@@ -19,6 +19,12 @@ data:
         url: http://{{ include "postgres-ai-monitoring.fullname" . }}-victoriametrics:{{ .Values.victoriaMetrics.service.port }}
         isDefault: true
         editable: true
+        {{- if .Values.victoriaMetrics.auth.enabled }}
+        basicAuth: true
+        basicAuthUser: {{ .Values.victoriaMetrics.auth.username | quote }}
+        secureJsonData:
+          basicAuthPassword: {{ .Values.secrets.vmAuth.password | quote }}
+        {{- end }}
       - name: SinkPostgres
         type: postgres
         access: proxy

@@ -95,13 +95,17 @@ services:
     volumes:
       - victoria_metrics_data:/victoria-metrics-data
       - postgres_ai_configs:/postgres_ai_configs:ro
+    environment:
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - "-storageDataPath=/victoria-metrics-data"
-      - "-retentionPeriod=336h"
-      - "-httpListenAddr=:9090"
-      - "-promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml"
-      - "-promscrape.config.strictParse=false"
-      - "-promscrape.maxScrapeSize=128000000"
+      - |
+        AUTH_ARGS=""
+        if [ -n "$$VM_AUTH_USERNAME" ] && [ -n "$$VM_AUTH_PASSWORD" ]; then
+          AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=$$VM_AUTH_PASSWORD"
+        fi
+        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod=336h -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 $$AUTH_ARGS
     depends_on:
       config-init:
         condition: service_completed_successfully
@@ -177,6 +181,8 @@ services:
       # Optional: disable login form when OAuth is primary auth
       GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_DISABLE_LOGIN_FORM:-false}
       GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-}
+      VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:-}
+      VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:-}
     ports:
       - "${GRAFANA_BIND_HOST:-}3000:3000"
     volumes:
@@ -199,6 +205,8 @@ services:
       - FLASK_ENV=production
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - POSTGRES_SINK_URL=postgresql://pgwatch@sink-postgres:5432/measurements
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
       # Optional overrides:
       # - ENABLE_AMP=true (enable Amazon Managed Prometheus support)
       # - AWS_REGION=us-east-1 (AWS region for Amazon Managed Prometheus)
@@ -219,6 +227,8 @@ services:
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
       - PROMETHEUS_URL=http://sink-prometheus:9090
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
       # Optional overrides:
       # - REPORTER_INITIAL_DELAY_SECONDS=1800
       # - REPORTER_INTERVAL_SECONDS=86400

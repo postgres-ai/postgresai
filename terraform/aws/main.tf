@@ -174,6 +174,8 @@ resource "aws_instance" "main" {
     postgres_ai_version  = var.postgres_ai_version
     bind_host            = var.bind_host
     grafana_bind_host    = var.grafana_bind_host
+    vm_auth_username     = var.vm_auth_username
+    vm_auth_password     = var.vm_auth_password
     instances_yml        = templatefile("${path.module}/instances.yml.tpl", {
       monitoring_instances = var.monitoring_instances
       enable_demo_db       = var.enable_demo_db

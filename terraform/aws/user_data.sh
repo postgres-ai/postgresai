@@ -98,6 +98,13 @@ BIND_HOST=${bind_host}
 GRAFANA_BIND_HOST=${grafana_bind_host}
 ENV_EOF
 
+%{ if vm_auth_password != "" ~}
+cat >> .env <<ENV_EOF
+VM_AUTH_USERNAME=${vm_auth_username}
+VM_AUTH_PASSWORD=${vm_auth_password}
+ENV_EOF
+%{ endif ~}
+
 # Ensure secure permissions
 chmod 600 .pgwatch-config .env
 
@@ -149,4 +156,8 @@ echo "Installation complete!"
 echo "Access Grafana at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):3000"
 echo "Username: monitor"
 echo "Password: ${grafana_password}"
+if [ -n "${vm_auth_username}" ] && [ -n "${vm_auth_password}" ]; then
+  echo ""
+  echo "VictoriaMetrics Auth: enabled (username: ${vm_auth_username})"
+fi
 
