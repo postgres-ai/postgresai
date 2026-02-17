@@ -21,11 +21,15 @@ datasources:
     uid: P7A0D6631BB10B34F
     url: http://sink-prometheus:9090
     isDefault: true
+    basicAuth: true
+    basicAuthUser: ${VM_AUTH_USERNAME}
     jsonData:
       scrapeInterval: '5s'
       queryTimeout: '5s'
       timeInterval: '5s'
       httpMethod: 'POST'
+    secureJsonData:
+      basicAuthPassword: ${VM_AUTH_PASSWORD}
 
   - name: Infinity
     type: yesoreyeram-infinity-datasource

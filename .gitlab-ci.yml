@@ -112,6 +112,25 @@ reporter:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+vm-auth:config:tests:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  before_script:
+    - pip install pytest pyyaml
+    # Install helm for template tests
+    - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    - helm repo add grafana https://grafana.github.io/helm-charts
+    - helm dependency build postgres_ai_helm/
+  script:
+    - python -m pytest tests/compliance_vectors/test_vm_auth.py -v
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 cli:node:smoke:
   stage: test
   image: node:20-alpine
@@ -501,11 +520,43 @@ cli:node:full:dind:
     - node ./cli/dist/bin/postgres-ai.js mon health --wait 120
     - node ./cli/dist/bin/postgres-ai.js mon show-grafana-credentials
     - echo ""
+    - echo "=== Testing VM Basic Auth ==="
+    # Read VM auth credentials from .env (CLI uses CWD when docker-compose.yml is present)
+    - |
+      VM_USER=$(grep '^VM_AUTH_USERNAME=' .env | cut -d= -f2)
+      VM_PASS=$(grep '^VM_AUTH_PASSWORD=' .env | cut -d= -f2)
+      echo "VM_AUTH_USERNAME=$VM_USER"
+      echo "VM_AUTH_PASSWORD is set: $(test -n "$VM_PASS" && echo yes || echo no)"
+
+      # In DinD, port-mapped ports are on the docker host, not localhost
+      VM_HOST="${DOCKER_HOST:-localhost}"
+      VM_HOST=$(echo "$VM_HOST" | sed 's|tcp://||;s|:.*||')
+      VM_URL="http://${VM_HOST}:59090"
+      echo "VM URL: $VM_URL"
+
+      # Test: unauthenticated API request should return 401
+      HTTP_NO_AUTH=$(curl -s -o /dev/null -w "%{http_code}" "$VM_URL/api/v1/query?query=up")
+      echo "No auth -> HTTP $HTTP_NO_AUTH"
+      test "$HTTP_NO_AUTH" = "401" || (echo "FAIL: expected 401 without auth" && exit 1)
+
+      # Test: authenticated API request should return 200
+      HTTP_WITH_AUTH=$(curl -s -o /dev/null -w "%{http_code}" -u "$VM_USER:$VM_PASS" "$VM_URL/api/v1/query?query=up")
+      echo "With auth -> HTTP $HTTP_WITH_AUTH"
+      test "$HTTP_WITH_AUTH" = "200" || (echo "FAIL: expected 200 with auth" && exit 1)
+
+      # Test: health endpoint should remain accessible without auth (for probes)
+      HTTP_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "$VM_URL/health")
+      echo "Health (no auth) -> HTTP $HTTP_HEALTH"
+      test "$HTTP_HEALTH" = "200" || (echo "FAIL: expected 200 for health" && exit 1)
+
+      echo "VM Basic Auth tests passed"
+    - echo ""
     - echo "=== Cleanup ==="
     - node ./cli/dist/bin/postgres-ai.js mon stop
     - node ./cli/dist/bin/postgres-ai.js mon clean || true
   after_script:
     - docker ps -a || true
+    - docker logs sink-prometheus 2>&1 || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'

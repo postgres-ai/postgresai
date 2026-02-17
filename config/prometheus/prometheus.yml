@@ -17,7 +17,11 @@ scrape_configs:
     metrics_path: /pgwatch
 
   # Self-monitoring: Victoria Metrics internal metrics
+  # Note: VictoriaMetrics expands percent-brace env vars in this file (not standard Prometheus)
   - job_name: 'victoriametrics'
+    basic_auth:
+      username: '%{VM_AUTH_USERNAME}'
+      password: '%{VM_AUTH_PASSWORD}'
     static_configs:
       - targets: ['localhost:9090']
     scrape_interval: 15s

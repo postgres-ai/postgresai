@@ -158,6 +158,10 @@ class PostgresReportGenerator:
                     refreshable_credentials=credentials,
                 )
 
+        vm_user = os.environ.get('VM_AUTH_USERNAME')
+        vm_pass = os.environ.get('VM_AUTH_PASSWORD')
+        if not self.auth and vm_user and vm_pass:
+            self.auth = (vm_user, vm_pass)
 
     def _read_text_file(self, path: str) -> Optional[str]:
         """Read and strip a small text file. Returns None if missing/empty/unreadable."""

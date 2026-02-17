@@ -45,6 +45,10 @@ victoriaMetrics:
   retentionPeriod: 336h
   scrapeInterval: 15s
   extraArgs: []
+  auth:
+    enabled: false
+    username: "vmauth"
+    # password stored in K8s secret (key: vm-auth-password)
   service:
     type: ClusterIP
     port: 8428
@@ -165,6 +169,8 @@ secrets:
   grafana:
     adminUser: admin
     adminPassword: "CHANGE_ME_grafana_password"
+  vmAuth:
+    password: "CHANGE_ME_vm_auth_password"
   pgwatchConfig:
     apiKey: ""
   # Passwords for monitored databases

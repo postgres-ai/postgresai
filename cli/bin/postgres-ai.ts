@@ -2235,6 +2235,26 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
     }
   }
 
+  // Load VM auth credentials from .env if not already set
+  const envFilePath = path.resolve(projectDir, ".env");
+  if (fs.existsSync(envFilePath)) {
+    try {
+      const envContent = fs.readFileSync(envFilePath, "utf8");
+      if (!env.VM_AUTH_USERNAME) {
+        const m = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
+        if (m) env.VM_AUTH_USERNAME = m[1].trim().replace(/^["']|["']$/g, '');
+      }
+      if (!env.VM_AUTH_PASSWORD) {
+        const m = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
+        if (m) env.VM_AUTH_PASSWORD = m[1].trim().replace(/^["']|["']$/g, '');
+      }
+    } catch (err) {
+      if (process.env.DEBUG) {
+        console.warn(`Warning: Could not read VM auth from .env: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   // On macOS, self-node-exporter can't mount host root filesystem - skip it
   const finalArgs = [...args];
   if (process.platform === "darwin" && args.includes("up")) {
@@ -2518,6 +2538,8 @@ mon
     console.log(opts.demo ? "Step 4: Configuring Grafana security..." : "Step 4: Configuring Grafana security...");
     const cfgPath = path.resolve(projectDir, ".pgwatch-config");
     let grafanaPassword = "";
+    let vmAuthUsername = "";
+    let vmAuthPassword = "";
 
     try {
       if (fs.existsSync(cfgPath)) {
@@ -2554,6 +2576,48 @@ mon
       console.error("⚠ Could not generate Grafana password automatically");
       console.log("Using default password: demo\n");
       grafanaPassword = "demo";
+    }
+
+    // Generate VictoriaMetrics auth credentials
+    try {
+      const envFile = path.resolve(projectDir, ".env");
+
+      // Read existing VM auth from .env if present
+      if (fs.existsSync(envFile)) {
+        const envContent = fs.readFileSync(envFile, "utf8");
+        const userMatch = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
+        const passMatch = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
+        if (userMatch) vmAuthUsername = userMatch[1].trim().replace(/^["']|["']$/g, '');
+        if (passMatch) vmAuthPassword = passMatch[1].trim().replace(/^["']|["']$/g, '');
+      }
+
+      if (!vmAuthUsername || !vmAuthPassword) {
+        console.log("Generating VictoriaMetrics auth credentials...");
+        vmAuthUsername = vmAuthUsername || "vmauth";
+        if (!vmAuthPassword) {
+          const { stdout: vmPass } = await execPromise("openssl rand -base64 12 | tr -d '\n'");
+          vmAuthPassword = vmPass.trim();
+        }
+
+        // Update .env file with VM auth credentials
+        let envContent = "";
+        if (fs.existsSync(envFile)) {
+          envContent = fs.readFileSync(envFile, "utf8");
+        }
+        const envLines = envContent.split(/\r?\n/)
+          .filter((l) => !/^VM_AUTH_USERNAME=/.test(l) && !/^VM_AUTH_PASSWORD=/.test(l))
+          .filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
+        envLines.push(`VM_AUTH_USERNAME=${vmAuthUsername}`);
+        envLines.push(`VM_AUTH_PASSWORD=${vmAuthPassword}`);
+        fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+      }
+
+      console.log("✓ VictoriaMetrics auth configured\n");
+    } catch (error) {
+      console.error("⚠ Could not generate VictoriaMetrics auth credentials automatically");
+      if (process.env.DEBUG) {
+        console.warn(`  ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     // Step 5: Start services
@@ -2606,6 +2670,9 @@ mon
     console.log("🚀 MAIN ACCESS POINT - Start here:");
     console.log("   Grafana Dashboard: http://localhost:3000");
     console.log(`   Login: monitor / ${grafanaPassword}`);
+    if (vmAuthUsername && vmAuthPassword) {
+      console.log(`   VictoriaMetrics Auth: ${vmAuthUsername} / ${vmAuthPassword}`);
+    }
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   });
 
@@ -3625,6 +3692,19 @@ mon
     console.log("  URL:      http://localhost:3000");
     console.log("  Username: monitor");
     console.log(`  Password: ${password}`);
+
+    // Show VM auth credentials from .env
+    const envFile = path.resolve(projectDir, ".env");
+    if (fs.existsSync(envFile)) {
+      const envContent = fs.readFileSync(envFile, "utf8");
+      const vmUser = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
+      const vmPass = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
+      if (vmUser && vmPass) {
+        console.log("\nVictoriaMetrics credentials:");
+        console.log(`  Username: ${vmUser[1].trim().replace(/^["']|["']$/g, '')}`);
+        console.log(`  Password: ${vmPass[1].trim().replace(/^["']|["']$/g, '')}`);
+      }
+    }
     console.log("");
   });
 

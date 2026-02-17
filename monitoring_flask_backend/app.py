@@ -224,6 +224,11 @@ def get_prometheus_client():
             # Enable SSL verification for AMP
             disable_ssl = False
 
+        vm_user = os.environ.get('VM_AUTH_USERNAME')
+        vm_pass = os.environ.get('VM_AUTH_PASSWORD')
+        if not auth and vm_user and vm_pass:
+            auth = (vm_user, vm_pass)
+
         return PrometheusConnect(url=PROMETHEUS_URL, disable_ssl=disable_ssl, auth=auth)
     except Exception as e:
         logger.error(f"Failed to connect to Prometheus: {e}")

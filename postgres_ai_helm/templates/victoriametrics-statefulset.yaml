@@ -37,6 +37,20 @@ spec:
             {{- range .Values.victoriaMetrics.extraArgs }}
             - {{ . }}
             {{- end }}
+            {{- if .Values.victoriaMetrics.auth.enabled }}
+            - -httpAuth.username=$(VM_AUTH_USERNAME)
+            - -httpAuth.password=$(VM_AUTH_PASSWORD)
+            {{- end }}
+          {{- if .Values.victoriaMetrics.auth.enabled }}
+          env:
+            - name: VM_AUTH_USERNAME
+              value: {{ .Values.victoriaMetrics.auth.username | quote }}
+            - name: VM_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "postgres-ai-monitoring.secretName" . }}
+                  key: vm-auth-password
+          {{- end }}
           ports:
             - name: http
               containerPort: 8428

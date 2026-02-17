@@ -97,3 +97,16 @@ variable "grafana_bind_host" {
   default     = "127.0.0.1:"
 }
 
+variable "vm_auth_username" {
+  description = "VictoriaMetrics HTTP Basic Auth username"
+  type        = string
+  default     = "vmauth"
+}
+
+variable "vm_auth_password" {
+  description = "VictoriaMetrics HTTP Basic Auth password. Leave empty to disable VM auth."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+

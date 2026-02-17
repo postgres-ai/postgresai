@@ -46,6 +46,15 @@ spec:
                   key: postgres-password
             - name: POSTGRES_SINK_URL
               value: "postgresql://{{ .Values.sinkPostgres.user }}:$(POSTGRES_PASSWORD)@{{ include "postgres-ai-monitoring.fullname" . }}-sink-postgres:5432/{{ .Values.sinkPostgres.database }}"
+            {{- if .Values.victoriaMetrics.auth.enabled }}
+            - name: VM_AUTH_USERNAME
+              value: {{ .Values.victoriaMetrics.auth.username | quote }}
+            - name: VM_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "postgres-ai-monitoring.secretName" . }}
+                  key: vm-auth-password
+            {{- end }}
             {{- range $key, $value := .Values.flask.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}

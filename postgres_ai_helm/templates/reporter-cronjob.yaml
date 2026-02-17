@@ -154,6 +154,15 @@ spec:
                       optional: true
                 {{- end }}
                 
+                {{- if $root.Values.victoriaMetrics.auth.enabled }}
+                - name: VM_AUTH_USERNAME
+                  value: {{ $root.Values.victoriaMetrics.auth.username | quote }}
+                - name: VM_AUTH_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "postgres-ai-monitoring.secretName" $root }}
+                      key: vm-auth-password
+                {{- end }}
                 {{- range $key, $value := $root.Values.reporter.env }}
                 - name: {{ $key }}
                   value: {{ $value | quote }}
