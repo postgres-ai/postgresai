@@ -2071,13 +2071,16 @@ function isDockerRunning(): boolean {
 }
 
 /**
- * Get docker compose command
+ * Get docker compose command.
+ * Prefer "docker compose" (V2 plugin) over legacy "docker-compose" (V1 standalone)
+ * because docker-compose V1 (<=1.29) is incompatible with modern Docker engines
+ * (KeyError: 'ContainerConfig' on container recreation).
  */
 function getComposeCmd(): string[] | null {
   const tryCmd = (cmd: string, args: string[]): boolean =>
     spawnSync(cmd, args, { stdio: "ignore", timeout: 5000 } as Parameters<typeof spawnSync>[2]).status === 0;
-  if (tryCmd("docker-compose", ["version"])) return ["docker-compose"];
   if (tryCmd("docker", ["compose", "version"])) return ["docker", "compose"];
+  if (tryCmd("docker-compose", ["version"])) return ["docker-compose"];
   return null;
 }
 
@@ -2621,6 +2624,10 @@ mon
     }
 
     // Step 5: Start services
+    // Remove stopped containers left by "run --rm" dependencies (e.g. config-init)
+    // to avoid docker-compose v1 'ContainerConfig' error on recreation.
+    // Best-effort: ignore exit code — container may not exist, failure here is non-fatal.
+    await runCompose(["rm", "-f", "-s", "config-init"]);
     console.log("Step 5: Starting monitoring services...");
     const code2 = await runCompose(["up", "-d", "--force-recreate"], grafanaPassword);
     if (code2 !== 0) {
