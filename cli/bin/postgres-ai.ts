@@ -2529,9 +2529,15 @@ mon
       // Demo mode: copy bundled instances.demo.yml → instances.yml so the demo target is active
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
       const { instancesFile: instancesPath } = await resolveOrInitPaths();
-      // Use import.meta.url instead of __dirname — bundlers bake in __dirname at build time
-      const demoSrc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "instances.demo.yml");
-      if (fs.existsSync(demoSrc)) {
+      // Use import.meta.url instead of __dirname — bundlers bake in __dirname at build time.
+      // Check multiple candidate paths (npm package vs repo dev layout).
+      const currentDir = path.dirname(fileURLToPath(import.meta.url));
+      const demoCandidates = [
+        path.resolve(currentDir, "..", "..", "instances.demo.yml"),        // npm: dist/bin -> package root
+        path.resolve(currentDir, "..", "..", "..", "instances.demo.yml"),  // dev: cli/bin -> repo root
+      ];
+      const demoSrc = demoCandidates.find(p => fs.existsSync(p));
+      if (demoSrc) {
         fs.copyFileSync(demoSrc, instancesPath);
         console.log("✓ Demo monitoring target configured\n");
       } else {
