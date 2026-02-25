@@ -504,7 +504,11 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     }
   }
 
-  // Ensure instances.yml exists as a FILE (avoid Docker creating a directory)
+  // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
+  // Docker bind-mounts create missing paths as directories; replace if so.
+  if (fs.existsSync(instancesFile) && fs.statSync(instancesFile).isDirectory()) {
+    fs.rmSync(instancesFile, { recursive: true, force: true });
+  }
   if (!fs.existsSync(instancesFile)) {
     const header =
       "# PostgreSQL instances to monitor\n" +
@@ -2303,7 +2307,7 @@ mon
     console.log("This will install, configure, and start the monitoring system\n");
 
     // Ensure we have a project directory with docker-compose.yml even if running from elsewhere
-    const { projectDir } = await resolveOrInitPaths();
+    const { projectDir, instancesFile: instancesPath } = await resolveOrInitPaths();
     console.log(`Project directory: ${projectDir}\n`);
 
     // Save project name to .pgwatch-config if provided (used by reporter container)
@@ -2528,7 +2532,6 @@ mon
     } else {
       // Demo mode: copy bundled instances.demo.yml → instances.yml so the demo target is active
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
-      const { instancesFile: instancesPath } = await resolveOrInitPaths();
       // Use import.meta.url instead of __dirname — bundlers bake in __dirname at build time.
       // Check multiple candidate paths (npm package vs repo dev layout).
       const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -2538,10 +2541,14 @@ mon
       ];
       const demoSrc = demoCandidates.find(p => fs.existsSync(p));
       if (demoSrc) {
+        // Remove directory artifact left by Docker bind-mounts
+        if (fs.existsSync(instancesPath) && fs.statSync(instancesPath).isDirectory()) {
+          fs.rmSync(instancesPath, { recursive: true, force: true });
+        }
         fs.copyFileSync(demoSrc, instancesPath);
         console.log("✓ Demo monitoring target configured\n");
       } else {
-        console.error("⚠ instances.demo.yml not found — demo target not configured\n");
+        console.error(`⚠ instances.demo.yml not found — demo target not configured (searched: ${demoCandidates.join(", ")})\n`);
       }
     }
 

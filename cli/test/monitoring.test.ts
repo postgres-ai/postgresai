@@ -286,6 +286,7 @@ describe("demo mode instances.demo.yml", () => {
     expect(content).toMatch(/^\s+conn_str:/m);
     expect(content).toMatch(/^\s+preset_metrics: full/m);
     expect(content).toMatch(/^\s+is_enabled: true/m);
+    // ~sink_type~ is a placeholder replaced per-sink by generate-pgwatch-sources.sh
     expect(content).toMatch(/^\s+sink_type: ~sink_type~/m);
   });
 
@@ -306,6 +307,31 @@ describe("demo mode instances.demo.yml", () => {
       const content = fs.readFileSync(instancesDest, "utf8");
       expect(content).toContain("name: target_database");
       expect(content).toContain("conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("demo config copy overwrites directory at instances.yml path", () => {
+    // Docker bind-mounts create missing paths as directories; the copy must handle this
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-eisdir-test-"));
+    try {
+      const demoSrc = path.join(repoRoot, "instances.demo.yml");
+      const instancesDest = path.join(tempDir, "instances.yml");
+
+      // Simulate Docker creating a directory at instances.yml path
+      fs.mkdirSync(instancesDest);
+      expect(fs.statSync(instancesDest).isDirectory()).toBe(true);
+
+      // The fix: remove directory then copy
+      if (fs.statSync(instancesDest).isDirectory()) {
+        fs.rmSync(instancesDest, { recursive: true, force: true });
+      }
+      fs.copyFileSync(demoSrc, instancesDest);
+
+      expect(fs.statSync(instancesDest).isFile()).toBe(true);
+      const content = fs.readFileSync(instancesDest, "utf8");
+      expect(content).toContain("name: target_database");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
