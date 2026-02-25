@@ -11,4 +11,4 @@
     env: demo
     cluster: local
     node_name: node-01
-    sink_type: ~sink_type~  # placeholder replaced by generate-pgwatch-sources.sh per sink
+    sink_type: ~sink_type~  # sed token substituted by generate-pgwatch-sources.sh; values: postgres, prometheus

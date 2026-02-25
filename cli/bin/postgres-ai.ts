@@ -506,7 +506,7 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
 
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
-  if (fs.existsSync(instancesFile) && fs.statSync(instancesFile).isDirectory()) {
+  if (fs.existsSync(instancesFile) && fs.lstatSync(instancesFile).isDirectory()) {
     fs.rmSync(instancesFile, { recursive: true, force: true });
   }
   if (!fs.existsSync(instancesFile)) {
@@ -2542,13 +2542,14 @@ mon
       const demoSrc = demoCandidates.find(p => fs.existsSync(p));
       if (demoSrc) {
         // Remove directory artifact left by Docker bind-mounts
-        if (fs.existsSync(instancesPath) && fs.statSync(instancesPath).isDirectory()) {
+        if (fs.existsSync(instancesPath) && fs.lstatSync(instancesPath).isDirectory()) {
           fs.rmSync(instancesPath, { recursive: true, force: true });
         }
         fs.copyFileSync(demoSrc, instancesPath);
         console.log("✓ Demo monitoring target configured\n");
       } else {
-        console.error(`⚠ instances.demo.yml not found — demo target not configured (searched: ${demoCandidates.join(", ")})\n`);
+        console.error(`Error: instances.demo.yml not found — cannot configure demo target.\nSearched: ${demoCandidates.join(", ")}\n`);
+        process.exit(1);
       }
     }
 
@@ -2904,7 +2905,7 @@ mon
     console.log(`Project Directory: ${projectDir}`);
     console.log(`Docker Compose File: ${composeFile}`);
     console.log(`Instances File: ${instancesFile}`);
-    if (fs.existsSync(instancesFile) && !fs.statSync(instancesFile).isDirectory()) {
+    if (fs.existsSync(instancesFile) && !fs.lstatSync(instancesFile).isDirectory()) {
       console.log("\nInstances configuration:\n");
       const text = fs.readFileSync(instancesFile, "utf8");
       process.stdout.write(text);
@@ -3120,7 +3121,7 @@ targets
   .description("list monitoring target databases")
   .action(async () => {
     const { instancesFile: instancesPath, projectDir } = await resolveOrInitPaths();
-    if (!fs.existsSync(instancesPath) || fs.statSync(instancesPath).isDirectory()) {
+    if (!fs.existsSync(instancesPath) || fs.lstatSync(instancesPath).isDirectory()) {
       console.error(`instances.yml not found in ${projectDir}`);
       process.exitCode = 1;
       return;
@@ -3186,7 +3187,7 @@ targets
 
     // Check if instance already exists
     try {
-      if (fs.existsSync(file) && !fs.statSync(file).isDirectory()) {
+      if (fs.existsSync(file) && !fs.lstatSync(file).isDirectory()) {
         const content = fs.readFileSync(file, "utf8");
         const instances = yaml.load(content) as Instance[] | null || [];
         if (Array.isArray(instances)) {
@@ -3200,7 +3201,7 @@ targets
       }
     } catch (err) {
       // If YAML parsing fails, fall back to simple check
-      const isFile = fs.existsSync(file) && !fs.statSync(file).isDirectory();
+      const isFile = fs.existsSync(file) && !fs.lstatSync(file).isDirectory();
       const content = isFile ? fs.readFileSync(file, "utf8") : "";
       if (new RegExp(`^- name: ${instanceName}$`, "m").test(content)) {
         console.error(`Monitoring target '${instanceName}' already exists`);
@@ -3210,7 +3211,7 @@ targets
     }
 
     // Add new instance — if instances.yml is a directory (Docker artifact), replace it with a file
-    if (fs.existsSync(file) && fs.statSync(file).isDirectory()) {
+    if (fs.existsSync(file) && fs.lstatSync(file).isDirectory()) {
       fs.rmSync(file, { recursive: true, force: true });
     }
     const body = `- name: ${instanceName}\n  conn_str: ${connStr}\n  preset_metrics: full\n  custom_metrics:\n  is_enabled: true\n  group: default\n  custom_tags:\n    env: production\n    cluster: default\n    node_name: ${instanceName}\n    sink_type: ~sink_type~\n`;
@@ -3223,7 +3224,7 @@ targets
   .description("remove monitoring target database")
   .action(async (name: string) => {
     const { instancesFile: file } = await resolveOrInitPaths();
-    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    if (!fs.existsSync(file) || fs.lstatSync(file).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
       return;
@@ -3260,7 +3261,7 @@ targets
   .description("test monitoring target database connectivity")
   .action(async (name: string) => {
     const { instancesFile: instancesPath } = await resolveOrInitPaths();
-    if (!fs.existsSync(instancesPath) || fs.statSync(instancesPath).isDirectory()) {
+    if (!fs.existsSync(instancesPath) || fs.lstatSync(instancesPath).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
       return;

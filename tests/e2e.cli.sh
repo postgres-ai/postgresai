@@ -8,8 +8,8 @@ CLI_CMD="node ./cli/dist/bin/postgres-ai.js"
 MON_CMD="$CLI_CMD mon"
 
 # Ensure instances.yml exists as a file (instances.demo.yml is the tracked template)
-if [ ! -f instances.yml ]; then
-  cp instances.demo.yml instances.yml 2>/dev/null || true
+if [[ ! -f instances.yml ]]; then
+  cp instances.demo.yml instances.yml || { echo "ERROR: instances.demo.yml missing — cannot seed instances.yml" >&2; exit 1; }
 fi
 
 echo "=== Testing service commands ==="

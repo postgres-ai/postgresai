@@ -286,13 +286,13 @@ describe("demo mode instances.demo.yml", () => {
     expect(content).toMatch(/^\s+conn_str:/m);
     expect(content).toMatch(/^\s+preset_metrics: full/m);
     expect(content).toMatch(/^\s+is_enabled: true/m);
-    // ~sink_type~ is a placeholder replaced per-sink by generate-pgwatch-sources.sh
+    // ~sink_type~ is a sed token substituted by generate-pgwatch-sources.sh; values: postgres, prometheus
     expect(content).toMatch(/^\s+sink_type: ~sink_type~/m);
   });
 
   test("instances.yml is gitignored (not tracked)", () => {
     const gitignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
-    expect(gitignore).toContain("instances.yml");
+    expect(gitignore).toMatch(/^instances\.yml$/m);
   });
 
   test("demo config can be copied to instances.yml in temp dir", () => {
