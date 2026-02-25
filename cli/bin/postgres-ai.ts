@@ -477,14 +477,14 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     fs.mkdirSync(projectDir, { recursive: true, mode: 0o700 });
   }
 
-  const refs = [
-    process.env.PGAI_PROJECT_REF,
-    pkg.version,
-    `v${pkg.version}`,
-    "main",
-  ].filter((v): v is string => Boolean(v && v.trim()));
-
   if (!fs.existsSync(composeFile)) {
+    const refs = [
+      process.env.PGAI_PROJECT_REF,
+      pkg.version,
+      `v${pkg.version}`,
+      "main",
+    ].filter((v): v is string => Boolean(v && v.trim()));
+
     let lastErr: unknown;
     for (const ref of refs) {
       const url = `https://gitlab.com/postgres-ai/postgres_ai/-/raw/${encodeURIComponent(ref)}/docker-compose.yml`;
@@ -500,21 +500,6 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     if (!fs.existsSync(composeFile)) {
       const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
       throw new Error(`Failed to bootstrap docker-compose.yml: ${msg}`);
-    }
-  }
-
-  // Download instances.demo.yml (demo target template) if not present
-  const demoFile = path.resolve(projectDir, "instances.demo.yml");
-  if (!fs.existsSync(demoFile)) {
-    for (const ref of refs) {
-      const url = `https://gitlab.com/postgres-ai/postgres_ai/-/raw/${encodeURIComponent(ref)}/instances.demo.yml`;
-      try {
-        const text = await downloadText(url);
-        fs.writeFileSync(demoFile, text, { encoding: "utf8", mode: 0o600 });
-        break;
-      } catch {
-        // non-fatal — demo file is optional
-      }
     }
   }
 
@@ -2540,10 +2525,10 @@ mon
         }
       }
     } else {
-      // Demo mode: copy instances.demo.yml → instances.yml so the demo target is active
+      // Demo mode: copy bundled instances.demo.yml → instances.yml so the demo target is active
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
-      const { instancesFile: instancesPath, projectDir } = await resolveOrInitPaths();
-      const demoSrc = path.resolve(projectDir, "instances.demo.yml");
+      const { instancesFile: instancesPath } = await resolveOrInitPaths();
+      const demoSrc = path.resolve(__dirname, "..", "..", "instances.demo.yml");
       if (fs.existsSync(demoSrc)) {
         fs.copyFileSync(demoSrc, instancesPath);
         console.log("✓ Demo monitoring target configured\n");
