@@ -2530,10 +2530,21 @@ mon
         }
       }
     } else {
-      // Demo mode: copy bundled instances.demo.yml → instances.yml so the demo target is active
+      // Demo mode: configure instances.yml from the bundled demo template.
+      //
+      // Side effects:
+      //   - Writes instancesPath (instances.yml next to docker-compose.yml)
+      //   - If Docker previously bind-mounted instances.yml as a directory, removes it first.
+      //
+      // Failure modes:
+      //   - Exits with code 1 if instances.demo.yml is not found in any candidate path.
+      //     This is fatal because starting without a target produces empty dashboards that
+      //     look like a bug rather than a misconfiguration.
+      //
+      // Template search order (import.meta.url is resolved at runtime, not baked in at build):
+      //   1. npm layout:  dist/bin/../../instances.demo.yml  →  package-root/instances.demo.yml
+      //   2. dev layout:  cli/bin/../../../instances.demo.yml →  repo-root/instances.demo.yml
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
-      // Use import.meta.url instead of __dirname — bundlers bake in __dirname at build time.
-      // Check multiple candidate paths (npm package vs repo dev layout).
       const currentDir = path.dirname(fileURLToPath(import.meta.url));
       const demoCandidates = [
         path.resolve(currentDir, "..", "..", "instances.demo.yml"),        // npm: dist/bin -> package root
@@ -2541,7 +2552,7 @@ mon
       ];
       const demoSrc = demoCandidates.find(p => fs.existsSync(p));
       if (demoSrc) {
-        // Remove directory artifact left by Docker bind-mounts
+        // Remove directory artifact left by Docker bind-mounts before copying
         if (fs.existsSync(instancesPath) && fs.lstatSync(instancesPath).isDirectory()) {
           fs.rmSync(instancesPath, { recursive: true, force: true });
         }
