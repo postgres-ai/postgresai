@@ -7,6 +7,7 @@ import * as yaml from "js-yaml";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
@@ -2528,7 +2529,8 @@ mon
       // Demo mode: copy bundled instances.demo.yml → instances.yml so the demo target is active
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
       const { instancesFile: instancesPath } = await resolveOrInitPaths();
-      const demoSrc = path.resolve(__dirname, "..", "..", "instances.demo.yml");
+      // Use import.meta.url instead of __dirname — bundlers bake in __dirname at build time
+      const demoSrc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "instances.demo.yml");
       if (fs.existsSync(demoSrc)) {
         fs.copyFileSync(demoSrc, instancesPath);
         console.log("✓ Demo monitoring target configured\n");
