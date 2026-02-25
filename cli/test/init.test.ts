@@ -1070,6 +1070,14 @@ describe("CLI commands", () => {
     expect(r.stderr).toMatch(/Reports will be generated locally only/);
   });
 
+  test("cli: mon local-install --demo configures demo monitoring target", () => {
+    // --demo should copy instances.demo.yml to instances.yml and print confirmation.
+    // The command will fail later (no Docker), but we verify the demo target step succeeded.
+    const r = runCli(["mon", "local-install", "--demo"]);
+    expect(r.stdout).toMatch(/Demo mode enabled/);
+    expect(r.stdout).toMatch(/Demo monitoring target configured/);
+  });
+
   test("cli: mon local-install --demo with global --api-key shows error", () => {
     // When --demo is used with global --api-key, it should still be detected and error
     const r = runCli([
