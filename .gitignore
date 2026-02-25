@@ -78,3 +78,6 @@ volumes/
 .pgwatch-config
 
 .env.hypothesis/
+
+# Runtime instances config (created from instances.demo.yml or by CLI)
+instances.yml

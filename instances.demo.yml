@@ -1,3 +1,6 @@
+# Demo PostgreSQL instance for `pgai mon local-install --demo`
+# This file is copied to instances.yml during demo mode setup.
+
 - name: target_database
   conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database
   preset_metrics: full
