@@ -259,3 +259,81 @@ describe("registerMonitoringInstance", () => {
     expect(fetchCalls[0].url).toBe("https://custom.api.com/v2/rpc/monitoring_instance_register");
   });
 });
+
+describe("demo mode instances.demo.yml", () => {
+  const repoRoot = path.resolve(import.meta.dir, "..", "..");
+
+  test("instances.demo.yml exists in repo root", () => {
+    const demoFile = path.join(repoRoot, "instances.demo.yml");
+    expect(fs.existsSync(demoFile)).toBe(true);
+  });
+
+  test("instances.demo.yml contains demo target connection", () => {
+    const demoFile = path.join(repoRoot, "instances.demo.yml");
+    const content = fs.readFileSync(demoFile, "utf8");
+    expect(content).toContain("name: target_database");
+    expect(content).toContain("conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database");
+    expect(content).toContain("is_enabled: true");
+    expect(content).toContain("preset_metrics: full");
+  });
+
+  test("instances.demo.yml has required YAML structure", () => {
+    const demoFile = path.join(repoRoot, "instances.demo.yml");
+    const content = fs.readFileSync(demoFile, "utf8");
+    // Verify it's a YAML list (starts with "- name:")
+    expect(content).toMatch(/^- name: target_database/m);
+    // Verify required fields are present with correct indentation
+    expect(content).toMatch(/^\s+conn_str:/m);
+    expect(content).toMatch(/^\s+preset_metrics: full/m);
+    expect(content).toMatch(/^\s+is_enabled: true/m);
+    // ~sink_type~ is a sed token substituted by generate-pgwatch-sources.sh; values: postgres, prometheus
+    expect(content).toMatch(/^\s+sink_type: ~sink_type~/m);
+  });
+
+  test("instances.yml is gitignored (not tracked)", () => {
+    const gitignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
+    expect(gitignore).toMatch(/^instances\.yml$/m);
+  });
+
+  test("demo config can be copied to instances.yml in temp dir", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-install-test-"));
+    try {
+      const demoSrc = path.join(repoRoot, "instances.demo.yml");
+      const instancesDest = path.join(tempDir, "instances.yml");
+
+      fs.copyFileSync(demoSrc, instancesDest);
+
+      expect(fs.existsSync(instancesDest)).toBe(true);
+      const content = fs.readFileSync(instancesDest, "utf8");
+      expect(content).toContain("name: target_database");
+      expect(content).toContain("conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("demo config copy overwrites directory at instances.yml path", () => {
+    // Docker bind-mounts create missing paths as directories; the copy must handle this
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-eisdir-test-"));
+    try {
+      const demoSrc = path.join(repoRoot, "instances.demo.yml");
+      const instancesDest = path.join(tempDir, "instances.yml");
+
+      // Simulate Docker creating a directory at instances.yml path
+      fs.mkdirSync(instancesDest);
+      expect(fs.statSync(instancesDest).isDirectory()).toBe(true);
+
+      // The fix: remove directory then copy
+      if (fs.statSync(instancesDest).isDirectory()) {
+        fs.rmSync(instancesDest, { recursive: true, force: true });
+      }
+      fs.copyFileSync(demoSrc, instancesDest);
+
+      expect(fs.statSync(instancesDest).isFile()).toBe(true);
+      const content = fs.readFileSync(instancesDest, "utf8");
+      expect(content).toContain("name: target_database");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
