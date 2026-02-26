@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { resolve } from "path";
+import path, { resolve } from "path";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -1068,6 +1068,69 @@ describe("CLI commands", () => {
     // Should indicate auto-yes mode without API key
     expect(r.stdout).toMatch(/Auto-yes mode: no API key provided/);
     expect(r.stderr).toMatch(/Reports will be generated locally only/);
+  });
+
+  test("cli: mon local-install --demo configures demo monitoring target", () => {
+    // --demo should copy instances.demo.yml to instances.yml and print confirmation.
+    // The command will fail later (no Docker), but we verify the demo target step succeeded.
+    // resolvePaths() walks cwd() up to find docker-compose.yml, so instances.yml
+    // is written next to docker-compose.yml in the repo root.
+    const repoRoot = resolve(import.meta.dir, "..", "..");
+    const instancesPath = path.join(repoRoot, "instances.yml");
+    // Remove instances.yml if it exists — use rmSync to handle both files and
+    // directories (the EISDIR test may have left a directory here if it failed).
+    if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
+    try {
+      const r = runCli(["mon", "local-install", "--demo"]);
+      expect(r.stdout).toMatch(/Demo mode enabled/);
+      expect(r.stdout).toMatch(/Demo monitoring target configured/);
+      // Verify instances.yml was actually written with the demo target
+      expect(fs.existsSync(instancesPath)).toBe(true);
+      const content = fs.readFileSync(instancesPath, "utf8");
+      expect(content).toContain("name: target_database");
+      expect(content).toContain("conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database");
+    } finally {
+      // Clean up — instances.yml is gitignored so safe to remove
+      if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
+    }
+  });
+
+  test("cli: mon local-install --demo exits with code 1 when instances.demo.yml is missing", () => {
+    // Regression: if instances.demo.yml cannot be found in any candidate path, the CLI
+    // must exit with a non-zero code and a descriptive error (not silently create empty dashboards).
+    const repoRoot = resolve(import.meta.dir, "..", "..");
+    const demoFile = path.join(repoRoot, "instances.demo.yml");
+    const tempBackup = path.join(os.tmpdir(), `instances.demo.yml.test-backup-${Date.now()}`);
+    // Temporarily move instances.demo.yml so neither candidate path resolves
+    fs.copyFileSync(demoFile, tempBackup);
+    fs.unlinkSync(demoFile);
+    try {
+      const r = runCli(["mon", "local-install", "--demo"]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("instances.demo.yml not found");
+    } finally {
+      // Restore the file — critical to do before any assertion can throw
+      if (!fs.existsSync(demoFile)) fs.copyFileSync(tempBackup, demoFile);
+      fs.rmSync(tempBackup, { force: true });
+    }
+  });
+
+  test("cli: mon local-install --demo with EISDIR recovers instances.yml", () => {
+    // Docker bind-mounts create missing paths as directories; the CLI must handle this.
+    const repoRoot = resolve(import.meta.dir, "..", "..");
+    const instancesPath = path.join(repoRoot, "instances.yml");
+    // Create instances.yml as a directory (simulating Docker artifact)
+    if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
+    fs.mkdirSync(instancesPath);
+    try {
+      const r = runCli(["mon", "local-install", "--demo"]);
+      expect(r.stdout).toMatch(/Demo monitoring target configured/);
+      expect(fs.statSync(instancesPath).isFile()).toBe(true);
+      const content = fs.readFileSync(instancesPath, "utf8");
+      expect(content).toContain("name: target_database");
+    } finally {
+      if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
+    }
   });
 
   test("cli: mon local-install --demo with global --api-key shows error", () => {

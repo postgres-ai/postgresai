@@ -28,7 +28,7 @@
     "embed-metrics": "bun run scripts/embed-metrics.ts",
     "embed-checkup-dictionary": "bun run scripts/embed-checkup-dictionary.ts",
     "embed-all": "bun run embed-metrics && bun run embed-checkup-dictionary",
-    "build": "bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && cp -r ./sql ./dist/sql",
+    "build": "bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && cp -r ./sql ./dist/sql && cp ../instances.demo.yml ./instances.demo.yml",
     "prepublishOnly": "npm run build",
     "start": "bun ./bin/postgres-ai.ts --help",
     "start:node": "node ./dist/bin/postgres-ai.js --help",

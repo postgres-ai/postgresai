@@ -78,3 +78,9 @@ volumes/
 .pgwatch-config
 
 .env.hypothesis/
+
+# Runtime instances config (created from instances.demo.yml or by CLI)
+instances.yml
+
+# Build artifact: copied from repo root into cli/ during build
+cli/instances.demo.yml

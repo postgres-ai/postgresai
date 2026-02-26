@@ -1,0 +1,7 @@
+package-lock.json
+node_modules/
+coverage/
+
+# Auto-generated at build time (do not commit)
+lib/metrics-embedded.ts
+lib/checkup-dictionary-embedded.ts
