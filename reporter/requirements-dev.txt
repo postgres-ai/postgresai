@@ -4,7 +4,7 @@ pytest-postgresql==7.0.2
 coverage==7.6.10
 pytest-cov==6.0.0
 jsonschema==4.23.0
-PyYAML==6.0.2
+PyYAML==6.0.3
 hypothesis==6.122.3
 syrupy==4.8.1
 pytest-socket==0.7.0
