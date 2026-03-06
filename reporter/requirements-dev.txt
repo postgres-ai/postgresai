@@ -2,7 +2,7 @@
 pytest==8.3.5
 pytest-postgresql==7.0.2
 coverage==7.6.10
-pytest-cov==6.0.0
+pytest-cov==7.0.0
 jsonschema==4.23.0
 PyYAML==6.0.2
 hypothesis==6.122.3
