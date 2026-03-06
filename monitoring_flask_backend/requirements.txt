@@ -1,6 +1,6 @@
 Flask==3.0.0
 prometheus-api-client==0.5.4
-python-dateutil==2.8.2
+python-dateutil==2.9.0.post0
 gunicorn==23.0.0
 requests==2.32.4
 pytest==8.3.4
