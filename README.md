@@ -225,6 +225,261 @@ npx postgresai checkup --json postgresql://... | claude -p "find issues and sugg
 
 **[PostgresAI](https://postgres.ai)** — Self-Driving Postgres
 
-Apache 2.0 · [Contributing](CONTRIBUTING.md)
+## 🎯 Use cases
+
+**For developers:**
+```bash
+postgresai mon local-install --demo
+```
+Get a complete monitoring setup with demo data in under 2 minutes.
+
+**For production:**
+```bash
+postgresai mon local-install --api-key=your_key
+# Then add your databases
+postgresai mon targets add "postgresql://user:pass@host:port/DB"
+```
+
+## 🔧 Management commands
+
+```bash
+# Instance management
+postgresai mon targets add "postgresql://user:pass@host:port/DB"
+postgresai mon targets list
+postgresai mon targets test my-DB
+
+# Service management
+postgresai mon status
+postgresai mon logs
+postgresai mon restart
+
+# Health check
+postgresai mon health
+```
+
+## 🔄 Upgrading
+
+To upgrade postgres_ai monitoring to a newer version:
+
+### Step 1: Update the CLI
+
+```bash
+npm install -g postgresai@latest
+```
+
+Or if you're using npx:
+```bash
+npx postgresai@latest --version  # verify the new version
+```
+
+### Step 2: Stop running services
+
+```bash
+postgresai mon stop
+```
+
+### Step 3: Pull new Docker images and restart
+
+The simplest approach is to re-run local-install, which updates the image tag and pulls new images:
+
+```bash
+postgresai mon local-install -y
+```
+
+This will:
+- Update the `PGAI_TAG` in `.env` (located in your monitoring directory, typically `~/.postgres_ai/` or your current working directory) to match the new CLI version
+- Pull the latest Docker images
+- Start the services with the new images
+
+> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag) and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry).
+
+**Alternative: Manual upgrade**
+
+If you prefer more control:
+
+```bash
+# Update the PGAI_TAG in .env to match your CLI version
+postgresai --version  # check your CLI version
+# Edit .env and set PGAI_TAG to the version number
+
+# Pull new images
+docker compose pull
+
+# Start services
+postgresai mon start
+```
+
+### Verify the upgrade
+
+After upgrading, verify services are running correctly:
+
+```bash
+postgresai mon status
+postgresai mon health
+```
+
+Check Grafana dashboards at http://localhost:3000 to confirm metrics are being collected.
+
+## 📋 Checkup reports
+
+postgres_ai monitoring generates automated health check reports based on [postgres-checkup](https://gitlab.com/postgres-ai/postgres-checkup). Each report has a unique check ID and title:
+
+### A. General / Infrastructural
+| Check ID | Title |
+|----------|-------|
+| A001 | System information |
+| A002 | Version information |
+| A003 | Postgres settings |
+| A004 | Cluster information |
+| A005 | Extensions |
+| A006 | Postgres setting deviations |
+| A007 | Altered settings |
+| A008 | Disk usage and file system type |
+
+### D. Monitoring / Troubleshooting
+| Check ID | Title |
+|----------|-------|
+| D004 | pg_stat_statements and pg_stat_kcache settings |
+
+### F. Autovacuum, Bloat
+| Check ID | Title |
+|----------|-------|
+| F001 | Autovacuum: current settings |
+| F004 | Autovacuum: heap bloat (estimated) |
+| F005 | Autovacuum: index bloat (estimated) |
+
+### G. Performance / Connections / Memory-related settings
+| Check ID | Title |
+|----------|-------|
+| G001 | Memory-related settings |
+
+### H. Index analysis
+| Check ID | Title |
+|----------|-------|
+| H001 | Invalid indexes |
+| H002 | Unused indexes |
+| H004 | Redundant indexes |
+
+### K. SQL query analysis
+| Check ID | Title |
+|----------|-------|
+| K001 | Globally aggregated query metrics |
+| K003 | Top queries by total time (total_exec_time + total_plan_time) |
+| K004 | Top queries by temp bytes written |
+| K005 | Top queries by WAL generation |
+| K006 | Top queries by shared blocks read |
+| K007 | Top queries by shared blocks hit |
+
+### M. SQL query analysis (top queries)
+| Check ID | Title |
+|----------|-------|
+| M001 | Top queries by mean execution time |
+| M002 | Top queries by rows (I/O intensity) |
+| M003 | Top queries by I/O time |
+
+### N. Wait events analysis
+| Check ID | Title |
+|----------|-------|
+| N001 | Wait events grouped by type and query |
+
+## 🌐 Access points
+
+After running local-install:
+
+- **🚀 MAIN: Grafana Dashboard**: http://localhost:3000 (login: `monitoring`; password is shown at the end of local-install)
+
+Technical URLs (for advanced users):
+- **Demo DB**: postgresql://postgres:postgres@localhost:55432/target_database
+- **Monitoring**: http://localhost:58080 (PGWatch)
+- **Metrics**: http://localhost:59090 (Victoria Metrics)
+
+## 📖 Help
+
+```bash
+postgresai --help
+postgresai mon --help
+```
+
+## 🔑 PostgresAI access token
+Get your access token at [PostgresAI](https://postgres.ai) for automated report uploads and advanced analysis.
+
+## 🛣️ Roadmap
+
+- Host stats for on-premise and managed Postgres setups
+- `pg_wait_sampling` and `pg_stat_kcache` extension support
+- Additional expert dashboards: autovacuum, checkpointer, lock analysis
+- Query plan analysis and automated recommendations
+- Enhanced AI integration capabilities
+
+## 🧪 Testing
+
+Python-based report generation lives under `reporter/` and now ships with a pytest suite.
+
+### Installation
+
+Install dev dependencies (includes `pytest`, `pytest-postgresql`, `psycopg`, etc.):
+```bash
+python3 -m pip install -r reporter/requirements-dev.txt
+```
+
+### Running Tests
+
+#### Unit Tests Only (Fast, No External Services Required)
+
+Run only unit tests with mocked Prometheus interactions:
+```bash
+pytest tests/reporter
+```
+
+This automatically skips integration tests. Or run specific test files:
+```bash
+pytest tests/reporter/test_generators_unit.py -v
+pytest tests/reporter/test_formatters.py -v
+```
+
+#### All Tests: Unit + Integration (Requires PostgreSQL)
+
+Run the complete test suite (both unit and integration tests):
+```bash
+pytest tests/reporter --run-integration
+```
+
+Integration tests create a temporary PostgreSQL instance automatically and require PostgreSQL binaries (`initdb`, `postgres`) on your PATH. No manual database setup or environment variables are required - the tests create and destroy their own temporary PostgreSQL instances.
+
+**Summary:**
+- `pytest tests/reporter` → **Unit tests only** (integration tests skipped)
+- `pytest tests/reporter --run-integration` → **Both unit and integration tests**
+
+### Test Coverage
+
+Generate coverage report:
+```bash
+pytest tests/reporter -m unit --cov=reporter --cov-report=html
+```
+
+View the coverage report by opening `htmlcov/index.html` in your browser.
+
+## 🤝 Contributing
+
+We welcome contributions from Postgres experts! Please check our [GitLab repository](https://gitlab.com/postgres-ai/postgres_ai) for:
+- Code standards and review process
+- Dashboard design principles
+- Testing requirements for monitoring components
+
+## 📄 License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## 🏢 About PostgresAI
+
+postgres_ai monitoring is developed by [PostgresAI](https://postgres.ai), bringing years of Postgres expertise into automated monitoring and analysis tools. We provide enterprise consulting and advanced Postgres solutions for fast-growing companies.
+
+## 📞 Support & community
+
+- 💬 [Get support](https://postgres.ai/contact)
+- 📺 [Postgres.TV (YouTube)](https://postgres.tv)
+- 🎙️ [Postgres FM Podcast](https://postgres.fm)
+- 🐛 [Report issues](https://gitlab.com/postgres-ai/postgres_ai/-/issues)
+- 📧 [Enterprise support](https://postgres.ai/consulting)
 
 </div>
