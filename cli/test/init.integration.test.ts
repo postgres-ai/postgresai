@@ -10,6 +10,8 @@ import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
 
+const TEST_TIMEOUT = 30000; // 30 seconds
+
 function sqlLiteral(value: string): string {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
@@ -215,7 +217,7 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     } finally {
       await pg.cleanup();
     }
-  }, { timeout: 15000 });
+  }, { timeout: TEST_TIMEOUT });
 
   test("requires explicit monitoring password in non-interactive mode", async () => {
     pg = await createTempPostgres();
@@ -239,7 +241,7 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     } finally {
       await pg.cleanup();
     }
-  }, { timeout: 15000 });
+  }, { timeout: TEST_TIMEOUT });
 
   test(
     "fixes slightly-off permissions idempotently",
@@ -296,21 +298,19 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
         await pg.cleanup();
       }
     },
-    { timeout: 15000 }
+    { timeout: TEST_TIMEOUT }
   );
 
-  test(
-    "reports nicely when lacking permissions",
-    async () => {
-      pg = await createTempPostgres();
+  test("reports nicely when lacking permissions", async () => {
+    pg = await createTempPostgres();
 
-      try {
-        // Create limited user that can connect but cannot create roles / grant.
-        const limitedPw = "limitedpw";
-        {
-          const c = new Client({ connectionString: pg.adminUri });
-          await c.connect();
-          await c.query(`do $$ begin
+    try {
+      // Create limited user that can connect but cannot create roles / grant.
+      const limitedPw = "limitedpw";
+      {
+        const c = new Client({ connectionString: pg.adminUri });
+        await c.connect();
+        await c.query(`do $$ begin
           if not exists (select 1 from pg_roles where rolname='limited') then
             begin
               create role limited login password ${sqlLiteral(limitedPw)};
@@ -323,18 +323,16 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
           await c.end();
         }
 
-        const limitedUri = `postgresql://limited:${limitedPw}@127.0.0.1:${pg.port}/testdb`;
-        const r = runCliInit([limitedUri, "--password", "monpw", "--skip-optional-permissions"]);
-        expect(r.status).not.toBe(0);
-        expect(r.stderr).toMatch(/Error: prepare-db:/);
-        expect(r.stderr).toMatch(/Failed at step "/);
-        expect(r.stderr).toMatch(/Fix: connect as a superuser/i);
-      } finally {
-        await pg.cleanup();
-      }
-    },
-    { timeout: 15000 }
-  );
+      const limitedUri = `postgresql://limited:${limitedPw}@127.0.0.1:${pg.port}/testdb`;
+      const r = runCliInit([limitedUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/Error: prepare-db:/);
+      expect(r.stderr).toMatch(/Failed at step "/);
+      expect(r.stderr).toMatch(/Fix: connect as a superuser/i);
+    } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
 
   test(
     "--verify returns 0 when ok and non-zero when missing",
@@ -372,7 +370,8 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
       } finally {
         await pg.cleanup();
       }
-    }
+    },
+    { timeout: TEST_TIMEOUT }
   );
 
   // 15s timeout for PostgreSQL startup + two CLI init commands in slow CI
@@ -406,7 +405,7 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     } finally {
       await pg.cleanup();
     }
-  }, { timeout: 15000 });
+  }, { timeout: TEST_TIMEOUT });
 
   // 60s timeout for PostgreSQL startup + multiple SQL queries in slow CI
   test("explain_generic validates input and prevents SQL injection", async () => {
