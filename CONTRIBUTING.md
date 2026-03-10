@@ -17,6 +17,19 @@ If you cloned the repo with submodules, make sure the `.cursor` submodule is ini
 git submodule update --init --recursive
 ```
 
+### Pre-commit hooks
+
+This repo uses [pre-commit](https://pre-commit.com/) with [gitleaks](https://github.com/gitleaks/gitleaks) to catch secrets before they are committed.
+
+```bash
+# Install pre-commit
+pip install pre-commit
+# or: brew install pre-commit
+
+# Install the hooks (one-time, after cloning)
+pre-commit install
+```
+
 ## Local development workflow (no-commit, debugger-friendly)
 
 This workflow lets you:
