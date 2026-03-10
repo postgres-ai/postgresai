@@ -55,20 +55,6 @@ function closeReadline() {
 }
 
 // Helper functions for spawning processes - use Node.js child_process for compatibility
-async function execPromise(command: string): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    childProcess.exec(command, (error, stdout, stderr) => {
-      if (error) {
-        const err = error as Error & { code: number };
-        err.code = typeof error.code === "number" ? error.code : 1;
-        reject(err);
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-  });
-}
-
 async function execFilePromise(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     childProcess.execFile(file, args, (error, stdout, stderr) => {
@@ -2594,8 +2580,8 @@ mon
 
       if (!grafanaPassword) {
         console.log("Generating secure Grafana password...");
-        const { stdout: password } = await execPromise("openssl rand -base64 12 | tr -d '\n'");
-        grafanaPassword = password.trim();
+        const { stdout: password } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
+        grafanaPassword = password.trim().replace(/\n/g, "");
 
         let configContent = "";
         if (fs.existsSync(cfgPath)) {
@@ -2634,8 +2620,8 @@ mon
         console.log("Generating VictoriaMetrics auth credentials...");
         vmAuthUsername = vmAuthUsername || "vmauth";
         if (!vmAuthPassword) {
-          const { stdout: vmPass } = await execPromise("openssl rand -base64 12 | tr -d '\n'");
-          vmAuthPassword = vmPass.trim();
+          const { stdout: vmPass } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
+          vmAuthPassword = vmPass.trim().replace(/\n/g, "");
         }
 
         // Update .env file with VM auth credentials
@@ -2947,16 +2933,16 @@ mon
 
       // Fetch latest changes
       console.log("Fetching latest changes...");
-      await execPromise("git fetch origin");
+      await execFilePromise("git", ["fetch", "origin"]);
 
       // Check current branch
-      const { stdout: branch } = await execPromise("git rev-parse --abbrev-ref HEAD");
+      const { stdout: branch } = await execFilePromise("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
       const currentBranch = branch.trim();
       console.log(`Current branch: ${currentBranch}`);
 
       // Pull latest changes
       console.log("Pulling latest changes...");
-      const { stdout: pullOut } = await execPromise("git pull origin " + currentBranch);
+      const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
       console.log(pullOut);
 
       // Update Docker images
@@ -3214,7 +3200,8 @@ targets
       // If YAML parsing fails, fall back to simple check
       const isFile = fs.existsSync(file) && !fs.lstatSync(file).isDirectory();
       const content = isFile ? fs.readFileSync(file, "utf8") : "";
-      if (new RegExp(`^- name: ${instanceName}$`, "m").test(content)) {
+      const escapedName = instanceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`^- name: ${escapedName}$`, "m").test(content)) {
         console.error(`Monitoring target '${instanceName}' already exists`);
         process.exitCode = 1;
         return;
@@ -3658,10 +3645,10 @@ mon
 
     try {
       // Generate secure password using openssl
-      const { stdout: password } = await execPromise(
-        "openssl rand -base64 12 | tr -d '\n'"
+      const { stdout: password } = await execFilePromise(
+        "openssl", ["rand", "-base64", "12"]
       );
-      const newPassword = password.trim();
+      const newPassword = password.trim().replace(/\n/g, "");
 
       if (!newPassword) {
         console.error("Failed to generate password");
@@ -4712,7 +4699,7 @@ mcp
       // Get the path to the current pgai executable
       let pgaiPath: string;
       try {
-        const execPath = await execPromise("which pgai");
+        const execPath = await execFilePromise("which", ["pgai"]);
         pgaiPath = execPath.stdout.trim();
       } catch {
         // Fallback to just "pgai" if which fails
@@ -4724,8 +4711,8 @@ mcp
         console.log("Installing PostgresAI MCP server for Claude Code...");
 
         try {
-          const { stdout, stderr } = await execPromise(
-            `claude mcp add -s user postgresai ${pgaiPath} mcp start`
+          const { stdout, stderr } = await execFilePromise(
+            "claude", ["mcp", "add", "-s", "user", "postgresai", pgaiPath, "mcp", "start"]
           );
 
           if (stdout) console.log(stdout);
