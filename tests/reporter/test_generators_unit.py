@@ -1360,7 +1360,7 @@ def test_make_request_raises_on_http_error(monkeypatch: pytest.MonkeyPatch) -> N
         def json(self):
             return {}
 
-    def fake_post(url: str, json: dict[str, Any] | None = None):
+    def fake_post(url: str, json: dict[str, Any] | None = None, **kwargs):
         return MockResponse()
 
     monkeypatch.setattr("requests.post", fake_post)
@@ -1375,7 +1375,7 @@ def test_make_request_raises_on_connection_error(monkeypatch: pytest.MonkeyPatch
     """Test that make_request raises exception on connection error."""
     import requests
 
-    def fake_post(url: str, json: dict[str, Any] | None = None):
+    def fake_post(url: str, json: dict[str, Any] | None = None, **kwargs):
         raise requests.ConnectionError("Connection failed")
 
     monkeypatch.setattr("requests.post", fake_post)

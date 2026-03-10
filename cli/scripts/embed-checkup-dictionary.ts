@@ -51,7 +51,16 @@ function generateTypeScript(data: CheckupDictionaryEntry[], sourceUrl: string): 
   return lines.join("\n");
 }
 
+// Allowed hosts for fetch requests to prevent SSRF
+const ALLOWED_HOSTS = ["postgres.ai"];
+
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  // Validate URL against allowlist to prevent SSRF
+  const parsed = new URL(url);
+  if (!ALLOWED_HOSTS.includes(parsed.hostname)) {
+    throw new Error(`Fetch blocked: host "${parsed.hostname}" is not in the allowlist`);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 

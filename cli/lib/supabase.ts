@@ -350,6 +350,10 @@ export async function fetchPoolerDatabaseUrl(
   config: SupabaseConfig,
   username: string
 ): Promise<string | null> {
+  // Validate projectRef format to prevent SSRF via crafted project references
+  if (!isValidProjectRef(config.projectRef)) {
+    throw new Error(`Invalid Supabase project reference format: "${config.projectRef}". Expected 10-30 alphanumeric characters.`);
+  }
   const url = `${SUPABASE_API_BASE}/v1/projects/${encodeURIComponent(config.projectRef)}/config/database/pooler`;
 
   // For Supabase pooler connections, the username must include the project ref:

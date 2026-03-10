@@ -368,7 +368,7 @@ class PostgresReportGenerator:
         params = {'query': query}
 
         try:
-            response = requests.get(f"{self.base_url}/query", params=params, auth=self.auth)
+            response = requests.get(f"{self.base_url}/query", params=params, auth=self.auth, timeout=30)
             if response.status_code == 200:
                 return response.json()
             else:
@@ -3115,7 +3115,7 @@ class PostgresReportGenerator:
         }
 
         try:
-            response = requests.get(f"{self.base_url}/query_range", params=params, auth=self.auth)
+            response = requests.get(f"{self.base_url}/query_range", params=params, auth=self.auth, timeout=30)
             if response.status_code == 200:
                 result = response.json()
                 if result.get('status') == 'success':
@@ -4890,7 +4890,7 @@ class PostgresReportGenerator:
 
 
 def make_request(api_url, endpoint, request_data):
-    response = requests.post(api_url + endpoint, json=request_data)
+    response = requests.post(api_url + endpoint, json=request_data, timeout=30)
     response.raise_for_status()
     return response.json()
 
