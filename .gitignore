@@ -84,3 +84,6 @@ instances.yml
 
 # Build artifact: copied from repo root into cli/ during build
 cli/instances.demo.yml
+
+# Claude Code agent worktrees (temporary)
+.claude/worktrees/
