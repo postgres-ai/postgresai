@@ -12,7 +12,7 @@
 # This approach simplifies container-to-container communication while maintaining
 # appropriate security isolation from external access.
 
-cat > ${PGDATA}/pg_hba.conf <<EOF
+cat > "${PGDATA}/pg_hba.conf" <<EOF
 # PostgreSQL Client Authentication Configuration File
 # Custom configuration for sink-postgres container
 # 
@@ -59,5 +59,5 @@ host    all             all             10.0.0.0/8              trust
 EOF
 
 # Reload PostgreSQL configuration
-pg_ctl reload -D ${PGDATA}
+pg_ctl reload -D "${PGDATA}"
 

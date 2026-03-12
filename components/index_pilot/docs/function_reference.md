@@ -49,7 +49,7 @@ returns table(
 ```
 
 Notes:
-- `estimated_bloat` is computed as `indexsize / (best_ratio * estimated_tuples)` using cached state in `index_pilot.index_current_state`.
+- `estimated_bloat` is computed as `indexsize / (best_ratio * estimated_tuples)` using cached state in `index_pilot.index_latest_state`.
 - Immediately after baseline initialization (see `do_force_populate_index_stats`) `estimated_bloat` will be ~1.0 by definition; it grows as indexes bloat further.
 
 ### Non-Superuser Mode Functions

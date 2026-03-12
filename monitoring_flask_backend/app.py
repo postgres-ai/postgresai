@@ -179,6 +179,18 @@ def smart_truncate_query(query: str, max_length: int = 40) -> str:
         return original_query
 
 
+def _sanitize_promql_label(value: str) -> str:
+    """Sanitize a value for safe use in a PromQL label matcher.
+
+    Escapes backslashes and double-quotes so that the value cannot break
+    out of a "..." label selector.  This prevents PromQL injection when
+    user-supplied query parameters are interpolated into metric selectors.
+    """
+    if not value:
+        return ''
+    return value.replace('\\', '\\\\').replace('"', '\\"')
+
+
 app = Flask(__name__)
 
 # PostgreSQL sink connection for query text lookups
@@ -387,11 +399,11 @@ def get_pgss_metrics_csv():
         # Add filters if provided
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_sanitize_promql_label(cluster_name)}"')
         if node_name:
-            filters.append(f'instance=~".*{node_name}.*"')
+            filters.append(f'instance=~".*{_sanitize_promql_label(node_name)}.*"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_sanitize_promql_label(db_name)}"')
 
         if filters:
             base_query += '{' + ','.join(filters) + '}'
@@ -701,17 +713,17 @@ def get_btree_bloat_csv():
         # Build label filters
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_sanitize_promql_label(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_sanitize_promql_label(node_name)}"')
         if schemaname:
-            filters.append(f'schemaname="{schemaname}"')
+            filters.append(f'schemaname="{_sanitize_promql_label(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_sanitize_promql_label(tblname)}"')
         if idxname:
-            filters.append(f'idxname="{idxname}"')
+            filters.append(f'idxname="{_sanitize_promql_label(idxname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_sanitize_promql_label(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
@@ -839,16 +851,16 @@ def get_table_info_csv():
         # Build label filters
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_sanitize_promql_label(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_sanitize_promql_label(node_name)}"')
         if schemaname:
             # Support regex pattern matching with =~
-            filters.append(f'schemaname=~"{schemaname}"')
+            filters.append(f'schemaname=~"{_sanitize_promql_label(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_sanitize_promql_label(tblname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_sanitize_promql_label(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 

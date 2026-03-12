@@ -10,18 +10,20 @@ data:
   00-configure-pg-hba.sh: |
     #!/bin/bash
     set -e
-    # Configure pg_hba.conf to allow passwordless connections from within cluster
+    # Configure pg_hba.conf to require password auth for remote connections
     cat > "$PGDATA/pg_hba.conf" <<EOF
     # TYPE  DATABASE        USER            ADDRESS                 METHOD
     local   all             all                                     trust
     host    all             all             127.0.0.1/32            trust
     host    all             all             ::1/128                 trust
-    host    all             all             0.0.0.0/0               trust
+    host    all             all             10.0.0.0/8              md5
+    host    all             all             172.16.0.0/12           md5
+    host    all             all             192.168.0.0/16          md5
     EOF
-  
+
   init.sql: |
-    create database if not exists measurements;
-    create user if not exists pgwatch with password 'pgwatch';
-    grant all privileges on database measurements to pgwatch;
+    SELECT 'CREATE DATABASE measurements' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'measurements')\gexec
+    DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgwatch') THEN CREATE ROLE pgwatch WITH LOGIN PASSWORD 'pgwatch'; END IF; END $$;
+    GRANT ALL PRIVILEGES ON DATABASE measurements TO pgwatch;
 
 

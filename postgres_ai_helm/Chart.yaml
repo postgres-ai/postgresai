@@ -22,4 +22,4 @@ name: postgres-ai-monitoring
 sources:
 - https://github.com/PostgresAI/double-pgwatch-poc
 type: application
-version: 0.12
+version: 0.12.0

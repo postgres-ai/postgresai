@@ -67,7 +67,7 @@ chmod +x /usr/local/bin/index_pilot_maintenance.sh
 
 ### Inventory of objects (control DB)
 - **Schema**: `index_pilot`
-- **Tables**: `target_databases`, `reindex_history`, `index_current_state`, `config`, `tables_version`, `current_processed_index`
+- **Tables**: `target_databases`, `reindex_history`, `index_latest_state`, `config`, `tables_version`, `current_processed_index`
 - **View**: `history`
 - **Functions/Procedures**: `periodic`, `do_reindex`, `get_index_bloat_estimates`, `do_force_populate_index_stats`, `get_setting`, `set_or_replace_setting`, `check_permissions`, `version`, `check_update_structure_version`, FDW helpers
 

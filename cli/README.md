@@ -398,4 +398,4 @@ Coverage configuration is in `bunfig.toml`. Reports are generated in `coverage/`
 ## Learn more
 
 - Documentation: https://postgres.ai/docs
-- Issues: https://gitlab.com/postgres-ai/postgres_ai/-/issues
+- Issues: https://gitlab.com/postgres-ai/postgresai/-/issues

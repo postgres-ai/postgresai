@@ -26,7 +26,7 @@ begin
   if _version is null or _version = '' then
     raise exception 'FAIL: Version function returned empty';
   end if;
-  raise notice 'PASS: Version function works (%))', _version;
+  raise notice 'PASS: Version function works (%)', _version;
 end $$;
 
 -- 3. Verify required tables exist

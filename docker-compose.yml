@@ -55,6 +55,12 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # Postgres Sink - Storage for metrics in PostgreSQL format
   # Note: pg_hba.conf is configured to allow passwordless connections (trust)
@@ -83,6 +89,12 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # VictoriaMetrics Sink - Storage for metrics in Prometheus format
   sink-prometheus:
@@ -109,6 +121,12 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/metrics || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # PGWatch Instance 1 - Monitoring service (Postgres sink)
   pgwatch-postgres:
@@ -128,7 +146,7 @@ services:
       sources-generator:
         condition: service_completed_successfully
       sink-postgres:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - postgres_ai_configs:/postgres_ai_configs:ro
     restart: unless-stopped
@@ -151,7 +169,7 @@ services:
       sources-generator:
         condition: service_completed_successfully
       sink-prometheus:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - postgres_ai_configs:/postgres_ai_configs:ro
     restart: unless-stopped
@@ -192,9 +210,9 @@ services:
       config-init:
         condition: service_completed_successfully
       sink-postgres:
-        condition: service_started
+        condition: service_healthy
       sink-prometheus:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
   monitoring_flask_backend:
     image: ${PGAI_REGISTRY:-postgresai}/monitoring-flask-backend:${PGAI_TAG:?PGAI_TAG is required}
@@ -211,8 +229,10 @@ services:
       # - ENABLE_AMP=true (enable Amazon Managed Prometheus support)
       # - AWS_REGION=us-east-1 (AWS region for Amazon Managed Prometheus)
     depends_on:
-      - sink-prometheus
-      - sink-postgres
+      sink-prometheus:
+        condition: service_healthy
+      sink-postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   # PostgreSQL Reports Generator - Runs reports after 30 minutes
@@ -242,7 +262,7 @@ services:
       config-init:
         condition: service_completed_successfully
       sink-prometheus:
-        condition: service_started
+        condition: service_healthy
       pgwatch-prometheus:
         condition: service_started
     command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]

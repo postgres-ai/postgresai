@@ -188,10 +188,10 @@ ensure_control_db() {
     return 0
   fi
   local exists
-  exists=$(psql_cmd postgres "select 1 from pg_database where datname = '${CONTROL_DB}'") || true
+  exists=$(psql_cmd postgres "select 1 from pg_database where datname = '${CONTROL_DB//\'/\'\'}'") || true
   if [[ -z "${exists}" ]]; then
     print_info "Creating control database ${CONTROL_DB}"
-    psql_cmd postgres "create database ${CONTROL_DB};"
+    psql_cmd postgres "create database \"${CONTROL_DB}\";"
     print_ok "Control database created: ${CONTROL_DB}"
   else
     print_ok "Control database exists: ${CONTROL_DB}"

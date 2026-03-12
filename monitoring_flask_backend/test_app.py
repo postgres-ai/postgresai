@@ -3,7 +3,7 @@ import pytest
 import json
 from unittest.mock import patch, mock_open
 
-from app import app, read_version_file, smart_truncate_query, _escape_prometheus_label
+from app import app, read_version_file, smart_truncate_query, _escape_prometheus_label, _sanitize_promql_label
 
 
 @pytest.fixture
@@ -433,6 +433,43 @@ class TestEscapePrometheusLabel:
         result = _escape_prometheus_label('col1\tcol2')
         # Tabs should be replaced with space
         assert '\t' not in result
+
+
+class TestSanitizePromqlLabel:
+    """Tests for the _sanitize_promql_label function."""
+
+    def test_empty_string(self):
+        """Test empty string returns empty."""
+        assert _sanitize_promql_label('') == ''
+
+    def test_none_returns_empty(self):
+        """Test None input returns empty string."""
+        assert _sanitize_promql_label(None) == ''
+
+    def test_simple_string_unchanged(self):
+        """Test simple strings are unchanged."""
+        assert _sanitize_promql_label('my-cluster') == 'my-cluster'
+
+    def test_escapes_double_quote(self):
+        """Test double quotes are escaped to prevent PromQL injection."""
+        assert _sanitize_promql_label('foo"} or vector(1) or x{"y="') == 'foo\\"} or vector(1) or x{\\"y=\\"'
+
+    def test_escapes_backslash(self):
+        """Test backslashes are escaped."""
+        assert _sanitize_promql_label('path\\to') == 'path\\\\to'
+
+    def test_injection_attempt_neutralized(self):
+        """Test that a PromQL injection attempt is safely escaped."""
+        malicious = 'cluster"} or up{job="'
+        result = _sanitize_promql_label(malicious)
+        # The result should contain escaped quotes, not raw ones
+        assert '"' not in result.replace('\\"', '')
+
+    def test_normal_label_values(self):
+        """Test typical label values pass through correctly."""
+        assert _sanitize_promql_label('prod-us-east-1') == 'prod-us-east-1'
+        assert _sanitize_promql_label('192.168.1.1:5432') == '192.168.1.1:5432'
+        assert _sanitize_promql_label('my_database') == 'my_database'
 
 
 class TestQueryInfoMetricsEndpoint:

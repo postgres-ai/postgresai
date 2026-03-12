@@ -1284,13 +1284,13 @@ begin
             join pg_catalog.pg_class as i on i.oid = x.indexrelid
             join pg_catalog.pg_namespace as n on n.oid = c.relnamespace
             where
-              n.nspname = '%1$s'
-              and c.relname = '%2$s'
-              and i.relname = '%3$s_ccnew'
+              n.nspname = %1$L
+              and c.relname = %2$L
+              and i.relname = %3$L || '_ccnew'
               and not x.indisvalid
           $sql$,
-          _index.schemaname, 
-          _index.relname, 
+          _index.schemaname,
+          _index.relname,
           _index.indexrelname
         )
       ) as _res(indexrelid oid))
@@ -1306,12 +1306,12 @@ begin
               join pg_catalog.pg_class as i on i.oid = x.indexrelid
               join pg_catalog.pg_namespace as n on n.oid = c.relnamespace
               where
-                n.nspname = '%1$s'
-                and c.relname = '%2$s'
-                and i.relname = '%3$s'
-            $sql$, 
-            _index.schemaname, 
-            _index.relname, 
+                n.nspname = %1$L
+                and c.relname = %2$L
+                and i.relname = %3$L
+            $sql$,
+            _index.schemaname,
+            _index.relname,
             _index.indexrelname
           )
         ) as _res(indexrelid oid))
@@ -1322,8 +1322,8 @@ begin
       end if;
 
       -- Drop the invalid _ccnew index
-      perform dblink(_index.datname, format('drop index concurrently %I.%I_ccnew',
-        _index.schemaname, _index.indexrelname));
+      perform dblink(_index.datname, format('drop index concurrently %I.%I',
+        _index.schemaname, _index.indexrelname || '_ccnew'));
 
       -- Log the drop
       raise warning 'The invalid index %.%_ccnew was dropped in database %',

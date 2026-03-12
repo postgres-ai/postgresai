@@ -150,12 +150,14 @@ sleep 30
 # Reset Grafana admin password to match terraform config
 echo "Setting Grafana admin password..."
 cd /home/postgres_ai/postgres_ai
-docker exec grafana-with-datasources grafana-cli admin reset-admin-password "${grafana_password}"
+docker exec grafana-with-datasources grafana-cli admin reset-admin-password "${grafana_password}" > /dev/null 2>&1
 
 echo "Installation complete!"
-echo "Access Grafana at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):3000"
+IMDS_TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+echo "Access Grafana at: http://$PUBLIC_IP:3000"
 echo "Username: monitor"
-echo "Password: ${grafana_password}"
+echo "Password: [stored in .pgwatch-config]"
 if [ -n "${vm_auth_username}" ] && [ -n "${vm_auth_password}" ]; then
   echo ""
   echo "VictoriaMetrics Auth: enabled (username: ${vm_auth_username})"

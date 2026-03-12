@@ -118,7 +118,7 @@ values ('<target_db_name>', '<target_host>', 5432, 'target_<target_db_name>');
 ```sql
 select cron.schedule_in_database(
   'pg_index_pilot_daily', '0 2 * * *',
-  'select index_pilot.periodic(real_run := true);',
+  'call index_pilot.periodic(real_run := true);',
   '<index_pilot_control_db>'
 );
 ```
