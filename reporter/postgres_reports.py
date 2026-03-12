@@ -3680,7 +3680,7 @@ class PostgresReportGenerator:
         Returns:
             D004 report dictionary
         """
-        print("Generating D004 from A003 data...")
+        logger.info("Generating D004 from A003 data...")
 
         # Filter A003 settings for D004-relevant settings
         pgstat_data = self.filter_a003_settings(a003_report, self.D004_SETTINGS)
@@ -3714,7 +3714,7 @@ class PostgresReportGenerator:
         Returns:
             F001 report dictionary
         """
-        print("Generating F001 from A003 data...")
+        logger.info("Generating F001 from A003 data...")
 
         # Filter A003 settings for F001-relevant settings
         autovacuum_data = self.filter_a003_settings(a003_report, self.F001_SETTINGS)
@@ -3735,7 +3735,7 @@ class PostgresReportGenerator:
         Returns:
             G001 report dictionary with memory analysis
         """
-        print("Generating G001 from A003 data...")
+        logger.info("Generating G001 from A003 data...")
 
         # Filter A003 settings for G001-relevant settings
         memory_data = self.filter_a003_settings(a003_report, self.G001_SETTINGS)
@@ -4123,7 +4123,7 @@ class PostgresReportGenerator:
                     # (A003 data already contains all nodes)
                     combined_results = {}
                     for node in nodes_to_process:
-                        print(f"Generating {check_id} report for node {node} from A003...")
+                        logger.info(f"Generating {check_id} report for node {node} from A003...")
                         node_report = report_func(cluster, node)
                         if 'results' in node_report and node in node_report['results']:
                             combined_results[node] = node_report['results'][node]
@@ -4136,7 +4136,7 @@ class PostgresReportGenerator:
                     )
         else:
             # Fallback to direct generation if A003 failed
-            print("Warning: A003 report not available, generating D004/F001/G001 directly")
+            logger.warning("A003 report not available, generating D004/F001/G001 directly")
             fallback_report_types = [
                 ('D004', self.generate_d004_pgstat_settings_report),
                 ('F001', self.generate_f001_autovacuum_settings_report),
@@ -4148,7 +4148,7 @@ class PostgresReportGenerator:
                 else:
                     combined_results = {}
                     for node in nodes_to_process:
-                        print(f"Generating {check_id} report for node {node}...")
+                        logger.info(f"Generating {check_id} report for node {node}...")
                         node_report = report_func(cluster, node)
                         if 'results' in node_report and node in node_report['results']:
                             combined_results[node] = node_report['results'][node]
@@ -4988,7 +4988,7 @@ def main():
                 query_files = generator.generate_per_query_jsons(
                     reports, cluster, node_name=args.node_name, 
                     # 640 KB should be enough for anybody
-                    query_text_limit=66560, hours=24,
+                    query_text_limit=655360, hours=24,
                     write_immediately=True,
                     include_cluster_prefix=(len(clusters_to_process) > 1),
                     api_url=args.api_url if (not args.no_upload and report_id) else None,
@@ -5025,7 +5025,7 @@ def main():
                 # For D004, F001, G001 - generate A003 first and derive from it
                 a003_report = None
                 if args.check_id in ('D004', 'F001', 'G001'):
-                    print(f"Generating A003 first for {args.check_id}...")
+                    logger.info(f"Generating A003 first for {args.check_id}...")
                     a003_report = generator.generate_a003_settings_report(cluster, args.node_name)
 
                 if args.check_id == 'A002':
@@ -5115,8 +5115,7 @@ def main():
             
     except Exception as e:
         logger.error(f"Error generating reports: {e}")
-        raise e
-        sys.exit(1)
+        raise
     finally:
         # Clean up postgres connection
         generator.close_postgres_sink()
