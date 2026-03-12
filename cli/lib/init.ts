@@ -29,7 +29,7 @@ const SKIP_SEARCH_PATH_CHECK_PROVIDERS = ["supabase"];
 
 /** Check if a provider is known and return a warning message if not. */
 export function validateProvider(provider: string | undefined): string | null {
-  if (!provider || KNOWN_PROVIDERS.includes(provider as any)) return null;
+  if (!provider || (KNOWN_PROVIDERS as readonly string[]).includes(provider)) return null;
   return `Unknown provider "${provider}". Known providers: ${KNOWN_PROVIDERS.join(", ")}. Treating as self-managed.`;
 }
 
@@ -607,8 +607,8 @@ export async function applyInitPlan(params: {
       applied.push(step.name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const errAny = e as any;
-      const wrapped: any = new Error(`Failed at step "${step.name}": ${msg}`);
+      const errAny = e as Record<string, unknown>;
+      const wrapped = new Error(`Failed at step "${step.name}": ${msg}`) as Error & Record<string, unknown>;
       // Preserve useful Postgres error fields so callers can provide better hints / diagnostics.
       const pgErrorFields = [
         "code",
@@ -857,7 +857,7 @@ export async function verifyInitSetup(params: {
     if (!SKIP_SEARCH_PATH_CHECK_PROVIDERS.includes(provider)) {
       const rolcfgRes = await params.client.query("select rolconfig from pg_catalog.pg_roles where rolname = $1", [role]);
       const rolconfig = rolcfgRes.rows?.[0]?.rolconfig;
-      const spLine = Array.isArray(rolconfig) ? rolconfig.find((v: any) => String(v).startsWith("search_path=")) : undefined;
+      const spLine = Array.isArray(rolconfig) ? rolconfig.find((v: unknown) => String(v).startsWith("search_path=")) : undefined;
       if (typeof spLine !== "string" || !spLine) {
         missingRequired.push("role search_path is set");
       } else {
