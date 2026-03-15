@@ -199,6 +199,7 @@ class PostgresReportGenerator:
         This prevents PromQL injection when cluster names, database names,
         or other user-controlled strings contain special characters.
         """
+        value = str(value)
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
     def _promql_filter(self, **labels: str) -> str:
@@ -413,15 +414,16 @@ class PostgresReportGenerator:
         # Support both label schemas:
         # - newer/expected-by-tests: setting_name/setting_value
         # - older/pgwatch-tagged:    tag_setting_name/tag_setting_value
+        _esc = self._escape_promql_label
         queries = [
             (
                 "setting_name",
-                f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}", '
+                f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", '
                 f'setting_name=~"server_version|server_version_num"}}[3h])',
             ),
             (
                 "tag_setting_name",
-                f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}", '
+                f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", '
                 f'tag_setting_name=~"server_version|server_version_num"}}[3h])',
             ),
         ]
@@ -501,7 +503,8 @@ class PostgresReportGenerator:
 
         # Query all PostgreSQL settings using the pgwatch_settings_configured metric with last_over_time
         # This metric has labels for each setting name
-        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        _esc = self._escape_promql_label
+        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
         settings_data = {}
@@ -550,17 +553,18 @@ class PostgresReportGenerator:
         logger.info("Generating A004 Cluster Information report...")
 
         # Query cluster information
+        _esc = self._escape_promql_label
         cluster_queries = {
-            'active_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{cluster}", node_name="{node_name}", state="active"}}[3h]))',
-            'idle_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{cluster}", node_name="{node_name}", state="idle"}}[3h]))',
-            'total_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{cluster}", node_name="{node_name}"}}[3h]))',
-            'database_sizes': f'sum(last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h]))',
-            'cache_hit_ratio': f'sum(last_over_time(pgwatch_db_stats_blks_hit{{cluster="{cluster}", node_name="{node_name}"}}[3h])) / clamp_min(sum(last_over_time(pgwatch_db_stats_blks_hit{{cluster="{cluster}", node_name="{node_name}"}}[3h])) + sum(last_over_time(pgwatch_db_stats_blks_read{{cluster="{cluster}", node_name="{node_name}"}}[3h])), 1) * 100',
-            'transactions_per_sec': f'sum(rate(pgwatch_db_stats_xact_commit{{cluster="{cluster}", node_name="{node_name}"}}[5m])) + sum(rate(pgwatch_db_stats_xact_rollback{{cluster="{cluster}", node_name="{node_name}"}}[5m]))',
-            'checkpoints_per_sec': f'sum(rate(pgwatch_pg_stat_bgwriter_checkpoints_timed{{cluster="{cluster}", node_name="{node_name}"}}[5m])) + sum(rate(pgwatch_pg_stat_bgwriter_checkpoints_req{{cluster="{cluster}", node_name="{node_name}"}}[5m]))',
-            'deadlocks': f'sum(last_over_time(pgwatch_db_stats_deadlocks{{cluster="{cluster}", node_name="{node_name}"}}[3h]))',
-            'temp_files': f'sum(last_over_time(pgwatch_db_stats_temp_files{{cluster="{cluster}", node_name="{node_name}"}}[3h]))',
-            'temp_bytes': f'sum(last_over_time(pgwatch_db_stats_temp_bytes{{cluster="{cluster}", node_name="{node_name}"}}[3h]))',
+            'active_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", state="active"}}[3h]))',
+            'idle_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", state="idle"}}[3h]))',
+            'total_connections': f'sum(last_over_time(pgwatch_pg_stat_activity_count{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]))',
+            'database_sizes': f'sum(last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]))',
+            'cache_hit_ratio': f'sum(last_over_time(pgwatch_db_stats_blks_hit{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])) / clamp_min(sum(last_over_time(pgwatch_db_stats_blks_hit{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])) + sum(last_over_time(pgwatch_db_stats_blks_read{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])), 1) * 100',
+            'transactions_per_sec': f'sum(rate(pgwatch_db_stats_xact_commit{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[5m])) + sum(rate(pgwatch_db_stats_xact_rollback{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[5m]))',
+            'checkpoints_per_sec': f'sum(rate(pgwatch_pg_stat_bgwriter_checkpoints_timed{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[5m])) + sum(rate(pgwatch_pg_stat_bgwriter_checkpoints_req{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[5m]))',
+            'deadlocks': f'sum(last_over_time(pgwatch_db_stats_deadlocks{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]))',
+            'temp_files': f'sum(last_over_time(pgwatch_db_stats_temp_files{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]))',
+            'temp_bytes': f'sum(last_over_time(pgwatch_db_stats_temp_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]))',
         }
 
         cluster_data = {}
@@ -577,7 +581,7 @@ class PostgresReportGenerator:
                     }
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -609,11 +613,12 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing altered settings information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating A007 Altered Settings report...")
 
         # Query settings by source using the pgwatch_settings_is_default metric with last_over_time
         # This returns settings where is_default = 0 (i.e., non-default/altered settings)
-        settings_by_source_query = f'last_over_time(pgwatch_settings_is_default{{cluster="{cluster}", node_name="{node_name}"}}[3h]) < 1'
+        settings_by_source_query = f'last_over_time(pgwatch_settings_is_default{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h]) < 1'
         result = self.query_instant(settings_by_source_query)
 
         altered_settings = {}
@@ -671,12 +676,13 @@ class PostgresReportGenerator:
             Dictionary containing invalid indexes observation data for decision tree analysis
         """
         logger.info("Generating H001 Invalid Indexes report...")
+        _esc = self._escape_promql_label
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -793,13 +799,14 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing unused indexes information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating H002 Unused Indexes report...")
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -810,7 +817,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         # Query postmaster uptime to get startup time
-        postmaster_uptime_query = f'last_over_time(pgwatch_db_stats_postmaster_uptime_s{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        postmaster_uptime_query = f'last_over_time(pgwatch_db_stats_postmaster_uptime_s{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         postmaster_uptime_result = self.query_instant(postmaster_uptime_query)
         
         postmaster_startup_time = None
@@ -826,7 +833,7 @@ class PostgresReportGenerator:
             # Get index definitions from Postgres sink database for this specific database
             index_definitions = self.get_index_definitions_from_sink(db_name)
             # Query stats_reset timestamp for this database
-            stats_reset_query = f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])'
+            stats_reset_query = f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
             stats_reset_result = self.query_instant(stats_reset_query)
             
             stats_reset_epoch = None
@@ -840,7 +847,7 @@ class PostgresReportGenerator:
                     days_since_reset = (datetime.now() - datetime.fromtimestamp(stats_reset_epoch)).days
 
             # Query unused indexes for each database using last_over_time to get most recent value
-            unused_indexes_query = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])'
+            unused_indexes_query = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
             unused_result = self.query_instant(unused_indexes_query)
 
             unused_indexes = []
@@ -855,8 +862,7 @@ class PostgresReportGenerator:
                     index_size_bytes = float(item['value'][1]) if item.get('value') else 0
 
                     # Query other related metrics for this index
-                    _e = self._escape_promql_label
-                    idx_scan_query = f'last_over_time(pgwatch_unused_indexes_idx_scan{{cluster="{_e(cluster)}", node_name="{_e(node_name)}", datname="{_e(db_name)}", schema_name="{_e(schema_name)}", table_name="{_e(table_name)}", index_name="{_e(index_name)}"}}[3h])'
+                    idx_scan_query = f'last_over_time(pgwatch_unused_indexes_idx_scan{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}", schema_name="{_esc(schema_name)}", table_name="{_esc(table_name)}", index_name="{_esc(index_name)}"}}[3h])'
                     idx_scan_result = self.query_instant(idx_scan_query)
                     idx_scan = float(idx_scan_result['data']['result'][0]['value'][1]) if idx_scan_result.get('data',
                                                                                                               {}).get(
@@ -926,13 +932,14 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing redundant indexes information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating H004 Redundant Indexes report...")
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -947,7 +954,7 @@ class PostgresReportGenerator:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
             # Query redundant indexes for each database using last_over_time to get most recent value
-            redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{cluster}", node_name="{node_name}", dbname="{db_name}"}}[3h])'
+            redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"}}[3h])'
             result = self.query_instant(redundant_indexes_query)
 
             redundant_indexes = []
@@ -966,8 +973,7 @@ class PostgresReportGenerator:
                     index_size_bytes = float(item['value'][1]) if item.get('value') else 0
 
                     # Query other related metrics for this index
-                    _e = self._escape_promql_label
-                    _idx_filter = f'cluster="{_e(cluster)}", node_name="{_e(node_name)}", dbname="{_e(db_name)}", schema_name="{_e(schema_name)}", table_name="{_e(table_name)}", index_name="{_e(index_name)}"'
+                    _idx_filter = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}", schema_name="{_esc(schema_name)}", table_name="{_esc(table_name)}", index_name="{_esc(index_name)}"'
                     table_size_query = f'last_over_time(pgwatch_redundant_indexes_table_size_bytes{{{_idx_filter}}}[3h])'
                     table_size_result = self.query_instant(table_size_query)
                     table_size_bytes = float(
@@ -1056,6 +1062,7 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing pg_stat_statements and pg_stat_kcache settings information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating D004 pgstatstatements and pgstatkcache Settings report...")
 
         # Define relevant pg_stat_statements and pg_stat_kcache settings
@@ -1074,7 +1081,7 @@ class PostgresReportGenerator:
         ]
 
         # Query all PostgreSQL settings for pg_stat_statements and related using last_over_time
-        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
         pgstat_data = {}
@@ -1133,10 +1140,11 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing pg_stat_kcache status information
         """
+        _esc = self._escape_promql_label
         kcache_queries = {
-            'exec_user_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_user_time{{cluster="{cluster}", node_name="{node_name}"}}[3h])',
-            'exec_system_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_system_time{{cluster="{cluster}", node_name="{node_name}"}}[3h])',
-            'exec_total_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_total_time{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+            'exec_user_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_user_time{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])',
+            'exec_system_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_system_time{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])',
+            'exec_total_time': f'last_over_time(pgwatch_pg_stat_kcache_exec_total_time{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         }
 
         kcache_status = {
@@ -1189,7 +1197,8 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing pg_stat_statements status information
         """
-        pgss_query = f'last_over_time(pgwatch_pg_stat_statements_calls{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        _esc = self._escape_promql_label
+        pgss_query = f'last_over_time(pgwatch_pg_stat_statements_calls{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(pgss_query)
 
         pgss_status = {
@@ -1235,6 +1244,7 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing autovacuum settings information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating F001 Autovacuum: Current Settings report...")
 
         # Define autovacuum related settings
@@ -1264,7 +1274,7 @@ class PostgresReportGenerator:
         ]
 
         # Query all PostgreSQL settings for autovacuum using last_over_time
-        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
         autovacuum_data = {}
@@ -1302,13 +1312,14 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing btree index bloat information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating F005 Autovacuum: Btree Index Bloat (Estimated) report...")
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -1323,7 +1334,7 @@ class PostgresReportGenerator:
             # Fetch last vacuum timestamp per table (from pg_stat_all_tables) so we can attach it to indexes.
             last_vacuum_query = (
                 f'last_over_time(pgwatch_pg_stat_all_tables_last_vacuum'
-                f'{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])'
+                f'{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
             )
             last_vacuum_result = self.query_instant(last_vacuum_query)
             last_vacuum_by_table: Dict[str, float] = {}
@@ -1351,7 +1362,7 @@ class PostgresReportGenerator:
             # Fetch table sizes from pg_class as a fallback if pg_btree_bloat_table_size_mib is unavailable.
             table_sizes_query = (
                 f'last_over_time(pgwatch_pg_class_relation_size_bytes'
-                f'{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}", relkind="r"}}[3h])'
+                f'{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}", relkind="r"}}[3h])'
             )
             table_sizes_result = self.query_instant(table_sizes_query)
             table_size_by_table: Dict[str, float] = {}
@@ -1380,15 +1391,15 @@ class PostgresReportGenerator:
                 # Backward/forward compatible:
                 # - Older pgwatch configs may expose bytes gauges (real_size, table_size)
                 # - Newer configs expose MiB gauges (real_size_mib, table_size_mib)
-                'real_size_mib': f'last_over_time(pgwatch_pg_btree_bloat_real_size_mib{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'real_size': f'last_over_time(pgwatch_pg_btree_bloat_real_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'table_size_mib': f'last_over_time(pgwatch_pg_btree_bloat_table_size_mib{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'table_size': f'last_over_time(pgwatch_pg_btree_bloat_table_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'extra_size': f'last_over_time(pgwatch_pg_btree_bloat_extra_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'extra_pct': f'last_over_time(pgwatch_pg_btree_bloat_extra_pct{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'fillfactor': f'last_over_time(pgwatch_pg_btree_bloat_fillfactor{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'bloat_size': f'last_over_time(pgwatch_pg_btree_bloat_bloat_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'bloat_pct': f'last_over_time(pgwatch_pg_btree_bloat_bloat_pct{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
+                'real_size_mib': f'last_over_time(pgwatch_pg_btree_bloat_real_size_mib{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'real_size': f'last_over_time(pgwatch_pg_btree_bloat_real_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'table_size_mib': f'last_over_time(pgwatch_pg_btree_bloat_table_size_mib{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'table_size': f'last_over_time(pgwatch_pg_btree_bloat_table_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'extra_size': f'last_over_time(pgwatch_pg_btree_bloat_extra_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'extra_pct': f'last_over_time(pgwatch_pg_btree_bloat_extra_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'fillfactor': f'last_over_time(pgwatch_pg_btree_bloat_fillfactor{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'bloat_size': f'last_over_time(pgwatch_pg_btree_bloat_bloat_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'bloat_pct': f'last_over_time(pgwatch_pg_btree_bloat_bloat_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
             }
 
             bloated_indexes = {}
@@ -1511,6 +1522,7 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing memory-related settings information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating G001 Memory-related Settings report...")
 
         # Define memory-related settings
@@ -1541,7 +1553,7 @@ class PostgresReportGenerator:
         ]
 
         # Query all PostgreSQL settings for memory-related settings using last_over_time
-        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
         memory_data = {}
@@ -1685,6 +1697,7 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing heap bloat information
         """
+        _esc = self._escape_promql_label
         logger.info("Generating F004 Autovacuum: Heap Bloat (Estimated) report...")
 
         # Get all databases
@@ -1694,7 +1707,7 @@ class PostgresReportGenerator:
             logger.warning("F004 - No databases found")
 
         # Get database sizes
-        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
 
@@ -1711,7 +1724,7 @@ class PostgresReportGenerator:
             # sometimes use `tblname`.
             last_vacuum_query = (
                 f'last_over_time(pgwatch_pg_stat_all_tables_last_vacuum'
-                f'{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])'
+                f'{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
             )
             last_vacuum_result = self.query_instant(last_vacuum_query)
             last_vacuum_by_table: Dict[str, float] = {}
@@ -1740,12 +1753,12 @@ class PostgresReportGenerator:
             bloat_queries = {
                 # pgwatch publishes "real size" in MiB (real_size_mib). We keep 'real_size' in the
                 # output as a backwards-compatible alias but it is based on MiB.
-                'real_size_mib': f'last_over_time(pgwatch_pg_table_bloat_real_size_mib{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'extra_size': f'last_over_time(pgwatch_pg_table_bloat_extra_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'extra_pct': f'last_over_time(pgwatch_pg_table_bloat_extra_pct{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'fillfactor': f'last_over_time(pgwatch_pg_table_bloat_fillfactor{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'bloat_size': f'last_over_time(pgwatch_pg_table_bloat_bloat_size{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
-                'bloat_pct': f'last_over_time(pgwatch_pg_table_bloat_bloat_pct{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}"}}[3h])',
+                'real_size_mib': f'last_over_time(pgwatch_pg_table_bloat_real_size_mib{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'extra_size': f'last_over_time(pgwatch_pg_table_bloat_extra_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'extra_pct': f'last_over_time(pgwatch_pg_table_bloat_extra_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'fillfactor': f'last_over_time(pgwatch_pg_table_bloat_fillfactor{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'bloat_size': f'last_over_time(pgwatch_pg_table_bloat_bloat_size{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
+                'bloat_pct': f'last_over_time(pgwatch_pg_table_bloat_bloat_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])',
             }
 
             bloated_tables = {}
@@ -2896,6 +2909,7 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing wait events grouped by type and query_id with hourly occurrences
         """
+        _esc = self._escape_promql_label
         logger.info("Generating N001 Wait Events report...")
 
         # Get all databases
@@ -2917,9 +2931,9 @@ class PostgresReportGenerator:
             # Query wait events from Prometheus
             # pgwatch_wait_events_total has labels: wait_event_type, wait_event, query_id, datname
             filters = [
-                f'cluster="{cluster}"',
-                f'node_name="{node_name}"',
-                f'datname="{db_name}"'
+                f'cluster="{_esc(cluster)}"',
+                f'node_name="{_esc(node_name)}"',
+                f'datname="{_esc(db_name)}"'
             ]
             filter_str = '{' + ','.join(filters) + '}'
             
@@ -3063,6 +3077,7 @@ class PostgresReportGenerator:
         Returns:
             List of query metrics with calculated differences
         """
+        _esc = self._escape_promql_label
         # Metric name mapping for cleaner output
         METRIC_NAME_MAPPING = {
             'calls': 'calls',
@@ -3077,7 +3092,7 @@ class PostgresReportGenerator:
         }
 
         # Build filters
-        filters = [f'cluster="{cluster}"', f'node_name="{node_name}"']
+        filters = [f'cluster="{_esc(cluster)}"', f'node_name="{_esc(node_name)}"']
         filter_str = '{' + ','.join(filters) + '}'
 
         # Get all pg_stat_statements metrics
@@ -3360,6 +3375,7 @@ class PostgresReportGenerator:
         Returns:
             Dict mapping queryid to list of values aligned to timeline
         """
+        _esc = self._escape_promql_label
         return {
             qid: [series_pts.get(qid, {}).get(ts, fill) for ts in timeline] 
             for qid in qids
@@ -3379,6 +3395,7 @@ class PostgresReportGenerator:
         Generalization of `_get_hourly_topk_pgss_data` that ranks and returns per-hour series by the
         sum of one or more pg_stat_statements Prometheus metrics.
         """
+        _esc = self._escape_promql_label
         metric_names = [m for m in metric_names if m]
         if not metric_names:
             raise ValueError("metric_names must contain at least one metric name")
@@ -3387,7 +3404,7 @@ class PostgresReportGenerator:
         end_s = self._floor_hour(now)
         start_s, timeline = self._build_timeline(end_s, hours, step_s)
 
-        filters = [f'cluster="{cluster}"', f'node_name="{node_name}"', f'datname="{db_name}"']
+        filters = [f'cluster="{_esc(cluster)}"', f'node_name="{_esc(node_name)}"', f'datname="{_esc(db_name)}"']
         filter_str = '{' + ','.join(filters) + '}'
         step_str = f"{step_s}s"
 
@@ -4341,14 +4358,15 @@ class PostgresReportGenerator:
         Returns:
             Dictionary of metrics with daily totals
         """
+        _esc = self._escape_promql_label
         metrics = {}
         
         # Build filters for this specific query
         filters = [
-            f'cluster="{cluster}"',
-            f'node_name="{node_name}"',
-            f'datname="{db_name}"',
-            f'queryid="{queryid}"'
+            f'cluster="{_esc(cluster)}"',
+            f'node_name="{_esc(node_name)}"',
+            f'datname="{_esc(db_name)}"',
+            f'queryid="{_esc(queryid)}"'
         ]
         filter_str = '{' + ','.join(filters) + '}'
         
@@ -4613,8 +4631,9 @@ class PostgresReportGenerator:
         Returns:
             Dictionary with 'primary' and 'standbys' keys containing node names
         """
+        _esc = self._escape_promql_label
         # Query for all nodes in the cluster using last_over_time
-        nodes_query = f'last_over_time(pgwatch_settings_configured{{cluster="{cluster}"}}[3h])'
+        nodes_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}"}}[3h])'
         result = self.query_instant(nodes_query)
         
         nodes = {"primary": None, "standbys": []}
@@ -4637,7 +4656,7 @@ class PostgresReportGenerator:
         # Use pgwatch_db_stats_in_recovery_int to determine primary vs standby
         # in_recovery = 0 means primary, in_recovery = 1 means standby
         for node_name in node_list:
-            recovery_query = f'last_over_time(pgwatch_db_stats_in_recovery_int{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+            recovery_query = f'last_over_time(pgwatch_db_stats_in_recovery_int{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
             recovery_result = self.query_instant(recovery_query)
             
             is_standby = False
@@ -4672,6 +4691,7 @@ class PostgresReportGenerator:
         Returns:
             List of database names
         """
+        _esc = self._escape_promql_label
         # Build a source-agnostic database list by unifying labels from:
         # 1) Generic per-database metric (wraparound) → datname
         # 2) Custom index reports (unused/redundant) → dbname
@@ -4686,41 +4706,41 @@ class PostgresReportGenerator:
                 databases.append(name)
 
         # 1) Generic per-database metric
-        wrap_q = f'last_over_time(pgwatch_pg_database_wraparound_age_datfrozenxid{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        wrap_q = f'last_over_time(pgwatch_pg_database_wraparound_age_datfrozenxid{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         wrap_res = self.query_instant(wrap_q)
         if wrap_res.get('status') == 'success' and wrap_res.get('data', {}).get('result'):
             for item in wrap_res['data']['result']:
                 add_db(item["metric"].get("datname", ""))
 
         # 2) Custom reports - unused indexes now uses datname, redundant still uses dbname
-        unused_q = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        unused_q = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         unused_res = self.query_instant(unused_q)
         if unused_res.get('status') == 'success' and unused_res.get('data', {}).get('result'):
             for item in unused_res['data']['result']:
                 add_db(item["metric"].get("datname", ""))
         
-        redun_q = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        redun_q = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         redun_res = self.query_instant(redun_q)
         if redun_res.get('status') == 'success' and redun_res.get('data', {}).get('result'):
             for item in redun_res['data']['result']:
                 add_db(item["metric"].get("dbname", ""))
 
         # 3) Btree bloat family
-        bloat_q = f'last_over_time(pgwatch_pg_btree_bloat_bloat_pct{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        bloat_q = f'last_over_time(pgwatch_pg_btree_bloat_bloat_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         bloat_res = self.query_instant(bloat_q)
         if bloat_res.get('status') == 'success' and bloat_res.get('data', {}).get('result'):
             for item in bloat_res['data']['result']:
                 add_db(item["metric"].get("datname", ""))
         
         # 4) pg_stat_statements metrics (calls)
-        pgss_q = f'last_over_time(pgwatch_pg_stat_statements_calls{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        pgss_q = f'last_over_time(pgwatch_pg_stat_statements_calls{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         pgss_res = self.query_instant(pgss_q)
         if pgss_res.get('status') == 'success' and pgss_res.get('data', {}).get('result'):
             for item in pgss_res['data']['result']:
                 add_db(item["metric"].get("datname", ""))
         
         # 5) Wait events
-        wait_q = f'last_over_time(pgwatch_wait_events_total{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+        wait_q = f'last_over_time(pgwatch_wait_events_total{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         wait_res = self.query_instant(wait_q)
         if wait_res.get('status') == 'success' and wait_res.get('data', {}).get('result'):
             for item in wait_res['data']['result']:
@@ -4743,6 +4763,7 @@ class PostgresReportGenerator:
         Returns:
             List of query metrics with calculated differences for the specific database
         """
+        _esc = self._escape_promql_label
         # Metric name mapping for cleaner output
         METRIC_NAME_MAPPING = {
             'calls': 'calls',
@@ -4757,7 +4778,7 @@ class PostgresReportGenerator:
         }
 
         # Build filters including database
-        filters = [f'cluster="{cluster}"', f'node_name="{node_name}"', f'datname="{db_name}"']
+        filters = [f'cluster="{_esc(cluster)}"', f'node_name="{_esc(node_name)}"', f'datname="{_esc(db_name)}"']
         filter_str = '{' + ','.join(filters) + '}'
 
         # Get all pg_stat_statements metrics

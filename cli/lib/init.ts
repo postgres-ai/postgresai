@@ -127,8 +127,10 @@ export async function connectWithSslFallback(
   verbose?: boolean
 ): Promise<{ client: PgClient; usedSsl: boolean }> {
   const tryConnect = async (config: PgClientConfig): Promise<PgClient> => {
-    const client = new ClientClass(config);
+    const client = new ClientClass({ ...config, connectionTimeoutMillis: 10_000 } as any);
     await client.connect();
+    // Set a default statement timeout to prevent runaway queries
+    await client.query("SET statement_timeout = '30s'");
     return client;
   };
 

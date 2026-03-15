@@ -703,20 +703,21 @@ def get_btree_bloat_csv():
         tblname = request.args.get('tblname')
         idxname = request.args.get('idxname')
 
-        # Build label filters
+        # Build label filters (escape values to prevent PromQL injection)
+        _esc = escape_promql_label
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_esc(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_esc(node_name)}"')
         if schemaname:
-            filters.append(f'schemaname="{schemaname}"')
+            filters.append(f'schemaname="{_esc(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_esc(tblname)}"')
         if idxname:
-            filters.append(f'idxname="{idxname}"')
+            filters.append(f'idxname="{_esc(idxname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_esc(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
@@ -841,19 +842,20 @@ def get_table_info_csv():
             except ValueError:
                 end_dt = datetime.fromisoformat(time_end.replace('Z', '+00:00'))
 
-        # Build label filters
+        # Build label filters (escape values to prevent PromQL injection)
+        _esc = escape_promql_label
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_esc(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_esc(node_name)}"')
         if schemaname:
             # Support regex pattern matching with =~
-            filters.append(f'schemaname=~"{schemaname}"')
+            filters.append(f'schemaname=~"{_esc(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_esc(tblname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_esc(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
