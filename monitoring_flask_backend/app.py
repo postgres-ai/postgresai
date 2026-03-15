@@ -16,6 +16,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def escape_promql_label(value: str) -> str:
+    """Escape a value for safe use inside PromQL label matchers (double-quoted strings)."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def smart_truncate_query(query: str, max_length: int = 40) -> str:
     """
     Smart SQL query truncation for display names.
@@ -250,7 +255,7 @@ def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart
 
     conn = None
     try:
-        conn = psycopg2.connect(POSTGRES_SINK_URL)
+        conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             # Skip db_name filter if it's empty, "All", or contains special chars
             use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
@@ -384,14 +389,14 @@ def get_pgss_metrics_csv():
         # Build the base query for pg_stat_statements metrics
         base_query = 'pgwatch_pg_stat_statements_calls'
 
-        # Add filters if provided
+        # Add filters if provided (escape values to prevent PromQL injection)
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{escape_promql_label(cluster_name)}"')
         if node_name:
-            filters.append(f'instance=~".*{node_name}.*"')
+            filters.append(f'instance=~".*{escape_promql_label(node_name)}.*"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{escape_promql_label(db_name)}"')
 
         if filters:
             base_query += '{' + ','.join(filters) + '}'
@@ -1176,7 +1181,7 @@ def get_query_texts():
 
         conn = None
         try:
-            conn = psycopg2.connect(POSTGRES_SINK_URL)
+            conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # Skip db_name filter if it's empty, "All", or contains special chars
                 use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
@@ -1287,7 +1292,7 @@ def get_query_info_metrics():
 
         conn = None
         try:
-            conn = psycopg2.connect(POSTGRES_SINK_URL)
+            conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # Skip db_name filter if it's empty, "All", or contains special chars
                 use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')

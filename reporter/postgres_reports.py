@@ -190,6 +190,29 @@ class PostgresReportGenerator:
             "build_ts": self._read_text_file(build_ts_path),
         }
 
+    @staticmethod
+    def _escape_promql_label(value: str) -> str:
+        """Escape a value for use inside PromQL label matchers.
+
+        PromQL label values are enclosed in double quotes and only need
+        backslash and double-quote characters escaped (like Go strings).
+        This prevents PromQL injection when cluster names, database names,
+        or other user-controlled strings contain special characters.
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _promql_filter(self, **labels: str) -> str:
+        """Build a PromQL label filter string from keyword arguments.
+
+        Example:
+            self._promql_filter(cluster="my-cluster", node_name="node-01")
+            # returns: '{cluster="my-cluster", node_name="node-01"}'
+        """
+        parts = []
+        for key, val in labels.items():
+            parts.append(f'{key}="{self._escape_promql_label(val)}"')
+        return "{" + ", ".join(parts) + "}"
+
     def test_connection(self) -> bool:
         """Test connection to Prometheus."""
         try:
@@ -205,9 +228,9 @@ class PostgresReportGenerator:
             return False
         if psycopg2 is None:
             raise RuntimeError("psycopg2 is required for postgres sink access but is not installed")
-        
+
         try:
-            self.pg_conn = psycopg2.connect(self.postgres_sink_url)
+            self.pg_conn = psycopg2.connect(self.postgres_sink_url, connect_timeout=10)
             return True
         except Exception as e:
             logger.error(f"Postgres sink connection failed: {e}")
@@ -670,7 +693,8 @@ class PostgresReportGenerator:
 
             # Query all invalid indexes metrics and merge by index key
             # Each field is a separate metric in pgwatch prometheus export
-            base_filter = f'cluster="{cluster}", node_name="{node_name}", datname="{db_name}"'
+            _esc = self._escape_promql_label
+            base_filter = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
 
             # Query primary metric (index_size_bytes) - this determines which indexes exist
             size_query = f'last_over_time(pgwatch_pg_invalid_indexes_index_size_bytes{{{base_filter}}}[3h])'
@@ -831,7 +855,8 @@ class PostgresReportGenerator:
                     index_size_bytes = float(item['value'][1]) if item.get('value') else 0
 
                     # Query other related metrics for this index
-                    idx_scan_query = f'last_over_time(pgwatch_unused_indexes_idx_scan{{cluster="{cluster}", node_name="{node_name}", datname="{db_name}", schema_name="{schema_name}", table_name="{table_name}", index_name="{index_name}"}}[3h])'
+                    _e = self._escape_promql_label
+                    idx_scan_query = f'last_over_time(pgwatch_unused_indexes_idx_scan{{cluster="{_e(cluster)}", node_name="{_e(node_name)}", datname="{_e(db_name)}", schema_name="{_e(schema_name)}", table_name="{_e(table_name)}", index_name="{_e(index_name)}"}}[3h])'
                     idx_scan_result = self.query_instant(idx_scan_query)
                     idx_scan = float(idx_scan_result['data']['result'][0]['value'][1]) if idx_scan_result.get('data',
                                                                                                               {}).get(
@@ -941,18 +966,20 @@ class PostgresReportGenerator:
                     index_size_bytes = float(item['value'][1]) if item.get('value') else 0
 
                     # Query other related metrics for this index
-                    table_size_query = f'last_over_time(pgwatch_redundant_indexes_table_size_bytes{{cluster="{cluster}", node_name="{node_name}", dbname="{db_name}", schema_name="{schema_name}", table_name="{table_name}", index_name="{index_name}"}}[3h])'
+                    _e = self._escape_promql_label
+                    _idx_filter = f'cluster="{_e(cluster)}", node_name="{_e(node_name)}", dbname="{_e(db_name)}", schema_name="{_e(schema_name)}", table_name="{_e(table_name)}", index_name="{_e(index_name)}"'
+                    table_size_query = f'last_over_time(pgwatch_redundant_indexes_table_size_bytes{{{_idx_filter}}}[3h])'
                     table_size_result = self.query_instant(table_size_query)
                     table_size_bytes = float(
                         table_size_result['data']['result'][0]['value'][1]) if table_size_result.get('data', {}).get(
                         'result') else 0
 
-                    index_usage_query = f'last_over_time(pgwatch_redundant_indexes_index_usage{{cluster="{cluster}", node_name="{node_name}", dbname="{db_name}", schema_name="{schema_name}", table_name="{table_name}", index_name="{index_name}"}}[3h])'
+                    index_usage_query = f'last_over_time(pgwatch_redundant_indexes_index_usage{{{_idx_filter}}}[3h])'
                     index_usage_result = self.query_instant(index_usage_query)
                     index_usage = float(index_usage_result['data']['result'][0]['value'][1]) if index_usage_result.get(
                         'data', {}).get('result') else 0
 
-                    supports_fk_query = f'last_over_time(pgwatch_redundant_indexes_supports_fk{{cluster="{cluster}", node_name="{node_name}", dbname="{db_name}", schema_name="{schema_name}", table_name="{table_name}", index_name="{index_name}"}}[3h])'
+                    supports_fk_query = f'last_over_time(pgwatch_redundant_indexes_supports_fk{{{_idx_filter}}}[3h])'
                     supports_fk_result = self.query_instant(supports_fk_query)
                     supports_fk = bool(
                         int(supports_fk_result['data']['result'][0]['value'][1])) if supports_fk_result.get('data',
