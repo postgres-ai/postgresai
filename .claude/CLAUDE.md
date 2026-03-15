@@ -17,6 +17,10 @@ git submodule update --remote .cursor
 
 - **README.md** — Project overview, features, and quick start
 - **CONTRIBUTING.md** — Local development workflow, Docker setup, debugging
+- **quality/QUALITY_ENGINEERING_GUIDE.md** — Quality standards, processes, automated gates
+- **quality/pr-review-prompt.md** — AI PR review system prompt (PostgreSQL-specific)
+- **quality/failure-modes.md** — Critical failure modes with required test coverage
+- **quality/checklists/** — PR review and release checklists
 
 ### Commands
 
@@ -44,3 +48,15 @@ postgresai mon local-install --demo
 | H004 | Redundant indexes |
 | F004 | Table bloat |
 | K003 | Top queries |
+
+## Quality
+
+```bash
+# Run release readiness check
+./quality/scripts/release-readiness.sh
+
+# Full check (includes integration tests)
+./quality/scripts/release-readiness.sh --full
+```
+
+See `quality/QUALITY_ENGINEERING_GUIDE.md` for the full quality framework.

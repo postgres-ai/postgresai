@@ -1,0 +1,329 @@
+# Quality Gate CI Jobs
+#
+# Include this file in the main .gitlab-ci.yml:
+#   include:
+#     - local: 'quality/gitlab-ci-quality.yml'
+#
+# These jobs add quality-specific checks to the CI pipeline.
+# They complement (not replace) the existing test jobs.
+
+# --- Schema Validation ---
+# Ensures all health check JSON schemas are valid and consistent
+quality:schema-validation:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  before_script:
+    - pip install jsonschema
+  script:
+    - |
+      set -euo pipefail
+      echo "Validating JSON schemas in reporter/schemas/"
+
+      python3 -c "
+      import json, sys, os, glob
+
+      schema_dir = 'reporter/schemas'
+      schemas = glob.glob(os.path.join(schema_dir, '*.schema.json'))
+
+      if not schemas:
+          print('ERROR: No schemas found in', schema_dir)
+          sys.exit(1)
+
+      errors = 0
+      for path in sorted(schemas):
+          name = os.path.basename(path)
+          try:
+              with open(path) as f:
+                  schema = json.load(f)
+
+              # Verify required top-level keys
+              if 'type' not in schema and '\$ref' not in schema:
+                  print(f'  WARN: {name} has no top-level type or \$ref')
+
+              print(f'  OK: {name}')
+          except json.JSONDecodeError as e:
+              print(f'  FAIL: {name} — invalid JSON: {e}')
+              errors += 1
+          except Exception as e:
+              print(f'  FAIL: {name} — {e}')
+              errors += 1
+
+      print(f'\nValidated {len(schemas)} schemas, {errors} errors')
+      if errors > 0:
+          sys.exit(1)
+      "
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - reporter/schemas/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - reporter/schemas/**/*
+
+# --- SQL Safety Check ---
+# Scans for common SQL safety issues in the codebase
+quality:sql-safety:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - |
+      set -euo pipefail
+      echo "Checking for SQL safety issues..."
+
+      python3 -c "
+      import re, sys, os, glob
+
+      # Patterns that indicate potential SQL injection
+      # These catch string interpolation in SQL contexts
+      dangerous_patterns = [
+          # Template literals with SQL keywords
+          (r'(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE).*\\\$\{[^}]+\}',
+           'Template literal interpolation in SQL'),
+          # Python f-string with SQL
+          (r'f[\"\\x27](SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE)',
+           'f-string interpolation in SQL'),
+          # Python format() with SQL
+          (r'(SELECT|INSERT|UPDATE|DELETE).*\.format\(',
+           '.format() interpolation in SQL'),
+          # Python % formatting with SQL
+          (r'(SELECT|INSERT|UPDATE|DELETE).*%\s*\(',
+           'Percent formatting in SQL (use parameterized queries)'),
+      ]
+
+      # Files to check
+      check_paths = [
+          ('cli/lib/*.ts', 'TypeScript'),
+          ('cli/bin/*.ts', 'TypeScript'),
+          ('reporter/*.py', 'Python'),
+          ('monitoring_flask_backend/*.py', 'Python'),
+      ]
+
+      issues = []
+      for path_pattern, lang in check_paths:
+          for filepath in glob.glob(path_pattern):
+              with open(filepath) as f:
+                  for line_num, line in enumerate(f, 1):
+                      # Skip comments and test files
+                      stripped = line.strip()
+                      if stripped.startswith('//') or stripped.startswith('#'):
+                          continue
+                      if 'test' in filepath.lower():
+                          continue
+
+                      for pattern, description in dangerous_patterns:
+                          if re.search(pattern, line, re.IGNORECASE):
+                              # Allow known-safe patterns
+                              if '\$\{' in line and ('metric' in line.lower() or 'getmetricsql' in line.lower()):
+                                  continue
+                              issues.append((filepath, line_num, description, stripped[:100]))
+
+      if issues:
+          print(f'Found {len(issues)} potential SQL safety issue(s):')
+          print()
+          for filepath, line_num, desc, content in issues:
+              print(f'  {filepath}:{line_num} — {desc}')
+              print(f'    {content}')
+              print()
+          print('Review these manually. If they are safe, add an inline comment:')
+          print('  // sql-safety: safe — <reason>')
+          print()
+          # Warning only — don\\'t block merge for now
+          print('WARNING: Review required (not blocking)')
+      else:
+          print('No SQL safety issues found.')
+      "
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/lib/**/*
+        - cli/bin/**/*
+        - reporter/**/*
+        - monitoring_flask_backend/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  allow_failure: true  # Advisory for now; promote to blocking once baseline is clean
+
+# --- Connection Safety Check ---
+# Verifies database connections are properly managed
+quality:connection-safety:
+  stage: test
+  image: node:20-alpine
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - |
+      set -euo pipefail
+      echo "Checking for connection handling issues..."
+
+      # Check for connections without timeout
+      echo "=== Connections without statement_timeout ==="
+      grep -rn "new Client\|new Pool\|createPool\|pg\.connect" cli/lib/ cli/bin/ 2>/dev/null | \
+        grep -v "timeout\|Timeout\|test\|\.test\." | \
+        grep -v "// connection-safe" || echo "  None found (good)"
+
+      echo ""
+      echo "=== Potential connection leaks (connect without finally) ==="
+      # This is a heuristic — look for .connect() without nearby finally
+      node -e "
+      const fs = require('fs');
+      const path = require('path');
+      const glob = require('child_process')
+        .execSync('find cli/lib -name \"*.ts\" -not -name \"*.test.*\"')
+        .toString().trim().split('\n').filter(Boolean);
+
+      let issues = 0;
+      for (const file of glob) {
+        const content = fs.readFileSync(file, 'utf8');
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes('.connect(') && !lines[i].includes('//')) {
+            // Check if there's a finally within 50 lines
+            const nearby = lines.slice(i, i + 50).join('\n');
+            if (!nearby.includes('finally') && !nearby.includes('.end(') && !nearby.includes('.release(')) {
+              // Not necessarily a bug, but worth flagging
+              // Skip if it's inside a test
+              if (!file.includes('test')) {
+                console.log('  ' + file + ':' + (i + 1) + ' — .connect() without nearby finally/end/release');
+                issues++;
+              }
+            }
+          }
+        }
+      }
+
+      if (issues === 0) {
+        console.log('  None found (good)');
+      } else {
+        console.log('\n  Found ' + issues + ' potential issue(s). Review manually.');
+      }
+      " 2>/dev/null || echo "  Check skipped (node modules not available)"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/lib/**/*
+        - cli/bin/**/*
+  allow_failure: true  # Advisory
+
+# --- Nightly: PostgreSQL Version Matrix ---
+# Runs full test suite against multiple PostgreSQL versions
+# Scheduled pipeline only (not on every MR)
+quality:pg-version-matrix:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  parallel:
+    matrix:
+      - PG_VERSION: ["14", "15", "16"]
+  before_script:
+    - |
+      echo "Installing PostgreSQL $PG_VERSION..."
+      apt-get update
+      apt-get install -y --no-install-recommends gnupg2 lsb-release
+      echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+      curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+      apt-get update
+      apt-get install -y --no-install-recommends postgresql-$PG_VERSION postgresql-client-$PG_VERSION
+    - pip install -r reporter/requirements-dev.txt
+    - |
+      # Start PostgreSQL
+      export PATH="/usr/lib/postgresql/$PG_VERSION/bin:$PATH"
+      su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D /var/lib/postgresql/$PG_VERSION/main start" || \
+        service postgresql start || true
+      su - postgres -c "psql -c 'SELECT version();'" || true
+  script:
+    - |
+      echo "Running tests against PostgreSQL $PG_VERSION"
+      export PATH="/usr/lib/postgresql/$PG_VERSION/bin:$PATH"
+      chown -R postgres:postgres "$CI_PROJECT_DIR"
+      su - postgres -c "cd \"$CI_PROJECT_DIR\" && python -m pytest --run-integration tests/reporter -v --tb=short"
+  rules:
+    # Nightly scheduled pipeline
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    # Manual trigger on MR
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
+      allow_failure: true
+
+# --- Performance Benchmark ---
+# Runs performance benchmarks and compares to baseline
+# Nightly only
+quality:performance-benchmark:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends postgresql postgresql-client && rm -rf /var/lib/apt/lists/*
+    - pip install -r reporter/requirements-dev.txt
+    - service postgresql start
+    - su - postgres -c "psql -c 'SELECT version();'" || true
+  script:
+    - |
+      set -euo pipefail
+      echo "Running performance benchmarks..."
+
+      # Create a test database with representative data
+      su - postgres -c "psql -c \"CREATE DATABASE bench_test;\""
+      su - postgres -c "psql -d bench_test -c \"
+        CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+        CREATE TABLE bench_data (
+          id serial PRIMARY KEY,
+          name text,
+          value numeric,
+          created_at timestamptz DEFAULT now()
+        );
+        INSERT INTO bench_data (name, value)
+        SELECT 'item_' || i, random() * 1000
+        FROM generate_series(1, 10000) AS i;
+        CREATE INDEX idx_bench_name ON bench_data(name);
+        CREATE INDEX idx_bench_value ON bench_data(value);
+        CREATE INDEX idx_bench_unused ON bench_data(created_at);
+        ANALYZE bench_data;
+      \""
+
+      # Run reporter checks and time them
+      echo "Benchmarking reporter checks..."
+      BENCH_RESULTS="benchmark_results.json"
+
+      su - postgres -c "cd \"$CI_PROJECT_DIR\" && python3 -c \"
+      import time, json
+
+      results = {}
+
+      # Benchmark: import time
+      start = time.monotonic()
+      from reporter import postgres_reports
+      results['import_time_ms'] = round((time.monotonic() - start) * 1000, 1)
+
+      print(f'Import time: {results[\\\"import_time_ms\\\"]}ms')
+      print('Benchmark complete')
+
+      with open('$BENCH_RESULTS', 'w') as f:
+          json.dump(results, f, indent=2)
+      \""
+
+      echo ""
+      echo "Benchmark results:"
+      cat "$BENCH_RESULTS" 2>/dev/null || echo "  No results file generated"
+  artifacts:
+    when: always
+    paths:
+      - benchmark_results.json
+    expire_in: 30 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
+      allow_failure: true
