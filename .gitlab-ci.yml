@@ -18,6 +18,7 @@ default:
   interruptible: true
 
 stages:
+  - security
   - build
   - test
   - publish
@@ -25,6 +26,83 @@ stages:
 
 # Build images from current code for e2e tests
 # Images are pushed to GitLab Container Registry and pulled by test jobs
+
+# ─── Secret Scanning ───────────────────────────────────────────────────────────
+gitleaks:
+  stage: security
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:105ac66a57b2bb8afb61a3b8a5dcc4817773d03724a7e8a515214cfe58225556
+    entrypoint: [""]  # Override default entrypoint so GitLab CI can run shell commands
+  variables:
+    GIT_DEPTH: "0"  # Full clone required — shallow clone silently misses commit history
+  script:
+    - |
+      # Scope scan to new commits only — avoids re-scanning repo history on every run
+      if [[ "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+        # MR pipeline: scan only commits added in this MR
+        gitleaks detect --source . --config gitleaks.toml --verbose --redact \
+          --report-path gitleaks-report.json --report-format json \
+          --log-opts="${CI_MERGE_REQUEST_DIFF_BASE_SHA}..${CI_COMMIT_SHA}"
+      elif [ -n "${CI_COMMIT_BEFORE_SHA:-}" ] && \
+           [ "${CI_COMMIT_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+        # Push to existing branch: scan only new commits
+        gitleaks detect --source . --config gitleaks.toml --verbose --redact \
+          --report-path gitleaks-report.json --report-format json \
+          --log-opts="${CI_COMMIT_BEFORE_SHA}..${CI_COMMIT_SHA}"
+      else
+        # New branch or force push: scan commits unique to this branch only
+        MERGE_BASE=$(git merge-base "origin/${CI_DEFAULT_BRANCH:-main}" "$CI_COMMIT_SHA" 2>/dev/null || echo "")
+        if [ -n "$MERGE_BASE" ] && [ "$MERGE_BASE" != "$CI_COMMIT_SHA" ]; then
+          LOG_OPTS="${MERGE_BASE}..${CI_COMMIT_SHA}"
+        else
+          # Fallback: scan only HEAD commit (safe — bounded to a single commit)
+          LOG_OPTS="${CI_COMMIT_SHA}^!"
+        fi
+        gitleaks detect --source . --config gitleaks.toml --verbose --redact \
+          --report-path gitleaks-report.json --report-format json \
+          --log-opts="$LOG_OPTS"
+      fi
+  artifacts:
+    paths:
+      - gitleaks-report.json
+    when: on_failure
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "push"
+  allow_failure: false
+# ───────────────────────────────────────────────────────────────────────────────
+
+# ─── Gitleaks Rule + Allowlist Tests ──────────────────────────────────────────
+gitleaks-rule-test:
+  stage: security
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:105ac66a57b2bb8afb61a3b8a5dcc4817773d03724a7e8a515214cfe58225556
+    entrypoint: [""]
+  before_script:
+    - apk add --no-cache python3
+  script:
+    - |
+      echo "=== Test 1: Detection rules must fire on synthetic fixtures ==="
+      python3 -c "import re; src=open('gitleaks.toml').read(); src=re.sub(r'paths = \\[.*?\\n\\]','paths = []',src,flags=re.DOTALL); open('/tmp/gitleaks-rules-only.toml','w').write(src)"
+      FIXTURE_EXIT=0
+      gitleaks detect --source tests/fixtures/gitleaks/ --config /tmp/gitleaks-rules-only.toml \
+        --no-git --verbose --redact 2>&1 || FIXTURE_EXIT=$?
+      if [ "$FIXTURE_EXIT" -eq 0 ]; then
+        echo "FAIL: Rules did not fire on fixture file"
+        exit 1
+      fi
+      echo "PASS: Rules fired on fixtures (exit=$FIXTURE_EXIT)"
+      echo ""
+      echo "=== Test 2: Allowlist must suppress fixtures in full-repo scan ==="
+      gitleaks detect --source . --config gitleaks.toml --no-git --redact
+      echo "PASS: Full repo scan clean (allowlist working)"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  allow_failure: false
+# ───────────────────────────────────────────────────────────────────────────────
+
 build:test:images:
   stage: build
   image: docker:27.3

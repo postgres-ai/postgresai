@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Pre-commit hook: scan staged files for secrets using gitleaks
+# Activate with: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "❌ gitleaks not found — install it to enable pre-commit secret scanning:" >&2
+  echo "   https://github.com/gitleaks/gitleaks#installing" >&2
+  echo "   (macOS: brew install gitleaks)" >&2
+  exit 1
+fi
+
+echo "🔍 Running gitleaks secret scan on staged files..."
+
+if ! gitleaks protect --staged \
+     --config "$(git rev-parse --show-toplevel)/gitleaks.toml" \
+     --verbose --redact 2>&1; then
+  echo "" >&2
+  echo "❌ Secret detected in staged files. Commit blocked." >&2
+  echo "   Review the output above and remove/rotate the secret." >&2
+  echo "   To add a false positive to the allowlist, edit gitleaks.toml." >&2
+  exit 1
+fi
+
+echo "✅ No secrets detected."

@@ -1,0 +1,95 @@
+title = "postgres-ai gitleaks config"
+
+[extend]
+# extend the default ruleset
+useDefault = true
+
+# GitLab token types — https://docs.gitlab.com/security/tokens/
+[[rules]]
+id = "gitlab-pat"
+description = "GitLab Personal Access Token"
+regex = '''\bglpat-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "gitlab-runner-token"
+description = "GitLab Runner Registration Token"
+regex = '''\bglrt-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "gitlab-deploy-token"
+description = "GitLab Deploy Token"
+regex = '''\bgldt-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "gitlab-trigger-token"
+description = "GitLab Pipeline Trigger Token"
+regex = '''\bglptt-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "gitlab-oauth-app-secret"
+description = "GitLab OAuth Application Secret"
+regex = '''\bgloas-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "gitlab-scim-token"
+description = "GitLab SCIM Token"
+regex = '''\bglsoat-[A-Za-z0-9_-]{20,}\b'''
+tags = ["gitlab", "token"]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API Key"
+regex = '''\bsk-ant-api03-[A-Za-z0-9_-]{20,}\b'''
+tags = ["anthropic", "ai"]
+
+[[rules]]
+id = "anthropic-oauth-token"
+description = "Anthropic OAuth Token"
+regex = '''\bsk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,}\b'''
+tags = ["anthropic", "ai"]
+
+[[rules]]
+id = "hetzner-api-token"
+description = "Hetzner Cloud API Token (variable assignment)"
+regex = '''(?i)\b(hetzner_token|hetzner_api_token|hetzner_api_key|hcloud_token|hcloud_api_key|hz_token)\b\s*[:=]\s*["']?[A-Za-z0-9_-]{60,}["']?'''
+tags = ["hetzner", "cloud"]
+
+# Global allowlist — gitleaks uses [[allowlists]] (array of tables)
+[[allowlists]]
+description = "False positives: test fixtures, example data, CI collections, rotated secrets"
+
+regexes = [
+  '''example\.com''',
+  '''dummy[-_]?token''',
+  '''fake[-_]?key''',
+  '''test[-_]?secret''',
+]
+
+paths = [
+  # Unit test fixtures with dummy credentials
+  '''cli/test/''',
+  '''^spec/''',
+  '''__tests__/''',
+  # Postman collections (Stripe pk_test_ keys, recorded calls)
+  '''\.ci/.*\.postman_collection\.json''',
+  # Sqitch DB migration verification scripts (test JWTs, example secrets)
+  '''db/verify/''',
+  # Terraform test files (test passwords/credentials in .tftest.hcl)
+  '''terraform/.*tests/''',
+  '''terraform/.*\.tftest\.hcl$''',
+  # GCP/AWS user_data scripts (cloud-init bootstrap, example credentials)
+  '''terraform/.*/user_data\.sh$''',
+  # Gitleaks test suites (intentionally contain synthetic secrets for rule testing)
+  '''tests/gitleaks/fixtures/''',
+  # Our own fixture directory
+  '''tests/fixtures/gitleaks/''',
+]
+
+# Commit SHA allowlist: known rotated/revoked secrets pending history cleanup
+# glpat-tars3 token committed by bench-bot on 2026-02-25 — token already revoked (infra#20)
+commits = ["5fbe547dd4b4efb052d8642d0613ac3e32f1fb52"]
