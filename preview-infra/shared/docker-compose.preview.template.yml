@@ -182,6 +182,7 @@ services:
       GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
       GF_PATHS_PROVISIONING: /postgres_ai_configs/grafana/provisioning
       GF_PATHS_CONFIG: /postgres_ai_configs/grafana/provisioning/grafana.ini
+      GF_FEATURE_TOGGLES_ENABLE: grafanaconThemes
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_SERVER_ROOT_URL: "https://preview-${BRANCH_SLUG}.pgai.watch/"
