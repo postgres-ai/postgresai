@@ -164,6 +164,7 @@ services:
       GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
       GF_PATHS_PROVISIONING: /postgres_ai_configs/grafana/provisioning
       GF_PATHS_CONFIG: /postgres_ai_configs/grafana/provisioning/grafana.ini
+      GF_FEATURE_TOGGLES_ENABLE: grafanaconThemes
       # OAuth configuration (disabled by default, enabled via Ansible)
       GF_AUTH_GENERIC_OAUTH_ENABLED: ${GRAFANA_OAUTH_ENABLED:-false}
       GF_AUTH_GENERIC_OAUTH_NAME: ${GRAFANA_OAUTH_NAME:-PostgresAI}
