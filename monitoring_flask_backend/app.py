@@ -5,6 +5,7 @@ import io
 from datetime import datetime, timezone, timedelta
 import logging
 import os
+import hmac
 import re
 import boto3
 from requests_aws4auth import AWS4Auth
@@ -14,6 +15,58 @@ import psycopg2.extras
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# Allowlist for the /execute-query debug endpoint: only read-only statement types.
+_SQL_ALLOWLIST_RE = re.compile(r'^\s*(SELECT|EXPLAIN|SHOW)\b', re.IGNORECASE)
+
+# Secondary blocklist: reject sensitive system functions/views and WITH clauses.
+# pg_read_file/pg_shadow/pg_authid/pg_read_binary_file/pg_ls_dir/pg_stat_file can
+# expose credentials or filesystem contents; WITH blocks writable CTEs
+# (INSERT/UPDATE/DELETE inside a CTE that passes the SELECT allowlist via
+# "WITH ... SELECT").
+_SQL_BLOCKLIST_RE = re.compile(
+    r'\b(pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|pg_shadow|pg_authid|dblink|lo_export|lo_import|COPY|DO|CALL)\b|\bWITH\b',
+    re.IGNORECASE,
+)
+
+# Regex for quote-aware SQL comment stripping.  Matches (in priority order):
+#   1. Single-quoted string literals (including escaped quotes '')  -> kept
+#   2. Block comments /* ... */                                     -> removed
+#   3. Single-line comments -- ...                                  -> removed
+_SQL_COMMENT_RE = re.compile(
+    r"'[^']*(?:''[^']*)*'"   # single-quoted literal (handles '' escapes)
+    r"|/\*.*?\*/"             # block comment
+    r"|--[^\n]*",             # line comment
+    re.DOTALL,
+)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove SQL comments while preserving single-quoted string literals.
+
+    Naive regex-based comment stripping (e.g. ``re.sub(r'--[^\\n]*', ...)``)
+    can be tricked by placing comment delimiters inside string literals:
+
+        SELECT 'x' || '--' || (SELECT * FROM pg_shadow)
+
+    This function matches quoted strings first (and keeps them intact) so that
+    only *real* comments are removed.
+    """
+    def _replace(m: re.Match) -> str:
+        text = m.group()
+        if text.startswith("'"):
+            return text          # keep string literals
+        return ""                # remove comments
+
+    return _SQL_COMMENT_RE.sub(_replace, sql)
+
+
+try:
+    from monitoring_flask_backend.promql_utils import escape_promql_label, escape_promql_regex_literal  # noqa: F401
+except ModuleNotFoundError:
+    # Running directly from the monitoring_flask_backend/ directory (e.g. pytest from that dir)
+    from promql_utils import escape_promql_label, escape_promql_regex_literal  # noqa: F401
 
 
 def smart_truncate_query(query: str, max_length: int = 40) -> str:
@@ -184,6 +237,17 @@ app = Flask(__name__)
 # PostgreSQL sink connection for query text lookups
 POSTGRES_SINK_URL = os.environ.get('POSTGRES_SINK_URL', 'postgresql://pgwatch@sink-postgres:5432/measurements')
 
+# PostgreSQL direct connection config (used by debug endpoints only)
+DB_CONFIG = {
+    'host': os.environ.get('DB_HOST', 'localhost'),
+    'dbname': os.environ.get('DB_NAME', 'postgres'),
+    'user': os.environ.get('DB_USER'),
+    'password': os.environ.get('DB_PASSWORD'),
+}
+
+# Secret key required to access debug endpoints (must be set to enable debug auth)
+_DEBUG_SECRET_KEY = os.environ.get('DEBUG_SECRET_KEY', '')
+
 # Prometheus connection - use environment variable with fallback
 PROMETHEUS_URL = os.environ.get('PROMETHEUS_URL', 'http://localhost:8428')
 
@@ -250,7 +314,7 @@ def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart
 
     conn = None
     try:
-        conn = psycopg2.connect(POSTGRES_SINK_URL)
+        conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             # Skip db_name filter if it's empty, "All", or contains special chars
             use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
@@ -384,14 +448,14 @@ def get_pgss_metrics_csv():
         # Build the base query for pg_stat_statements metrics
         base_query = 'pgwatch_pg_stat_statements_calls'
 
-        # Add filters if provided
+        # Add filters if provided (escape values to prevent PromQL injection)
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{escape_promql_label(cluster_name)}"')
         if node_name:
-            filters.append(f'instance=~".*{node_name}.*"')
+            filters.append(f'instance=~".*{escape_promql_regex_literal(node_name)}.*"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{escape_promql_label(db_name)}"')
 
         if filters:
             base_query += '{' + ','.join(filters) + '}'
@@ -698,20 +762,21 @@ def get_btree_bloat_csv():
         tblname = request.args.get('tblname')
         idxname = request.args.get('idxname')
 
-        # Build label filters
+        # Build label filters (escape values to prevent PromQL injection)
+        _esc = escape_promql_label
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_esc(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_esc(node_name)}"')
         if schemaname:
-            filters.append(f'schemaname="{schemaname}"')
+            filters.append(f'schemaname="{_esc(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_esc(tblname)}"')
         if idxname:
-            filters.append(f'idxname="{idxname}"')
+            filters.append(f'idxname="{_esc(idxname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_esc(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
@@ -736,19 +801,20 @@ def get_btree_bloat_csv():
 
                 for entry in result:
                     metric_labels = entry.get('metric', {})
-                    key = (
-                        metric_labels.get('datname', ''),
-                        metric_labels.get('schemaname', ''),
-                        metric_labels.get('tblname', ''),
-                        metric_labels.get('idxname', '')
-                    )
+                    # Extract label values from Prometheus response (not user input —
+                    # no PromQL escaping needed here; these go into the CSV output).
+                    db_val = metric_labels.get('datname', '')
+                    schema_val = metric_labels.get('schemaname', '')
+                    tbl_val = metric_labels.get('tblname', '')
+                    idx_val = metric_labels.get('idxname', '')
+                    key = (db_val, schema_val, tbl_val, idx_val)
 
                     if key not in metric_results:
                         metric_results[key] = {
-                            'database': metric_labels.get('datname', ''),
-                            'schemaname': metric_labels.get('schemaname', ''),
-                            'tblname': metric_labels.get('tblname', ''),
-                            'idxname': metric_labels.get('idxname', ''),
+                            'database': db_val,
+                            'schemaname': schema_val,
+                            'tblname': tbl_val,
+                            'idxname': idx_val,
                         }
 
                     # Extract metric type from query and store value
@@ -836,19 +902,21 @@ def get_table_info_csv():
             except ValueError:
                 end_dt = datetime.fromisoformat(time_end.replace('Z', '+00:00'))
 
-        # Build label filters
+        # Build label filters (escape values to prevent PromQL injection)
+        _esc = escape_promql_label
         filters = []
         if cluster_name:
-            filters.append(f'cluster="{cluster_name}"')
+            filters.append(f'cluster="{_esc(cluster_name)}"')
         if node_name:
-            filters.append(f'node_name="{node_name}"')
+            filters.append(f'node_name="{_esc(node_name)}"')
         if schemaname:
-            # Support regex pattern matching with =~
-            filters.append(f'schemaname=~"{schemaname}"')
+            # Use =~ with a regex-escaped literal so dots and other RE2 metacharacters
+            # in schema names are matched literally, not as regex patterns.
+            filters.append(f'schemaname=~"{escape_promql_regex_literal(schemaname)}"')
         if tblname:
-            filters.append(f'tblname="{tblname}"')
+            filters.append(f'tblname="{_esc(tblname)}"')
         if db_name:
-            filters.append(f'datname="{db_name}"')
+            filters.append(f'datname="{_esc(db_name)}"')
 
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
@@ -1176,7 +1244,7 @@ def get_query_texts():
 
         conn = None
         try:
-            conn = psycopg2.connect(POSTGRES_SINK_URL)
+            conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # Skip db_name filter if it's empty, "All", or contains special chars
                 use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
@@ -1287,7 +1355,7 @@ def get_query_info_metrics():
 
         conn = None
         try:
-            conn = psycopg2.connect(POSTGRES_SINK_URL)
+            conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # Skip db_name filter if it's empty, "All", or contains special chars
                 use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
@@ -1391,6 +1459,77 @@ def get_query_info_metrics():
     except Exception as e:
         logger.error(f"Error generating query info metrics: {e}")
         return f"# Error: {str(e)}\n", 500
+
+
+def _check_debug_auth():
+    """Validate debug endpoint auth. Returns None on success, a (response, status) tuple on failure."""
+    if not _DEBUG_SECRET_KEY:
+        return jsonify({'error': 'Debug auth not configured (DEBUG_SECRET_KEY env var not set)'}), 403
+    auth_header = request.headers.get('Authorization', '')
+    if not hmac.compare_digest(auth_header, f'Bearer {_DEBUG_SECRET_KEY}'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    return None
+
+
+@app.route('/execute-query', methods=['POST'])
+def execute_query():
+    """Debug-only endpoint for executing read-only queries against the configured database.
+
+    Requires ENABLE_DEBUG=true and a valid Authorization: Bearer <DEBUG_SECRET_KEY> header.
+    Returns 404 when debug mode is disabled so the endpoint is not discoverable in production.
+    """
+    if os.environ.get('ENABLE_DEBUG', 'false').lower() != 'true':
+        return jsonify({'error': 'Not found'}), 404
+
+    auth_error = _check_debug_auth()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'Request body must be JSON with Content-Type: application/json'}), 400
+
+    query = data.get('query')
+    if not query or not isinstance(query, str):
+        return jsonify({'error': 'query field is required and must be a string'}), 400
+
+    # Strip leading block comments before allowlist check so that
+    # "/* comment */ SELECT ..." is still accepted.
+    query_stripped = re.sub(r'^(\s*/\*.*?\*/\s*)+', '', query, flags=re.DOTALL).strip()
+    if not _SQL_ALLOWLIST_RE.match(query_stripped):
+        return jsonify({'error': 'Only SELECT, EXPLAIN, and SHOW statements are permitted'}), 400
+
+    # Strip ALL comments (block and line) before blocklist / multi-statement
+    # checks.  The helper is quote-aware: comment delimiters that appear
+    # inside single-quoted string literals are left intact, preventing bypass
+    # attacks like:  SELECT 'x' || '--' || (SELECT * FROM pg_shadow)
+    query_no_comments = _strip_sql_comments(query_stripped)
+    if _SQL_BLOCKLIST_RE.search(query_no_comments):
+        return jsonify({'error': 'Query contains disallowed functions or clauses '
+                        '(pg_read_file, pg_read_binary_file, pg_ls_dir, pg_stat_file, '
+                        'pg_shadow, pg_authid, WITH)'}), 400
+
+    # Reject multi-statement queries (reuses query_no_comments already computed above).
+    if ';' in query_no_comments:
+        return jsonify({'error': 'Multi-statement queries are not permitted'}), 400
+
+    conn = None
+    try:
+        cfg = {k: v for k, v in DB_CONFIG.items() if v is not None}
+        conn = psycopg2.connect(**cfg, connect_timeout=10)
+        conn.set_session(autocommit=True, readonly=True)
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute('SET statement_timeout = %s', ('10s',))
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return jsonify({'columns': columns, 'rows': [list(row) for row in rows]})
+    except Exception as e:
+        logger.error(f"Debug execute-query error: {e}")
+        return jsonify({'error': 'Query execution failed'}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == '__main__':

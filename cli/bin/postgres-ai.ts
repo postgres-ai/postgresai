@@ -2452,16 +2452,20 @@ mon
 
         // Test connection
         console.log("Testing connection to the added instance...");
-        try {
-          const client = new Client({ connectionString: connStr });
-          await client.connect();
-          const result = await client.query("select version();");
-          console.log("✓ Connection successful");
-          console.log(`${result.rows[0].version}\n`);
-          await client.end();
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`✗ Connection failed: ${message}\n`);
+        {
+          let testClient: InstanceType<typeof Client> | null = null;
+          try {
+            testClient = new Client({ connectionString: connStr, connectionTimeoutMillis: 10000 });
+            await testClient.connect();
+            const result = await testClient.query("select version();");
+            console.log("✓ Connection successful");
+            console.log(`${result.rows[0].version}\n`);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`✗ Connection failed: ${message}\n`);
+          } finally {
+            if (testClient) await testClient.end();
+          }
         }
       } else if (opts.yes) {
         // Auto-yes mode without database URL - skip database setup
@@ -2496,16 +2500,20 @@ mon
 
               // Test connection
               console.log("Testing connection to the added instance...");
-              try {
-                const client = new Client({ connectionString: connStr });
-                await client.connect();
-                const result = await client.query("select version();");
-                console.log("✓ Connection successful");
-                console.log(`${result.rows[0].version}\n`);
-                await client.end();
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                console.error(`✗ Connection failed: ${message}\n`);
+              {
+                let testClient: InstanceType<typeof Client> | null = null;
+                try {
+                  testClient = new Client({ connectionString: connStr, connectionTimeoutMillis: 10000 });
+                  await testClient.connect();
+                  const result = await testClient.query("select version();");
+                  console.log("✓ Connection successful");
+                  console.log(`${result.rows[0].version}\n`);
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  console.error(`✗ Connection failed: ${message}\n`);
+                } finally {
+                  if (testClient) await testClient.end();
+                }
               }
             }
           } else {
@@ -3292,7 +3300,7 @@ targets
       console.log(`Testing connection to monitoring target '${name}'...`);
 
       // Use native pg client instead of requiring psql to be installed
-      const client = new Client({ connectionString: instance.conn_str });
+      const client = new Client({ connectionString: instance.conn_str, connectionTimeoutMillis: 10000 });
 
       try {
         await client.connect();

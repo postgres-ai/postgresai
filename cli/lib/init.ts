@@ -127,8 +127,10 @@ export async function connectWithSslFallback(
   verbose?: boolean
 ): Promise<{ client: PgClient; usedSsl: boolean }> {
   const tryConnect = async (config: PgClientConfig): Promise<PgClient> => {
-    const client = new ClientClass(config);
+    const client = new ClientClass({ ...config, connectionTimeoutMillis: 10_000 } as any);
     await client.connect();
+    // Set a default statement timeout to prevent runaway queries
+    await client.query("SET statement_timeout = '30s'");
     return client;
   };
 
@@ -454,8 +456,18 @@ export function resolveAdminConnection(opts: {
   return { clientConfig: cfg, display: describePgConfig(cfg), sslFallbackEnabled: true };
 }
 
+/**
+ * Generate a cryptographically secure random password for the monitoring role.
+ *
+ * Encoding note — bytes vs output length:
+ *   - hex:      N bytes → 2N characters  (24 bytes → 48 hex chars)
+ *   - base64:   N bytes → ⌈4N/3⌉ chars   (24 bytes → 32 base64url chars, no padding)
+ *
+ * We use base64url (RFC 4648 §5) because it is shorter than hex and safe in URLs,
+ * connection strings, and shell variables without quoting.
+ */
 function generateMonitoringPassword(): string {
-  // URL-safe and easy to copy/paste; 24 bytes => 32 base64url chars (no padding).
+  // 24 random bytes → 32 base64url characters (no padding).
   // Note: randomBytes() throws on failure; we add a tiny sanity check for unexpected output.
   const password = randomBytes(24).toString("base64url");
   if (password.length < 30) {

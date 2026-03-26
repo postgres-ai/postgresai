@@ -1314,3 +1314,56 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=secret123/);
   }, 60000);
 });
+
+// ---------------------------------------------------------------------------
+// connectWithSslFallback — connectionTimeoutMillis and statement_timeout
+// Issues 9 & 10
+// ---------------------------------------------------------------------------
+describe("connectWithSslFallback", () => {
+  // Issue 9: Verify that connectionTimeoutMillis is forwarded to the pg Client
+  // constructor so slow-responding servers don't hang the CLI indefinitely.
+  // Direct integration testing against a real TCP timeout would be flaky in CI,
+  // so we use a mock ClientClass and assert the config passed to its constructor.
+  test("passes connectionTimeoutMillis: 10_000 to the pg Client constructor", async () => {
+    const receivedConfigs: any[] = [];
+
+    class MockClient {
+      constructor(config: any) {
+        receivedConfigs.push(config);
+      }
+      async connect() {}
+      async query() { return {}; }
+    }
+
+    const adminConn = init.resolveAdminConnection({ conn: "postgresql://u:p@localhost:5432/d" });
+    // Disable SSL fallback so we exercise the simple (non-retry) path.
+    (adminConn as any).sslFallbackEnabled = false;
+
+    await init.connectWithSslFallback(MockClient as any, adminConn);
+
+    expect(receivedConfigs.length).toBeGreaterThanOrEqual(1);
+    expect(receivedConfigs[0].connectionTimeoutMillis).toBe(10_000);
+  });
+
+  // Issue 10: Verify that SET statement_timeout is issued after every successful
+  // connection to prevent runaway queries from blocking the CLI.
+  test("issues SET statement_timeout = '30s' after connecting", async () => {
+    const queriesSent: string[] = [];
+
+    class MockClient {
+      constructor(_config: any) {}
+      async connect() {}
+      async query(sql: string) {
+        queriesSent.push(sql);
+        return {};
+      }
+    }
+
+    const adminConn = init.resolveAdminConnection({ conn: "postgresql://u:p@localhost:5432/d" });
+    (adminConn as any).sslFallbackEnabled = false;
+
+    await init.connectWithSslFallback(MockClient as any, adminConn);
+
+    expect(queriesSent.some((q) => /SET\s+statement_timeout/i.test(q))).toBe(true);
+  });
+});

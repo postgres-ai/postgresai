@@ -1,5 +1,6 @@
 include:
   - local: 'components/index_pilot/.gitlab-ci.yml'
+  - local: 'quality/gitlab-ci-quality.yml'
   - template: Security/SAST.gitlab-ci.yml
   - project: 'postgres-ai/infra'
     file: '/ci/templates/approval-check.yml'
