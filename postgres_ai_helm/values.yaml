@@ -68,7 +68,7 @@ pgwatchPrometheus:
 
 flask:
   enabled: true
-  image: postgresai/monitoring-flask-backend:latest
+  image: postgresai/monitoring-flask-backend:0.14.0
   imagePullPolicy: IfNotPresent
   containerPort: 8000
   healthPath: /health

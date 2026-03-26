@@ -11,7 +11,7 @@ variables:
 
 index_pilot:shell:lint:
   stage: test
-  image: alpine:latest
+  image: alpine:3.21
   allow_failure: true  # Alpha for 0.14
   script:
     - apk add --no-cache shellcheck shfmt
@@ -187,7 +187,7 @@ index_pilot:test:nonsuperuser:
 # SQL security checks
 index_pilot:sql-security:
   stage: test
-  image: alpine:latest
+  image: alpine:3.21
   allow_failure: true  # Alpha for 0.14
   script:
     - apk add --no-cache grep

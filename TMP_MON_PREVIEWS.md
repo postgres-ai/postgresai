@@ -399,7 +399,7 @@ variables:
 preview:deploy:
   stage: preview
   when: manual
-  image: alpine:latest
+  image: alpine:3.21
   before_script:
     - apk add --no-cache openssh-client rsync bash coreutils
     - eval $(ssh-agent -s)
@@ -457,7 +457,7 @@ preview:deploy:
 preview:destroy:
   stage: cleanup
   when: manual
-  image: alpine:latest
+  image: alpine:3.21
   environment:
     name: preview/$CI_COMMIT_REF_SLUG
     action: stop
@@ -480,7 +480,7 @@ preview:destroy:
 # =============================================================================
 preview:update:
   stage: preview
-  image: alpine:latest
+  image: alpine:3.21
   before_script:
     - apk add --no-cache openssh-client rsync bash coreutils
     - eval $(ssh-agent -s)
