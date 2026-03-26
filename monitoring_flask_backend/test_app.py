@@ -1,9 +1,17 @@
 """Tests for the Flask monitoring backend."""
 import pytest
 import json
-from unittest.mock import patch, mock_open
+import psycopg2
+from unittest.mock import patch, mock_open, MagicMock, call
 
-from app import app, read_version_file, smart_truncate_query, _escape_prometheus_label
+from app import (
+    app,
+    read_version_file,
+    smart_truncate_query,
+    _escape_prometheus_label,
+    escape_promql_label,
+    escape_promql_regex_literal,
+)
 
 
 @pytest.fixture
@@ -12,6 +20,34 @@ def client():
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
+
+
+@pytest.fixture
+def debug_mode():
+    """Enable the /execute-query debug endpoint with a known secret key.
+
+    Yields the app module so tests can assert on module-level state if needed.
+    Proper fixture teardown ensures env/module state is always restored.
+    """
+    import os
+    import app as app_module
+    os.environ['ENABLE_DEBUG'] = 'true'
+    app_module._DEBUG_SECRET_KEY = 'test-secret'
+    yield app_module
+    os.environ.pop('ENABLE_DEBUG', None)
+    app_module._DEBUG_SECRET_KEY = ''
+
+
+@pytest.fixture
+def debug_mode_no_key():
+    """Enable debug mode but with no secret key configured (tests the 403 path)."""
+    import os
+    import app as app_module
+    os.environ['ENABLE_DEBUG'] = 'true'
+    app_module._DEBUG_SECRET_KEY = ''
+    yield app_module
+    os.environ.pop('ENABLE_DEBUG', None)
+    app_module._DEBUG_SECRET_KEY = ''
 
 
 class TestVersionEndpoint:
@@ -583,3 +619,1012 @@ class TestQueryInfoMetricsEndpoint:
         assert 'users\nWHERE' not in data
         # Double quotes should be escaped
         assert '\\"column\\"' in data or 'column' in data
+
+
+class TestMetricsEndpoint:
+    """Tests for the /metrics endpoint with mocked psycopg2."""
+
+    @patch('app.get_prometheus_client')
+    def test_metrics_returns_json(self, mock_prom, client):
+        """Test /metrics returns JSON with pg_stat_statements_metrics key."""
+        mock_prom.return_value.all_metrics.return_value = [
+            'pgwatch_pg_stat_statements_calls',
+            'pgwatch_pg_stat_statements_rows',
+            'other_metric',
+        ]
+        response = client.get('/metrics')
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert 'pg_stat_statements_metrics' in data
+
+    @patch('app.get_prometheus_client')
+    def test_metrics_filters_pgss_metrics(self, mock_prom, client):
+        """Test /metrics only returns pg_stat_statements metrics."""
+        mock_prom.return_value.all_metrics.return_value = [
+            'pgwatch_pg_stat_statements_calls',
+            'pgwatch_pg_stat_statements_rows',
+            'node_cpu_seconds_total',
+            'up',
+        ]
+        response = client.get('/metrics')
+        data = json.loads(response.data)
+        pgss = data['pg_stat_statements_metrics']
+        assert all('pg_stat_statements' in m for m in pgss)
+        assert 'node_cpu_seconds_total' not in pgss
+        assert 'up' not in pgss
+
+    @patch('app.get_prometheus_client')
+    def test_metrics_empty_when_no_pgss(self, mock_prom, client):
+        """Test /metrics returns empty list when no pg_stat_statements metrics exist."""
+        mock_prom.return_value.all_metrics.return_value = ['node_cpu_seconds_total', 'up']
+        response = client.get('/metrics')
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['pg_stat_statements_metrics'] == []
+
+    @patch('app.get_prometheus_client')
+    def test_metrics_returns_500_on_prometheus_error(self, mock_prom, client):
+        """Test /metrics returns 500 when Prometheus is unreachable."""
+        mock_prom.return_value.all_metrics.side_effect = Exception("Prometheus unreachable")
+        response = client.get('/metrics')
+        assert response.status_code == 500
+        data = json.loads(response.data)
+        assert 'error' in data
+
+
+class TestExecuteQueryEndpoint:
+    """Tests for the gated /execute-query debug endpoint."""
+
+    def test_returns_404_when_debug_disabled(self, client):
+        """Test endpoint returns 404 when ENABLE_DEBUG is not set."""
+        import os
+        os.environ.pop('ENABLE_DEBUG', None)
+        response = client.post('/execute-query',
+                               json={'query': 'SELECT 1'},
+                               content_type='application/json')
+        assert response.status_code == 404
+
+    def test_returns_403_when_no_secret_key_configured(self, client, debug_mode_no_key):
+        """Test endpoint returns 403 when ENABLE_DEBUG=true but DEBUG_SECRET_KEY not set."""
+        response = client.post('/execute-query',
+                               json={'query': 'SELECT 1'},
+                               content_type='application/json')
+        assert response.status_code == 403
+
+    def test_returns_400_on_missing_json_body(self, client, debug_mode):
+        """Test endpoint returns 400 when Content-Type is not application/json."""
+        response = client.post('/execute-query',
+                               data='not json',
+                               content_type='text/plain',
+                               headers={'Authorization': 'Bearer test-secret'})
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'error' in data
+
+
+class TestEscapePromqlLabel:
+    """Unit tests for the escape_promql_label function."""
+
+    def test_simple_value_unchanged(self):
+        assert escape_promql_label("hello") == "hello"
+
+    def test_empty_string(self):
+        assert escape_promql_label("") == ""
+
+    def test_escapes_backslash(self):
+        assert escape_promql_label("path\\to") == "path\\\\to"
+
+    def test_escapes_double_quote(self):
+        assert escape_promql_label('say "hi"') == 'say \\"hi\\"'
+
+    def test_escapes_newline(self):
+        assert escape_promql_label("line1\nline2") == "line1\\nline2"
+
+    def test_backslash_before_quote_double_escaped(self):
+        # Input \", output \\\"
+        assert escape_promql_label('\\"') == '\\\\\\"'
+
+    def test_combined_special_chars(self):
+        result = escape_promql_label('a\\b"c\nd')
+        assert '\\\\' in result    # escaped backslash
+        assert '\\"' in result     # escaped quote
+        assert '\\n' in result     # escaped newline
+
+
+class TestEscapePromqlRegexLiteral:
+    """Unit tests for the escape_promql_regex_literal function."""
+
+    def test_simple_value_unchanged(self):
+        assert escape_promql_regex_literal("hello") == "hello"
+
+    def test_empty_string(self):
+        assert escape_promql_regex_literal("") == ""
+
+    def test_escapes_dot(self):
+        # Schema names like "public.myschema" must match literally
+        assert escape_promql_regex_literal("public.myschema") == "public\\.myschema"
+
+    def test_escapes_plus(self):
+        assert escape_promql_regex_literal("a+b") == "a\\+b"
+
+    def test_escapes_star(self):
+        assert escape_promql_regex_literal("a*b") == "a\\*b"
+
+    def test_escapes_pipe(self):
+        assert escape_promql_regex_literal("a|b") == "a\\|b"
+
+    def test_escapes_parens(self):
+        assert escape_promql_regex_literal("(group)") == "\\(group\\)"
+
+    def test_escapes_brackets(self):
+        # '-' is not a RE2 metacharacter outside a character class; only '[' and ']' are escaped
+        assert escape_promql_regex_literal("[0-9]") == "\\[0-9\\]"
+
+    def test_escapes_caret_and_dollar(self):
+        result = escape_promql_regex_literal("^start$end")
+        assert "\\^" in result
+        assert "\\$" in result
+
+    def test_also_escapes_double_quote(self):
+        result = escape_promql_regex_literal('"quoted"')
+        assert '\\"' in result
+
+    def test_also_escapes_backslash(self):
+        result = escape_promql_regex_literal("path\\file")
+        assert '\\\\' in result
+
+    def test_schema_with_dot_and_special_chars(self):
+        # Real-world: "my_schema.table+extra" must be a literal match
+        result = escape_promql_regex_literal("my_schema.table+extra")
+        assert "\\." in result
+        assert "\\+" in result
+        assert "my_schema" in result
+        assert "table" in result
+
+
+class TestExecuteQuerySQLAllowlist:
+    """Tests for the SQL allowlist on the /execute-query debug endpoint."""
+
+    def _setup_debug(self, app_module):
+        import os
+        os.environ['ENABLE_DEBUG'] = 'true'
+        app_module._DEBUG_SECRET_KEY = 'test-secret'
+
+    def _teardown_debug(self, app_module):
+        import os
+        os.environ.pop('ENABLE_DEBUG', None)
+        app_module._DEBUG_SECRET_KEY = ''
+
+    def test_auth_required_without_header(self, client):
+        """Endpoint returns 401/403 when Authorization header is absent."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'SELECT 1'},
+                                   content_type='application/json')
+            assert response.status_code in (401, 403)
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_auth_required_with_wrong_token(self, client):
+        """Endpoint returns 401/403 for a wrong Bearer token."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'SELECT 1'},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer wrong-token'})
+            assert response.status_code in (401, 403)
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_select_allowlisted(self, client):
+        """Valid SELECT query is accepted (reaches the DB layer, not rejected by allowlist)."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            with patch('app.psycopg2.connect') as mock_connect:
+                mock_cursor = MagicMock()
+                mock_cursor.fetchall.return_value = [(1,)]
+                mock_cursor.description = [('?column?',)]
+                mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+                response = client.post('/execute-query',
+                                       json={'query': 'SELECT 1'},
+                                       content_type='application/json',
+                                       headers={'Authorization': 'Bearer test-secret'})
+                assert response.status_code == 200
+                data = json.loads(response.data)
+                assert 'error' not in data or 'permitted' not in data.get('error', '')
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_explain_allowlisted(self, client):
+        """EXPLAIN query is accepted by the allowlist."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            with patch('app.psycopg2.connect') as mock_connect:
+                mock_cursor = MagicMock()
+                mock_cursor.fetchall.return_value = [('Seq Scan on t',)]
+                mock_cursor.description = [('QUERY PLAN',)]
+                mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+                response = client.post('/execute-query',
+                                       json={'query': 'EXPLAIN SELECT 1'},
+                                       content_type='application/json',
+                                       headers={'Authorization': 'Bearer test-secret'})
+                assert response.status_code == 200
+                data = json.loads(response.data)
+                assert 'error' not in data or 'permitted' not in data.get('error', '')
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_drop_blocked(self, client):
+        """DROP statement is rejected by the SQL allowlist."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'DROP TABLE users'},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'permitted' in data['error'].lower() or 'only' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_delete_blocked(self, client):
+        """DELETE statement is rejected by the SQL allowlist."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'DELETE FROM users WHERE id = 1'},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'permitted' in data['error'].lower() or 'only' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_insert_blocked(self, client):
+        """INSERT statement is rejected by the SQL allowlist."""
+        import os
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "INSERT INTO users VALUES (1, 'x')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'permitted' in data['error'].lower() or 'only' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+
+class TestExecuteQuerySQLBlocklist:
+    """Tests for the secondary SQL blocklist on the /execute-query debug endpoint."""
+
+    def _setup_debug(self, app_module):
+        import os
+        os.environ['ENABLE_DEBUG'] = 'true'
+        app_module._DEBUG_SECRET_KEY = 'test-secret'
+
+    def _teardown_debug(self, app_module):
+        import os
+        os.environ.pop('ENABLE_DEBUG', None)
+        app_module._DEBUG_SECRET_KEY = ''
+
+    def test_pg_read_file_blocked(self, client):
+        """SELECT containing pg_read_file() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT pg_read_file('/etc/passwd')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'disallowed' in data['error'].lower() or 'pg_read_file' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_shadow_blocked(self, client):
+        """SELECT from pg_shadow is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'SELECT usename, passwd FROM pg_shadow'},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_authid_blocked(self, client):
+        """SELECT from pg_authid is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': 'SELECT rolname, rolpassword FROM pg_authid'},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_ls_dir_blocked(self, client):
+        """pg_ls_dir() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT * FROM pg_ls_dir('.')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_stat_file_blocked(self, client):
+        """pg_stat_file() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT * FROM pg_stat_file('pg_hba.conf')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_read_binary_file_blocked(self, client):
+        """pg_read_binary_file() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT pg_read_binary_file('pg_hba.conf')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_copy_blocked(self, client):
+        """COPY statement is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "COPY users TO '/tmp/dump.csv'"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_do_blocked(self, client):
+        """DO anonymous block is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "DO $$ BEGIN RAISE NOTICE 'x'; END $$"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_call_blocked(self, client):
+        """CALL statement is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "CALL my_procedure()"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_dblink_blocked(self, client):
+        """dblink() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT * FROM dblink('host=evil', 'SELECT 1') AS t(x int)"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'disallowed' in data['error'].lower() or 'dblink' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_lo_export_blocked(self, client):
+        """lo_export() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT lo_export(1234, '/tmp/out')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'disallowed' in data['error'].lower() or 'lo_export' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_lo_import_blocked(self, client):
+        """lo_import() is rejected by the secondary blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post('/execute-query',
+                                   json={'query': "SELECT lo_import('/etc/passwd')"},
+                                   content_type='application/json',
+                                   headers={'Authorization': 'Bearer test-secret'})
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'disallowed' in data['error'].lower() or 'lo_import' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_writable_cte_blocked(self, client):
+        """WITH clause is rejected to prevent writable CTEs."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': "WITH d AS (DELETE FROM users RETURNING id) SELECT id FROM d"},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_select_cte_also_blocked(self, client):
+        """Even read-only CTEs are blocked (conservative policy: no WITH at all)."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': "WITH cte AS (SELECT 1) SELECT * FROM cte"},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+        finally:
+            self._teardown_debug(app_module)
+
+    # --- Block comment bypass tests ---
+
+    def test_block_comment_before_drop_still_blocked(self, client):
+        """Leading block comment does not let DROP bypass the allowlist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': '/* hello */ DROP TABLE users'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_block_comment_before_select_allowed(self, client):
+        """Leading block comment before SELECT is accepted (comment stripped first)."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            with patch('app.psycopg2.connect') as mock_connect:
+                mock_cursor = MagicMock()
+                mock_cursor.fetchall.return_value = [(1,)]
+                mock_cursor.description = [('?column?',)]
+                mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+                response = client.post(
+                    '/execute-query',
+                    json={'query': '/* comment */ SELECT 1'},
+                    content_type='application/json',
+                    headers={'Authorization': 'Bearer test-secret'},
+                )
+                assert response.status_code == 200
+                data = json.loads(response.data)
+                assert 'permitted' not in data.get('error', '')
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_inline_comment_containing_with_allowed(self, client):
+        """Inline block comment containing WITH keyword is not treated as a real CTE."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            with patch('app.psycopg2.connect') as mock_connect:
+                mock_cursor = MagicMock()
+                mock_cursor.fetchall.return_value = [(1,)]
+                mock_cursor.description = [('?column?',)]
+                mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+                response = client.post(
+                    '/execute-query',
+                    json={'query': 'SELECT /* WITH DELETE */ 1'},
+                    content_type='application/json',
+                    headers={'Authorization': 'Bearer test-secret'},
+                )
+                assert response.status_code == 200
+                data = json.loads(response.data)
+                assert 'disallowed' not in data.get('error', '')
+        finally:
+            self._teardown_debug(app_module)
+
+    # --- Allowlist bypass tests ---
+
+    def test_explain_with_pg_shadow_blocked(self, client):
+        """EXPLAIN does not bypass the blocklist — pg_shadow is still rejected."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': 'EXPLAIN SELECT * FROM pg_shadow'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'disallowed' in data['error'].lower() or 'pg_shadow' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_pg_shadow_mixed_case_blocked(self, client):
+        """pg_shadow in mixed/upper case is still caught by the case-insensitive blocklist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT * FROM PG_SHADOW'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_multi_statement_blocked(self, client):
+        """Multi-statement SQL (semicolon-separated) is rejected."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT 1; DELETE FROM users'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert 'error' in data
+            assert 'multi' in data['error'].lower() or 'statement' in data['error'].lower()
+        finally:
+            self._teardown_debug(app_module)
+
+    def test_explain_format_json_allowed(self, client):
+        """EXPLAIN (FORMAT JSON) with option clause is accepted by the allowlist."""
+        import app as app_module
+        self._setup_debug(app_module)
+        try:
+            with patch('app.psycopg2.connect') as mock_connect:
+                mock_cursor = MagicMock()
+                mock_cursor.fetchall.return_value = [('[{"Plan":{}}]',)]
+                mock_cursor.description = [('QUERY PLAN',)]
+                mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+                response = client.post(
+                    '/execute-query',
+                    json={'query': 'EXPLAIN (FORMAT JSON) SELECT 1'},
+                    content_type='application/json',
+                    headers={'Authorization': 'Bearer test-secret'},
+                )
+                assert response.status_code == 200
+                data = json.loads(response.data)
+                assert 'permitted' not in data.get('error', '')
+        finally:
+            self._teardown_debug(app_module)
+
+
+class TestQueryTextsTimeout:
+    """Tests for /query_texts timeout error path."""
+
+    @patch('app.psycopg2.connect')
+    def test_operationalerror_timeout_returns_empty_list(self, mock_connect, client):
+        """OperationalError (e.g. connection timeout) is handled gracefully."""
+        mock_connect.side_effect = psycopg2.OperationalError("connection timed out")
+
+        response = client.get('/query_texts')
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert isinstance(data, list)
+        assert data == []
+
+    @patch('app.psycopg2.connect')
+    def test_statement_timeout_returns_empty_list(self, mock_connect, client):
+        """Statement timeout OperationalError returns empty list, not 500."""
+        mock_connect.side_effect = psycopg2.OperationalError(
+            "ERROR:  canceling statement due to statement timeout"
+        )
+
+        response = client.get('/query_texts')
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert isinstance(data, list)
+
+
+class TestQueryInfoMetricsTimeout:
+    """Tests for /query_info_metrics timeout error path."""
+
+    @patch('app.psycopg2.connect')
+    def test_operationalerror_returns_200_with_header(self, mock_connect, client):
+        """OperationalError from psycopg2 still returns Prometheus header lines."""
+        mock_connect.side_effect = psycopg2.OperationalError("connection timed out")
+
+        response = client.get('/query_info_metrics')
+        assert response.status_code == 200
+        data = response.data.decode('utf-8')
+        assert '# HELP pgwatch_query_info' in data
+        assert '# TYPE pgwatch_query_info gauge' in data
+
+    @patch('app.psycopg2.connect')
+    def test_statement_timeout_returns_empty_metrics(self, mock_connect, client):
+        """Statement timeout still returns a valid (empty) Prometheus response."""
+        mock_connect.side_effect = psycopg2.OperationalError(
+            "ERROR:  canceling statement due to statement timeout"
+        )
+
+        response = client.get('/query_info_metrics')
+        assert response.status_code == 200
+        data = response.data.decode('utf-8')
+        # Should have header but no metric lines (no rows fetched)
+        assert '# HELP pgwatch_query_info' in data
+        assert 'pgwatch_query_info{' not in data
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage for /execute-query (issues 4, 6, 7, 8)
+# ---------------------------------------------------------------------------
+
+class TestExecuteQuerySuccessPath:
+    """Issue 4 — success-path test: valid SELECT returning real results."""
+
+    def test_returns_columns_and_rows(self, client, debug_mode):
+        """A valid SELECT query returns 200 with populated columns and rows."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [('alice', 1), ('bob', 2)]
+            mock_cursor.description = [('name',), ('score',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT name, score FROM leaderboard'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+            data = json.loads(response.data)
+            assert data['columns'] == ['name', 'score']
+            assert data['rows'] == [['alice', 1], ['bob', 2]]
+
+
+class TestExecuteQueryAuthSchemes:
+    """Issue 6 — non-Bearer auth schemes (Basic, Token) must be rejected."""
+
+    def test_basic_auth_rejected(self, client, debug_mode):
+        """Authorization: Basic <token> is not accepted (only Bearer is valid)."""
+        import base64
+        creds = base64.b64encode(b'test-secret:').decode()
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+            headers={'Authorization': f'Basic {creds}'},
+        )
+        assert response.status_code in (401, 403)
+
+    def test_token_auth_rejected(self, client, debug_mode):
+        """Authorization: Token <token> is not accepted (only Bearer is valid)."""
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+            headers={'Authorization': 'Token test-secret'},
+        )
+        assert response.status_code in (401, 403)
+
+    def test_apikey_scheme_rejected(self, client, debug_mode):
+        """Authorization: ApiKey <token> is not accepted."""
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+            headers={'Authorization': 'ApiKey test-secret'},
+        )
+        assert response.status_code in (401, 403)
+
+
+class TestExecuteQueryMultipleBlockComments:
+    """Issue 7 — multiple sequential leading block comments before SELECT."""
+
+    def test_two_sequential_block_comments_accepted(self, client, debug_mode):
+        """/* a */ /* b */ SELECT 1 passes the allowlist (both comments stripped)."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(1,)]
+            mock_cursor.description = [('?column?',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': '/* a */ /* b */ SELECT 1'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+            data = json.loads(response.data)
+            assert 'permitted' not in data.get('error', '')
+
+    def test_three_sequential_block_comments_accepted(self, client, debug_mode):
+        """Three leading block comments before SELECT are all stripped correctly."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(42,)]
+            mock_cursor.description = [('?column?',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': '/* x */ /* y */ /* z */ SELECT 42'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+
+
+class TestExecuteQueryStatementTimeout:
+    """Issue 8 — statement timeout during query execution returns 500."""
+
+    def test_statement_timeout_returns_500(self, client, debug_mode):
+        """OperationalError from statement_timeout inside execute-query returns 500."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.execute.side_effect = psycopg2.OperationalError(
+                "ERROR:  canceling statement due to statement timeout"
+            )
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT pg_sleep(999)'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 500
+            data = json.loads(response.data)
+            assert 'error' in data
+
+    def test_line_comment_containing_blocked_keyword_not_blocked(self, client, debug_mode):
+        """Issue 2 regression: '-- pg_read_file' in a line comment must not trigger blocklist."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(1,)]
+            mock_cursor.description = [('?column?',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': "SELECT 1 -- pg_read_file('/etc/passwd')"},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200, (
+                "A blocked keyword inside a line comment should NOT be rejected by the blocklist"
+            )
+
+    def test_query_with_double_dash_in_string_literal(self, client, debug_mode):
+        """SELECT with -- inside a string literal must not be rejected by the blocklist."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [('foo--bar',)]
+            mock_cursor.description = [('?column?',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': "SELECT 'foo--bar'"},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200, (
+                "A -- inside a string literal should NOT be treated as a comment by the blocklist"
+            )
+
+
+class TestDebugAuth:
+    """Unit tests for _check_debug_auth() via the /execute-query endpoint."""
+
+    def test_valid_token_allows_request(self, client, debug_mode):
+        """Valid Bearer token returns None (auth passes, request proceeds)."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(1,)]
+            mock_cursor.description = [('?column?',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT 1'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+
+    def test_wrong_token_returns_401(self, client, debug_mode):
+        """Wrong Bearer token is rejected with 401."""
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+            headers={'Authorization': 'Bearer wrong-secret'},
+        )
+        assert response.status_code == 401
+        data = json.loads(response.data)
+        assert 'error' in data
+
+    def test_missing_header_returns_401(self, client, debug_mode):
+        """Missing Authorization header is rejected with 401."""
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+        )
+        assert response.status_code == 401
+        data = json.loads(response.data)
+        assert 'error' in data
+
+    def test_non_bearer_scheme_returns_401(self, client, debug_mode):
+        """Non-Bearer auth scheme (e.g. Basic) is rejected with 401."""
+        response = client.post(
+            '/execute-query',
+            json={'query': 'SELECT 1'},
+            content_type='application/json',
+            headers={'Authorization': 'Basic dXNlcjpwYXNz'},
+        )
+        assert response.status_code == 401
+        data = json.loads(response.data)
+        assert 'error' in data
+
+
+class TestExecuteQuerySessionSetup:
+    """Verify connection session configuration in /execute-query."""
+
+    def test_set_session_readonly_called(self, client, debug_mode):
+        """set_session(autocommit=True, readonly=True) must be called on the connection."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(1,)]
+            mock_cursor.description = [('?column?',)]
+            mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+            mock_connect.return_value = mock_conn
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT 1'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+            mock_conn.set_session.assert_called_once_with(autocommit=True, readonly=True)
+
+    def test_set_statement_timeout_called(self, client, debug_mode):
+        """cursor.execute must be called with SET statement_timeout before the user query."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [(1,)]
+            mock_cursor.description = [('?column?',)]
+            mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+            mock_connect.return_value = mock_conn
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SELECT 1'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200
+            calls = mock_cursor.execute.call_args_list
+            timeout_call = calls[0]
+            assert timeout_call == call('SET statement_timeout = %s', ('10s',)), (
+                "First cursor.execute call must set statement_timeout to 10s"
+            )
+
+
+class TestExecuteQueryShowAllowed:
+    """SHOW commands must be accepted by the SQL allowlist."""
+
+    def test_show_command_allowed(self, client, debug_mode):
+        """SHOW statement_timeout passes the allowlist and executes successfully."""
+        with patch('app.psycopg2.connect') as mock_connect:
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [('10s',)]
+            mock_cursor.description = [('statement_timeout',)]
+            mock_connect.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+            response = client.post(
+                '/execute-query',
+                json={'query': 'SHOW statement_timeout'},
+                content_type='application/json',
+                headers={'Authorization': 'Bearer test-secret'},
+            )
+            assert response.status_code == 200, (
+                "SHOW command should be allowed by the SQL allowlist"
+            )
+            data = json.loads(response.data)
+            assert data['columns'] == ['statement_timeout']
+            assert data['rows'] == [['10s']]

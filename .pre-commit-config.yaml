@@ -3,3 +3,42 @@ repos:
     rev: v8.30.0
     hooks:
       - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Prevent large files from being committed
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      # Ensure JSON files are valid
+      - id: check-json
+      # Ensure YAML files are valid
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+      # Prevent committing to main directly
+      - id: no-commit-to-branch
+        args: ['--branch', 'main']
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+        args: ['--markdown-linebreak-ext=md']
+
+  - repo: local
+    hooks:
+      # Catch potential SQL injection patterns in TypeScript
+      - id: sql-injection-check
+        name: SQL injection check (TypeScript)
+        entry: bash -c 'grep -rn --include="*.ts" -E "(\`SELECT|\`INSERT|\`UPDATE|\`DELETE|\`DROP|\`ALTER|\`CREATE).*\$\{" "$@" && echo "ERROR: Possible SQL injection — use parameterized queries" && exit 1 || exit 0' --
+        language: system
+        files: '\.(ts|js)$'
+        exclude: '(test|spec|__tests__)'
+        pass_filenames: false
+
+      # Verify JSON schemas are valid
+      - id: validate-schemas
+        name: Validate JSON schemas
+        entry: python3 -c "import json, sys; [json.load(open(f)) for f in sys.argv[1:]]"
+        language: system
+        files: '\.schema\.json$'
+        types: [json]
