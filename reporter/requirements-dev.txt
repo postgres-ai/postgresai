@@ -3,7 +3,7 @@ pytest==8.3.5
 pytest-postgresql==8.0.0
 psycopg[binary]==3.3.3
 coverage==7.10.6
-pytest-cov==7.0.0
+pytest-cov==7.1.0
 jsonschema==4.23.0
 PyYAML==6.0.3
 hypothesis==6.151.9
