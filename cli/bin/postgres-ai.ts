@@ -15,7 +15,7 @@ import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, create
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import { resolveBaseUrls } from "../lib/util";
 import { uploadFile, downloadFile, buildMarkdownLink } from "../lib/storage";
-import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
+import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1816,6 +1816,24 @@ program
       spinner.update("Connecting to Postgres");
       const connResult = await connectWithSslFallback(Client, adminConn);
       client = connResult.client as Client;
+
+      // Preflight: verify the connected user has sufficient permissions
+      spinner.update("Checking database permissions");
+      const permCheck = await checkCurrentUserPermissions(client);
+      const permMessages = formatPermissionCheckMessages(permCheck);
+
+      for (const w of permMessages.warnings) {
+        console.error(w);
+      }
+
+      if (permMessages.failed) {
+        spinner.stop();
+        for (const e of permMessages.errors) {
+          console.error(e);
+        }
+        process.exitCode = 1;
+        return;
+      }
 
       // Generate reports
       let reports: Record<string, any>;

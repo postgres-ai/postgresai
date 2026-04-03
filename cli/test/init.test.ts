@@ -1367,3 +1367,412 @@ describe("connectWithSslFallback", () => {
     expect(queriesSent.some((q) => /SET\s+statement_timeout/i.test(q))).toBe(true);
   });
 });
+
+describe("checkCurrentUserPermissions", () => {
+  function makeMockClient(rows: init.PermissionCheckRow[]) {
+    return {
+      query: async () => ({ rows }),
+    };
+  }
+
+  function makeFailingClient(error: Error) {
+    return {
+      query: async () => { throw error; },
+    };
+  }
+
+  test("returns ok when all required permissions are granted", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.ok).toBe(true);
+    expect(result.missingRequired).toHaveLength(0);
+    expect(result.missingOptional).toHaveLength(0);
+  });
+
+  test("reports missing required permissions with fix commands", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.ok).toBe(false);
+    expect(result.missingRequired).toHaveLength(1);
+    expect(result.missingRequired[0].permission_name).toBe("pg_monitor role membership");
+    expect(result.missingRequired[0].fix_command).toBe("grant pg_monitor to testuser;");
+  });
+
+  test("reports missing optional permissions without failing", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create postgres_ai.pg_statistic view (see setup script)" },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: false, fix_command: "grant select on postgres_ai.pg_statistic to testuser;" },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.ok).toBe(true);
+    expect(result.missingRequired).toHaveLength(0);
+    expect(result.missingOptional).toHaveLength(2);
+    expect(result.missingOptional[0].permission_name).toBe("postgres_ai.pg_statistic view exists");
+  });
+
+  test("reports multiple missing required permissions", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: false, fix_command: "grant connect on database postgres to testuser;" },
+      { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: false, fix_command: "grant select on pg_catalog.pg_index to testuser;" },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create postgres_ai.pg_statistic view (see setup script)" },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: null, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.ok).toBe(false);
+    expect(result.missingRequired).toHaveLength(3);
+    expect(result.missingOptional).toHaveLength(1);
+    // null granted for optional (view doesn't exist) should NOT count as missing optional
+    expect(result.rows[4].granted).toBeNull();
+  });
+
+  test("treats null granted as missing for required permissions (fail-safe)", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: null, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    // null on a required check should be treated as not-granted
+    expect(result.ok).toBe(false);
+    expect(result.missingRequired).toHaveLength(1);
+    expect(result.missingRequired[0].permission_name).toBe("connect on database postgres");
+  });
+
+  test("null granted on optional permission is not treated as missing", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create postgres_ai.pg_statistic view (see setup script)" },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: null, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.ok).toBe(true);
+    // null granted on optional should NOT be treated as missing — check was skipped
+    expect(result.missingOptional).toHaveLength(1);
+    expect(result.missingOptional[0].permission_name).toBe("postgres_ai.pg_statistic view exists");
+  });
+
+  test("propagates query errors to caller", async () => {
+    const dbError = new Error("permission denied for relation pg_roles");
+    const client = makeFailingClient(dbError);
+
+    await expect(
+      init.checkCurrentUserPermissions(client as any)
+    ).rejects.toThrow("permission denied for relation pg_roles");
+  });
+
+  test("returns all rows for inspection", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const result = await init.checkCurrentUserPermissions(makeMockClient(rows) as any);
+    expect(result.rows).toHaveLength(5);
+    expect(result.rows).toEqual(rows);
+  });
+
+  test("handles empty rows (no permission checks returned)", async () => {
+    const result = await init.checkCurrentUserPermissions(makeMockClient([]) as any);
+    expect(result.ok).toBe(true);
+    expect(result.rows).toHaveLength(0);
+    expect(result.missingRequired).toHaveLength(0);
+    expect(result.missingOptional).toHaveLength(0);
+  });
+});
+
+describe("formatPermissionCheckMessages", () => {
+  test("returns no warnings or errors when all permissions granted", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: true,
+      rows: [],
+      missingRequired: [],
+      missingOptional: [],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(false);
+    expect(messages.warnings).toHaveLength(0);
+    expect(messages.errors).toHaveLength(0);
+  });
+
+  test("returns warnings for missing optional permissions", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: true,
+      rows: [],
+      missingRequired: [],
+      missingOptional: [
+        { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create view" },
+      ],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(false);
+    expect(messages.warnings).toHaveLength(1);
+    expect(messages.warnings[0]).toContain("postgres_ai.pg_statistic view exists");
+    expect(messages.warnings[0]).toContain("Fix: -- create view");
+    expect(messages.errors).toHaveLength(0);
+  });
+
+  test("returns errors with fix commands for missing required permissions", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: false,
+      rows: [],
+      missingRequired: [
+        { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      ],
+      missingOptional: [],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(true);
+    expect(messages.errors.some((e) => e.includes("pg_monitor role membership"))).toBe(true);
+    expect(messages.errors.some((e) => e.includes("grant pg_monitor to testuser;"))).toBe(true);
+    expect(messages.errors.some((e) => e.includes("postgresai prepare-db"))).toBe(true);
+  });
+
+  test("omits fix section when all fix_commands are null", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: false,
+      rows: [],
+      missingRequired: [
+        { permission_name: "pg_monitor role membership", status: "required", granted: null, fix_command: null },
+      ],
+      missingOptional: [],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(true);
+    expect(messages.errors.some((e) => e.includes("pg_monitor role membership"))).toBe(true);
+    // Should NOT have "To fix" section when no fix commands
+    expect(messages.errors.some((e) => e.includes("To fix"))).toBe(false);
+    // Should still suggest prepare-db
+    expect(messages.errors.some((e) => e.includes("postgresai prepare-db"))).toBe(true);
+  });
+
+  test("includes both warnings and errors when both are present", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: false,
+      rows: [],
+      missingRequired: [
+        { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      ],
+      missingOptional: [
+        { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: null },
+      ],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(true);
+    expect(messages.warnings).toHaveLength(1);
+    expect(messages.errors.length).toBeGreaterThan(0);
+  });
+
+  test("warning without fix_command omits Fix: suffix", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: true,
+      rows: [],
+      missingRequired: [],
+      missingOptional: [
+        { permission_name: "some optional check", status: "optional", granted: false, fix_command: null },
+      ],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.warnings[0]).not.toContain("Fix:");
+    expect(messages.warnings[0]).toContain("some optional check");
+  });
+});
+
+describe("Permission check integration (checkup command)", () => {
+  /**
+   * Integration tests for the permission check flow in the checkup command.
+   * These tests verify that the permission check integration in postgres-ai.ts
+   * correctly handles different permission scenarios:
+   * - Successful checks allow execution to proceed
+   * - Missing required permissions halt execution with exitCode=1
+   * - Missing optional permissions show warnings but allow execution to continue
+   */
+
+  function makeMockClientForIntegration(permissionRows: init.PermissionCheckRow[], reportResult?: any) {
+    const queriesExecuted: string[] = [];
+    return {
+      client: {
+        query: async (sql: string) => {
+          queriesExecuted.push(sql);
+          // Return permission check results for the permission check query
+          if (sql.includes("permission_checks")) {
+            return { rows: permissionRows };
+          }
+          // Return empty result for other queries (like report generation)
+          return reportResult || { rows: [] };
+        },
+        end: async () => {},
+      },
+      queriesExecuted,
+    };
+  }
+
+  test("successful permission check allows execution to proceed", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const mockClient = makeMockClientForIntegration(rows);
+    const permCheck = await init.checkCurrentUserPermissions(mockClient.client as any);
+    const permMessages = init.formatPermissionCheckMessages(permCheck);
+
+    // Verify permission check passed
+    expect(permMessages.failed).toBe(false);
+    expect(permMessages.warnings).toHaveLength(0);
+    expect(permMessages.errors).toHaveLength(0);
+
+    // In the actual integration, process.exitCode would not be set and execution continues
+    // This simulates the successful path where reports would be generated
+  });
+
+  test("missing required permissions halt execution with clear error messages", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: false, fix_command: "grant select on pg_catalog.pg_index to testuser;" },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: true, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: true, fix_command: null },
+    ];
+
+    const mockClient = makeMockClientForIntegration(rows);
+    const permCheck = await init.checkCurrentUserPermissions(mockClient.client as any);
+    const permMessages = init.formatPermissionCheckMessages(permCheck);
+
+    // Verify permission check failed
+    expect(permMessages.failed).toBe(true);
+    expect(permMessages.errors.length).toBeGreaterThan(0);
+
+    // Verify error messages include the missing permissions
+    const errorText = permMessages.errors.join("\n");
+    expect(errorText).toContain("pg_monitor role membership");
+    expect(errorText).toContain("select on pg_catalog.pg_index");
+
+    // Verify fix commands are included
+    expect(errorText).toContain("grant pg_monitor to testuser;");
+    expect(errorText).toContain("grant select on pg_catalog.pg_index to testuser;");
+
+    // Verify alternative fix suggestion
+    expect(errorText).toContain("postgresai prepare-db");
+
+    // In the actual integration, process.exitCode would be set to 1 and execution would halt
+  });
+
+  test("missing optional permissions show warnings but allow execution to proceed", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create postgres_ai.pg_statistic view (see setup script)" },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: null, fix_command: null },
+    ];
+
+    const mockClient = makeMockClientForIntegration(rows);
+    const permCheck = await init.checkCurrentUserPermissions(mockClient.client as any);
+    const permMessages = init.formatPermissionCheckMessages(permCheck);
+
+    // Verify permission check passed (required permissions OK)
+    expect(permMessages.failed).toBe(false);
+
+    // Verify warnings are present for optional permissions
+    expect(permMessages.warnings).toHaveLength(1);
+    expect(permMessages.warnings[0]).toContain("postgres_ai.pg_statistic view exists");
+    expect(permMessages.warnings[0]).toContain("Fix: -- create postgres_ai.pg_statistic view");
+
+    // Verify no errors (only warnings)
+    expect(permMessages.errors).toHaveLength(0);
+
+    // In the actual integration, warnings would be printed to stderr but execution continues
+  });
+
+  test("permission check integration handles multiple missing required permissions", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: false, fix_command: "grant connect on database postgres to testuser;" },
+      { permission_name: "pg_monitor role membership", status: "required", granted: false, fix_command: "grant pg_monitor to testuser;" },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: false, fix_command: "grant select on pg_catalog.pg_index to testuser;" },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: false, fix_command: "-- create postgres_ai.pg_statistic view (see setup script)" },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: null, fix_command: null },
+    ];
+
+    const mockClient = makeMockClientForIntegration(rows);
+    const permCheck = await init.checkCurrentUserPermissions(mockClient.client as any);
+    const permMessages = init.formatPermissionCheckMessages(permCheck);
+
+    // Verify permission check failed
+    expect(permMessages.failed).toBe(true);
+
+    // Verify all missing required permissions are reported
+    const errorText = permMessages.errors.join("\n");
+    expect(errorText).toContain("connect on database postgres");
+    expect(errorText).toContain("pg_monitor role membership");
+    expect(errorText).toContain("select on pg_catalog.pg_index");
+
+    // Verify all fix commands are included
+    expect(errorText).toContain("grant connect on database postgres to testuser;");
+    expect(errorText).toContain("grant pg_monitor to testuser;");
+    expect(errorText).toContain("grant select on pg_catalog.pg_index to testuser;");
+
+    // Verify warning for optional permission
+    expect(permMessages.warnings).toHaveLength(1);
+    expect(permMessages.warnings[0]).toContain("postgres_ai.pg_statistic view exists");
+  });
+
+  test("permission check integration handles null granted values correctly", async () => {
+    const rows: init.PermissionCheckRow[] = [
+      { permission_name: "connect on database postgres", status: "required", granted: null, fix_command: null },
+      { permission_name: "pg_monitor role membership", status: "required", granted: true, fix_command: null },
+      { permission_name: "select on pg_catalog.pg_index", status: "required", granted: true, fix_command: null },
+      { permission_name: "postgres_ai.pg_statistic view exists", status: "optional", granted: null, fix_command: null },
+      { permission_name: "select on postgres_ai.pg_statistic", status: "optional", granted: null, fix_command: null },
+    ];
+
+    const mockClient = makeMockClientForIntegration(rows);
+    const permCheck = await init.checkCurrentUserPermissions(mockClient.client as any);
+    const permMessages = init.formatPermissionCheckMessages(permCheck);
+
+    // Verify null on required permission is treated as failure (fail-safe)
+    expect(permMessages.failed).toBe(true);
+    const errorText = permMessages.errors.join("\n");
+    expect(errorText).toContain("connect on database postgres");
+
+    // Verify null on optional permissions does not generate warnings (skipped checks)
+    expect(permMessages.warnings).toHaveLength(0);
+  });
+});

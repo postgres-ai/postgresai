@@ -673,7 +673,10 @@ export async function verifyInitSetupViaSupabase(params: {
 
   // Check pg_statistic view
   const viewExistsRes = await params.client.query(
-    "SELECT to_regclass('postgres_ai.pg_statistic') IS NOT NULL as ok",
+    `SELECT CASE
+      WHEN NOT has_schema_privilege(current_user, 'postgres_ai', 'USAGE') THEN NULL
+      ELSE to_regclass('postgres_ai.pg_statistic') IS NOT NULL
+    END as ok`,
     true
   );
   if (!viewExistsRes.rows?.[0]?.ok) {

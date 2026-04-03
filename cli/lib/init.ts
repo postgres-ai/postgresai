@@ -671,6 +671,36 @@ export type VerifyInitResult = {
   missingOptional: string[];
 };
 
+/** A single permission check result from the preflight query. */
+export type PermissionCheckRow = {
+  permission_name: string;
+  status: "required" | "optional";
+  /**
+   * Whether the permission is granted.
+   * - `true`  — permission is granted
+   * - `false` — permission is explicitly denied
+   * - `null`  — check was skipped (e.g., object does not exist, so the privilege
+   *             check is inapplicable — such as SELECT on a view that hasn't been created)
+   */
+  granted: boolean | null;
+  fix_command: string | null;
+};
+
+/**
+ * Result of the preflight permission check for the current DB user.
+ *
+ * - `ok` is `true` when `missingRequired` is empty.
+ * - `rows` contains every check (for inspection / logging).
+ * - `missingRequired` / `missingOptional` are filtered subsets of `rows`
+ *   where the permission is not granted (`granted !== true`).
+ */
+export type PreflightPermissionResult = {
+  ok: boolean;
+  rows: PermissionCheckRow[];
+  missingRequired: PermissionCheckRow[];
+  missingOptional: PermissionCheckRow[];
+};
+
 export type UninitPlan = {
   monitoringUser: string;
   database: string;
@@ -825,7 +855,12 @@ export async function verifyInitSetup(params: {
       missingRequired.push("USAGE on schema postgres_ai");
     }
 
-    const viewExistsRes = await params.client.query("select to_regclass('postgres_ai.pg_statistic') is not null as ok");
+    const viewExistsRes = await params.client.query(`
+      select case
+        when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
+        else to_regclass('postgres_ai.pg_statistic') is not null
+      end as ok
+    `);
     if (!viewExistsRes.rows?.[0]?.ok) {
       missingRequired.push("view postgres_ai.pg_statistic exists");
     } else {
@@ -948,4 +983,149 @@ export async function verifyInitSetup(params: {
   }
 }
 
+/**
+ * Check that the currently connected DB user has sufficient permissions for
+ * monitoring operations. Returns structured results with fix commands.
+ *
+ * Required permissions cause startup to fail; optional ones produce warnings.
+ *
+ * @param client  An already-connected PostgreSQL client.
+ * @returns       A {@link PreflightPermissionResult} with per-check rows and
+ *                filtered `missingRequired` / `missingOptional` arrays.
+ * @throws        Propagates database errors (network, permission denied on catalog
+ *                tables, timeout) to the caller.
+ */
+export async function checkCurrentUserPermissions(
+  client: PgClient
+): Promise<PreflightPermissionResult> {
+  const sql = `
+    with permission_checks as (
+      select
+        format('connect on database %I', current_database()) as permission_name,
+        'required' as status,
+        has_database_privilege(current_user, current_database(), 'connect') as granted
 
+      union all
+
+      select
+        'pg_monitor role membership' as permission_name,
+        'required' as status,
+        -- CASE guarantees evaluation order: pg_has_role() is only called if the
+        -- pg_monitor role exists, avoiding ERROR on PostgreSQL < 10 or when dropped.
+        case
+          when not exists (select from pg_roles where rolname = 'pg_monitor')
+          then false
+          else pg_has_role(current_user, 'pg_monitor', 'member')
+        end as granted
+
+      union all
+
+      select
+        'select on pg_catalog.pg_index' as permission_name,
+        'required' as status,
+        has_table_privilege(current_user, 'pg_catalog.pg_index', 'select') as granted
+
+      union all
+
+      select
+        'postgres_ai.pg_statistic view exists' as permission_name,
+        'optional' as status,
+        case
+          when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
+          else to_regclass('postgres_ai.pg_statistic') is not null
+        end as granted
+
+      union all
+
+      select
+        'select on postgres_ai.pg_statistic' as permission_name,
+        'optional' as status,
+        case
+          when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
+          when to_regclass('postgres_ai.pg_statistic') is null then null
+          else has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select')
+        end as granted
+    )
+    select
+      permission_name,
+      status,
+      granted,
+      case
+        when status = 'required' and not coalesce(granted, false) then
+          case
+            when permission_name like 'connect%' then
+              format('grant connect on database %I to %I;', current_database(), current_user)
+            when permission_name = 'pg_monitor role membership' then
+              format('grant pg_monitor to %I;', current_user)
+            when permission_name like 'select on pg_catalog.pg_index' then
+              format('grant select on pg_catalog.pg_index to %I;', current_user)
+          end
+        when permission_name = 'postgres_ai.pg_statistic view exists' and granted = false then
+          '-- create postgres_ai.pg_statistic view (see setup script)'
+        when permission_name = 'select on postgres_ai.pg_statistic' and granted = false then
+          format('grant select on postgres_ai.pg_statistic to %I;', current_user)
+        else null
+      end as fix_command
+    from permission_checks
+    order by
+      case status when 'required' then 1 else 2 end,
+      permission_name;
+  `;
+
+  const res = await client.query(sql);
+  const rows: PermissionCheckRow[] = res.rows;
+
+  // Required: treat null (skipped) as not-granted — fail safe.
+  // Optional: only explicit false counts as missing; null means the check was
+  //           skipped (e.g., view doesn't exist) and is not actionable.
+  const missingRequired = rows.filter((r) => r.status === "required" && r.granted !== true);
+  const missingOptional = rows.filter((r) => r.status === "optional" && r.granted === false);
+
+  return {
+    ok: missingRequired.length === 0,
+    rows,
+    missingRequired,
+    missingOptional,
+  };
+}
+
+/**
+ * Format permission check results into user-facing error/warning lines.
+ *
+ * @returns An object with `warnings` (for optional misses), `errors` (for
+ *          required misses including fix SQL), and `failed` (whether required
+ *          permissions are missing).
+ */
+export function formatPermissionCheckMessages(result: PreflightPermissionResult): {
+  failed: boolean;
+  warnings: string[];
+  errors: string[];
+} {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  for (const row of result.missingOptional) {
+    const fix = row.fix_command ? ` Fix: ${row.fix_command}` : "";
+    warnings.push(`Warning: optional permission missing — ${row.permission_name}.${fix}`);
+  }
+
+  if (!result.ok) {
+    errors.push("Error: the database user is missing required permissions.\n");
+    errors.push("Missing permissions:");
+    for (const row of result.missingRequired) {
+      errors.push(`  - ${row.permission_name}`);
+    }
+    const fixes = result.missingRequired
+      .map((r) => r.fix_command)
+      .filter(Boolean);
+    if (fixes.length > 0) {
+      errors.push("\nTo fix, run the following as a superuser:\n");
+      for (const fix of fixes) {
+        errors.push(`  ${fix}`);
+      }
+    }
+    errors.push("\nAlternatively, run 'postgresai prepare-db' to set up permissions automatically.");
+  }
+
+  return { failed: !result.ok, warnings, errors };
+}
