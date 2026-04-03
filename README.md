@@ -320,6 +320,56 @@ postgresai mon health
 
 Check Grafana dashboards at http://localhost:3000 to confirm metrics are being collected.
 
+## ☸️ Kubernetes deployment
+
+Deploy postgres_ai monitoring to Kubernetes using helm:
+
+```bash
+# Install from the helm chart directory
+helm install postgres-ai-monitoring ./postgres_ai_helm
+
+# Or install from a release (replace <VERSION> with the desired release, e.g. 0.14.0)
+curl -LO https://gitlab.com/postgres-ai/postgresai/-/releases/helm-v<VERSION>/downloads/postgres-ai-monitoring-chart.tgz
+helm install postgres-ai-monitoring postgres-ai-monitoring-chart.tgz
+
+# Customize installation
+helm install postgres-ai-monitoring ./postgres_ai_helm -f custom-values.yaml
+```
+
+### Helm chart features
+
+- Complete monitoring stack for Kubernetes
+- PGWatch, VictoriaMetrics, and Grafana
+- Automated report generation via CronJobs
+- Node exporter and cAdvisor for system metrics
+- Configurable resource limits and persistence
+
+### Helm chart documentation
+
+- [README](./postgres_ai_helm/README.md): Quick start and overview
+- [INSTALLATION_GUIDE](./postgres_ai_helm/INSTALLATION_GUIDE.md): Detailed installation instructions
+- [RELEASE](./postgres_ai_helm/RELEASE.md): Release process for maintainers
+
+### Creating helm releases
+
+For maintainers creating new helm chart releases:
+
+```bash
+cd postgres_ai_helm
+
+# Test the chart locally
+./test-release.sh
+
+# Create a new release (e.g. 0.14.0)
+./release.sh <VERSION>
+```
+
+This automatically:
+- Updates Chart.yaml with the new version
+- Creates a git tag
+- Triggers GitLab CI/CD to package and publish the chart
+- Creates a GitLab release with the packaged chart
+
 ## 📋 Checkup reports
 
 postgres_ai monitoring generates automated health check reports based on [postgres-checkup](https://gitlab.com/postgres-ai/postgres-checkup). Each report has a unique check ID and title:
@@ -461,7 +511,7 @@ View the coverage report by opening `htmlcov/index.html` in your browser.
 
 ## 🤝 Contributing
 
-We welcome contributions from Postgres experts! Please check our [GitLab repository](https://gitlab.com/postgres-ai/postgres_ai) for:
+We welcome contributions from Postgres experts! Please check our [GitLab repository](https://gitlab.com/postgres-ai/postgresai) for:
 - Code standards and review process
 - Dashboard design principles
 - Testing requirements for monitoring components
@@ -479,7 +529,7 @@ postgres_ai monitoring is developed by [PostgresAI](https://postgres.ai), bringi
 - 💬 [Get support](https://postgres.ai/contact)
 - 📺 [Postgres.TV (YouTube)](https://postgres.tv)
 - 🎙️ [Postgres FM Podcast](https://postgres.fm)
-- 🐛 [Report issues](https://gitlab.com/postgres-ai/postgres_ai/-/issues)
+- 🐛 [Report issues](https://gitlab.com/postgres-ai/postgresai/-/issues)
 - 📧 [Enterprise support](https://postgres.ai/consulting)
 
 </div>

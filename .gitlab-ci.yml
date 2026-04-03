@@ -22,8 +22,13 @@ stages:
   - security
   - build
   - test
+  - validate
   - publish
+  - release
   - preview
+
+variables:
+  HELM_VERSION: "3.13.0"
 
 # Build images from current code for e2e tests
 # Images are pushed to GitLab Container Registry and pulled by test jobs
@@ -299,6 +304,37 @@ cli:node:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# Validate helm chart on merge requests and main branch
+validate-helm-chart:
+  stage: validate
+  image: 
+    name: alpine/helm:${HELM_VERSION}
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - postgres_ai_helm/**/*
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - postgres_ai_helm/**/*
+        - .gitlab-ci.yml
+  script:
+    - echo "Starting helm chart validation"
+    - apk add --no-cache bash git
+    - bash postgres_ai_helm/test-release-logic.sh
+    - cd postgres_ai_helm
+    - echo "Validating helm chart"
+    - helm dependency update
+    - helm lint .
+    - helm template test-release .
+    - helm package .
+    - ls -lh postgres-ai-monitoring-*.tgz
+  artifacts:
+    paths:
+      - postgres_ai_helm/*.tgz
+    expire_in: 1 week
+
 cli:npm:publish:
   stage: publish
   interruptible: false  # Never cancel publish jobs
@@ -418,6 +454,8 @@ cli:npm:publish:
   after_script:
     - rm -f ~/.npmrc
   rules:
+    - if: '$CI_COMMIT_TAG =~ /^helm-v/'
+      when: never
     - if: '$CI_COMMIT_TAG'
 
 .docker-publish-base: &docker-publish-base
@@ -508,7 +546,102 @@ docker:publish:images:
       PLATFORMS="linux/amd64,linux/arm64"
     - *docker-build-script
   rules:
+    - if: '$CI_COMMIT_TAG =~ /^helm-v/'
+      when: never
     - if: '$CI_COMMIT_TAG'
+
+# Release helm chart when a tag is pushed.
+# NOTE: The 'helm-v' prefix is an explicit exception to the org 'vX.Y.Z' tag convention.
+# It is required to distinguish helm chart releases from npm/Docker image releases so that
+# the cli:npm:publish and docker:publish:images jobs are not triggered on helm chart tags.
+release-helm-chart:
+  stage: release
+  image:
+    name: alpine/helm:${HELM_VERSION}
+    entrypoint: [""]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^helm-v[0-9]+\.[0-9]+\.[0-9]+$/'
+  script:
+    - apk add --no-cache bash
+    - |
+      bash -euo pipefail << 'BASH_SCRIPT'
+      set -euo pipefail
+      # Extract version from tag
+      VERSION="${CI_COMMIT_TAG#helm-}"
+      VERSION="${VERSION#v}"
+      echo "Version: ${VERSION}"
+
+      cd postgres_ai_helm
+
+      # Update Chart.yaml chart version only (appVersion tracks the deployed app, not the chart)
+      sed "s/^version: .*/version: \"${VERSION}\"/" Chart.yaml > Chart.yaml.tmp
+      mv Chart.yaml.tmp Chart.yaml
+
+      # Verify the substitution succeeded
+      if ! grep -q "^version: \"${VERSION}\"" Chart.yaml; then
+        echo "ERROR: Failed to update version in Chart.yaml (sed pattern may not match)" >&2
+        exit 1
+      fi
+
+      # Build and package
+      helm dependency update
+      helm lint .
+      helm package .
+      pkg=(postgres-ai-monitoring-*.tgz)
+      if [ ! -f "${pkg[0]}" ]; then
+        echo "Error: Package file not found after helm package" >&2
+        exit 1
+      fi
+      PACKAGE_FILE="${pkg[0]}"
+      echo "Packaged: ${PACKAGE_FILE} ($(du -h "${PACKAGE_FILE}" | cut -f1))"
+
+      # Copy artifact to fixed name so release: block can reference it with a known path
+      # (shell variables like ${PACKAGE_FILE} are not available in the release: YAML block)
+      cp "${PACKAGE_FILE}" "../postgres-ai-monitoring-chart.tgz"
+      BASH_SCRIPT
+  artifacts:
+    paths:
+      - postgres-ai-monitoring-chart.tgz
+    expire_in: 30 days
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "Helm chart $CI_COMMIT_TAG"
+    description: |
+      ## PostgresAI monitoring helm chart $CI_COMMIT_TAG
+
+      ### Installation
+
+      Download `postgres-ai-monitoring-chart.tgz` from this release's assets and run:
+
+      ```bash
+      helm install postgres-ai-monitoring postgres-ai-monitoring-chart.tgz
+      ```
+
+      ### Upgrade
+
+      ```bash
+      helm upgrade postgres-ai-monitoring postgres-ai-monitoring-chart.tgz
+      ```
+
+      ### What's included
+
+      - PGWatch for Postgres metrics collection
+      - VictoriaMetrics for metrics storage
+      - Grafana for visualization
+      - Node exporter for system metrics
+      - cAdvisor for container metrics
+      - Automated reporting cronjobs
+
+      ### Documentation
+
+      - [Installation guide]($CI_PROJECT_URL/-/blob/main/postgres_ai_helm/INSTALLATION_GUIDE.md)
+      - [Helm chart README]($CI_PROJECT_URL/-/blob/main/postgres_ai_helm/README.md)
+      - [Release process]($CI_PROJECT_URL/-/blob/main/postgres_ai_helm/RELEASE.md)
+    assets:
+      links:
+        - name: "postgres-ai-monitoring-chart.tgz"
+          url: "$CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/postgres-ai-monitoring-chart.tgz"
+          link_type: package
 
 cli:node:e2e:dind:
   stage: test
