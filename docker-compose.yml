@@ -83,6 +83,7 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   # VictoriaMetrics Sink - Storage for metrics in Prometheus format
   sink-prometheus:
@@ -109,6 +110,7 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   # PGWatch Instance 1 - Monitoring service (Postgres sink)
   pgwatch-postgres:
