@@ -1,3 +1,4 @@
+import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
 import { normalizeBaseUrl } from "./util";
@@ -27,7 +28,7 @@ function isRetryableError(err: unknown): boolean {
     // Retry on server errors (5xx), not on client errors (4xx)
     return err.statusCode >= 500 && err.statusCode < 600;
   }
-  
+
   // Check for Node.js error codes (works on Error and Error-like objects)
   if (typeof err === "object" && err !== null && "code" in err) {
     const code = String((err as { code: unknown }).code);
@@ -35,7 +36,7 @@ function isRetryableError(err: unknown): boolean {
       return true;
     }
   }
-  
+
   if (err instanceof Error) {
     const msg = err.message.toLowerCase();
     // Retry on network-related errors based on message content
@@ -49,7 +50,7 @@ function isRetryableError(err: unknown): boolean {
       msg.includes("network")
     );
   }
-  
+
   return false;
 }
 
@@ -226,7 +227,25 @@ async function postRpc<T>(params: {
       resolve(value);
     };
 
-    const req = https.request(
+    // Transport is picked from the URL protocol so the CLI can talk to a
+    // local-dev PostgREST over plain HTTP. Production URLs are always HTTPS;
+    // to guard against typos (e.g. a missing 's' in 'https://') silently
+    // leaking the API key in cleartext, refuse HTTP to non-loopback hosts
+    // unless the operator explicitly opts in via CHECKUP_ALLOW_HTTP=1.
+    if (url.protocol === "http:") {
+      // WHATWG URL keeps IPv6 literals bracketed in .hostname
+      // (e.g. `[::1]`), so strip the brackets before matching the allowlist.
+      const hostname = url.hostname.replace(/^\[|\]$/g, "");
+      const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(hostname);
+      if (!isLoopback && process.env.CHECKUP_ALLOW_HTTP !== "1") {
+        throw new Error(
+          `Refusing to send API key over plaintext HTTP to '${url.host}'. ` +
+          `Use https://, a loopback hostname, or set CHECKUP_ALLOW_HTTP=1.`
+        );
+      }
+    }
+    const transport = url.protocol === "http:" ? http : https;
+    const req = transport.request(
       url,
       {
         method: "POST",
@@ -277,7 +296,7 @@ async function postRpc<T>(params: {
       req.destroy();  // Backup: ensure request is terminated
       settledReject(new Error(`RPC ${rpcName} timed out after ${timeoutMs}ms (no response)`));
     }, timeoutMs);
-    
+
     req.on("error", (err: Error) => {
       // Handle abort as timeout (may already be rejected by timeout handler)
       if (err.name === "AbortError" || (err as any).code === "ABORT_ERR") {
@@ -295,7 +314,7 @@ async function postRpc<T>(params: {
         settledReject(err);
       }
     });
-    
+
     req.write(body);
     req.end();
   });

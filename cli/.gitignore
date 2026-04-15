@@ -6,3 +6,6 @@ coverage/
 # Auto-generated at build time (do not commit)
 lib/metrics-embedded.ts
 lib/checkup-dictionary-embedded.ts
+
+# Local-dev tarballs from `npm pack` (consumed by credential-service Dockerfile.dev)
+*.tgz
