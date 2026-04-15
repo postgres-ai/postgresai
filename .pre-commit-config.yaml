@@ -26,10 +26,15 @@ repos:
 
   - repo: local
     hooks:
-      # Catch potential SQL injection patterns in TypeScript
+      # Catch potential SQL injection patterns in TypeScript.
+      # NOTE: `entry` MUST be a literal block scalar (|-). A plain YAML scalar
+      # breaks parsing because the bash command contains `: ` (e.g. in the
+      # "ERROR: Possible ..." echo), which YAML interprets as a mapping
+      # separator inside the value. Don't "simplify" back to a plain scalar.
       - id: sql-injection-check
         name: SQL injection check (TypeScript)
-        entry: bash -c 'grep -rn --include="*.ts" -E "(\`SELECT|\`INSERT|\`UPDATE|\`DELETE|\`DROP|\`ALTER|\`CREATE).*\$\{" "$@" && echo "ERROR: Possible SQL injection — use parameterized queries" && exit 1 || exit 0' --
+        entry: |-
+          bash -c 'grep -rn --include="*.ts" -E "(\`SELECT|\`INSERT|\`UPDATE|\`DELETE|\`DROP|\`ALTER|\`CREATE).*\$\{" "$@" && echo "ERROR: Possible SQL injection — use parameterized queries" && exit 1 || exit 0' --
         language: system
         files: '\.(ts|js)$'
         exclude: '(test|spec|__tests__)'

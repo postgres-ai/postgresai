@@ -1290,6 +1290,90 @@ describe("checkup-api", () => {
     }
     expect(attempts).toBe(2); // Should retry on ECONNRESET
   });
+
+  // Transport selection — pick http/https by URL protocol, but refuse HTTP
+  // to non-loopback hosts unless CHECKUP_ALLOW_HTTP=1 is set (prevents
+  // typo-driven plaintext API-key leaks like http://api.postgres.ai/...).
+  describe("transport selection", () => {
+    test("https URL does not trip the guard (network error expected)", async () => {
+      let caught: Error | null = null;
+      try {
+        await api.createCheckupReport({
+          apiKey: "dummy",
+          apiBaseUrl: "https://127.0.0.1:1/api", // port 1 — connect refused
+          project: "p",
+        });
+      } catch (e) {
+        caught = e as Error;
+      }
+      expect(caught).not.toBeNull();
+      expect(caught!.message).not.toMatch(/Refusing to send API key/);
+    });
+
+    test("http on loopback does not trip the guard (network error expected)", async () => {
+      // IPv6 loopback is written as `[::1]` in URLs; WHATWG URL preserves
+      // the brackets in .hostname, so the guard must strip them before
+      // matching the allowlist.
+      for (const host of ["localhost", "127.0.0.1", "[::1]"]) {
+        let caught: Error | null = null;
+        try {
+          await api.createCheckupReport({
+            apiKey: "dummy",
+            apiBaseUrl: `http://${host}:1/api`, // port 1 — connect refused
+            project: "p",
+          });
+        } catch (e) {
+          caught = e as Error;
+        }
+        expect(caught).not.toBeNull();
+        expect(caught!.message).not.toMatch(/Refusing to send API key/);
+      }
+    });
+
+    test("http to non-loopback host is refused by the guard", async () => {
+      const saved = process.env.CHECKUP_ALLOW_HTTP;
+      delete process.env.CHECKUP_ALLOW_HTTP;
+      try {
+        let caught: Error | null = null;
+        try {
+          await api.createCheckupReport({
+            apiKey: "dummy",
+            apiBaseUrl: "http://example.com/api",
+            project: "p",
+          });
+        } catch (e) {
+          caught = e as Error;
+        }
+        expect(caught).not.toBeNull();
+        expect(caught!.message).toMatch(/Refusing to send API key over plaintext HTTP/);
+        expect(caught!.message).toMatch(/example\.com/);
+      } finally {
+        if (saved !== undefined) process.env.CHECKUP_ALLOW_HTTP = saved;
+      }
+    });
+
+    test("CHECKUP_ALLOW_HTTP=1 bypasses the guard for non-loopback hosts", async () => {
+      const saved = process.env.CHECKUP_ALLOW_HTTP;
+      process.env.CHECKUP_ALLOW_HTTP = "1";
+      try {
+        let caught: Error | null = null;
+        try {
+          await api.createCheckupReport({
+            apiKey: "dummy",
+            apiBaseUrl: "http://127.0.0.2:1/api", // non-loopback-match hostname, connect refused port
+            project: "p",
+          });
+        } catch (e) {
+          caught = e as Error;
+        }
+        expect(caught).not.toBeNull();
+        expect(caught!.message).not.toMatch(/Refusing to send API key/);
+      } finally {
+        if (saved === undefined) delete process.env.CHECKUP_ALLOW_HTTP;
+        else process.env.CHECKUP_ALLOW_HTTP = saved;
+      }
+    });
+  });
 });
 
 // Tests for checkup-summary module
@@ -1821,5 +1905,3 @@ describe("checkup-summary", () => {
     expect(result.message).toBe("No redundant indexes");
   });
 });
-
-
