@@ -39,6 +39,9 @@ services:
       POSTGRES_DB: target_database
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      # 01-create-replicator.sh rejects an empty value so the demo never starts
+      # streaming replication with a known fallback password.
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD:-}
     entrypoint:
       [
         "bash",
@@ -48,6 +51,14 @@ services:
         "shared_preload_libraries=pg_stat_statements",
         "-c",
         "pg_stat_statements.track=all",
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "max_prepared_transactions=10",
+        "-c",
+        "max_replication_slots=10",
+        "-c",
+        "max_wal_senders=10",
       ]
     volumes:
       - target_db_data:/var/lib/postgresql/data
@@ -55,6 +66,39 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+
+  # Hot standby used by xmin-horizon integration coverage when explicitly started.
+  target-standby:
+    image: postgres:15
+    container_name: target-standby
+    cpus: 0.2
+    mem_limit: 768m
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      # The command below rejects an empty value so the standby cannot loop with
+      # a known fallback password.
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD:-}
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -Eeuo pipefail
+        : "$${REPLICATOR_PASSWORD:?REPLICATOR_PASSWORD is required}"
+        if [ ! -s "$${PGDATA}/PG_VERSION" ]; then
+          rm -rf "$${PGDATA:?}"/*
+          until pg_isready -h target-db -U postgres; do
+            sleep 2
+          done
+          until PGPASSWORD="$${REPLICATOR_PASSWORD}" pg_basebackup -h target-db -D "$${PGDATA}" -U replicator -R -X stream; do
+            rm -rf "$${PGDATA:?}"/*
+            sleep 2
+          done
+          echo "hot_standby_feedback = on" >> "$${PGDATA}/postgresql.auto.conf"
+        fi
+        exec docker-entrypoint.sh postgres -c max_prepared_transactions=10
+    volumes:
+      - target_standby_data:/var/lib/postgresql/data
+    depends_on:
+      - target-db
 
   # Postgres Sink - Storage for metrics in PostgreSQL format
   # Note: pg_hba.conf is configured to allow passwordless connections (trust)
@@ -299,6 +343,7 @@ services:
 volumes:
   postgres_ai_configs:
   target_db_data:
+  target_standby_data:
   sink_postgres_data:
   victoria_metrics_data:
   grafana_data:

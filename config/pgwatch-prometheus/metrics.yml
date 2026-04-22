@@ -291,7 +291,7 @@ metrics:
             and database = (select oid from pg_database where datname = current_database())
           limit 5000
         )
-        
+
         select /* pgwatch_generated */
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
@@ -498,7 +498,7 @@ metrics:
                     not exists(select 1 from pg_locks where relation = relid and mode = 'AccessExclusiveLock')
                   and c.relpersistence <> 't' -- and temp tables
             )
-        
+
         select /* pgwatch_generated */
             epoch_ns,
             tag_datname,
@@ -531,9 +531,9 @@ metrics:
         from q_tstats
         where not tag_schema like E'\\_timescaledb%'
         and not exists (select * from q_root_part where oid = q_tstats.relid)
-        
+
         union all
-        
+
         select * from (
             select
                 epoch_ns,
@@ -640,7 +640,7 @@ metrics:
                 limit 1500 /* NB! When changing the bottom final LIMIT also adjust this limit. Should be at least 5x bigger as approx sizes depend a lot on vacuum frequency.
                             The general idea is to reduce filesystem "stat"-ing on tables that won't make it to final output anyways based on approximate size */
             )
-        
+
         select /* pgwatch_generated */
             epoch_ns,
             tag_datname,
@@ -674,9 +674,9 @@ metrics:
         from q_tstats
         where not tag_schema like E'\\_timescaledb%'
         and not exists (select * from q_root_part where oid = q_tstats.relid)
-        
+
         union all
-        
+
         select * from (
             select
                 epoch_ns,
@@ -769,7 +769,7 @@ metrics:
         union
         select 'server_process' as tag_datname, coalesce (wait_event, 'CPU*') as tag_wait_event, coalesce(wait_event_type, 'CPU*') as tag_wait_event_type, count(*) as total
         from pg_stat_activity
-        where state = 'active' and datname is null 
+        where state = 'active' and datname is null
         group by tag_datname, tag_wait_event_type, tag_wait_event
       14: |-
         select datname as tag_datname, query_id::text as tag_query_id, coalesce (wait_event, 'CPU*') as tag_wait_event, coalesce(wait_event_type, 'CPU*') as tag_wait_event_type, count(*) as total /* pgwatch_generated */
@@ -779,7 +779,7 @@ metrics:
         union
         select 'server_process' as tag_datname, null as tag_query_id, coalesce (wait_event, 'CPU*') as tag_wait_event, coalesce(wait_event_type, 'CPU*') as tag_wait_event_type, count(*) as total
         from pg_stat_activity
-        where state = 'active' and datname is null 
+        where state = 'active' and datname is null
         group by tag_datname, tag_query_id, tag_wait_event_type, tag_wait_event
     gauges:
       - total
@@ -843,8 +843,8 @@ metrics:
             from pg_stat_archiver
           )
         select (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
-          current_database() as tag_datname, 
-          coalesce(((cw.log - aw.log) * 256) + (cw.seg-aw.seg), -1) as pending_wal_count 
+          current_database() as tag_datname,
+          coalesce(((cw.log - aw.log) * 256) + (cw.seg-aw.seg), -1) as pending_wal_count
         from current_wal cw, archive_wal aw
     gauges:
       - pending_wal_count
@@ -856,9 +856,9 @@ metrics:
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
           count(*) as queries,
-          case 
+          case
             when locktype = 'transactionid' then '__transaction__'
-            else relation::regclass::text 
+            else relation::regclass::text
           end as tag_table
         from pg_catalog.pg_locks blocked
         where
@@ -934,6 +934,418 @@ metrics:
       - blocked_ms
       - blocker_tx_ms
     statement_timeout_seconds: 15
+  xmin_horizon:
+    description: >
+      Tracks the current xmin horizon age split by blocker class and horizon type:
+      data horizon blockers from primary-side client backends, replication slot xmin,
+      standby feedback seen via pg_stat_replication, and prepared transactions; plus
+      catalog horizon blockers from replication slot catalog_xmin. Emits component
+      `*_age_tx` and `*_count` columns, `data_horizon_age_tx`, `catalog_horizon_age_tx`,
+      and `snapshot_xmin` as a raw anchor from txid_snapshot_xmin(txid_current_snapshot()).
+      Component age/count columns emit 0 (never NULL) when the component has no active
+      blocker. This metric helps distinguish data tuple cleanup blockers from logical
+      replication catalog cleanup blockers during wraparound/bloat RCA.
+    sqls:
+      11: |-
+        with snapshot as (
+          select txid_snapshot_xmin(txid_current_snapshot())::int8 as snapshot_xmin
+        ),
+        activity as (
+          select
+            max(age(backend_xmin))::int8 as pg_stat_activity_age_tx,
+            count(*)::int8 as pg_stat_activity_count
+          from pg_stat_activity
+          where
+            pid <> pg_backend_pid()
+            and backend_type = 'client backend'
+            and backend_xmin is not null
+        ),
+        slots as (
+          select
+            max(age(xmin))::int8 as pg_replication_slots_age_tx,
+            count(*)::int8 as pg_replication_slots_count
+          from pg_replication_slots
+          where xmin is not null
+        ),
+        slots_catalog as (
+          select
+            max(age(catalog_xmin))::int8 as pg_replication_slots_catalog_age_tx,
+            count(*)::int8 as pg_replication_slots_catalog_count
+          from pg_replication_slots
+          where catalog_xmin is not null
+        ),
+        replication as (
+          select
+            max(age(backend_xmin))::int8 as pg_stat_replication_age_tx,
+            count(*)::int8 as pg_stat_replication_count
+          from pg_stat_replication
+          where backend_xmin is not null
+        ),
+        prepared as (
+          select
+            max(age(transaction))::int8 as pg_prepared_xacts_age_tx,
+            count(*)::int8 as pg_prepared_xacts_count
+          from pg_prepared_xacts
+        ),
+        summary as (
+          select
+            (select snapshot_xmin from snapshot) as snapshot_xmin,
+            coalesce((select pg_stat_activity_age_tx from activity), 0) as pg_stat_activity_age_tx,
+            coalesce((select pg_stat_activity_count from activity), 0) as pg_stat_activity_count,
+            coalesce((select pg_replication_slots_age_tx from slots), 0) as pg_replication_slots_age_tx,
+            coalesce((select pg_replication_slots_count from slots), 0) as pg_replication_slots_count,
+            coalesce((select pg_replication_slots_catalog_age_tx from slots_catalog), 0) as pg_replication_slots_catalog_age_tx,
+            coalesce((select pg_replication_slots_catalog_count from slots_catalog), 0) as pg_replication_slots_catalog_count,
+            coalesce((select pg_stat_replication_age_tx from replication), 0) as pg_stat_replication_age_tx,
+            coalesce((select pg_stat_replication_count from replication), 0) as pg_stat_replication_count,
+            coalesce((select pg_prepared_xacts_age_tx from prepared), 0) as pg_prepared_xacts_age_tx,
+            coalesce((select pg_prepared_xacts_count from prepared), 0) as pg_prepared_xacts_count
+        )
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          snapshot_xmin,
+          pg_stat_activity_age_tx,
+          pg_stat_activity_count,
+          pg_replication_slots_age_tx,
+          pg_replication_slots_count,
+          pg_replication_slots_catalog_age_tx,
+          pg_replication_slots_catalog_count,
+          pg_stat_replication_age_tx,
+          pg_stat_replication_count,
+          pg_prepared_xacts_age_tx,
+          pg_prepared_xacts_count,
+          greatest(
+            pg_stat_activity_age_tx,
+            pg_replication_slots_age_tx,
+            pg_stat_replication_age_tx,
+            pg_prepared_xacts_age_tx
+          ) as data_horizon_age_tx,
+          greatest(
+            pg_stat_activity_age_tx,
+            pg_replication_slots_age_tx,
+            pg_stat_replication_age_tx,
+            pg_prepared_xacts_age_tx,
+            pg_replication_slots_catalog_age_tx
+          ) as catalog_horizon_age_tx
+        from summary
+    gauges:
+      - '*'
+    is_instance_level: true
+    node_status: primary
+    statement_timeout_seconds: 15
+  xmin_horizon_blockers:
+    description: >
+      Captures the top xmin-horizon blocker for each active component (`pg_stat_activity`,
+      `pg_replication_slots`, `pg_replication_slots_catalog`, `pg_stat_replication`,
+      `pg_prepared_xacts`) as a separate labeled series with the blocker's xmin age in
+      transactions (`age_tx`). Primary-only. Emits one series per currently active
+      component (the single oldest blocker for that component) and no series for an empty
+      component, so cardinality varies between 0 and 5 per scrape. The labels carry RCA
+      context for that single top blocker: horizon type, activity queryid and session
+      identity, replication slot name/type/status/xmin source, standby name, and prepared
+      transaction gid/owner. Query text is intentionally not emitted as a Prometheus label;
+      use the queryid link to inspect text from pgwatch query storage.
+    sqls:
+      11: |-
+        with activity as (
+          select
+            'pg_stat_activity'::text as tag_component,
+            'data'::text as tag_horizon_type,
+            coalesce(datname, '')::text as tag_blocker_database,
+            coalesce(usename, '')::text as tag_blocker_user,
+            coalesce(application_name, '')::text as tag_blocker_appname,
+            coalesce(state, '')::text as tag_blocker_state,
+            coalesce(to_jsonb(a)->>'query_id', '')::text as tag_queryid,
+            ''::text as tag_slot_name,
+            ''::text as tag_slot_type,
+            ''::text as tag_slot_plugin,
+            ''::text as tag_slot_xmin_source,
+            ''::text as tag_slot_status,
+            ''::text as tag_slot_wal_status,
+            ''::text as tag_slot_inactive_since,
+            ''::text as tag_slot_conflicting,
+            ''::text as tag_slot_invalidation_reason,
+            ''::text as tag_replication_state,
+            ''::text as tag_replication_sync_state,
+            ''::text as tag_standby_name,
+            ''::text as tag_prepared_gid,
+            ''::text as tag_owner,
+            age(backend_xmin)::int8 as age_tx
+          from pg_stat_activity as a
+          where
+            pid <> pg_backend_pid()
+            and backend_type = 'client backend'
+            and backend_xmin is not null
+          order by age(backend_xmin) desc, pid asc
+          limit 1
+        ),
+        slots as (
+          select
+            'pg_replication_slots'::text as tag_component,
+            'data'::text as tag_horizon_type,
+            coalesce(database, '')::text as tag_blocker_database,
+            ''::text as tag_blocker_user,
+            ''::text as tag_blocker_appname,
+            case when active then 'active' else 'inactive' end::text as tag_blocker_state,
+            ''::text as tag_queryid,
+            slot_name::text as tag_slot_name,
+            slot_type::text as tag_slot_type,
+            coalesce(plugin, '')::text as tag_slot_plugin,
+            'xmin'::text as tag_slot_xmin_source,
+            case
+              when coalesce(to_jsonb(s)->>'invalidation_reason', '') <> '' then 'invalidated'
+              when coalesce(to_jsonb(s)->>'conflicting', 'false') = 'true' then 'conflicting'
+              when not active and coalesce(to_jsonb(s)->>'inactive_since', '') <> '' then 'inactive'
+              when not active then 'unused'
+              else 'active'
+            end::text as tag_slot_status,
+            coalesce(to_jsonb(s)->>'wal_status', '')::text as tag_slot_wal_status,
+            coalesce(to_jsonb(s)->>'inactive_since', '')::text as tag_slot_inactive_since,
+            coalesce(to_jsonb(s)->>'conflicting', '')::text as tag_slot_conflicting,
+            coalesce(to_jsonb(s)->>'invalidation_reason', '')::text as tag_slot_invalidation_reason,
+            ''::text as tag_replication_state,
+            ''::text as tag_replication_sync_state,
+            ''::text as tag_standby_name,
+            ''::text as tag_prepared_gid,
+            ''::text as tag_owner,
+            age(xmin)::int8 as age_tx
+          from pg_replication_slots as s
+          where xmin is not null
+          order by age(xmin) desc, slot_name asc
+          limit 1
+        ),
+        slots_catalog as (
+          select
+            'pg_replication_slots_catalog'::text as tag_component,
+            'catalog'::text as tag_horizon_type,
+            coalesce(database, '')::text as tag_blocker_database,
+            ''::text as tag_blocker_user,
+            ''::text as tag_blocker_appname,
+            case when active then 'active' else 'inactive' end::text as tag_blocker_state,
+            ''::text as tag_queryid,
+            slot_name::text as tag_slot_name,
+            slot_type::text as tag_slot_type,
+            coalesce(plugin, '')::text as tag_slot_plugin,
+            'catalog_xmin'::text as tag_slot_xmin_source,
+            case
+              when coalesce(to_jsonb(s)->>'invalidation_reason', '') <> '' then 'invalidated'
+              when coalesce(to_jsonb(s)->>'conflicting', 'false') = 'true' then 'conflicting'
+              when not active and coalesce(to_jsonb(s)->>'inactive_since', '') <> '' then 'inactive'
+              when not active then 'unused'
+              else 'active'
+            end::text as tag_slot_status,
+            coalesce(to_jsonb(s)->>'wal_status', '')::text as tag_slot_wal_status,
+            coalesce(to_jsonb(s)->>'inactive_since', '')::text as tag_slot_inactive_since,
+            coalesce(to_jsonb(s)->>'conflicting', '')::text as tag_slot_conflicting,
+            coalesce(to_jsonb(s)->>'invalidation_reason', '')::text as tag_slot_invalidation_reason,
+            ''::text as tag_replication_state,
+            ''::text as tag_replication_sync_state,
+            ''::text as tag_standby_name,
+            ''::text as tag_prepared_gid,
+            ''::text as tag_owner,
+            age(catalog_xmin)::int8 as age_tx
+          from pg_replication_slots as s
+          where catalog_xmin is not null
+          order by age(catalog_xmin) desc, slot_name asc
+          limit 1
+        ),
+        replication as (
+          select
+            'pg_stat_replication'::text as tag_component,
+            'data'::text as tag_horizon_type,
+            ''::text as tag_blocker_database,
+            coalesce(usename, '')::text as tag_blocker_user,
+            coalesce(application_name, '')::text as tag_blocker_appname,
+            ''::text as tag_blocker_state,
+            ''::text as tag_queryid,
+            ''::text as tag_slot_name,
+            ''::text as tag_slot_type,
+            ''::text as tag_slot_plugin,
+            ''::text as tag_slot_xmin_source,
+            ''::text as tag_slot_status,
+            ''::text as tag_slot_wal_status,
+            ''::text as tag_slot_inactive_since,
+            ''::text as tag_slot_conflicting,
+            ''::text as tag_slot_invalidation_reason,
+            coalesce(state, '')::text as tag_replication_state,
+            coalesce(sync_state, '')::text as tag_replication_sync_state,
+            coalesce(application_name, '')::text as tag_standby_name,
+            ''::text as tag_prepared_gid,
+            ''::text as tag_owner,
+            age(backend_xmin)::int8 as age_tx
+          from pg_stat_replication
+          where backend_xmin is not null
+          order by age(backend_xmin) desc, pid asc
+          limit 1
+        ),
+        prepared as (
+          select
+            'pg_prepared_xacts'::text as tag_component,
+            'data'::text as tag_horizon_type,
+            coalesce(database, '')::text as tag_blocker_database,
+            ''::text as tag_blocker_user,
+            ''::text as tag_blocker_appname,
+            ''::text as tag_blocker_state,
+            ''::text as tag_queryid,
+            ''::text as tag_slot_name,
+            ''::text as tag_slot_type,
+            ''::text as tag_slot_plugin,
+            ''::text as tag_slot_xmin_source,
+            ''::text as tag_slot_status,
+            ''::text as tag_slot_wal_status,
+            ''::text as tag_slot_inactive_since,
+            ''::text as tag_slot_conflicting,
+            ''::text as tag_slot_invalidation_reason,
+            ''::text as tag_replication_state,
+            ''::text as tag_replication_sync_state,
+            ''::text as tag_standby_name,
+            gid::text as tag_prepared_gid,
+            owner::text as tag_owner,
+            age(transaction)::int8 as age_tx
+          from pg_prepared_xacts
+          order by age(transaction) desc, gid asc
+          limit 1
+        )
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          tag_component,
+          tag_horizon_type,
+          tag_blocker_database,
+          tag_blocker_user,
+          tag_blocker_appname,
+          tag_blocker_state,
+          tag_queryid,
+          tag_slot_name,
+          tag_slot_type,
+          tag_slot_plugin,
+          tag_slot_xmin_source,
+          tag_slot_status,
+          tag_slot_wal_status,
+          tag_slot_inactive_since,
+          tag_slot_conflicting,
+          tag_slot_invalidation_reason,
+          tag_replication_state,
+          tag_replication_sync_state,
+          tag_standby_name,
+          tag_prepared_gid,
+          tag_owner,
+          age_tx
+        from activity
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          tag_component,
+          tag_horizon_type,
+          tag_blocker_database,
+          tag_blocker_user,
+          tag_blocker_appname,
+          tag_blocker_state,
+          tag_queryid,
+          tag_slot_name,
+          tag_slot_type,
+          tag_slot_plugin,
+          tag_slot_xmin_source,
+          tag_slot_status,
+          tag_slot_wal_status,
+          tag_slot_inactive_since,
+          tag_slot_conflicting,
+          tag_slot_invalidation_reason,
+          tag_replication_state,
+          tag_replication_sync_state,
+          tag_standby_name,
+          tag_prepared_gid,
+          tag_owner,
+          age_tx
+        from slots
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          tag_component,
+          tag_horizon_type,
+          tag_blocker_database,
+          tag_blocker_user,
+          tag_blocker_appname,
+          tag_blocker_state,
+          tag_queryid,
+          tag_slot_name,
+          tag_slot_type,
+          tag_slot_plugin,
+          tag_slot_xmin_source,
+          tag_slot_status,
+          tag_slot_wal_status,
+          tag_slot_inactive_since,
+          tag_slot_conflicting,
+          tag_slot_invalidation_reason,
+          tag_replication_state,
+          tag_replication_sync_state,
+          tag_standby_name,
+          tag_prepared_gid,
+          tag_owner,
+          age_tx
+        from slots_catalog
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          tag_component,
+          tag_horizon_type,
+          tag_blocker_database,
+          tag_blocker_user,
+          tag_blocker_appname,
+          tag_blocker_state,
+          tag_queryid,
+          tag_slot_name,
+          tag_slot_type,
+          tag_slot_plugin,
+          tag_slot_xmin_source,
+          tag_slot_status,
+          tag_slot_wal_status,
+          tag_slot_inactive_since,
+          tag_slot_conflicting,
+          tag_slot_invalidation_reason,
+          tag_replication_state,
+          tag_replication_sync_state,
+          tag_standby_name,
+          tag_prepared_gid,
+          tag_owner,
+          age_tx
+        from replication
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          tag_component,
+          tag_horizon_type,
+          tag_blocker_database,
+          tag_blocker_user,
+          tag_blocker_appname,
+          tag_blocker_state,
+          tag_queryid,
+          tag_slot_name,
+          tag_slot_type,
+          tag_slot_plugin,
+          tag_slot_xmin_source,
+          tag_slot_status,
+          tag_slot_wal_status,
+          tag_slot_inactive_since,
+          tag_slot_conflicting,
+          tag_slot_invalidation_reason,
+          tag_replication_state,
+          tag_replication_sync_state,
+          tag_standby_name,
+          tag_prepared_gid,
+          tag_owner,
+          age_tx
+        from prepared
+    gauges:
+      - age_tx
+    is_instance_level: true
+    node_status: primary
+    statement_timeout_seconds: 15
   pg_database_wraparound:
     sqls:
       11: |
@@ -970,14 +1382,14 @@ metrics:
     sqls:
       11: |
         select (extract(epoch from now()) * 1e9)::int8 as epoch_ns, /* pgwatch_generated */
-          current_database() as tag_datname, 
-          application_name as tag_application_name, 
-          (pg_current_wal_lsn() - '0/0') % (2^52)::bigint as current_wal_lsn, 
-          (sent_lsn - '0/0') % (2^52)::bigint as sent_lsn, 
-          (write_lsn - '0/0') % (2^52)::bigint as write_lsn, 
-          (flush_lsn - '0/0') % (2^52)::bigint as flush_lsn, 
+          current_database() as tag_datname,
+          application_name as tag_application_name,
+          (pg_current_wal_lsn() - '0/0') % (2^52)::bigint as current_wal_lsn,
+          (sent_lsn - '0/0') % (2^52)::bigint as sent_lsn,
+          (write_lsn - '0/0') % (2^52)::bigint as write_lsn,
+          (flush_lsn - '0/0') % (2^52)::bigint as flush_lsn,
           (replay_lsn - '0/0') % (2^52)::bigint as replay_lsn,
-          extract(seconds from (now() - reply_time)) reply_time_lag 
+          extract(seconds from (now() - reply_time)) reply_time_lag
         from pg_stat_replication
     gauges:
       - current_wal_lsn
@@ -1305,7 +1717,7 @@ metrics:
       It provides insights into estimated bloat percentage, real size, extra size due to estimated bloat, and estimated bloat size considering fill factor.
       This metric helps administrators identify indexes that may need maintenance like VACUUM FULL or index reorganization.
     sqls:
-      11: | 
+      11: |
         select /* pgwatch_generated */
           current_database() as tag_datname, nspname as tag_schemaname, tblname as tag_tblname, idxname as tag_idxname,
           (bs*(relpages)/(1024*1024))::float as real_size_mib,
@@ -1531,7 +1943,7 @@ metrics:
           where c.relkind in ('r', 'p', 'm') -- regular tables, partitioned tables, materialized views
             and n.nspname not in ('information_schema', 'pg_toast')
             and not exists (
-              select 1 from pg_locks 
+              select 1 from pg_locks
               where relation = c.oid and mode = 'AccessExclusiveLock'
             )
           order by pg_total_relation_size(c.oid) desc
@@ -1557,7 +1969,7 @@ metrics:
         limit 1000;
     gauges:
       - table_main_size_b
-      - table_fsm_size_b  
+      - table_fsm_size_b
       - table_vm_size_b
       - table_indexes_size_b
       - toast_main_size_b
@@ -1830,7 +2242,7 @@ metrics:
       It provides insights into the number of unused indexes and their details.
       This metric helps administrators identify and fix unused indexes to improve database performance.
     sqls:
-      11: | 
+      11: |
         with fk_indexes as ( /* pgwatch_generated */
           select
             n.nspname as schema_name,
@@ -2119,8 +2531,8 @@ metrics:
                 archived_count,
                 failed_count,
                 -- wal_segment_size is already in bytes!
-                (select setting::bigint 
-                from pg_settings 
+                (select setting::bigint
+                from pg_settings
                 where name = 'wal_segment_size') as wal_segment_size_bytes
             from pg_stat_archiver
             where last_archived_wal is not null
@@ -2128,31 +2540,31 @@ metrics:
         select
             pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint as current_lsn_numeric,
             pg_wal_lsn_diff((log_id_hex || '/' || lpad(to_hex((segment_dec + 1) * wal_segment_size_bytes), 8, '0'))::pg_lsn, '0/0')::bigint as archived_wal_finish_lsn_numeric,
-            
+
             round(
                 pg_wal_lsn_diff(
                     pg_current_wal_lsn(),
                     (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
-                )::numeric / wal_segment_size_bytes, 
+                )::numeric / wal_segment_size_bytes,
                 2
             ) as wal_files_behind,
-            
+
             pg_size_pretty(wal_segment_size_bytes) as wal_segment_size,
             extract(epoch from (now() - last_archived_time))::int as seconds_since_archive,
-            
+
             -- alert thresholds based on segment size
-            case 
+            case
                 when pg_wal_lsn_diff(
-                        pg_current_wal_lsn(), 
+                        pg_current_wal_lsn(),
                         (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                     ) > 6 * wal_segment_size_bytes then 'critical'
                 when pg_wal_lsn_diff(
-                        pg_current_wal_lsn(), 
+                        pg_current_wal_lsn(),
                         (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                     ) > 3 * wal_segment_size_bytes then 'warning'
                 else 'ok'
             end as tag_status,
-            
+
             archived_count,
             failed_count
         from wal_info;
@@ -2185,7 +2597,7 @@ metrics:
           extract(epoch from A.query_start) as query_start,
           case when S.phase ~ 'initial' then
             1
-          when S.phase ~ 'scanning heap' then 
+          when S.phase ~ 'scanning heap' then
             2
           when s.phase ~ 'vacuuming indexes' then
             3
@@ -2230,7 +2642,7 @@ metrics:
           extract(epoch from A.query_start) as query_start,
           case when S.phase ~ 'initial' then
             1
-          when S.phase ~ 'scanning heap' then 
+          when S.phase ~ 'scanning heap' then
             2
           when s.phase ~ 'vacuuming indexes' then
             3
@@ -2290,22 +2702,22 @@ metrics:
           coalesce(relname, '*') as tag_relname,
           coalesce(indexrelname, '*') as tag_indexrelname,
           key as tag_config_key,
-          case 
-            when key = 'index_size_threshold' then 
-              case 
+          case
+            when key = 'index_size_threshold' then
+              case
                 when value ~ '^[0-9]+MB$' then (regexp_replace(value, 'MB$', '')::numeric * 1024 * 1024)::float
                 when value ~ '^[0-9]+kB$' then (regexp_replace(value, 'kB$', '')::numeric * 1024)::float
                 when value ~ '^[0-9]+GB$' then (regexp_replace(value, 'GB$', '')::numeric * 1024 * 1024 * 1024)::float
                 else 0
               end
-            when key = 'minimum_reliable_index_size' then 
-              case 
+            when key = 'minimum_reliable_index_size' then
+              case
                 when value ~ '^[0-9]+kB$' then (regexp_replace(value, 'kB$', '')::numeric * 1024)::float
                 when value ~ '^[0-9]+MB$' then (regexp_replace(value, 'MB$', '')::numeric * 1024 * 1024)::float
                 else 0
               end
             when key = 'index_rebuild_scale_factor' then value::float
-            when key = 'reindex_history_retention_period' then 
+            when key = 'reindex_history_retention_period' then
               case when value ~ 'years?' then regexp_replace(value, ' years?', '')::int else 0 end
             when key = 'skip' then case when value::boolean then 1 else 0 end
             else 0
@@ -2375,7 +2787,7 @@ metrics:
     gauges:
       - '*'
     statement_timeout_seconds: 15
-  
+
   multixact_size:
     sqls:
       11: |
@@ -2603,6 +3015,8 @@ presets:
       pg_statio_all_indexes: 30
       pg_total_relation_size: 30
       lock_waits: 30
+      xmin_horizon: 30
+      xmin_horizon_blockers: 30
       pg_blocked: 30
       pg_long_running_transactions: 30
       pg_stuck_idle_in_transaction: 30

@@ -2324,10 +2324,11 @@ mon
     // Update .env with custom tag if provided
     const envFile = path.resolve(projectDir, ".env");
 
-    // Build .env content, preserving important existing values (registry, password)
-    // Note: PGAI_TAG is intentionally NOT preserved - the CLI version should always match Docker images
+    // Build .env content, preserving important existing values.
+    // Note: PGAI_TAG is intentionally NOT preserved - the CLI version should always match Docker images.
     let existingRegistry: string | null = null;
     let existingPassword: string | null = null;
+    let existingReplicatorPassword: string | null = null;
 
     if (fs.existsSync(envFile)) {
       const existingEnv = fs.readFileSync(envFile, "utf8");
@@ -2336,6 +2337,8 @@ mon
       if (registryMatch) existingRegistry = registryMatch[1].trim();
       const pwdMatch = existingEnv.match(/^GF_SECURITY_ADMIN_PASSWORD=(.+)$/m);
       if (pwdMatch) existingPassword = pwdMatch[1].trim();
+      const replicatorPwdMatch = existingEnv.match(/^REPLICATOR_PASSWORD=(.+)$/m);
+      if (replicatorPwdMatch) existingReplicatorPassword = replicatorPwdMatch[1].trim();
     }
 
     // Priority: CLI --tag flag > package version
@@ -2351,6 +2354,9 @@ mon
     if (existingPassword) {
       envLines.push(`GF_SECURITY_ADMIN_PASSWORD=${existingPassword}`);
     }
+    envLines.push(
+      `REPLICATOR_PASSWORD=${existingReplicatorPassword || crypto.randomBytes(32).toString("hex")}`,
+    );
     fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 
     if (opts.tag) {

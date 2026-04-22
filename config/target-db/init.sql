@@ -10,12 +10,15 @@ create table if not exists sample_data (
 );
 
 -- Insert some sample data
-insert into sample_data (name) values 
+insert into sample_data (name) values
     ('Sample Record 1'),
     ('Sample Record 2'),
     ('Sample Record 3');
 
--- Create a user for PGWatch monitoring
+-- Create the 'monitor' user for pgwatch collection. The 'replicator' user
+-- (required by target-standby) is created by 01-create-replicator.sh, which
+-- passes the password as a psql variable so it never lands on the server
+-- command line or as a queryable GUC.
 create user monitor with password 'monitor_pass';
 grant connect on database target_database to monitor;
 grant usage on schema public to monitor;
@@ -44,7 +47,7 @@ grant select on postgres_ai.pg_statistic to pg_monitor;
 -- Grant access to monitoring views
 grant select on pg_stat_statements to monitor;
 grant select on pg_stat_database to monitor;
-grant select on pg_stat_user_tables to monitor; 
+grant select on pg_stat_user_tables to monitor;
 -- Grant pg_monitor role to monitor user for enhanced monitoring capabilities
 grant pg_monitor to monitor;
 grant execute on function pg_stat_file(text) to monitor;

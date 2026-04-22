@@ -173,7 +173,7 @@ postgresai mon local-install --api-key your_key --db-url postgresql://user:pass@
 This will:
 - Configure API key for automated report uploads (if provided)
 - Add PostgreSQL instance to monitor (if provided)
-- Generate secure Grafana password
+- Generate secure Grafana and replication passwords
 - Start all monitoring services
 - Open Grafana at http://localhost:3000
 
@@ -204,6 +204,8 @@ postgresai mon health [--wait <sec>]  # Check monitoring services health
 - `--api-key <key>` - Postgres AI API key for automated report uploads
 - `--db-url <url>` - PostgreSQL connection URL to monitor (format: `postgresql://user:pass@host:port/db`)
 - `-y, --yes` - Accept all defaults and skip interactive prompts
+
+`local-install` writes `.env` in the monitoring directory. It preserves an existing `REPLICATOR_PASSWORD` or generates a new random one when missing; this password is used by the demo PostgreSQL standby replication user and Docker Compose requires it instead of falling back to a known default.
 
 #### Monitoring target databases (`mon targets` subgroup)
 ```bash

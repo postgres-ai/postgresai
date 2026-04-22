@@ -291,7 +291,7 @@ This will:
 - Pull the latest Docker images
 - Start the services with the new images
 
-> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag) and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry).
+> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves an existing `REPLICATOR_PASSWORD` or generates a new one when it is missing; Docker Compose requires it and does not use a known default password.
 
 **Alternative: Manual upgrade**
 

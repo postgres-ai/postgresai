@@ -1288,12 +1288,12 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     expect(envContent).toMatch(/PGAI_TAG=\d+\.\d+\.\d+|PGAI_TAG=0\.0\.0-dev/);
   }, 60000);
 
-  test("existing registry and password are preserved while tag is updated", () => {
+  test("existing registry and passwords are preserved while tag is updated", () => {
     const testDir = resolve(tempDir, "preserve-test");
     fs.mkdirSync(testDir, { recursive: true });
-    // Create .env with stale tag but valid registry and password
+    // Create .env with stale tag but valid registry and passwords
     fs.writeFileSync(resolve(testDir, ".env"),
-      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\n");
+      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
     const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
@@ -1309,9 +1309,10 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     // Tag should be updated (not stale-tag)
     expect(envContent).not.toMatch(/PGAI_TAG=stale-tag/);
 
-    // But registry and password should be preserved
+    // But registry and passwords should be preserved
     expect(envContent).toMatch(/PGAI_REGISTRY=my\.registry\.com/);
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=secret123/);
+    expect(envContent).toMatch(/REPLICATOR_PASSWORD=repl-secret/);
   }, 60000);
 });
 
