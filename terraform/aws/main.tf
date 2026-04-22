@@ -145,6 +145,7 @@ resource "aws_ebs_volume" "data" {
   size              = var.data_volume_size
   type              = var.data_volume_type
   encrypted         = true
+  kms_key_id        = var.encryption_kms_key_arn != "" ? var.encryption_kms_key_arn : null
 
   tags = {
     Name = "${var.environment}-postgres-ai-data"
@@ -165,6 +166,7 @@ resource "aws_instance" "main" {
     volume_size = 30
     volume_type = var.root_volume_type
     encrypted   = true
+    kms_key_id  = var.encryption_kms_key_arn != "" ? var.encryption_kms_key_arn : null
   }
 
   user_data = templatefile("${path.module}/user_data.sh", {

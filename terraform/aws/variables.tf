@@ -85,6 +85,17 @@ variable "postgres_ai_version" {
   default     = "0.10"
 }
 
+variable "encryption_kms_key_arn" {
+  description = "KMS key ARN or alias ARN for EBS encryption. Leave empty to use the default AWS-managed aws/ebs key (AES-256). Accepts key ARNs (arn:aws:kms:REGION:ACCOUNT:key/UUID) and alias ARNs (arn:aws:kms:REGION:ACCOUNT:alias/NAME). WARNING: changing this value in any direction (empty to ARN, ARN to empty, or ARN to different ARN) on existing infrastructure will destroy and recreate EBS volumes and the EC2 instance, causing data loss. Snapshot both volumes before making this change on a live deployment."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.encryption_kms_key_arn == "" || can(regex("^arn:aws(-[a-z-]+)?:kms:[a-z0-9-]+:[0-9]{12}:(key/((mrk-[a-fA-F0-9]{32})|([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}))|alias/[a-zA-Z0-9/._-]+)$", var.encryption_kms_key_arn))
+    error_message = "Must be a valid KMS key ARN (e.g., 'arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012') or alias ARN (e.g., 'arn:aws:kms:us-east-1:123456789012:alias/my-ebs-key'), or empty string to use the AWS-managed aws/ebs key."
+  }
+}
+
 variable "bind_host" {
   description = "Bind host for internal service ports (127.0.0.1: for localhost only, empty for all interfaces)"
   type        = string

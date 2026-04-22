@@ -22,6 +22,15 @@ storage:
   victoriaMetricsSize: 150Gi
   grafanaSize: 5Gi
   accessModes: ["ReadWriteOnce"]
+  # Storage class for persistent volumes.
+  # For encryption at rest (required for DPA/SOC2 compliance), use an
+  # encrypted storage class. Examples:
+  #   AWS EKS:  create a StorageClass with "encrypted: true" parameter,
+  #             or enable account-level default EBS encryption
+  #   GCP GKE:  "standard" or "premium-rwo" (encrypted at rest by default with Google-managed keys)
+  #   Azure AKS: "managed-premium" (encrypted by default with platform-managed keys)
+  #   Hetzner HCloud: "hcloud-volumes" (encrypted at rest by default)
+  # Leave empty to use the cluster default storage class.
   storageClassName: ""
 
 global:

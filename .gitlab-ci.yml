@@ -219,6 +219,31 @@ vm-auth:config:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+terraform:aws:tests:
+  stage: test
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  variables:
+    TF_IN_AUTOMATION: "true"
+  script:
+    # file("~/.ssh/test-key.pem") in terraform_data connection block is
+    # evaluated eagerly during config parsing even though the resource is
+    # overridden in tests. Create a dummy file so file() resolves; the
+    # content is never used for an actual SSH connection.
+    - mkdir -p ~/.ssh && printf 'dummy-key-for-testing\n' > ~/.ssh/test-key.pem
+    - cd terraform/aws
+    - terraform init -backend=false
+    - terraform validate
+    - terraform test -filter=tests/kms_encryption.tftest.hcl
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - terraform/aws/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - terraform/aws/**/*
+
 cli:node:smoke:
   stage: test
   image: node:20-alpine
