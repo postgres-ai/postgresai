@@ -2162,7 +2162,7 @@ metrics:
       - 'failed_count'
       - 'wal_files_behind'
       - 'current_lsn_numeric'
-      - 'archived_wal_start_lsn_numeric'
+      - 'archived_wal_finish_lsn_numeric'
     statement_timeout_seconds: 15
   pg_vacuum_progress:
     sqls:
@@ -2507,6 +2507,74 @@ metrics:
       - status_code
     statement_timeout_seconds: 15
 
+  pg_wal_size:
+    description: >
+      This metric collects the total size of regular files in the Postgres pg_wal directory.
+      It uses pg_ls_waldir(), which is available to superusers and roles with privileges of pg_monitor by default.
+      It does not recurse into subdirectories such as pg_wal/archive_status.
+      Exported series are pgwatch_pg_wal_size_bytes, a gauge with the size of regular files in bytes,
+      and pgwatch_pg_wal_size_status_code, a gauge where 0 = success, 1 = pg_ls_waldir() is not available,
+      and 2 = the monitoring role lacks EXECUTE privilege. Bytes are not emitted when status_code > 0.
+      If pg_ls_waldir() fails at runtime for reasons other than availability or privilege, the metric query fails
+      and pgwatch records a collection error.
+    sqls:
+      11: |
+        with env as ( /* pgwatch_generated */
+          select
+            exists (
+              select
+              from pg_proc as p
+              join pg_namespace as n on n.oid = p.pronamespace
+              where p.proname = 'pg_ls_waldir' and n.nspname = 'pg_catalog'
+            ) as has_pg_ls_waldir_func,
+            coalesce((
+              select has_function_privilege(p.oid, 'EXECUTE')
+              from pg_proc as p
+              join pg_namespace as n on n.oid = p.pronamespace
+              where p.proname = 'pg_ls_waldir' and n.nspname = 'pg_catalog'
+              limit 1
+            ), false) as has_pg_ls_waldir_privilege
+        ),
+        -- Use query_to_xml to safely execute pg_ls_waldir(). The XML wrapper keeps the permission-gated
+        -- path separate from the status-code fallback rows.
+        probe_xml as (
+          select query_to_xml($q$
+            select
+              coalesce(sum(size), 0)::bigint as bytes,
+              0::int as status_code
+            from pg_ls_waldir()
+          $q$, true, true, '') as x
+          where (select has_pg_ls_waldir_func and has_pg_ls_waldir_privilege from env)
+        ),
+        parsed as (
+          select
+            (xpath('//bytes/text()', x))[1]::text::bigint as bytes,
+            (xpath('//status_code/text()', x))[1]::text::int as status_code
+          from probe_xml
+        )
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          bytes,
+          status_code
+        from parsed
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          null::bigint as bytes,
+          case
+            when not (select has_pg_ls_waldir_func from env) then 1
+            when not (select has_pg_ls_waldir_privilege from env) then 2
+            else 0
+          end as status_code
+        where not exists (select 1 from parsed);
+    gauges:
+      - bytes
+      - status_code
+    is_instance_level: true
+    statement_timeout_seconds: 15
+
 presets:
   full:
     description: almost all available metrics for a even deeper performance understanding
@@ -2552,6 +2620,7 @@ presets:
       archive_lag: 15
       pg_vacuum_progress: 30
       multixact_size: 300
+      pg_wal_size: 30
   pg_index_pilot:
     metrics:
       pg_index_pilot: 30
