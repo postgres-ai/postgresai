@@ -347,7 +347,7 @@ echo "[$(date)] Workload generator stopped gracefully"
 
 ```yaml
 workload-generator:
-  image: postgres:15
+  image: postgres:17
   depends_on:
     target-db:
       condition: service_healthy
@@ -1172,7 +1172,7 @@ Using Compose v2 native limits (`mem_limit`, `cpus`), NOT `deploy.resources`.
 # docker-compose.preview.template.yml (excerpt)
 services:
   grafana:
-    image: grafana/grafana:12.0.2
+    image: grafana/grafana:12.3.2
     mem_limit: 256m
     cpus: 0.25
     healthcheck:
@@ -1185,7 +1185,7 @@ services:
       - "pgai.preview=true"
 
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:v1.105.0
+    image: victoriametrics/victoria-metrics:v1.140.0
     mem_limit: 768m
     cpus: 0.4
     command:
@@ -1199,7 +1199,7 @@ services:
       - "pgai.preview=true"
 
   target-db:
-    image: postgres:15
+    image: postgres:17
     mem_limit: 512m
     cpus: 0.3
     healthcheck:
@@ -1348,7 +1348,7 @@ version: "3.8"
 
 services:
   node-exporter:
-    image: prom/node-exporter:v1.8.2
+    image: prom/node-exporter:v1.11.1
     restart: unless-stopped
     volumes:
       - /proc:/host/proc:ro

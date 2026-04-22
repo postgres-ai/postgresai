@@ -30,18 +30,18 @@ global:
   customTags: {}
 
 sinkPostgres:
-  image: postgres:15
+  image: postgres:17
   database: measurements
   user: pgwatch
   resources: {}
 
 postgresExporter:
   enabled: true
-  image: prometheuscommunity/postgres-exporter:v0.16.0
+  image: prometheuscommunity/postgres-exporter:v0.19.1
   resources: {}
 
 victoriaMetrics:
-  image: victoriametrics/victoria-metrics:v1.105.0
+  image: victoriametrics/victoria-metrics:v1.140.0
   retentionPeriod: 336h
   scrapeInterval: 15s
   extraArgs: []
@@ -56,13 +56,13 @@ victoriaMetrics:
 
 pgwatchPostgres:
   enabled: true
-  image: cybertecpostgresql/pgwatch:3
+  image: cybertecpostgresql/pgwatch:4.1.0
   logLevel: error
   resources: {}
 
 pgwatchPrometheus:
   enabled: true
-  image: cybertecpostgresql/pgwatch:3
+  image: cybertecpostgresql/pgwatch:4.1.0
   logLevel: error
   resources: {}
 
@@ -103,15 +103,20 @@ reporter:
   # reporter cronjob will be created for each unique cluster/node combination.
 
 nodeExporter:
-  # Disabled due to compatibility issues
+  # Disabled on k8s: host /proc and /sys mounts require a privileged
+  # DaemonSet, which we don't ship yet. Re-enable once the DaemonSet
+  # manifest lands. docker-compose retains this for self-monitoring.
   enabled: false
-  image: prom/node-exporter:v1.8.2
+  image: prom/node-exporter:v1.11.1
   resources: {}
 
 cadvisor:
-  # Disabled due to compatibility issues
+  # Disabled on k8s: requires privileged access to the container runtime
+  # socket, which we don't ship yet. Image registry migrated from gcr.io
+  # to ghcr.io/google/cadvisor; tags omit the 'v' prefix (upstream
+  # registry convention, unlike other images here).
   enabled: false
-  image: gcr.io/cadvisor/cadvisor:v0.51.0
+  image: ghcr.io/google/cadvisor:0.56.2
   resources: {}
 
 monitoredDatabases:
@@ -129,7 +134,7 @@ monitoredDatabases:
     group: default
     customTags:
       env: production
-  
+
   # Example: Database with custom cluster/node name
   # - name: production-db-cluster-2
   #   host: postgres-host-2
@@ -186,6 +191,14 @@ secrets:
 
 grafana:
   enabled: true
+  # Pin the Grafana app version to match docker-compose.yml so both deploy
+  # paths ship the same major. The grafana subchart's default appVersion
+  # may lag behind; override explicitly to stay in sync with compose.
+  # Pin repository too so a subchart default change can't silently move us
+  # to a different image.
+  image:
+    repository: grafana/grafana
+    tag: "12.3.2"
   # Admin credentials are stored in secrets
   # Secret name pattern: <release-name>-postgres-ai-monitoring-secrets (or <fullnameOverride>-secrets)
   # Set admin.existingSecret manually if using custom release name or fullnameOverride
@@ -195,20 +208,20 @@ grafana:
     passwordKey: grafana-admin-password
   plugins:
     - yesoreyeram-infinity-datasource
-  
-  
+
+
   persistence:
     enabled: true
     size: 5Gi
     storageClassName: ""
-  
+
   service:
     type: ClusterIP
     port: 80
-  
+
   ingress:
     enabled: false
-  
+
   sidecar:
     datasources:
       enabled: true
@@ -216,7 +229,7 @@ grafana:
     dashboards:
       enabled: true
       label: grafana_dashboard
-  
+
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1

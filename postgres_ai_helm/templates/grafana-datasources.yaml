@@ -35,7 +35,9 @@ data:
         jsonData:
           database: {{ .Values.sinkPostgres.database }}
           sslmode: disable
-          postgresVersion: 1500
+          # Grafana encoding: PG major version * 100 (1700 = PG 17). PG 17
+          # is not in Grafana's official dropdown yet; this value overrides it.
+          postgresVersion: 1700
         secureJsonData:
           password: {{ .Values.secrets.postgres.password }}
       {{- if .Values.flask.enabled }}
@@ -50,5 +52,3 @@ data:
           tlsSkipVerify: true
       {{- end }}
 {{- end }}
-
-
