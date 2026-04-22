@@ -2919,6 +2919,74 @@ metrics:
       - status_code
     statement_timeout_seconds: 15
 
+  pg_stat_io:
+    description: >
+      Collects I/O statistics from the PostgreSQL `pg_stat_io` view (available in PostgreSQL 16+).
+      Provides insights into read and write operations by backend type, including the number of operations,
+      MiB transferred (divided by 1048576), and time spent on I/O. This metric is essential for monitoring I/O performance
+      and identifying potential bottlenecks in disk operations. The data is aggregated by backend type
+      with a total row included via ROLLUP.
+    sqls:
+      11: "; -- pg_stat_io only available in PostgreSQL 16+"
+      16: |-
+        select /* pgwatch_generated */
+            (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+            current_database() as tag_datname,
+            coalesce(backend_type, 'total') as tag_backend_type,
+            sum(coalesce(reads, 0))::int8 as reads,
+            (sum(coalesce(reads, 0) * op_bytes) / 1048576.0)::int8 as read_bytes_mb,
+            sum(coalesce(read_time, 0))::int8 as read_time_ms,
+            sum(coalesce(writes, 0))::int8 as writes,
+            (sum(coalesce(writes, 0) * op_bytes) / 1048576.0)::int8 as write_bytes_mb,
+            sum(coalesce(write_time, 0))::int8 as write_time_ms,
+            sum(coalesce(writebacks, 0))::int8 as writebacks,
+            (sum(coalesce(writebacks, 0) * op_bytes) / 1048576.0)::int8 as writeback_bytes_mb,
+            sum(coalesce(writeback_time, 0))::int8 as writeback_time_ms,
+            sum(coalesce(fsyncs, 0))::int8 as fsyncs,
+            sum(coalesce(fsync_time, 0))::int8 as fsync_time_ms,
+            sum(coalesce(extends, 0))::int8 as extends,
+            (sum(coalesce(extends, 0) * op_bytes) / 1048576.0)::int8 as extend_bytes_mb,
+            sum(coalesce(hits, 0))::int8 as hits,
+            sum(coalesce(evictions, 0))::int8 as evictions,
+            sum(coalesce(reuses, 0))::int8 as reuses,
+            max(extract(epoch from now() - stats_reset)::int) as stats_reset_s
+        from
+            pg_stat_io
+        group by
+            rollup (backend_type)
+      18: |-
+        select /* pgwatch_generated */
+            (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+            current_database() as tag_datname,
+            coalesce(backend_type, 'total') as tag_backend_type,
+            sum(coalesce(reads, 0))::int8 as reads,
+            (sum(coalesce(read_bytes, 0)) / 1048576.0)::int8 as read_bytes_mb,
+            sum(coalesce(read_time, 0))::int8 as read_time_ms,
+            sum(coalesce(writes, 0))::int8 as writes,
+            (sum(coalesce(write_bytes, 0)) / 1048576.0)::int8 as write_bytes_mb,
+            sum(coalesce(write_time, 0))::int8 as write_time_ms,
+            sum(coalesce(writebacks, 0))::int8 as writebacks,
+            -- PostgreSQL 18 has no writeback_bytes column; rows with NULL op_bytes contribute zero by design.
+            (sum(coalesce(writebacks, 0) * coalesce(op_bytes, 0)) / 1048576.0)::int8 as writeback_bytes_mb,
+            sum(coalesce(writeback_time, 0))::int8 as writeback_time_ms,
+            sum(coalesce(fsyncs, 0))::int8 as fsyncs,
+            sum(coalesce(fsync_time, 0))::int8 as fsync_time_ms,
+            sum(coalesce(extends, 0))::int8 as extends,
+            (sum(coalesce(extend_bytes, 0)) / 1048576.0)::int8 as extend_bytes_mb,
+            sum(coalesce(hits, 0))::int8 as hits,
+            sum(coalesce(evictions, 0))::int8 as evictions,
+            sum(coalesce(reuses, 0))::int8 as reuses,
+            max(extract(epoch from now() - stats_reset)::int) as stats_reset_s
+        from
+            pg_stat_io
+        group by
+            rollup (backend_type)
+    # pg_stat_io columns are cumulative until pg_stat_reset_shared('io'); expose them as gauges for pgwatch delta/rate handling.
+    gauges:
+      - '*'
+    is_instance_level: true
+    statement_timeout_seconds: 15
+
   pg_wal_size:
     description: >
       This metric collects the total size of regular files in the Postgres pg_wal directory.
@@ -3034,6 +3102,7 @@ presets:
       archive_lag: 15
       pg_vacuum_progress: 30
       multixact_size: 300
+      pg_stat_io: 30
       pg_wal_size: 30
   pg_index_pilot:
     metrics:

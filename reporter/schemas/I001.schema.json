@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "I001 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
+  "properties": {
+    "version": { "type": ["string", "null"] },
+    "build_ts": { "type": ["string", "null"] },
+    "generation_mode": { "type": ["string", "null"] },
+    "checkId": { "const": "I001" },
+    "checkTitle": { "const": "I/O statistics (pg_stat_io)" },
+    "timestamptz": { "type": "string" },
+    "nodes": { "$ref": "#/$defs/nodes" },
+    "results": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/nodeResult" }
+    }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "standbys"],
+      "properties": {
+        "primary": { "type": "string" },
+        "standbys": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "postgresVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "server_version_num", "server_major_ver", "server_minor_ver"],
+      "properties": {
+        "version": { "type": "string" },
+        "server_version_num": { "type": "string" },
+        "server_major_ver": { "type": "string" },
+        "server_minor_ver": { "type": "string" }
+      }
+    },
+    "backendIOStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend_type",
+        "reads",
+        "read_bytes_mb",
+        "read_time_ms",
+        "writes",
+        "write_bytes_mb",
+        "write_time_ms",
+        "writebacks",
+        "writeback_bytes_mb",
+        "writeback_time_ms",
+        "fsyncs",
+        "fsync_time_ms",
+        "hits",
+        "evictions",
+        "reuses"
+      ],
+      "properties": {
+        "backend_type": { "type": "string" },
+        "reads": { "type": "number" },
+        "read_bytes_mb": { "type": "number" },
+        "read_time_ms": { "type": "number" },
+        "writes": { "type": "number" },
+        "write_bytes_mb": { "type": "number" },
+        "write_time_ms": { "type": "number" },
+        "writebacks": { "type": "number" },
+        "writeback_bytes_mb": { "type": "number" },
+        "writeback_time_ms": { "type": "number" },
+        "fsyncs": { "type": "number" },
+        "fsync_time_ms": { "type": "number" },
+        "extends": {
+          "type": "number",
+          "description": "Number of relation extension operations reported by pg_stat_io. Populated for PostgreSQL 16+ backends."
+        },
+        "extend_bytes_mb": {
+          "type": "number",
+          "description": "Mebibytes extended by pg_stat_io. PostgreSQL 16 derives this from extends * op_bytes; PostgreSQL 18+ uses the native extend_bytes column."
+        },
+        "hits": { "type": "number" },
+        "evictions": { "type": "number" },
+        "reuses": { "type": "number" }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_read_mb", "total_write_mb", "total_io_time_ms", "read_hit_ratio_pct"],
+      "properties": {
+        "total_read_mb": {
+          "type": "number",
+          "description": "Total read volume in MiB. Historical field name retains the _mb suffix for compatibility."
+        },
+        "total_write_mb": {
+          "type": "number",
+          "description": "Total write volume in MiB. Historical field name retains the _mb suffix for compatibility."
+        },
+        "total_io_time_ms": {
+          "type": "number",
+          "description": "Total read_time_ms + write_time_ms across backends. Excludes writeback and fsync time."
+        },
+        "read_hit_ratio_pct": {
+          "type": "number",
+          "description": "Buffer hit ratio percentage: 100 * hits / (hits + reads)."
+        },
+        "avg_read_time_ms": {
+          "type": ["number", "null"],
+          "description": "Average read latency in milliseconds per read operation; null when total reads is zero."
+        },
+        "avg_write_time_ms": {
+          "type": ["number", "null"],
+          "description": "Average write latency in milliseconds per write operation; null when total writes is zero."
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "by_backend_type", "analysis", "stats_reset_s"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "min_version_required": {
+          "type": "string",
+          "description": "Minimum PostgreSQL major version required for this check. Present when available is false because pg_stat_io is unsupported."
+        },
+        "by_backend_type": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/backendIOStats" }
+        },
+        "analysis": { "$ref": "#/$defs/analysis" },
+        "stats_reset_s": { "type": ["number", "null"] }
+      }
+    },
+    "nodeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data"],
+      "properties": {
+        "data": { "$ref": "#/$defs/data" },
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+      }
+    }
+  }
+}

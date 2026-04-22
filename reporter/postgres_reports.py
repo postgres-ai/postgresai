@@ -4,7 +4,7 @@ PostgreSQL Reports Generator using PromQL
 
 This script generates JSON reports containing Observations for specific PostgreSQL
 check types (A002, A003, A004, A007, D004, F001, F004, F005, H001, H002, H004,
-K001, K003, K004, K005, K006, K007, K008, M001, M002, M003, N001) by querying
+I001, K001, K003, K004, K005, K006, K007, K008, M001, M002, M003, N001) by querying
 Prometheus metrics using PromQL.
 
 IMPORTANT: Scope of this module
@@ -3054,6 +3054,177 @@ class PostgresReportGenerator:
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
 
+    def generate_i001_io_statistics_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
+        """
+        Generate I001 I/O Statistics report using pg_stat_io metrics.
+
+        This report collects I/O statistics from the pg_stat_io view (PostgreSQL 16+),
+        providing insights into read/write operations by backend type.
+        Prometheus samples use last_over_time(...[3h]) to tolerate missed scrapes.
+
+        Args:
+            cluster: Cluster name
+            node_name: Node name
+
+        Returns:
+            Dictionary containing I/O statistics information
+        """
+        logger.info("Generating I001 I/O Statistics report...")
+
+        # Check PostgreSQL version first
+        version_info = self._get_postgres_version_info(cluster, node_name)
+        major_ver = version_info.get("server_major_ver")
+        try:
+            pg_major = int(major_ver) if major_ver is not None else 0
+        except ValueError:
+            pg_major = 0
+
+        # pg_stat_io requires PostgreSQL 16+
+        if pg_major < 16:
+            found_version = major_ver if major_ver else "unknown"
+            logger.warning(f"I001 - pg_stat_io requires PostgreSQL 16+, found version {found_version}")
+            return self.format_report_data(
+                "I001",
+                {
+                    "available": False,
+                    "min_version_required": "16",
+                    "by_backend_type": [],
+                    "analysis": {
+                        "total_read_mb": 0,
+                        "total_write_mb": 0,
+                        "total_io_time_ms": 0,
+                        "read_hit_ratio_pct": 0,
+                        "avg_read_time_ms": None,
+                        "avg_write_time_ms": None,
+                    },
+                    "stats_reset_s": None,
+                },
+                node_name,
+                postgres_version=version_info,
+            )
+
+        # Keep this list in sync with metrics.yml::pg_stat_io, checkup.ts::BackendIOStats, and I001 tests.
+        # Query pg_stat_io metrics using last_over_time. The 3h lookback tolerates missed scrapes.
+        # The metric is collected as pgwatch_pg_stat_io_* with tag_backend_type labels
+        io_metrics = [
+            "reads", "read_bytes_mb", "read_time_ms",
+            "writes", "write_bytes_mb", "write_time_ms",
+            "writebacks", "writeback_bytes_mb", "writeback_time_ms",
+            "fsyncs", "fsync_time_ms",
+            "extends", "extend_bytes_mb", "hits", "evictions", "reuses",
+            "stats_reset_s"
+        ]
+
+        by_backend_type = {}
+        stats_reset_s = None
+
+        for metric_name in io_metrics:
+            query = f'last_over_time(pgwatch_pg_stat_io_{metric_name}{{cluster="{cluster}", node_name="{node_name}"}}[3h])'
+            try:
+                result = self.query_instant(query)
+            except Exception as exc:
+                logger.warning(f"I001 - Failed to query {metric_name}: {exc}")
+                continue
+
+            if result.get('status') == 'success' and result.get('data', {}).get('result'):
+                for item in result['data']['result']:
+                    backend_type = item['metric'].get('backend_type', item['metric'].get('tag_backend_type', 'unknown'))
+                    value = float(item['value'][1]) if item.get('value') else 0
+
+                    if metric_name == "stats_reset_s":
+                        # Use the max stats_reset_s value across all backend types without creating a zeroed backend row.
+                        if stats_reset_s is None or value > stats_reset_s:
+                            stats_reset_s = int(value)
+                        continue
+
+                    if backend_type not in by_backend_type:
+                        by_backend_type[backend_type] = {
+                            "backend_type": backend_type,
+                            "reads": 0,
+                            "read_bytes_mb": 0,
+                            "read_time_ms": 0,
+                            "writes": 0,
+                            "write_bytes_mb": 0,
+                            "write_time_ms": 0,
+                            "writebacks": 0,
+                            "writeback_bytes_mb": 0,
+                            "writeback_time_ms": 0,
+                            "fsyncs": 0,
+                            "fsync_time_ms": 0,
+                            "extends": 0,
+                            "extend_bytes_mb": 0,
+                            "hits": 0,
+                            "evictions": 0,
+                            "reuses": 0,
+                        }
+
+                    by_backend_type[backend_type][metric_name] = value
+
+        # Convert to list and sort by backend_type, putting 'total' first if present
+        backend_list = list(by_backend_type.values())
+        backend_list.sort(key=lambda x: (0 if x['backend_type'] == 'total' else 1, x['backend_type']))
+
+        # Calculate analysis from the 'total' row if available, otherwise sum all
+        total_stats = by_backend_type.get('total', {})
+        if not total_stats and backend_list:
+            # Sum all backend types if no 'total' row
+            total_stats = {
+                "reads": sum(b.get("reads", 0) for b in backend_list),
+                "read_bytes_mb": sum(b.get("read_bytes_mb", 0) for b in backend_list),
+                "read_time_ms": sum(b.get("read_time_ms", 0) for b in backend_list),
+                "writes": sum(b.get("writes", 0) for b in backend_list),
+                "write_bytes_mb": sum(b.get("write_bytes_mb", 0) for b in backend_list),
+                "write_time_ms": sum(b.get("write_time_ms", 0) for b in backend_list),
+                "writebacks": sum(b.get("writebacks", 0) for b in backend_list),
+                "writeback_bytes_mb": sum(b.get("writeback_bytes_mb", 0) for b in backend_list),
+                "writeback_time_ms": sum(b.get("writeback_time_ms", 0) for b in backend_list),
+                "fsyncs": sum(b.get("fsyncs", 0) for b in backend_list),
+                "fsync_time_ms": sum(b.get("fsync_time_ms", 0) for b in backend_list),
+                "extends": sum(b.get("extends", 0) for b in backend_list),
+                "extend_bytes_mb": sum(b.get("extend_bytes_mb", 0) for b in backend_list),
+                "hits": sum(b.get("hits", 0) for b in backend_list),
+                "evictions": sum(b.get("evictions", 0) for b in backend_list),
+                "reuses": sum(b.get("reuses", 0) for b in backend_list),
+            }
+
+        total_read_mb = total_stats.get("read_bytes_mb", 0)
+        total_write_mb = total_stats.get("write_bytes_mb", 0)
+        total_read_time = total_stats.get("read_time_ms", 0)
+        total_write_time = total_stats.get("write_time_ms", 0)
+        total_io_time_ms = total_read_time + total_write_time
+        total_reads = total_stats.get("reads", 0)
+        total_writes = total_stats.get("writes", 0)
+        total_hits = total_stats.get("hits", 0)
+
+        # Calculate hit ratio: hits / (hits + reads) * 100
+        total_requests = total_hits + total_reads
+        read_hit_ratio_pct = round((total_hits / total_requests * 100), 2) if total_requests > 0 else 0.0
+
+        # Calculate average times
+        avg_read_time_ms = round(total_read_time / total_reads, 3) if total_reads > 0 else None
+        avg_write_time_ms = round(total_write_time / total_writes, 3) if total_writes > 0 else None
+
+        analysis = {
+            "total_read_mb": total_read_mb,
+            "total_write_mb": total_write_mb,
+            "total_io_time_ms": total_io_time_ms,
+            "read_hit_ratio_pct": read_hit_ratio_pct,
+            "avg_read_time_ms": avg_read_time_ms,
+            "avg_write_time_ms": avg_write_time_ms,
+        }
+
+        return self.format_report_data(
+            "I001",
+            {
+                "available": len(backend_list) > 0,
+                "by_backend_type": backend_list,
+                "analysis": analysis,
+                "stats_reset_s": stats_reset_s,
+            },
+            node_name,
+            postgres_version=version_info,
+        )
+
     def _get_pgss_metrics_data(self, cluster: str, node_name: str, start_time: datetime, end_time: datetime) -> List[
         Dict[str, Any]]:
         """
@@ -3870,6 +4041,7 @@ class PostgresReportGenerator:
             "M002": "Top queries by rows (I/O intensity)",
             "M003": "Top queries by I/O time",
             "N001": "Wait events grouped by type and query",
+            "I001": "I/O statistics (pg_stat_io)",
             "L002": "Data types being used",
             "L003": "Integer out-of-range risks in PKs",
             "L004": "Tables without PK/UK",
@@ -4098,6 +4270,7 @@ class PostgresReportGenerator:
             ('M002', self.generate_m002_rows_report),
             ('M003', self.generate_m003_io_time_report),
             ('N001', self.generate_n001_wait_events_report),
+            ('I001', self.generate_i001_io_statistics_report),
         ]
 
         for check_id, report_func in independent_report_types:
