@@ -9,7 +9,7 @@ Single EC2 instance with Docker Compose.
 Terraform creates:
 - VPC with public subnet
 - EC2 instance (Ubuntu 22.04 LTS)
-- EBS volumes (configurable types: gp3, st1, sc1, encrypted)
+- EBS volumes (configurable types: gp3, st1, sc1; AES-256 encryption at rest enabled)
 - Security Group (SSH + Grafana ports)
 - Elastic IP (optional)
 
@@ -223,6 +223,37 @@ When enabled, all VictoriaMetrics API endpoints require authentication. The heal
 
 Grafana, the Flask backend, and the Reporter are automatically configured to use the credentials.
 
+
+### Encryption at rest
+
+All monitoring data is encrypted at rest using AES-256:
+
+- **EBS root volume** (30 GiB): `encrypted = true` in `main.tf`
+- **EBS data volume** (configurable size): `encrypted = true` in `main.tf`
+- **Encryption key**: AWS-managed `aws/ebs` key by default. To use a custom KMS key, set `encryption_kms_key_arn` in `terraform.tfvars`:
+  ```hcl
+  encryption_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+  ```
+  > **WARNING — data loss risk:** Changing `encryption_kms_key_arn` in **any direction** (empty → ARN, ARN → empty, or ARN → different ARN) on an existing deployment will cause Terraform to **destroy and recreate** both the EBS data volume and the EC2 instance (`kms_key_id` is a `ForceNew` attribute). Take a snapshot of **both** the data volume and the root volume before applying this change to a live environment, then restore from snapshots after Terraform completes.
+
+Postgres (sink-postgres) and VictoriaMetrics store data on the encrypted EBS data volume mounted at `/data`. No application-level encryption is needed — the storage layer handles it transparently.
+
+To verify encryption on a running instance:
+
+```bash
+# Data volume
+aws ec2 describe-volumes \
+  --volume-ids $(terraform output -raw data_volume_id) \
+  --query 'Volumes[0].{Encrypted:Encrypted,KmsKeyId:KmsKeyId}'
+
+# Root volume
+aws ec2 describe-volumes \
+  --volume-ids $(terraform output -raw root_volume_id) \
+  --query 'Volumes[0].{Encrypted:Encrypted,KmsKeyId:KmsKeyId}'
+```
+
+**Note:** This covers encryption at rest only. For encryption in transit, configure TLS for Postgres connections and HTTPS for Grafana endpoints.
+
 ### Recommendations
 
 1. **Most secure setup (SSH tunnel only)**:
@@ -433,6 +464,29 @@ For production deployments:
 - Use environment variables: `export TF_VAR_grafana_password=...`
 - Configure monitoring instances manually after deployment (Method 2)
 - Store state in private repositories only
+
+#### Remote state with encryption (recommended for production)
+
+Add a backend block inside `terraform {}` in `main.tf`:
+
+```hcl
+backend "s3" {
+  bucket         = "your-terraform-state-bucket"
+  key            = "postgres-ai-monitoring/terraform.tfstate"
+  region         = "us-east-1"
+  encrypt        = true        # AES-256 encryption at rest (SSE-S3)
+  dynamodb_table = "terraform-locks"  # State locking (Terraform < 1.10)
+  # use_lockfile = true               # Native S3 locking (Terraform >= 1.10, replaces dynamodb_table)
+}
+```
+
+This ensures the state file (which contains credentials) is encrypted at rest in S3.
+
+**Important:** The S3 bucket should have versioning enabled, public access blocked, and a bucket policy enforcing TLS (`aws:SecureTransport`). For SSE-KMS instead of SSE-S3, add `kms_key_id` to the backend configuration.
+
+**Note:** For existing deployments with local state, run `terraform init -migrate-state` after adding the backend block.
+
+**Note:** The application (Postgres, VictoriaMetrics) does not use S3 buckets for data storage — all data resides on the encrypted EBS data volume at `/data`.
 
 ### IMDSv2
 

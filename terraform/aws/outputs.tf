@@ -8,6 +8,11 @@ output "data_volume_id" {
   value       = aws_ebs_volume.data.id
 }
 
+output "root_volume_id" {
+  description = "EBS root volume ID (for snapshots)"
+  value       = one(aws_instance.main.root_block_device).volume_id
+}
+
 output "public_ip" {
   description = "Public IP address"
   value       = var.use_elastic_ip ? aws_eip.main[0].public_ip : aws_instance.main.public_ip
