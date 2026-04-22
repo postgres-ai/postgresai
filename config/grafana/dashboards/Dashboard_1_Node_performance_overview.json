@@ -1831,7 +1831,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "blue",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -3065,6 +3066,104 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "description": "High-level node signal showing the total size of regular files in pg_wal. Use dashboard 05. WAL, backups, DR for detailed WAL retention, archiving, and producer analysis. Subdirectories such as archive_status are excluded; check pgwatch_pg_wal_size_status_code if this series is missing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 131
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(pgwatch_pg_wal_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}[1h])",
+          "legendFormat": "pg_wal_size",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "pg_wal directory size",
+      "type": "timeseries"
+    },
+    {
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -3073,7 +3172,7 @@
         "h": 3,
         "w": 24,
         "x": 0,
-        "y": 131
+        "y": 143
       },
       "id": 40,
       "options": {
@@ -3159,5 +3258,5 @@
   "timezone": "utc",
   "title": "01. Single node performance overview (high-level)",
   "uid": "f90500a0-a12e-4081-a2f0-07ed96f27915",
-  "version": 12
+  "version": 14
 }
