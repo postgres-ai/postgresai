@@ -76,7 +76,13 @@ flask:
   service:
     type: ClusterIP
     port: 8000
-  resources: {}
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
 
 reporter:
   enabled: true

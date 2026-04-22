@@ -212,7 +212,9 @@ vm-auth:config:tests:
     - helm repo add grafana https://grafana.github.io/helm-charts
     - helm dependency build postgres_ai_helm/
   script:
-    - python -m pytest tests/compliance_vectors/test_vm_auth.py -v
+    - helm lint postgres_ai_helm/
+    - helm template test postgres_ai_helm/ --set secrets.createFromValues=true >/tmp/postgres-ai-helm-rendered.yaml
+    - python -m pytest tests/compliance_vectors/test_vm_auth.py tests/compliance_vectors/test_flask_resources.py -v
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
