@@ -87,7 +87,7 @@ describe("createBaseReport", () => {
 // Tests for CHECK_INFO
 describe("CHECK_INFO and REPORT_GENERATORS", () => {
   // Express-mode checks that have generators
-  const expressCheckIds = ["A002", "A003", "A004", "A007", "A013", "D001", "D004", "F001", "F004", "F005", "G001", "G003", "H001", "H002", "H004"];
+  const expressCheckIds = ["A002", "A003", "A004", "A007", "A013", "D001", "D004", "F001", "F004", "F005", "G001", "G003", "H001", "H002", "H004", "I001"];
 
   test("CHECK_INFO contains all express-mode checks", () => {
     for (const checkId of expressCheckIds) {
@@ -152,6 +152,90 @@ describe("formatBytes", () => {
   });
 });
 
+function createI001MockClient(options: {
+  versionRows?: any[];
+  ioRows?: any[];
+  ioError?: boolean;
+  resetRows?: any[];
+  resetError?: boolean;
+} = {}) {
+  const queries: string[] = [];
+  const {
+    versionRows = [
+      { name: "server_version", setting: "16.3" },
+      { name: "server_version_num", setting: "160003" },
+    ],
+    ioRows = [],
+    ioError = false,
+    resetRows = [{ stats_reset_s: "86400" }],
+    resetError = false,
+  } = options;
+
+  return {
+    queries,
+    query: async (sql: string) => {
+      queries.push(sql);
+      if (sql.includes("server_version") && sql.includes("server_version_num") && sql.includes("pg_settings")) {
+        return { rows: versionRows };
+      }
+      if (sql.includes("pg_stat_io") && sql.includes("rollup")) {
+        if (ioError) {
+          throw new Error("I/O statistics unavailable");
+        }
+        return { rows: ioRows };
+      }
+      if (sql.includes("pg_stat_io") && sql.includes("stats_reset_s")) {
+        if (resetError) {
+          throw new Error("stats reset unavailable");
+        }
+        return { rows: resetRows };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+}
+
+const i001Rows = [
+  {
+    tag_backend_type: "client backend",
+    reads: "1000",
+    read_bytes_mb: "100",
+    read_time_ms: "500",
+    writes: "200",
+    write_bytes_mb: "50",
+    write_time_ms: "100",
+    writebacks: "20",
+    writeback_bytes_mb: "2",
+    writeback_time_ms: "4",
+    fsyncs: "1",
+    fsync_time_ms: "3",
+    extends: "6",
+    extend_bytes_mb: "8",
+    hits: "5000",
+    evictions: "3",
+    reuses: "7",
+  },
+  {
+    tag_backend_type: "total",
+    reads: "1500",
+    read_bytes_mb: "150",
+    read_time_ms: "750",
+    writes: "300",
+    write_bytes_mb: "75",
+    write_time_ms: "150",
+    writebacks: "30",
+    writeback_bytes_mb: "3",
+    writeback_time_ms: "6",
+    fsyncs: "2",
+    fsync_time_ms: "5",
+    extends: "9",
+    extend_bytes_mb: "12",
+    hits: "7500",
+    evictions: "4",
+    reuses: "11",
+  },
+];
+
 // Mock client tests for report generators
 describe("Report generators with mock client", () => {
   test("getPostgresVersion extracts version info", async () => {
@@ -167,6 +251,208 @@ describe("Report generators with mock client", () => {
     expect(version.server_version_num).toBe("160003");
     expect(version.server_major_ver).toBe("16");
     expect(version.server_minor_ver).toBe("3");
+  });
+
+  test("getIOStatistics returns empty for PostgreSQL versions before 16", async () => {
+    const mockClient = createI001MockClient({ ioRows: i001Rows });
+
+    const defaultStats = await checkup.getIOStatistics(mockClient as any);
+    const stats = await checkup.getIOStatistics(mockClient as any, 15);
+
+    expect(defaultStats).toEqual([]);
+    expect(stats).toEqual([]);
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  test("getIOStatistics skips placeholder SQL without querying", async () => {
+    const mockClient = createI001MockClient({ ioRows: i001Rows });
+
+    const stats = await checkup.getIOStatistics(mockClient as any, 16, "; -- pg_stat_io unavailable");
+    const barePlaceholderStats = await checkup.getIOStatistics(mockClient as any, 16, ";");
+
+    const whitespacePlaceholderStats = await checkup.getIOStatistics(mockClient as any, 16, "  ; -- whitespace prefix");
+
+    expect(stats).toEqual([]);
+    expect(barePlaceholderStats).toEqual([]);
+    expect(whitespacePlaceholderStats).toEqual([]);
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  test("getIOStatistics returns empty when the SQL result has no rows", async () => {
+    const mockClient = createI001MockClient({ ioRows: [] });
+
+    const stats = await checkup.getIOStatistics(mockClient as any, 16);
+
+    expect(stats).toEqual([]);
+  });
+
+  test("getIOStatistics catches primary query errors", async () => {
+    const mockClient = createI001MockClient({ ioError: true, resetRows: [] });
+
+    const stats = await checkup.getIOStatistics(mockClient as any, 16);
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+
+    expect(stats).toEqual([]);
+    expect(report.results["node-01"].data).toEqual({
+      available: false,
+      by_backend_type: [],
+      analysis: {
+        total_read_mb: 0,
+        total_write_mb: 0,
+        total_io_time_ms: 0,
+        read_hit_ratio_pct: 0,
+        avg_read_time_ms: null,
+        avg_write_time_ms: null,
+      },
+      stats_reset_s: null,
+    });
+  });
+
+  test("getIOStatistics maps backend rows including extension bytes", async () => {
+    const mockClient = createI001MockClient({ ioRows: i001Rows });
+
+    const stats = await checkup.getIOStatistics(mockClient as any, 16);
+
+    expect(stats).toHaveLength(2);
+    expect(stats[0]).toMatchObject({
+      backend_type: "client backend",
+      reads: 1000,
+      read_bytes_mb: 100,
+      writes: 200,
+      write_bytes_mb: 50,
+      writebacks: 20,
+      writeback_bytes_mb: 2,
+      fsyncs: 1,
+      extends: 6,
+      extend_bytes_mb: 8,
+      hits: 5000,
+      evictions: 3,
+      reuses: 7,
+    });
+  });
+
+  test("generateI001 keeps report available when stats_reset query fails", async () => {
+    const mockClient = createI001MockClient({ ioRows: i001Rows, resetError: true });
+
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+    const data = report.results["node-01"].data;
+
+    expect(report.checkId).toBe("I001");
+    expect(data.available).toBe(true);
+    expect(data.stats_reset_s).toBeNull();
+    expect(data.by_backend_type.map((row: any) => row.backend_type)).toEqual(["total", "client backend"]);
+    expect(data.by_backend_type[0].extend_bytes_mb).toBe(12);
+    expect(data.analysis.read_hit_ratio_pct).toBe(83.33);
+  });
+
+  test("generateI001 dispatches version-specific pg_stat_io SQL", async () => {
+    const pg16Client = createI001MockClient({ ioRows: i001Rows });
+    const pg18Client = createI001MockClient({
+      versionRows: [
+        { name: "server_version", setting: "18.0" },
+        { name: "server_version_num", setting: "180000" },
+      ],
+      ioRows: i001Rows,
+    });
+
+    await checkup.REPORT_GENERATORS.I001(pg16Client as any, "node-01");
+    await checkup.REPORT_GENERATORS.I001(pg18Client as any, "node-01");
+
+    const pg16MetricSql = pg16Client.queries.find((sql) => sql.includes("pg_stat_io") && sql.includes("rollup"));
+    const pg18MetricSql = pg18Client.queries.find((sql) => sql.includes("pg_stat_io") && sql.includes("rollup"));
+
+    expect(pg16MetricSql).toContain("sum(coalesce(reads, 0) * op_bytes)");
+    expect(pg16MetricSql).toContain("sum(coalesce(extends, 0) * op_bytes)");
+    expect(pg18MetricSql).toContain("sum(coalesce(read_bytes, 0))");
+    expect(pg18MetricSql).toContain("sum(coalesce(extend_bytes, 0))");
+    expect(pg18MetricSql).toContain("sum(coalesce(writebacks, 0) * coalesce(op_bytes, 0))");
+  });
+
+  test("generateI001 returns unavailable on PostgreSQL 16 when ioStats are empty", async () => {
+    const mockClient = createI001MockClient({ ioRows: [], resetRows: [] });
+
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+    const data = report.results["node-01"].data;
+
+    expect(data.available).toBe(false);
+    expect(data.by_backend_type).toEqual([]);
+    expect(data.stats_reset_s).toBeNull();
+    expect(data.analysis).toEqual({
+      total_read_mb: 0,
+      total_write_mb: 0,
+      total_io_time_ms: 0,
+      read_hit_ratio_pct: 0,
+      avg_read_time_ms: null,
+      avg_write_time_ms: null,
+    });
+  });
+
+  test("generateI001 returns unavailable on PostgreSQL before 16 without querying pg_stat_io", async () => {
+    const mockClient = createI001MockClient({
+      versionRows: [
+        { name: "server_version", setting: "15.4" },
+        { name: "server_version_num", setting: "150004" },
+      ],
+    });
+
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+    const data = report.results["node-01"].data;
+
+    expect(data.available).toBe(false);
+    expect(data.min_version_required).toBe("16");
+    expect(data.by_backend_type).toEqual([]);
+    expect(mockClient.queries.every((sql) => !sql.includes("pg_stat_io"))).toBe(true);
+  });
+
+  test("generateI001 handles unknown PostgreSQL version as unavailable", async () => {
+    const mockClient = createI001MockClient({
+      versionRows: [
+        { name: "server_version", setting: "unknown" },
+        { name: "server_version_num", setting: "unknown" },
+      ],
+    });
+
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+    const data = report.results["node-01"].data;
+
+    expect(data.available).toBe(false);
+    expect(data.min_version_required).toBe("16");
+    expect(data.by_backend_type).toEqual([]);
+  });
+
+  test("generateI001 handles zero-request hit ratio and empty averages", async () => {
+    const mockClient = createI001MockClient({
+      ioRows: [{
+        tag_backend_type: "total",
+        reads: "0",
+        read_bytes_mb: "0",
+        read_time_ms: "0",
+        writes: "0",
+        write_bytes_mb: "0",
+        write_time_ms: "0",
+        writebacks: "0",
+        writeback_bytes_mb: "0",
+        writeback_time_ms: "0",
+        fsyncs: "0",
+        fsync_time_ms: "0",
+        extends: "0",
+        extend_bytes_mb: "0",
+        hits: "0",
+        evictions: "0",
+        reuses: "0",
+      }],
+      resetRows: [],
+    });
+
+    const report = await checkup.REPORT_GENERATORS.I001(mockClient as any, "node-01");
+    const data = report.results["node-01"].data;
+    const analysis = data.analysis;
+
+    expect(data.available).toBe(true);
+    expect(data.stats_reset_s).toBeNull();
+    expect(analysis.read_hit_ratio_pct).toBe(0);
+    expect(analysis.avg_read_time_ms).toBeNull();
+    expect(analysis.avg_write_time_ms).toBeNull();
   });
 
   test("getSettings transforms rows to keyed object", async () => {

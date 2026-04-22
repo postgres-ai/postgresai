@@ -78,4 +78,85 @@ describe("Schema validation", () => {
       validateAgainstSchema(report, checkId);
     });
   }
+
+  test("I001 validates with available pg_stat_io data", () => {
+    const report = {
+      version: null,
+      build_ts: null,
+      generation_mode: null,
+      checkId: "I001",
+      checkTitle: "I/O statistics (pg_stat_io)",
+      timestamptz: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+      nodes: { primary: "node-01", standbys: [] },
+      results: {
+        "node-01": {
+          data: {
+            available: true,
+            by_backend_type: [{
+              backend_type: "total",
+              reads: 10,
+              read_bytes_mb: 64,
+              read_time_ms: 20,
+              writes: 5,
+              write_bytes_mb: 32,
+              write_time_ms: 10,
+              writebacks: 4,
+              writeback_bytes_mb: 16,
+              writeback_time_ms: 8,
+              fsyncs: 2,
+              fsync_time_ms: 6,
+              extends: 3,
+              extend_bytes_mb: 24,
+              hits: 90,
+              evictions: 7,
+              reuses: 11,
+            }],
+            analysis: {
+              total_read_mb: 64,
+              total_write_mb: 32,
+              total_io_time_ms: 30,
+              read_hit_ratio_pct: 90,
+              avg_read_time_ms: 2,
+              avg_write_time_ms: 2,
+            },
+            stats_reset_s: 7200,
+          },
+        },
+      },
+    };
+
+    validateAgainstSchema(report, "I001");
+  });
+
+  test("I001 validates with unavailable pg_stat_io data", () => {
+    const report = {
+      version: null,
+      build_ts: null,
+      generation_mode: null,
+      checkId: "I001",
+      checkTitle: "I/O statistics (pg_stat_io)",
+      timestamptz: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+      nodes: { primary: "node-01", standbys: [] },
+      results: {
+        "node-01": {
+          data: {
+            available: false,
+            min_version_required: "16",
+            by_backend_type: [],
+            analysis: {
+              total_read_mb: 0,
+              total_write_mb: 0,
+              total_io_time_ms: 0,
+              read_hit_ratio_pct: 0,
+              avg_read_time_ms: null,
+              avg_write_time_ms: null,
+            },
+            stats_reset_s: null,
+          },
+        },
+      },
+    };
+
+    validateAgainstSchema(report, "I001");
+  });
 });

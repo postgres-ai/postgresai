@@ -50,6 +50,40 @@ def _query_stub_factory(prom_result, mapping: dict[str, Any]) -> Callable[[str],
     return _fake
 
 
+I001_IO_METRICS = [
+    "reads",
+    "read_bytes_mb",
+    "read_time_ms",
+    "writes",
+    "write_bytes_mb",
+    "write_time_ms",
+    "writebacks",
+    "writeback_bytes_mb",
+    "writeback_time_ms",
+    "fsyncs",
+    "fsync_time_ms",
+    "extends",
+    "extend_bytes_mb",
+    "hits",
+    "evictions",
+    "reuses",
+    "stats_reset_s",
+]
+
+
+def _i001_responses(prom_result, values_by_metric: dict[str, dict[str, float]]) -> dict[str, Any]:
+    """Build Prometheus responses for I001 metrics keyed by backend type."""
+    return {
+        f"pgwatch_pg_stat_io_{metric_name}": prom_result(
+            [
+                {"metric": {"backend_type": backend_type}, "value": [0, str(value)]}
+                for backend_type, value in backend_values.items()
+            ]
+        )
+        for metric_name, backend_values in values_by_metric.items()
+    }
+
+
 @pytest.mark.unit
 def test_query_instant_hits_prometheus(
     monkeypatch: pytest.MonkeyPatch,
@@ -880,6 +914,509 @@ def test_get_pgss_metrics_data_by_db_invokes_all_metrics(monkeypatch: pytest.Mon
 
 
 @pytest.mark.unit
+def test_generate_i001_io_statistics_report(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test I001 I/O Statistics report generation with pg_stat_io metrics."""
+    # Mock version info to return PostgreSQL 16+ (required for pg_stat_io)
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+
+    # Mock IO statistics metrics
+    io_responses = {
+        "pgwatch_pg_stat_io_reads": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "1000"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "1500"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_read_bytes_mb": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "100"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "150"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_read_time_ms": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "500"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "750"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_writes": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "200"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "300"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_write_bytes_mb": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "50"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "75"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_write_time_ms": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "100"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "150"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_hits": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "5000"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "7500"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_writebacks": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "20"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "30"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_writeback_bytes_mb": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "2"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "3"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_writeback_time_ms": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "4"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "6"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_fsyncs": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "1"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "2"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_fsync_time_ms": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "3"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "5"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_extends": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "6"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "9"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_extend_bytes_mb": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "8"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "12"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_evictions": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "3"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "4"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_reuses": prom_result(
+            [
+                {"metric": {"backend_type": "client backend"}, "value": [0, "7"]},
+                {"metric": {"backend_type": "total"}, "value": [0, "11"]},
+            ]
+        ),
+        "pgwatch_pg_stat_io_stats_reset_s": prom_result(
+            [{"metric": {"backend_type": "total"}, "value": [0, "86400"]}]
+        ),
+    }
+    monkeypatch.setattr(generator, "query_instant", _query_stub_factory(prom_result, io_responses))
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    assert payload["checkId"] == "I001"
+    assert payload["checkTitle"] == "I/O statistics (pg_stat_io)"
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is True
+    assert [row["backend_type"] for row in data["by_backend_type"]] == ["total", "client backend"]
+
+    total = data["by_backend_type"][0]
+    client_backend = data["by_backend_type"][1]
+    assert total["reads"] == 1500
+    assert total["read_bytes_mb"] == 150
+    assert total["writes"] == 300
+    assert total["write_bytes_mb"] == 75
+    assert total["writebacks"] == 30
+    assert total["writeback_bytes_mb"] == 3
+    assert total["fsyncs"] == 2
+    assert total["extends"] == 9
+    assert total["extend_bytes_mb"] == 12
+    assert total["hits"] == 7500
+    assert client_backend["backend_type"] == "client backend"
+    assert client_backend["reads"] == 1000
+    assert client_backend["extend_bytes_mb"] == 8
+    assert data["stats_reset_s"] == 86400
+
+    # Check analysis
+    analysis = data["analysis"]
+    assert analysis["total_read_mb"] == 150
+    assert analysis["total_write_mb"] == 75
+    assert analysis["total_io_time_ms"] == 900  # 750 + 150
+    assert analysis["avg_read_time_ms"] == pytest.approx(0.5)
+    assert analysis["avg_write_time_ms"] == pytest.approx(0.5)
+    # Hit ratio: 7500 / (7500 + 1500) = 83.33%
+    assert analysis["read_hit_ratio_pct"] == pytest.approx(83.33, rel=0.01)
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_no_prometheus_data(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test I001 returns empty availability when PG16 has no Prometheus samples."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+    captured_queries: list[str] = []
+
+    def fake_query_instant(query: str) -> dict[str, Any]:
+        captured_queries.append(query)
+        return prom_result([])
+
+    monkeypatch.setattr(generator, "query_instant", fake_query_instant)
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["by_backend_type"] == []
+    assert data["stats_reset_s"] is None
+    assert data["analysis"] == {
+        "total_read_mb": 0,
+        "total_write_mb": 0,
+        "total_io_time_ms": 0,
+        "read_hit_ratio_pct": 0,
+        "avg_read_time_ms": None,
+        "avg_write_time_ms": None,
+    }
+    assert len(captured_queries) == len(I001_IO_METRICS)
+    assert all("pgwatch_pg_stat_io_" in query for query in captured_queries)
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_pg18_byte_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test I001 accepts PG18 pg_stat_io byte metrics, including native extend bytes."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "18.0",
+            "server_version_num": "180000",
+            "server_major_ver": "18",
+            "server_minor_ver": "0",
+        },
+    )
+
+    io_responses = _i001_responses(
+        prom_result,
+        {
+            "reads": {"total": 10},
+            "read_bytes_mb": {"total": 64},
+            "read_time_ms": {"total": 20},
+            "writes": {"total": 5},
+            "write_bytes_mb": {"total": 32},
+            "write_time_ms": {"total": 10},
+            "writebacks": {"total": 4},
+            "writeback_bytes_mb": {"total": 16},
+            "writeback_time_ms": {"total": 8},
+            "fsyncs": {"total": 2},
+            "fsync_time_ms": {"total": 6},
+            "extends": {"total": 3},
+            "extend_bytes_mb": {"total": 24},
+            "hits": {"total": 90},
+            "evictions": {"total": 7},
+            "reuses": {"total": 11},
+            "stats_reset_s": {"total": 7200},
+        },
+    )
+    monkeypatch.setattr(generator, "query_instant", _query_stub_factory(prom_result, io_responses))
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is True
+    total = data["by_backend_type"][0]
+    assert total["backend_type"] == "total"
+    assert total["read_bytes_mb"] == 64
+    assert total["write_bytes_mb"] == 32
+    assert total["writebacks"] == 4
+    assert total["writeback_bytes_mb"] == 16
+    assert total["writeback_time_ms"] == 8
+    assert total["fsyncs"] == 2
+    assert total["fsync_time_ms"] == 6
+    assert total["extends"] == 3
+    assert total["extend_bytes_mb"] == 24
+    assert total["evictions"] == 7
+    assert total["reuses"] == 11
+    assert data["stats_reset_s"] == 7200
+    assert data["analysis"]["read_hit_ratio_pct"] == pytest.approx(90.0)
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_fallback_sums_all_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test no-total fallback sums every cumulative I/O field."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+    io_responses = _i001_responses(
+        prom_result,
+        {
+            "reads": {"client backend": 10, "autovacuum worker": 5},
+            "read_bytes_mb": {"client backend": 40, "autovacuum worker": 20},
+            "read_time_ms": {"client backend": 8, "autovacuum worker": 4},
+            "writes": {"client backend": 6, "autovacuum worker": 3},
+            "write_bytes_mb": {"client backend": 30, "autovacuum worker": 15},
+            "write_time_ms": {"client backend": 12, "autovacuum worker": 6},
+            "writebacks": {"client backend": 2, "autovacuum worker": 1},
+            "writeback_bytes_mb": {"client backend": 16, "autovacuum worker": 8},
+            "writeback_time_ms": {"client backend": 10, "autovacuum worker": 5},
+            "fsyncs": {"client backend": 4, "autovacuum worker": 2},
+            "fsync_time_ms": {"client backend": 14, "autovacuum worker": 7},
+            "extends": {"client backend": 3, "autovacuum worker": 2},
+            "extend_bytes_mb": {"client backend": 24, "autovacuum worker": 16},
+            "hits": {"client backend": 90, "autovacuum worker": 45},
+            "evictions": {"client backend": 7, "autovacuum worker": 4},
+            "reuses": {"client backend": 11, "autovacuum worker": 6},
+            "stats_reset_s": {"client backend": 3600, "autovacuum worker": 7200},
+        },
+    )
+    monkeypatch.setattr(generator, "query_instant", _query_stub_factory(prom_result, io_responses))
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is True
+    assert [row["backend_type"] for row in data["by_backend_type"]] == ["autovacuum worker", "client backend"]
+    assert data["stats_reset_s"] == 7200
+    assert data["analysis"] == {
+        "total_read_mb": 60,
+        "total_write_mb": 45,
+        "total_io_time_ms": 30,
+        "read_hit_ratio_pct": 90.0,
+        "avg_read_time_ms": 0.8,
+        "avg_write_time_ms": 2.0,
+    }
+    autovacuum_row = data["by_backend_type"][0]
+    client_row = data["by_backend_type"][1]
+    assert autovacuum_row["reads"] == 5
+    assert autovacuum_row["extends"] == 2
+    assert autovacuum_row["extend_bytes_mb"] == 16
+    assert autovacuum_row["reuses"] == 6
+    assert client_row["reads"] == 10
+    assert client_row["extends"] == 3
+    assert client_row["extend_bytes_mb"] == 24
+    assert client_row["reuses"] == 11
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_stats_reset_only_not_available(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test stats_reset_s alone does not create zero-filled backend rows."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+    io_responses = _i001_responses(prom_result, {"stats_reset_s": {"total": 3600}})
+    monkeypatch.setattr(generator, "query_instant", _query_stub_factory(prom_result, io_responses))
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["by_backend_type"] == []
+    assert data["stats_reset_s"] == 3600
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_tag_backend_type_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    """Test backend type extraction supports tag_backend_type and unknown fallback labels."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+    io_responses = {
+        "pgwatch_pg_stat_io_reads": prom_result(
+            [
+                {"metric": {"tag_backend_type": "client backend"}, "value": [0, "10"]},
+                {"metric": {}, "value": [0, "2"]},
+            ]
+        )
+    }
+    monkeypatch.setattr(generator, "query_instant", _query_stub_factory(prom_result, io_responses))
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is True
+    assert [row["backend_type"] for row in data["by_backend_type"]] == ["client backend", "unknown"]
+    assert data["by_backend_type"][0]["reads"] == 10
+    assert data["by_backend_type"][1]["reads"] == 2
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_query_exception_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+) -> None:
+    """Test Prometheus query exceptions produce an unavailable I001 payload."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "16.1",
+            "server_version_num": "160001",
+            "server_major_ver": "16",
+            "server_minor_ver": "1",
+        },
+    )
+
+    def failing_query_instant(query: str) -> dict[str, Any]:
+        raise ConnectionError("Prometheus unavailable")
+
+    monkeypatch.setattr(generator, "query_instant", failing_query_instant)
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["by_backend_type"] == []
+    assert data["stats_reset_s"] is None
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_invalid_version_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+) -> None:
+    """Test non-numeric server_major_ver falls back to unavailable."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "unknown",
+            "server_version_num": "unknown",
+            "server_major_ver": "unknown",
+            "server_minor_ver": "",
+        },
+    )
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["min_version_required"] == "16"
+    assert data["by_backend_type"] == []
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_missing_version_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+) -> None:
+    """Test missing server_major_ver falls back to unavailable."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "unknown",
+            "server_version_num": "unknown",
+            "server_major_ver": None,
+            "server_minor_ver": "",
+        },
+    )
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["min_version_required"] == "16"
+    assert data["by_backend_type"] == []
+
+
+@pytest.mark.unit
+def test_generate_i001_io_statistics_report_pg15_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+) -> None:
+    """Test I001 returns unavailable for PostgreSQL < 16."""
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "15.4",
+            "server_version_num": "150004",
+            "server_major_ver": "15",
+            "server_minor_ver": "4",
+        },
+    )
+
+    payload = generator.generate_i001_io_statistics_report("local", "node-1")
+
+    assert payload["checkId"] == "I001"
+    data = payload["results"]["node-1"]["data"]
+    assert data["available"] is False
+    assert data["min_version_required"] == "16"
+    assert data["by_backend_type"] == []
+
+
+@pytest.mark.unit
 def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPatch) -> None:
     generator = PostgresReportGenerator()
     called: list[str] = []
@@ -902,6 +1439,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
         "generate_h001_invalid_indexes_report",
         "generate_h002_unused_indexes_report",
         "generate_h004_redundant_indexes_report",
+        "generate_i001_io_statistics_report",
         "generate_k001_query_calls_report",
         "generate_k003_top_queries_report",
         "generate_k004_temp_bytes_report",
@@ -936,6 +1474,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
         'A002', 'A003', 'A004', 'A007',
         'D004', 'F001', 'F004', 'F005', 'G001',
         'H001', 'H002', 'H004',
+        'I001',
         'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008',
         'M001', 'M002', 'M003',
         'N001',

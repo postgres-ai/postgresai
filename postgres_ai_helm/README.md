@@ -27,7 +27,7 @@ This helm chart deploys the following components:
 
 - **PGWatch**: Monitors Postgres databases and collects metrics
 - **VictoriaMetrics**: Time-series database for storing metrics
-- **Grafana**: Visualization and dashboards
+- **Grafana**: Visualization and dashboards, including Dashboard 14 I/O statistics powered by `pg_stat_io` for PostgreSQL 16+
 - **Node exporter**: System-level metrics
 - **cAdvisor**: Container metrics
 - **Reporter**: Automated health check reports

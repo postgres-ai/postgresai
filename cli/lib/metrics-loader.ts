@@ -63,7 +63,7 @@ export function listMetricNames(): string[] {
 export const METRIC_NAMES = {
   // Index health checks
   H001: "pg_invalid_indexes",
-  H002: "unused_indexes", 
+  H002: "unused_indexes",
   H004: "redundant_indexes",
   // Bloat estimation
   F004: "pg_table_bloat",
@@ -75,6 +75,8 @@ export const METRIC_NAMES = {
   dbSize: "db_size",
   // Stats reset info (H002)
   statsReset: "stats_reset",
+  // I/O statistics (I001) - PostgreSQL 16+
+  I001: "pg_stat_io",
 } as const;
 
 /**
