@@ -2468,6 +2468,113 @@
         "type": "prometheus",
         "uid": "P7A0D6631BB10B34F"
       },
+      "description": "High-level data and catalog xmin horizon ages for the selected node. Use Dashboard 07 for source-level blocker details.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: tx"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 84
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "pgwatch_xmin_horizon_data_horizon_age_tx{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "data horizon",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "pgwatch_xmin_horizon_catalog_horizon_age_tx{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "catalog horizon",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "xmin horizon age (experimental)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2528,7 +2635,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 84
+        "y": 92
       },
       "id": 41,
       "options": {
@@ -2694,7 +2801,7 @@
         "h": 11,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 102
       },
       "id": 42,
       "options": {
@@ -2815,7 +2922,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 105
+        "y": 113
       },
       "id": 44,
       "options": {
@@ -3017,7 +3124,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 127
       },
       "id": 46,
       "options": {

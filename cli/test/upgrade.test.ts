@@ -285,6 +285,7 @@ describe("upgrade error handling", () => {
 
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     expect(envContent).toMatch(/PGAI_TAG=/);
+    expect(envContent).toMatch(/REPLICATOR_PASSWORD=[a-f0-9]{64}/);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles .env without PGAI_TAG line", () => {
@@ -292,7 +293,7 @@ describe("upgrade error handling", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     // Create .env without PGAI_TAG (only has other settings)
-    fs.writeFileSync(resolve(testDir, ".env"), "GF_SECURITY_ADMIN_PASSWORD=old-password\n");
+    fs.writeFileSync(resolve(testDir, ".env"), "GF_SECURITY_ADMIN_PASSWORD=old-password\nREPLICATOR_PASSWORD=existing-repl\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
@@ -309,6 +310,7 @@ describe("upgrade error handling", () => {
     expect(envContent).toMatch(/PGAI_TAG=/);
     // Should preserve existing settings
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=old-password/);
+    expect(envContent).toMatch(/REPLICATOR_PASSWORD=existing-repl/);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles same version (no-op scenario)", () => {

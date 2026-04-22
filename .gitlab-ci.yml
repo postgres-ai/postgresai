@@ -307,7 +307,7 @@ cli:node:tests:
 # Validate helm chart on merge requests and main branch
 validate-helm-chart:
   stage: validate
-  image: 
+  image:
     name: alpine/helm:${HELM_VERSION}
     entrypoint: [""]
   rules:
@@ -674,9 +674,10 @@ cli:node:e2e:dind:
       docker pull "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "Images ready:"
       docker images | grep "$CI_REGISTRY_IMAGE"
-    # Create .env file with registry and tag
+    # Create .env file with registry, tag, and a per-job replication password
     - |
-      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" > .env
+      REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
   script:
     - ./tests/e2e.cli.sh
   after_script:
@@ -715,9 +716,10 @@ cli:node:full:dind:
       docker pull "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "Images ready:"
       docker images | grep "$CI_REGISTRY_IMAGE"
-    # Create .env file with registry and tag
+    # Create .env file with registry, tag, and a per-job replication password
     - |
-      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" > .env
+      REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
   script:
     - echo "=== Testing local-install (demo mode) ==="
     - node ./cli/dist/bin/postgres-ai.js mon local-install --demo
@@ -775,6 +777,128 @@ cli:node:full:dind:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
   allow_failure: false
+
+integration:xmin-horizon:
+  stage: test
+  image: docker:27.3
+  services:
+    - name: docker:27.3-dind
+      command: ["--tls=false"]
+  needs:
+    - job: build:test:images
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_API_VERSION: "1.45"
+    GIT_STRATEGY: fetch
+    PGAI_TAG: ${CI_COMMIT_REF_SLUG}
+  before_script:
+    - apk add --no-cache bash docker-cli docker-compose
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+    - REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
+    - cp instances.demo.yml instances.yml
+  script:
+    - docker compose up -d target-db sink-prometheus
+    - |
+      bash <<'BASH'
+      set -Eeuo pipefail
+      IFS=$'\n\t'
+      NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' target-db | head -n1)"
+      test -n "$NETWORK"
+      target_ready=0
+      for i in {1..60}; do
+        if docker run --rm --network "$NETWORK" postgres:15 pg_isready -h target-db -U postgres; then
+          target_ready=1
+          break
+        fi
+        sleep 2
+      done
+      test "$target_ready" = "1"
+      monitor_ready=0
+      for i in {1..60}; do
+        if docker run --rm --network "$NETWORK" postgres:15 \
+          psql "postgresql://monitor:monitor_pass@target-db:5432/target_database" -c 'select 1'; then
+          monitor_ready=1
+          break
+        fi
+        sleep 2
+      done
+      test "$monitor_ready" = "1"
+      docker compose up -d target-standby
+      standby_ready=0
+      for i in {1..60}; do
+        if docker run --rm --network "$NETWORK" postgres:15 pg_isready -h target-standby -U postgres; then
+          standby_ready=1
+          break
+        fi
+        sleep 2
+      done
+      test "$standby_ready" = "1"
+      standby_recovery_ready=0
+      for i in {1..60}; do
+        if docker run --rm --network "$NETWORK" postgres:15 \
+          psql "postgresql://postgres:postgres@target-standby:5432/target_database" -tAc 'select pg_is_in_recovery()' | grep -qx t; then
+          standby_recovery_ready=1
+          break
+        fi
+        sleep 2
+      done
+      test "$standby_recovery_ready" = "1"
+      docker compose up -d pgwatch-prometheus
+      docker run --rm \
+        --network "$NETWORK" \
+        -v "$CI_PROJECT_DIR:/workspace" \
+        -w /workspace \
+        -e TARGET_DB_URL="postgresql://postgres:postgres@target-db:5432/target_database" \
+        -e STANDBY_DB_URL="postgresql://postgres:postgres@target-standby:5432/target_database" \
+        -e PROMETHEUS_URL="http://sink-prometheus:9090" \
+        -e COLLECTION_WAIT_SECONDS="480" \
+        -e REQUIRE_REPLICATION_SLOT_TEST="1" \
+        -e REQUIRE_PREPARED_XACTS_TEST="1" \
+        -e REQUIRE_STANDBY_FEEDBACK_TEST="1" \
+        python:3.11-slim \
+        bash -lc './tests/xmin_horizon/run_test.sh'
+      BASH
+  after_script:
+    - docker ps -a || true
+    - docker logs target-standby 2>&1 || true
+    - docker logs pgwatch-prometheus 2>&1 || true
+    - docker logs sink-prometheus 2>&1 || true
+    - docker compose down -v || true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - tests/xmin_horizon/**/*
+        - config/pgwatch-prometheus/metrics.yml
+        - config/target-db/**/*
+        - config/grafana/dashboards/Dashboard_7_Autovacuum_and_bloat.json
+        - postgres_ai_helm/config/grafana/dashboards/Dashboard_7_Autovacuum_and_bloat.json
+        - docker-compose.yml
+        - .gitlab-ci.yml
+
+integration:xmin-horizon:standby-feedback:
+  stage: test
+  image: python:3.11-slim
+  variables:
+    GIT_STRATEGY: fetch
+    REQUIRE_STANDBY_FEEDBACK_TEST: "1"
+  script:
+    - |
+      : "${XMIN_HORIZON_STANDBY_TARGET_DB_URL:?set in CI for standby-feedback xmin coverage}"
+      : "${XMIN_HORIZON_STANDBY_DB_URL:?set in CI for standby-feedback xmin coverage}"
+      : "${XMIN_HORIZON_STANDBY_PROMETHEUS_URL:?set in CI for standby-feedback xmin coverage}"
+      TARGET_DB_URL="$XMIN_HORIZON_STANDBY_TARGET_DB_URL" \
+      STANDBY_DB_URL="$XMIN_HORIZON_STANDBY_DB_URL" \
+      PROMETHEUS_URL="$XMIN_HORIZON_STANDBY_PROMETHEUS_URL" \
+      REQUIRE_STANDBY_FEEDBACK_TEST="1" \
+      ./tests/xmin_horizon/run_test.sh
+  rules:
+    - if: '$XMIN_HORIZON_STANDBY_TARGET_DB_URL && $XMIN_HORIZON_STANDBY_DB_URL && $XMIN_HORIZON_STANDBY_PROMETHEUS_URL'
+      changes:
+        - tests/xmin_horizon/**/*
+        - config/pgwatch-prometheus/metrics.yml
+        - .gitlab-ci.yml
 
 cli:node:integration:
   stage: test
@@ -849,15 +973,15 @@ preview:deploy:
       set -euo pipefail
       : "${PREVIEW_SSH_PRIVATE_KEY:?PREVIEW_SSH_PRIVATE_KEY is required}"
       : "${PREVIEW_VM_HOST:?PREVIEW_VM_HOST is required}"
-      
+
       # Sanitize branch name
       BRANCH_SLUG=$(echo "$CI_COMMIT_REF_SLUG" | tr '[:upper:]' '[:lower:]' | \
         sed 's/[\/\_]/-/g' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | \
         sed 's/^-//;s/-$//' | cut -c1-63)
-      
+
       echo "Deploying preview: $BRANCH_SLUG"
       echo "PREVIEW_URL=https://preview-${BRANCH_SLUG}.pgai.watch" >> deploy.env
-      
+
       # Sync scripts to VM
       rsync -avz --delete -e "ssh" \
         preview-infra/scripts/ \
@@ -880,7 +1004,7 @@ preview:deploy:
         "BRANCH_SLUG=${BRANCH_SLUG} COMMIT_SHA=${CI_COMMIT_SHA} BRANCH_NAME='${CI_COMMIT_REF_NAME}' \
          PGAI_REGISTRY=${CI_REGISTRY_IMAGE} PGAI_TAG=${CI_COMMIT_REF_SLUG} \
          ${PREVIEW_BASE_DIR}/manager/deploy.sh"
-      
+
       echo ""
       echo "Preview deployed successfully!"
       echo "URL: https://preview-${BRANCH_SLUG}.pgai.watch"
@@ -898,15 +1022,15 @@ preview:update:
       set -euo pipefail
       : "${PREVIEW_SSH_PRIVATE_KEY:?PREVIEW_SSH_PRIVATE_KEY is required}"
       : "${PREVIEW_VM_HOST:?PREVIEW_VM_HOST is required}"
-      
+
       BRANCH_SLUG=$(echo "$CI_COMMIT_REF_SLUG" | tr '[:upper:]' '[:lower:]' | \
         sed 's/[\/\_]/-/g' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | \
         sed 's/^-//;s/-$//' | cut -c1-63)
-      
+
       # Check if preview exists
       EXISTS=$(ssh ${PREVIEW_VM_USER}@${PREVIEW_VM_HOST} \
         "test -d ${PREVIEW_BASE_DIR}/previews/${BRANCH_SLUG} && echo yes || echo no")
-      
+
       if [ "$EXISTS" = "yes" ]; then
         echo "Updating preview: $BRANCH_SLUG"
 
@@ -950,16 +1074,16 @@ preview:destroy:
       set -euo pipefail
       : "${PREVIEW_SSH_PRIVATE_KEY:?PREVIEW_SSH_PRIVATE_KEY is required}"
       : "${PREVIEW_VM_HOST:?PREVIEW_VM_HOST is required}"
-      
+
       BRANCH_SLUG=$(echo "$CI_COMMIT_REF_SLUG" | tr '[:upper:]' '[:lower:]' | \
         sed 's/[\/\_]/-/g' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | \
         sed 's/^-//;s/-$//' | cut -c1-63)
-      
+
       echo "Destroying preview: $BRANCH_SLUG"
-      
+
       ssh ${PREVIEW_VM_USER}@${PREVIEW_VM_HOST} \
         "BRANCH_SLUG=${BRANCH_SLUG} ${PREVIEW_BASE_DIR}/manager/destroy.sh" || true
-      
+
       echo "Preview destroyed"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
