@@ -33,7 +33,7 @@ services:
 
   # Target Database - PostgreSQL being monitored
   target-db:
-    image: postgres:15
+    image: postgres:17
     mem_limit: 512m
     cpus: 0.3
     environment:
@@ -67,7 +67,7 @@ services:
 
   # Sink Postgres - Metrics storage
   sink-postgres:
-    image: postgres:15
+    image: postgres:17
     mem_limit: 768m
     cpus: 0.3
     environment:
@@ -98,7 +98,7 @@ services:
 
   # VictoriaMetrics - Prometheus-compatible metrics storage
   sink-prometheus:
-    image: victoriametrics/victoria-metrics:v1.105.0
+    image: victoriametrics/victoria-metrics:v1.140.0
     mem_limit: 768m
     cpus: 0.4
     volumes:
@@ -125,7 +125,7 @@ services:
 
   # PGWatch - Postgres sink
   pgwatch-postgres:
-    image: cybertecpostgresql/pgwatch:3
+    image: cybertecpostgresql/pgwatch:4.1.0
     mem_limit: 384m
     cpus: 0.25
     command:
@@ -149,7 +149,7 @@ services:
 
   # PGWatch - Prometheus sink
   pgwatch-prometheus:
-    image: cybertecpostgresql/pgwatch:3
+    image: cybertecpostgresql/pgwatch:4.1.0
     mem_limit: 512m
     cpus: 0.5
     command:
@@ -173,7 +173,7 @@ services:
 
   # Grafana - Visualization
   grafana:
-    image: grafana/grafana:12.0.2
+    image: grafana/grafana:12.3.2
     mem_limit: 256m
     cpus: 0.25
     environment:
@@ -215,7 +215,7 @@ services:
 
   # Workload generator
   workload:
-    image: postgres:15
+    image: postgres:17
     mem_limit: 128m
     cpus: 0.1
     depends_on:

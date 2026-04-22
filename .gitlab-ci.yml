@@ -810,7 +810,7 @@ integration:xmin-horizon:
       test -n "$NETWORK"
       target_ready=0
       for i in {1..60}; do
-        if docker run --rm --network "$NETWORK" postgres:15 pg_isready -h target-db -U postgres; then
+        if docker run --rm --network "$NETWORK" postgres:17 pg_isready -h target-db -U postgres; then
           target_ready=1
           break
         fi
@@ -819,7 +819,7 @@ integration:xmin-horizon:
       test "$target_ready" = "1"
       monitor_ready=0
       for i in {1..60}; do
-        if docker run --rm --network "$NETWORK" postgres:15 \
+        if docker run --rm --network "$NETWORK" postgres:17 \
           psql "postgresql://monitor:monitor_pass@target-db:5432/target_database" -c 'select 1'; then
           monitor_ready=1
           break
@@ -830,7 +830,7 @@ integration:xmin-horizon:
       docker compose up -d target-standby
       standby_ready=0
       for i in {1..60}; do
-        if docker run --rm --network "$NETWORK" postgres:15 pg_isready -h target-standby -U postgres; then
+        if docker run --rm --network "$NETWORK" postgres:17 pg_isready -h target-standby -U postgres; then
           standby_ready=1
           break
         fi
@@ -839,7 +839,7 @@ integration:xmin-horizon:
       test "$standby_ready" = "1"
       standby_recovery_ready=0
       for i in {1..60}; do
-        if docker run --rm --network "$NETWORK" postgres:15 \
+        if docker run --rm --network "$NETWORK" postgres:17 \
           psql "postgresql://postgres:postgres@target-standby:5432/target_database" -tAc 'select pg_is_in_recovery()' | grep -qx t; then
           standby_recovery_ready=1
           break

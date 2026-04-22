@@ -23,6 +23,52 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # Fail fast with an actionable message if the on-disk PGDATA major
+        # version does not match the image. Without this, postgres crash-
+        # loops with only "database files are incompatible with server"
+        # buried in the logs, and `helm upgrade` against an existing PG 15
+        # PVC surfaces as a generic pod CrashLoopBackOff.
+        - name: pg-version-guard
+          image: {{ .Values.sinkPostgres.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -Eeuo pipefail
+              version_file="${PGDATA}/PG_VERSION"
+              if [[ ! -f "${version_file}" ]]; then
+                exit 0  # empty PGDATA: initdb will run on first start
+              fi
+              on_disk="$(tr -d '[:space:]' < "${version_file}")"
+              image="$(postgres --version | awk '{print $3}' | cut -d. -f1)"
+              if [[ -n "${on_disk}" && "${on_disk}" != "${image}" ]]; then
+                cat >&2 <<EOF
+              =======================================================================
+              PostgreSQL version mismatch — refusing to start.
+
+                PVC PG version:   ${on_disk}
+                Image PG version: ${image}
+
+              On-disk format is not compatible across majors. Starting postgres
+              now would crash-loop. Data is NOT lost; it is simply unreadable
+              by this image version.
+
+              Upgrade path (see PostgresAI MR !145 runbook):
+                1. Scale this StatefulSet to 0.
+                2. Run pg_upgrade against the PVC from PG ${on_disk} to PG ${image},
+                   OR dump-and-restore into a fresh PVC.
+                3. Scale back to 1.
+              =======================================================================
+              EOF
+                exit 3
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
       containers:
         - name: postgres
           image: {{ .Values.sinkPostgres.image }}
@@ -70,5 +116,3 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storage.postgresSize }}
-
-
