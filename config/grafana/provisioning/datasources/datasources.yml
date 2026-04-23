@@ -1,8 +1,32 @@
 apiVersion: 1
 
+# Force re-provisioning on each startup to ensure config always wins over DB state.
+# WARNING:
+# 1. deleteDatasources overwrites Grafana DB state on every startup.
+# 2. editable: false prevents UI repair; the next restart deletes UI edits.
+# 3. VM_AUTH_PASSWORD must be non-empty. deleteDatasources removes the stored
+#    PGWatch-Prometheus row, then YAML provisioning recreates it with the
+#    current VM_AUTH_PASSWORD. If that value is unset or empty, a previously
+#    working basic-auth password is replaced with an empty one and Prometheus
+#    datasource queries fail with 401. Use scripts/rotate-vm-auth.sh to update
+#    VM auth, .env, sink-prometheus, and Grafana together; otherwise provisioning
+#    can reinsert a stale password and dashboards will fail with 401.
+# Keep stable uid values below so provisioned dashboards keep working.
+# orgId: 1 is Grafana's default single organization.
+deleteDatasources:
+  - name: PGWatch-PostgreSQL
+    orgId: 1
+  - name: PGWatch-Prometheus
+    orgId: 1
+  - name: Infinity
+    orgId: 1
+
+# editable: false prevents UI-driven drift between restarts; deleteDatasources
+# clears stale persisted state at startup.
 datasources:
   - name: PGWatch-PostgreSQL
     type: postgres
+    orgId: 1
     access: proxy
     uid: P031DD592934B2F1F
     url: sink-postgres:5432
@@ -16,9 +40,11 @@ datasources:
       # not in Grafana's official dropdown yet; this value overrides it.
       postgresVersion: 1700
     isDefault: false
+    editable: false
 
   - name: PGWatch-Prometheus
     type: prometheus
+    orgId: 1
     access: proxy
     uid: P7A0D6631BB10B34F
     url: http://sink-prometheus:9090
@@ -32,12 +58,15 @@ datasources:
       httpMethod: 'POST'
     secureJsonData:
       basicAuthPassword: ${VM_AUTH_PASSWORD}
+    editable: false
 
   - name: Infinity
     type: yesoreyeram-infinity-datasource
+    orgId: 1
     access: proxy
     uid: aerffb0z8rjlsc
     isDefault: false
     jsonData:
       auth_method: none
       allowed_hosts: []
+    editable: false

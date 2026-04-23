@@ -228,8 +228,8 @@ services:
       # Optional: disable login form when OAuth is primary auth
       GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_DISABLE_LOGIN_FORM:-false}
       GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-}
-      VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:-}
-      VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:-}
+      VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:?VM_AUTH_USERNAME is required for Grafana datasource provisioning}
+      VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:?VM_AUTH_PASSWORD is required for Grafana datasource provisioning}
     ports:
       - "${GRAFANA_BIND_HOST:-}3000:3000"
     volumes:
