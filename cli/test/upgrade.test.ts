@@ -286,6 +286,8 @@ describe("upgrade error handling", () => {
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     expect(envContent).toMatch(/PGAI_TAG=/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=[a-f0-9]{64}/);
+    expect(envContent).toMatch(/VM_AUTH_USERNAME=vmauth/);
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}\s*$/m);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles .env without PGAI_TAG line", () => {
@@ -293,7 +295,7 @@ describe("upgrade error handling", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     // Create .env without PGAI_TAG (only has other settings)
-    fs.writeFileSync(resolve(testDir, ".env"), "GF_SECURITY_ADMIN_PASSWORD=old-password\nREPLICATOR_PASSWORD=existing-repl\n");
+    fs.writeFileSync(resolve(testDir, ".env"), "GF_SECURITY_ADMIN_PASSWORD=old-password\nREPLICATOR_PASSWORD=existing-repl\nVM_AUTH_USERNAME=existing-vm-user\nVM_AUTH_PASSWORD=existing-vm-pass\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
@@ -311,6 +313,30 @@ describe("upgrade error handling", () => {
     // Should preserve existing settings
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=old-password/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=existing-repl/);
+    expect(envContent).toMatch(/VM_AUTH_USERNAME=existing-vm-user/);
+    expect(envContent).toMatch(/VM_AUTH_PASSWORD=existing-vm-pass/);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("local-install strips only matching quotes from VM auth values", () => {
+    const testDir = resolve(tempDir, "quoted-vm-auth-test");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(
+      resolve(testDir, ".env"),
+      "VM_AUTH_USERNAME=\"quoted-vm-user\"\nVM_AUTH_PASSWORD='quoted-vm-pass'\n"
+    );
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(
+      ["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"],
+      testDir,
+      { PGAI_TAG: undefined }
+    );
+
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+    expect(envContent).toMatch(/VM_AUTH_USERNAME=quoted-vm-user/);
+    expect(envContent).toMatch(/VM_AUTH_PASSWORD=quoted-vm-pass/);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles same version (no-op scenario)", () => {

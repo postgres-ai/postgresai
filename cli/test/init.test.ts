@@ -1293,7 +1293,7 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     fs.mkdirSync(testDir, { recursive: true });
     // Create .env with stale tag but valid registry and passwords
     fs.writeFileSync(resolve(testDir, ".env"),
-      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\n");
+      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\nVM_AUTH_USERNAME=existing-vm-user\nVM_AUTH_PASSWORD=existing-vm-pass\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
     const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
@@ -1313,6 +1313,8 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     expect(envContent).toMatch(/PGAI_REGISTRY=my\.registry\.com/);
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=secret123/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=repl-secret/);
+    expect(envContent).toMatch(/VM_AUTH_USERNAME=existing-vm-user/);
+    expect(envContent).toMatch(/VM_AUTH_PASSWORD=existing-vm-pass/);
   }, 60000);
 });
 

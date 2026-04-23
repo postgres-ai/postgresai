@@ -54,6 +54,15 @@ function closeReadline() {
   }
 }
 
+function stripMatchingQuotes(value: string): string {
+  const trimmed = value.trim();
+  const quote = trimmed[0];
+  if (trimmed.length >= 2 && (quote === '"' || quote === "'") && trimmed.endsWith(quote)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 // Helper functions for spawning processes - use Node.js child_process for compatibility
 async function execFilePromise(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -2254,11 +2263,11 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
       const envContent = fs.readFileSync(envFilePath, "utf8");
       if (!env.VM_AUTH_USERNAME) {
         const m = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
-        if (m) env.VM_AUTH_USERNAME = m[1].trim().replace(/^["']|["']$/g, '');
+        if (m) env.VM_AUTH_USERNAME = stripMatchingQuotes(m[1]);
       }
       if (!env.VM_AUTH_PASSWORD) {
         const m = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
-        if (m) env.VM_AUTH_PASSWORD = m[1].trim().replace(/^["']|["']$/g, '');
+        if (m) env.VM_AUTH_PASSWORD = stripMatchingQuotes(m[1]);
       }
     } catch (err) {
       if (process.env.DEBUG) {
@@ -2329,6 +2338,8 @@ mon
     let existingRegistry: string | null = null;
     let existingPassword: string | null = null;
     let existingReplicatorPassword: string | null = null;
+    let existingVmAuthUsername: string | null = null;
+    let existingVmAuthPassword: string | null = null;
 
     if (fs.existsSync(envFile)) {
       const existingEnv = fs.readFileSync(envFile, "utf8");
@@ -2339,6 +2350,10 @@ mon
       if (pwdMatch) existingPassword = pwdMatch[1].trim();
       const replicatorPwdMatch = existingEnv.match(/^REPLICATOR_PASSWORD=(.+)$/m);
       if (replicatorPwdMatch) existingReplicatorPassword = replicatorPwdMatch[1].trim();
+      const vmAuthUserMatch = existingEnv.match(/^VM_AUTH_USERNAME=(.+)$/m);
+      if (vmAuthUserMatch) existingVmAuthUsername = stripMatchingQuotes(vmAuthUserMatch[1]);
+      const vmAuthPasswordMatch = existingEnv.match(/^VM_AUTH_PASSWORD=(.+)$/m);
+      if (vmAuthPasswordMatch) existingVmAuthPassword = stripMatchingQuotes(vmAuthPasswordMatch[1]);
     }
 
     // Priority: CLI --tag flag > package version
@@ -2357,6 +2372,8 @@ mon
     envLines.push(
       `REPLICATOR_PASSWORD=${existingReplicatorPassword || crypto.randomBytes(32).toString("hex")}`,
     );
+    envLines.push(`VM_AUTH_USERNAME=${existingVmAuthUsername || "vmauth"}`);
+    envLines.push(`VM_AUTH_PASSWORD=${existingVmAuthPassword || crypto.randomBytes(18).toString("base64")}`);
     fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 
     if (opts.tag) {
@@ -2644,8 +2661,8 @@ mon
         const envContent = fs.readFileSync(envFile, "utf8");
         const userMatch = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
         const passMatch = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
-        if (userMatch) vmAuthUsername = userMatch[1].trim().replace(/^["']|["']$/g, '');
-        if (passMatch) vmAuthPassword = passMatch[1].trim().replace(/^["']|["']$/g, '');
+        if (userMatch) vmAuthUsername = stripMatchingQuotes(userMatch[1]);
+        if (passMatch) vmAuthPassword = stripMatchingQuotes(passMatch[1]);
       }
 
       if (!vmAuthUsername || !vmAuthPassword) {
@@ -3767,8 +3784,8 @@ mon
       const vmPass = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
       if (vmUser && vmPass) {
         console.log("\nVictoriaMetrics credentials:");
-        console.log(`  Username: ${vmUser[1].trim().replace(/^["']|["']$/g, '')}`);
-        console.log(`  Password: ${vmPass[1].trim().replace(/^["']|["']$/g, '')}`);
+        console.log(`  Username: ${stripMatchingQuotes(vmUser[1])}`);
+        console.log(`  Password: ${stripMatchingQuotes(vmPass[1])}`);
       }
     }
     console.log("");

@@ -701,10 +701,16 @@ cli:node:e2e:dind:
       docker pull "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "Images ready:"
       docker images | grep "$CI_REGISTRY_IMAGE"
-    # Create .env file with registry, tag, and a per-job replication password
+    # Create .env file with registry, tag, and per-job credentials
     - |
       REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
+      VM_AUTH_PASSWORD="$(dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '\n')"
+      printf "%s\n" \
+        "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" \
+        "PGAI_TAG=$PGAI_TAG" \
+        "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" \
+        "VM_AUTH_USERNAME=vmauth" \
+        "VM_AUTH_PASSWORD=$VM_AUTH_PASSWORD" > .env
   script:
     - ./tests/e2e.cli.sh
   after_script:
@@ -743,10 +749,16 @@ cli:node:full:dind:
       docker pull "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "Images ready:"
       docker images | grep "$CI_REGISTRY_IMAGE"
-    # Create .env file with registry, tag, and a per-job replication password
+    # Create .env file with registry, tag, and per-job credentials
     - |
       REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-      printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
+      VM_AUTH_PASSWORD="$(dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '\n')"
+      printf "%s\n" \
+        "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" \
+        "PGAI_TAG=$PGAI_TAG" \
+        "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" \
+        "VM_AUTH_USERNAME=vmauth" \
+        "VM_AUTH_PASSWORD=$VM_AUTH_PASSWORD" > .env
   script:
     - echo "=== Testing local-install (demo mode) ==="
     - node ./cli/dist/bin/postgres-ai.js mon local-install --demo
@@ -823,7 +835,8 @@ integration:xmin-horizon:
     - apk add --no-cache bash docker-cli docker-compose
     - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
     - REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" > .env
+    - VM_AUTH_PASSWORD="$(dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '\n')"
+    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" "VM_AUTH_USERNAME=vmauth" "VM_AUTH_PASSWORD=$VM_AUTH_PASSWORD" > .env
     - cp instances.demo.yml instances.yml
   script:
     - docker compose up -d target-db sink-prometheus
@@ -872,6 +885,11 @@ integration:xmin-horizon:
         sleep 2
       done
       test "$standby_recovery_ready" = "1"
+      PROMETHEUS_USERNAME="$(awk -F= '$1 == "VM_AUTH_USERNAME" { value = substr($0, index($0, "=") + 1) } END { print value }' .env)"
+      PROMETHEUS_PASSWORD="$(awk -F= '$1 == "VM_AUTH_PASSWORD" { value = substr($0, index($0, "=") + 1) } END { print value }' .env)"
+      test -n "$PROMETHEUS_USERNAME"
+      test -n "$PROMETHEUS_PASSWORD"
+      export PROMETHEUS_USERNAME PROMETHEUS_PASSWORD
       docker compose up -d pgwatch-prometheus
       docker run --rm \
         --network "$NETWORK" \
@@ -880,6 +898,8 @@ integration:xmin-horizon:
         -e TARGET_DB_URL="postgresql://postgres:postgres@target-db:5432/target_database" \
         -e STANDBY_DB_URL="postgresql://postgres:postgres@target-standby:5432/target_database" \
         -e PROMETHEUS_URL="http://sink-prometheus:9090" \
+        -e PROMETHEUS_USERNAME \
+        -e PROMETHEUS_PASSWORD \
         -e COLLECTION_WAIT_SECONDS="480" \
         -e REQUIRE_REPLICATION_SLOT_TEST="1" \
         -e REQUIRE_PREPARED_XACTS_TEST="1" \

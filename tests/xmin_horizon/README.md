@@ -73,6 +73,8 @@ You can also use environment variables:
 ```bash
 export TARGET_DB_URL="postgresql://postgres:postgres@localhost:55432/target_database"
 export PROMETHEUS_URL="http://localhost:59090"
+export PROMETHEUS_USERNAME="vmauth"        # optional, for VM auth-enabled stacks
+export PROMETHEUS_PASSWORD="secret"        # optional, for VM auth-enabled stacks
 export STANDBY_DB_URL="postgresql://postgres:postgres@localhost:55433/target_database"
 export COLLECTION_WAIT_SECONDS=240
 export REQUIRE_REPLICATION_SLOT_TEST=1

@@ -205,7 +205,7 @@ postgresai mon health [--wait <sec>]  # Check monitoring services health
 - `--db-url <url>` - PostgreSQL connection URL to monitor (format: `postgresql://user:pass@host:port/db`)
 - `-y, --yes` - Accept all defaults and skip interactive prompts
 
-`local-install` writes `.env` in the monitoring directory. It preserves an existing `REPLICATOR_PASSWORD` or generates a new random one when missing; this password is used by the demo PostgreSQL standby replication user and Docker Compose requires it instead of falling back to a known default.
+`local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new random ones when missing; `VM_AUTH_USERNAME` defaults to `vmauth` when absent. The replication password is used by the demo PostgreSQL standby replication user, and the VM auth credentials are required before Docker Compose can provision Grafana datasources. If you run `docker compose` directly or maintain `.env` yourself, set both VM auth values before upgrading. For rotation, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory so `.env`, `sink-prometheus`, and `grafana` update together.
 
 #### Monitoring target databases (`mon targets` subgroup)
 ```bash

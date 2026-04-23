@@ -36,6 +36,13 @@ DATA_COMPONENTS = {
     "pg_prepared_xacts",
 }
 
+def env_with_fallback(primary: str, fallback: str) -> str | None:
+    """Return primary env value when set, otherwise fall back to another key."""
+    if primary in os.environ:
+        return os.environ[primary]
+    return os.environ.get(fallback)
+
+
 COMPONENT_SUMMARY_METRICS = {
     "pg_stat_activity": "pgwatch_xmin_horizon_pg_stat_activity_age_tx",
     "pg_replication_slots": "pgwatch_xmin_horizon_pg_replication_slots_age_tx",
@@ -81,10 +88,21 @@ class xminHorizonTest:
         prometheus_url: str,
         standby_db_url: str | None = None,
         collection_wait_seconds: int = 60,
+        prometheus_username: str | None = None,
+        prometheus_password: str | None = None,
     ):
         self.target_db_url = target_db_url
         self.standby_db_url = standby_db_url
         self.prometheus_url = prometheus_url.rstrip("/")
+        if bool(prometheus_username) != bool(prometheus_password):
+            raise ValueError(
+                "Both prometheus_username and prometheus_password must be set together"
+            )
+        self.prometheus_auth = (
+            (prometheus_username, prometheus_password)
+            if prometheus_username and prometheus_password
+            else None
+        )
         self.collection_wait_seconds = collection_wait_seconds
         self.started_at_seconds = time.time()
         self.target_conn: psycopg.Connection | None = None
@@ -128,6 +146,7 @@ class xminHorizonTest:
 
         response = requests.get(
             f"{self.prometheus_url}/api/v1/status/config",
+            auth=self.prometheus_auth,
             timeout=5,
         )
         response.raise_for_status()
@@ -637,6 +656,7 @@ class xminHorizonTest:
         response = requests.get(
             f"{self.prometheus_url}/api/v1/query",
             params={"query": query},
+            auth=self.prometheus_auth,
             timeout=10,
         )
         response.raise_for_status()
@@ -1992,6 +2012,16 @@ def main() -> None:
         default=int(os.getenv("COLLECTION_WAIT_SECONDS", "480")),
         help="Seconds to wait for pgwatch to collect metrics",
     )
+    parser.add_argument(
+        "--prometheus-username",
+        default=env_with_fallback("PROMETHEUS_USERNAME", "VM_AUTH_USERNAME"),
+        help="Optional Prometheus/VictoriaMetrics basic auth username",
+    )
+    parser.add_argument(
+        "--prometheus-password",
+        default=env_with_fallback("PROMETHEUS_PASSWORD", "VM_AUTH_PASSWORD"),
+        help="Optional Prometheus/VictoriaMetrics basic auth password",
+    )
 
     args = parser.parse_args()
 
@@ -2000,6 +2030,8 @@ def main() -> None:
         prometheus_url=args.prometheus_url,
         standby_db_url=args.standby_db_url,
         collection_wait_seconds=args.collection_wait,
+        prometheus_username=args.prometheus_username,
+        prometheus_password=args.prometheus_password,
     )
 
     success = test.run()

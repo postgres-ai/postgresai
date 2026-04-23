@@ -291,7 +291,9 @@ This will:
 - Pull the latest Docker images
 - Start the services with the new images
 
-> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves an existing `REPLICATOR_PASSWORD` or generates a new one when it is missing; Docker Compose requires it and does not use a known default password.
+> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords.
+
+> **Manual upgrade note:** If you run `docker compose` directly or maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading. Rotate VictoriaMetrics auth with `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart.
 
 **Alternative: Manual upgrade**
 
