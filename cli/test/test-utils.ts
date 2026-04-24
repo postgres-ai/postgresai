@@ -15,6 +15,16 @@ export interface MockClientOptions {
   invalidIndexesRows?: any[];
   unusedIndexesRows?: any[];
   redundantIndexesRows?: any[];
+  tableBloatRows?: any[];
+  indexBloatRows?: any[];
+  vacuumStatsRows?: any[];
+  deadlockStatsRows?: any[];
+  pgStatStatementsExtensionRows?: any[];
+  pgStatStatementsStatsRows?: any[];
+  pgStatStatementsSampleRows?: any[];
+  pgStatKcacheExtensionRows?: any[];
+  pgStatKcacheStatsRows?: any[];
+  pgStatKcacheSampleRows?: any[];
   sensitiveColumnsRows?: any[];
 }
 
@@ -46,6 +56,16 @@ export function createMockClient(options: MockClientOptions = {}) {
     invalidIndexesRows = [],
     unusedIndexesRows = [],
     redundantIndexesRows = [],
+    tableBloatRows = [],
+    indexBloatRows = [],
+    vacuumStatsRows = [],
+    deadlockStatsRows = [{ deadlocks: "0", conflicts: "0", stats_reset: null }],
+    pgStatStatementsExtensionRows = [],
+    pgStatStatementsStatsRows = [],
+    pgStatStatementsSampleRows = [],
+    pgStatKcacheExtensionRows = [],
+    pgStatKcacheStatsRows = [],
+    pgStatKcacheSampleRows = [],
     sensitiveColumnsRows = [],
   } = options;
 
@@ -99,13 +119,42 @@ export function createMockClient(options: MockClientOptions = {}) {
       if (sql.includes("redundant_indexes_grouped") && sql.includes("columns like")) {
         return { rows: redundantIndexesRows };
       }
+      // F004/F005: bloat metrics from metrics.yml
+      if (sql.includes("tag_idxname") && sql.includes("bloat_size")) {
+        return { rows: indexBloatRows };
+      }
+      if (sql.includes("tag_tblname") && sql.includes("bloat_size")) {
+        return { rows: tableBloatRows };
+      }
+      // Vacuum stats used by F004/F005
+      if (sql.includes("pg_stat_user_tables") && sql.includes("last_vacuum")) {
+        return { rows: vacuumStatsRows };
+      }
+      // G003: Deadlock/conflict stats
+      if (sql.includes("coalesce(sum(deadlocks)") && sql.includes("current_database()")) {
+        return { rows: deadlockStatsRows };
+      }
       // D004: pg_stat_statements extension check
       if (sql.includes("pg_extension") && sql.includes("pg_stat_statements")) {
-        return { rows: [] };
+        return { rows: pgStatStatementsExtensionRows };
+      }
+      // D004: pg_stat_statements aggregate and sample queries
+      if (sql.includes("from pg_stat_statements") && sql.includes("count(*) as cnt")) {
+        return { rows: pgStatStatementsStatsRows };
+      }
+      if (sql.includes("from pg_stat_statements s") && sql.includes("order by calls desc")) {
+        return { rows: pgStatStatementsSampleRows };
       }
       // D004: pg_stat_kcache extension check
       if (sql.includes("pg_extension") && sql.includes("pg_stat_kcache")) {
-        return { rows: [] };
+        return { rows: pgStatKcacheExtensionRows };
+      }
+      // D004: pg_stat_kcache aggregate and sample queries
+      if (sql.includes("from pg_stat_kcache") && sql.includes("count(*) as cnt")) {
+        return { rows: pgStatKcacheStatsRows };
+      }
+      if (sql.includes("from pg_stat_kcache k") && sql.includes("order by")) {
+        return { rows: pgStatKcacheSampleRows };
       }
       // G001: Memory settings query
       if (sql.includes("pg_size_bytes") && sql.includes("shared_buffers") && sql.includes("work_mem")) {
