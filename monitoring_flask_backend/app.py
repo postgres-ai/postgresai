@@ -7,6 +7,8 @@ import logging
 import os
 import hmac
 import re
+import threading
+import time
 import boto3
 from requests_aws4auth import AWS4Auth
 import psycopg2
@@ -251,6 +253,261 @@ _DEBUG_SECRET_KEY = os.environ.get('DEBUG_SECRET_KEY', '')
 # Prometheus connection - use environment variable with fallback
 PROMETHEUS_URL = os.environ.get('PROMETHEUS_URL', 'http://localhost:8428')
 
+# Retention: how long to keep stale queryid entries (queryids no longer in pg_stat_statements).
+# Default 30 days. Rows older than this are deleted by background cleanup.
+QUERYID_RETENTION_HOURS = max(1, int(os.environ.get('QUERYID_RETENTION_HOURS', '720')))
+
+# How recent a queryid must be to appear in /query_info_metrics (must be > pgwatch collection interval).
+# Default 10 minutes. Queryids not seen within this window are excluded from metrics export.
+QUERYID_ACTIVE_MINUTES = max(1, int(os.environ.get('QUERYID_ACTIVE_MINUTES', '10')))
+
+# Rows deleted per batch during retention cleanup. Limits lock contention on large tables.
+QUERYID_RETENTION_BATCH_SIZE = max(1, int(os.environ.get('QUERYID_RETENTION_BATCH_SIZE', '10000')))
+
+
+# Per-worker flag; each gunicorn worker re-runs the (cheap, idempotent)
+# verification once on first request after startup. Cross-worker
+# serialization is the advisory lock below — do not try to replace this
+# with a cross-process cache.
+_trigger_migration_applied = False
+_trigger_migration_lock = threading.Lock()
+_trigger_migration_warning_state = {'last_at': 0.0}
+_TRIGGER_MIGRATION_WARNING_INTERVAL_SECONDS = 300
+
+# Arbitrary constant keys for pg_advisory_lock — serialize across workers
+# so only one gunicorn process at a time runs the DDL / retention cleanup.
+# Different keys so the two paths don't block each other.
+_TRIGGER_MIGRATION_ADVISORY_LOCK_KEY = 0x70676169_71756964  # "pgai" + "quid"
+_RETENTION_CLEANUP_ADVISORY_LOCK_KEY = 0x70676169_72746e63  # "pgai" + "rtnc"
+
+
+def _warn_trigger_migration_failure(message: str, *args) -> None:
+    """Rate-limit retryable trigger verification warnings per worker."""
+    now = time.monotonic()
+    if now - _trigger_migration_warning_state['last_at'] < _TRIGGER_MIGRATION_WARNING_INTERVAL_SECONDS:
+        return
+    _trigger_migration_warning_state['last_at'] = now
+    logger.warning(message, *args)
+
+
+def _apply_trigger_migration() -> None:
+    """
+    Verify the sink-side dedup trigger matches what this Flask backend
+    expects. The function body + trigger are created by
+    config/sink-postgres/init.sql as the bootstrap superuser; this call
+    only checks that the deployed function contains the advisory-lock
+    deduplication path and is named as expected.
+
+    Running as the pgwatch role (which does not own the function) means we
+    cannot self-heal an out-of-date deployment — by design. If the
+    verification fails, the operator must re-run init.sql as the
+    bootstrap role.
+
+    Called lazily on first request. Concurrency-safe: in-process Lock
+    for thread-level serialization, Postgres advisory lock for
+    worker-level serialization.
+    """
+    global _trigger_migration_applied
+    # Fast path — avoid taking the lock once verification has succeeded.
+    if _trigger_migration_applied:
+        return
+
+    with _trigger_migration_lock:
+        if _trigger_migration_applied:
+            return
+
+        conn = None
+        try:
+            conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
+            conn.autocommit = True
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "select pg_try_advisory_lock(%s)",
+                    (_TRIGGER_MIGRATION_ADVISORY_LOCK_KEY,),
+                )
+                got_lock = cursor.fetchone()[0]
+                if not got_lock:
+                    logger.debug(
+                        "Trigger verification advisory lock held by another worker; skipping"
+                    )
+                    return
+
+                try:
+                    # Verify the function body contains the advisory-lock
+                    # delete-or-insert path compatible with pgwatch's
+                    # dbname/time partition hierarchy.
+                    cursor.execute("""
+                        select prosrc
+                        from pg_proc
+                        where proname = 'enforce_queryid_uniqueness'
+                          and pronamespace = 'public'::regnamespace
+                    """)
+                    row = cursor.fetchone()
+                    if row is None:
+                        _warn_trigger_migration_failure(
+                            "Sink dedup function public.enforce_queryid_uniqueness not found; "
+                            "re-run config/sink-postgres/init.sql as the bootstrap role."
+                        )
+                        return
+                    function_body = row[0] or ''
+                    function_body_lower = function_body.lower()
+                    has_advisory_lock = 'pg_advisory_xact_lock' in function_body_lower
+                    has_queryid_lookup = "data->>'queryid'" in function_body_lower
+                    has_delete_dedup = re.search(
+                        r'\bdelete\s+from\s+(?:public\.)?pgss_queryid_queries\b',
+                        function_body,
+                        re.IGNORECASE,
+                    )
+                    if not (has_advisory_lock and has_queryid_lookup and has_delete_dedup):
+                        _warn_trigger_migration_failure(
+                            "Sink dedup function public.enforce_queryid_uniqueness is missing "
+                            "the partition-safe advisory-lock dedup path. Re-run "
+                            "config/sink-postgres/init.sql as the bootstrap role to upgrade."
+                        )
+                        return
+
+                    # Verify the trigger exists with the expected name.
+                    cursor.execute("""
+                        select 1 from pg_trigger
+                        where tgname = 'enforce_queryid_uniqueness_trigger'
+                          and tgrelid = 'public.pgss_queryid_queries'::regclass
+                    """)
+                    if cursor.fetchone() is None:
+                        _warn_trigger_migration_failure(
+                            "Sink dedup trigger enforce_queryid_uniqueness_trigger is missing "
+                            "on public.pgss_queryid_queries. Re-run "
+                            "config/sink-postgres/init.sql as the bootstrap role."
+                        )
+                        return
+                finally:
+                    cursor.execute(
+                        "select pg_advisory_unlock(%s)",
+                        (_TRIGGER_MIGRATION_ADVISORY_LOCK_KEY,),
+                    )
+            _trigger_migration_applied = True
+            logger.info("Verified sink dedup function + trigger")
+        except Exception as e:
+            logger.warning("Failed to verify sink dedup migration: %s", e)
+        finally:
+            if conn:
+                conn.close()
+
+
+@app.before_request
+def _ensure_trigger_migration() -> None:
+    """Verify the sink dedup migration lazily on first request."""
+    _apply_trigger_migration()
+
+# Guard to prevent unbounded background thread creation per scrape.
+# The lock makes the Event check/set an atomic in-process compare-and-set.
+_cleanup_running = threading.Event()
+_cleanup_start_lock = threading.Lock()
+
+
+# Cap iterations per run so a huge backlog can't monopolize a connection.
+# At BATCH_SIZE=10 000 and 10 iterations this deletes up to 100 000 rows
+# per scrape — enough to keep up with typical write rates without holding
+# locks too long. Clamped to >= 1 so a misconfiguration doesn't silently
+# disable cleanup.
+QUERYID_RETENTION_MAX_ITERATIONS = max(
+    1, int(os.environ.get('QUERYID_RETENTION_MAX_ITERATIONS', '10'))
+)
+
+
+def _run_retention_cleanup() -> None:
+    """
+    Delete stale queryid entries in a background thread using a separate
+    connection. This prevents the retention DELETE from adding latency to
+    every Prometheus scrape of /query_info_metrics.
+
+    Loops up to QUERYID_RETENTION_MAX_ITERATIONS so cleanup can catch up
+    on a backlog (e.g. after an outage). statement_timeout/lock_timeout
+    prevent the daemon thread from hanging indefinitely on a lock wait.
+
+    Concurrency: _cleanup_running coalesces threads inside one worker;
+    pg_try_advisory_lock serializes across workers so only one of N
+    gunicorn processes runs the DELETE loop at any moment.
+    """
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            POSTGRES_SINK_URL,
+            connect_timeout=10,
+            # Bound each DELETE at the server side so a blocked lock or
+            # runaway plan doesn't leave the cleanup thread stuck forever.
+            options='-c statement_timeout=60000 -c lock_timeout=5000',
+        )
+        conn.autocommit = True
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "select pg_try_advisory_lock(%s)",
+                (_RETENTION_CLEANUP_ADVISORY_LOCK_KEY,),
+            )
+            got_lock = cursor.fetchone()[0]
+            if not got_lock:
+                logger.debug(
+                    "Retention cleanup advisory lock held by another worker; skipping"
+                )
+                return
+
+            total_deleted = 0
+            try:
+                for _ in range(QUERYID_RETENTION_MAX_ITERATIONS):
+                    cursor.execute("""
+                        delete from public.pgss_queryid_queries
+                        where ctid in (
+                            select ctid from public.pgss_queryid_queries
+                            where time < now() - make_interval(hours => %s)
+                            limit %s
+                        )
+                    """, (QUERYID_RETENTION_HOURS, QUERYID_RETENTION_BATCH_SIZE))
+                    deleted = cursor.rowcount
+                    total_deleted += deleted
+                    if deleted < QUERYID_RETENTION_BATCH_SIZE:
+                        break
+            finally:
+                cursor.execute(
+                    "select pg_advisory_unlock(%s)",
+                    (_RETENTION_CLEANUP_ADVISORY_LOCK_KEY,),
+                )
+            if total_deleted > 0:
+                logger.info(
+                    "Retention cleanup: deleted %d stale queryid entries",
+                    total_deleted,
+                )
+    except Exception as e:
+        logger.warning("Retention cleanup failed: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def _run_retention_cleanup_guarded() -> None:
+    """Wrapper that clears the _cleanup_running flag when done."""
+    try:
+        _run_retention_cleanup()
+    finally:
+        _cleanup_running.clear()
+
+
+def _start_retention_cleanup_thread() -> None:
+    """Start one in-process retention cleanup thread if none is running."""
+    with _cleanup_start_lock:
+        if _cleanup_running.is_set():
+            return
+
+        _cleanup_running.set()
+        try:
+            threading.Thread(
+                target=_run_retention_cleanup_guarded,
+                name="retention-cleanup",
+                daemon=True,
+            ).start()
+        except Exception:
+            _cleanup_running.clear()
+            raise
+
+
 # Metric name mapping for cleaner CSV output
 METRIC_NAME_MAPPING = {
     'calls': 'calls',
@@ -299,17 +556,22 @@ def get_prometheus_client():
         raise
 
 
-def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart') -> dict:
+def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart',
+                              max_age_hours: int = None) -> dict:
     """
     Fetch queryid-to-query text mappings from the PostgreSQL sink database.
 
     Args:
         db_name: Optional database name to filter results
         truncation_mode: 'smart' for smart truncation, 'raw' for simple truncation
+        max_age_hours: Only return queryids seen within this many hours (None = use retention window)
 
     Returns:
         Dictionary mapping queryid to query text
     """
+    if max_age_hours is None:
+        max_age_hours = QUERYID_RETENTION_HOURS
+
     query_texts = {}
 
     conn = None
@@ -326,11 +588,12 @@ def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart
                     FROM public.pgss_queryid_queries
                     WHERE
                         dbname = %s
+                        AND time > now() - make_interval(hours => %s)
                         AND data->>'queryid' IS NOT NULL
                         AND data->>'query' IS NOT NULL
                     ORDER BY data->>'queryid', time DESC
                 """
-                cursor.execute(query, (db_name,))
+                cursor.execute(query, (db_name, max_age_hours))
             else:
                 query = """
                     SELECT DISTINCT ON (data->>'queryid')
@@ -338,11 +601,12 @@ def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart
                         data->>'query' as query
                     FROM public.pgss_queryid_queries
                     WHERE
-                        data->>'queryid' IS NOT NULL
+                        time > now() - make_interval(hours => %s)
+                        AND data->>'queryid' IS NOT NULL
                         AND data->>'query' IS NOT NULL
                     ORDER BY data->>'queryid', time DESC
                 """
-                cursor.execute(query)
+                cursor.execute(query, (max_age_hours,))
 
             for row in cursor:
                 queryid = row['queryid']
@@ -1356,8 +1620,17 @@ def get_query_info_metrics():
         conn = None
         try:
             conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
+            # Run retention cleanup in a background thread so it doesn't
+            # add latency to every Prometheus scrape.
+            try:
+                _start_retention_cleanup_thread()
+            except Exception as e:
+                logger.warning("Failed to start retention cleanup thread: %s", e)
+
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # Skip db_name filter if it's empty, "All", or contains special chars
+                # Only export queryids recently seen in pg_stat_statements.
+                # The dedup trigger refreshes the timestamp on each collection,
+                # so active queryids have time within the last few minutes.
                 use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
                 if use_db_filter:
                     query = """
@@ -1367,11 +1640,12 @@ def get_query_info_metrics():
                         FROM public.pgss_queryid_queries
                         WHERE
                             dbname = %s
+                            AND time > now() - make_interval(mins => %s)
                             AND data->>'queryid' IS NOT NULL
                             AND data->>'query' IS NOT NULL
                         ORDER BY data->>'queryid', time DESC
                     """
-                    cursor.execute(query, (db_name,))
+                    cursor.execute(query, (db_name, QUERYID_ACTIVE_MINUTES))
                 else:
                     query = """
                         SELECT DISTINCT ON (data->>'queryid')
@@ -1379,11 +1653,12 @@ def get_query_info_metrics():
                             data->>'query' as query
                         FROM public.pgss_queryid_queries
                         WHERE
-                            data->>'queryid' IS NOT NULL
+                            time > now() - make_interval(mins => %s)
+                            AND data->>'queryid' IS NOT NULL
                             AND data->>'query' IS NOT NULL
                         ORDER BY data->>'queryid', time DESC
                     """
-                    cursor.execute(query)
+                    cursor.execute(query, (QUERYID_ACTIVE_MINUTES,))
 
                 for row in cursor:
                     queryid = row['queryid']
@@ -1428,6 +1703,8 @@ def get_query_info_metrics():
                             'full': full,
                             'queryid_only': queryid_only,
                         }
+
+                logger.info(f"Exported {len(query_data)} active queryids for metrics")
         except Exception as e:
             logger.warning(f"Failed to fetch query texts from sink database: {e}")
         finally:

@@ -11,7 +11,9 @@ metrics:
         where
           queryid is not null
           and dbid = (select oid from pg_database where datname = current_database())
+          and (calls >= 3 and total_exec_time >= 1000)
         order by total_exec_time desc
+        limit 100
     gauges:
       - '*' 
   

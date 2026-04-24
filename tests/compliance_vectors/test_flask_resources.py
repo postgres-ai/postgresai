@@ -9,6 +9,12 @@ import yaml
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 EXPECTED_MEMORY_BYTES = 1073741824
+EXPECTED_QUERY_INFO_ENV = {
+    'QUERYID_ACTIVE_MINUTES': 10,
+    'QUERYID_RETENTION_HOURS': 720,
+    'QUERYID_RETENTION_BATCH_SIZE': 10000,
+    'QUERYID_RETENTION_MAX_ITERATIONS': 10,
+}
 
 
 def _load_yaml(*parts):
@@ -36,6 +42,31 @@ def test_helm_flask_resources_match_expected_requests_and_limits():
         'cpu': '500m',
         'memory': '1Gi',
     }
+
+
+def test_helm_flask_query_info_retention_env_defaults_are_explicit():
+    values = _load_yaml('postgres_ai_helm', 'values.yaml')
+    query_info = values['flask']['queryInfo']
+
+    assert query_info == {
+        'activeMinutes': EXPECTED_QUERY_INFO_ENV['QUERYID_ACTIVE_MINUTES'],
+        'retentionHours': EXPECTED_QUERY_INFO_ENV['QUERYID_RETENTION_HOURS'],
+        'retentionBatchSize': EXPECTED_QUERY_INFO_ENV['QUERYID_RETENTION_BATCH_SIZE'],
+        'retentionMaxIterations': EXPECTED_QUERY_INFO_ENV['QUERYID_RETENTION_MAX_ITERATIONS'],
+    }
+
+
+def test_helm_flask_deployment_exposes_query_info_retention_env_vars():
+    with open(os.path.join(PROJECT_ROOT, 'postgres_ai_helm', 'templates', 'flask-deployment.yaml')) as f:
+        template = f.read()
+
+    for env_name in EXPECTED_QUERY_INFO_ENV:
+        assert f'name: {env_name}' in template
+    assert '.Values.flask.queryInfo.activeMinutes' in template
+    assert '.Values.flask.queryInfo.retentionHours' in template
+    assert '.Values.flask.queryInfo.retentionBatchSize' in template
+    assert '.Values.flask.queryInfo.retentionMaxIterations' in template
+
 
 
 @pytest.fixture

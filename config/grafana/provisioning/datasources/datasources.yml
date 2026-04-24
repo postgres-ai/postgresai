@@ -53,7 +53,7 @@ datasources:
     basicAuthUser: ${VM_AUTH_USERNAME}
     jsonData:
       scrapeInterval: '5s'
-      queryTimeout: '5s'
+      queryTimeout: '60s'
       timeInterval: '5s'
       httpMethod: 'POST'
     secureJsonData:

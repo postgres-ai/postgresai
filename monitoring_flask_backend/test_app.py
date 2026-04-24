@@ -1,9 +1,13 @@
 """Tests for the Flask monitoring backend."""
+import importlib
+import os
+import threading
 import pytest
 import json
 import psycopg2
-from unittest.mock import patch, mock_open, MagicMock, call
+from unittest.mock import patch, mock_open, Mock, MagicMock, call
 
+import app as app_module
 from app import (
     app,
     read_version_file,
@@ -17,9 +21,28 @@ from app import (
 @pytest.fixture
 def client():
     """Create test client."""
+    original_trigger_migration_applied = app_module._trigger_migration_applied
+    original_active_minutes = app_module.QUERYID_ACTIVE_MINUTES
+    original_retention_hours = app_module.QUERYID_RETENTION_HOURS
+    original_retention_max_iterations = app_module.QUERYID_RETENTION_MAX_ITERATIONS
+    cleanup_was_running = app_module._cleanup_running.is_set()
+
     app.config['TESTING'] = True
-    with app.test_client() as client:
-        yield client
+    # Reset the lazy migration flag so tests are independent
+    app_module._trigger_migration_applied = True  # Skip migration in tests
+    app_module._cleanup_running.clear()
+
+    try:
+        with app.test_client() as client:
+            yield client
+    finally:
+        app_module._trigger_migration_applied = original_trigger_migration_applied
+        app_module.QUERYID_ACTIVE_MINUTES = original_active_minutes
+        app_module.QUERYID_RETENTION_HOURS = original_retention_hours
+        app_module.QUERYID_RETENTION_MAX_ITERATIONS = original_retention_max_iterations
+        app_module._cleanup_running.clear()
+        if cleanup_was_running:
+            app_module._cleanup_running.set()
 
 
 @pytest.fixture
@@ -475,6 +498,34 @@ class TestQueryInfoMetricsEndpoint:
     """Tests for the /query_info_metrics endpoint."""
 
     @patch('app.psycopg2.connect')
+    def test_get_query_texts_uses_explicit_max_age_with_db_filter(self, mock_connect):
+        """Direct sink lookup passes explicit max_age_hours after db_name."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        result = app_module.get_query_texts_from_sink(db_name='mydb', max_age_hours=48)
+
+        assert result == {}
+        query, params = mock_cursor.execute.call_args[0]
+        assert 'dbname = %s' in query
+        assert 'make_interval(hours => %s)' in query
+        assert params == ('mydb', 48)
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_defaults_max_age_to_retention_window(self, mock_connect):
+        """Direct sink lookup defaults max_age_hours to QUERYID_RETENTION_HOURS."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        result = app_module.get_query_texts_from_sink(max_age_hours=None)
+
+        assert result == {}
+        query, params = mock_cursor.execute.call_args[0]
+        assert 'dbname = %s' not in query
+        assert 'make_interval(hours => %s)' in query
+        assert params == (app_module.QUERYID_RETENTION_HOURS,)
+
+    @patch('app.psycopg2.connect')
     def test_endpoint_returns_prometheus_format(self, mock_connect, client):
         """Test endpoint returns Prometheus exposition format."""
         # Mock database connection
@@ -559,7 +610,7 @@ class TestQueryInfoMetricsEndpoint:
         response = client.get('/query_info_metrics?db_name=mydb')
         assert response.status_code == 200
 
-        # Verify the query was called with db_name filter
+        # Verify the main query (last execute call) was called with db_name filter
         call_args = mock_cursor.execute.call_args
         assert call_args is not None
         query = call_args[0][0]
@@ -574,7 +625,7 @@ class TestQueryInfoMetricsEndpoint:
         response = client.get('/query_info_metrics?db_name=all')
         assert response.status_code == 200
 
-        # Verify the query was called without db_name filter
+        # Verify the main query (last execute call) was called without db_name filter
         call_args = mock_cursor.execute.call_args
         query = call_args[0][0]
         assert 'dbname = %s' not in query
@@ -588,10 +639,152 @@ class TestQueryInfoMetricsEndpoint:
         response = client.get('/query_info_metrics?db_name=$db_name')
         assert response.status_code == 200
 
-        # Verify the query was called without db_name filter
+        # Verify the main query (last execute call) was called without db_name filter
         call_args = mock_cursor.execute.call_args
         query = call_args[0][0]
         assert 'dbname = %s' not in query
+
+    @patch('app.psycopg2.connect')
+    def test_time_filter_applied(self, mock_connect, client):
+        """Test that the time filter is applied and QUERYID_ACTIVE_MINUTES flows through."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        # Temporarily override the active minutes constant
+        original_minutes = app_module.QUERYID_ACTIVE_MINUTES
+        app_module.QUERYID_ACTIVE_MINUTES = 42
+        try:
+            response = client.get('/query_info_metrics')
+            assert response.status_code == 200
+
+            # Verify the main query includes a time filter
+            call_args = mock_cursor.execute.call_args
+            query = call_args[0][0]
+            assert "make_interval" in query
+            assert "mins" in query
+            # Verify the parameter value is passed correctly
+            params = call_args[0][1]
+            assert params == (42,)
+        finally:
+            app_module.QUERYID_ACTIVE_MINUTES = original_minutes
+
+    @patch('app.psycopg2.connect')
+    def test_time_filter_applied_with_db_filter(self, mock_connect, client):
+        """Time filter + db_name filter path: both dbname and make_interval land in the query, params pair correctly."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        original_minutes = app_module.QUERYID_ACTIVE_MINUTES
+        app_module.QUERYID_ACTIVE_MINUTES = 42
+        try:
+            response = client.get('/query_info_metrics?db_name=mydb')
+            assert response.status_code == 200
+
+            call_args = mock_cursor.execute.call_args
+            query = call_args[0][0]
+            params = call_args[0][1]
+
+            assert 'dbname = %s' in query
+            assert 'make_interval(mins => %s)' in query
+            # The db_filter branch passes (db_name, minutes) in that order.
+            assert params == ('mydb', 42)
+        finally:
+            app_module.QUERYID_ACTIVE_MINUTES = original_minutes
+
+    @patch('app._run_retention_cleanup')
+    @patch('app.psycopg2.connect')
+    def test_retention_cleanup_runs_in_background(self, mock_connect, mock_cleanup, client):
+        """Test that retention cleanup is triggered and the running flag is cleared."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+        mock_cursor.rowcount = 0
+        started = threading.Event()
+        release = threading.Event()
+        threads = []
+        original_thread = threading.Thread
+
+        def cleanup_side_effect():
+            started.set()
+            release.wait(timeout=5)
+
+        def make_thread(*args, **kwargs):
+            thread = original_thread(*args, **kwargs)
+            threads.append(thread)
+            return thread
+
+        mock_cleanup.side_effect = cleanup_side_effect
+
+        with patch('app.threading.Thread', side_effect=make_thread):
+            response = client.get('/query_info_metrics')
+            assert response.status_code == 200
+            assert started.wait(timeout=2)
+            assert app_module._cleanup_running.is_set() is True
+            release.set()
+
+        for thread in threads:
+            thread.join(timeout=2)
+            assert thread.is_alive() is False
+
+        mock_cleanup.assert_called_once()
+        assert app_module._cleanup_running.is_set() is False
+
+    def test_start_retention_cleanup_thread_coalesces_concurrent_callers(self):
+        """Concurrent scrapes should start at most one in-process cleanup thread."""
+        app_module._cleanup_running.clear()
+        start_barrier = threading.Barrier(3)
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+        cleanup_finished = threading.Event()
+        errors = []
+
+        def guarded_cleanup():
+            cleanup_started.set()
+            try:
+                release_cleanup.wait(timeout=5)
+            finally:
+                app_module._cleanup_running.clear()
+                cleanup_finished.set()
+
+        def caller():
+            try:
+                start_barrier.wait(timeout=2)
+                app_module._start_retention_cleanup_thread()
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch('app._run_retention_cleanup_guarded', side_effect=guarded_cleanup) as mock_guarded:
+            callers = [threading.Thread(target=caller) for _ in range(2)]
+            for thread in callers:
+                thread.start()
+            start_barrier.wait(timeout=2)
+            assert cleanup_started.wait(timeout=2)
+            for thread in callers:
+                thread.join(timeout=2)
+                assert thread.is_alive() is False
+            assert errors == []
+            assert mock_guarded.call_count == 1
+            release_cleanup.set()
+            assert cleanup_finished.wait(timeout=2)
+
+        assert app_module._cleanup_running.is_set() is False
+
+    @patch('app.psycopg2.connect')
+    def test_retention_cleanup_thread_start_failure_clears_flag(self, mock_connect, client):
+        """Thread.start failure must not leave cleanup disabled forever."""
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+        broken_thread = Mock()
+        broken_thread.start.side_effect = RuntimeError("thread quota exhausted")
+
+        with patch('app.threading.Thread', return_value=broken_thread), \
+             patch('app.logger.warning') as mock_warning:
+            response = client.get('/query_info_metrics')
+
+        assert response.status_code == 200
+        assert app_module._cleanup_running.is_set() is False
+        warning_text = ' '.join(str(c) for c in mock_warning.call_args_list)
+        assert 'Failed to start retention cleanup thread' in warning_text
+        assert 'thread quota exhausted' in warning_text
 
     @patch('app.psycopg2.connect')
     def test_handles_db_connection_error(self, mock_connect, client):
@@ -619,6 +812,346 @@ class TestQueryInfoMetricsEndpoint:
         assert 'users\nWHERE' not in data
         # Double quotes should be escaped
         assert '\\"column\\"' in data or 'column' in data
+
+
+_GUARD_PROSRC = """
+declare queryid_value text;
+begin
+  queryid_value := new.data->>'queryid';
+  perform pg_advisory_xact_lock(lock_key);
+  delete from public.pgss_queryid_queries
+  where dbname = new.dbname
+    and data->>'queryid' = queryid_value
+    and time <= new.time;
+  ...
+end;
+"""
+
+_UNPATCHED_PROSRC = """
+declare queryid_value text;
+begin
+  queryid_value := new.data->>'queryid';
+  insert into pgss_queryid_queries values (...);
+  return null;
+end;
+"""
+
+
+class TestTriggerMigration:
+    """Tests for the verify-only _apply_trigger_migration function.
+
+    Migration no longer does DDL — the bootstrap role's init.sql owns
+    that responsibility. This function verifies the deployed function
+    body contains the advisory-lock dedup path and the trigger exists.
+    """
+
+    def _make_mock_conn(self, fetchone_sequence):
+        """Build a mock connection whose cursor().fetchone() returns successive tuples."""
+        app_module._trigger_migration_warning_state['last_at'] = 0.0
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_cursor.fetchone.side_effect = list(fetchone_sequence)
+        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
+        return mock_conn, mock_cursor
+
+    def test_verifies_function_body_and_trigger_when_both_present(self):
+        """Guard present in function body + trigger exists → flag set, no DDL."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,),               # pg_try_advisory_lock
+            (_GUARD_PROSRC,),      # pg_proc.prosrc with guard
+            (1,),                  # trigger exists
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._apply_trigger_migration()
+
+        calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        # Purely read-only: no CREATE / ALTER / DROP.
+        assert not any('create or replace function' in c.lower() for c in calls)
+        assert not any('create trigger' in c.lower() for c in calls)
+        assert not any('alter function' in c.lower() for c in calls)
+        assert app_module._trigger_migration_applied is True
+
+    def test_missing_guard_logs_warning_and_sets_flag(self):
+        """Deployed function body missing advisory-lock dedup → warn, don't retry-spam."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,),                 # advisory lock
+            (_UNPATCHED_PROSRC,),    # prosrc without guard
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn), \
+             patch('app.logger.warning') as mock_warning:
+            app_module._apply_trigger_migration()
+
+        # Verification failures are retryable so a later init.sql repair is detected.
+        assert app_module._trigger_migration_applied is False
+        # A clear remediation hint in the log.
+        warning_text = ' '.join(str(c) for c in mock_warning.call_args_list)
+        assert 'advisory-lock dedup' in warning_text
+        assert 'init.sql' in warning_text
+
+    def test_missing_function_logs_warning_and_sets_flag(self):
+        """Function doesn't exist at all → warn, then retry on a later request."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,),   # advisory lock
+            None,      # pg_proc lookup returns no row
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn), \
+             patch('app.logger.warning') as mock_warning:
+            app_module._apply_trigger_migration()
+
+        assert app_module._trigger_migration_applied is False
+        warning_text = ' '.join(str(c) for c in mock_warning.call_args_list)
+        assert 'public.enforce_queryid_uniqueness' in warning_text
+        assert 'init.sql' in warning_text
+
+    def test_missing_trigger_logs_warning_and_sets_flag(self):
+        """Function exists and is guarded but trigger is absent → warn, then retry."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,),                # advisory lock
+            (_GUARD_PROSRC,),       # prosrc with guard
+            None,                   # trigger lookup returns no row
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn), \
+             patch('app.logger.warning') as mock_warning:
+            app_module._apply_trigger_migration()
+
+        assert app_module._trigger_migration_applied is False
+        warning_text = ' '.join(str(c) for c in mock_warning.call_args_list)
+        assert 'enforce_queryid_uniqueness_trigger' in warning_text
+        assert 'init.sql' in warning_text
+
+    def test_does_not_transfer_function_ownership(self):
+        """Security: verification path must never issue ALTER FUNCTION ... OWNER."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,), (_GUARD_PROSRC,), (1,),
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._apply_trigger_migration()
+
+        calls = [c[0][0].lower() for c in mock_cursor.execute.call_args_list]
+        assert not any('owner to' in c for c in calls)
+
+    def test_advisory_lock_taken_and_released(self):
+        """Migration grabs pg_try_advisory_lock and releases it on completion."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,), (_GUARD_PROSRC,), (1,),
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._apply_trigger_migration()
+
+        calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any('pg_try_advisory_lock' in c for c in calls)
+        assert any('pg_advisory_unlock' in c for c in calls)
+
+    def test_advisory_lock_denied_skips_verification(self):
+        """When another worker holds the advisory lock, skip without error; flag stays False."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (False,),   # lock denied
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._apply_trigger_migration()
+
+        calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any('pg_try_advisory_lock' in c for c in calls)
+        assert not any('pg_proc' in c for c in calls)
+        assert not any('pg_trigger' in c for c in calls)
+        # Flag stays False so the next request retries.
+        assert app_module._trigger_migration_applied is False
+
+    def test_db_error_leaves_flag_false(self):
+        """On DB error, flag remains False so retry is possible."""
+        app_module._trigger_migration_applied = False
+
+        with patch('app.psycopg2.connect', side_effect=Exception("connection refused")):
+            app_module._apply_trigger_migration()
+
+        assert app_module._trigger_migration_applied is False
+
+    def test_successful_run_sets_flag_so_subsequent_calls_are_noop(self):
+        """Once verification succeeds, subsequent calls must not touch the DB."""
+        app_module._trigger_migration_applied = False
+        mock_conn, mock_cursor = self._make_mock_conn([
+            (True,), (_GUARD_PROSRC,), (1,),
+        ])
+
+        with patch('app.psycopg2.connect', return_value=mock_conn) as mock_connect:
+            app_module._apply_trigger_migration()
+            first_call_count = mock_connect.call_count
+            # Second invocation should early-return without opening a new connection.
+            app_module._apply_trigger_migration()
+            assert mock_connect.call_count == first_call_count
+
+
+class TestRetentionCleanup:
+    """Tests for the _run_retention_cleanup function."""
+
+    def _make_mock_conn(self, advisory_lock_granted=True):
+        """Build a mock connection; pg_try_advisory_lock returns TRUE by default."""
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_cursor.fetchone.return_value = (advisory_lock_granted,)
+        mock_cursor.rowcount = 0
+        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
+        return mock_conn, mock_cursor
+
+    def _delete_calls(self, mock_cursor):
+        """Return only the DELETE execute calls (advisory-lock calls excluded)."""
+        return [
+            c for c in mock_cursor.execute.call_args_list
+            if 'delete' in c[0][0].lower()
+        ]
+
+    def test_single_batch_exits_loop(self):
+        """When the DELETE removes fewer rows than the batch size, the loop exits after one iteration."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+        mock_cursor.rowcount = 500  # less than batch size (10 000)
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._run_retention_cleanup()
+
+        assert len(self._delete_calls(mock_cursor)) == 1
+
+    def test_full_batch_then_partial_drains_backlog(self):
+        """Full batch on iteration 1 keeps looping; partial batch on iteration 2 exits the loop."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+        # psycopg2 sets cursor.rowcount after each execute. Only the DELETEs
+        # care about rowcount; bump it only on DELETE calls so the
+        # advisory-lock SELECTs don't consume a value.
+        rowcounts = [app_module.QUERYID_RETENTION_BATCH_SIZE, 500]
+
+        def update_rowcount(sql, *args, **kwargs):
+            if 'delete' in sql.lower() and rowcounts:
+                mock_cursor.rowcount = rowcounts.pop(0)
+
+        mock_cursor.execute.side_effect = update_rowcount
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._run_retention_cleanup()
+
+        assert len(self._delete_calls(mock_cursor)) == 2
+
+    def test_max_iterations_cap_respected(self):
+        """The loop is capped so a perpetually-full batch can't monopolize the connection."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+        mock_cursor.rowcount = app_module.QUERYID_RETENTION_BATCH_SIZE  # always full
+
+        original_max = app_module.QUERYID_RETENTION_MAX_ITERATIONS
+        app_module.QUERYID_RETENTION_MAX_ITERATIONS = 3
+        try:
+            with patch('app.psycopg2.connect', return_value=mock_conn):
+                app_module._run_retention_cleanup()
+            assert len(self._delete_calls(mock_cursor)) == 3
+        finally:
+            app_module.QUERYID_RETENTION_MAX_ITERATIONS = original_max
+
+    @pytest.mark.parametrize(
+        ('env_name', 'setting_name'),
+        [
+            ('QUERYID_RETENTION_HOURS', 'QUERYID_RETENTION_HOURS'),
+            ('QUERYID_ACTIVE_MINUTES', 'QUERYID_ACTIVE_MINUTES'),
+            ('QUERYID_RETENTION_BATCH_SIZE', 'QUERYID_RETENTION_BATCH_SIZE'),
+            ('QUERYID_RETENTION_MAX_ITERATIONS', 'QUERYID_RETENTION_MAX_ITERATIONS'),
+        ],
+    )
+    def test_queryid_env_lower_bound_is_one(self, env_name, setting_name):
+        """Query-info integer env vars use >=1 lower bounds."""
+        try:
+            with patch.dict(os.environ, {env_name: '0'}):
+                importlib.reload(app_module)
+                assert getattr(app_module, setting_name) == 1
+        finally:
+            importlib.reload(app_module)
+
+    def test_connection_uses_statement_and_lock_timeouts(self):
+        """psycopg2.connect is called with server-side timeouts so the thread can't hang."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+
+        with patch('app.psycopg2.connect', return_value=mock_conn) as mock_connect:
+            app_module._run_retention_cleanup()
+
+        kwargs = mock_connect.call_args.kwargs
+        assert 'options' in kwargs
+        assert 'statement_timeout=60000' in kwargs['options']
+        assert 'lock_timeout=5000' in kwargs['options']
+
+    def test_advisory_lock_taken_and_released(self):
+        """Cleanup serializes across workers via pg_try_advisory_lock."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._run_retention_cleanup()
+
+        calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any('pg_try_advisory_lock' in c for c in calls)
+        assert any('pg_advisory_unlock' in c for c in calls)
+
+    def test_advisory_lock_denied_skips_delete(self):
+        """When another worker already holds the cleanup lock, skip without running DELETE."""
+        mock_conn, mock_cursor = self._make_mock_conn(advisory_lock_granted=False)
+
+        with patch('app.psycopg2.connect', return_value=mock_conn):
+            app_module._run_retention_cleanup()
+
+        assert self._delete_calls(mock_cursor) == []
+
+    def test_delete_error_after_lock_attempts_unlock_and_is_swallowed(self):
+        """DELETE errors are caught after attempting to release the advisory lock."""
+        mock_conn, mock_cursor = self._make_mock_conn()
+
+        def execute_side_effect(sql, *args, **kwargs):
+            if 'delete from public.pgss_queryid_queries' in sql.lower():
+                raise psycopg2.OperationalError("delete failed")
+
+        mock_cursor.execute.side_effect = execute_side_effect
+
+        with patch('app.psycopg2.connect', return_value=mock_conn), \
+             patch('app.logger.warning') as mock_warning:
+            app_module._run_retention_cleanup()
+
+        calls = [c[0][0].lower() for c in mock_cursor.execute.call_args_list]
+        assert any('pg_try_advisory_lock' in c for c in calls)
+        assert any('delete from public.pgss_queryid_queries' in c for c in calls)
+        assert any('pg_advisory_unlock' in c for c in calls)
+        warning_text = ' '.join(str(c) for c in mock_warning.call_args_list)
+        assert 'Retention cleanup failed' in warning_text
+        assert 'delete failed' in warning_text
+
+    def test_db_exception_caught_not_propagated(self):
+        """DB errors are caught and logged, not raised."""
+        with patch('app.psycopg2.connect', side_effect=Exception("connection refused")):
+            # Should not raise
+            app_module._run_retention_cleanup()
+
+    def test_retention_hours_parameter_flows(self):
+        """QUERYID_RETENTION_HOURS is passed as a parameter to the DELETE."""
+        original_hours = app_module.QUERYID_RETENTION_HOURS
+        app_module.QUERYID_RETENTION_HOURS = 48
+        mock_conn, mock_cursor = self._make_mock_conn()
+
+        try:
+            with patch('app.psycopg2.connect', return_value=mock_conn):
+                app_module._run_retention_cleanup()
+
+            delete_call = self._delete_calls(mock_cursor)[0]
+            params = delete_call[0][1]
+            assert params == (48, app_module.QUERYID_RETENTION_BATCH_SIZE)
+        finally:
+            app_module.QUERYID_RETENTION_HOURS = original_hours
 
 
 class TestMetricsEndpoint:
