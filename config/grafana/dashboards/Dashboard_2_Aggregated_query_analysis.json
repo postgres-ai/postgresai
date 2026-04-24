@@ -587,7 +587,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -711,7 +711,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -837,7 +837,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -961,7 +961,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1087,7 +1087,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1213,7 +1213,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1338,7 +1338,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_rows{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1462,7 +1462,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1588,7 +1588,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_hit_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1712,7 +1712,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1838,7 +1838,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_read_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -1962,7 +1962,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2088,7 +2088,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_written_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2212,7 +2212,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2338,7 +2338,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_shared_bytes_dirtied_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2462,7 +2462,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2586,7 +2586,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_wal_bytes{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2710,7 +2710,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2833,7 +2833,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_wal_fpi{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -2957,7 +2957,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -3081,7 +3081,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -3205,7 +3205,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,
@@ -3329,7 +3329,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info",
+          "expr": "(topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on(queryid) group_left(displayname, displayname_medium, displayname_long, displayname_raw_short, displayname_raw_medium, displayname_raw_long, displayname_full, displayname_queryid) pgwatch_query_info) or (topk($top_n, irate(pgwatch_pg_stat_statements_temp_bytes_written{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])/irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) unless on(queryid) pgwatch_query_info)",
           "interval": "20",
           "legendFormat": "{{$legend_label}}",
           "range": true,

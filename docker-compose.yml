@@ -1,9 +1,9 @@
 # Resource limits are configured for a 4 vCPU / 8 GiB RAM host.
-# Total allocation: ~5.1 vCPUs, ~7.6 GiB RAM (with headroom for host OS).
+# Total allocation: ~4.1 vCPUs, ~7.3 GiB RAM (with headroom for host OS).
 # CPU overcommitment is intentional - containers rarely hit limits simultaneously.
 #
-# pgwatch-prometheus gets higher CPU (1.5) to handle pg_stat_statements load,
-# which was observed spiking to 150%+ under heavy query workloads.
+# pgwatch-prometheus collects metrics including pg_stat_statements
+# (top 100 queries by exec_time_total, filtered: calls >= 3 AND exec_time >= 1000ms).
 
 services:
   # Config Initializer - Copies static configs from image to volume
@@ -150,7 +150,7 @@ services:
         if [ -n "$$VM_AUTH_USERNAME" ] && [ -n "$$VM_AUTH_PASSWORD" ]; then
           AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=$$VM_AUTH_PASSWORD"
         fi
-        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod=336h -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 $$AUTH_ARGS
+        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod=336h -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration=30s -search.maxConcurrentRequests=16 $$AUTH_ARGS
     depends_on:
       config-init:
         condition: service_completed_successfully
@@ -158,7 +158,9 @@ services:
 
   # PGWatch Instance 1 - Monitoring service (Postgres sink)
   pgwatch-postgres:
-    image: cybertecpostgresql/pgwatch:4.1.0
+    image: ${PGAI_REGISTRY:-postgresai}/pgwatch:${PGAI_TAG:?PGAI_TAG is required}
+    build:
+      context: ./pgwatch
     container_name: pgwatch-postgres
     cpus: 0.35
     mem_limit: 512m
@@ -181,10 +183,12 @@ services:
 
   # PGWatch Instance 2 - Monitoring service (Prometheus sink)
   pgwatch-prometheus:
-    image: cybertecpostgresql/pgwatch:4.1.0
+    image: ${PGAI_REGISTRY:-postgresai}/pgwatch:${PGAI_TAG:?PGAI_TAG is required}
+    build:
+      context: ./pgwatch
     container_name: pgwatch-prometheus
-    cpus: 1.5
-    mem_limit: 1024m
+    cpus: 0.5
+    mem_limit: 512m
     command:
       [
         "--sources=/postgres_ai_configs/pgwatch-prometheus/sources.yml",
@@ -316,6 +320,7 @@ services:
       - "--docker_only=true"
       - "--disable_metrics=percpu,sched,tcp,udp,hugetlb,referenced_memory,cpu_topology,resctrl"
       - "--store_container_labels=false"
+    restart: unless-stopped
 
   # Node Exporter - System metrics (self-monitoring)
   self-node-exporter:

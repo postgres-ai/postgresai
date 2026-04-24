@@ -53,7 +53,12 @@ victoriaMetrics:
   image: victoriametrics/victoria-metrics:v1.140.0
   retentionPeriod: 336h
   scrapeInterval: 15s
-  extraArgs: []
+  # Bound expensive dashboard/API queries so VictoriaMetrics stays responsive under high-cardinality pg_stat_statements data.
+  extraArgs:
+    # Maximum wall time per query; raise only if dashboards legitimately need longer searches.
+    - -search.maxQueryDuration=30s
+    # Maximum concurrent search requests; lower reduces memory pressure, higher improves dashboard fan-out.
+    - -search.maxConcurrentRequests=16
   auth:
     enabled: false
     username: "vmauth"
@@ -81,6 +86,15 @@ flask:
   imagePullPolicy: IfNotPresent
   containerPort: 8000
   healthPath: /health
+  queryInfo:
+    # Minutes a queryid remains active in /query_info_metrics; keep above the pgwatch scrape interval.
+    activeMinutes: 10
+    # Hours to retain stale queryid rows in the sink before background cleanup deletes them.
+    retentionHours: 720
+    # Rows deleted per cleanup batch; higher catches up faster but holds locks longer.
+    retentionBatchSize: 10000
+    # Maximum cleanup batches per scrape-triggered run; caps background work per invocation.
+    retentionMaxIterations: 10
   env: {}
   service:
     type: ClusterIP

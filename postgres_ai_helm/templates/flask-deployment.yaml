@@ -46,6 +46,14 @@ spec:
                   key: postgres-password
             - name: POSTGRES_SINK_URL
               value: "postgresql://{{ .Values.sinkPostgres.user }}:$(POSTGRES_PASSWORD)@{{ include "postgres-ai-monitoring.fullname" . }}-sink-postgres:5432/{{ .Values.sinkPostgres.database }}"
+            - name: QUERYID_ACTIVE_MINUTES
+              value: {{ .Values.flask.queryInfo.activeMinutes | quote }}
+            - name: QUERYID_RETENTION_HOURS
+              value: {{ .Values.flask.queryInfo.retentionHours | quote }}
+            - name: QUERYID_RETENTION_BATCH_SIZE
+              value: {{ .Values.flask.queryInfo.retentionBatchSize | quote }}
+            - name: QUERYID_RETENTION_MAX_ITERATIONS
+              value: {{ .Values.flask.queryInfo.retentionMaxIterations | quote }}
             {{- if .Values.victoriaMetrics.auth.enabled }}
             - name: VM_AUTH_USERNAME
               value: {{ .Values.victoriaMetrics.auth.username | quote }}

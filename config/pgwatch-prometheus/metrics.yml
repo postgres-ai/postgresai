@@ -1447,6 +1447,9 @@ metrics:
           temp_bytes_read::int8 as temp_bytes_read,
           temp_bytes_written::int8 as temp_bytes_written
           from aggregated_statements
+          where calls >= 3 and exec_time_total >= 1000
+          order by exec_time_total desc
+          limit 100
       17: |
         with aggregated_statements as ( /* pgwatch_generated */
           select
@@ -1493,6 +1496,9 @@ metrics:
           temp_bytes_read::int8 as temp_bytes_read,
           temp_bytes_written::int8 as temp_bytes_written
           from aggregated_statements
+          where calls >= 3 and exec_time_total >= 1000
+          order by exec_time_total desc
+          limit 100
     gauges:
       - calls
       - plans_total
@@ -2809,7 +2815,19 @@ metrics:
             exists (select from pg_proc where proname = 'pg_stat_file') as has_pg_stat_file_func
         ),
         can_local as (
-          select (has_pg_ls_dir_func and has_pg_stat_file_func) as ok from env
+          -- to_regprocedure returns NULL instead of erroring when the signature
+          -- does not exist, so this stays safe even on databases where
+          -- pg_stat_file has been dropped or has a different signature.
+          -- coalesce guards against NULL propagating through the AND chain.
+          -- The execute-privilege check prevents "permission denied" on
+          -- managed databases (Supabase etc.) where pg_stat_file is
+          -- restricted to superusers (#142).
+          select (has_pg_ls_dir_func and has_pg_stat_file_func
+            and coalesce(
+              has_function_privilege(
+                to_regprocedure('pg_stat_file(text,boolean)'), 'execute'),
+              false)
+          ) as ok from env
         ),
         -- Use query_to_xml to safely execute Aurora-specific multixact query.
         -- Aurora uses aurora_stat_file() function instead of rds_tools.pg_ls_multixactdir().
