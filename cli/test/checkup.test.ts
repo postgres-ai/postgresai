@@ -5,8 +5,29 @@ import type { Client } from "pg";
 // Import from source directly since we're using Bun
 import * as checkup from "../lib/checkup";
 import * as api from "../lib/checkup-api";
+import * as metricsLoader from "../lib/metrics-loader";
 import { createMockClient } from "./test-utils";
 
+const SUPPORTED_PG_VERSIONS = [
+  { major: 13, minor: 16, versionNum: "130016" },
+  { major: 14, minor: 12, versionNum: "140012" },
+  { major: 15, minor: 7, versionNum: "150007" },
+  { major: 16, minor: 3, versionNum: "160003" },
+  { major: 17, minor: 2, versionNum: "170002" },
+  { major: 18, minor: 0, versionNum: "180000" },
+];
+const SUPPORTED_PG_MAJOR_VERSIONS = SUPPORTED_PG_VERSIONS.map(({ major }) => major);
+const SECONDS_PER_DAY = 86400;
+const STATS_RESET_EPOCH = Date.UTC(2024, 0, 1) / 1000;
+const DAYS_SINCE_RESET = 30;
+const STATS_RESET_SECONDS_SINCE_RESET = DAYS_SINCE_RESET * SECONDS_PER_DAY;
+const TEST_NOW_EPOCH = STATS_RESET_EPOCH + STATS_RESET_SECONDS_SINCE_RESET;
+const POSTMASTER_STARTUP_EPOCH = TEST_NOW_EPOCH - STATS_RESET_SECONDS_SINCE_RESET;
+const STATS_RESET_TIME = new Date(STATS_RESET_EPOCH * 1000).toISOString();
+const formatPostgresTimestamp = (epochSeconds: number) =>
+  new Date(epochSeconds * 1000).toISOString().replace("T", " ").replace(".000Z", "+00");
+const POSTMASTER_STARTUP_TIME = formatPostgresTimestamp(POSTMASTER_STARTUP_EPOCH);
+const POSTMASTER_UPTIME_SECONDS = TEST_NOW_EPOCH - POSTMASTER_STARTUP_EPOCH;
 
 function runCli(args: string[], env: Record<string, string> = {}) {
   const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
@@ -39,6 +60,24 @@ describe("parseVersionNum", () => {
     const result = checkup.parseVersionNum("140012");
     expect(result.major).toBe("14");
     expect(result.minor).toBe("12");
+  });
+
+  test("parses PG 13.16 version number", () => {
+    const result = checkup.parseVersionNum("130016");
+    expect(result.major).toBe("13");
+    expect(result.minor).toBe("16");
+  });
+
+  test("parses PG 17.2 version number", () => {
+    const result = checkup.parseVersionNum("170002");
+    expect(result.major).toBe("17");
+    expect(result.minor).toBe("2");
+  });
+
+  test("parses PG 18.0 version number", () => {
+    const result = checkup.parseVersionNum("180000");
+    expect(result.major).toBe("18");
+    expect(result.minor).toBe("0");
   });
 
   test("handles empty string", () => {
@@ -86,8 +125,7 @@ describe("createBaseReport", () => {
 
 // Tests for CHECK_INFO
 describe("CHECK_INFO and REPORT_GENERATORS", () => {
-  // Express-mode checks that have generators
-  const expressCheckIds = ["A002", "A003", "A004", "A007", "A013", "D001", "D004", "F001", "F004", "F005", "G001", "G003", "H001", "H002", "H004", "I001"];
+  const expressCheckIds = Object.keys(checkup.REPORT_GENERATORS);
 
   test("CHECK_INFO contains all express-mode checks", () => {
     for (const checkId of expressCheckIds) {
@@ -2189,5 +2227,885 @@ describe("checkup-summary", () => {
     const result = summary.generateCheckSummary("H004", report);
     expect(result.status).toBe("ok");
     expect(result.message).toBe("No redundant indexes");
+  });
+});
+
+// Postgres version compatibility tests (PG13-PG18)
+describe("Postgres version compatibility (PG13-PG18)", () => {
+  /**
+   * Version-matrix fixture invariants:
+   * - version_num uses Postgres major * 10000 + minor encoding.
+   * - shared_buffers 16384 * 8kB is 128 MiB.
+   * - days_since_reset is derived by production code from the stats_reset metric's
+   *   seconds_since_reset field, not from Date.now().
+   * - postmaster uptime, uptime text, and postmaster startup timestamp are derived
+   *   from TEST_NOW_EPOCH and POSTMASTER_STARTUP_EPOCH and must stay in sync.
+   */
+  const createVersionMockData = (major: number, minor: number) => ({
+    versionRows: [
+      { name: "server_version", setting: `${major}.${minor}` },
+      { name: "server_version_num", setting: `${major}${String(minor).padStart(4, "0")}` },
+    ],
+    settingsRows: [
+      {
+        tag_setting_name: "shared_buffers",
+        tag_setting_value: "16384",
+        tag_unit: "8kB",
+        tag_category: "Resource Usage / Memory",
+        tag_vartype: "integer",
+        is_default: 0,
+        setting_normalized: "134217728",
+        unit_normalized: "bytes",
+      },
+      {
+        tag_setting_name: "autovacuum_vacuum_scale_factor",
+        tag_setting_value: "0.2",
+        tag_unit: "",
+        tag_category: "Autovacuum",
+        tag_vartype: "real",
+        is_default: 0,
+        setting_normalized: null,
+        unit_normalized: null,
+      },
+      {
+        tag_setting_name: "log_min_duration_statement",
+        tag_setting_value: "-1",
+        tag_unit: "ms",
+        tag_category: "Reporting and Logging / When to Log",
+        tag_vartype: "integer",
+        is_default: 1,
+        setting_normalized: null,
+        unit_normalized: null,
+      },
+      {
+        tag_setting_name: "deadlock_timeout",
+        tag_setting_value: "1000",
+        tag_unit: "ms",
+        tag_category: "Lock Management",
+        tag_vartype: "integer",
+        is_default: 1,
+        setting_normalized: null,
+        unit_normalized: null,
+      },
+    ],
+    databaseSizesRows: [{ datname: "postgres", size_bytes: "1073741824" }],
+    dbStatsRows: [{
+      numbackends: 5,
+      xact_commit: 100,
+      xact_rollback: 1,
+      blks_read: 100,
+      blks_hit: 900,
+      tup_returned: 500,
+      tup_fetched: 400,
+      tup_inserted: 50,
+      tup_updated: 30,
+      tup_deleted: 10,
+      deadlocks: 0,
+      temp_files: 0,
+      temp_bytes: 0,
+      postmaster_uptime_s: POSTMASTER_UPTIME_SECONDS,
+    }],
+    connectionStatesRows: [{ state: "active", count: 2 }, { state: "idle", count: 3 }],
+    uptimeRows: [{ start_time: new Date(POSTMASTER_STARTUP_EPOCH * 1000), uptime: `${DAYS_SINCE_RESET} days` }],
+    invalidIndexesRows: [],
+    unusedIndexesRows: [],
+    redundantIndexesRows: [],
+  });
+
+  const pgVersions = SUPPORTED_PG_VERSIONS;
+
+  // A003 surfaces the full pg_settings projection. A007 uses value, not setting,
+  // and intentionally omits context/vartype because altered settings expose a smaller shape.
+  const expectedSharedBuffersSetting = {
+    setting: "16384",
+    unit: "8kB",
+    category: "Resource Usage / Memory",
+    context: "",
+    vartype: "integer",
+    pretty_value: "128.00 MiB",
+  };
+
+  const expectedSharedBuffersAlteredSetting = {
+    value: "16384",
+    unit: "8kB",
+    category: "Resource Usage / Memory",
+    pretty_value: "128.00 MiB",
+  };
+
+  const expectedAutovacuumSetting = {
+    setting: "0.2",
+    unit: "",
+    category: "Autovacuum",
+    context: "",
+    vartype: "real",
+    pretty_value: "0.2",
+  };
+
+  const expectedAutovacuumAlteredSetting = {
+    value: "0.2",
+    unit: "",
+    category: "Autovacuum",
+    pretty_value: "0.2",
+  };
+
+  const expectedLogMinDurationSetting = {
+    setting: "-1",
+    unit: "ms",
+    category: "Reporting and Logging / When to Log",
+    context: "",
+    vartype: "integer",
+    pretty_value: "-1",
+  };
+
+  const expectedDeadlockTimeoutSetting = {
+    setting: "1000",
+    unit: "ms",
+    category: "Lock Management",
+    context: "",
+    vartype: "integer",
+    pretty_value: "1000",
+  };
+
+  const expectedDatabaseSizeBytes = 1073741824;
+
+  describe("getPostgresVersion extracts correct version for each PG version", () => {
+    for (const { major, minor, versionNum } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const version = await checkup.getPostgresVersion(mockClient as any);
+
+        expect(version.version).toBe(`${major}.${minor}`);
+        expect(version.server_version_num).toBe(versionNum);
+        expect(version.server_major_ver).toBe(String(major));
+        expect(version.server_minor_ver).toBe(String(minor));
+      });
+    }
+  });
+
+  describe("generateA002 (major version) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateA002(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("A002");
+        expect(report.checkTitle).toBe("Postgres major version");
+        expect(report.results["test-node"].data.version.version).toBe(`${major}.${minor}`);
+        expect(report.results["test-node"].data.version.server_major_ver).toBe(String(major));
+        expect(report.results["test-node"].data.version.server_minor_ver).toBe(String(minor));
+      });
+    }
+  });
+
+  describe("generateA013 (minor version) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateA013(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("A013");
+        expect(report.checkTitle).toBe("Postgres minor version");
+        expect(report.results["test-node"].data.version.server_minor_ver).toBe(String(minor));
+        expect(report.results["test-node"].data.version.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateA003 (settings) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateA003(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("A003");
+        expect(report.checkTitle).toBe("Postgres settings");
+        expect(report.results["test-node"].data.shared_buffers).toEqual(expectedSharedBuffersSetting);
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+        expect(report.results["test-node"].postgres_version?.server_major_ver).toBe(String(major));
+      });
+    }
+  });
+
+  describe("generateA007 (altered settings) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateA007(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("A007");
+        expect(report.checkTitle).toBe("Altered settings");
+        expect(report.results["test-node"].data.shared_buffers).toEqual(expectedSharedBuffersAlteredSetting);
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateA004 (cluster info) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateA004(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("A004");
+        expect(report.checkTitle).toBe("Cluster information");
+        const data = report.results["test-node"].data;
+        expect(data.general_info.total_connections.value).toBe("5");
+        expect(data.general_info.cache_hit_ratio.value).toBe("90.00");
+        expect(data.general_info.connections_active.value).toBe("2");
+        expect(data.database_sizes.postgres).toBe(expectedDatabaseSizeBytes);
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateH001 (invalid indexes) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateH001(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("H001");
+        expect(report.checkTitle).toBe("Invalid indexes");
+        expect(report.results["test-node"].data.testdb).toEqual({
+          invalid_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateH002 (unused indexes) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateH002(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("H002");
+        expect(report.checkTitle).toBe("Unused indexes");
+        expect(report.results["test-node"].data.testdb).toEqual({
+          unused_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+          stats_reset: {
+            stats_reset_epoch: STATS_RESET_EPOCH,
+            stats_reset_time: STATS_RESET_TIME,
+            days_since_reset: DAYS_SINCE_RESET,
+            postmaster_startup_epoch: STATS_RESET_EPOCH,
+            postmaster_startup_time: POSTMASTER_STARTUP_TIME,
+          },
+        });
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateH004 (redundant indexes) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.generateH004(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("H004");
+        expect(report.checkTitle).toBe("Redundant indexes");
+        expect(report.results["test-node"].data.testdb).toEqual({
+          redundant_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("index reports surface non-empty rows for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient({
+          ...createVersionMockData(major, minor),
+          invalidIndexesRows: [
+            {
+              schema_name: "public",
+              table_name: "orders",
+              index_name: "orders_status_idx_invalid",
+              relation_name: "orders",
+              index_size_bytes: "2097152",
+              index_definition: "CREATE INDEX orders_status_idx_invalid ON public.orders USING btree (status)",
+              supports_fk: false,
+              is_pk: false,
+              is_unique: false,
+              constraint_name: null,
+              table_row_estimate: "50000",
+              has_valid_duplicate: true,
+              valid_index_name: "orders_status_idx",
+              valid_index_definition: "CREATE INDEX orders_status_idx ON public.orders USING btree (status)",
+            },
+          ],
+          unusedIndexesRows: [
+            {
+              schema_name: "public",
+              table_name: "logs",
+              index_name: "logs_created_idx",
+              index_definition: "CREATE INDEX logs_created_idx ON public.logs USING btree (created_at)",
+              reason: "Never Used Indexes",
+              index_size_bytes: "4194304",
+              idx_scan: "0",
+              idx_is_btree: true,
+              supports_fk: false,
+            },
+          ],
+          redundantIndexesRows: [
+            {
+              schema_name: "public",
+              table_name: "orders",
+              index_name: "orders_user_id_idx",
+              relation_name: "orders",
+              access_method: "btree",
+              reason: "public.orders_user_id_created_idx",
+              index_size_bytes: "2097152",
+              table_size_bytes: "16777216",
+              index_usage: "0",
+              supports_fk: false,
+              index_definition: "CREATE INDEX orders_user_id_idx ON public.orders USING btree (user_id)",
+              redundant_to_json: JSON.stringify([
+                {
+                  index_name: "public.orders_user_id_created_idx",
+                  index_definition: "CREATE INDEX orders_user_id_created_idx ON public.orders USING btree (user_id, created_at)",
+                  index_size_bytes: 1048576,
+                },
+              ]),
+            },
+          ],
+        });
+
+        const invalidReport = await checkup.generateH001(mockClient as any, "test-node");
+        expect(invalidReport.results["test-node"].data.testdb).toEqual({
+          invalid_indexes: [
+            {
+              schema_name: "public",
+              table_name: "orders",
+              index_name: "orders_status_idx_invalid",
+              relation_name: "orders",
+              index_size_bytes: 2097152,
+              index_size_pretty: "2.00 MiB",
+              index_definition: "CREATE INDEX orders_status_idx_invalid ON public.orders USING btree (status)",
+              supports_fk: false,
+              is_pk: false,
+              is_unique: false,
+              constraint_name: null,
+              table_row_estimate: 50000,
+              has_valid_duplicate: true,
+              valid_duplicate_name: "orders_status_idx",
+              valid_duplicate_definition: "CREATE INDEX orders_status_idx ON public.orders USING btree (status)",
+            },
+          ],
+          total_count: 1,
+          total_size_bytes: 2097152,
+          total_size_pretty: "2.00 MiB",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+
+        const unusedReport = await checkup.generateH002(mockClient as any, "test-node");
+        expect(unusedReport.results["test-node"].data.testdb).toEqual({
+          unused_indexes: [
+            {
+              schema_name: "public",
+              table_name: "logs",
+              index_name: "logs_created_idx",
+              index_definition: "CREATE INDEX logs_created_idx ON public.logs USING btree (created_at)",
+              reason: "Never Used Indexes",
+              idx_scan: 0,
+              index_size_bytes: 4194304,
+              idx_is_btree: true,
+              supports_fk: false,
+              index_size_pretty: "4.00 MiB",
+            },
+          ],
+          total_count: 1,
+          total_size_bytes: 4194304,
+          total_size_pretty: "4.00 MiB",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+          stats_reset: {
+            stats_reset_epoch: STATS_RESET_EPOCH,
+            stats_reset_time: STATS_RESET_TIME,
+            days_since_reset: DAYS_SINCE_RESET,
+            postmaster_startup_epoch: STATS_RESET_EPOCH,
+            postmaster_startup_time: POSTMASTER_STARTUP_TIME,
+          },
+        });
+
+        const redundantReport = await checkup.generateH004(mockClient as any, "test-node");
+        expect(redundantReport.results["test-node"].data.testdb).toEqual({
+          redundant_indexes: [
+            {
+              schema_name: "public",
+              table_name: "orders",
+              index_name: "orders_user_id_idx",
+              relation_name: "orders",
+              access_method: "btree",
+              reason: "public.orders_user_id_created_idx",
+              index_size_bytes: 2097152,
+              table_size_bytes: 16777216,
+              index_usage: 0,
+              supports_fk: false,
+              index_definition: "CREATE INDEX orders_user_id_idx ON public.orders USING btree (user_id)",
+              index_size_pretty: "2.00 MiB",
+              table_size_pretty: "16.00 MiB",
+              redundant_to: [
+                {
+                  index_name: "public.orders_user_id_created_idx",
+                  index_definition: "CREATE INDEX orders_user_id_created_idx ON public.orders USING btree (user_id, created_at)",
+                  index_size_bytes: 1048576,
+                  index_size_pretty: "1.00 MiB",
+                },
+              ],
+            },
+          ],
+          total_count: 1,
+          total_size_bytes: 2097152,
+          total_size_pretty: "2.00 MiB",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+      });
+    }
+  });
+
+  describe("generateD004 (pg_stat_statements) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.REPORT_GENERATORS.D004(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("D004");
+        expect(report.checkTitle).toBe("pg_stat_statements and pg_stat_kcache settings");
+        const data = report.results["test-node"].data;
+        expect(data).toEqual({
+          settings: {},
+          pg_stat_statements_status: {
+            extension_available: false,
+            metrics_count: 0,
+            total_calls: 0,
+            sample_queries: [],
+          },
+          pg_stat_kcache_status: {
+            extension_available: false,
+            metrics_count: 0,
+            total_exec_time: 0,
+            total_user_time: 0,
+            total_system_time: 0,
+            sample_queries: [],
+          },
+        });
+      });
+    }
+
+    test("surfaces populated extension metrics", async () => {
+      const mockClient = createMockClient({
+        ...createVersionMockData(16, 3),
+        settingsRows: [
+          {
+            tag_setting_name: "pg_stat_statements.max",
+            tag_setting_value: "5000",
+            tag_unit: "",
+            tag_category: "Custom",
+            tag_vartype: "integer",
+            is_default: 0,
+            setting_normalized: null,
+            unit_normalized: null,
+          },
+          {
+            tag_setting_name: "pg_stat_kcache.linux_hz",
+            tag_setting_value: "100",
+            tag_unit: "",
+            tag_category: "Custom",
+            tag_vartype: "integer",
+            is_default: 1,
+            setting_normalized: null,
+            unit_normalized: null,
+          },
+        ],
+        pgStatStatementsExtensionRows: [{ exists: 1 }],
+        pgStatStatementsStatsRows: [{ cnt: "2", total_calls: "42" }],
+        pgStatStatementsSampleRows: [
+          { queryid: "101", user: "app", database: "testdb", calls: "40" },
+          { queryid: "202", user: "worker", database: "testdb", calls: "2" },
+        ],
+        pgStatKcacheExtensionRows: [{ exists: 1 }],
+        pgStatKcacheStatsRows: [{ cnt: "1", total_exec_time: "12.5", total_user_time: "8.5", total_system_time: "4" }],
+        pgStatKcacheSampleRows: [{ queryid: "101", user: "app", exec_total_time: "12.5" }],
+      });
+
+      const report = await checkup.REPORT_GENERATORS.D004(mockClient as any, "test-node");
+      expect(report.results["test-node"].data).toEqual({
+        settings: {
+          "pg_stat_statements.max": {
+            setting: "5000",
+            unit: "",
+            category: "Custom",
+            context: "",
+            vartype: "integer",
+            pretty_value: "5000",
+          },
+          "pg_stat_kcache.linux_hz": {
+            setting: "100",
+            unit: "",
+            category: "Custom",
+            context: "",
+            vartype: "integer",
+            pretty_value: "100",
+          },
+        },
+        pg_stat_statements_status: {
+          extension_available: true,
+          metrics_count: 2,
+          total_calls: 42,
+          sample_queries: [
+            { queryid: "101", user: "app", database: "testdb", calls: 40 },
+            { queryid: "202", user: "worker", database: "testdb", calls: 2 },
+          ],
+        },
+        pg_stat_kcache_status: {
+          extension_available: true,
+          metrics_count: 1,
+          total_exec_time: 12.5,
+          total_user_time: 8.5,
+          total_system_time: 4,
+          sample_queries: [{ queryid: "101", user: "app", exec_total_time: 12.5 }],
+        },
+      });
+    });
+  });
+
+  describe("generateF001 (autovacuum settings) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.REPORT_GENERATORS.F001(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("F001");
+        expect(report.checkTitle).toBe("Autovacuum: current settings");
+        expect(report.results["test-node"].data).toEqual({
+          autovacuum_vacuum_scale_factor: expectedAutovacuumSetting,
+        });
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateG001 (memory settings) works for each PG version", () => {
+    for (const { major, minor } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const report = await checkup.REPORT_GENERATORS.G001(mockClient as any, "test-node");
+
+        expect(report.checkId).toBe("G001");
+        expect(report.checkTitle).toBe("Memory-related settings");
+        const data = report.results["test-node"].data;
+        expect(data).toEqual({
+          settings: {
+            shared_buffers: expectedSharedBuffersSetting,
+          },
+          analysis: {
+            estimated_total_memory_usage: {
+              shared_buffers_bytes: 134217728,
+              shared_buffers_pretty: "128.00 MiB",
+              wal_buffers_bytes: 4194304,
+              wal_buffers_pretty: "4.00 MiB",
+              shared_memory_total_bytes: 138412032,
+              shared_memory_total_pretty: "132.00 MiB",
+              work_mem_per_connection_bytes: 4194304,
+              work_mem_per_connection_pretty: "4.00 MiB",
+              max_work_mem_usage_bytes: 419430400,
+              max_work_mem_usage_pretty: "400.00 MiB",
+              maintenance_work_mem_bytes: 67108864,
+              maintenance_work_mem_pretty: "64.00 MiB",
+              effective_cache_size_bytes: 4294967296,
+              effective_cache_size_pretty: "4.00 GiB",
+            },
+          },
+        });
+        expect(report.results["test-node"].postgres_version?.version).toBe(`${major}.${minor}`);
+      });
+    }
+  });
+
+  describe("generateAllReports works for each PG version", () => {
+    for (const { major, minor, versionNum } of pgVersions) {
+      test(`PG ${major}.${minor}`, async () => {
+        const mockClient = createMockClient(createVersionMockData(major, minor));
+        const reports = await checkup.generateAllReports(mockClient as any, "test-node");
+        const expectedVersion = {
+          version: `${major}.${minor}`,
+          server_version_num: versionNum,
+          server_major_ver: String(major),
+          server_minor_ver: String(minor),
+        };
+
+        // Verify all express-mode checks are generated from the same source of truth.
+        const expectedChecks = Object.keys(checkup.REPORT_GENERATORS).sort();
+        expect(Object.keys(reports).sort()).toEqual(expectedChecks);
+        for (const checkId of expectedChecks) {
+          expect(reports[checkId]?.checkId).toBe(checkId);
+          expect(reports[checkId].results["test-node"]).toBeDefined();
+        }
+
+        // Verify every generated report has a concrete payload shape.
+        expect(reports.A002.results["test-node"].data).toEqual({ version: expectedVersion });
+        expect(reports.A003.results["test-node"].data).toEqual({
+          shared_buffers: expectedSharedBuffersSetting,
+          autovacuum_vacuum_scale_factor: expectedAutovacuumSetting,
+          log_min_duration_statement: expectedLogMinDurationSetting,
+          deadlock_timeout: expectedDeadlockTimeoutSetting,
+        });
+        expect(reports.A004.results["test-node"].data.database_sizes).toEqual({ postgres: expectedDatabaseSizeBytes });
+        expect(reports.A004.results["test-node"].data.general_info.total_connections.value).toBe("5");
+        expect(reports.A004.results["test-node"].data.general_info.uptime.value).toBe("30 days 0:00:00");
+        expect(reports.A007.results["test-node"].data).toEqual({
+          shared_buffers: expectedSharedBuffersAlteredSetting,
+          autovacuum_vacuum_scale_factor: expectedAutovacuumAlteredSetting,
+        });
+        expect(reports.A013.results["test-node"].data).toEqual({ version: expectedVersion });
+        expect(reports.D001.results["test-node"].data).toEqual({
+          log_min_duration_statement: expectedLogMinDurationSetting,
+        });
+        expect(reports.D004.results["test-node"].data).toEqual({
+          settings: {},
+          pg_stat_statements_status: {
+            extension_available: false,
+            metrics_count: 0,
+            total_calls: 0,
+            sample_queries: [],
+          },
+          pg_stat_kcache_status: {
+            extension_available: false,
+            metrics_count: 0,
+            total_exec_time: 0,
+            total_user_time: 0,
+            total_system_time: 0,
+            sample_queries: [],
+          },
+        });
+        expect(reports.F001.results["test-node"].data).toEqual({
+          autovacuum_vacuum_scale_factor: expectedAutovacuumSetting,
+        });
+        expect(reports.F004.results["test-node"].data.testdb).toEqual({
+          bloated_tables: [],
+          total_count: 0,
+          total_bloat_size_bytes: 0,
+          total_bloat_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+        expect(reports.F005.results["test-node"].data.testdb).toEqual({
+          bloated_indexes: [],
+          total_count: 0,
+          total_bloat_size_bytes: 0,
+          total_bloat_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+        expect(reports.G001.results["test-node"].data.settings).toEqual({
+          shared_buffers: expectedSharedBuffersSetting,
+        });
+        expect(reports.G001.results["test-node"].data.analysis.estimated_total_memory_usage.shared_buffers_bytes).toBe(134217728);
+        expect(reports.G003.results["test-node"].data).toEqual({
+          settings: {
+            deadlock_timeout: expectedDeadlockTimeoutSetting,
+          },
+          deadlock_stats: { deadlocks: 0, conflicts: 0, stats_reset: null },
+        });
+        expect(reports.H001.results["test-node"].data.testdb).toEqual({
+          invalid_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+        expect(reports.H002.results["test-node"].data.testdb).toEqual({
+          unused_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+          stats_reset: {
+            stats_reset_epoch: STATS_RESET_EPOCH,
+            stats_reset_time: STATS_RESET_TIME,
+            days_since_reset: DAYS_SINCE_RESET,
+            postmaster_startup_epoch: STATS_RESET_EPOCH,
+            postmaster_startup_time: POSTMASTER_STARTUP_TIME,
+          },
+        });
+        expect(reports.H004.results["test-node"].data.testdb).toEqual({
+          redundant_indexes: [],
+          total_count: 0,
+          total_size_bytes: 0,
+          total_size_pretty: "0 B",
+          database_size_bytes: expectedDatabaseSizeBytes,
+          database_size_pretty: "1.00 GiB",
+        });
+
+        // Verify postgres_version is set in reports that include it.
+        expect(reports.A003.results["test-node"].postgres_version).toEqual(expectedVersion);
+        expect(reports.A004.results["test-node"].postgres_version).toEqual(expectedVersion);
+      });
+    }
+  });
+});
+
+// Tests for version-aware SQL query selection
+describe("Version-aware SQL query selection (PG13-PG18)", () => {
+  const pgVersions = SUPPORTED_PG_MAJOR_VERSIONS;
+
+  // All metrics registered in metrics.yml.
+  const allMetrics = metricsLoader.listMetricNames();
+  expect(allMetrics.length).toBeGreaterThan(0);
+  const sqlStartPattern = /^\s*(with|select)\b/i;
+
+  describe("All metrics from metrics.yml return valid SQL for each PG version", () => {
+    for (const pgVersion of pgVersions) {
+      describe(`PG${pgVersion}`, () => {
+        for (const metric of allMetrics) {
+          test(`${metric}`, () => {
+            const sql = metricsLoader.getMetricSql(metric, pgVersion);
+            expect(typeof sql).toBe("string");
+            expect(sql.length).toBeGreaterThan(0);
+
+            const trimmedSql = sql.trim();
+            if (trimmedSql.startsWith(";")) {
+              expect(metric).toBe("pg_stat_io");
+              expect(pgVersion).toBeLessThan(16);
+              expect(trimmedSql).toMatch(/pg_stat_io only available/i);
+              return;
+            }
+
+            expect(trimmedSql).toMatch(sqlStartPattern);
+            expect(trimmedSql.toLowerCase()).toMatch(/\bfrom\b/);
+            expect(trimmedSql).not.toMatch(/\{\{.*\}\}/);
+            expect(trimmedSql).not.toMatch(/\$\{.*\}/);
+          });
+        }
+      });
+    }
+  });
+
+  describe("getMetricSql rejects invalid version inputs", () => {
+    const invalidVersions = [0, -1, Number.NaN];
+
+    for (const pgVersion of invalidVersions) {
+      test(`settings rejects Postgres ${String(pgVersion)}`, () => {
+        expect(() => metricsLoader.getMetricSql("settings", pgVersion)).toThrow(/No compatible SQL version/);
+      });
+    }
+
+    test("rejects versions older than the oldest keyed SQL", () => {
+      for (const metric of allMetrics) {
+        expect(() => metricsLoader.getMetricSql(metric, 10)).toThrow(/No compatible SQL version/);
+      }
+    });
+
+    test("rejects unknown metric names", () => {
+      expect(() => metricsLoader.getMetricSql("not_a_metric", 16)).toThrow(/Metric "not_a_metric" not found/);
+    });
+  });
+
+  describe("getMetricSql selects the nearest compatible version", () => {
+    test("uses exact and previous keyed SQL for mid-range versions", () => {
+      const definition = metricsLoader.getMetricDefinition("db_stats")!;
+      expect(typeof definition.sqls["11"]).toBe("string");
+      expect(typeof definition.sqls["12"]).toBe("string");
+      expect(typeof definition.sqls["14"]).toBe("string");
+      expect(typeof definition.sqls["15"]).toBe("string");
+
+      expect(metricsLoader.getMetricSql("db_stats", 12)).toBe(definition.sqls["12"]);
+      expect(metricsLoader.getMetricSql("db_stats", 13)).toBe(definition.sqls["12"]);
+      expect(metricsLoader.getMetricSql("db_stats", 14)).toBe(definition.sqls["14"]);
+      expect(metricsLoader.getMetricSql("db_stats", 19)).toBe(definition.sqls["15"]);
+      expect(definition.sqls["12"]).not.toBe(definition.sqls["11"]);
+      expect(definition.sqls["15"]).not.toBe(definition.sqls["14"]);
+    });
+
+    test("uses a metric's oldest SQL when no newer key exists below the requested version", () => {
+      const definition = metricsLoader.getMetricDefinition("settings")!;
+      expect(typeof definition.sqls["11"]).toBe("string");
+      expect(metricsLoader.getMetricSql("settings", 12)).toBe(definition.sqls["11"]);
+      expect(metricsLoader.getMetricSql("settings", 19)).toBe(definition.sqls["11"]);
+    });
+  });
+
+  describe("getMetricDefinition returns metadata for all metrics", () => {
+    for (const metric of allMetrics) {
+      test(`${metric} has definition with versioned SQL`, () => {
+        const definition = metricsLoader.getMetricDefinition(metric);
+        expect(definition).toBeTruthy();
+        expect(definition?.sqls).toBeTruthy();
+        expect(typeof definition?.sqls).toBe("object");
+        const entries = Object.entries(definition!.sqls);
+        expect(entries.length).toBeGreaterThan(0);
+        for (const [versionKey, sql] of entries) {
+          const version = Number(versionKey);
+          const trimmedSql = sql.trim();
+          expect(Number.isInteger(version)).toBe(true);
+          expect(version).toBeGreaterThan(0);
+          expect(typeof sql).toBe("string");
+          expect(sql.length).toBeGreaterThan(0);
+          if (trimmedSql.startsWith(";")) {
+            expect(metric).toBe("pg_stat_io");
+            expect(version).toBe(11);
+            expect(trimmedSql).toMatch(/pg_stat_io only available/i);
+            continue;
+          }
+          expect(trimmedSql).toMatch(sqlStartPattern);
+        }
+      });
+    }
+  });
+
+  test("listMetricNames returns all expected core metrics", () => {
+    const names = metricsLoader.listMetricNames();
+    expect(Array.isArray(names)).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
+    const coreMetrics = [
+      "settings",
+      "db_stats",
+      "db_size",
+      "stats_reset",
+      "pg_invalid_indexes",
+      "unused_indexes",
+      "redundant_indexes",
+    ];
+    expect(names.length).toBeGreaterThanOrEqual(coreMetrics.length);
+    for (const metric of coreMetrics) {
+      expect(names).toContain(metric);
+    }
+  });
+
+  test("METRIC_NAMES maps every express report metric", () => {
+    expect(metricsLoader.METRIC_NAMES).toEqual({
+      H001: "pg_invalid_indexes",
+      H002: "unused_indexes",
+      H004: "redundant_indexes",
+      F004: "pg_table_bloat",
+      F005: "pg_btree_bloat",
+      settings: "settings",
+      dbStats: "db_stats",
+      dbSize: "db_size",
+      statsReset: "stats_reset",
+      I001: "pg_stat_io",
+    });
   });
 });
