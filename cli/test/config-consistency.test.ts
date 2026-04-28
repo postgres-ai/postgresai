@@ -24,6 +24,10 @@ type GrafanaDatasourceConfig = {
   datasources?: GrafanaDatasource[];
 };
 
+type DockerComposeConfig = {
+  services?: Record<string, { restart?: unknown }>;
+};
+
 // These UIDs are referenced by provisioned Grafana dashboards.
 // Changing them without updating dashboard JSON silently breaks panels.
 const expectedGrafanaDatasourceUids = new Map([
@@ -257,6 +261,32 @@ describe("Config consistency", () => {
     expect(envExample).toContain("VM_AUTH_PASSWORD=");
     expect(envExample).toContain("openssl rand -hex 32");
     expect(envExample).toContain("openssl rand -base64 18");
+  });
+
+  test("long-running Docker Compose services survive host reboot", () => {
+    const composeConfig = Bun.YAML.parse(
+      readFileSync(composePath, "utf8")
+    ) as DockerComposeConfig;
+    const services = composeConfig.services ?? {};
+
+    // All services should survive host reboot unless they are one-shot setup jobs.
+    const oneShotServices = new Set(["config-init", "sources-generator"]);
+    const serviceEntries = Object.entries(services);
+
+    expect(serviceEntries.length).toBeGreaterThan(0);
+
+    for (const serviceName of oneShotServices) {
+      expect(services[serviceName]).toBeDefined();
+      expect(services[serviceName]?.restart).toBeUndefined();
+    }
+
+    for (const [serviceName, serviceConfig] of serviceEntries) {
+      if (oneShotServices.has(serviceName)) {
+        continue;
+      }
+
+      expect(serviceConfig.restart).toBe("unless-stopped");
+    }
   });
 
   test("pgwatch presets only reference configured metrics", () => {

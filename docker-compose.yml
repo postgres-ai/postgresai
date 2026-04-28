@@ -66,6 +66,7 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   # Hot standby used by xmin-horizon integration coverage when explicitly started.
   target-standby:
@@ -99,6 +100,7 @@ services:
       - target_standby_data:/var/lib/postgresql/data
     depends_on:
       - target-db
+    restart: unless-stopped
 
   # Postgres Sink - Storage for metrics in PostgreSQL format
   # Note: pg_hba.conf is configured to allow passwordless connections (trust)
@@ -297,6 +299,7 @@ services:
       pgwatch-prometheus:
         condition: service_started
     command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]
+    restart: unless-stopped
 
   # Self-monitoring components (may have reduced functionality on macOS)
 
