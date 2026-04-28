@@ -140,7 +140,13 @@ cadvisor:
   # registry convention, unlike other images here).
   enabled: false
   image: ghcr.io/google/cadvisor:0.56.2
-  resources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 250m
+      memory: 384Mi
 
 monitoredDatabases:
   # Example: Database with default cluster/node from global settings

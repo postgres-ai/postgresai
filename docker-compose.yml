@@ -306,8 +306,8 @@ services:
   self-cadvisor:
     image: ghcr.io/google/cadvisor:0.56.2
     container_name: self-cadvisor
-    cpus: 0.15
-    mem_limit: 192m
+    cpus: 0.25
+    mem_limit: 402653184
     privileged: true
     volumes:
       - /:/rootfs:ro
