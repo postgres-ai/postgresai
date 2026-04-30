@@ -19,7 +19,21 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": 5,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
   "panels": [
     {
       "collapsed": false,
@@ -1144,7 +1158,8 @@
   "tags": [
     "backups",
     "dr",
-    "wal"
+    "wal",
+    "postgres-ai"
   ],
   "templating": {
     "list": [

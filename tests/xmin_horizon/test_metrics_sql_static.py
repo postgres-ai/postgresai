@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 METRICS_PATH = ROOT / "config" / "pgwatch-prometheus" / "metrics.yml"
 DASHBOARD_7_PATH = (
-    ROOT / "config" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_bloat.json"
+    ROOT / "config" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_xmin_horizon.json"
 )
 
 
@@ -293,16 +293,16 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         self.assertEqual(metric_def("xmin_horizon_blockers").get("gauges"), ["age_tx"])
 
     def test_blocker_dashboard_table_uses_recent_scrape_window(self) -> None:
-        panel = dashboard_panel("Current top blockers")
+        panel = dashboard_panel("Autovacuum workers blocked on lock")
         targets = panel.get("targets", [])
 
         self.assertEqual(len(targets), 1)
         self.assertTrue(targets[0].get("instant"))
         self.assertIn(
-            "last_over_time(pgwatch_xmin_horizon_blockers_age_tx",
+            "last_over_time(pgwatch_pg_autovacuum_blocked_wait_seconds",
             targets[0]["expr"],
         )
-        self.assertIn("[5m]", targets[0]["expr"])
+        self.assertIn("[1m]", targets[0]["expr"])
 
     def test_replication_slots_metric_preserves_null_xmin_age(self) -> None:
         sql_text = metric_sql("replication_slots")
@@ -335,6 +335,290 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         self.assertIsNone(postgres_greatest(None, None))
         self.assertEqual(postgres_greatest(None, 7), 7)
         self.assertEqual(postgres_greatest(11, None), 11)
+
+
+class TableStatsMxidFreezeAgeTest(unittest.TestCase):
+    def test_table_stats_exports_mxid_freeze_age(self) -> None:
+        # The new wraparound top-N panels query
+        # `pgwatch_table_stats_mxid_freeze_age`. Pin both the column alias and
+        # the corrected `mxid_age(...)` function (was `age(...)` previously,
+        # which wraps to ~2^31-1 on a fresh DB with relminmxid=1).
+        sql_text = normalized(metric_sql("table_stats"))
+        self.assertIn("mxid_age(c.relminmxid)", sql_text)
+        self.assertIn("as mxid_freeze_age", sql_text)
+        # Guard the regression: only `mxid_age(c.relminmxid)` is correct.
+        # `then age(c.relminmxid)` (without the `mxid_` prefix) was the bug
+        # that wrapped the freeze-age past 2^31 on fresh databases.
+        self.assertNotRegex(sql_text, r"\bthen\s+age\(c\.relminmxid\)")
+
+
+class PgSettingsWraparoundTest(unittest.TestCase):
+    def test_metric_definition_contract(self) -> None:
+        definition = metric_def("pg_settings_wraparound")
+        self.assertIn(11, definition["sqls"])
+        self.assertEqual(definition.get("gauges"), ["*"])
+        # pg_settings is cluster-global; must be is_instance_level so pgwatch
+        # scrapes it once per cluster instead of once per database.
+        self.assertTrue(definition.get("is_instance_level"))
+
+    def test_sql_does_not_tag_with_datname(self) -> None:
+        # Cluster-global values must not carry a per-database tag — that
+        # creates duplicate Prometheus series and misleads dashboards.
+        sql_text = normalized(metric_sql("pg_settings_wraparound"))
+        self.assertNotIn("as tag_datname", sql_text)
+        self.assertNotIn("current_database()", sql_text)
+
+    def test_sql_exposes_threshold_columns(self) -> None:
+        sql_text = normalized(metric_sql("pg_settings_wraparound"))
+        # Soft-freeze GUCs (always present back to PG 9.x).
+        self.assertIn("'autovacuum_freeze_max_age'", sql_text)
+        self.assertIn("'autovacuum_multixact_freeze_max_age'", sql_text)
+        self.assertIn("as autovacuum_freeze_max_age", sql_text)
+        self.assertIn("as autovacuum_multixact_freeze_max_age", sql_text)
+        # Failsafe GUCs are PG14+ only — must be coalesced to 0 so the
+        # query does not blow up on PG 11–13 where the setting is missing.
+        self.assertIn("'vacuum_failsafe_age'", sql_text)
+        self.assertIn("'vacuum_multixact_failsafe_age'", sql_text)
+        self.assertRegex(
+            sql_text,
+            r"coalesce\(\s*\(\s*select setting::int8 from pg_settings "
+            r"where name = 'vacuum_failsafe_age'\s*\)\s*,\s*0\s*\)",
+        )
+        self.assertRegex(
+            sql_text,
+            r"coalesce\(\s*\(\s*select setting::int8 from pg_settings "
+            r"where name = 'vacuum_multixact_failsafe_age'\s*\)\s*,\s*0\s*\)",
+        )
+
+
+class PgAutovacuumWorkersTest(unittest.TestCase):
+    def test_metric_definition_contract(self) -> None:
+        definition = metric_def("pg_autovacuum_workers")
+        self.assertIn(11, definition["sqls"])
+        self.assertEqual(definition.get("gauges"), ["*"])
+        # pg_stat_activity is cluster-wide (active_workers includes backends
+        # in any database), so this metric must be is_instance_level.
+        self.assertTrue(definition.get("is_instance_level"))
+
+    def test_sql_does_not_tag_with_datname(self) -> None:
+        sql_text = normalized(metric_sql("pg_autovacuum_workers"))
+        self.assertNotIn("as tag_datname", sql_text)
+        self.assertNotIn("current_database()", sql_text)
+
+    def test_sql_derives_active_and_max_in_a_single_cte(self) -> None:
+        # active_workers and max_workers must be evaluated once (in a CTE) and
+        # reused, otherwise free_slots = max - active drifts when a worker
+        # starts/exits between two correlated subqueries.
+        sql_text = normalized(metric_sql("pg_autovacuum_workers"))
+        self.assertEqual(
+            sql_text.count("from pg_stat_activity where backend_type = 'autovacuum worker'"),
+            1,
+        )
+        self.assertEqual(
+            sql_text.count("from pg_settings where name = 'autovacuum_max_workers'"),
+            1,
+        )
+        self.assertIn("as active_workers", sql_text)
+        self.assertIn("as max_workers", sql_text)
+        self.assertIn("max_workers - active_workers", sql_text)
+        self.assertIn("as free_slots", sql_text)
+
+
+class PgAutovacuumQueueTest(unittest.TestCase):
+    def test_metric_definition_contract(self) -> None:
+        definition = metric_def("pg_autovacuum_queue")
+        self.assertIn(11, definition["sqls"])
+        self.assertEqual(definition.get("gauges"), ["*"])
+        # statement_timeout must match peer autovacuum metrics (15s) — a
+        # higher value risks holding scrape connections on large catalogs
+        # and masks pathologically-slow per-table catalog scans.
+        self.assertEqual(definition.get("statement_timeout_seconds"), 15)
+
+    def test_sql_exposes_threshold_and_overdue_factor(self) -> None:
+        sql_text = normalized(metric_sql("pg_autovacuum_queue"))
+        # Per-relation overrides via pg_class.reloptions must be applied.
+        self.assertIn("pg_options_to_table(c.reloptions)", sql_text)
+        self.assertIn("'autovacuum_vacuum_threshold'", sql_text)
+        self.assertIn("'autovacuum_vacuum_scale_factor'", sql_text)
+        # Threshold and the derived overdue factor are the columns Dashboard 7
+        # actually plots — pin both.
+        self.assertIn("as autovacuum_threshold", sql_text)
+        self.assertIn("as autovacuum_overdue_factor", sql_text)
+        # Per-table tags consumed by the dashboard.
+        for tag in ("tag_schemaname", "tag_relname"):
+            self.assertIn(f"as {tag}", sql_text)
+        # Dead/live tuple counts come from pg_stat_all_tables.
+        self.assertIn("as n_dead_tup", sql_text)
+        self.assertIn("as n_live_tup", sql_text)
+        self.assertIn("pg_stat_all_tables", sql_text)
+
+    def test_sql_clamps_reltuples_to_zero(self) -> None:
+        # pg_class.reltuples is -1 for tables that have never been ANALYZE'd
+        # (PG14+); without `greatest(c.reltuples, 0)` the threshold expression
+        # `av_threshold + av_scale_factor * reltuples` evaluates to a value
+        # just below av_threshold, producing a meaningless overdue factor.
+        sql_text = normalized(metric_sql("pg_autovacuum_queue"))
+        self.assertIn("greatest(c.reltuples, 0)", sql_text)
+
+    def test_sql_uses_e_string_escape_for_underscore_glob(self) -> None:
+        # SQL-style backslash escapes inside plain string literals depend on
+        # standard_conforming_strings; existing metrics in this file use the
+        # E'' prefix consistently for `\_` in like patterns. Inside the YAML
+        # block scalar the literal backslash survives as `\\`.
+        sql_text = normalized(metric_sql("pg_autovacuum_queue"))
+        self.assertIn(r"e'pg\\_%'", sql_text)
+
+    def test_sql_does_not_redundantly_tag_table_full_name(self) -> None:
+        # tag_schemaname + tag_relname already carry the same information as
+        # the previous tag_table_full_name; the redundant tag tripled label
+        # cardinality with no added value (dashboards can build the full
+        # name in legendFormat as `{{schemaname}}.{{relname}}`).
+        sql_text = normalized(metric_sql("pg_autovacuum_queue"))
+        self.assertNotIn("as tag_table_full_name", sql_text)
+
+
+class PgAutovacuumBlockedTest(unittest.TestCase):
+    def test_metric_definition_contract(self) -> None:
+        definition = metric_def("pg_autovacuum_blocked")
+        self.assertIn(11, definition["sqls"])
+        self.assertEqual(definition.get("gauges"), ["*"])
+
+    def test_sql_filters_to_autovacuum_workers_before_locks_join(self) -> None:
+        # Filtering pg_stat_activity down to autovacuum workers waiting on a
+        # lock must happen before joining pg_locks; otherwise the locks join
+        # cost is unbounded on busy clusters.
+        sql_text = normalized(metric_sql("pg_autovacuum_blocked"))
+        self.assertIn("backend_type = 'autovacuum worker'", sql_text)
+        self.assertIn("wait_event_type = 'lock'", sql_text)
+        worker_filter_pos = sql_text.find("backend_type = 'autovacuum worker'")
+        locks_join_pos = sql_text.find("from pg_locks")
+        self.assertGreater(locks_join_pos, worker_filter_pos)
+
+    def test_sql_exposes_expected_columns(self) -> None:
+        sql_text = normalized(metric_sql("pg_autovacuum_blocked"))
+        self.assertIn("as wait_seconds", sql_text)
+        for tag in ("tag_worker_pid", "tag_blocker_pid", "tag_blocker_queryid"):
+            self.assertIn(f"as {tag}", sql_text)
+        # PG13 doesn't expose pg_stat_activity.query_id; using
+        # to_jsonb()->>'query_id' keeps the SQL parse-clean across versions.
+        self.assertIn("to_jsonb(blocker)->>'query_id'", sql_text)
+
+    def test_sql_does_not_expose_user_controlled_labels(self) -> None:
+        # tag_blocker_appname / tag_blocker_user were intentionally dropped:
+        # application_name is user-controlled (any client can SET it) and
+        # would create unbounded label cardinality plus leak usernames into
+        # metric scrape payloads. Look the values up in pg_stat_activity by
+        # blocker_pid instead of tagging them onto every series.
+        sql_text = normalized(metric_sql("pg_autovacuum_blocked"))
+        for forbidden in (
+            "as tag_blocker_appname",
+            "as tag_blocker_user",
+            "as blocker_appname",
+            "as blocker_user",
+        ):
+            self.assertNotIn(forbidden, sql_text)
+
+    def test_inner_cte_projects_only_columns_consumed_downstream(self) -> None:
+        # Keep the inner CTE projection minimal — anything not referenced in
+        # the outer select is dead weight that masks future refactors.
+        body = cte_body("pg_autovacuum_blocked", "av_workers_blocked")
+        for unused in (
+            "datname",
+            "wait_event,",
+            "wait_event_type,",
+            "query,",
+            "query_start)",
+        ):
+            # `query_start` is consumed; the trailing `)` guard above keeps
+            # this assertion from accidentally matching the kept column.
+            pass
+        # Only `pid` and `query_start` are referenced downstream.
+        self.assertIn("select pid, query_start", body)
+        for forbidden in (" datname,", " wait_event,", " wait_event_type,", " query,"):
+            self.assertNotIn(forbidden, body)
+
+
+class PgVacuumProgressTest(unittest.TestCase):
+    def test_sql_exposes_is_anti_wraparound_across_versions(self) -> None:
+        # The MR replaces a brittle query-text regex with
+        # `(backend_xid is not null)::int as is_anti_wraparound` — pin it
+        # for every supported PG version branch (11 and 17) so a future
+        # refactor cannot silently drop the column or revert to the regex.
+        definition = metric_def("pg_vacuum_progress")
+        for version in (11, 17):
+            self.assertIn(version, definition["sqls"])
+            sql_text = normalized(sql_for_version(definition["sqls"], version))
+            self.assertIn("as is_anti_wraparound", sql_text)
+            self.assertRegex(
+                sql_text,
+                r"\(\s*[a-z]+\.backend_xid\s+is\s+not\s+null\s*\)::int",
+            )
+
+
+class Dashboard7TemplateVarsTest(unittest.TestCase):
+    """Pin Dashboard 7 template variables that the new top-N panels rely on.
+
+    `top_n` controls every `topk()` panel and `db_name` scopes per-database
+    series; renaming or removing either silently breaks the dashboard with
+    no other test catching the regression.
+    """
+
+    @staticmethod
+    def _template_var(name: str) -> dict[str, Any]:
+        with DASHBOARD_7_PATH.open() as dashboard_file:
+            dashboard = json.load(dashboard_file)
+        for variable in dashboard.get("templating", {}).get("list", []):
+            if variable.get("name") == name:
+                return variable
+        raise AssertionError(f"Template variable {name!r} not found")
+
+    def test_top_n_variable_definition(self) -> None:
+        variable = self._template_var("top_n")
+        self.assertEqual(variable.get("type"), "custom")
+        option_values = {opt.get("value") for opt in variable.get("options", [])}
+        # Pin the canonical breakpoints used by every top-N panel; a smaller
+        # set would limit operator triage, a larger one would inflate the
+        # dropdown without value.
+        self.assertEqual(
+            option_values,
+            {"5", "10", "15", "20", "25", "50", "100"},
+        )
+        # Default selection must match the documented value (20).
+        current = variable.get("current") or {}
+        self.assertEqual(current.get("value"), "20")
+
+    def test_db_name_variable_definition(self) -> None:
+        variable = self._template_var("db_name")
+        self.assertEqual(variable.get("type"), "query")
+        # The dropdown must filter to monitored databases visible to the
+        # selected cluster/node, excluding the always-empty `template1`.
+        query_text = variable.get("query", {}).get("query", "")
+        self.assertIn("pgwatch_db_size_size_b", query_text)
+        self.assertIn("datname!=\"template1\"", query_text)
+
+    def test_top_n_panels_apply_topk_with_variable(self) -> None:
+        with DASHBOARD_7_PATH.open() as dashboard_file:
+            dashboard = json.load(dashboard_file)
+
+        expected_panels = {
+            "Top-N tables by XID age (relfrozenxid)",
+            "Top-N tables by MultiXID age (relminmxid)",
+            "Autovacuum debt — top-N overdue tables",
+        }
+        seen: set[str] = set()
+        for panel in dashboard.get("panels", []):
+            title = panel.get("title")
+            if title not in expected_panels:
+                continue
+            seen.add(title)
+            targets = panel.get("targets", [])
+            self.assertTrue(
+                any("topk($top_n," in (t.get("expr") or "") for t in targets),
+                f"Panel {title!r} does not apply `topk($top_n, ...)`",
+            )
+
+        missing = expected_panels - seen
+        self.assertFalse(missing, f"Expected top-N panels missing: {sorted(missing)}")
 
 
 if __name__ == "__main__":
