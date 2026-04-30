@@ -19,7 +19,21 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": 23,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
   "panels": [
     {
       "collapsed": false,
@@ -2835,7 +2849,8 @@
   "schemaVersion": 41,
   "tags": [
     "self-monitoring",
-    "monitoring-stack"
+    "monitoring-stack",
+    "postgres-ai"
   ],
   "templating": {
     "list": []

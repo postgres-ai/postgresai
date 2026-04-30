@@ -489,7 +489,8 @@ metrics:
                         autovacuum_count,
                         analyze_count,
                         autoanalyze_count,
-                        case when c.relkind <> 'p' then age(c.relfrozenxid) else 0 end as tx_freeze_age
+                        case when c.relkind <> 'p' then age(c.relfrozenxid) else 0 end as tx_freeze_age,
+                        case when c.relkind <> 'p' then mxid_age(c.relminmxid) else 0 end as mxid_freeze_age
                 from pg_stat_all_tables ut
                           join
                       pg_class c on c.oid = ut.relid
@@ -527,7 +528,8 @@ metrics:
             autovacuum_count,
             analyze_count,
             autoanalyze_count,
-            tx_freeze_age
+            tx_freeze_age,
+            mxid_freeze_age
         from q_tstats
         where not tag_schema like E'\\_timescaledb%'
         and not exists (select * from q_root_part where oid = q_tstats.relid)
@@ -564,7 +566,8 @@ metrics:
                 sum(autovacuum_count)::int8 autovacuum_count,
                 sum(analyze_count)::int8 analyze_count,
                 sum(autoanalyze_count)::int8 autoanalyze_count,
-                max(tx_freeze_age)::int8 tx_freeze_age
+                max(tx_freeze_age)::int8 tx_freeze_age,
+                max(mxid_freeze_age)::int8 mxid_freeze_age
               from
                     q_tstats ts
                     join q_parts qp on qp.relid = ts.relid
@@ -626,6 +629,7 @@ metrics:
                         analyze_count,
                         autoanalyze_count,
                         case when c.relkind <> 'p' then age(c.relfrozenxid) else 0 end as tx_freeze_age,
+                        case when c.relkind <> 'p' then mxid_age(c.relminmxid) else 0 end as mxid_freeze_age,
                         extract(epoch from now() - last_seq_scan)::int8 as last_seq_scan_s
                 from pg_stat_all_tables ut
                     join pg_class c on c.oid = ut.relid
@@ -670,6 +674,7 @@ metrics:
             analyze_count,
             autoanalyze_count,
             tx_freeze_age,
+            mxid_freeze_age,
             last_seq_scan_s
         from q_tstats
         where not tag_schema like E'\\_timescaledb%'
@@ -708,6 +713,7 @@ metrics:
                 sum(analyze_count)::int8 analyze_count,
                 sum(autoanalyze_count)::int8 autoanalyze_count,
                 max(tx_freeze_age)::int8 tx_freeze_age,
+                max(mxid_freeze_age)::int8 mxid_freeze_age,
                 min(last_seq_scan_s)::int8 last_seq_scan_s
               from
                     q_tstats ts
@@ -2621,7 +2627,8 @@ metrics:
           S.heap_blks_vacuumed::float,
           S.index_vacuum_count::float,
           (S.max_dead_tuples::float / 1024 / 1024) as max_dead_tuples_mb,
-          S.num_dead_tuples::float as num_dead_item_ids
+          S.num_dead_tuples::float as num_dead_item_ids,
+          (A.backend_xid is not null)::int as is_anti_wraparound
         from
           pg_stat_progress_vacuum as S
           join pg_database D on (S.datid = D.oid)
@@ -2666,7 +2673,8 @@ metrics:
           S.heap_blks_vacuumed::float,
           S.index_vacuum_count::float,
           (S.max_dead_tuple_bytes / 1024 / 1024)::float as max_dead_tuples_mb,
-          S.num_dead_item_ids::float
+          S.num_dead_item_ids::float,
+          (A.backend_xid is not null)::int as is_anti_wraparound
         from
           pg_stat_progress_vacuum as S
           join pg_database D on (S.datid = D.oid)
@@ -2674,6 +2682,143 @@ metrics:
           join pg_class C on (C.oid = S.relid)
           join pg_namespace N on (N.oid = C.relnamespace)
         where D.datname = current_database()
+    gauges:
+      - '*'
+    statement_timeout_seconds: 15
+  pg_autovacuum_workers:
+    description: >
+      Active autovacuum worker count vs the configured pool size. Pinning at the
+      cap is a leading indicator of bloat / wraparound risk that progress-only
+      panels miss. active_workers is cluster-wide (pg_stat_activity shows all
+      backends regardless of which database the scrape connects to), so this
+      metric is is_instance_level — pgwatch scrapes it once per cluster.
+    sqls:
+      11: |-
+        with s as (
+          select
+            (select setting::int8 from pg_settings where name = 'autovacuum_max_workers') as max_workers,
+            (select count(*)::int8 from pg_stat_activity where backend_type = 'autovacuum worker') as active_workers
+        )
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          active_workers,
+          max_workers,
+          (max_workers - active_workers) as free_slots
+        from s
+    gauges:
+      - '*'
+    is_instance_level: true
+    statement_timeout_seconds: 15
+  pg_autovacuum_queue:
+    description: >
+      Per-table dead-tuple debt vs the autovacuum trigger threshold. A row's
+      `autovacuum_overdue_factor` is dead_tup divided by the per-relation
+      threshold computed from `autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * reltuples`,
+      with `pg_class.reloptions` per-table overrides applied. Reading: 1.0 = exactly
+      at the trigger; >1.0 = overdue (autovacuum should run / has been picked but
+      hasn't completed); <1.0 = not yet eligible. Operators sort desc by
+      autovacuum_overdue_factor to triage tables that autovacuum is failing to
+      keep up with.
+    sqls:
+      11: |-
+        with settings as (
+          select
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_threshold')        as default_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_scale_factor')    as default_scale_factor
+        ),
+        tables as (
+          select
+            c.oid as relid,
+            n.nspname as schemaname,
+            c.relname as relname,
+            -- pg_class.reltuples is -1 for tables that have never been ANALYZE'd
+            -- (PG14+); clamping to 0 keeps the threshold and overdue factor
+            -- well-defined for those tables.
+            greatest(c.reltuples, 0)::float8 as reltuples,
+            coalesce(
+              (select option_value::float8 from pg_options_to_table(c.reloptions) where option_name = 'autovacuum_vacuum_threshold'),
+              (select default_threshold from settings)
+            ) as av_threshold,
+            coalesce(
+              (select option_value::float8 from pg_options_to_table(c.reloptions) where option_name = 'autovacuum_vacuum_scale_factor'),
+              (select default_scale_factor from settings)
+            ) as av_scale_factor
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          where c.relkind in ('r', 'm')
+            and c.relpersistence <> 't'
+            and not n.nspname like any (array[E'pg\\_%', 'information_schema'])
+        )
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          t.schemaname as tag_schemaname,
+          t.relname as tag_relname,
+          ut.n_dead_tup::int8 as n_dead_tup,
+          ut.n_live_tup::int8 as n_live_tup,
+          (t.av_threshold + t.av_scale_factor * t.reltuples)::int8 as autovacuum_threshold,
+          case
+            when (t.av_threshold + t.av_scale_factor * t.reltuples) > 0
+            then ut.n_dead_tup::float8 / (t.av_threshold + t.av_scale_factor * t.reltuples)
+            else 0
+          end as autovacuum_overdue_factor
+        from tables t
+        join pg_stat_all_tables ut on ut.relid = t.relid
+    gauges:
+      - '*'
+    statement_timeout_seconds: 15
+  pg_autovacuum_blocked:
+    description: >
+      Autovacuum workers currently waiting on a lock, with the lock-holder pid
+      and queryid. Catches anti-wraparound autovacuum stuck behind DDL — a
+      silent XID-eater. Per-scrape rows are bounded by autovacuum_max_workers,
+      but Prometheus label cardinality accumulates over time across distinct
+      worker_pid / blocker_pid / blocker_queryid values. blocker_user and
+      blocker_appname (user-controlled — any client can SET application_name)
+      are intentionally omitted to avoid unbounded label cardinality and to
+      keep usernames out of metric scrape payloads; look them up directly in
+      pg_stat_activity by blocker_pid when needed.
+    sqls:
+      11: |-
+        with av_workers_blocked as (
+          select pid, query_start
+          from pg_stat_activity
+          where backend_type = 'autovacuum worker'
+            and wait_event_type = 'Lock'
+        ),
+        blockers as (
+          select
+            w.pid as worker_pid,
+            extract(epoch from (now() - w.query_start))::float8 as wait_seconds,
+            (
+              select bl.pid
+              from pg_locks bl
+              join pg_locks rq on rq.locktype = bl.locktype
+                and rq.database is not distinct from bl.database
+                and rq.relation is not distinct from bl.relation
+                and rq.page is not distinct from bl.page
+                and rq.tuple is not distinct from bl.tuple
+                and rq.transactionid is not distinct from bl.transactionid
+                and rq.classid is not distinct from bl.classid
+                and rq.objid is not distinct from bl.objid
+                and rq.objsubid is not distinct from bl.objsubid
+                and rq.pid <> bl.pid
+              where rq.pid = w.pid and not rq.granted and bl.granted
+              limit 1
+            ) as blocker_pid
+          from av_workers_blocked w
+        )
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          b.worker_pid::text as tag_worker_pid,
+          coalesce(b.blocker_pid, 0)::text as tag_blocker_pid,
+          -- to_jsonb()->>'query_id' lets the same SQL run on PG <14 (where the
+          -- column is absent and `blocker.query_id` would fail to parse).
+          coalesce(to_jsonb(blocker)->>'query_id', '')::text as tag_blocker_queryid,
+          b.wait_seconds
+        from blockers b
+        left join pg_stat_activity blocker on blocker.pid = b.blocker_pid
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -3072,6 +3217,25 @@ metrics:
       - status_code
     is_instance_level: true
     statement_timeout_seconds: 15
+  pg_settings_wraparound:
+    description: >
+      Snapshots wraparound-related pg_settings values so dashboards can plot
+      threshold lines (soft autovacuum_freeze_max_age, failsafe age) that
+      reflect actual cluster configuration instead of compiled defaults.
+      pg_settings is cluster-global, so this metric is is_instance_level —
+      pgwatch scrapes it once per cluster instead of once per database.
+    sqls:
+      11: |-
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          (select setting::int8 from pg_settings where name = 'autovacuum_freeze_max_age') as autovacuum_freeze_max_age,
+          (select setting::int8 from pg_settings where name = 'autovacuum_multixact_freeze_max_age') as autovacuum_multixact_freeze_max_age,
+          coalesce((select setting::int8 from pg_settings where name = 'vacuum_failsafe_age'), 0) as vacuum_failsafe_age,
+          coalesce((select setting::int8 from pg_settings where name = 'vacuum_multixact_failsafe_age'), 0) as vacuum_multixact_failsafe_age
+    gauges:
+      - "*"
+    is_instance_level: true
+    statement_timeout_seconds: 15
 
 presets:
   full:
@@ -3103,6 +3267,7 @@ presets:
       lock_waits: 30
       xmin_horizon: 30
       xmin_horizon_blockers: 30
+      pg_settings_wraparound: 300
       pg_blocked: 30
       pg_long_running_transactions: 30
       pg_stuck_idle_in_transaction: 30
@@ -3119,6 +3284,9 @@ presets:
       stats_reset: 3600
       archive_lag: 15
       pg_vacuum_progress: 30
+      pg_autovacuum_workers: 30
+      pg_autovacuum_queue: 60
+      pg_autovacuum_blocked: 30
       multixact_size: 300
       pg_stat_io: 30
       pg_wal_size: 30

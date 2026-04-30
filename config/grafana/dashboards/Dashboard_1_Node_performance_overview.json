@@ -19,7 +19,21 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": 3,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
   "panels": [
     {
       "collapsed": false,
@@ -2325,10 +2339,40 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "suffix:tx"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byFrameRefID", "options": "B"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "C"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "D"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "dark-red", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [4, 6]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
+      "description": "Per-database wraparound horizon for regular transaction IDs. Y-axis is age in transactions (not seconds). The per-database value is the minimum of pg_class.relfrozenxid across all tables in the database, so a single neglected table dominates this metric. Crossing autovacuum_freeze_max_age (default 200M) triggers anti-wraparound autovacuum, which runs even when autovacuum = off. Around 2^31 - 10M the cluster refuses new XIDs to prevent wraparound corruption.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -2361,9 +2405,33 @@
           "legendFormat": "{{datname}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "max(last_over_time(pgwatch_pg_settings_wraparound_autovacuum_freeze_max_age{cluster=\"$cluster_name\", node_name=\"$node_name\"}[5m]))",
+          "legendFormat": "autovacuum_freeze_max_age (soft)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "max(last_over_time(pgwatch_pg_settings_wraparound_vacuum_failsafe_age{cluster=\"$cluster_name\", node_name=\"$node_name\"}[5m])) > 0",
+          "legendFormat": "vacuum_failsafe_age (failsafe)",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "vector(2137483648)",
+          "legendFormat": "XID exhaustion (read-only)",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Age of the oldest transaction ID that has not been frozen",
+      "title": "Database age (datfrozenxid) — wraparound risk",
       "type": "timeseries"
     },
     {
@@ -2422,10 +2490,40 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "suffix:mxid"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byFrameRefID", "options": "B"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "C"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "D"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "dark-red", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [4, 6]}},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "custom.lineWidth", "value": 2}
+            ]
+          }
+        ]
       },
+      "description": "Per-database wraparound horizon for multixact IDs (used for shared row locks and multi-transaction visibility). Y-axis is age in multixacts (not seconds). The per-database value is the minimum of pg_class.relminmxid across all tables, so a single neglected table dominates this metric. Crossing autovacuum_multixact_freeze_max_age (default 400M) triggers anti-wraparound autovacuum, which runs even when autovacuum = off. Around 2^31 - 10M the cluster refuses new MXIDs to prevent wraparound corruption.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -2458,9 +2556,33 @@
           "legendFormat": "{{datname}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "max(last_over_time(pgwatch_pg_settings_wraparound_autovacuum_multixact_freeze_max_age{cluster=\"$cluster_name\", node_name=\"$node_name\"}[5m]))",
+          "legendFormat": "autovacuum_multixact_freeze_max_age (soft)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "max(last_over_time(pgwatch_pg_settings_wraparound_vacuum_multixact_failsafe_age{cluster=\"$cluster_name\", node_name=\"$node_name\"}[5m])) > 0",
+          "legendFormat": "vacuum_multixact_failsafe_age (failsafe)",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "vector(2137483648)",
+          "legendFormat": "MultiXID exhaustion",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Age of the oldest multi-transaction ID that has not been frozen",
+      "title": "Database multixid age (datminmxid) — wraparound risk",
       "type": "timeseries"
     },
     {
@@ -2516,7 +2638,7 @@
               }
             ]
           },
-          "unit": "suffix: tx"
+          "unit": "suffix:tx"
         },
         "overrides": []
       },
@@ -2920,7 +3042,7 @@
       },
       "gridPos": {
         "h": 14,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 113
       },
@@ -3232,10 +3354,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 131
+        "h": 14,
+        "w": 12,
+        "x": 12,
+        "y": 113
       },
       "id": 50,
       "options": {
@@ -3279,7 +3401,7 @@
         "h": 3,
         "w": 24,
         "x": 0,
-        "y": 143
+        "y": 139
       },
       "id": 40,
       "options": {
@@ -3298,7 +3420,9 @@
   ],
   "preload": false,
   "schemaVersion": 41,
-  "tags": [],
+  "tags": [
+    "postgres-ai"
+  ],
   "templating": {
     "list": [
       {
