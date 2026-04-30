@@ -1,0 +1,22 @@
+{
+  "name": "@postgresai/telemetry",
+  "version": "0.1.0",
+  "description": "Telemetry service for PostgresAI monitoring instances. Collects OOM count, faulty containers, free RAM and free disk hourly and posts to the PostgresAI platform.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "bun ./bin/telemetry.ts",
+    "dev": "bun --watch ./bin/telemetry.ts",
+    "build": "bun build ./bin/telemetry.ts --outdir ./dist --target node",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "typescript": "^6.0.2"
+  }
+}

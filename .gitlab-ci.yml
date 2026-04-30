@@ -331,6 +331,24 @@ cli:node:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+telemetry:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - cd "$CI_PROJECT_DIR/telemetry" && bun install --frozen-lockfile
+  script:
+    - cd "$CI_PROJECT_DIR/telemetry" && bun audit --audit-level=high
+    - cd "$CI_PROJECT_DIR/telemetry" && bun test && bun run typecheck
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - telemetry/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - telemetry/**/*
+
 # Validate helm chart on merge requests and main branch
 validate-helm-chart:
   stage: validate
