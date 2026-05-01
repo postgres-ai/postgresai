@@ -412,21 +412,22 @@ cli:npm:publish:
         exit 1
       fi
 
-      # Determine npm dist-tags:
+      # Determine npm dist-tags. Standard npm convention: @latest is reserved
+      # for the most recent stable (GA) release; pre-releases require explicit
+      # opt-in via @rc / @beta / @dev so that `npm install postgresai` (no tag)
+      # never returns an unstable version.
       #   - X.Y.Z (final release) → @latest
-      #   - X.Y.Z-beta.N → @latest + @beta
-      #   - X.Y.Z-rc.N → @latest + @rc
+      #   - X.Y.Z-beta.N → @beta only
+      #   - X.Y.Z-rc.N → @rc only
       #   - X.Y.Z-dev.N → @dev only
       DIST_TAG=""
-      EXTRA_TAG=""
+      EXTRA_TAG=""  # No longer used; kept for compat with downstream `[ -n "$EXTRA_TAG" ]` checks under `set -u`.
       if printf '%s' "$NPM_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
         DIST_TAG="latest"
       elif printf '%s' "$NPM_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'; then
-        DIST_TAG="latest"
-        EXTRA_TAG="beta"
+        DIST_TAG="beta"
       elif printf '%s' "$NPM_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
-        DIST_TAG="latest"
-        EXTRA_TAG="rc"
+        DIST_TAG="rc"
       elif printf '%s' "$NPM_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$'; then
         DIST_TAG="dev"
       fi
