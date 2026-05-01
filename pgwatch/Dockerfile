@@ -11,7 +11,13 @@
 # Based on: cybertec-postgresql/pgwatch v3.7.0
 
 # ---- Stage 1: build WebUI ----
-FROM node:22 AS uibuilder
+# Pin to BUILDPLATFORM so the WebUI build (yarn install + react-scripts build)
+# runs on the runner's native arch. The output is static JS/CSS/HTML — fully
+# arch-independent — so a single build serves both linux/amd64 and linux/arm64
+# final images. Without this, `docker buildx --platform linux/amd64,linux/arm64`
+# would run the WebUI build under QEMU emulation for arm64, taking 30+ min and
+# overrunning the GitLab runner's 1h job timeout.
+FROM --platform=$BUILDPLATFORM node:22 AS uibuilder
 
 # Pin to the exact commit SHA of the v3.7.0 tag in upstream. Tags are
 # mutable (force-push etc.), so we verify the checkout resolves to this SHA
@@ -28,7 +34,13 @@ RUN git clone --depth 1 --branch "${PGWATCH_VERSION}" \
 RUN cd /src/internal/webui && yarn install --network-timeout 100000 && yarn build
 
 # ---- Stage 2: patch & build Go binary ----
-FROM golang:1.24 AS builder
+# Pin to BUILDPLATFORM and use Go's native cross-compilation via GOOS/GOARCH
+# (BuildKit injects TARGETOS/TARGETARCH from the --platform flag). Cgo is
+# already disabled below, so cross-compile produces a working static binary
+# in seconds for any target arch — no QEMU, no toolchain setup.
+FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 COPY --from=uibuilder /src /pgwatch
 COPY --from=uibuilder /src/internal/webui/build /pgwatch/internal/webui/build
@@ -44,7 +56,7 @@ RUN grep -q 'return fmt.Errorf("unexpected extension %s version input: %s", ext,
 RUN sed -i 's|return fmt.Errorf("unexpected extension %s version input: %s", ext, ver)|return nil /* skip unparseable extension version */|' \
     /pgwatch/internal/sources/conn.go
 
-RUN cd /pgwatch && CGO_ENABLED=0 go build \
+RUN cd /pgwatch && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -ldflags "-X 'main.version=3.7.0-patched'" \
       ./cmd/pgwatch
 
