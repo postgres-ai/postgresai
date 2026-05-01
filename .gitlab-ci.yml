@@ -158,11 +158,20 @@ build:test:images:
         monitoring_flask_backend
       docker push "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
 
+      # Build and push pgwatch (forked from cybertec-postgresql/pgwatch v3.7.0
+      # with extension-version-0.0 patch — see pgwatch/Dockerfile)
+      docker build \
+        -f pgwatch/Dockerfile \
+        -t "$CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG" \
+        pgwatch
+      docker push "$CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG"
+
       echo ""
       echo "Images pushed to GitLab Container Registry:"
       echo "  $CI_REGISTRY_IMAGE/postgres-ai-configs:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
+      echo "  $CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
@@ -558,11 +567,19 @@ cli:npm:publish:
     --push \
     config
 
+  docker buildx build \
+    --platform "$PLATFORMS" \
+    -f pgwatch/Dockerfile \
+    -t "postgresai/pgwatch:$VERSION" \
+    --push \
+    pgwatch
+
   echo ""
   echo "Published images:"
   echo "  postgresai/reporter:$VERSION"
   echo "  postgresai/monitoring-flask-backend:$VERSION"
   echo "  postgresai/postgres-ai-configs:$VERSION"
+  echo "  postgresai/pgwatch:$VERSION"
 
 docker:publish:images:
   <<: *docker-publish-base
