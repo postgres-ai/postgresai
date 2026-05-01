@@ -219,6 +219,19 @@ vm-auth:config:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+compose:retention-config:
+  stage: test
+  image: docker:27.3
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - apk add --no-cache bash jq docker-cli-compose
+  script:
+    - bash tests/compliance_vectors/check_compose_retention_config.sh
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 terraform:aws:tests:
   stage: test
   image:
