@@ -211,7 +211,10 @@ export async function downloadFile(params: DownloadFileParams): Promise<Download
   // and restricting it to cwd would break legitimate use (e.g. -o /tmp/file.png).
   if (!outputPath) {
     const normalizedSave = path.normalize(saveTo);
-    if (!normalizedSave.startsWith(path.normalize(process.cwd()))) {
+    const cwd = path.normalize(process.cwd());
+    // Append path.sep so that cwd "/home/u/proj" doesn't allow a sibling
+    // "/home/u/proj-evil/x" via plain prefix match.
+    if (normalizedSave !== cwd && !normalizedSave.startsWith(cwd + path.sep)) {
       throw new Error("Derived output path escapes current directory; please specify --output");
     }
   }
@@ -288,4 +291,77 @@ export function buildMarkdownLink(fileUrl: string, storageBaseUrl: string, filen
     return `![${safeName}](${fullUrl})`;
   }
   return `[${safeName}](${fullUrl})`;
+}
+
+export interface UploadedAttachment {
+  path: string;
+  url: string;
+  markdown: string;
+  metadata: UploadFileMetadata;
+}
+
+export interface UploadAttachmentsParams {
+  apiKey: string;
+  storageBaseUrl: string;
+  attachmentPaths: string[];
+  debug?: boolean;
+}
+
+/**
+ * Upload a list of local files to storage and return one markdown link per file.
+ *
+ * Shared by both the CLI `--attach` flag and the MCP `attachments` parameter so
+ * that the two surfaces produce identical output. Uploads are sequential (not
+ * parallel) so that on failure of file N, the error from `uploadFile` (which
+ * includes the resolved path, e.g. `File not found: /abs/path`) pinpoints
+ * which file failed. Note: any files already uploaded successfully before
+ * the failure remain on the storage server; a retry of the same call will
+ * re-upload them.
+ *
+ * Returns an empty array if `attachmentPaths` is empty (callers don't have to
+ * guard).
+ */
+export async function uploadAttachments(params: UploadAttachmentsParams): Promise<UploadedAttachment[]> {
+  const { apiKey, storageBaseUrl, attachmentPaths, debug } = params;
+  if (!attachmentPaths || attachmentPaths.length === 0) {
+    return [];
+  }
+  const out: UploadedAttachment[] = [];
+  for (const attachmentPath of attachmentPaths) {
+    const result = await uploadFile({
+      apiKey,
+      storageBaseUrl,
+      filePath: attachmentPath,
+      debug,
+    });
+    const markdown = buildMarkdownLink(result.url, storageBaseUrl, result.metadata.originalName);
+    out.push({
+      path: attachmentPath,
+      url: result.url,
+      markdown,
+      metadata: result.metadata,
+    });
+  }
+  return out;
+}
+
+/**
+ * Append uploaded-attachment markdown links to a body of content.
+ *
+ * - If `attachments` is empty, returns `content` unchanged.
+ * - If `content` is empty/whitespace, returns just the links.
+ * - Otherwise: `${content}\n\n${links joined by \n}`.
+ *
+ * One link per line keeps the renderer happy whether the surface is GFM
+ * (which collapses adjacent lines) or strict CommonMark.
+ */
+export function appendAttachmentsToContent(content: string, attachments: UploadedAttachment[]): string {
+  if (!attachments || attachments.length === 0) {
+    return content;
+  }
+  const links = attachments.map((a) => a.markdown).join("\n");
+  if (!content || !content.trim()) {
+    return links;
+  }
+  return `${content}\n\n${links}`;
 }

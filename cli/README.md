@@ -249,20 +249,91 @@ Cursor configuration example (Settings → MCP):
 ```
 
 Tools exposed:
-- list_issues: returns the same JSON as `postgresai issues list`.
-- view_issue: view a single issue with its comments (args: { issue_id, debug? })
-- post_issue_comment: post a comment (args: { issue_id, content, parent_comment_id?, debug? })
+- `list_issues`: returns the same JSON as `postgresai issues list`.
+- `view_issue`: view a single issue with its comments (args: `{ issue_id, debug? }`).
+- `create_issue`: create a new issue (args: `{ title, description?, org_id, attachments?, debug? }`).
+- `update_issue`: update title/description/status/labels (args: `{ issue_id, title?, description?, status?, labels?, attachments?, debug? }`).
+- `post_issue_comment`: post a comment (args: `{ issue_id, content?, parent_comment_id?, attachments?, debug? }`).
+- `update_issue_comment`: update an existing comment (args: `{ comment_id, content?, attachments?, debug? }`).
+- `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, debug? }`).
+- `download_file`: download a file from storage (args: `{ url, output_path?, debug? }`).
+
+#### `attachments` parameter (issue/comment tools)
+
+`create_issue`, `update_issue`, `post_issue_comment`, and `update_issue_comment` accept an
+optional `attachments: string[]` of local file paths. Each file is uploaded to PostgresAI
+storage and the resulting markdown link is appended to the comment body or issue
+description (image extensions — `.png .jpg .jpeg .gif .webp .svg .bmp .ico` — render
+inline as `![](url)`; everything else as `[](url)`).
+
+For `post_issue_comment` and `update_issue_comment`, either `content` or `attachments`
+must be non-empty (attachments alone are allowed). For `update_issue` with `attachments`
+but no `description`, the existing description is fetched first and the new links are
+appended to it.
+
+#### Threat model
+
+The MCP server runs in your local user account with your PostgresAI API key. It
+treats the connected MCP client (the LLM agent) as **trusted** — the same way the
+CLI treats you when you type a command. In particular:
+
+- `upload_file` and the `attachments: string[]` parameter on the issue/comment tools
+  read **any local file the CLI process can read**, including secrets like
+  `~/.ssh/id_rsa`, `~/.aws/credentials`, or `~/.config/postgresai/config.json` (which
+  contains your own API key). The file's bytes are uploaded to PostgresAI storage
+  and the resulting URL becomes visible to anyone with read access to the issue or
+  comment it ends up in.
+- `download_file` writes to **any path the CLI process can write to** when
+  `output_path` is supplied (`~/.ssh/authorized_keys`, `~/.bashrc`, etc. are all
+  fair game). When `output_path` is omitted, downloads are restricted to the
+  current working directory.
+
+This is fine when the agent and the upstream context the agent is reading are
+trusted. It is **not** safe to run this MCP server against an agent that is
+processing untrusted text (issue bodies, comments, web pages, third-party docs)
+without additional sandboxing — a prompt-injection in any input the agent reads
+could be used to exfiltrate local secrets or write arbitrary files. If you need
+to expose this MCP server to such an agent, run the agent (and this server) in a
+container or restricted user account that doesn't have access to anything
+sensitive.
 
 ### Issues management (`issues` group)
 
 ```bash
-postgresai issues list                                  # List issues (shows: id, title, status, created_at)
-postgresai issues view <issueId>                        # View issue details and comments
-postgresai issues post_comment <issueId> <content>      # Post a comment to an issue
-# Options:
-#   --parent <uuid>  Parent comment ID (for replies)
+postgresai issues list                                       # List issues (shows: id, title, status, created_at)
+postgresai issues view <issueId>                             # View issue details and comments
+postgresai issues create --org-id <id> --title <t>           # Create a new issue
+postgresai issues update <issueId> [--title ... --status ...]# Update an existing issue
+postgresai issues post-comment <issueId> <content>           # Post a comment to an issue
+postgresai issues update-comment <commentId> <content>       # Update an existing comment
+postgresai issues files upload <path>                        # Upload a file, print URL + markdown
+postgresai issues files download <url> [-o <path>]           # Download a file
+# Common options:
+#   --parent <uuid>  Parent comment ID (for replies on post-comment)
 #   --debug          Enable debug output
 #   --json           Output raw JSON (overrides default YAML)
+```
+
+#### Attaching files to issues and comments (`--attach`)
+
+`create`, `update`, `post-comment`, and `update-comment` accept a repeatable
+`--attach <path>` flag. Each file is uploaded to PostgresAI storage and a
+markdown link is appended to the comment body (or issue description). Image
+extensions — `.png .jpg .jpeg .gif .webp .svg .bmp .ico` — render inline as
+`![](url)`; everything else as `[](url)`. Multiple `--attach` flags preserve
+order; each link goes on its own line.
+
+```bash
+# Attach a screenshot to a new comment
+postgresai issues post-comment <issueId> "Saw this in prod" --attach screenshot.png
+
+# Attach multiple files to a new issue
+postgresai issues create --org-id 4 --title "Slow query" \
+  --description "Plan attached" --attach plan.txt --attach flame.svg
+
+# Attach a file to an existing issue without changing the description.
+# The current description is fetched and the link is appended to it.
+postgresai issues update <issueId> --attach trace.log
 ```
 
 #### Output format for issues commands

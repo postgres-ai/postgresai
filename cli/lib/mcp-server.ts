@@ -15,6 +15,7 @@ import {
   type ConfigChange,
 } from "./issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
+import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "./storage";
 import { resolveBaseUrls } from "./util";
 
 // MCP SDK imports - Bun handles these directly
@@ -107,13 +108,19 @@ export async function handleToolCall(
       const issueId = String(args.issue_id || "").trim();
       const rawContent = String(args.content || "");
       const parentCommentId = args.parent_comment_id ? String(args.parent_comment_id) : undefined;
+      const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       if (!issueId) {
         return { content: [{ type: "text", text: "issue_id is required" }], isError: true };
       }
-      if (!rawContent) {
-        return { content: [{ type: "text", text: "content is required" }], isError: true };
+      if (!rawContent && attachments.length === 0) {
+        return { content: [{ type: "text", text: "content or attachments is required" }], isError: true };
       }
-      const content = interpretEscapes(rawContent);
+      let content = interpretEscapes(rawContent);
+      if (attachments.length > 0) {
+        const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+        const uploaded = await uploadAttachments({ apiKey, storageBaseUrl, attachmentPaths: attachments, debug });
+        content = appendAttachmentsToContent(content, uploaded);
+      }
       const result = await createIssueComment({ apiKey, apiBaseUrl, issueId, content, parentCommentId, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
@@ -125,14 +132,20 @@ export async function handleToolCall(
       }
       const title = interpretEscapes(rawTitle);
       const rawDescription = args.description ? String(args.description) : undefined;
-      const description = rawDescription ? interpretEscapes(rawDescription) : undefined;
+      let description = rawDescription ? interpretEscapes(rawDescription) : undefined;
       const projectId = args.project_id !== undefined ? Number(args.project_id) : undefined;
       const labels = Array.isArray(args.labels) ? args.labels.map(String) : undefined;
+      const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       // Get orgId from args or fall back to config
       const orgId = args.org_id !== undefined ? Number(args.org_id) : cfg.orgId;
       // Note: orgId=0 is technically valid (though unlikely), so don't use falsy check
       if (orgId === undefined || orgId === null || Number.isNaN(orgId)) {
         return { content: [{ type: "text", text: "org_id is required. Either provide it as a parameter or run 'pgai auth' to set it in config." }], isError: true };
+      }
+      if (attachments.length > 0) {
+        const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+        const uploaded = await uploadAttachments({ apiKey, storageBaseUrl, attachmentPaths: attachments, debug });
+        description = appendAttachmentsToContent(description ?? "", uploaded);
       }
       const result = await createIssue({ apiKey, apiBaseUrl, title, orgId, description, projectId, labels, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -146,16 +159,32 @@ export async function handleToolCall(
       const rawTitle = args.title !== undefined ? String(args.title) : undefined;
       const title = rawTitle !== undefined ? interpretEscapes(rawTitle) : undefined;
       const rawDescription = args.description !== undefined ? String(args.description) : undefined;
-      const description = rawDescription !== undefined ? interpretEscapes(rawDescription) : undefined;
+      let description = rawDescription !== undefined ? interpretEscapes(rawDescription) : undefined;
       const status = args.status !== undefined ? Number(args.status) : undefined;
       const labels = Array.isArray(args.labels) ? args.labels.map(String) : undefined;
-      // Validate that at least one update field is provided
-      if (title === undefined && description === undefined && status === undefined && labels === undefined) {
-        return { content: [{ type: "text", text: "At least one field to update is required (title, description, status, or labels)" }], isError: true };
+      const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
+      // Validate that at least one update field is provided (attachments alone counts)
+      if (title === undefined && description === undefined && status === undefined && labels === undefined && attachments.length === 0) {
+        return { content: [{ type: "text", text: "At least one field to update is required (title, description, status, labels, or attachments)" }], isError: true };
       }
       // Validate status value if provided (check for NaN and valid values)
       if (status !== undefined && (Number.isNaN(status) || (status !== 0 && status !== 1))) {
         return { content: [{ type: "text", text: "status must be 0 (open) or 1 (closed)" }], isError: true };
+      }
+      if (attachments.length > 0) {
+        // If the caller did not supply a new description, fetch the existing one
+        // and append to it so "add a screenshot to issue X" is one round-trip
+        // for the agent. Same race-window tradeoff as the CLI flag.
+        if (description === undefined) {
+          const existing = await fetchIssue({ apiKey, apiBaseUrl, issueId, debug });
+          if (!existing) {
+            return { content: [{ type: "text", text: `Issue not found: ${issueId}` }], isError: true };
+          }
+          description = (existing as { description?: string | null }).description ?? "";
+        }
+        const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+        const uploaded = await uploadAttachments({ apiKey, storageBaseUrl, attachmentPaths: attachments, debug });
+        description = appendAttachmentsToContent(description, uploaded);
       }
       const result = await updateIssue({ apiKey, apiBaseUrl, issueId, title, description, status, labels, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -164,14 +193,59 @@ export async function handleToolCall(
     if (toolName === "update_issue_comment") {
       const commentId = String(args.comment_id || "").trim();
       const rawContent = String(args.content || "");
+      const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       if (!commentId) {
         return { content: [{ type: "text", text: "comment_id is required" }], isError: true };
       }
-      if (!rawContent.trim()) {
-        return { content: [{ type: "text", text: "content is required" }], isError: true };
+      if (!rawContent.trim() && attachments.length === 0) {
+        return { content: [{ type: "text", text: "content or attachments is required" }], isError: true };
       }
-      const content = interpretEscapes(rawContent);
+      let content = interpretEscapes(rawContent);
+      if (attachments.length > 0) {
+        const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+        const uploaded = await uploadAttachments({ apiKey, storageBaseUrl, attachmentPaths: attachments, debug });
+        content = appendAttachmentsToContent(content, uploaded);
+      }
       const result = await updateIssueComment({ apiKey, apiBaseUrl, commentId, content, debug });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+
+    if (toolName === "upload_file") {
+      const filePath = String(args.path || "").trim();
+      if (!filePath) {
+        return { content: [{ type: "text", text: "path is required" }], isError: true };
+      }
+      const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const result = await uploadFile({ apiKey, storageBaseUrl, filePath, debug });
+      const markdown = buildMarkdownLink(result.url, storageBaseUrl, result.metadata.originalName);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: result.success,
+                url: result.url,
+                markdown,
+                metadata: result.metadata,
+                requestId: result.requestId,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    if (toolName === "download_file") {
+      const fileUrl = String(args.url || "").trim();
+      const outputPath = args.output_path !== undefined ? String(args.output_path) : undefined;
+      if (!fileUrl) {
+        return { content: [{ type: "text", text: "url is required" }], isError: true };
+      }
+      const { storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const result = await downloadFile({ apiKey, storageBaseUrl, fileUrl, outputPath, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
@@ -345,22 +419,27 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "post_issue_comment",
-          description: "Post a new comment to an issue (optionally as a reply)",
+          description: "Post a new comment to an issue (optionally as a reply). Local files passed via 'attachments' are uploaded to PostgresAI storage and the resulting markdown links are appended to the comment body (image extensions render inline).",
           inputSchema: {
             type: "object",
             properties: {
               issue_id: { type: "string", description: "Issue ID (UUID)" },
               content: { type: "string", description: "Comment text (supports \\n as newline)" },
               parent_comment_id: { type: "string", description: "Parent comment ID (UUID) for replies" },
+              attachments: {
+                type: "array",
+                items: { type: "string" },
+                description: "Local file paths to upload and append as markdown links (images render inline). Either 'content' or 'attachments' must be non-empty.",
+              },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
-            required: ["issue_id", "content"],
+            required: ["issue_id"],
             additionalProperties: false,
           },
         },
         {
           name: "create_issue",
-          description: "Create a new issue in PostgresAI",
+          description: "Create a new issue in PostgresAI. Local files passed via 'attachments' are uploaded to PostgresAI storage and the resulting markdown links are appended to the issue description.",
           inputSchema: {
             type: "object",
             properties: {
@@ -373,6 +452,11 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
                 items: { type: "string" },
                 description: "Labels to apply to the issue",
               },
+              attachments: {
+                type: "array",
+                items: { type: "string" },
+                description: "Local file paths to upload and append as markdown links to the description (images render inline)",
+              },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["title"],
@@ -381,7 +465,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "update_issue",
-          description: "Update an existing issue (title, description, status, labels). Use status=1 to close, status=0 to reopen.",
+          description: "Update an existing issue (title, description, status, labels). Use status=1 to close, status=0 to reopen. Local files passed via 'attachments' are uploaded and appended to 'description'; if 'description' is omitted, the existing description is fetched first and appended to.",
           inputSchema: {
             type: "object",
             properties: {
@@ -394,6 +478,11 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
                 items: { type: "string" },
                 description: "Labels to set on the issue",
               },
+              attachments: {
+                type: "array",
+                items: { type: "string" },
+                description: "Local file paths to upload and append as markdown links (images render inline). When provided without 'description', the existing description is fetched and appended to.",
+              },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["issue_id"],
@@ -402,15 +491,47 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "update_issue_comment",
-          description: "Update an existing issue comment",
+          description: "Update an existing issue comment. Local files passed via 'attachments' are uploaded and appended to 'content' as markdown links.",
           inputSchema: {
             type: "object",
             properties: {
               comment_id: { type: "string", description: "Comment ID (UUID)" },
-              content: { type: "string", description: "New comment text (supports \\n as newline)" },
+              content: { type: "string", description: "New comment text (supports \\n as newline). Either 'content' or 'attachments' must be non-empty." },
+              attachments: {
+                type: "array",
+                items: { type: "string" },
+                description: "Local file paths to upload and append as markdown links (images render inline)",
+              },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
-            required: ["comment_id", "content"],
+            required: ["comment_id"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "upload_file",
+          description: "Upload a local file to PostgresAI storage. Returns the storage URL and a ready-to-paste markdown link (image extensions get the inline `![](url)` form, others get `[](url)`). For posting attachments alongside an issue or comment, prefer the 'attachments' parameter on the issue/comment tools — this tool is for ad-hoc uploads or when you need the URL out of band.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Local file path to upload (absolute or relative to CWD)" },
+              debug: { type: "boolean", description: "Enable verbose debug logs" },
+            },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "download_file",
+          description: "Download a file from PostgresAI storage by URL (full URL under the storage base, or a relative path like /files/123/foo.png).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "Full URL (must be under the configured storage base) or relative storage path (e.g. /files/123/foo.png)" },
+              output_path: { type: "string", description: "Local destination path (default: derive filename from URL, save in CWD). When omitted, the path-traversal guard restricts the destination to CWD." },
+              debug: { type: "boolean", description: "Enable verbose debug logs" },
+            },
+            required: ["url"],
             additionalProperties: false,
           },
         },

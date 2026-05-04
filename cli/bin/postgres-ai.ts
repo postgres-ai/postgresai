@@ -14,7 +14,7 @@ import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import { resolveBaseUrls } from "../lib/util";
-import { uploadFile, downloadFile, buildMarkdownLink } from "../lib/storage";
+import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
@@ -3915,9 +3915,18 @@ issues
   .command("post-comment <issueId> <content>")
   .description("post a new comment to an issue")
   .option("--parent <uuid>", "parent comment id")
+  .option(
+    "--attach <path>",
+    "attach a file (uploads to storage and appends a markdown link; repeatable)",
+    (value: string, previous: string[]) => {
+      previous.push(value);
+      return previous;
+    },
+    [] as string[]
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (issueId: string, content: string, opts: { parent?: string; debug?: boolean; json?: boolean }) => {
+  .action(async (issueId: string, content: string, opts: { parent?: string; attach?: string[]; debug?: boolean; json?: boolean }) => {
     // Interpret escape sequences in content (e.g., \n -> newline)
     if (opts.debug) {
       // eslint-disable-next-line no-console
@@ -3929,7 +3938,11 @@ issues
       console.error(`Debug: Interpreted content: ${JSON.stringify(content)}`);
     }
 
-    const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Posting comment...");
+    const attachPaths = Array.isArray(opts.attach) ? opts.attach : [];
+    const spinner = createTtySpinner(
+      process.stdout.isTTY ?? false,
+      attachPaths.length > 0 ? "Uploading attachments..." : "Posting comment..."
+    );
     try {
       const rootOpts = program.opts<CliOptions>();
       const cfg = config.readConfig();
@@ -3941,13 +3954,25 @@ issues
         return;
       }
 
-      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+      let augmentedContent = content;
+      if (attachPaths.length > 0) {
+        const uploaded = await uploadAttachments({
+          apiKey,
+          storageBaseUrl,
+          attachmentPaths: attachPaths,
+          debug: !!opts.debug,
+        });
+        augmentedContent = appendAttachmentsToContent(content, uploaded);
+        spinner.update("Posting comment...");
+      }
 
       const result = await createIssueComment({
         apiKey,
         apiBaseUrl,
         issueId,
-        content,
+        content: augmentedContent,
         parentCommentId: opts.parent,
         debug: !!opts.debug,
       });
@@ -3976,9 +4001,18 @@ issues
     },
     [] as string[]
   )
+  .option(
+    "--attach <path>",
+    "attach a file (uploads to storage and appends a markdown link to the description; repeatable)",
+    (value: string, previous: string[]) => {
+      previous.push(value);
+      return previous;
+    },
+    [] as string[]
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (rawTitle: string, opts: { orgId?: number; projectId?: number; description?: string; label?: string[]; debug?: boolean; json?: boolean }) => {
+  .action(async (rawTitle: string, opts: { orgId?: number; projectId?: number; description?: string; label?: string[]; attach?: string[]; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -4005,16 +4039,33 @@ issues
     const description = opts.description !== undefined ? interpretEscapes(String(opts.description)) : undefined;
     const labels = Array.isArray(opts.label) && opts.label.length > 0 ? opts.label.map(String) : undefined;
     const projectId = typeof opts.projectId === "number" && !Number.isNaN(opts.projectId) ? opts.projectId : undefined;
+    const attachPaths = Array.isArray(opts.attach) ? opts.attach : [];
 
-    const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Creating issue...");
+    const spinner = createTtySpinner(
+      process.stdout.isTTY ?? false,
+      attachPaths.length > 0 ? "Uploading attachments..." : "Creating issue..."
+    );
     try {
-      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+      let augmentedDescription = description;
+      if (attachPaths.length > 0) {
+        const uploaded = await uploadAttachments({
+          apiKey,
+          storageBaseUrl,
+          attachmentPaths: attachPaths,
+          debug: !!opts.debug,
+        });
+        augmentedDescription = appendAttachmentsToContent(description ?? "", uploaded);
+        spinner.update("Creating issue...");
+      }
+
       const result = await createIssue({
         apiKey,
         apiBaseUrl,
         title,
         orgId,
-        description,
+        description: augmentedDescription,
         projectId,
         labels,
         debug: !!opts.debug,
@@ -4045,9 +4096,18 @@ issues
     [] as string[]
   )
   .option("--clear-labels", "set labels to an empty list")
+  .option(
+    "--attach <path>",
+    "attach a file (uploads and appends a markdown link to --description; if --description is omitted the existing description is fetched and appended to; repeatable)",
+    (value: string, previous: string[]) => {
+      previous.push(value);
+      return previous;
+    },
+    [] as string[]
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; debug?: boolean; json?: boolean }) => {
+  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -4057,10 +4117,10 @@ issues
       return;
     }
 
-    const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+    const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
     const title = opts.title !== undefined ? interpretEscapes(String(opts.title)) : undefined;
-    const description = opts.description !== undefined ? interpretEscapes(String(opts.description)) : undefined;
+    let description = opts.description !== undefined ? interpretEscapes(String(opts.description)) : undefined;
 
     let status: number | undefined = undefined;
     if (opts.status !== undefined) {
@@ -4090,8 +4150,38 @@ issues
       labels = opts.label.map(String);
     }
 
-    const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Updating issue...");
+    const attachPaths = Array.isArray(opts.attach) ? opts.attach : [];
+    const spinner = createTtySpinner(
+      process.stdout.isTTY ?? false,
+      attachPaths.length > 0 ? "Uploading attachments..." : "Updating issue..."
+    );
     try {
+      if (attachPaths.length > 0) {
+        // If the caller did not supply a new description, fetch the existing one
+        // and append to it. This makes "add a screenshot to issue X" a one-step
+        // operation rather than forcing the caller to copy-paste the existing
+        // description first. Small race window if someone else updates
+        // concurrently, which is acceptable for an interactive CLI / agent.
+        if (description === undefined) {
+          const existing = await fetchIssue({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
+          if (!existing) {
+            spinner.stop();
+            console.error(`Issue not found: ${issueId}`);
+            process.exitCode = 1;
+            return;
+          }
+          description = (existing as { description?: string | null }).description ?? "";
+        }
+        const uploaded = await uploadAttachments({
+          apiKey,
+          storageBaseUrl,
+          attachmentPaths: attachPaths,
+          debug: !!opts.debug,
+        });
+        description = appendAttachmentsToContent(description ?? "", uploaded);
+        spinner.update("Updating issue...");
+      }
+
       const result = await updateIssue({
         apiKey,
         apiBaseUrl,
@@ -4115,9 +4205,18 @@ issues
 issues
   .command("update-comment <commentId> <content>")
   .description("update an existing issue comment")
+  .option(
+    "--attach <path>",
+    "attach a file (uploads and appends a markdown link to <content>; repeatable)",
+    (value: string, previous: string[]) => {
+      previous.push(value);
+      return previous;
+    },
+    [] as string[]
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (commentId: string, content: string, opts: { debug?: boolean; json?: boolean }) => {
+  .action(async (commentId: string, content: string, opts: { attach?: string[]; debug?: boolean; json?: boolean }) => {
     if (opts.debug) {
       // eslint-disable-next-line no-console
       console.error(`Debug: Original content: ${JSON.stringify(content)}`);
@@ -4137,15 +4236,31 @@ issues
       return;
     }
 
-    const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Updating comment...");
+    const attachPaths = Array.isArray(opts.attach) ? opts.attach : [];
+    const spinner = createTtySpinner(
+      process.stdout.isTTY ?? false,
+      attachPaths.length > 0 ? "Uploading attachments..." : "Updating comment..."
+    );
     try {
-      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+      let augmentedContent = content;
+      if (attachPaths.length > 0) {
+        const uploaded = await uploadAttachments({
+          apiKey,
+          storageBaseUrl,
+          attachmentPaths: attachPaths,
+          debug: !!opts.debug,
+        });
+        augmentedContent = appendAttachmentsToContent(content, uploaded);
+        spinner.update("Updating comment...");
+      }
 
       const result = await updateIssueComment({
         apiKey,
         apiBaseUrl,
         commentId,
-        content,
+        content: augmentedContent,
         debug: !!opts.debug,
       });
       spinner.stop();

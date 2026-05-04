@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterEach, beforeEach } from "bun:test";
-import { uploadFile, downloadFile, buildMarkdownLink } from "../lib/storage";
+import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -757,5 +757,179 @@ describe("buildMarkdownLink escaping", () => {
   test("escapes special chars in custom filename", () => {
     const result = buildMarkdownLink("/files/123/abc.png", storageBaseUrl, "shot [v2] (draft).png");
     expect(result).toBe("![shot \\[v2\\] \\(draft\\).png](https://postgres.ai/storage/files/123/abc.png)");
+  });
+});
+
+describe("appendAttachmentsToContent", () => {
+  const mkAttachment = (markdown: string) => ({
+    path: "/tmp/x",
+    url: "/files/1/x",
+    markdown,
+    metadata: { originalName: "x", size: 0, mimeType: "x", uploadedAt: "", duration: 0 },
+  });
+
+  test("returns content unchanged when attachments empty", () => {
+    expect(appendAttachmentsToContent("hello", [])).toBe("hello");
+  });
+
+  test("returns content unchanged when attachments missing (undefined-safe)", () => {
+    // Defensive: callers may pass undefined for cleaner sites — we tolerate it.
+    // (TS prevents this at compile time but runtime data can disagree.)
+    expect(appendAttachmentsToContent("hello", undefined as unknown as never[])).toBe("hello");
+  });
+
+  test("returns just the link(s) when content is empty string", () => {
+    const out = appendAttachmentsToContent("", [mkAttachment("![a](u)")]);
+    expect(out).toBe("![a](u)");
+  });
+
+  test("returns just the link(s) when content is whitespace", () => {
+    const out = appendAttachmentsToContent("   \n  ", [mkAttachment("![a](u)")]);
+    expect(out).toBe("![a](u)");
+  });
+
+  test("appends a single link with two-newline separator", () => {
+    const out = appendAttachmentsToContent("hello", [mkAttachment("![a](u)")]);
+    expect(out).toBe("hello\n\n![a](u)");
+  });
+
+  test("appends multiple links one per line, preserving order", () => {
+    const out = appendAttachmentsToContent("hello", [
+      mkAttachment("![first](u1)"),
+      mkAttachment("[second](u2)"),
+      mkAttachment("![third](u3)"),
+    ]);
+    expect(out).toBe("hello\n\n![first](u1)\n[second](u2)\n![third](u3)");
+  });
+
+  test("does not strip user-provided trailing newlines", () => {
+    // The user may have a meaningful trailing newline (e.g. for code blocks).
+    // We should not normalize content beyond appending.
+    const out = appendAttachmentsToContent("hello\n", [mkAttachment("![a](u)")]);
+    expect(out).toBe("hello\n\n\n![a](u)");
+  });
+});
+
+describe("uploadAttachments", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("returns empty array when input is empty", async () => {
+    const out = await uploadAttachments({
+      apiKey: "k",
+      storageBaseUrl: "https://postgres.ai/storage",
+      attachmentPaths: [],
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("returns empty array when input is undefined (defensive)", async () => {
+    const out = await uploadAttachments({
+      apiKey: "k",
+      storageBaseUrl: "https://postgres.ai/storage",
+      attachmentPaths: undefined as unknown as string[],
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("uploads each file in order and returns metadata + markdown link per upload", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ua-"));
+    const f1 = path.join(tmpDir, "shot.png");
+    const f2 = path.join(tmpDir, "trace.log");
+    fs.writeFileSync(f1, "fake-png-bytes");
+    fs.writeFileSync(f2, "log line 1\nlog line 2\n");
+
+    const fakeResponses = [
+      { url: "/files/9/aaa.png", originalName: "shot.png" },
+      { url: "/files/9/bbb.log", originalName: "trace.log" },
+    ];
+    const calls: Array<{ url: string; mime: string }> = [];
+
+    globalThis.fetch = mock((url: string, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      const file = body?.get("file") as Blob;
+      const next = fakeResponses[calls.length];
+      calls.push({ url: String(url), mime: file?.type ?? "" });
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            success: true,
+            url: next.url,
+            metadata: {
+              originalName: next.originalName,
+              size: 0,
+              mimeType: file?.type ?? "application/octet-stream",
+              uploadedAt: "",
+              duration: 0,
+            },
+            requestId: `r-${calls.length}`,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = await uploadAttachments({
+        apiKey: "k",
+        storageBaseUrl: "https://postgres.ai/storage",
+        attachmentPaths: [f1, f2],
+      });
+
+      // Both uploads happened, in order.
+      expect(calls).toHaveLength(2);
+      expect(calls[0].url).toBe("https://postgres.ai/storage/upload");
+      expect(calls[1].url).toBe("https://postgres.ai/storage/upload");
+      // Mime types from extensions (image/png, text/plain).
+      // Blob may append `;charset=utf-8` for text MIME types — accept either.
+      expect(calls[0].mime).toBe("image/png");
+      expect(calls[1].mime.startsWith("text/plain")).toBe(true);
+
+      expect(out).toHaveLength(2);
+      expect(out[0].path).toBe(f1);
+      expect(out[0].url).toBe("/files/9/aaa.png");
+      // Image extension renders inline.
+      expect(out[0].markdown).toBe("![shot.png](https://postgres.ai/storage/files/9/aaa.png)");
+      expect(out[0].metadata.mimeType).toBe("image/png");
+
+      expect(out[1].path).toBe(f2);
+      expect(out[1].url).toBe("/files/9/bbb.log");
+      // Non-image renders as plain link.
+      expect(out[1].markdown).toBe("[trace.log](https://postgres.ai/storage/files/9/bbb.log)");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("error on file N surfaces the path so the user can retry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ua-err-"));
+    const f1 = path.join(tmpDir, "ok.txt");
+    fs.writeFileSync(f1, "ok");
+    const missing = path.join(tmpDir, "definitely-not-here.png");
+
+    let callCount = 0;
+    globalThis.fetch = mock(() => {
+      callCount++;
+      return Promise.resolve(
+        new Response(JSON.stringify({ success: true, url: "/files/1/a", metadata: { originalName: "ok.txt", size: 2, mimeType: "text/plain", uploadedAt: "", duration: 0 }, requestId: "r" }), { status: 200 })
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      await expect(
+        uploadAttachments({
+          apiKey: "k",
+          storageBaseUrl: "https://postgres.ai/storage",
+          attachmentPaths: [f1, missing],
+        })
+      ).rejects.toThrow(/File not found.*definitely-not-here/);
+      // The first file was uploaded before the failure; we don't retry it.
+      // (Documenting current behavior — caller is responsible if mid-failure
+      // partial uploads matter.)
+      expect(callCount).toBe(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
