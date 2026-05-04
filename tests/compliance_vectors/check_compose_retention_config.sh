@@ -44,8 +44,8 @@ assert_vm_safety_flags() {
 
   assert_vm_flag_present "$label" '-retentionPeriod="$$VM_RETENTION_PERIOD"' "$config_json"
   assert_vm_flag_present "$label" "-promscrape.maxScrapeSize=128000000" "$config_json"
-  assert_vm_flag_present "$label" "-search.maxQueryDuration=30s" "$config_json"
-  assert_vm_flag_present "$label" "-search.maxConcurrentRequests=16" "$config_json"
+  assert_vm_flag_present "$label" '-search.maxQueryDuration="$${VM_QUERY_DURATION}"' "$config_json"
+  assert_vm_flag_present "$label" '-search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}"' "$config_json"
 }
 
 assert_retention_config() {

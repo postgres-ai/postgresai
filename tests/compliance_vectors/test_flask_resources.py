@@ -23,11 +23,20 @@ def _load_yaml(*parts):
 
 
 def test_docker_compose_flask_resources_match_expected_limits():
+    """Pin the Flask defaults introduced in !238 and parameterized in !252.
+
+    After the MR for issue #176 the compose file reads ``cpus`` / ``mem_limit``
+    from env vars (``FLASK_CPUS`` / ``FLASK_MEM``) with the historical values
+    as defaults; ``yaml.safe_load`` returns the raw ``${VAR:-default}``
+    template string unexpanded, so we assert the template form directly. The
+    rendered value is exercised end-to-end by
+    ``test_compose_parameterization.py``.
+    """
     compose = _load_yaml('docker-compose.yml')
     flask = compose['services']['monitoring_flask_backend']
 
-    assert flask['cpus'] == 0.5
-    assert flask['mem_limit'] == EXPECTED_MEMORY_BYTES
+    assert flask['cpus'] == '${FLASK_CPUS:-0.5}'
+    assert flask['mem_limit'] == f'${{FLASK_MEM:-{EXPECTED_MEMORY_BYTES}}}'
 
 
 def test_helm_flask_resources_match_expected_requests_and_limits():
