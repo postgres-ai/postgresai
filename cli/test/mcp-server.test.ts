@@ -388,7 +388,8 @@ describe("MCP Server", () => {
       );
 
       expect(response.isError).toBe(true);
-      expect(getResponseText(response)).toBe("content is required");
+      // Error message updated to reflect that attachments alone are also valid input.
+      expect(getResponseText(response)).toBe("content or attachments is required");
 
       readConfigSpy.mockRestore();
     });
@@ -911,7 +912,7 @@ describe("MCP Server", () => {
       );
 
       expect(response.isError).toBe(true);
-      expect(getResponseText(response)).toBe("content is required");
+      expect(getResponseText(response)).toBe("content or attachments is required");
 
       readConfigSpy.mockRestore();
     });
@@ -2038,6 +2039,488 @@ describe("MCP Server", () => {
       expect(getResponseText(response)).toContain("Network error");
 
       readConfigSpy.mockRestore();
+    });
+  });
+
+  describe("attachments parameter & file tools", () => {
+    // Real-file approach (rather than fs mocking) — ESM module caching means
+    // monkey-patching fs after `import * as fs from "fs"` does not affect the
+    // already-resolved binding inside storage.ts. Real tmp files are simpler
+    // and match how the existing storage tests work.
+    const fs = require("fs") as typeof import("fs");
+    const path = require("path") as typeof import("path");
+    const os = require("os") as typeof import("os");
+
+    const createdDirs: string[] = [];
+
+    function mockTinyFile(name: string, body = "FAKE"): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pgai-mcp-attach-"));
+      createdDirs.push(dir);
+      const p = path.join(dir, name);
+      fs.writeFileSync(p, body);
+      return p;
+    }
+
+    afterEach(() => {
+      while (createdDirs.length > 0) {
+        const d = createdDirs.pop();
+        if (d) fs.rmSync(d, { recursive: true, force: true });
+      }
+    });
+
+    function configWithKey() {
+      return spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: 1,
+        defaultProject: null,
+        projectName: null,
+      });
+    }
+
+    test("upload_file tool returns url + ready-to-paste markdown link", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("shot.png");
+
+      globalThis.fetch = mock((_url: string, _init?: RequestInit) =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              url: "/files/9/abc.png",
+              metadata: { originalName: "shot.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r1",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          )
+        )
+      ) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("upload_file", { path: fakePath }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+
+      expect(response.isError).toBeFalsy();
+      const obj = JSON.parse(getResponseText(response));
+      expect(obj.success).toBe(true);
+      expect(obj.url).toBe("/files/9/abc.png");
+      // Image extension renders inline.
+      expect(obj.markdown).toBe("![shot.png](https://storage.example.com/files/9/abc.png)");
+
+      cfgSpy.mockRestore();
+    });
+
+    test("upload_file requires path", async () => {
+      const cfgSpy = configWithKey();
+      const r = await handleToolCall(createRequest("upload_file", {}));
+      expect(r.isError).toBe(true);
+      expect(getResponseText(r)).toBe("path is required");
+      cfgSpy.mockRestore();
+    });
+
+    test("download_file tool requires url", async () => {
+      const cfgSpy = configWithKey();
+      const r = await handleToolCall(createRequest("download_file", {}));
+      expect(r.isError).toBe(true);
+      expect(getResponseText(r)).toBe("url is required");
+      cfgSpy.mockRestore();
+    });
+
+    test("post_issue_comment with attachments uploads and appends link", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("debug.png");
+
+      const calls: Array<{ url: string; method?: string; bodyJson?: unknown }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push({
+          url: u,
+          method: init?.method,
+          bodyJson: typeof init?.body === "string" ? JSON.parse(init.body as string) : undefined,
+        });
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              url: "/files/9/dbg.png",
+              metadata: { originalName: "debug.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r1",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_comment_create")) {
+          return new Response(
+            JSON.stringify({
+              id: "c1",
+              issue_id: "i1",
+              author_id: 1,
+              parent_comment_id: null,
+              content: "ignored",
+              created_at: "",
+              updated_at: "",
+              data: null,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("post_issue_comment", {
+          issue_id: "11111111-1111-1111-1111-111111111111",
+          content: "see screenshot",
+          attachments: [fakePath],
+        }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+
+      expect(response.isError).toBeFalsy();
+
+      // Upload happened first, then comment-create with augmented content.
+      expect(calls[0].url).toContain("/upload");
+      const commentCall = calls.find((c) => c.url.endsWith("/rpc/issue_comment_create"));
+      expect(commentCall).toBeTruthy();
+      const body = commentCall!.bodyJson as { content: string };
+      expect(body.content).toBe("see screenshot\n\n![debug.png](https://storage.example.com/files/9/dbg.png)");
+
+      cfgSpy.mockRestore();
+    });
+
+    test("post_issue_comment with only attachments (no content) is allowed", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("only.png");
+
+      const commentBodies: Array<{ content: string }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              url: "/files/9/only.png",
+              metadata: { originalName: "only.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_comment_create")) {
+          commentBodies.push(JSON.parse(String(init?.body)));
+          return new Response(
+            JSON.stringify({ id: "c1", issue_id: "i1", author_id: 1, parent_comment_id: null, content: "", created_at: "", updated_at: "", data: null }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("post_issue_comment", {
+          issue_id: "11111111-1111-1111-1111-111111111111",
+          content: "",
+          attachments: [fakePath],
+        }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+
+      expect(response.isError).toBeFalsy();
+      expect(commentBodies[0].content).toBe("![only.png](https://storage.example.com/files/9/only.png)");
+
+      cfgSpy.mockRestore();
+    });
+
+    test("post_issue_comment with no content and no attachments is rejected", async () => {
+      const cfgSpy = configWithKey();
+      const r = await handleToolCall(
+        createRequest("post_issue_comment", {
+          issue_id: "11111111-1111-1111-1111-111111111111",
+          content: "",
+        })
+      );
+      expect(r.isError).toBe(true);
+      expect(getResponseText(r)).toBe("content or attachments is required");
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue with attachments and no description fetches existing then appends", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("evidence.png");
+
+      const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push({
+          url: u,
+          method: init?.method,
+          body: typeof init?.body === "string" ? JSON.parse(init.body as string) : undefined,
+        });
+        if (u.includes("/issues?") && (init?.method ?? "GET") === "GET") {
+          return new Response(
+            JSON.stringify([
+              { id: "i1", title: "T", description: "Existing description", status: 0, created_at: "", action_items: [] },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              url: "/files/9/ev.png",
+              metadata: { originalName: "evidence.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_update")) {
+          return new Response(
+            JSON.stringify({ id: "i1", title: "T", description: "ignored", status: 0, updated_at: "" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("update_issue", {
+          issue_id: "i1",
+          attachments: [fakePath],
+        }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+
+      expect(response.isError).toBeFalsy();
+      const updateCall = calls.find((c) => c.url.endsWith("/rpc/issue_update"));
+      expect(updateCall).toBeTruthy();
+      // Order: GET issues -> POST upload -> POST update.
+      const fetchIdx = calls.findIndex((c) => c.url.includes("/issues?"));
+      const uploadIdx = calls.findIndex((c) => c.url.endsWith("/upload"));
+      const updateIdx = calls.findIndex((c) => c.url.endsWith("/rpc/issue_update"));
+      expect(fetchIdx).toBeGreaterThanOrEqual(0);
+      expect(uploadIdx).toBeGreaterThan(fetchIdx);
+      expect(updateIdx).toBeGreaterThan(uploadIdx);
+
+      const body = updateCall!.body as { p_description: string };
+      expect(body.p_description).toBe(
+        "Existing description\n\n![evidence.png](https://storage.example.com/files/9/ev.png)"
+      );
+
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue with only attachments is treated as a valid update", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("ok.png");
+
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/issues?")) {
+          return new Response(JSON.stringify([{ id: "i1", title: "T", description: "old", status: 0 }]), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true, url: "/files/9/ok.png",
+              metadata: { originalName: "ok.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_update")) {
+          return new Response(JSON.stringify({ id: "i1", title: "T", description: "ignored", status: 0, updated_at: "" }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("update_issue", { issue_id: "i1", attachments: [fakePath] }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+      expect(response.isError).toBeFalsy();
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue with no fields including no attachments is rejected", async () => {
+      const cfgSpy = configWithKey();
+      const r = await handleToolCall(createRequest("update_issue", { issue_id: "i1" }));
+      expect(r.isError).toBe(true);
+      expect(getResponseText(r)).toContain("At least one field to update is required");
+      // The error message now mentions attachments as a valid update field.
+      expect(getResponseText(r)).toContain("attachments");
+      cfgSpy.mockRestore();
+    });
+
+    test("create_issue with attachments appends link to provided description", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("design.png");
+
+      const createBodies: Array<{ description?: string }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true, url: "/files/9/dz.png",
+              metadata: { originalName: "design.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_create")) {
+          createBodies.push(JSON.parse(String(init?.body)));
+          return new Response(
+            JSON.stringify({ id: "i1", title: "T", description: "ignored", created_at: "", status: 0 }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("create_issue", {
+          title: "Dx",
+          description: "see design",
+          attachments: [fakePath],
+        }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+      expect(response.isError).toBeFalsy();
+      expect(createBodies[0].description).toBe(
+        "see design\n\n![design.png](https://storage.example.com/files/9/dz.png)"
+      );
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue_comment with attachments appends to content", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("after.png");
+
+      const bodies: Array<{ p_content?: string }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true, url: "/files/9/aft.png",
+              metadata: { originalName: "after.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_comment_update")) {
+          bodies.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ id: "c1", issue_id: "i1", content: "ignored", updated_at: "" }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("update_issue_comment", { comment_id: "c1", content: "now updated", attachments: [fakePath] }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+      expect(response.isError).toBeFalsy();
+      expect(bodies[0].p_content).toBe("now updated\n\n![after.png](https://storage.example.com/files/9/aft.png)");
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue_comment with attachments-only (no content) sends just the markdown link", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("only.png");
+
+      const bodies: Array<{ p_content?: string }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true, url: "/files/9/only.png",
+              metadata: { originalName: "only.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_comment_update")) {
+          bodies.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ id: "c1", issue_id: "i1", content: "ignored", updated_at: "" }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("update_issue_comment", { comment_id: "c1", attachments: [fakePath] }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+      expect(response.isError).toBeFalsy();
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0].p_content).toBe("![only.png](https://storage.example.com/files/9/only.png)");
+      cfgSpy.mockRestore();
+    });
+
+    test("update_issue_comment without content and without attachments is rejected", async () => {
+      const cfgSpy = configWithKey();
+      const fetchSpy = mock(() => {
+        throw new Error("should not be called");
+      });
+      globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("update_issue_comment", { comment_id: "c1" }));
+      expect(response.isError).toBe(true);
+      expect(getResponseText(response)).toBe("content or attachments is required");
+      expect(fetchSpy).not.toHaveBeenCalled();
+      cfgSpy.mockRestore();
+    });
+
+    test("create_issue with attachments and no description sets description to just the link", async () => {
+      const cfgSpy = configWithKey();
+      const fakePath = mockTinyFile("plan.png");
+
+      const createBodies: Array<{ description?: string }> = [];
+      globalThis.fetch = mock(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/upload")) {
+          return new Response(
+            JSON.stringify({
+              success: true, url: "/files/9/plan.png",
+              metadata: { originalName: "plan.png", size: 4, mimeType: "image/png", uploadedAt: "", duration: 0 },
+              requestId: "r",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (u.endsWith("/rpc/issue_create")) {
+          createBodies.push(JSON.parse(String(init?.body)));
+          return new Response(
+            JSON.stringify({ id: "i1", title: "T", description: "ignored", created_at: "", status: 0 }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(
+        createRequest("create_issue", { title: "Dx", attachments: [fakePath] }),
+        { apiBaseUrl: "https://api.example.com", storageBaseUrl: "https://storage.example.com" }
+      );
+      expect(response.isError).toBeFalsy();
+      expect(createBodies[0].description).toBe("![plan.png](https://storage.example.com/files/9/plan.png)");
+      cfgSpy.mockRestore();
     });
   });
 });

@@ -49,7 +49,11 @@ async function startFakeApi() {
     headers: Record<string, string>;
     bodyText: string;
     bodyJson: any | null;
+    contentType?: string;
   }> = [];
+
+  // For storage tests: tracks file uploads served at /storage/upload.
+  const uploads: Array<{ filename: string; size: number; mimeType: string; url: string }> = [];
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -58,6 +62,50 @@ async function startFakeApi() {
       const url = new URL(req.url);
       const headers: Record<string, string> = {};
       for (const [k, v] of req.headers.entries()) headers[k.toLowerCase()] = v;
+
+      // /storage/upload is multipart/form-data, not JSON. Branch on content type.
+      const contentType = headers["content-type"] || "";
+      const isMultipart = contentType.startsWith("multipart/form-data");
+
+      // Storage upload endpoint — return a deterministic /files/N/<idx>_<name> URL.
+      if (req.method === "POST" && url.pathname === "/storage/upload" && isMultipart) {
+        const form = await req.formData();
+        const file = form.get("file") as File | null;
+        if (!file) return new Response("missing file", { status: 400 });
+        const buf = new Uint8Array(await file.arrayBuffer());
+        const idx = uploads.length;
+        const fileUrl = `/files/test/${idx}_${file.name}`;
+        uploads.push({ filename: file.name, size: buf.length, mimeType: file.type, url: fileUrl });
+        requests.push({ method: req.method, pathname: url.pathname, headers, bodyText: "", bodyJson: null, contentType });
+        return new Response(
+          JSON.stringify({
+            success: true,
+            url: fileUrl,
+            metadata: {
+              originalName: file.name,
+              size: buf.length,
+              mimeType: file.type,
+              uploadedAt: "2025-01-01T00:00:00.000Z",
+              duration: 1,
+            },
+            requestId: `req-upload-${idx}`,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      // Storage download endpoint — return whatever bytes were uploaded.
+      if (req.method === "GET" && url.pathname.startsWith("/storage/files/")) {
+        // Strip "/storage" so the lookup matches what we stored.
+        const fileUrl = url.pathname.replace(/^\/storage/, "");
+        const found = uploads.find((u) => u.url === fileUrl);
+        if (!found) return new Response("not found", { status: 404 });
+        // Re-upload-ish path: we don't keep bytes, but for test purposes return a known body.
+        return new Response("FAKE_DOWNLOADED_BYTES", {
+          status: 200,
+          headers: { "Content-Type": found.mimeType || "application/octet-stream" },
+        });
+      }
 
       const bodyText = await req.text();
       let bodyJson: any | null = null;
@@ -73,6 +121,7 @@ async function startFakeApi() {
         headers,
         bodyText,
         bodyJson,
+        contentType,
       });
 
       // Minimal fake PostgREST RPC endpoints used by our CLI.
@@ -133,6 +182,26 @@ async function startFakeApi() {
         );
       }
 
+      // GET /issues — used by `issues update --attach` to fetch existing description.
+      if (req.method === "GET" && url.pathname.endsWith("/issues")) {
+        const idParam = url.searchParams.get("id") || "";
+        const issueId = idParam.replace("eq.", "");
+        return new Response(
+          JSON.stringify([
+            {
+              id: issueId,
+              title: "Existing title",
+              description: "Existing description body",
+              status: 0,
+              created_at: "2025-01-01T00:00:00Z",
+              author_display_name: "tester",
+              action_items: [],
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       // Action Items endpoints
       if (req.method === "GET" && url.pathname.endsWith("/issue_action_items")) {
         const issueIdParam = url.searchParams.get("issue_id");
@@ -175,10 +244,13 @@ async function startFakeApi() {
   });
 
   const baseUrl = `http://${server.hostname}:${server.port}/api/general`;
+  const storageBaseUrl = `http://${server.hostname}:${server.port}/storage`;
 
   return {
     baseUrl,
+    storageBaseUrl,
     requests,
+    uploads,
     stop: () => server.stop(true),
   };
 }
@@ -763,5 +835,328 @@ describe("CLI set-storage-url command", () => {
     const r = runCli(["set-storage-url", "not-a-url"], isolatedEnv());
     expect(r.status).toBe(1);
     expect(`${r.stdout}\n${r.stderr}`).toContain("invalid URL");
+  });
+});
+
+describe("CLI issues --attach flag", () => {
+  // Helper: write a small image-named tmp file (not a real PNG, but the .png
+  // extension is what the CLI / storage helper read for MIME + markdown form).
+  function writeTmpFile(name: string, body = "X"): string {
+    const dir = mkdtempSync(resolve(tmpdir(), "pgai-attach-"));
+    const p = resolve(dir, name);
+    writeFileSync(p, body);
+    return p;
+  }
+
+  test("post-comment --attach uploads then appends image markdown to comment", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("pic.png", "PNGBYTES");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "post-comment",
+          "11111111-1111-1111-1111-111111111111",
+          "see attached",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+
+      expect(r.status).toBe(0);
+      // Upload happened first.
+      expect(api.uploads).toHaveLength(1);
+      expect(api.uploads[0].filename).toBe("pic.png");
+
+      // Comment-create request was sent with augmented content.
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.content).toBe(
+        `see attached\n\n![pic.png](${api.storageBaseUrl}${api.uploads[0].url})`
+      );
+      // Request order: upload before comment.
+      const uploadIdx = api.requests.findIndex((x) => x.pathname === "/storage/upload");
+      const commentIdx = api.requests.findIndex((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
+      expect(uploadIdx).toBeGreaterThanOrEqual(0);
+      expect(commentIdx).toBeGreaterThan(uploadIdx);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("post-comment --attach with multiple files appends one link per line preserving order", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("a.png", "P");
+    const log = writeTmpFile("b.log", "L");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "post-comment",
+          "11111111-1111-1111-1111-111111111111",
+          "ctx",
+          "--attach",
+          png,
+          "--attach",
+          log,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      expect(api.uploads.map((u) => u.filename)).toEqual(["a.png", "b.log"]);
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
+      expect(req).toBeTruthy();
+      const expected =
+        `ctx\n\n![a.png](${api.storageBaseUrl}/files/test/0_a.png)\n` +
+        `[b.log](${api.storageBaseUrl}/files/test/1_b.log)`;
+      expect(req!.bodyJson.content).toBe(expected);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("create --attach appends markdown link to description", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("diagram.png", "PNG");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "create",
+          "Reproduces under load",
+          "--org-id",
+          "1",
+          "--description",
+          "see chart",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_create"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.description).toBe(
+        `see chart\n\n![diagram.png](${api.storageBaseUrl}/files/test/0_diagram.png)`
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("create --attach without --description sets description to just the link", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("only.png", "P");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "create",
+          "tinier example",
+          "--org-id",
+          "1",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_create"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.description).toBe(
+        `![only.png](${api.storageBaseUrl}/files/test/0_only.png)`
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("update --attach without --description fetches existing description and appends", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("evidence.png", "P");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "update",
+          "issue-1",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      // GET /issues happens first to read the existing description, then upload, then update.
+      const seq = api.requests.map((x) => `${x.method} ${x.pathname}`);
+      const fetchIdx = seq.indexOf("GET /api/general/issues");
+      const uploadIdx = seq.indexOf("POST /storage/upload");
+      const updateIdx = seq.indexOf("POST /api/general/rpc/issue_update");
+      expect(fetchIdx).toBeGreaterThanOrEqual(0);
+      expect(uploadIdx).toBeGreaterThan(fetchIdx);
+      expect(updateIdx).toBeGreaterThan(uploadIdx);
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_update"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.p_description).toBe(
+        `Existing description body\n\n![evidence.png](${api.storageBaseUrl}/files/test/0_evidence.png)`
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("update --attach with --description appends to the new description (no fetch)", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("e2.png", "P");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "update",
+          "issue-1",
+          "--description",
+          "Rewritten body",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      // No GET /issues happened — we already have the new description.
+      const fetched = api.requests.find((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+      expect(fetched).toBeFalsy();
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_update"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.p_description).toBe(
+        `Rewritten body\n\n![e2.png](${api.storageBaseUrl}/files/test/0_e2.png)`
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("update-comment --attach appends markdown link to comment content", async () => {
+    const api = await startFakeApi();
+    const png = writeTmpFile("after.png", "P");
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "update-comment",
+          "comment-1",
+          "now with a screenshot",
+          "--attach",
+          png,
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_update"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.p_content).toBe(
+        `now with a screenshot\n\n![after.png](${api.storageBaseUrl}/files/test/0_after.png)`
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("--attach with a missing file fails fast and never sends the comment-create request", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "post-comment",
+          "11111111-1111-1111-1111-111111111111",
+          "should not be posted",
+          "--attach",
+          "/tmp/this-path-does-not-exist-xyz123.png",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(1);
+      expect(`${r.stdout}\n${r.stderr}`).toMatch(/File not found/);
+      // No comment-create request reached the server — we bailed before posting.
+      const commentReq = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
+      expect(commentReq).toBeFalsy();
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("post-comment without --attach still works (regression check)", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        [
+          "issues",
+          "post-comment",
+          "11111111-1111-1111-1111-111111111111",
+          "plain comment",
+          "--json",
+        ],
+        isolatedEnv({
+          PGAI_API_KEY: "test-key",
+          PGAI_API_BASE_URL: api.baseUrl,
+          PGAI_STORAGE_BASE_URL: api.storageBaseUrl,
+        })
+      );
+      expect(r.status).toBe(0);
+      expect(api.uploads).toHaveLength(0);
+      const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
+      expect(req).toBeTruthy();
+      expect(req!.bodyJson.content).toBe("plain comment");
+    } finally {
+      api.stop();
+    }
   });
 });
