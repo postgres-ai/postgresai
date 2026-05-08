@@ -26,6 +26,17 @@ import { REPORT_GENERATORS, CHECK_INFO, generateAllReports } from "../lib/checku
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
+import {
+  type Instance,
+  InstancesParseError,
+  loadInstances,
+  buildInstance,
+  addInstanceToFile,
+  removeInstanceFromFile,
+  buildClientConfig,
+  sslOptionFromConnString,
+  warnIfLaxSslmode,
+} from "../lib/instances";
 
 // Node.js version check - require Node 18+
 // Node 14 reached EOL in April 2023, Node 16 in September 2023.
@@ -417,19 +428,6 @@ interface CliOptions {
  */
 interface ConfigResult {
   apiKey: string;
-}
-
-/**
- * Instance configuration
- */
-interface Instance {
-  name: string;
-  conn_str?: string;
-  preset_metrics?: string;
-  custom_metrics?: any;
-  is_enabled?: boolean;
-  group?: string;
-  custom_tags?: Record<string, any>;
 }
 
 /**
@@ -2302,6 +2300,18 @@ const mon = program.command("mon").description("monitoring services management")
 mon
   .command("local-install")
   .description("install local monitoring stack (generate config, start services)")
+  .addHelpText(
+    "after",
+    [
+      "",
+      "Networking:",
+      "  Compose enables IPv6 on the project's default network so containers can",
+      "  reach IPv6-only databases (e.g. Supabase free-tier db.<ref>.supabase.co).",
+      "  Override on hosts whose Docker daemon cannot create an IPv6 network:",
+      "      PGAI_ENABLE_IPV6=false   (accepted: true|false|yes|no, lowercase)",
+      "",
+    ].join("\n"),
+  )
   .option("--demo", "demo mode with sample database", false)
   .option("--api-key <key>", "Postgres AI API key for automated report uploads")
   .option("--db-url <url>", "PostgreSQL connection URL to monitor")
@@ -2487,8 +2497,7 @@ mon
         const db = m[5];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        const body = `- name: ${instanceName}\n  conn_str: ${connStr}\n  preset_metrics: full\n  custom_metrics:\n  is_enabled: true\n  group: default\n  custom_tags:\n    env: production\n    cluster: default\n    node_name: ${instanceName}\n    sink_type: ~sink_type~\n`;
-        fs.appendFileSync(instancesPath, body, "utf8");
+        addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
         console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
         // Test connection
@@ -2496,7 +2505,8 @@ mon
         {
           let testClient: InstanceType<typeof Client> | null = null;
           try {
-            testClient = new Client({ connectionString: connStr, connectionTimeoutMillis: 10000 });
+            warnIfLaxSslmode(connStr);
+            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
             await testClient.connect();
             const result = await testClient.query("select version();");
             console.log("✓ Connection successful");
@@ -2535,8 +2545,7 @@ mon
               const db = m[5];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              const body = `- name: ${instanceName}\n  conn_str: ${connStr}\n  preset_metrics: full\n  custom_metrics:\n  is_enabled: true\n  group: default\n  custom_tags:\n    env: production\n    cluster: default\n    node_name: ${instanceName}\n    sink_type: ~sink_type~\n`;
-              fs.appendFileSync(instancesPath, body, "utf8");
+              addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
               console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
               // Test connection
@@ -2544,7 +2553,8 @@ mon
               {
                 let testClient: InstanceType<typeof Client> | null = null;
                 try {
-                  testClient = new Client({ connectionString: connStr, connectionTimeoutMillis: 10000 });
+                  warnIfLaxSslmode(connStr);
+            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
                   await testClient.connect();
                   const result = await testClient.query("select version();");
                   console.log("✓ Connection successful");
@@ -3173,42 +3183,32 @@ targets
       return;
     }
 
+    let instances: Instance[];
     try {
-      const content = fs.readFileSync(instancesPath, "utf8");
-      const instances = yaml.load(content) as Instance[] | null;
-
-      if (!instances || !Array.isArray(instances) || instances.length === 0) {
-        console.log("No monitoring targets configured");
-        console.log("");
-        console.log("To add a monitoring target:");
-        console.log("  postgres-ai mon targets add <connection-string> <name>");
-        console.log("");
-        console.log("Example:");
-        console.log("  postgres-ai mon targets add 'postgresql://user:pass@host:5432/db' my-db");
-        return;
-      }
-
-      // Filter out disabled instances (e.g., demo placeholders)
-      const filtered = instances.filter((inst) => inst.name && inst.is_enabled !== false);
-
-      if (filtered.length === 0) {
-        console.log("No monitoring targets configured");
-        console.log("");
-        console.log("To add a monitoring target:");
-        console.log("  postgres-ai mon targets add <connection-string> <name>");
-        console.log("");
-        console.log("Example:");
-        console.log("  postgres-ai mon targets add 'postgresql://user:pass@host:5432/db' my-db");
-        return;
-      }
-
-      for (const inst of filtered) {
-        console.log(`Target: ${inst.name}`);
-      }
+      instances = loadInstances(instancesPath);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Error parsing instances.yml: ${message}`);
       process.exitCode = 1;
+      return;
+    }
+
+    // Filter out disabled instances (e.g., demo placeholders)
+    const filtered = instances.filter((inst) => inst.name && inst.is_enabled !== false);
+
+    if (filtered.length === 0) {
+      console.log("No monitoring targets configured");
+      console.log("");
+      console.log("To add a monitoring target:");
+      console.log("  postgres-ai mon targets add <connection-string> <name>");
+      console.log("");
+      console.log("Example:");
+      console.log("  postgres-ai mon targets add 'postgresql://user:pass@host:5432/db' my-db");
+      return;
+    }
+
+    for (const inst of filtered) {
+      console.log(`Target: ${inst.name}`);
     }
   });
 targets
@@ -3231,40 +3231,17 @@ targets
     const db = m[5];
     const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-    // Check if instance already exists
     try {
-      if (fs.existsSync(file) && !fs.lstatSync(file).isDirectory()) {
-        const content = fs.readFileSync(file, "utf8");
-        const instances = yaml.load(content) as Instance[] | null || [];
-        if (Array.isArray(instances)) {
-          const exists = instances.some((inst) => inst.name === instanceName);
-          if (exists) {
-            console.error(`Monitoring target '${instanceName}' already exists`);
-            process.exitCode = 1;
-            return;
-          }
-        }
-      }
+      addInstanceToFile(file, buildInstance(instanceName, connStr));
+      console.log(`Monitoring target '${instanceName}' added`);
     } catch (err) {
-      // If YAML parsing fails, fall back to simple check
-      const isFile = fs.existsSync(file) && !fs.lstatSync(file).isDirectory();
-      const content = isFile ? fs.readFileSync(file, "utf8") : "";
-      const escapedName = instanceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (new RegExp(`^- name: ${escapedName}$`, "m").test(content)) {
-        console.error(`Monitoring target '${instanceName}' already exists`);
-        process.exitCode = 1;
-        return;
-      }
+      // Surface InstancesParseError as-is so we don't silently overwrite a
+      // corrupted file (which could discard several targets, including the
+      // credentials in their conn_str values).
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(message);
+      process.exitCode = 1;
     }
-
-    // Add new instance — if instances.yml is a directory (Docker artifact), replace it with a file
-    if (fs.existsSync(file) && fs.lstatSync(file).isDirectory()) {
-      fs.rmSync(file, { recursive: true, force: true });
-    }
-    const body = `- name: ${instanceName}\n  conn_str: ${connStr}\n  preset_metrics: full\n  custom_metrics:\n  is_enabled: true\n  group: default\n  custom_tags:\n    env: production\n    cluster: default\n    node_name: ${instanceName}\n    sink_type: ~sink_type~\n`;
-    const content = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-    fs.appendFileSync(file, (content && !/\n$/.test(content) ? "\n" : "") + body, "utf8");
-    console.log(`Monitoring target '${instanceName}' added`);
   });
 targets
   .command("remove <name>")
@@ -3278,24 +3255,12 @@ targets
     }
 
     try {
-      const content = fs.readFileSync(file, "utf8");
-      const instances = yaml.load(content) as Instance[] | null;
-
-      if (!instances || !Array.isArray(instances)) {
-        console.error("Invalid instances.yml format");
-        process.exitCode = 1;
-        return;
-      }
-
-      const filtered = instances.filter((inst) => inst.name !== name);
-
-      if (filtered.length === instances.length) {
+      const removed = removeInstanceFromFile(file, name);
+      if (!removed) {
         console.error(`Monitoring target '${name}' not found`);
         process.exitCode = 1;
         return;
       }
-
-      fs.writeFileSync(file, yaml.dump(filtered), "utf8");
       console.log(`Monitoring target '${name}' removed`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3314,35 +3279,35 @@ targets
       return;
     }
 
+    let instances: Instance[];
     try {
-      const content = fs.readFileSync(instancesPath, "utf8");
-      const instances = yaml.load(content) as Instance[] | null;
+      instances = loadInstances(instancesPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Error parsing instances.yml: ${message}`);
+      process.exitCode = 1;
+      return;
+    }
+    const instance = instances.find((inst) => inst.name === name);
 
-      if (!instances || !Array.isArray(instances)) {
-        console.error("Invalid instances.yml format");
-        process.exitCode = 1;
-        return;
-      }
+    if (!instance) {
+      console.error(`Monitoring target '${name}' not found`);
+      process.exitCode = 1;
+      return;
+    }
 
-      const instance = instances.find((inst) => inst.name === name);
+    if (!instance.conn_str) {
+      console.error(`Connection string not found for monitoring target '${name}'`);
+      process.exitCode = 1;
+      return;
+    }
 
-      if (!instance) {
-        console.error(`Monitoring target '${name}' not found`);
-        process.exitCode = 1;
-        return;
-      }
+    console.log(`Testing connection to monitoring target '${name}'...`);
 
-      if (!instance.conn_str) {
-        console.error(`Connection string not found for monitoring target '${name}'`);
-        process.exitCode = 1;
-        return;
-      }
+    warnIfLaxSslmode(instance.conn_str);
+    const client = new Client(buildClientConfig(instance.conn_str, { connectionTimeoutMillis: 10000 }));
 
-      console.log(`Testing connection to monitoring target '${name}'...`);
-
-      // Use native pg client instead of requiring psql to be installed
-      const client = new Client({ connectionString: instance.conn_str, connectionTimeoutMillis: 10000 });
-
+    try {
       try {
         await client.connect();
         const result = await client.query('select version();');
@@ -3376,17 +3341,17 @@ auth
         process.exitCode = 1;
         return;
       }
-      
+
       // Read existing config to check for defaultProject before updating
       const existingConfig = config.readConfig();
       const existingProject = existingConfig.defaultProject;
-      
+
       config.writeConfig({ apiKey: trimmedKey });
       // When API key is set directly, only clear orgId (org selection may differ).
       // Preserve defaultProject to avoid orphaning historical reports.
       // If the new key lacks access to the project, upload will fail with a clear error.
       config.deleteConfigKeys(["orgId"]);
-      
+
       console.log(`API key saved to ${config.getConfigPath()}`);
       if (existingProject) {
         console.log(`Note: Your default project "${existingProject}" has been preserved.`);
@@ -3570,13 +3535,13 @@ auth
           const existingOrgId = existingConfig.orgId;
           const existingProject = existingConfig.defaultProject;
           const orgChanged = existingOrgId && existingOrgId !== orgId;
-          
+
           config.writeConfig({
             apiKey: apiToken,
             baseUrl: apiBaseUrl,
             orgId: orgId,
           });
-          
+
           // Only clear defaultProject if org actually changed
           if (orgChanged && existingProject) {
             config.deleteConfigKeys(["defaultProject"]);
@@ -4971,4 +4936,3 @@ mcp
 program.parseAsync(process.argv).finally(() => {
   closeReadline();
 });
-

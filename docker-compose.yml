@@ -361,3 +361,17 @@ volumes:
   sink_postgres_data:
   victoria_metrics_data:
   grafana_data:
+
+networks:
+  default:
+    # Enable IPv6 on the project's default bridge network so containers can
+    # reach IPv6-only databases. Notably required for Supabase free-tier
+    # direct hosts (db.<ref>.supabase.co), which only resolve to IPv6.
+    #
+    # Override: set PGAI_ENABLE_IPV6=false (in your shell or .env) if the
+    # host's Docker daemon cannot create an IPv6 network. Compose interpolates
+    # this value into a YAML boolean, so only the exact strings `true`,
+    # `false`, `yes`, `no` are accepted (lowercase). Numeric `0`/`1` and
+    # casing like `True`/`False` are rejected by Compose with a confusing
+    # "invalid boolean" error — use `true`/`false`.
+    enable_ipv6: ${PGAI_ENABLE_IPV6:-true}
