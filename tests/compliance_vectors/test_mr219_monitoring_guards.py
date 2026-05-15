@@ -81,30 +81,36 @@ def test_pgwatch_metrics_yml_pg_stat_statements_has_top_n_filter():
 
 
 def test_pgwatch_stat_views_use_topn_and_other_bucket():
-    """High-cardinality per-relation metrics must port the pattern from
-    pgwatch2 postgres.ai edition (gitlab.com/postgres-ai/pgwatch2, our
-    fork of Cybertec's pgwatch2 used as the previous generation of our
-    monitoring stack): read pg_stat_user_*/pg_statio_user_* (so pg_catalog,
-    information_schema and pg_toast are excluded by the Postgres view
-    itself, no hand-curated nspname pattern), keep the top 100 by relevance,
-    and aggregate the tail into a single `'other'` tag row so dashboard
-    totals stay correct under a hard cardinality cap. Hand-rolled nspname
-    LIKE filters or LIMIT-only truncation silently drop the tail and break
-    sums on extension-heavy or schema-heavy databases.
+    """High-cardinality per-relation metrics must bound cardinality by
+    RANKING, not by IDENTITY. Read pg_stat_all_*/pg_statio_all_* directly
+    (NOT the pg_stat_user_*/pg_statio_user_* views, which silently exclude
+    pg_catalog/pg_toast and would hide bloat or hot scans in those
+    relations), keep the top 100 by relevance, and aggregate the tail into
+    a single `'other'` tag row so dashboard totals stay correct.
+
+    The principle: a bloated pg_toast or a heavy _timescaledb_internal
+    chunk should appear in the top-N when its activity/size warrants it.
+    Schema-name filtering (`pg_stat_user_*` views, `NOT LIKE 'pg_toast%'`,
+    `NOT LIKE '_timescaledb%'`) makes those issues invisible. Hand-rolled
+    nspname LIKE filters or LIMIT-only truncation likewise silently drop
+    the tail and break sums on extension-heavy or schema-heavy databases.
     """
     metrics = yaml.safe_load(
         (PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml").read_text()
     )
     expectations = {
-        "pg_stat_all_indexes": "pg_stat_user_indexes",
-        "pg_stat_all_tables": "pg_stat_user_tables",
-        "pg_statio_all_tables": "pg_statio_user_tables",
-        "pg_statio_all_indexes": "pg_statio_user_indexes",
+        "pg_stat_all_indexes": "pg_stat_all_indexes",
+        "pg_stat_all_tables": "pg_stat_all_tables",
+        "pg_statio_all_tables": "pg_statio_all_tables",
+        "pg_statio_all_indexes": "pg_statio_all_indexes",
     }
     for metric_name, base_view in expectations.items():
         for sql in metrics["metrics"][metric_name]["sqls"].values():
             compact_sql = _compact_sql(sql)
-            assert base_view in compact_sql, metric_name
+            # Reads the _all_ view, not the _user_ view — keeps catalog/toast/timescale visible.
+            assert f"from {base_view}" in compact_sql, metric_name
+            user_view = base_view.replace("_all_", "_user_")
+            assert user_view not in compact_sql, metric_name
             # Top-N window + tail aggregation
             assert "row_number() over" in compact_sql, metric_name
             assert "rownum <= 100" in compact_sql, metric_name
@@ -112,12 +118,20 @@ def test_pgwatch_stat_views_use_topn_and_other_bucket():
             assert "'other'" in compact_sql, metric_name
             # No unfiltered LIMIT-only truncation left in place
             assert "limit 5000" not in compact_sql, metric_name
+            # No identity-based schema exclusions sneaking back in.
+            assert "schemaname like" not in compact_sql, metric_name
+            assert "nspname like" not in compact_sql, metric_name
+            assert "'pg_toast'" not in compact_sql, metric_name
+            assert "'pg_catalog'" not in compact_sql, metric_name
+            assert "_timescaledb" not in compact_sql, metric_name
 
 
 def test_pgwatch_statio_skips_zero_activity_rows():
-    """pg_statio_user_* tail is mostly zero-I/O rows on schema-heavy DBs.
-    Filtering them out (pgwatch2 behavior) cuts cardinality before the
-    top-N cap is even reached and keeps the `'other'` bucket meaningful.
+    """pg_statio tail is mostly zero-I/O rows on schema-heavy DBs. Skipping
+    them cuts cardinality before the top-N cap is even reached and keeps
+    the `'other'` bucket meaningful. This is NOT identity-based filtering:
+    a row with every counter zero literally carries no information and
+    cannot mask any issue.
     """
     metrics = yaml.safe_load(
         (PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml").read_text()
