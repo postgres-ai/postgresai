@@ -194,7 +194,11 @@ reporter:tests:
     - su - postgres -c "psql -c 'SELECT version();'" || echo "PostgreSQL started"
   script:
     - chown -R postgres:postgres "$CI_PROJECT_DIR"
-    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter"
+    # PGAI_USE_SYSTEM_PG tells tests/compliance_vectors/conftest.py to
+    # connect to the cluster started by `service postgresql start` above
+    # instead of letting pytest-postgresql spin up its own (which hangs
+    # in this image — see tests/reporter/conftest.py for the same fix).
+    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && PGAI_USE_SYSTEM_PG=1 python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter tests/compliance_vectors/test_mr262_pgwatch_topn_integration.py"
     # Fix ownership for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/coverage" || true
   coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+)%/'
