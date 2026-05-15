@@ -1552,9 +1552,29 @@ metrics:
       - total_relation_size_bytes
     statement_timeout_seconds: 15
   pg_stat_all_indexes:
+    # Bound cardinality by ranking — NOT by identity. Reads pg_stat_all_indexes
+    # directly (NOT pg_stat_user_indexes) so pg_catalog, pg_toast and
+    # _timescaledb_internal indexes stay visible: a heavily-scanned catalog
+    # index or a hot Timescale chunk index will naturally rank into the
+    # top-N. Everything below the cap is aggregated into a single `'other'`
+    # row so dashboard totals stay correct. Pattern adapted from pgwatch2
+    # postgres.ai edition (gitlab.com/postgres-ai/pgwatch2 — our fork of
+    # Cybertec's pgwatch2), but without that edition's pg_temp%/user-view
+    # filters which would silently hide system-schema problems.
     sqls:
       11: |
-        select /* pgwatch_generated */
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (order by idx_scan desc nulls last) as rownum,
+            schemaname,
+            relname,
+            indexrelname,
+            idx_scan,
+            idx_tup_read,
+            idx_tup_fetch
+          from pg_stat_all_indexes
+        )
+        select
           current_database() as tag_datname,
           schemaname as tag_schemaname,
           relname as tag_relname,
@@ -1562,18 +1582,63 @@ metrics:
           idx_scan,
           idx_tup_read,
           idx_tup_fetch
-        from pg_stat_all_indexes
-        order by idx_scan desc
-        limit 5000
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          'other'::text as tag_schemaname,
+          'other'::text as tag_relname,
+          'other'::text as tag_indexrelname,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(idx_tup_read), 0)::int8 as idx_tup_read,
+          coalesce(sum(idx_tup_fetch), 0)::int8 as idx_tup_fetch
+        from ranked
+        where rownum > 100
+        having count(*) > 0
     gauges:
       - idx_scan
       - idx_tup_read
       - idx_tup_fetch
     statement_timeout_seconds: 15
   pg_stat_all_tables:
+    # Bound cardinality by ranking — NOT by identity. Reads pg_stat_all_tables
+    # directly (NOT pg_stat_user_tables) so pg_catalog, pg_toast and
+    # _timescaledb_internal tables stay visible: a bloated TOAST table or a
+    # huge Timescale chunk will naturally rank into the top-N by
+    # pg_total_relation_size. Everything below the cap is summed into a
+    # single `'other'` row.
+    #
+    # Ordering by total relation size (vs the previous n_live_tup+n_dead_tup)
+    # keeps big-but-static tables — including pg_toast — in scope.
     sqls:
       11: |
-        select /* pgwatch_generated */
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (order by pg_total_relation_size(relid) desc nulls last) as rownum,
+            schemaname,
+            relname,
+            seq_scan,
+            seq_tup_read,
+            idx_scan,
+            idx_tup_fetch,
+            n_tup_ins,
+            n_tup_upd,
+            n_tup_del,
+            n_tup_hot_upd,
+            n_live_tup,
+            n_dead_tup,
+            last_vacuum,
+            last_autovacuum,
+            last_analyze,
+            last_autoanalyze,
+            vacuum_count,
+            autovacuum_count,
+            analyze_count,
+            autoanalyze_count
+          from pg_stat_all_tables
+        )
+        select
           current_database() as tag_datname,
           schemaname as tag_schemaname,
           relname as tag_relname,
@@ -1592,10 +1657,30 @@ metrics:
           extract(epoch from greatest(last_autoanalyze, last_analyze, '1970-01-01Z'))::int8 as last_analyze,
           (vacuum_count + autovacuum_count) as vacuum_count,
           (analyze_count + autoanalyze_count) as analyze_count
-        from
-          pg_stat_all_tables
-        order by n_live_tup + n_dead_tup desc
-        limit 5000
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          'other'::text as tag_schemaname,
+          'other'::text as tag_relname,
+          coalesce(sum(seq_scan), 0)::int8 as seq_scan,
+          coalesce(sum(seq_tup_read), 0)::int8 as seq_tup_read,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(idx_tup_fetch), 0)::int8 as idx_tup_fetch,
+          coalesce(sum(n_tup_ins), 0)::int8 as n_tup_ins,
+          coalesce(sum(n_tup_upd), 0)::int8 as n_tup_upd,
+          coalesce(sum(n_tup_del), 0)::int8 as n_tup_del,
+          coalesce(sum(n_tup_hot_upd), 0)::int8 as n_tup_hot_upd,
+          coalesce(sum(n_live_tup), 0)::int8 as n_live_tup,
+          coalesce(sum(n_dead_tup), 0)::int8 as n_dead_tup,
+          0::int8 as last_vacuum,
+          0::int8 as last_analyze,
+          coalesce(sum(vacuum_count + autovacuum_count), 0)::int8 as vacuum_count,
+          coalesce(sum(analyze_count + autoanalyze_count), 0)::int8 as analyze_count
+        from ranked
+        where rownum > 100
+        having count(*) > 0
     gauges:
       - seq_scan
       - seq_tup_read
@@ -2881,60 +2966,121 @@ metrics:
     statement_timeout_seconds: 15
   pg_statio_all_tables:
     description: >
-      Retrieves table-level I/O statistics from the PostgreSQL `pg_statio_all_tables` view, providing insights into I/O operations for all tables.
-      It returns block-level read and hit statistics for heap, index, TOAST, and TOAST index operations broken down by schema and table.
-      Joined with pg_class for efficient ordering by table size.
-      This metric helps administrators monitor table-level I/O performance and identify which tables are generating the most I/O activity.
+      Retrieves table-level I/O statistics from `pg_statio_all_tables`, returning
+      block-level read and hit counters for heap, index, TOAST and TOAST-index
+      pages. Adapts the top-N + `'other'` bucket pattern from pgwatch2 postgres.ai
+      edition (gitlab.com/postgres-ai/pgwatch2): ranks tables by heap_blks_read,
+      keeps the top 100, and folds the tail into a single `'other'` row so totals
+      remain accurate while cardinality stays bounded.
+      Reads pg_statio_all_tables (not pg_statio_user_tables) so I/O on pg_catalog,
+      pg_toast and _timescaledb_internal stays visible — those tables enter the
+      top-N by activity, not by schema membership. The zero-counter row skip is
+      kept (those rows literally carry no information and are not identity-based).
       Compatible with all PostgreSQL versions.
     sqls:
       11: |-
-        select /* pgwatch_generated */
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (order by heap_blks_read desc nulls last) as rownum,
+            schemaname,
+            relname,
+            heap_blks_read,
+            heap_blks_hit,
+            idx_blks_read,
+            idx_blks_hit,
+            toast_blks_read,
+            toast_blks_hit,
+            tidx_blks_read,
+            tidx_blks_hit
+          from pg_statio_all_tables
+          where
+            heap_blks_read > 0 or heap_blks_hit > 0
+            or idx_blks_read > 0 or idx_blks_hit > 0
+            or toast_blks_read > 0 or toast_blks_hit > 0
+            or tidx_blks_read > 0 or tidx_blks_hit > 0
+        )
+        select
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
-          s.schemaname as tag_schemaname,
-          s.relname as tag_relname,
-          s.heap_blks_read,
-          s.heap_blks_hit,
-          s.idx_blks_read,
-          s.idx_blks_hit,
-          s.toast_blks_read,
-          s.toast_blks_hit,
-          s.tidx_blks_read,
-          s.tidx_blks_hit
-        from
-          pg_statio_all_tables as s
-          join pg_class as c on
-            s.relname = c.relname
-            and s.schemaname = c.relnamespace::regnamespace::name
-        order by c.relpages desc
-        limit 5000;
+          schemaname as tag_schemaname,
+          relname as tag_relname,
+          heap_blks_read,
+          heap_blks_hit,
+          idx_blks_read,
+          idx_blks_hit,
+          toast_blks_read,
+          toast_blks_hit,
+          tidx_blks_read,
+          tidx_blks_hit
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          'other'::text as tag_schemaname,
+          'other'::text as tag_relname,
+          coalesce(sum(heap_blks_read), 0)::int8 as heap_blks_read,
+          coalesce(sum(heap_blks_hit), 0)::int8 as heap_blks_hit,
+          coalesce(sum(idx_blks_read), 0)::int8 as idx_blks_read,
+          coalesce(sum(idx_blks_hit), 0)::int8 as idx_blks_hit,
+          coalesce(sum(toast_blks_read), 0)::int8 as toast_blks_read,
+          coalesce(sum(toast_blks_hit), 0)::int8 as toast_blks_hit,
+          coalesce(sum(tidx_blks_read), 0)::int8 as tidx_blks_read,
+          coalesce(sum(tidx_blks_hit), 0)::int8 as tidx_blks_hit
+        from ranked
+        where rownum > 100
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
   pg_statio_all_indexes:
     description: >
-      Retrieves index-level I/O statistics from the PostgreSQL `pg_statio_all_indexes` view, providing insights into I/O operations for all indexes.
-      It returns block-level read and hit statistics for index operations broken down by schema, table, and index name.
-      Joined with pg_class for efficient ordering by index size.
-      This metric helps administrators monitor index-level I/O performance and identify which indexes are generating the most I/O activity.
+      Retrieves index-level I/O statistics from `pg_statio_all_indexes`, returning
+      block-level read and hit counters per index. Adapts the top-N + `'other'`
+      bucket pattern from pgwatch2 postgres.ai edition
+      (gitlab.com/postgres-ai/pgwatch2): ranks indexes by idx_blks_read, keeps the
+      top 100, folds the tail into a single `'other'` row, and drops indexes with
+      no I/O activity (zero-counter rows carry no information).
+      Reads pg_statio_all_indexes (not pg_statio_user_indexes) so catalog,
+      pg_toast and _timescaledb_internal indexes stay visible: a hot catalog
+      index will rank into the top-N by activity, not be hidden by schema name.
       Compatible with all PostgreSQL versions.
     sqls:
       11: |-
-        select /* pgwatch_generated */
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (order by idx_blks_read desc nulls last) as rownum,
+            schemaname,
+            relname,
+            indexrelname,
+            idx_blks_read,
+            idx_blks_hit
+          from pg_statio_all_indexes
+          where idx_blks_read > 0 or idx_blks_hit > 0
+        )
+        select
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
-          s.schemaname as tag_schemaname,
-          s.relname as tag_relname,
-          s.indexrelname as tag_indexrelname,
-          s.idx_blks_read,
-          s.idx_blks_hit
-        from
-          pg_statio_all_indexes as s
-          join pg_class as c on
-            s.indexrelname = c.relname
-            and s.schemaname = c.relnamespace::regnamespace::name
-        order by c.relpages desc
-        limit 5000;
+          schemaname as tag_schemaname,
+          relname as tag_relname,
+          indexrelname as tag_indexrelname,
+          idx_blks_read,
+          idx_blks_hit
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          'other'::text as tag_schemaname,
+          'other'::text as tag_relname,
+          'other'::text as tag_indexrelname,
+          coalesce(sum(idx_blks_read), 0)::int8 as idx_blks_read,
+          coalesce(sum(idx_blks_hit), 0)::int8 as idx_blks_hit
+        from ranked
+        where rownum > 100
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
