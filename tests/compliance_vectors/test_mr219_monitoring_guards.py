@@ -81,8 +81,10 @@ def test_pgwatch_metrics_yml_pg_stat_statements_has_top_n_filter():
 
 
 def test_pgwatch_stat_views_use_topn_and_other_bucket():
-    """High-cardinality per-relation metrics must port the pgwatch2 (gen2)
-    pattern: read pg_stat_user_*/pg_statio_user_* (so pg_catalog,
+    """High-cardinality per-relation metrics must port the pattern from
+    pgwatch2 postgres.ai edition (gitlab.com/postgres-ai/pgwatch2, our
+    fork of Cybertec's pgwatch2 used as the previous generation of our
+    monitoring stack): read pg_stat_user_*/pg_statio_user_* (so pg_catalog,
     information_schema and pg_toast are excluded by the Postgres view
     itself, no hand-curated nspname pattern), keep the top 100 by relevance,
     and aggregate the tail into a single `'other'` tag row so dashboard

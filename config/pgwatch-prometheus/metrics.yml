@@ -1552,7 +1552,9 @@ metrics:
       - total_relation_size_bytes
     statement_timeout_seconds: 15
   pg_stat_all_indexes:
-    # Top-N + "other" bucket pattern ported from pgwatch2 (gen2). Reads
+    # Top-N + "other" bucket pattern ported from pgwatch2 postgres.ai edition
+    # (gitlab.com/postgres-ai/pgwatch2 — our fork of Cybertec's pgwatch2,
+    # used as gen2 of our monitoring stack before postgresai). Reads
     # pg_stat_user_indexes so pg_catalog/information_schema/pg_toast are
     # excluded by the Postgres view itself, no hand-curated nspname pattern.
     # The "other" row aggregates the tail so totals stay correct under a
@@ -1599,7 +1601,8 @@ metrics:
       - idx_tup_fetch
     statement_timeout_seconds: 15
   pg_stat_all_tables:
-    # Top-N + "other" bucket pattern ported from pgwatch2 (gen2). Ranks by
+    # Top-N + "other" bucket pattern ported from pgwatch2 postgres.ai edition
+    # (gitlab.com/postgres-ai/pgwatch2). Ranks by
     # pg_total_relation_size — large tables are usually the interesting ones,
     # which avoids starving big-but-static tables out of the top-N (the old
     # n_live_tup+n_dead_tup ordering did exactly that).
@@ -2960,7 +2963,8 @@ metrics:
     description: >
       Retrieves table-level I/O statistics from `pg_statio_user_tables`, returning
       block-level read and hit counters for heap, index, TOAST and TOAST-index pages.
-      Ports the pgwatch2 (gen2) top-N + `'other'` bucket pattern: ranks tables by
+      Ports the top-N + `'other'` bucket pattern from pgwatch2 postgres.ai
+      edition (gitlab.com/postgres-ai/pgwatch2): ranks tables by
       heap_blks_read, keeps the top 100, and folds the tail into a single `'other'`
       row so totals remain accurate while cardinality stays bounded. Drops rows
       with no I/O activity at all (every counter zero).
@@ -3025,7 +3029,8 @@ metrics:
   pg_statio_all_indexes:
     description: >
       Retrieves index-level I/O statistics from `pg_statio_user_indexes`, returning
-      block-level read and hit counters per index. Ports the pgwatch2 (gen2)
+      block-level read and hit counters per index. Ports the pgwatch2
+      postgres.ai edition (gitlab.com/postgres-ai/pgwatch2)
       top-N + `'other'` bucket pattern: ranks indexes by idx_blks_read, keeps the
       top 100, folds the tail into a single `'other'` row, and drops indexes with
       no I/O activity. Filters temp schemas.
