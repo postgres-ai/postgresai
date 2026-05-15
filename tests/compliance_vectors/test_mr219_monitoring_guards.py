@@ -80,6 +80,52 @@ def test_pgwatch_metrics_yml_pg_stat_statements_has_top_n_filter():
             assert "limit 100" in compact_sql
 
 
+def test_pgwatch_stat_views_use_topn_and_other_bucket():
+    """High-cardinality per-relation metrics must port the pgwatch2 (gen2)
+    pattern: read pg_stat_user_*/pg_statio_user_* (so pg_catalog,
+    information_schema and pg_toast are excluded by the Postgres view
+    itself, no hand-curated nspname pattern), keep the top 100 by relevance,
+    and aggregate the tail into a single `'other'` tag row so dashboard
+    totals stay correct under a hard cardinality cap. Hand-rolled nspname
+    LIKE filters or LIMIT-only truncation silently drop the tail and break
+    sums on extension-heavy or schema-heavy databases.
+    """
+    metrics = yaml.safe_load(
+        (PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml").read_text()
+    )
+    expectations = {
+        "pg_stat_all_indexes": "pg_stat_user_indexes",
+        "pg_stat_all_tables": "pg_stat_user_tables",
+        "pg_statio_all_tables": "pg_statio_user_tables",
+        "pg_statio_all_indexes": "pg_statio_user_indexes",
+    }
+    for metric_name, base_view in expectations.items():
+        for sql in metrics["metrics"][metric_name]["sqls"].values():
+            compact_sql = _compact_sql(sql)
+            assert base_view in compact_sql, metric_name
+            # Top-N window + tail aggregation
+            assert "row_number() over" in compact_sql, metric_name
+            assert "rownum <= 100" in compact_sql, metric_name
+            assert "rownum > 100" in compact_sql, metric_name
+            assert "'other'" in compact_sql, metric_name
+            # No unfiltered LIMIT-only truncation left in place
+            assert "limit 5000" not in compact_sql, metric_name
+
+
+def test_pgwatch_statio_skips_zero_activity_rows():
+    """pg_statio_user_* tail is mostly zero-I/O rows on schema-heavy DBs.
+    Filtering them out (pgwatch2 behavior) cuts cardinality before the
+    top-N cap is even reached and keeps the `'other'` bucket meaningful.
+    """
+    metrics = yaml.safe_load(
+        (PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml").read_text()
+    )
+    for sql in metrics["metrics"]["pg_statio_all_tables"]["sqls"].values():
+        assert "heap_blks_read > 0" in _compact_sql(sql)
+    for sql in metrics["metrics"]["pg_statio_all_indexes"]["sqls"].values():
+        assert "idx_blks_read > 0" in _compact_sql(sql)
+
+
 def test_pgwatch_dockerfile_sha_pin_and_patch_present():
     dockerfile = (PROJECT_ROOT / "pgwatch/Dockerfile").read_text()
 
