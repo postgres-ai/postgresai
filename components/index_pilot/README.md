@@ -104,9 +104,9 @@ The framework of reindexing is implemented entirely inside Postgres, using:
 - Manages multiple target databases from single control database
 - Uses REINDEX CONCURRENTLY from control database (avoids deadlocks)
 
-## Recommendations 
-- If server resources allow set non-zero `max_parallel_maintenance_workers` (exact amount depends on server parameters).
-- To set `wal_keep_segments` to at least `5000`, unless the WAL archive is used to support streaming replication.
+## Recommendations
+- If server resources allow, set a non-zero `max_parallel_maintenance_workers` (exact amount depends on server parameters).
+- Set `wal_keep_segments` to at least `5000`, unless the WAL archive is used to support streaming replication.
 
 ## Installation
 
@@ -140,14 +140,14 @@ PGPASSWORD='your_password' \
 ```
 
 Notes:
-- Use `PGPASSWORD` to avoid echoing secrets; the script won’t print passwords.
+- Use `PGPASSWORD` to avoid echoing secrets; the script won't print passwords.
 - `--fdw-host` should be reachable from the database server itself (in Docker/CI it might be `postgres`, `127.0.0.1`, or the container IP).
 - For self-hosted replace host with `127.0.0.1`. For managed services ensure the admin user can `create database` and `create extension`.
 
 ### Before you start (checklist)
 - PostgreSQL ≥ 13 and ability to create database/extensions (control DB).
 - Decide: CONTROL_DB name, TARGET_DB name, TARGET_HOST (reachable from Postgres server, not only from client).
-- If you plan to use pg_cron: ensure it’s in `shared_preload_libraries` (RDS: parameter group + reboot), and `create extension pg_cron` in `cron.database_name`.
+- If you plan to use pg_cron: ensure it's in `shared_preload_libraries` (RDS: parameter group + reboot), and `create extension pg_cron` in `cron.database_name`.
 - The FDW user mapping is looked up for the `current_user` in the control DB session. Create mapping for that user.
 
 ### Placeholders used below

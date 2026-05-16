@@ -113,7 +113,7 @@ That means edits to:
 - `config/pgwatch-*/metrics.yml`
 - `config/scripts/*.sh`
 
-can be picked up locally (see “Applying config changes” below).
+can be picked up locally (see "Applying config changes" below).
 
 #### 1) Choose what Postgres you want to monitor
 
@@ -290,7 +290,7 @@ Then attach:
 ### Troubleshooting
 
 - **Compose says `PGAI_TAG is required`**: set it in `.env` (see above).
-- **Host reporter can’t connect to sink-postgres**: make sure the stack is up and `sink-postgres` is bound to `127.0.0.1:55433` (it is in `docker-compose.override.yml`).
+- **Host reporter can't connect to sink-postgres**: make sure the stack is up and `sink-postgres` is bound to `127.0.0.1:55433` (it is in `docker-compose.override.yml`).
 - **Need to regenerate pgwatch sources after editing `instances.yml`**:
 
 ```bash

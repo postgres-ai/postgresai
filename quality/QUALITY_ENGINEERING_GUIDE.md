@@ -304,7 +304,6 @@ Track these metrics to measure quality system effectiveness:
 - **Separate staging that drifts** — Use monitoring stack's own Docker setup to mirror real environments
 - **100% coverage targets** — Diminishing returns; focus on critical paths and failure modes
 
-
 ---
 
 ## UX/DX Quality Standards
@@ -312,7 +311,7 @@ Track these metrics to measure quality system effectiveness:
 The `postgresai` tool is used by engineers and DBAs who may be troubleshooting a production incident, running their first checkup, or installing the monitoring stack in an unfamiliar environment. Every user-facing surface — CLI output, error messages, report output, install flow, Grafana dashboards — must meet explicit standards. These are as non-negotiable as SQL safety.
 
 Surfaces covered by this section:
-- CLI (`postgresai checkup`, `postgresai init`, `postgresai monitoring`, subcommands)
+- CLI (`postgresai checkup`, `postgresai auth`, `postgresai mon`, subcommands)
 - Report output (JSON schema + human-readable summary)
 - Error messages (CLI, Python reporter, monitoring stack)
 - Monitoring stack install and first-run experience
@@ -400,8 +399,8 @@ PostgresAI Checkup — db-prod (PostgreSQL 16.2)
 Ran 12 checks | 3 warnings | 0 critical
 
 ⚠  K001  Top queries: 4 queries using >80% of total query time
-⚠  U001  Unused indexes: 7 indexes totaling 2.3 GB (13% of total DB size)
-⚠  D004  Bloat: 3 tables with >30% dead tuple ratio
+⚠  H002  Unused indexes: 7 indexes totaling 2.3 GB (13% of total DB size)
+⚠  F004  Bloat: 3 tables with >30% dead tuple ratio
 ✓  9 other checks passed
 ```
 

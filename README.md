@@ -206,49 +206,20 @@ npx postgresai checkup --json postgresql://... | claude -p "find issues and sugg
 ## Tips
 
 - **Short alias:** `npx pgai checkup` works too
-- **Can I use it without registration on console.postgres.ai?** Yes, both express checkup and full-fledged monitoring are open-source and can be used without any connection to console.postgres.ai. In instructions above, just skip `npx postgresai auth` and:
+- **Can I use it without registration on console.postgres.ai?** Yes, both express checkup and full-fledged monitoring are open-source and can be used without any connection to console.postgres.ai. In the instructions above, just skip `npx postgresai auth` and:
     - Express checkup: use `--no-upload`
-    - Full monitoring: omit --api-key`
-- **Managed version:** Express checkup finds problems. The managed version at [console.postgres.ai](https://console.postgres.ai) also explains how to fix them and provides an Issues workflow to track fixes
-## Links
+    - Full monitoring: omit `--api-key`
+- **Managed version:** Express checkup finds problems. The managed version at [console.postgres.ai](https://console.postgres.ai) also explains how to fix them and provides an Issues workflow to track fixes.
 
-| | |
-|---|---|
-| **Demo** | [demo.postgres.ai](https://demo.postgres.ai) (login: `demo` / `demo`) |
-| **Docs** | [postgres.ai/docs](https://postgres.ai/docs) |
-| **Issues** | [GitLab](https://gitlab.com/postgres-ai/postgresai/-/issues) |
-| **Community** | [Postgres.FM](https://postgres.fm) · [Postgres.TV](https://postgres.tv) |
-
----
-
-<div align="center">
-
-**[PostgresAI](https://postgres.ai)** — Self-Driving Postgres
-
-## 🎯 Use cases
-
-**For developers:**
-```bash
-postgresai mon local-install --demo
-```
-Get a complete monitoring setup with demo data in under 2 minutes.
-
-**For production:**
-```bash
-postgresai mon local-install --api-key=your_key
-# Then add your databases
-postgresai mon targets add "postgresql://user:pass@host:port/DB"
-```
-
-## 🔧 Management commands
+## Management commands
 
 ```bash
-# Instance management
-postgresai mon targets add "postgresql://user:pass@host:port/DB"
+# Target databases
+postgresai mon targets add "postgresql://user:pass@host:port/db" my-db
 postgresai mon targets list
-postgresai mon targets test my-DB
+postgresai mon targets test my-db
 
-# Service management
+# Service lifecycle
 postgresai mon status
 postgresai mon logs
 postgresai mon restart
@@ -257,7 +228,7 @@ postgresai mon restart
 postgresai mon health
 ```
 
-## 🔄 Upgrading
+## Upgrading
 
 To upgrade postgres_ai monitoring to a newer version:
 
@@ -322,7 +293,7 @@ postgresai mon health
 
 Check Grafana dashboards at http://localhost:3000 to confirm metrics are being collected.
 
-## ☸️ Kubernetes deployment
+## Kubernetes deployment
 
 Deploy postgres_ai monitoring to Kubernetes using helm:
 
@@ -372,7 +343,7 @@ This automatically:
 - Triggers GitLab CI/CD to package and publish the chart
 - Creates a GitLab release with the packaged chart
 
-## 📋 Checkup reports
+## Checkup reports
 
 postgres_ai monitoring generates automated health check reports based on [postgres-checkup](https://gitlab.com/postgres-ai/postgres-checkup). Each report has a unique check ID and title:
 
@@ -434,28 +405,26 @@ postgres_ai monitoring generates automated health check reports based on [postgr
 |----------|-------|
 | N001 | Wait events grouped by type and query |
 
-## 🌐 Access points
+## Access points
 
-After running local-install:
+After running `local-install`:
 
-- **🚀 MAIN: Grafana Dashboard**: http://localhost:3000 (login: `monitoring`; password is shown at the end of local-install)
+- **Grafana dashboard:** http://localhost:3000 (login: `monitoring`; password is shown at the end of `local-install`)
 
 Technical URLs (for advanced users):
-- **Demo DB**: postgresql://postgres:postgres@localhost:55432/target_database
-- **Monitoring**: http://localhost:58080 (PGWatch)
-- **Metrics**: http://localhost:59090 (Victoria Metrics)
 
-## 📖 Help
+- **Demo DB:** `postgresql://postgres:postgres@localhost:55432/target_database`
+- **Monitoring:** http://localhost:58080 (PGWatch)
+- **Metrics:** http://localhost:59090 (Victoria Metrics)
+
+## Help
 
 ```bash
 postgresai --help
 postgresai mon --help
 ```
 
-## 🔑 PostgresAI access token
-Get your access token at [PostgresAI](https://postgres.ai) for automated report uploads and advanced analysis.
-
-## 🛣️ Roadmap
+## Roadmap
 
 - Host stats for on-premise and managed Postgres setups
 - `pg_wait_sampling` and `pg_stat_kcache` extension support
@@ -463,7 +432,7 @@ Get your access token at [PostgresAI](https://postgres.ai) for automated report 
 - Query plan analysis and automated recommendations
 - Enhanced AI integration capabilities
 
-## 🧪 Testing
+## Testing
 
 Python-based report generation lives under `reporter/` and now ships with a pytest suite.
 
@@ -511,27 +480,36 @@ pytest tests/reporter -m unit --cov=reporter --cov-report=html
 
 View the coverage report by opening `htmlcov/index.html` in your browser.
 
-## 🤝 Contributing
+## Contributing
 
-We welcome contributions from Postgres experts! Please check our [GitLab repository](https://gitlab.com/postgres-ai/postgresai) for:
+We welcome contributions from Postgres experts. See [CONTRIBUTING.md](CONTRIBUTING.md) for local development setup, and the [GitLab repository](https://gitlab.com/postgres-ai/postgresai) for:
+
 - Code standards and review process
 - Dashboard design principles
 - Testing requirements for monitoring components
 
-## 📄 License
+## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
 
-## 🏢 About PostgresAI
+## About PostgresAI
 
-postgres_ai monitoring is developed by [PostgresAI](https://postgres.ai), bringing years of Postgres expertise into automated monitoring and analysis tools. We provide enterprise consulting and advanced Postgres solutions for fast-growing companies.
+`postgresai` is developed by [PostgresAI](https://postgres.ai), bringing years of Postgres expertise into automated monitoring and analysis tools. We provide enterprise consulting and advanced Postgres solutions for fast-growing companies.
 
-## 📞 Support & community
+## Links
 
-- 💬 [Get support](https://postgres.ai/contact)
-- 📺 [Postgres.TV (YouTube)](https://postgres.tv)
-- 🎙️ [Postgres FM Podcast](https://postgres.fm)
-- 🐛 [Report issues](https://gitlab.com/postgres-ai/postgresai/-/issues)
-- 📧 [Enterprise support](https://postgres.ai/consulting)
+| | |
+|---|---|
+| **Demo** | [demo.postgres.ai](https://demo.postgres.ai) (login: `demo` / `demo`) |
+| **Docs** | [postgres.ai/docs](https://postgres.ai/docs) |
+| **Issues** | [GitLab](https://gitlab.com/postgres-ai/postgresai/-/issues) |
+| **Community** | [Postgres.FM](https://postgres.fm) · [Postgres.TV](https://postgres.tv) |
+| **Support** | [Get support](https://postgres.ai/contact) · [Enterprise support](https://postgres.ai/consulting) |
+
+---
+
+<div align="center">
+
+**[PostgresAI](https://postgres.ai)** — Self-Driving Postgres
 
 </div>

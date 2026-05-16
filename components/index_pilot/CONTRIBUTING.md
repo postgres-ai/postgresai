@@ -140,6 +140,3 @@ Please include:
 - Output of `select * from index_pilot.check_fdw_security_status();` and `select * from index_pilot.check_permissions();`
 - Recent failures if relevant
 - Minimal reproduction steps and expected vs actual behavior
-
-
-
