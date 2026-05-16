@@ -135,6 +135,3 @@ The chart includes GitLab CI/CD pipelines for:
 ## License
 
 See [LICENSE](../LICENSE) file for details.
-
-
-

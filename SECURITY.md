@@ -13,14 +13,14 @@ If you discover a security vulnerability in this project, please report it to **
 
 ### When should I NOT report a vulnerability?
 
-- Your issue is not security related.
+- Your issue is not security-related.
 
-## Security Vulnerability Response
+## Security vulnerability response
 
 Each report is acknowledged and analyzed by the project maintainers and the security team within 3 working days.
 
-The reporter will be kept updated at every stage of the issue's analysis and resolution (triage → fix → release).
+The reporter is kept updated at every stage of the issue's analysis and resolution (triage → fix → release).
 
-## Public Disclosure Timing
+## Public disclosure timing
 
 A public disclosure date is negotiated by the maintainers (security@postgres.ai) and the bug submitter. We prefer to fully disclose the bug as soon as possible once user mitigation is available. It is reasonable to delay disclosure when the bug or the fix is not yet fully understood, the solution is not well-tested, or for vendor coordination. The timeframe for disclosure is from immediate (especially if it's already publicly known) to a few weeks. We expect the timeframe between a report and public disclosure to typically be in the order of 7 days.

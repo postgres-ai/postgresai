@@ -17,5 +17,3 @@ This is equivalent to:
 npx postgresai --help
 npx postgresai prepare-db postgresql://admin@host:5432/dbname
 ```
-
-
