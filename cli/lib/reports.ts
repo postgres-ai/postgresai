@@ -1,4 +1,4 @@
-import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
+import { buildApiHeaders, debugLogRequest, debugLogResponse, formatHttpError, normalizeBaseUrl } from "./util";
 
 // ============================================================================
 // Types
@@ -134,25 +134,13 @@ export async function fetchReports(params: FetchReportsParams): Promise<CheckupR
     url.searchParams.set("id", `lt.${beforeId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), { method: "GET", headers });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -211,25 +199,13 @@ export async function fetchReportFiles(params: FetchReportFilesParams): Promise<
     url.searchParams.set("check_id", `eq.${checkId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), { method: "GET", headers });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -266,25 +242,13 @@ export async function fetchReportFileData(params: FetchReportFileDataParams): Pr
     url.searchParams.set("check_id", `eq.${checkId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), { method: "GET", headers });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
