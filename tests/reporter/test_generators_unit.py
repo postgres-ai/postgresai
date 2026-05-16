@@ -1706,11 +1706,6 @@ def test_main_exits_when_connection_fails(monkeypatch: pytest.MonkeyPatch) -> No
         postgres_reports_module.main()
 
 
-# ============================================================================
-# Negative test cases - Error handling
-# ============================================================================
-
-
 @pytest.mark.unit
 def test_query_instant_handles_http_404_error(monkeypatch: pytest.MonkeyPatch, generator: PostgresReportGenerator) -> None:
     """Test that query_instant returns empty dict on HTTP 404 error."""

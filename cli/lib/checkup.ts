@@ -955,10 +955,6 @@ function resolveBuildTs(): string | null {
   }
 }
 
-// ============================================================================
-// Unified Report Generator Helpers
-// ============================================================================
-
 /**
  * Generate a simple version report (A002, A013).
  * These reports only contain PostgreSQL version information.
@@ -1033,10 +1029,6 @@ async function generateIndexReport<T extends { index_size_bytes: number }>(
   report.results[nodeName] = { data: { [dbName]: dbEntry }, postgres_version: postgresVersion };
   return report;
 }
-
-// ============================================================================
-// Report Generators (using unified helpers)
-// ============================================================================
 
 /** Generate A002 report - Postgres major version */
 export const generateA002 = (client: Client, nodeName = "node-01") =>

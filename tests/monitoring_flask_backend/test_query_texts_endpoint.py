@@ -40,10 +40,6 @@ class TestQueryTextsEndpoint:
 
         return _create_mock
 
-    # =========================================================================
-    # Response Format Tests
-    # =========================================================================
-
     def test_returns_200_ok(self, client, mock_db_connection):
         """Test that /query_texts endpoint returns 200 status."""
         mock_conn, _ = mock_db_connection([])
@@ -148,10 +144,6 @@ class TestQueryTextsEndpoint:
             assert '111' in queryids
             assert '222' in queryids
             assert '333' in queryids
-
-    # =========================================================================
-    # Truncate Parameter Tests
-    # =========================================================================
 
     def test_default_truncate_is_40(self, client, mock_db_connection):
         """
@@ -300,10 +292,6 @@ class TestQueryTextsEndpoint:
             # but should still return 200
             assert response.status_code == 200
 
-    # =========================================================================
-    # db_name Filter Logic Tests
-    # =========================================================================
-
     def test_no_db_name_filter_queries_all(self, client, mock_db_connection):
         """Test that no db_name parameter queries all databases."""
         rows = [
@@ -435,10 +423,6 @@ class TestQueryTextsEndpoint:
             call_args = mock_cursor.execute.call_args
             query = call_args[0][0]
             assert 'dbname = %s' not in query
-
-    # =========================================================================
-    # Smart Truncation Behavior Tests
-    # =========================================================================
 
     def test_select_query_smart_truncation(self, client, mock_db_connection):
         """Test that SELECT queries are truncated smartly to show FROM clause."""
@@ -621,10 +605,6 @@ class TestQueryTextsEndpoint:
             # Comment should not be in the result
             assert 'long comment' not in item['query_text']
 
-    # =========================================================================
-    # Error Handling Tests
-    # =========================================================================
-
     def test_db_connection_failure_returns_empty_array(self, client):
         """Test that database connection failure returns empty array gracefully."""
         with patch('psycopg2.connect', side_effect=Exception('Connection refused')):
@@ -670,10 +650,6 @@ class TestQueryTextsEndpoint:
             data = response.get_json()
             assert data == []
 
-    # =========================================================================
-    # HTTP Method Tests
-    # =========================================================================
-
     def test_post_not_allowed(self, client):
         """Test that POST to /query_texts returns 405."""
         response = client.post('/query_texts')
@@ -688,10 +664,6 @@ class TestQueryTextsEndpoint:
         """Test that DELETE to /query_texts returns 405."""
         response = client.delete('/query_texts')
         assert response.status_code == 405
-
-    # =========================================================================
-    # Edge Cases
-    # =========================================================================
 
     def test_null_queryid_is_skipped(self, client, mock_db_connection):
         """Test that rows with null queryid are skipped."""

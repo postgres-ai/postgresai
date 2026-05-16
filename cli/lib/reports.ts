@@ -1,9 +1,5 @@
 import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface CheckupReport {
   id: number;
   org_id: number;
@@ -31,10 +27,6 @@ export interface CheckupReportFile {
 export interface CheckupReportFileData extends CheckupReportFile {
   data: string;
 }
-
-// ============================================================================
-// Date parsing
-// ============================================================================
 
 /**
  * Parse a date string in various formats into an ISO 8601 string.
@@ -73,10 +65,6 @@ export function parseFlexibleDate(input: string): string {
   throw new Error(`Unrecognized date format: ${input}. Use YYYY-MM-DD or DD.MM.YYYY`);
 }
 
-// ============================================================================
-// Params
-// ============================================================================
-
 export interface FetchReportsParams {
   apiKey: string;
   apiBaseUrl: string;
@@ -106,10 +94,6 @@ export interface FetchReportFileDataParams {
   checkId?: string;
   debug?: boolean;
 }
-
-// ============================================================================
-// API functions
-// ============================================================================
 
 export async function fetchReports(params: FetchReportsParams): Promise<CheckupReport[]> {
   const { apiKey, apiBaseUrl, projectId, status, limit = 20, beforeDate, beforeId, debug } = params;
@@ -299,10 +283,7 @@ export async function fetchReportFileData(params: FetchReportFileDataParams): Pr
   }
 }
 
-// ============================================================================
-// Lightweight markdown terminal renderer
-// ============================================================================
-
+/** Lightweight markdown terminal renderer. */
 export function renderMarkdownForTerminal(md: string): string {
   if (!md) return "";
 
