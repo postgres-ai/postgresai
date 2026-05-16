@@ -15,10 +15,6 @@ from unittest.mock import MagicMock, patch, call
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'monitoring_flask_backend'))
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
 def _make_prom_mock(query_results=None):
     """Return a mock PrometheusConnect with empty results by default."""
     mock_prom = MagicMock()
@@ -41,10 +37,6 @@ def _captured_queries(mock_prom):
     return queries
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(autouse=True)
 def isolate_app_module():
     """Force a fresh import of app for each test to avoid cross-test state."""
@@ -62,10 +54,6 @@ def client():
     with app_module.app.test_client() as c:
         yield c
 
-
-# ===========================================================================
-# get_pgss_metrics_csv  (/pgss_metrics/csv)
-# ===========================================================================
 
 class TestPgssMetricsCsvPromqlEscape:
     """Verify that /pgss_metrics/csv correctly escapes PromQL parameters."""
@@ -163,10 +151,6 @@ class TestPgssMetricsCsvPromqlEscape:
                     f"Raw newline found in PromQL query: {q!r}")
 
 
-# ===========================================================================
-# get_btree_bloat_csv  (/btree_bloat/csv)
-# ===========================================================================
-
 class TestBtreeBloatCsvPromqlEscape:
     """Verify that /btree_bloat/csv correctly escapes PromQL parameters."""
 
@@ -253,10 +237,6 @@ class TestBtreeBloatCsvPromqlEscape:
                 assert 'node_name="my"node"' not in q, (
                     f"Unescaped quote breaks label matcher: {q!r}")
 
-
-# ===========================================================================
-# get_table_info_csv  (/table_info/csv)
-# ===========================================================================
 
 class TestTableInfoCsvPromqlEscape:
     """Verify that /table_info/csv correctly escapes PromQL parameters."""

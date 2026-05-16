@@ -2,7 +2,6 @@
 # shellcheck shell=bash
 #
 # Release Readiness Check
-# TODO: add bats tests for this script
 #
 # Verifies that the codebase is ready for release by checking:
 #   1. Git status (clean working tree, release-eligible branch)

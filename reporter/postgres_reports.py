@@ -346,24 +346,20 @@ class PostgresReportGenerator:
                     """
                     cursor.execute(query)
                 
-                # Use iterator to fetch rows in batches instead of loading all at once
                 for row in cursor:
                     db_name = row['dbname']
                     queryid = row['queryid']
                     query_text = row['query']
-                    
-                    # Skip if queryid is missing
+
                     if not queryid:
                         continue
-                    
-                    # Truncate query text if it exceeds the limit
+
                     if query_text and len(query_text) > query_text_limit:
                         query_text = query_text[:query_text_limit] + '...'
-                    
-                    # Initialize database dict if needed
+
                     if db_name not in queries_by_db:
                         queries_by_db[db_name] = {}
-                    
+
                     queries_by_db[db_name][queryid] = query_text or ''
         
         except Exception as e:
@@ -639,22 +635,9 @@ class PostgresReportGenerator:
 
         return self.format_report_data("A007", altered_settings, node_name, postgres_version=self._get_postgres_version_info(cluster, node_name))
 
-    # ==================================================================================
-    # H001: Invalid Indexes - Observation Data for Decision Tree
-    # ==================================================================================
-    #
-    # This report collects observation data that enables decision tree analysis:
-    #   - has_valid_duplicate / valid_duplicate_name: Is there a valid index on same column(s)?
-    #   - is_pk / is_unique / constraint_name: Does it back a constraint (UNIQUE / PK)?
-    #   - table_row_estimate: Is the table small (< 10K rows)?
-    #
-    # The JSON report contains ONLY observations (raw data).
-    # Recommendations (DROP, RECREATE, UNCERTAIN) are computed at render time:
-    #   - CLI: cli/lib/checkup.ts -> getInvalidIndexRecommendation()
-    #   - UI: Grafana dashboard or web template applies the same logic
-    #
-    # ==================================================================================
-
+    # H001 collects observation data only; recommendations (DROP, RECREATE, UNCERTAIN)
+    # are computed at render time by CLI (cli/lib/checkup.ts -> getInvalidIndexRecommendation())
+    # and UI (Grafana / web template) using the same decision tree.
     def generate_h001_invalid_indexes_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
         """

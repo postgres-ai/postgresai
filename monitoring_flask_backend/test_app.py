@@ -1877,12 +1877,8 @@ class TestQueryInfoMetricsTimeout:
         assert 'pgwatch_query_info{' not in data
 
 
-# ---------------------------------------------------------------------------
-# Additional coverage for /execute-query (issues 4, 6, 7, 8)
-# ---------------------------------------------------------------------------
-
 class TestExecuteQuerySuccessPath:
-    """Issue 4 — success-path test: valid SELECT returning real results."""
+    """Success-path test: valid SELECT returning real results."""
 
     def test_returns_columns_and_rows(self, client, debug_mode):
         """A valid SELECT query returns 200 with populated columns and rows."""
@@ -1905,7 +1901,7 @@ class TestExecuteQuerySuccessPath:
 
 
 class TestExecuteQueryAuthSchemes:
-    """Issue 6 — non-Bearer auth schemes (Basic, Token) must be rejected."""
+    """Non-Bearer auth schemes (Basic, Token) must be rejected."""
 
     def test_basic_auth_rejected(self, client, debug_mode):
         """Authorization: Basic <token> is not accepted (only Bearer is valid)."""
@@ -1941,7 +1937,7 @@ class TestExecuteQueryAuthSchemes:
 
 
 class TestExecuteQueryMultipleBlockComments:
-    """Issue 7 — multiple sequential leading block comments before SELECT."""
+    """Multiple sequential leading block comments before SELECT."""
 
     def test_two_sequential_block_comments_accepted(self, client, debug_mode):
         """/* a */ /* b */ SELECT 1 passes the allowlist (both comments stripped)."""
@@ -1979,7 +1975,7 @@ class TestExecuteQueryMultipleBlockComments:
 
 
 class TestExecuteQueryStatementTimeout:
-    """Issue 8 — statement timeout during query execution returns 500."""
+    """Statement timeout during query execution returns 500."""
 
     def test_statement_timeout_returns_500(self, client, debug_mode):
         """OperationalError from statement_timeout inside execute-query returns 500."""
@@ -2001,7 +1997,7 @@ class TestExecuteQueryStatementTimeout:
             assert 'error' in data
 
     def test_line_comment_containing_blocked_keyword_not_blocked(self, client, debug_mode):
-        """Issue 2 regression: '-- pg_read_file' in a line comment must not trigger blocklist."""
+        """Regression: '-- pg_read_file' in a line comment must not trigger blocklist."""
         with patch('app.psycopg2.connect') as mock_connect:
             mock_cursor = MagicMock()
             mock_cursor.fetchall.return_value = [(1,)]

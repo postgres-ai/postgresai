@@ -10,9 +10,6 @@ import {
 
 const originalFetch = globalThis.fetch;
 
-// ---------------------------------------------------------------------------
-// fetchReports
-// ---------------------------------------------------------------------------
 describe("fetchReports", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -274,9 +271,6 @@ describe("fetchReports", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// fetchAllReports
-// ---------------------------------------------------------------------------
 describe("fetchAllReports", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -416,9 +410,6 @@ describe("fetchAllReports", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// fetchReportFiles
-// ---------------------------------------------------------------------------
 describe("fetchReportFiles", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -623,9 +614,6 @@ describe("fetchReportFiles", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// fetchReportFileData
-// ---------------------------------------------------------------------------
 describe("fetchReportFileData", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -841,9 +829,6 @@ describe("fetchReportFileData", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// renderMarkdownForTerminal
-// ---------------------------------------------------------------------------
 describe("renderMarkdownForTerminal", () => {
   test("returns empty string for empty input", () => {
     expect(renderMarkdownForTerminal("")).toBe("");
@@ -923,9 +908,6 @@ describe("renderMarkdownForTerminal", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// parseFlexibleDate
-// ---------------------------------------------------------------------------
 describe("parseFlexibleDate", () => {
   test("parses YYYY-MM-DD", () => {
     expect(parseFlexibleDate("2025-01-15")).toBe("2025-01-15T00:00:00.000Z");

@@ -167,9 +167,6 @@ async function startFakeApi() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Help output
-// ---------------------------------------------------------------------------
 describe("CLI reports command group", () => {
   test("reports help exposes list, files, data subcommands", () => {
     const r = runCli(["reports", "--help"], isolatedEnv());
@@ -180,9 +177,6 @@ describe("CLI reports command group", () => {
     expect(out).toContain("data");
   });
 
-  // -----------------------------------------------------------------------
-  // Input validation
-  // -----------------------------------------------------------------------
   test("reports list fails fast when API key is missing", () => {
     const r = runCli(["reports", "list"], isolatedEnv());
     expect(r.status).toBe(1);
@@ -237,9 +231,6 @@ describe("CLI reports command group", () => {
     expect(`${r.stdout}\n${r.stderr}`).toContain("Either reportId or --check-id is required");
   });
 
-  // -----------------------------------------------------------------------
-  // Successful API calls
-  // -----------------------------------------------------------------------
   test("reports list succeeds against a fake API", async () => {
     const api = await startFakeApi();
     try {
