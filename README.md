@@ -208,8 +208,9 @@ npx postgresai checkup --json postgresql://... | claude -p "find issues and sugg
 - **Short alias:** `npx pgai checkup` works too
 - **Can I use it without registration on console.postgres.ai?** Yes, both express checkup and full-fledged monitoring are open-source and can be used without any connection to console.postgres.ai. In instructions above, just skip `npx postgresai auth` and:
     - Express checkup: use `--no-upload`
-    - Full monitoring: omit --api-key`
+    - Full monitoring: omit `--api-key`
 - **Managed version:** Express checkup finds problems. The managed version at [console.postgres.ai](https://console.postgres.ai) also explains how to fix them and provides an Issues workflow to track fixes
+
 ## Links
 
 | | |

@@ -138,7 +138,7 @@ select index_pilot.version();
 ### Bloat and history
 ```sql
 -- Bloat estimates for a target DB
-select 
+select
   indexrelname,
   pg_size_pretty(indexsize::bigint) as current_size,
   round(estimated_bloat::numeric, 2) as bloat_x
@@ -159,7 +159,7 @@ select * from index_pilot.history where status = 'failed' order by ts desc;
 select * from index_pilot.current_processed_index order by mtime desc;
 
 -- Raw reindex history (with durations)
-select 
+select
   datname, schemaname, relname, indexrelname,
   pg_size_pretty(indexsize_before) as before,
   pg_size_pretty(indexsize_after)  as after,

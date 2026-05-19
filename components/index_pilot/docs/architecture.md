@@ -37,15 +37,15 @@ graph TB
         HIST[reindex_history]
         STATE[index_latest_state]
     end
-    
+
     subgraph "Target Database 1"
         DB1[Tables & Indexes]
     end
-    
+
     subgraph "Target Database 2"
         DB2[Tables & Indexes]
     end
-    
+
     PGC -->|triggers| IPF
     IPF -->|secure connection| FDW
     FDW -->|dblink| DB1
