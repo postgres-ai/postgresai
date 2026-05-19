@@ -51,7 +51,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as pkg from "../package.json";
 import { getMetricSql, transformMetricRow, METRIC_NAMES } from "./metrics-loader";
-import { getCheckupTitle, buildCheckInfoMap } from "./checkup-dictionary";
+import { buildCheckInfoMap } from "./checkup-dictionary";
 
 // Time constants
 const SECONDS_PER_DAY = 86400;

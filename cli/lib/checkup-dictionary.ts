@@ -58,17 +58,6 @@ export function getCheckupEntry(code: string): CheckupDictionaryEntry | null {
 }
 
 /**
- * Get the title for a checkup code.
- *
- * @param code - The check code (e.g., "A001", "H002")
- * @returns The title or the code itself if not found
- */
-export function getCheckupTitle(code: string): string {
-  const entry = getCheckupEntry(code);
-  return entry?.title ?? code;
-}
-
-/**
  * Check if a code exists in the dictionary.
  *
  * @param code - The check code to validate
