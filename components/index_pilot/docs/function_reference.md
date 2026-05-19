@@ -15,10 +15,10 @@
 Manually triggers reindexing for specific objects.
 ```sql
 procedure index_pilot.do_reindex(
-    _datname name, 
-    _schemaname name, 
-    _relname name, 
-    _indexrelname name, 
+    _datname name,
+    _schemaname name,
+    _relname name,
+    _indexrelname name,
     _force boolean default false  -- Force reindex regardless of bloat
 )
 ```
@@ -37,13 +37,13 @@ procedure index_pilot.periodic(
 #### `index_pilot.get_index_bloat_estimates()`
 Returns current bloat estimates for all indexes in a database.
 ```sql
-function index_pilot.get_index_bloat_estimates(_datname name) 
+function index_pilot.get_index_bloat_estimates(_datname name)
 returns table(
-    datname name, 
-    schemaname name, 
-    relname name, 
-    indexrelname name, 
-    indexsize bigint, 
+    datname name,
+    schemaname name,
+    relname name,
+    indexrelname name,
+    indexsize bigint,
     estimated_bloat real
 )
 ```
@@ -57,9 +57,9 @@ Notes:
 #### `index_pilot.check_permissions()`
 Verifies permissions for non-superuser mode operation.
 ```sql
-function index_pilot.check_permissions() 
+function index_pilot.check_permissions()
 returns table(
-    permission text, 
+    permission text,
     status boolean
 )
 ```

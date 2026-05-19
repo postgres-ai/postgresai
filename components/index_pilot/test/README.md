@@ -16,7 +16,7 @@ This directory contains the automated test suite for pg_index_pilot. The tests a
   - Handles PostgreSQL connection
   - Runs tests in sequence
   - Generates JUnit XML output for CI
-  - Supports multiple PostgreSQL versions (12+)
+  - Supports multiple PostgreSQL versions (13+)
 
 ## Running Tests Locally
 
@@ -144,7 +144,7 @@ Current test coverage includes:
 3. **Test failures**
    - Check `test-results.xml` for detailed error messages
    - Review `/tmp/test_output.log` for full output
-   - Ensure PostgreSQL version is 12+
+   - Ensure PostgreSQL version is 13+
 
 ### Debug Mode
 ```bash

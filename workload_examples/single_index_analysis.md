@@ -114,12 +114,9 @@ select cron.schedule_in_database(
     'call index_pilot.periodic(real_run := true);',
     'index_pilot_control'  -- run in control database
 );
-SQL
 ```
 
 Behavior: when `index_pilot.periodic(true)` runs, it evaluates index bloat in the registered target database(s). If bloat for an index exceeds the configured `index_rebuild_scale_factor` at the time of a run, an index rebuild is initiated.
-
-#
 
 ### run the workload with pgbench
 
@@ -162,7 +159,7 @@ tmux new -d -s pgbench_updates 'env PGPASSWORD=<password> pgbench -n -h 127.0.0.
 tmux new -d -s pgbench_selects 'env PGPASSWORD=<password> pgbench -n -h 127.0.0.1 -U postgres -d workloaddb -c 2 -j 2 -P 10 -T 1000000000 -f /root/workload/longselect.sql'
 ```
 
-Let these processes run continuously. The updates will steadily create index bloat; every 20 minutes, `index_pilot.periodic(true)` evaluates bloat and, if thresholds are exceeded, initiates index rebuilds.
+Let these processes run continuously. The updates will steadily create index bloat; on the configured schedule (daily in the example above), `index_pilot.periodic(true)` evaluates bloat and, if thresholds are exceeded, initiates index rebuilds.
 
 ### monitor results
 

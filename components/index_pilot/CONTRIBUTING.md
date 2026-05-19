@@ -141,5 +141,3 @@ Please include:
 - Recent failures if relevant
 - Minimal reproduction steps and expected vs actual behavior
 
-
-

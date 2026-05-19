@@ -11,8 +11,8 @@ PGPASSWORD='your_password' ./index_pilot.sh verify -H <host> -U <user> -C <contr
 
 - **What are the common flags and defaults?**
   - `-H/--host`: PostgreSQL host
-  - `-P/--port`: Port 
-  - `-U/--user`: User 
+  - `-P/--port`: Port
+  - `-U/--user`: User
   - `-W/--password`: Password (prefer `PGPASSWORD` env)
   - `-C/--control-db`: Control DB
   - `--fdw-host`: Host used inside FDW (default same as `--host`)
@@ -45,7 +45,7 @@ PGPASSWORD='your_password' ./index_pilot.sh uninstall -H <host> -U <user> -C <co
 
 - **How do I see current bloat for a DB?** - Query estimates and sort by bloat.
 ```sql
-select 
+select
   indexrelname,
   pg_size_pretty(indexsize) as current_size,
   round(estimated_bloat::numeric, 2) as bloat_x

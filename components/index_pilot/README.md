@@ -87,11 +87,10 @@ The roadmap covers three big areas:
 
 The framework of reindexing is implemented entirely inside Postgres, using:
 - PL/pgSQL functions and stored procedures with transaction control
-- [dblink](https://www.postgresql.org/docs/current/contrib-dblink-function.html) to execute `REINDEX CONCURRENTLY` – because it cannot be inside a transaction block)
+- [dblink](https://www.postgresql.org/docs/current/contrib-dblink-function.html) to execute `REINDEX CONCURRENTLY` – because it cannot be inside a transaction block
 - [pg_cron](https://github.com/citusdata/pg_cron) for scheduling
 
 ---
-
 
 ## Requirements
 
@@ -104,7 +103,7 @@ The framework of reindexing is implemented entirely inside Postgres, using:
 - Manages multiple target databases from single control database
 - Uses REINDEX CONCURRENTLY from control database (avoids deadlocks)
 
-## Recommendations 
+## Recommendations
 - If server resources allow set non-zero `max_parallel_maintenance_workers` (exact amount depends on server parameters).
 - To set `wal_keep_segments` to at least `5000`, unless the WAL archive is used to support streaming replication.
 
@@ -336,8 +335,8 @@ select cron.schedule_in_database(
 **Step 3: Verify and manage schedules**
 ```sql
 -- View scheduled jobs
-select jobname, schedule, command, database, active 
-from cron.job 
+select jobname, schedule, command, database, active
+from cron.job
 where jobname like 'pg_index_pilot%';
 
 -- Disable a schedule
@@ -346,7 +345,7 @@ select cron.unschedule('pg_index_pilot_daily');
 -- Change schedule time
 select cron.unschedule('pg_index_pilot_daily');
 select cron.schedule_in_database(
-    'pg_index_pilot_daily', 
+    'pg_index_pilot_daily',
     '0 3 * * *',  -- New time: 3 AM
     'call index_pilot.periodic(real_run := true);',
     'index_pilot_control'
@@ -383,7 +382,7 @@ psql -h your-instance.region.rds.amazonaws.com -U postgres -d your_database -f u
 
 # Check for any leftover invalid indexes from failed reindexes
 psql -h your-instance.region.rds.amazonaws.com -U postgres -d your_database \
-  -c "select format('drop index concurrently if exists %I.%I;', n.nspname, i.relname) 
+  -c "select format('drop index concurrently if exists %I.%I;', n.nspname, i.relname)
       from pg_index idx
       join pg_class i on i.oid = idx.indexrelid
       join pg_namespace n on n.oid = i.relnamespace
@@ -416,7 +415,7 @@ psql -1 -d your_database -f index_pilot_fdw.sql
 ### View Reindexing History
 ```sql
 -- Show recent reindexing operations with status
-select 
+select
     schemaname, relname, indexrelname,
     pg_size_pretty(indexsize_before::bigint) as size_before,
     pg_size_pretty(indexsize_after::bigint) as size_after,
@@ -424,18 +423,18 @@ select
     status,
     case when error_message is not null then left(error_message, 50) else null end as error,
     entry_timestamp
-from index_pilot.reindex_history 
-order by entry_timestamp desc 
+from index_pilot.reindex_history
+order by entry_timestamp desc
 limit 20;
 
 -- Show only failed reindexes for debugging
-select 
+select
     schemaname, relname, indexrelname,
     pg_size_pretty(indexsize_before::bigint) as size_before,
     reindex_duration,
     error_message,
     entry_timestamp
-from index_pilot.reindex_history 
+from index_pilot.reindex_history
 where status = 'failed'
 order by entry_timestamp desc;
 ```
@@ -452,12 +451,12 @@ select * from index_pilot.history where status = 'failed';
 ### Check Current Bloat Status
 ```sql
 -- Check bloat estimates for current database
-select 
+select
     indexrelname,
     pg_size_pretty(indexsize::bigint) as current_size,
     round(estimated_bloat::numeric, 1)||'x' as bloat_now
-from index_pilot.get_index_bloat_estimates(current_database()) 
-order by estimated_bloat desc nulls last 
+from index_pilot.get_index_bloat_estimates(current_database())
+order by estimated_bloat desc nulls last
 limit 40;
 ```
 
