@@ -259,7 +259,7 @@ class PostgresReportGenerator:
                 # 1. This method is called VERY rarely (only during report generation)
                 # 2. The table size is expected to remain small (< 10000 rows per database)
                 # 3. Current latency is well under 1 second for typical workloads
-                # 
+                #
                 # If the table grows significantly larger (>> 10000 rows) or latency exceeds 1s,
                 # consider adding a GIN index on the data JSONB column or materialized view.
                 if db_name:
@@ -1107,7 +1107,7 @@ class PostgresReportGenerator:
         # Check if pg_stat_kcache extension is available and working by querying its metrics
         kcache_status = self._check_pg_stat_kcache_status(cluster, node_name)
 
-        # Check if pg_stat_statements is available and working by querying its metrics  
+        # Check if pg_stat_statements is available and working by querying its metrics
         pgss_status = self._check_pg_stat_statements_status(cluster, node_name)
 
         return self.format_report_data(
@@ -1635,7 +1635,7 @@ class PostgresReportGenerator:
                 "effective_cache_size_pretty": self.format_bytes(effective_cache_size)
             }
 
-            # Generate recommendations                            
+            # Generate recommendations
         except (ValueError, TypeError):
             # If parsing fails, return empty analysis
             analysis["estimated_total_memory_usage"] = {}
@@ -3285,7 +3285,7 @@ class PostgresReportGenerator:
                 if start_result:
                     start_data.extend(start_result)
 
-                # Query metrics around end time  
+                # Query metrics around end time
                 end_result = self.query_range(metric_with_filters, end_time - timedelta(minutes=1),
                                               end_time + timedelta(minutes=1))
                 if end_result:
@@ -4976,7 +4976,7 @@ class PostgresReportGenerator:
                     start_data.extend(start_result)
                     metrics_found += 1
 
-                # Query metrics around end time  
+                # Query metrics around end time
                 end_result = self.query_range(metric_with_filters, end_time - timedelta(minutes=1),
                                               end_time + timedelta(minutes=1))
                 if end_result:

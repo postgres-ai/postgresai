@@ -87,7 +87,7 @@ export type AdminConnection = {
 /**
  * Check if an error indicates SSL negotiation failed and fallback to non-SSL should be attempted.
  * This mimics libpq's sslmode=prefer behavior.
- * 
+ *
  * IMPORTANT: This should NOT match certificate errors (expired, invalid, self-signed)
  * as those are real errors the user needs to fix, not negotiation failures.
  */
