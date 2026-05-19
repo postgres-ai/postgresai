@@ -2,41 +2,41 @@
  * Express Checkup Module
  * ======================
  * Generates JSON health check reports directly from PostgreSQL without Prometheus.
- * 
+ *
  * ARCHITECTURAL DECISIONS
  * -----------------------
- * 
+ *
  * 1. SINGLE SOURCE OF TRUTH FOR SQL QUERIES
- *    Complex metrics (index health, settings, db_stats) are loaded from 
+ *    Complex metrics (index health, settings, db_stats) are loaded from
  *    config/pgwatch-prometheus/metrics.yml via getMetricSql() from metrics-loader.ts.
- *    
+ *
  *    Simple queries (version, database list, connection states, uptime) use
  *    inline SQL as they're trivial and CLI-specific.
- * 
+ *
  * 2. JSON SCHEMA COMPLIANCE
  *    All generated reports MUST comply with JSON schemas in reporter/schemas/.
  *    These schemas define the expected format for both:
  *    - Full-fledged monitoring reporter output
  *    - Express checkup output
- * 
+ *
  *    Before adding or modifying a report, verify the corresponding schema exists
  *    and ensure the output matches. Run schema validation tests to confirm.
- * 
+ *
  * 3. ERROR HANDLING STRATEGY
  *    Functions follow two patterns based on criticality:
- * 
+ *
  *    PROPAGATING (throws on error):
  *    - Core data functions: getPostgresVersion, getSettings, getAlteredSettings,
  *      getDatabaseSizes, getInvalidIndexes, getUnusedIndexes, getRedundantIndexes
  *    - If these fail, the entire report should fail (data is required)
  *    - Callers should handle errors at the report generation level
- * 
+ *
  *    GRACEFUL DEGRADATION (catches errors, includes error in output):
  *    - Optional/supplementary queries: pg_stat_statements, pg_stat_kcache checks,
  *      memory calculations, postmaster startup time
  *    - These are nice-to-have; missing data shouldn't fail the whole report
  *    - Errors are logged and included in report output for visibility
- * 
+ *
  * ADDING NEW REPORTS
  * ------------------
  * 1. Add/verify the metric exists in config/pgwatch-prometheus/metrics.yml
@@ -336,7 +336,7 @@ export function parseVersionNum(versionNum: string): { major: string; minor: str
 /**
  * Format bytes to human readable string using binary units (1024-based).
  * Uses IEC standard: KiB, MiB, GiB, etc.
- * 
+ *
  * Note: PostgreSQL's pg_size_pretty() uses kB/MB/GB with 1024 base (technically
  * incorrect SI usage), but we follow IEC binary units per project style guide.
  */
@@ -387,7 +387,7 @@ function formatSettingPrettyValue(
 /**
  * Get PostgreSQL version information.
  * Uses simple inline SQL (trivial query, CLI-specific).
- * 
+ *
  * @throws {Error} If database query fails (propagating - critical data)
  */
 export async function getPostgresVersion(client: Client): Promise<PostgresVersion> {
@@ -1084,7 +1084,7 @@ export const generateH004 = (client: Client, nodeName = "node-01") =>
 
 /**
  * Generate D004 report - pg_stat_statements and pg_stat_kcache settings.
- * 
+ *
  * Uses graceful degradation: extension queries are wrapped in try-catch
  * because extensions may not be installed. Errors are included in the
  * report output rather than failing the entire report.

@@ -1,6 +1,6 @@
 /**
  * Metrics loader for express checkup reports
- * 
+ *
  * Loads SQL queries from embedded metrics data (generated from metrics.yml at build time).
  * Provides version-aware query selection and row transformation utilities.
  */
@@ -9,7 +9,7 @@ import { METRICS, MetricDefinition } from "./metrics-embedded";
 
 /**
  * Get SQL query for a specific metric, selecting the appropriate version.
- * 
+ *
  * @param metricName - Name of the metric (e.g., "settings", "db_stats")
  * @param pgMajorVersion - PostgreSQL major version (default: 16)
  * @returns SQL query string
@@ -41,7 +41,7 @@ export function getMetricSql(metricName: string, pgMajorVersion: number = 16): s
 
 /**
  * Get metric definition including all metadata.
- * 
+ *
  * @param metricName - Name of the metric
  * @returns MetricDefinition or undefined if not found
  */
