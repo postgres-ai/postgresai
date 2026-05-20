@@ -50,7 +50,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
 
 
-def _load_sql(metric_name: str, version: int = None) -> str:
+def _load_sql(metric_name: str, version: int | None = None) -> str:
     """Load the SQL for a metric. If `version` is None, assert there's
     only one variant (catches future divergence on single-variant metrics).
     If specified, return the SQL for that PG major version.
@@ -87,14 +87,13 @@ METRIC_KEYS = (
 # can seed in bulk; no helper views needed; the >100-row threshold is
 # trivially reachable.
 #
-# `table_stats` is parametrized over its two PG-major variants by
-# (metric_name, pg_version) tuples elsewhere; FULL_CROSS_CHECK lists it
-# once as a placeholder so the parametrize machinery can expand it.
+# `table_stats` is NOT in this tuple — it is added separately by
+# `_full_cross_check_params()`, one entry per PG-major SQL variant, via
+# `TABLE_STATS_VARIANTS`. Keep this tuple for single-variant metrics only.
 NEW_METRICS_FULL_CROSS_CHECK = (
     "pg_total_relation_size",
     "pg_class",
     "table_size_detailed",
-    # table_stats has two SQL variants; parametrize handles below.
 )
 
 # `table_stats` parametrized over its SQL variants. Tested separately so
@@ -142,8 +141,9 @@ create or replace view postgres_ai.pg_statistic as
 
 # Output column name that holds the '$other$' literal in each metric.
 # Most metrics use `tag_schemaname`, but `table_stats` and
-# `table_size_detailed` use `tag_schema`. Used to distinguish the
-# aggregate row from the top-100.
+# `table_size_detailed` use `tag_schema`, and the index metrics use
+# `tag_schema_name` (snake-cased). Used to distinguish the aggregate row
+# from the top-100.
 SCHEMA_TAG_COL = {
     "pg_stat_all_indexes": "tag_schemaname",
     "pg_stat_all_tables": "tag_schemaname",
@@ -153,6 +153,26 @@ SCHEMA_TAG_COL = {
     "pg_class": "tag_schemaname",
     "table_size_detailed": "tag_schema",
     "table_stats": "tag_schema",
+    "pg_table_bloat": "tag_schemaname",
+    "pg_btree_bloat": "tag_schemaname",
+    "unused_indexes": "tag_schema_name",
+    "redundant_indexes": "tag_schema_name",
+    "rarely_used_indexes": "tag_schema_name",
+    "pg_invalid_indexes": "tag_schema_name",
+}
+
+# Per metric: one numeric column that must appear in the output. Used by
+# the SYNTAX_ONLY column-name assertion so a UNION ALL alias swap between
+# the top-N arm and the '$other$' arm is caught at test time (psycopg2
+# returns tuples, so without checking cur.description a column-name
+# mismatch between arms would silently pass).
+EXPECTED_NUMERIC_COL = {
+    "pg_table_bloat": "bloat_size",
+    "pg_btree_bloat": "bloat_size",
+    "unused_indexes": "index_size_bytes",
+    "redundant_indexes": "index_size_bytes",
+    "rarely_used_indexes": "index_size_bytes",
+    "pg_invalid_indexes": "index_size_bytes",
 }
 
 # Per metric: the base view it reads from, and a SQL expression that
@@ -509,7 +529,7 @@ def _full_cross_check_params():
     return params
 
 
-def _skip_if_pg_version_below(cur, required_major: int, sql_version: int):
+def _skip_if_pg_version_below(cur, required_major: int, sql_version: int) -> None:
     """`table_stats` ships per-PG-major SQL variants. pgwatch's source
     picker selects the highest matching variant at scrape time, so the
     PG16+ SQL never runs on PG <16 in production. But the test
@@ -632,6 +652,7 @@ def test_pgwatch_topn_new_metrics_syntax_only(seeded_cur_mr267, metric_name):
     """
     sql = _load_sql(metric_name)
     seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    colnames = [c.name for c in seeded_cur_mr267.description]
     rows = seeded_cur_mr267.fetchall()
     # Result must still be bounded by the cap even when the source set
     # is small — `top_n <= 100` strictly holds, and at most one '$other$'.
@@ -639,3 +660,281 @@ def test_pgwatch_topn_new_metrics_syntax_only(seeded_cur_mr267, metric_name):
         f"{metric_name}: result exceeded 101-row cap on a seeded cluster "
         f"(got {len(rows)})"
     )
+    # Column-name check: a UNION ALL arm alias swap (e.g. `tag_schema_name`
+    # in the top-N arm vs `tag_schema` in the '$other$' arm) would return
+    # a shape-equivalent tuple and silently pass an only-row-count check.
+    # Assert both the schema tag column AND one numeric column are present.
+    schema_col = SCHEMA_TAG_COL[metric_name]
+    assert schema_col in colnames, (
+        f"{metric_name}: expected schema tag column {schema_col!r} in output "
+        f"columns {colnames!r} — a UNION ALL arm alias swap would land here"
+    )
+    numeric_col = EXPECTED_NUMERIC_COL[metric_name]
+    assert numeric_col in colnames, (
+        f"{metric_name}: expected numeric column {numeric_col!r} in output "
+        f"columns {colnames!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("metric_name", NEW_METRICS_SYNTAX_ONLY)
+def test_pgwatch_topn_syntax_only_no_other_when_below_cap(
+    seeded_cur_mr267, metric_name
+):
+    """(d) for the bloat / index-list metrics: HAVING count(*) > 0 must
+    suppress the synthetic `'$other$'` row when the source set has ≤100
+    qualifying rows after the metric's WHERE filters.
+
+    The MR-262 metrics have an independent guard test that uses a
+    temporary table to construct the empty-tail scenario; the SYNTAX_ONLY
+    metrics here exercise the same guard against the production SQL
+    directly. On the seeded cluster (110 small user tables, all PKs, no
+    invalid/redundant/unused/rarely-used indexes that match the filters)
+    every one of these metrics returns well under 100 qualifying rows,
+    so the `'$other$'` row should be absent. A regression that drops the
+    `HAVING count(*) > 0` guard (e.g. a future refactor) would emit a
+    synthetic aggregate row even when there is no tail to aggregate, and
+    this test would catch it.
+    """
+    sql = _load_sql(metric_name)
+    seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    colnames = [c.name for c in seeded_cur_mr267.description]
+    schema_col = SCHEMA_TAG_COL[metric_name]
+    # `redundant_indexes` deliberately exposes `tag_schema_name` twice
+    # (raw + formated_*); dict(zip(...)) would only keep the last column.
+    # Walk the tuples positionally and look at every position whose name
+    # matches `schema_col` — any one of them being '$other$' means the
+    # aggregate row leaked.
+    schema_positions = [i for i, n in enumerate(colnames) if n == schema_col]
+    assert schema_positions, (
+        f"{metric_name}: expected schema tag column {schema_col!r} in output "
+        f"columns {colnames!r}"
+    )
+    rows = seeded_cur_mr267.fetchall()
+    other_rows = [
+        r for r in rows
+        if any(r[pos] == "$other$" for pos in schema_positions)
+    ]
+    assert other_rows == [], (
+        f"{metric_name}: HAVING count(*) > 0 should suppress the '$other$' "
+        f"row when the source set has ≤100 qualifying rows after the "
+        f"metric's WHERE filters; got {len(other_rows)} '$other$' row(s) "
+        f"out of {len(rows)} total"
+    )
+
+
+# Per-metric SQL to compute the per-column source-view totals that the
+# top-N + `'$other$'` UNION ALL must reproduce. Each entry returns one
+# row whose columns correspond (by position) to TAIL_SUM_COLUMNS_NEW_267
+# for that metric. The WHERE clause MUST match what the metric's CTE
+# applies before ranking — otherwise rows the metric excluded would
+# inflate the view total and the comparison would fail.
+#
+# For pg_total_relation_size: filters relkind = 'r' only.
+# For pg_class: filters non-system schemas + relkind in ('r','i','m','v').
+# For table_size_detailed: filters relkind in ('r','p','m') +
+#   non-system schemas + no AccessExclusiveLock + total_relation_size_b > 0.
+# For table_stats: filters partition-leaves + non-temp + non-timescaledb
+#   schemas + no AccessExclusiveLock. On a test cluster with no partition
+#   roots the rows_pre_rank set is exactly q_tstats minus partition roots,
+#   which on this seed is all of q_tstats.
+SOURCE_VIEW_SUM_SQL_267 = {
+    "pg_total_relation_size": """
+        select coalesce(sum(pg_total_relation_size(c.oid)), 0)::int8 as bytes
+        from pg_class c
+        where c.relkind = 'r'
+    """,
+    "pg_class": """
+        select
+          coalesce(sum(c.reltuples), 0)::float4 as reltuples,
+          coalesce(sum(c.relpages), 0)::int4 as relpages,
+          coalesce(sum(pg_relation_size(c.oid)), 0)::int8 as relation_size_bytes,
+          coalesce(sum(pg_total_relation_size(c.oid)), 0)::int8 as total_relation_size_bytes
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname not in ('information_schema', 'pg_catalog')
+          and c.relkind in ('r', 'i', 'm', 'v')
+    """,
+    "table_size_detailed": """
+        with src as (
+          select
+            pg_relation_size(c.oid, 'main') as table_main_size_b,
+            pg_relation_size(c.oid, 'fsm') as table_fsm_size_b,
+            pg_relation_size(c.oid, 'vm') as table_vm_size_b,
+            pg_indexes_size(c.oid) as table_indexes_size_b,
+            pg_relation_size(c.reltoastrelid, 'main') as toast_main_size_b,
+            pg_relation_size(c.reltoastrelid, 'fsm') as toast_fsm_size_b,
+            pg_relation_size(c.reltoastrelid, 'vm') as toast_vm_size_b,
+            pg_indexes_size(c.reltoastrelid) as toast_indexes_size_b,
+            pg_total_relation_size(c.oid) as total_relation_size_b
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          where c.relkind in ('r', 'p', 'm')
+            and n.nspname not in ('information_schema', 'pg_toast')
+            and not exists (
+              select 1 from pg_locks
+              where relation = c.oid and mode = 'AccessExclusiveLock'
+            )
+        )
+        select
+          coalesce(sum(table_main_size_b), 0)::int8 as table_main_size_b,
+          coalesce(sum(table_fsm_size_b), 0)::int8 as table_fsm_size_b,
+          coalesce(sum(table_vm_size_b), 0)::int8 as table_vm_size_b,
+          coalesce(sum(table_indexes_size_b), 0)::int8 as table_indexes_size_b,
+          coalesce(sum(toast_main_size_b), 0)::int8 as toast_main_size_b,
+          coalesce(sum(toast_fsm_size_b), 0)::int8 as toast_fsm_size_b,
+          coalesce(sum(toast_vm_size_b), 0)::int8 as toast_vm_size_b,
+          coalesce(sum(toast_indexes_size_b), 0)::int8 as toast_indexes_size_b,
+          coalesce(sum(total_relation_size_b), 0)::int8 as total_relation_size_b
+        from src
+        where total_relation_size_b > 0
+    """,
+    # table_stats's source CTE has a partition-roots UNION arm; the test
+    # cluster has no partition roots (the seeded tables are plain
+    # CREATE TABLE, not PARTITION OF), so rows_pre_rank == q_tstats minus
+    # the empty q_root_part set. Replay just the q_tstats path, summing
+    # only the columns whose aggregate semantics on `'$other$'` is sum()
+    # (size + counter columns). Timestamp `seconds_since_last_*` columns
+    # use min() on the tail; freeze-age columns use max(); cross-checking
+    # those would require excluding the top-100 from the source — skip
+    # them here, the substring tests in test_mr219_monitoring_guards.py
+    # pin those aggregation shapes structurally.
+    "table_stats": """
+        select
+          coalesce(sum(pg_table_size(ut.relid)), 0)::int8 as table_size_b,
+          coalesce(sum(pg_total_relation_size(ut.relid)), 0)::int8 as total_relation_size_b,
+          coalesce(sum(case when c.reltoastrelid <> 0
+                  then pg_total_relation_size(c.reltoastrelid)
+                  else 0::int8 end), 0)::int8 as toast_size_b,
+          coalesce(sum(case when 'autovacuum_enabled=off' = ANY (c.reloptions)
+                  then 1 else 0 end), 0)::int8 as no_autovacuum,
+          coalesce(sum(ut.seq_scan), 0)::int8 as seq_scan,
+          coalesce(sum(ut.seq_tup_read), 0)::int8 as seq_tup_read,
+          coalesce(sum(coalesce(ut.idx_scan, 0)), 0)::int8 as idx_scan,
+          coalesce(sum(coalesce(ut.idx_tup_fetch, 0)), 0)::int8 as idx_tup_fetch,
+          coalesce(sum(ut.n_tup_ins), 0)::int8 as n_tup_ins,
+          coalesce(sum(ut.n_tup_upd), 0)::int8 as n_tup_upd,
+          coalesce(sum(ut.n_tup_del), 0)::int8 as n_tup_del,
+          coalesce(sum(ut.n_tup_hot_upd), 0)::int8 as n_tup_hot_upd,
+          coalesce(sum(ut.n_live_tup), 0)::int8 as n_live_tup,
+          coalesce(sum(ut.n_dead_tup), 0)::int8 as n_dead_tup,
+          coalesce(sum(ut.vacuum_count), 0)::int8 as vacuum_count,
+          coalesce(sum(ut.autovacuum_count), 0)::int8 as autovacuum_count,
+          coalesce(sum(ut.analyze_count), 0)::int8 as analyze_count,
+          coalesce(sum(ut.autoanalyze_count), 0)::int8 as autoanalyze_count
+        from pg_stat_all_tables ut
+        join pg_class c on c.oid = ut.relid
+        where not exists (
+                select 1 from pg_locks
+                where relation = ut.relid and mode = 'AccessExclusiveLock'
+              )
+          and c.relpersistence <> 't'
+          and not quote_ident(ut.schemaname) like E'\\_timescaledb%'
+    """,
+}
+
+# Per-metric: output columns to cross-check (the production SQL outputs
+# both top-N and `'$other$'` arms in the same column order, so summing
+# `union_total = sum(top-N[col]) + other[col]` and comparing to the
+# source-view total cleanly validates the tail aggregation). Order MUST
+# match the SELECT list of SOURCE_VIEW_SUM_SQL_267[metric] above so the
+# zip() below pairs the right columns.
+TAIL_SUM_COLUMNS_NEW_267 = {
+    "pg_total_relation_size": ("bytes",),
+    "pg_class": (
+        "reltuples",
+        "relpages",
+        "relation_size_bytes",
+        "total_relation_size_bytes",
+    ),
+    "table_size_detailed": (
+        "table_main_size_b",
+        "table_fsm_size_b",
+        "table_vm_size_b",
+        "table_indexes_size_b",
+        "toast_main_size_b",
+        "toast_fsm_size_b",
+        "toast_vm_size_b",
+        "toast_indexes_size_b",
+        "total_relation_size_b",
+    ),
+    "table_stats": (
+        "table_size_b",
+        "total_relation_size_b",
+        "toast_size_b",
+        "no_autovacuum",
+        "seq_scan",
+        "seq_tup_read",
+        "idx_scan",
+        "idx_tup_fetch",
+        "n_tup_ins",
+        "n_tup_upd",
+        "n_tup_del",
+        "n_tup_hot_upd",
+        "n_live_tup",
+        "n_dead_tup",
+        "vacuum_count",
+        "autovacuum_count",
+        "analyze_count",
+        "autoanalyze_count",
+    ),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("metric_name,pg_version", _full_cross_check_params())
+def test_pgwatch_topn_new_metrics_other_bucket_aggregates_tail(
+    seeded_cur_mr267, metric_name, pg_version
+):
+    """(c) column-by-column tail-sum cross-check for !267 FULL_CROSS_CHECK
+    metrics: for each metric whose `'$other$'` row uses `sum()` semantics
+    on its numeric columns, the top-100 rows' counter sum plus the
+    `'$other$'` row's counter must equal the source-view sum (computed
+    directly with the metric's WHERE filters re-applied).
+
+    A regression that lost data in the tail aggregation (wrong window
+    function, missing UNION arm column, dropped `coalesce`) would show
+    up as a per-column mismatch. The MR-262 test
+    `test_pgwatch_topn_other_bucket_aggregates_tail` validates the same
+    invariant for the 4 !262 metrics; this is the !267 equivalent.
+
+    Timestamp / min / max / avg columns are not cross-checked here — they
+    don't decompose into top-N + tail sums, and the substring tests in
+    test_mr219_monitoring_guards.py pin those aggregation shapes
+    structurally.
+    """
+    if metric_name == "table_stats" and pg_version == 16:
+        _skip_if_pg_version_below(seeded_cur_mr267, required_major=16, sql_version=16)
+    sql = _load_sql(metric_name, pg_version)
+    seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    colnames = [c.name for c in seeded_cur_mr267.description]
+    rows = [dict(zip(colnames, r)) for r in seeded_cur_mr267.fetchall()]
+
+    schema_col = SCHEMA_TAG_COL[metric_name]
+    other_rows = [r for r in rows if r[schema_col] == "$other$"]
+    assert len(other_rows) == 1, (
+        f"{metric_name} (pg_version={pg_version}): cross-check requires "
+        f"the `'$other$'` row to be present (seed is 110 user tables); "
+        f"got {len(other_rows)}"
+    )
+    other = other_rows[0]
+
+    seeded_cur_mr267.execute(SOURCE_VIEW_SUM_SQL_267[metric_name])
+    view_totals = dict(
+        zip(TAIL_SUM_COLUMNS_NEW_267[metric_name], seeded_cur_mr267.fetchone())
+    )
+
+    for col, view_total in view_totals.items():
+        # The production '$other$' arm uses coalesce(sum(col), 0); mirror
+        # that on the union side here so a NULL top-N value (e.g. an
+        # idx_scan that was NULL before pgwatch saw any activity) does
+        # not poison the union total. Use int() comparison to avoid
+        # float-vs-int type mismatches on the reltuples column.
+        union_total = sum(int(r[col] or 0) for r in rows)
+        assert union_total == int(view_total), (
+            f"{metric_name}.{col} (pg_version={pg_version}): top-N + "
+            f"'$other$' total = {union_total}, view sum = {int(view_total)}; "
+            f"tail aggregation lost data"
+        )

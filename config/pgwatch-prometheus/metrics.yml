@@ -2437,6 +2437,14 @@ metrics:
       Decision tree: 1) Valid duplicate exists -> DROP, 2) Backs PK/UNIQUE constraint -> RECREATE,
       3) Table < 10K rows -> RECREATE (small tables rebuild quickly, typically under 1 second),
       4) Otherwise -> UNCERTAIN (need query plan analysis to assess impact).
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      ranks invalid indexes by `index_size_bytes desc` (ties broken by schema,
+      table, then index name for stability), keeps the top 100, and folds the
+      tail into a single `'$other$'` row whose `index_size_bytes` /
+      `table_row_estimate` are summed and whose tag columns carry the literal
+      `'$other$'` sentinel. The `'$other$'` row is omitted entirely (via
+      `HAVING count(*) > 0`) when all invalid indexes fit within the top-100
+      cap, so its absence on healthy clusters is normal.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2565,6 +2573,18 @@ metrics:
       This metric identifies redundant indexes that can potentially be dropped to save storage space and improve write performance.
       It analyzes index relationships and finds indexes that are covered by other indexes, considering column order, operator classes,
       and foreign key constraints. Uses the exact logic from tmp.sql with JSON aggregation and proper thresholds.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      ranks redundant indexes by `index_size_bytes desc` (ties broken by
+      `table_name`), keeps the top 100, and folds the tail into a single
+      `'$other$'` row whose `table_size_bytes`, `index_size_bytes` and
+      `index_usage` columns are summed and whose tag columns carry the literal
+      `'$other$'` sentinel. The `redundant_indexes_grouped` CTE intentionally
+      preserves duplicate column aliases (`tag_schema_name` / `tag_index_name`
+      appear twice — once from the raw name and once from the `formated_*`
+      variant) because the dashboards rely on both spellings; the duplication
+      is preserved on the `'$other$'` row for consistency. The `'$other$'`
+      row is omitted entirely (via `HAVING count(*) > 0`) when there are
+      ≤100 redundant pairs, so its absence on healthy clusters is normal.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2762,6 +2782,18 @@ metrics:
       This metric identifies unused indexes in the database.
       It provides insights into the number of unused indexes and their details.
       This metric helps administrators identify and fix unused indexes to improve database performance.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      within the `idx_scan = 0 AND idx_is_btree` filter, ranks indexes by
+      `index_size_bytes desc` (ties broken by schema, table, index name),
+      keeps the top 100, and folds the tail into a single `'$other$'` row.
+      Counter columns (`idx_scan`, `all_scans`, `writes`, `index_size_bytes`,
+      `table_size_bytes`, `relpages`) are summed across the tail; ratio
+      columns (`index_scan_pct`, `scans_per_write`) and the `supports_fk`
+      boolean are deliberately zeroed/false on the aggregate row because the
+      tail-level average would mislead and the per-row FK relationship has
+      no meaningful aggregate. Tag columns carry the literal `'$other$'`
+      sentinel. The `'$other$'` row is omitted entirely (via
+      `HAVING count(*) > 0`) when ≤100 indexes match the unused filter.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2905,6 +2937,19 @@ metrics:
       This metric identifies rarely used indexes in the database.
       It provides insights into the number of rarely used indexes and their details.
       This metric helps administrators identify and fix rarely used indexes to improve database performance.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      the source is a 3-way UNION ALL of reason categories (Low Scans / Low
+      Scans Ratio / Old Indexes), ranked first by reason group `grp` and
+      then by `index_size_bytes desc`, keeping the top 100 across all
+      groups. The tail is folded into a single `'$other$'` row whose
+      `tag_reason` literal is `'$other$'` (deliberately not one of the
+      real reason categories, so dashboards can distinguish the aggregate
+      from a real bucket). Counter columns (`idx_scan`, `all_scans`,
+      `writes`, `index_size_bytes`, `table_size_bytes`, `relpages`) are
+      summed across the tail; ratio columns (`index_scan_pct`,
+      `scans_per_write`) and the `supports_fk` boolean are deliberately
+      zeroed/false on the aggregate row. The `'$other$'` row is omitted
+      entirely (via `HAVING count(*) > 0`) when ≤100 indexes match.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
