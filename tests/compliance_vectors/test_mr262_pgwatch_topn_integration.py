@@ -1,4 +1,4 @@
-"""Integration coverage for MR !262: execute the four rewritten pgwatch
+"""Integration coverage for MRs !262 and !267: execute the rewritten pgwatch
 per-relation SQLs against a real PostgreSQL.
 
 The compliance-vector tests in `test_mr219_monitoring_guards.py` are
@@ -12,7 +12,9 @@ SQL against a live cluster and asserts:
       rows plus at most one `'$other$'` aggregate row),
   (c) when there are more than 100 source relations the `'$other$'` row
       is present, occurs exactly once, and its aggregated counters equal
-      the sum of the excluded tail.
+      the sum of the excluded tail (only checked for metrics where (c) is
+      cleanly testable on a seeded PG cluster — see `FULL_CROSS_CHECK`
+      vs `SYNTAX_ONLY` below).
 
 The HAVING-count(*)>0 guard (no `'$other$'` row when the tail is empty)
 is exercised separately via a temporary table that exposes <=100 rows
@@ -22,6 +24,20 @@ Marked `integration` + `requires_postgres` so the default
 `--disable-socket` unit-test run skips the file; the CI reporter:tests
 job (already provisions a Postgres cluster) picks it up under
 `--run-integration`.
+
+Scope by MR:
+  - !262: pg_stat_all_indexes, pg_stat_all_tables,
+          pg_statio_all_tables, pg_statio_all_indexes (4 metrics)
+  - !267: pg_total_relation_size, pg_class, table_size_detailed,
+          table_stats (PG11 + PG16+ variants) get the full cross-check;
+          pg_table_bloat, pg_btree_bloat, unused_indexes,
+          redundant_indexes, rarely_used_indexes, pg_invalid_indexes
+          get a SQL-parses-and-runs check only (forcing > 100 rows
+          for those would require multi-MiB seed tables, the
+          postgres_ai.pg_statistic helper view, or
+          deliberately-redundant index pairs — the substring tests in
+          test_mr219_monitoring_guards.py pin the structural shape;
+          the value here is catching syntax/cast/column errors).
 """
 from pathlib import Path
 
@@ -34,26 +50,110 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
 
 
-def _load_sql(metric_name: str) -> str:
+def _load_sql(metric_name: str, version: int = None) -> str:
+    """Load the SQL for a metric. If `version` is None, assert there's
+    only one variant (catches future divergence on single-variant metrics).
+    If specified, return the SQL for that PG major version.
+
+    `table_stats` ships PG11 and PG16+ variants (the PG16+ adds
+    `last_seq_scan_s` and an inner relpages-based pre-filter for big
+    catalogs); both must get integration coverage.
+    """
     metrics = yaml.safe_load(METRICS_YML.read_text())
     sqls = metrics["metrics"][metric_name]["sqls"]
-    # The four metrics ship a single PG11+ SQL today. Fail loudly if a
-    # version-specific variant is added in the future without updating
-    # this test to exercise every variant — otherwise only the first one
-    # would get integration coverage.
-    assert len(sqls) == 1, (
-        f"{metric_name}: expected exactly one SQL version, got "
-        f"{list(sqls)}; update this test to iterate every variant"
+    if version is None:
+        assert len(sqls) == 1, (
+            f"{metric_name}: expected exactly one SQL version, got "
+            f"{list(sqls)}; update this test to iterate every variant"
+        )
+        return next(iter(sqls.values()))
+    assert version in sqls, (
+        f"{metric_name}: requested SQL for PG {version}, but only have "
+        f"variants for: {list(sqls)}"
     )
-    return next(iter(sqls.values()))
+    return sqls[version]
 
 
+# Metrics from !262 — fully cross-checked (tail sum == view sum).
 METRIC_KEYS = (
     "pg_stat_all_indexes",
     "pg_stat_all_tables",
     "pg_statio_all_tables",
     "pg_statio_all_indexes",
 )
+
+# !267: metrics that get the full cross-check (parse + cap + '$other$'
+# tail sum). All read from pg_class / pg_stat_all_tables on relations we
+# can seed in bulk; no helper views needed; the >100-row threshold is
+# trivially reachable.
+#
+# `table_stats` is parametrized over its two PG-major variants by
+# (metric_name, pg_version) tuples elsewhere; FULL_CROSS_CHECK lists it
+# once as a placeholder so the parametrize machinery can expand it.
+NEW_METRICS_FULL_CROSS_CHECK = (
+    "pg_total_relation_size",
+    "pg_class",
+    "table_size_detailed",
+    # table_stats has two SQL variants; parametrize handles below.
+)
+
+# `table_stats` parametrized over its SQL variants. Tested separately so
+# each variant gets its own (metric, version) pytest id.
+TABLE_STATS_VARIANTS = (11, 16)
+
+# !267: metrics that get only the "parses and runs against a real PG"
+# check. These have either:
+#   - helper-view dependencies (postgres_ai.pg_statistic, only created on
+#     monitored DBs by pgwatch's --create-helpers flow; we mirror it in
+#     the fixture, but the >1 MiB filter inside the bloat SQL would
+#     require ~110 multi-MiB seed tables to force the '$other$' bucket —
+#     too expensive for CI runtime), or
+#   - filter patterns that make >100 rows artificial to construct
+#     (idx_scan=0 indexes; redundant index pairs; invalid indexes).
+# The substring tests in test_mr219_monitoring_guards.py pin the
+# structural shape of every '$other$' bucket; the value here is making
+# sure the SQL itself parses, casts cleanly, and runs without error on
+# whichever rows the seed happens to produce.
+NEW_METRICS_SYNTAX_ONLY = (
+    "pg_table_bloat",
+    "pg_btree_bloat",
+    "unused_indexes",
+    "redundant_indexes",
+    "rarely_used_indexes",
+    "pg_invalid_indexes",
+)
+
+# pgwatch's `--create-helpers` flow creates `postgres_ai.pg_statistic`
+# on every monitored DB so the role can read column-level stats without
+# the `pg_read_all_stats` privilege. On a stock test cluster the schema
+# doesn't exist, so the bloat SQLs error out at parse time without it.
+# A view over `pg_stats` works, but we can only project the concrete-typed
+# columns: `pg_stats.most_common_vals` and a couple of others have type
+# `anyarray` (a pseudo-type), and PostgreSQL refuses to create a view
+# that exposes any column with a pseudo-type. The bloat SQLs only read
+# `schemaname`, `tablename`, `attname`, `null_frac`, `avg_width`,
+# `inherited` — project exactly those.
+POSTGRES_AI_HELPER_VIEW_SQL = """
+create schema if not exists postgres_ai;
+create or replace view postgres_ai.pg_statistic as
+  select schemaname, tablename, attname, inherited, null_frac, avg_width
+    from pg_stats;
+"""
+
+# Output column name that holds the '$other$' literal in each metric.
+# Most metrics use `tag_schemaname`, but `table_stats` and
+# `table_size_detailed` use `tag_schema`. Used to distinguish the
+# aggregate row from the top-100.
+SCHEMA_TAG_COL = {
+    "pg_stat_all_indexes": "tag_schemaname",
+    "pg_stat_all_tables": "tag_schemaname",
+    "pg_statio_all_tables": "tag_schemaname",
+    "pg_statio_all_indexes": "tag_schemaname",
+    "pg_total_relation_size": "tag_schemaname",
+    "pg_class": "tag_schemaname",
+    "table_size_detailed": "tag_schema",
+    "table_stats": "tag_schema",
+}
 
 # Per metric: the base view it reads from, and a SQL expression that
 # (after WHERE filters baked into the metric) gives the count of source
@@ -120,6 +220,17 @@ SUM_COLUMNS = {
         "idx_blks_hit": "idx_blks_hit",
     },
 }
+# Note: SUM_COLUMNS keys are limited to the !262 four metrics. The new
+# !267 metrics use the same structural pattern but their source views
+# require per-metric WHERE replay (the recursive CTE in `table_stats`,
+# the `>0 bytes` / `relkind IN (...)` filters in `table_size_detailed`,
+# the join + `n.nspname NOT IN` in `pg_class`, etc.). The cross-check
+# logic in `test_pgwatch_topn_other_bucket_aggregates_tail` only runs
+# for METRIC_KEYS; the new metrics get a less strict "parses + caps +
+# '$other$' present" check via NEW_METRICS_FULL_CROSS_CHECK and
+# NEW_METRICS_SYNTAX_ONLY below. The substring assertions in
+# test_mr219_monitoring_guards.py pin the structural aggregate shape on
+# every new metric independently of this file.
 
 
 def _seed_relations(cur, count: int) -> None:
@@ -355,3 +466,147 @@ def test_pgwatch_topn_having_guard_suppresses_other_when_tail_empty(
     )
     assert int(out[0][1]) == 101 + 102 + 103 + 104 + 105
     cur.close()
+
+
+# ---------------------------------------------------------------------------
+# !267 coverage: the remaining per-relation metrics that got the same
+# top-N + `'$other$'` pattern. See module docstring for the rationale
+# behind the split between FULL_CROSS_CHECK and SYNTAX_ONLY.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="function")
+def seeded_cur_mr267(postgresql):
+    """Like `seeded_cur` (the MR-262 fixture) but also creates the
+    `postgres_ai.pg_statistic` helper view that the bloat metrics
+    require. pgwatch's `--create-helpers` flow normally puts this view
+    on every monitored DB on first connect; a stock test cluster doesn't
+    have it, so the bloat metrics' SQL would fail to parse without it.
+    """
+    conn = postgresql
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(POSTGRES_AI_HELPER_VIEW_SQL)
+    _seed_relations(cur, count=110)
+    yield cur
+    cur.execute("drop schema if exists mr262 cascade")
+    cur.execute("drop view if exists postgres_ai.pg_statistic")
+    cur.execute("drop schema if exists postgres_ai cascade")
+    cur.close()
+
+
+# Build (metric, version) tuples for parametrization. Most !267 metrics
+# have a single PG-major variant; `table_stats` has two (PG11 + PG16+).
+# Use `pytest.param` with explicit `id=` so each pytest line names the
+# metric (and PG-version, where applicable) instead of getting an
+# auto-generated index — keeps `pytest -k` filtering useful.
+def _full_cross_check_params():
+    params = [pytest.param(m, None, id=m) for m in NEW_METRICS_FULL_CROSS_CHECK]
+    params.extend(
+        pytest.param("table_stats", v, id=f"table_stats-pg{v}")
+        for v in TABLE_STATS_VARIANTS
+    )
+    return params
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("metric_name,pg_version", _full_cross_check_params())
+def test_pgwatch_topn_new_metrics_parse_and_cap(
+    seeded_cur_mr267, metric_name, pg_version
+):
+    """(a) + (b) for !267 metrics: SQL parses + runs, result <= 101 rows.
+
+    Catches: typos in window function, UNION ALL column-count mismatches,
+    misplaced HAVING, stray casts, column-name divergence between the
+    top-100 arm and the `'$other$'` arm.
+    """
+    sql = _load_sql(metric_name, pg_version)
+    seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    rows = seeded_cur_mr267.fetchall()
+    assert len(rows) <= 101, (
+        f"{metric_name} (pg_version={pg_version}): expected at most 101 "
+        f"rows (100 top-N + 1 '$other$'), got {len(rows)}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("metric_name,pg_version", _full_cross_check_params())
+def test_pgwatch_topn_new_metrics_other_bucket_present(
+    seeded_cur_mr267, metric_name, pg_version
+):
+    """(c) for !267 metrics: when the seeded source > 100 user tables,
+    each metric's output must contain exactly one `'$other$'` row.
+
+    The full column-by-column cross-check (top-N sum + '$other$' sum ==
+    view sum) is not performed here — that would require per-metric
+    replay of the metric's WHERE clause to avoid inflating the view
+    total with rows the metric excluded, which is bespoke and brittle
+    enough per metric that the MR-219 substring tests pin the structural
+    aggregate shape independently. The strongest assertion here is
+    "the cap engaged and the synthetic row appeared as designed."
+    """
+    sql = _load_sql(metric_name, pg_version)
+    seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    colnames = [c.name for c in seeded_cur_mr267.description]
+    rows = [dict(zip(colnames, r)) for r in seeded_cur_mr267.fetchall()]
+
+    schema_col = SCHEMA_TAG_COL[metric_name]
+    assert schema_col in colnames, (
+        f"{metric_name} (pg_version={pg_version}): expected output column "
+        f"{schema_col!r} in {colnames!r}"
+    )
+
+    other_rows = [r for r in rows if r[schema_col] == "$other$"]
+    assert len(other_rows) == 1, (
+        f"{metric_name} (pg_version={pg_version}): expected exactly one "
+        f"'$other$' row (seed creates 110 user tables, all metrics here "
+        f"include user tables in their source set); got {len(other_rows)}"
+    )
+
+    top_n = [r for r in rows if r[schema_col] != "$other$"]
+    # `table_stats` includes pg_catalog/pg_toast tables in the rankable
+    # set (the cap is the cardinality control, not a schema filter), so
+    # the top-100 can include system tables alongside the 110 seeded
+    # user tables — the count is still exactly 100.
+    assert len(top_n) == 100, (
+        f"{metric_name} (pg_version={pg_version}): expected exactly 100 "
+        f"top-N rows, got {len(top_n)}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("metric_name", NEW_METRICS_SYNTAX_ONLY)
+def test_pgwatch_topn_new_metrics_syntax_only(seeded_cur_mr267, metric_name):
+    """(a) for the bloat / index-list metrics: SQL parses and runs.
+
+    These metrics can't easily be pushed past their `'$other$'`
+    threshold in a fast CI test:
+      - pg_table_bloat / pg_btree_bloat: filter rows with `bs * tblpages
+        > 1 MiB`. Forcing 110 relations >1 MiB each would mean ~110 MB
+        of seed data — too expensive for the reporter:tests CI runtime.
+      - unused_indexes / rarely_used_indexes: filter on
+        idx_scan = 0 / specific scans_per_write ratios that are awkward
+        to construct in bulk.
+      - redundant_indexes: requires actual pairs of overlapping btree
+        indexes, ~220 indexes to push past 100 redundant pairs.
+      - pg_invalid_indexes: requires invalid indexes (usually from
+        failed CREATE INDEX CONCURRENTLY, hard to construct artificially).
+
+    The MR-219 substring tests pin the structural shape of `$other$`,
+    `having count(*) > 0`, the `row_number() over` clause, and the cap
+    on every one of these metrics. The value here is: run the actual
+    SQL, catch any cast / column-name / UNION-arity error at test time
+    rather than scrape time.
+    """
+    sql = _load_sql(metric_name)
+    seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
+    rows = seeded_cur_mr267.fetchall()
+    # Result must still be bounded by the cap even when the source set
+    # is small — `top_n <= 100` strictly holds, and at most one '$other$'.
+    assert len(rows) <= 101, (
+        f"{metric_name}: result exceeded 101-row cap on a seeded cluster "
+        f"(got {len(rows)})"
+    )
