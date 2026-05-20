@@ -509,6 +509,31 @@ def _full_cross_check_params():
     return params
 
 
+def _skip_if_pg_version_below(cur, required_major: int, sql_version: int):
+    """`table_stats` ships per-PG-major SQL variants. pgwatch's source
+    picker selects the highest matching variant at scrape time, so the
+    PG16+ SQL never runs on PG <16 in production. But the test
+    parametrize fans out both variants unconditionally — gate each on
+    the live cluster's PG major so a PG13 CI image (Debian bullseye
+    ships PG13/14) doesn't fail with "column last_seq_scan does not
+    exist" when the PG16+ SQL hits a missing column.
+
+    Production parity: the version picker in pgwatch's metric runner
+    enforces the same lower bound — this skip mirrors that gate at the
+    test layer.
+    """
+    cur.execute("show server_version_num")
+    server_version_num = int(cur.fetchone()[0])
+    server_major = server_version_num // 10000
+    if server_major < required_major:
+        pytest.skip(
+            f"table_stats SQL variant for PG {sql_version} requires server "
+            f"PG >= {required_major}, but live cluster is PG {server_major}; "
+            f"in production the version picker would route this cluster to "
+            f"the PG{TABLE_STATS_VARIANTS[0]} variant instead."
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.requires_postgres
 @pytest.mark.parametrize("metric_name,pg_version", _full_cross_check_params())
@@ -521,6 +546,8 @@ def test_pgwatch_topn_new_metrics_parse_and_cap(
     misplaced HAVING, stray casts, column-name divergence between the
     top-100 arm and the `'$other$'` arm.
     """
+    if metric_name == "table_stats" and pg_version == 16:
+        _skip_if_pg_version_below(seeded_cur_mr267, required_major=16, sql_version=16)
     sql = _load_sql(metric_name, pg_version)
     seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
     rows = seeded_cur_mr267.fetchall()
@@ -547,6 +574,8 @@ def test_pgwatch_topn_new_metrics_other_bucket_present(
     aggregate shape independently. The strongest assertion here is
     "the cap engaged and the synthetic row appeared as designed."
     """
+    if metric_name == "table_stats" and pg_version == 16:
+        _skip_if_pg_version_below(seeded_cur_mr267, required_major=16, sql_version=16)
     sql = _load_sql(metric_name, pg_version)
     seeded_cur_mr267.execute(sql.rstrip().rstrip(";"))
     colnames = [c.name for c in seeded_cur_mr267.description]
