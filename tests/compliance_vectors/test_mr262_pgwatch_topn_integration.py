@@ -938,3 +938,153 @@ def test_pgwatch_topn_new_metrics_other_bucket_aggregates_tail(
             f"'$other$' total = {union_total}, view sum = {int(view_total)}; "
             f"tail aggregation lost data"
         )
+
+
+# Source query mirroring `q_tstats` (the leaf-tables CTE inside the
+# table_stats metric SQL) with the same WHERE filters that gate which
+# rows reach `rows_pre_rank`. On a test cluster with no partitioned
+# tables and no timescale schemas, `rows_pre_rank` equals exactly what
+# this query returns — so the (tag_schema, tag_table_name) keys here
+# decompose cleanly into "top-100" vs "tail" once the metric SQL has
+# named the top-100. Used by the min/max cross-check below.
+TABLE_STATS_SOURCE_PER_ROW_SQL = """
+    select
+      quote_ident(ut.schemaname) as tag_schema,
+      quote_ident(ut.relname)    as tag_table_name,
+      (extract(epoch from now() - greatest(last_vacuum, last_autovacuum)))::int8
+        as seconds_since_last_vacuum,
+      (extract(epoch from now() - greatest(last_analyze, last_autoanalyze)))::int8
+        as seconds_since_last_analyze,
+      case when c.relkind <> 'p' then age(c.relfrozenxid)  else 0 end as tx_freeze_age,
+      case when c.relkind <> 'p' then mxid_age(c.relminmxid) else 0 end as mxid_freeze_age
+    from pg_stat_all_tables ut
+    join pg_class c on c.oid = ut.relid
+    where not exists (
+            select 1 from pg_locks
+            where relation = ut.relid and mode = 'AccessExclusiveLock'
+          )
+      and c.relpersistence <> 't'
+      and not quote_ident(ut.schemaname) like E'\\_timescaledb%'
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.requires_postgres
+@pytest.mark.parametrize("pg_version", TABLE_STATS_VARIANTS)
+def test_pgwatch_topn_table_stats_other_bucket_min_max_semantics(
+    seeded_cur_mr267, pg_version
+):
+    """Runtime cross-check of min()/max() aggregate semantics on the
+    `'$other$'` row for table_stats.
+
+    `seconds_since_last_vacuum` and `seconds_since_last_analyze` use
+    `min()` on the tail (most recently maintained tail table wins, NOT
+    summed and NOT zeroed). `tx_freeze_age` and `mxid_freeze_age` use
+    `max()` (oldest still-alive xid is the wraparound risk). A regression
+    that swapped min/max on either family would invert the operational
+    meaning of the `'$other$'` row without changing its shape — the
+    sum-based cross-check in
+    `test_pgwatch_topn_new_metrics_other_bucket_aggregates_tail` would
+    not catch it, and the substring tests in
+    `test_mr219_monitoring_guards.py` only assert that `min(`/`max(`
+    appears textually, not that the runtime value is correct.
+
+    Method: execute the metric SQL → name the top-100 by
+    (tag_schema, tag_table_name) → independently query the source
+    (q_tstats's WHERE-filter set) and partition into tail = source rows
+    NOT in top-100 → compute expected min/max over tail and compare
+    to the `'$other$'` row.
+
+    Tolerances: time-since columns use a small clock-slack window
+    because the metric SQL and the source query each call `now()` at
+    independent statement-level moments under autocommit. Freeze-age
+    columns are pure xid integers; they advance only when a transaction
+    commits, so a tight tolerance covers read-only queries on a quiet
+    cluster.
+    """
+    if pg_version == 16:
+        _skip_if_pg_version_below(
+            seeded_cur_mr267, required_major=16, sql_version=16
+        )
+
+    cur = seeded_cur_mr267
+    metric_sql = _load_sql("table_stats", pg_version)
+    cur.execute(metric_sql.rstrip().rstrip(";"))
+    colnames = [c.name for c in cur.description]
+    rows = [dict(zip(colnames, r)) for r in cur.fetchall()]
+
+    other_rows = [r for r in rows if r["tag_schema"] == "$other$"]
+    assert len(other_rows) == 1, (
+        f"table_stats pg{pg_version}: min/max cross-check requires the "
+        f"'$other$' row (seed creates 110 user tables); got "
+        f"{len(other_rows)}"
+    )
+    other = other_rows[0]
+    top_n_keys = {
+        (r["tag_schema"], r["tag_table_name"])
+        for r in rows if r["tag_schema"] != "$other$"
+    }
+    assert len(top_n_keys) == 100
+
+    cur.execute(TABLE_STATS_SOURCE_PER_ROW_SQL)
+    src_cols = [c.name for c in cur.description]
+    src = [dict(zip(src_cols, r)) for r in cur.fetchall()]
+    tail = [
+        r for r in src
+        if (r["tag_schema"], r["tag_table_name"]) not in top_n_keys
+    ]
+    assert len(tail) > 0, (
+        f"table_stats pg{pg_version}: tail must be non-empty for min/max "
+        f"cross-check (source rows={len(src)}, top-100={len(top_n_keys)})"
+    )
+
+    def _safe_min(values):
+        non_null = [v for v in values if v is not None]
+        return min(non_null) if non_null else None
+
+    def _safe_max(values):
+        non_null = [v for v in values if v is not None]
+        return max(non_null) if non_null else None
+
+    expected = {
+        "seconds_since_last_vacuum":
+            _safe_min(r["seconds_since_last_vacuum"] for r in tail),
+        "seconds_since_last_analyze":
+            _safe_min(r["seconds_since_last_analyze"] for r in tail),
+        "tx_freeze_age":
+            _safe_max(r["tx_freeze_age"] for r in tail),
+        "mxid_freeze_age":
+            _safe_max(r["mxid_freeze_age"] for r in tail),
+    }
+
+    clock_slack_s = 5
+    xid_slack = 2
+    tolerances = {
+        "seconds_since_last_vacuum":  clock_slack_s,
+        "seconds_since_last_analyze": clock_slack_s,
+        "tx_freeze_age":              xid_slack,
+        "mxid_freeze_age":            xid_slack,
+    }
+
+    for col, exp_val in expected.items():
+        tol = tolerances[col]
+        actual = other[col]
+        if exp_val is None:
+            assert actual is None, (
+                f"table_stats pg{pg_version} $other$.{col}: source-derived "
+                f"tail aggregate is NULL (all tail rows NULL), but "
+                f"production SQL returned {actual!r} — min/max semantics "
+                f"may have been replaced with sum/coalesce-to-0"
+            )
+        else:
+            assert actual is not None, (
+                f"table_stats pg{pg_version} $other$.{col}: expected ~"
+                f"{exp_val} (tail aggregate), got NULL — min/max may have "
+                f"been removed from the '$other$' arm"
+            )
+            assert abs(actual - exp_val) <= tol, (
+                f"table_stats pg{pg_version} $other$.{col}: production "
+                f"SQL returned {actual}, independent tail aggregate = "
+                f"{exp_val} (delta {actual - exp_val}, tolerance {tol}). "
+                f"A min/max swap would land here."
+            )
