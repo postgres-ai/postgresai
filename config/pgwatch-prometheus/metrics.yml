@@ -2505,18 +2505,58 @@ metrics:
           left join valid_duplicates vd on vd.invalid_indexrelid = pidx.indexrelid
           where pidx.indisvalid = false
         ),
-        num_data as (
+        ranked as (
           select
-            row_number() over () as num,
+            row_number() over (
+              order by index_size_bytes desc nulls last,
+                       tag_schema_name, tag_table_name, tag_index_name
+            ) as num,
             data.*
           from data
         )
         select
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
-          num_data.*
-        from num_data
-        limit 1000;
+          num,
+          tag_index_name,
+          tag_schema_name,
+          tag_table_name,
+          tag_relation_name,
+          index_definition,
+          index_size_bytes,
+          is_pk,
+          is_unique,
+          constraint_name,
+          table_row_estimate,
+          has_valid_duplicate,
+          valid_index_name,
+          valid_index_definition,
+          supports_fk
+        from ranked
+        where num <= 100
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          0::bigint as num,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_relation_name,
+          '$other$'::text as index_definition,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          false as is_pk,
+          false as is_unique,
+          '$other$'::text as constraint_name,
+          coalesce(sum(table_row_estimate), 0)::bigint as table_row_estimate,
+          bool_or(has_valid_duplicate) as has_valid_duplicate,
+          '$other$'::text as valid_index_name,
+          '$other$'::text as valid_index_definition,
+          coalesce(max(supports_fk), 0)::int as supports_fk
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2677,9 +2717,43 @@ metrics:
             formated_relation_name,
             supports_fk
           order by index_size_bytes desc
+        ),
+        -- redundant_indexes_grouped intentionally exposes duplicate aliases
+        -- (tag_schema_name / tag_index_name appear twice — once from the
+        -- raw name and once from the formated_* variant). select * over it
+        -- preserves both. Order by table_name (unique, non-duplicated).
+        ranked as (
+          select
+            row_number() over (
+              order by index_size_bytes desc nulls last, table_name
+            ) as num,
+            redundant_indexes_grouped.*
+          from redundant_indexes_grouped
         )
-        select * from redundant_indexes_grouped
-        limit 1000;
+        select * from ranked where num <= 100
+        union all
+        select
+          0::bigint as num,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as table_name,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_access_method,
+          '$other$'::text as tag_reason,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(index_usage), 0)::int8 as index_usage,
+          '$other$'::text as index_definition,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_relation_name,
+          coalesce(max(supports_fk), 0)::int as supports_fk,
+          '$other$'::text as redundant_to_json
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2767,6 +2841,17 @@ metrics:
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
+        , ranked as (
+          select
+            row_number() over (
+              order by index_size_bytes desc nulls last,
+                       schema_name, table_name, index_name
+            ) as num,
+            *
+          from index_ratios
+          where idx_scan = 0
+            and idx_is_btree
+        )
         select
           'Never Used Indexes' as tag_reason,
           current_database() as tag_datname,
@@ -2786,12 +2871,32 @@ metrics:
           idx_is_btree,
           opclasses as tag_opclasses,
           supports_fk
-        from index_ratios
-        where
-          idx_scan = 0
-          and idx_is_btree
-        order by index_size_bytes desc
-        limit 1000;
+        from ranked
+        where num <= 100
+        union all
+        select
+          'Never Used Indexes' as tag_reason,
+          current_database() as tag_datname,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as index_definition,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(all_scans), 0)::int8 as all_scans,
+          0::numeric as index_scan_pct,
+          coalesce(sum(writes), 0)::int8 as writes,
+          0::numeric as scans_per_write,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          coalesce(sum(relpages), 0)::int4 as relpages,
+          true as idx_is_btree,
+          '$other$'::text as tag_opclasses,
+          false as supports_fk
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2882,25 +2987,7 @@ metrics:
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
-        select
-          tag_reason,
-          index_id,
-            schema_name as tag_schema_name,
-            table_name as tag_table_name,
-            index_name as tag_index_name,
-            idx_scan,
-            all_scans,
-            index_scan_pct,
-            writes,
-            scans_per_write,
-            index_size_bytes,
-            table_size_bytes,
-            relpages,
-            idx_is_btree,
-            opclasses as tag_opclasses,
-            supports_fk,
-            grp
-        from (
+        , flagged as (
           select
             'Low Scans, High Writes' as tag_reason,
             *,
@@ -2934,9 +3021,59 @@ metrics:
               ( writes::numeric / ( total_writes + 1 ) ) > 0.02
               and not idx_is_btree
               and index_size_bytes > 100000000
-        ) t
-        order by grp, index_size_bytes desc
-        limit 1000;
+        ),
+        ranked as (
+          select
+            row_number() over (
+              order by grp, index_size_bytes desc nulls last,
+                       schema_name, table_name, index_name
+            ) as num,
+            *
+          from flagged
+        )
+        select
+          tag_reason,
+          index_id,
+          schema_name as tag_schema_name,
+          table_name as tag_table_name,
+          index_name as tag_index_name,
+          idx_scan,
+          all_scans,
+          index_scan_pct,
+          writes,
+          scans_per_write,
+          index_size_bytes,
+          table_size_bytes,
+          relpages,
+          idx_is_btree,
+          opclasses as tag_opclasses,
+          supports_fk,
+          grp
+        from ranked
+        where num <= 100
+        union all
+        select
+          '$other$' as tag_reason,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_index_name,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(all_scans), 0)::int8 as all_scans,
+          0::numeric as index_scan_pct,
+          coalesce(sum(writes), 0)::int8 as writes,
+          0::numeric as scans_per_write,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          coalesce(sum(relpages), 0)::int4 as relpages,
+          false as idx_is_btree,
+          '$other$'::text as tag_opclasses,
+          false as supports_fk,
+          0 as grp
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
