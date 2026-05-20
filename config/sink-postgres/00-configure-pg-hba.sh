@@ -15,7 +15,7 @@
 cat > ${PGDATA}/pg_hba.conf <<EOF
 # PostgreSQL Client Authentication Configuration File
 # Custom configuration for sink-postgres container
-# 
+#
 # SECURITY CONTEXT:
 # This configuration uses trust authentication for connections within Docker networks.
 # This is safe because:
@@ -53,11 +53,27 @@ host    replication     all             ::1/128                 trust
 # 172.16.0.0/12   - Default Docker bridge networks
 # 192.168.0.0/16  - User-defined bridge networks
 # 10.0.0.0/8      - Additional private network range
+# fc00::/7        - IPv6 Unique Local Address range (RFC 4193); the
+#                   IPv6 equivalent of the above three RFC 1918 ranges.
+#                   Docker assigns IPv6 prefixes inside fc00::/7 when
+#                   IPv6 is enabled on a Compose network — which mon
+#                   local-install does by default so containers can
+#                   reach IPv6-only external databases (Supabase
+#                   free-tier db.<ref>.supabase.co, etc.). Without
+#                   this entry, dual-stack hostname resolution serves
+#                   the AAAA result first per RFC 6724 and Python
+#                   clients (flask-pgss-api, postgres-reports) fail
+#                   the connection on pg_hba.conf without falling
+#                   back to IPv4. Go's pgx driver recovers via
+#                   happy-eyeballs but logs ~18 startup-race errors.
 host    all             all             172.16.0.0/12           trust
 host    all             all             192.168.0.0/16          trust
 host    all             all             10.0.0.0/8              trust
+host    all             all             fc00::/7                trust
+
+# Replication over the IPv6 ULA range (mirrors the IPv4 docker ranges above)
+host    replication     all             fc00::/7                trust
 EOF
 
 # Reload PostgreSQL configuration
 pg_ctl reload -D ${PGDATA}
-
