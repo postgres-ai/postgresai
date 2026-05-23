@@ -46,7 +46,7 @@
       },
       "id": 1,
       "panels": [],
-      "title": "I/O Overview",
+      "title": "I/O overview",
       "type": "row"
     },
     {
@@ -245,7 +245,7 @@
           "refId": "C"
         }
       ],
-      "title": "I/O Time (ms per second)",
+      "title": "I/O time (ms/s)",
       "type": "timeseries"
     },
     {
@@ -312,7 +312,7 @@
           "refId": "A"
         }
       ],
-      "title": "Buffer Hit Ratio (%)",
+      "title": "Buffer hit ratio (%)",
       "type": "gauge"
     },
     {
@@ -415,7 +415,7 @@
           "refId": "C"
         }
       ],
-      "title": "I/O Operations (ops/s)",
+      "title": "I/O operations (ops/s)",
       "type": "timeseries"
     },
     {
@@ -428,7 +428,7 @@
       },
       "id": 10,
       "panels": [],
-      "title": "I/O by Backend Type",
+      "title": "I/O by backend type",
       "type": "row"
     },
     {
@@ -517,7 +517,7 @@
           "refId": "A"
         }
       ],
-      "title": "Reads by Backend Type (ops/s)",
+      "title": "Reads by backend type (ops/s)",
       "type": "timeseries"
     },
     {
@@ -606,7 +606,7 @@
           "refId": "A"
         }
       ],
-      "title": "Writes by Backend Type (ops/s)",
+      "title": "Writes by backend type (ops/s)",
       "type": "timeseries"
     },
     {
@@ -619,7 +619,7 @@
       },
       "id": 20,
       "panels": [],
-      "title": "Writebacks, Fsyncs & Extends",
+      "title": "Writebacks, fsyncs, and file extends",
       "type": "row"
     },
     {
@@ -886,7 +886,7 @@
           "refId": "A"
         }
       ],
-      "title": "Extends/File Growth (ops/s)",
+      "title": "File extends (ops/s)",
       "type": "timeseries"
     },
     {
@@ -899,7 +899,7 @@
       },
       "id": 30,
       "panels": [],
-      "title": "Buffer Cache Efficiency",
+      "title": "Buffer cache efficiency",
       "type": "row"
     },
     {
@@ -995,7 +995,7 @@
           "refId": "B"
         }
       ],
-      "title": "Buffer Evictions & Reuses (ops/s)",
+      "title": "Buffer evictions and reuses (ops/s)",
       "type": "timeseries"
     },
     {
@@ -1084,7 +1084,7 @@
           "refId": "A"
         }
       ],
-      "title": "Buffer Hits by Backend Type (ops/s)",
+      "title": "Buffer hits by backend type (ops/s)",
       "type": "timeseries"
     }
   ],
@@ -1144,7 +1144,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "14. I/O Statistics (pg_stat_io)",
+  "title": "14. I/O statistics (pg_stat_io)",
   "uid": "io_statistics",
   "version": 1
 }
