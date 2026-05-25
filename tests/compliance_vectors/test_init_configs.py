@@ -162,3 +162,54 @@ def test_missing_version_marker_on_nonempty_target_overwrites():
         assert os.path.isfile(marker)
         with open(marker) as f:
             assert f.read().strip() == '2.0.0'
+
+
+def test_stale_grafana_dashboards_removed_on_upgrade():
+    """Renamed dashboards from a prior version must NOT linger in the volume.
+
+    Grafana provisioning treats files in `grafana/dashboards/` as authoritative
+    sources. A stale file from a prior version that shares a top-level `uid`
+    with a renamed file in the new version triggers the
+    "the same UID is used more than once" warning and blocks the provider from
+    writing ANY dashboard. The init-configs script must therefore mirror the
+    dashboards directory to the image contents, not merely overlay it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        source_dir = os.path.join(tmp, 'src')
+        target_dir = os.path.join(tmp, 'tgt')
+        version_file = os.path.join(tmp, 'VERSION')
+        os.makedirs(source_dir)
+        os.makedirs(target_dir)
+        _make_source_tree(source_dir)
+
+        # New image ships a renamed dashboard.
+        os.makedirs(os.path.join(source_dir, 'grafana', 'dashboards'))
+        new_dashboard = os.path.join(
+            source_dir, 'grafana', 'dashboards', 'Dashboard_7_Autovacuum_and_xmin_horizon.json'
+        )
+        with open(new_dashboard, 'w') as f:
+            f.write('{"uid": "caffad19", "title": "new D7"}\n')
+
+        # Pre-existing volume from a prior version still has the OLD filename
+        # with the SAME top-level uid - the case that triggered the
+        # "the same UID is used more than once" warning in 0.14 -> 0.15.
+        os.makedirs(os.path.join(target_dir, 'grafana', 'dashboards'))
+        stale_dashboard = os.path.join(
+            target_dir, 'grafana', 'dashboards', 'Dashboard_7_Autovacuum_and_bloat.json'
+        )
+        with open(stale_dashboard, 'w') as f:
+            f.write('{"uid": "caffad19", "title": "old D7"}\n')
+        # Mismatched version marker so re-init runs.
+        with open(os.path.join(target_dir, VERSION_MARKER), 'w') as f:
+            f.write('1.0.0')
+
+        _run_script(source_dir, target_dir, version_file, version='2.0.0')
+
+        # Stale dashboard removed; new dashboard present.
+        assert not os.path.exists(stale_dashboard), (
+            'stale dashboard from prior version must be removed to avoid '
+            'duplicate-uid provisioning collisions'
+        )
+        assert os.path.isfile(
+            os.path.join(target_dir, 'grafana', 'dashboards', 'Dashboard_7_Autovacuum_and_xmin_horizon.json')
+        )

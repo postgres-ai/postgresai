@@ -1021,7 +1021,8 @@
   "refresh": "30s",
   "schemaVersion": 39,
   "tags": [
-    "postgres-ai"
+    "postgres-ai",
+    "locks"
   ],
   "templating": {
     "list": [

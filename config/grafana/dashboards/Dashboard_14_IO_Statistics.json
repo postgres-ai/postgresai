@@ -1092,10 +1092,8 @@
   "refresh": "30s",
   "schemaVersion": 41,
   "tags": [
-    "postgresql",
-    "io",
-    "performance",
-    "postgres-ai"
+    "postgres-ai",
+    "io"
   ],
   "templating": {
     "list": [

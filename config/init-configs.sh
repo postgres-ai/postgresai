@@ -45,6 +45,21 @@ fi
 
 echo "Initializing configs (target version: $SOURCE_VERSION)..."
 
+# Grafana dashboards are managed by file-based provisioning and must mirror the
+# image exactly: stale files cause "the same UID is used more than once" warnings
+# that block the provisioner from writing ANY dashboard. cp -r only adds/overwrites,
+# so an in-place upgrade where a dashboard was renamed (e.g. 0.14 ->
+# 0.15: Dashboard_7_Autovacuum_and_bloat.json -> Dashboard_7_Autovacuum_and_xmin_horizon.json,
+# both with the same top-level uid) would leave both files in the volume and
+# trigger a collision. Clean the dashboards directory before re-copy. We only
+# clean dashboards/ - other config files (pgwatch metrics.yml, etc.) may have
+# been edited by the operator and must be preserved.
+DASHBOARDS_DIR="${TARGET_DIR}/grafana/dashboards"
+if [ -d "$DASHBOARDS_DIR" ]; then
+  echo "Cleaning stale dashboards from $DASHBOARDS_DIR..."
+  find "$DASHBOARDS_DIR" -mindepth 1 -delete
+fi
+
 # Copy all configs preserving structure
 cp -r "$SOURCE_DIR"/* "$TARGET_DIR/"
 

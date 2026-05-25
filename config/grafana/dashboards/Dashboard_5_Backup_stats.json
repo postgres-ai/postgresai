@@ -1156,10 +1156,10 @@
   "preload": false,
   "schemaVersion": 41,
   "tags": [
-    "backups",
-    "dr",
+    "postgres-ai",
     "wal",
-    "postgres-ai"
+    "backups",
+    "dr"
   ],
   "templating": {
     "list": [

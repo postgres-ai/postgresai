@@ -2,6 +2,54 @@
 
 This document outlines the naming principles used in PostgresAI Grafana dashboards.
 
+## Tag Vocabulary
+
+Every shipped dashboard JSON MUST include a top-level `"tags"` array whose
+first entry is the project label `postgres-ai`, followed by 1-3 thematic tags
+drawn from the controlled vocabulary below. The leading project label lets
+operators filter the dashboard library to PostgresAI-shipped content even
+when other Grafana provisioning providers are configured on the same
+instance; the thematic tags give topical navigation.
+
+**Project label (mandatory, always first):** `postgres-ai`
+
+**Thematic vocabulary (pick 1-3):**
+
+| Tag | Meaning |
+|-----|---------|
+| `overview` | High-level / landing-page dashboards |
+| `node` | Per-node performance |
+| `queries` | Query analysis (pg_stat_statements, etc.) |
+| `waits` | Wait events |
+| `ash` | Active Session History |
+| `wal` | WAL generation and archiving |
+| `backups` | Backup state and lag |
+| `dr` | Disaster recovery |
+| `replication` | Streaming/logical replication |
+| `ha` | High availability state |
+| `autovacuum` | Autovacuum workload |
+| `xmin` | xmin horizon, bloat causes |
+| `tables` | Table-level stats |
+| `indexes` | Index-level stats |
+| `slru` | SLRU caches |
+| `locks` | Lock contention |
+| `io` | I/O statistics (pg_stat_io) |
+| `self-monitoring` | Monitoring of the monitoring stack itself |
+| `monitoring-stack` | pgwatch/VictoriaMetrics/Grafana plumbing |
+
+The mapping for shipped dashboards lives in the dashboards themselves; the
+file `config/grafana/dashboards/<name>.json` is the source of truth.
+
+When adding a new dashboard:
+
+1. Add `postgres-ai` as the first tag.
+2. Pick 1-3 thematic tags from the table above. Add to the table if a new
+   theme is genuinely needed (and explain why in the PR).
+3. Choose a stable top-level `uid` and never reuse one previously shipped:
+   Grafana provisioning blocks the entire provider when two files share a
+   top-level `uid` (see `config/init-configs.sh` for the upgrade-time
+   cleanup of stale dashboards).
+
 ## Terminology Rules
 
 ### Bloat Metrics

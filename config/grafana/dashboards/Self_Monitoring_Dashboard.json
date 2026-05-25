@@ -2848,9 +2848,9 @@
   "refresh": "",
   "schemaVersion": 41,
   "tags": [
+    "postgres-ai",
     "self-monitoring",
-    "monitoring-stack",
-    "postgres-ai"
+    "monitoring-stack"
   ],
   "templating": {
     "list": []
