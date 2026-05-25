@@ -74,6 +74,71 @@ function stripMatchingQuotes(value: string): string {
   return trimmed;
 }
 
+/**
+ * Required env vars contract for the monitoring stack.
+ *
+ * Keys listed here are required by the docker-compose stack and must exist in
+ * `.env` for the stack to start cleanly. Each entry knows how to mint a safe
+ * default if the key is missing. Existing values are always preserved
+ * verbatim - this function is purely additive.
+ *
+ * This is the spine of the in-place upgrade story: when a user upgrades from
+ * a version that didn't require a key (e.g. 0.14, pre-VM-auth) to one that
+ * does (0.15), `ensureRequiredEnvVars` appends what's missing so the next
+ * `docker compose up` doesn't fail with `missing "<KEY>" env var`.
+ */
+type EnvKeyDefault = {
+  key: string;
+  /** Default value or factory for green-field installs / first upgrade. */
+  defaultValue: () => string;
+  /** Key was introduced in this CLI version - used in human-readable migration logs. */
+  introducedIn: string;
+};
+
+const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
+  { key: "REPLICATOR_PASSWORD", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.13" },
+  { key: "VM_AUTH_USERNAME", defaultValue: () => "vmauth", introducedIn: "0.15" },
+  { key: "VM_AUTH_PASSWORD", defaultValue: () => crypto.randomBytes(18).toString("base64"), introducedIn: "0.15" },
+];
+
+/**
+ * Read `.env` (if present), append any required keys that are missing, write
+ * back atomically with 0600 perms, and return the list of keys that were added.
+ *
+ * Idempotent: a second call is a no-op once all keys are present.
+ *
+ * Used by `mon local-install`, `mon update`, and `mon update-config` so the
+ * in-place upgrade path picks up newly-required env vars without surprising
+ * the user with a silent boot failure on `sink-prometheus` / `grafana`.
+ */
+function ensureRequiredEnvVars(projectDir: string): string[] {
+  const envFile = path.resolve(projectDir, ".env");
+  const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+
+  const added: string[] = [];
+  const appendLines: string[] = [];
+
+  for (const spec of REQUIRED_ENV_KEYS) {
+    const re = new RegExp(`^${spec.key}=`, "m");
+    if (!re.test(existing)) {
+      appendLines.push(`${spec.key}=${spec.defaultValue()}`);
+      added.push(spec.key);
+    }
+  }
+
+  if (appendLines.length === 0) {
+    return added;
+  }
+
+  // Append (don't overwrite) so we preserve order and any comments the user
+  // may have added to their .env. Make sure we have a trailing newline first.
+  const needsTrailingNewline = existing.length > 0 && !existing.endsWith("\n");
+  const newContent = existing + (needsTrailingNewline ? "\n" : "") + appendLines.join("\n") + "\n";
+  fs.writeFileSync(envFile, newContent, { encoding: "utf8", mode: 0o600 });
+
+  return added;
+}
+
 // Helper functions for spawning processes - use Node.js child_process for compatibility
 async function execFilePromise(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -2970,41 +3035,83 @@ mon
   });
 mon
   .command("update-config")
-  .description("apply monitoring services configuration (generate sources)")
+  .description("apply monitoring services configuration (generate sources, migrate .env)")
   .action(async () => {
+    let projectDir: string;
+    try {
+      ({ projectDir } = await resolveOrInitPaths());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(message);
+      process.exitCode = 1;
+      return;
+    }
+
+    // Migrate .env first: append any required keys introduced by newer stack
+    // versions (e.g. VM_AUTH_* added in 0.15). This is what makes in-place
+    // upgrades from older deployments not break with `missing "VM_AUTH_USERNAME"
+    // env var` when sink-prometheus boots.
+    const added = ensureRequiredEnvVars(projectDir);
+    if (added.length > 0) {
+      console.log(`Added missing .env keys for this stack version: ${added.join(", ")}`);
+      console.log("(existing values were preserved; missing keys filled with safe defaults)\n");
+    }
+
     const code = await runCompose(["run", "--rm", "sources-generator"]);
     if (code !== 0) process.exitCode = code;
   });
 mon
   .command("update")
-  .description("update monitoring stack")
+  .description("update monitoring stack (migrate .env, pull images)")
   .action(async () => {
     console.log("Updating PostgresAI monitoring stack...\n");
 
     try {
-      // Check if we're in a git repo
-      const gitDir = path.resolve(process.cwd(), ".git");
-      if (!fs.existsSync(gitDir)) {
-        console.error("Not a git repository. Cannot update.");
+      let projectDir: string;
+      try {
+        ({ projectDir } = await resolveOrInitPaths());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(message);
         process.exitCode = 1;
         return;
       }
 
-      // Fetch latest changes
-      console.log("Fetching latest changes...");
-      await execFilePromise("git", ["fetch", "origin"]);
+      // Step 1: migrate .env so newer stack versions that require additional
+      // env vars (e.g. VM_AUTH_USERNAME / VM_AUTH_PASSWORD introduced in 0.15)
+      // don't make `docker compose up` fail silently for users who installed
+      // before those vars existed. Purely additive: existing values are kept.
+      console.log("Checking .env for newly-required keys...");
+      const added = ensureRequiredEnvVars(projectDir);
+      if (added.length > 0) {
+        console.log(`✓ Added missing .env keys: ${added.join(", ")}`);
+        console.log("  (existing values preserved; missing keys filled with safe defaults)");
+      } else {
+        console.log("✓ .env is up to date");
+      }
+      console.log();
 
-      // Check current branch
-      const { stdout: branch } = await execFilePromise("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
-      const currentBranch = branch.trim();
-      console.log(`Current branch: ${currentBranch}`);
+      // Step 2: refresh repo if this is a git-based deployment. Some users
+      // upgrade purely via `npm install -g postgresai@latest` and don't have a
+      // git checkout - in that case we skip git operations and still do the
+      // env migration + docker pull.
+      const gitDir = path.resolve(projectDir, ".git");
+      if (fs.existsSync(gitDir)) {
+        console.log("Fetching latest changes...");
+        await execFilePromise("git", ["fetch", "origin"]);
 
-      // Pull latest changes
-      console.log("Pulling latest changes...");
-      const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
-      console.log(pullOut);
+        const { stdout: branch } = await execFilePromise("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+        const currentBranch = branch.trim();
+        console.log(`Current branch: ${currentBranch}`);
 
-      // Update Docker images
+        console.log("Pulling latest changes...");
+        const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
+        console.log(pullOut);
+      } else {
+        console.log("(not a git checkout — skipping git fetch/pull and going straight to image pull)");
+      }
+
+      // Step 3: pull new images.
       console.log("\nUpdating Docker images...");
       const code = await runCompose(["pull"]);
 

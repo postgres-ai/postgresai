@@ -294,7 +294,7 @@ This will:
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords.
 
-> **Manual upgrade note:** If you run `docker compose` directly or maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading. Rotate VictoriaMetrics auth with `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart.
+> **In-place upgrade note:** Newer stack versions can require additional `.env` keys (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` were added in 0.15 for VictoriaMetrics basic auth). Both `postgresai mon local-install -y` and `postgresai mon update` perform a purely-additive `.env` migration on every run: existing values are preserved verbatim, and any newly-required keys are appended with safe random defaults. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart.
 
 **Alternative: Manual upgrade**
 
@@ -304,6 +304,9 @@ If you prefer more control:
 # Update the PGAI_TAG in .env to match your CLI version
 postgresai --version  # check your CLI version
 # Edit .env and set PGAI_TAG to the version number
+
+# Migrate .env to add any newly-required keys (e.g. VM_AUTH_* for 0.15+)
+postgresai mon update-config
 
 # Pull new images
 docker compose pull

@@ -420,3 +420,126 @@ describe("upgrade CLI commands", () => {
     expect(stdout).toMatch(/health/i);
   }, { timeout: TEST_TIMEOUT });
 });
+
+describe("in-place upgrade env migration (mon update / update-config)", () => {
+  /**
+   * Regression tests for the 0.14 -> 0.15 in-place upgrade gap (#203).
+   *
+   * Before this fix, a user who installed at 0.14 and ran the documented
+   * upgrade flow (`pgai mon update`) ended up with a .env file that lacked
+   * VM_AUTH_USERNAME / VM_AUTH_PASSWORD, so sink-prometheus exited with:
+   *
+   *   fatal cannot read "/postgres_ai_configs/prometheus/prometheus.yml":
+   *   cannot expand environment variables: missing "VM_AUTH_USERNAME" env var
+   *
+   * `mon update` and `mon update-config` now migrate .env additively before
+   * doing anything else.
+   */
+
+  let tempDir: string;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(resolve(os.tmpdir(), "pgai-upgrade-env-migration-"));
+  });
+
+  afterAll(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("mon update-config appends missing VM_AUTH_USERNAME / VM_AUTH_PASSWORD to a 0.14-shaped .env", () => {
+    const testDir = resolve(tempDir, "update-config-0.14-env");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // 0.14-shaped .env: PGAI_TAG present, VM_AUTH_* absent.
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\nGF_SECURITY_ADMIN_PASSWORD=user-set-grafana-pw\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    // The compose run will fail (no Docker in CI), but env migration runs first.
+    runCliInDir(["mon", "update-config"], testDir, { PGAI_TAG: undefined });
+
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    // Existing values must be preserved verbatim.
+    expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
+    expect(envContent).toMatch(/^GF_SECURITY_ADMIN_PASSWORD=user-set-grafana-pw$/m);
+
+    // New required keys must be appended (vmauth username + non-empty base64 password).
+    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}$/m);
+
+    // REPLICATOR_PASSWORD was introduced earlier and is also part of the contract.
+    expect(envContent).toMatch(/^REPLICATOR_PASSWORD=[a-f0-9]{64}$/m);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("mon update appends missing VM_AUTH_USERNAME / VM_AUTH_PASSWORD to a 0.14-shaped .env", () => {
+    const testDir = resolve(tempDir, "update-0.14-env");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    // mon update will fail (no Docker in CI, no git repo), but env migration runs first.
+    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
+
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
+    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}$/m);
+
+    // The migration step should print what it added so the user can see it.
+    expect(result.stdout).toMatch(/Added missing \.env keys/);
+    expect(result.stdout).toMatch(/VM_AUTH_USERNAME/);
+    expect(result.stdout).toMatch(/VM_AUTH_PASSWORD/);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("mon update preserves existing VM_AUTH_* values (no rotation)", () => {
+    const testDir = resolve(tempDir, "update-preserve-vm-auth");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // User already has VM auth configured (e.g. set up via rotate-vm-auth.sh).
+    fs.writeFileSync(
+      resolve(testDir, ".env"),
+      "PGAI_TAG=0.15.0\nVM_AUTH_USERNAME=custom-user\nVM_AUTH_PASSWORD=custom-pw-do-not-rotate\nREPLICATOR_PASSWORD=" +
+        "a".repeat(64) +
+        "\n",
+    );
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
+
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    expect(envContent).toMatch(/^VM_AUTH_USERNAME=custom-user$/m);
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=custom-pw-do-not-rotate$/m);
+    expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
+
+    // When nothing is missing, the migration step should say so.
+    expect(result.stdout).toMatch(/\.env is up to date/);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("mon update-config handles a .env that doesn't end with a newline", () => {
+    const testDir = resolve(tempDir, "update-config-no-trailing-newline");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // No trailing newline - migration must add one before appending new keys
+    // or we'd produce e.g. `PGAI_TAG=0.14.0VM_AUTH_USERNAME=vmauth`.
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, { PGAI_TAG: undefined });
+
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
+    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
+    // No key should be glued onto the previous line.
+    expect(envContent).not.toMatch(/PGAI_TAG=0\.14\.0VM_AUTH_USERNAME/);
+  }, { timeout: TEST_TIMEOUT });
+});
