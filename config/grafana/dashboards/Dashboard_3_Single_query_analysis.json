@@ -311,10 +311,10 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum by (event_type) (irate(pgwatch_wait_events_sampling_total[$__rate_interval]))>0",
+          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total)>0",
           "hide": false,
           "interval": "20",
-          "legendFormat": " {{event_type}}",
+          "legendFormat": " {{wait_event_type}}",
           "range": true,
           "refId": "D"
         }
