@@ -936,7 +936,9 @@
   "refresh": "5s",
   "schemaVersion": 41,
   "tags": [
-    "postgres-ai"
+    "postgres-ai",
+    "waits",
+    "ash"
   ],
   "templating": {
     "list": [

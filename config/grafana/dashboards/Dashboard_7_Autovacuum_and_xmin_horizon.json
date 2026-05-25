@@ -1615,7 +1615,9 @@
   "preload": false,
   "schemaVersion": 41,
   "tags": [
-    "postgres-ai"
+    "postgres-ai",
+    "autovacuum",
+    "xmin"
   ],
   "templating": {
     "list": [

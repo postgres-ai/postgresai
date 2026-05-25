@@ -763,7 +763,8 @@
     "refresh": "30s",
     "schemaVersion": 41,
     "tags": [
-      "postgres-ai"
+      "postgres-ai",
+      "slru"
     ],
     "templating": {
       "list": [

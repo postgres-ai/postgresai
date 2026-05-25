@@ -1115,7 +1115,8 @@
   "preload": false,
   "schemaVersion": 41,
   "tags": [
-    "postgres-ai"
+    "postgres-ai",
+    "indexes"
   ],
   "templating": {
     "list": [

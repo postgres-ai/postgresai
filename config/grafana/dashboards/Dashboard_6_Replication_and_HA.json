@@ -64,7 +64,9 @@
     "preload": false,
     "schemaVersion": 41,
     "tags": [
-      "postgres-ai"
+      "postgres-ai",
+      "replication",
+      "ha"
     ],
     "templating": {
       "list": []
