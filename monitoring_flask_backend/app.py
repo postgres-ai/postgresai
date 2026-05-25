@@ -556,13 +556,153 @@ def get_prometheus_client():
         raise
 
 
-def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart',
-                              max_age_hours: int = None) -> dict:
+# Used to gate the cross-source-duplicate warning so we do not spam logs once
+# per dashboard refresh. Keyed by datname; emits at most one warning per
+# (datname, source-set) pair per process.
+_logged_cross_source_warnings: set = set()
+
+
+def _should_apply_db_filter(db_name: str | None) -> bool:
+    """
+    Decide whether ``db_name`` is a real database name worth filtering on.
+
+    Skips empty strings, the literal Grafana ``All`` sentinel, and unresolved
+    template variables (``$db_name``) that occasionally leak through when a
+    dashboard panel is rendered before the variable is populated.
+    """
+    return bool(db_name) and db_name.lower() not in ('all', '') and not db_name.startswith('$')
+
+
+def _build_query_text_lookup_sql(*, with_db_filter: bool, time_clause: str | None) -> str:
+    """
+    Build the SQL for queryid → query text lookups against the sink table.
+
+    The sink table ``public.pgss_queryid_queries`` is LIST-partitioned by
+    the ``dbname`` column, which stores the *pgwatch source name* (e.g.
+    ``my-host-cone-demo``) — NOT the actual Postgres database name. The
+    actual database name (``datname``) is stored inside the JSONB payload
+    as ``data->>'real_dbname'``. Dashboards pass the Prometheus
+    ``datname`` label, so the filter must be on the JSONB key. Filtering
+    on the partition ``dbname`` column with a ``datname`` value yields
+    zero rows — that was the root cause of MR !271.
+
+    Args:
+        with_db_filter: when True, append the
+            ``data->>'real_dbname' = %s`` predicate (caller binds a
+            ``datname``). The companion ``data ? 'real_dbname'`` is also
+            emitted so the absent-key case is explicit (older pgwatch
+            payloads or non-pgss rows missing the key are excluded
+            deliberately, not by accident).
+        time_clause: optional ``time > now() - ...`` fragment to bound
+            the scan, e.g. ``"time > now() - make_interval(hours => %s)"``.
+
+    When ``with_db_filter`` is True, the SQL also surfaces a
+    ``source_dbnames`` column with the array of partition names that
+    hold a row for the same queryid. Callers use this to detect (and
+    log) the multi-source-ambiguity scenario flagged in MR !271's
+    review: two pgwatch sources observing the same physical database
+    would each contribute a row, and ``DISTINCT ON`` would pick one
+    arbitrarily by ``time DESC``.
+
+    The aggregation cannot use ``array_agg(distinct ...) OVER (...)``
+    because PostgreSQL does not implement ``DISTINCT`` in window
+    aggregates (`FeatureNotSupported`). Instead, the filtered scan
+    is materialized once via a CTE and joined to a separate
+    ``GROUP BY queryid`` aggregate — same single underlying scan
+    plan, but only standard SQL constructs.
+
+    Performance note: efficient evaluation of the
+    ``data->>'real_dbname'`` predicate requires the expression index
+    ``pgss_queryid_queries_real_dbname_time_idx`` declared in
+    ``config/sink-postgres/init.sql`` (also covers the ``time``
+    column). Without that index this becomes a per-partition seq scan.
+    """
+    where_clauses = [
+        "data->>'queryid' is not null",
+        "data->>'query' is not null",
+    ]
+    if with_db_filter:
+        where_clauses.append("data ? 'real_dbname'")
+        where_clauses.append("data->>'real_dbname' = %s")
+    if time_clause:
+        where_clauses.append(time_clause)
+    where_sql = "\n              and ".join(where_clauses)
+
+    if with_db_filter:
+        return (
+            "with filtered as (\n"
+            "    select\n"
+            "        data->>'queryid' as queryid,\n"
+            "        data->>'query' as query,\n"
+            "        dbname,\n"
+            "        time\n"
+            "    from public.pgss_queryid_queries\n"
+            "    where\n"
+            f"              {where_sql}\n"
+            "),\n"
+            "sources as (\n"
+            "    select queryid, array_agg(distinct dbname) as source_dbnames\n"
+            "    from filtered\n"
+            "    group by queryid\n"
+            "),\n"
+            "latest as (\n"
+            "    select distinct on (queryid) queryid, query\n"
+            "    from filtered\n"
+            "    order by queryid, time desc\n"
+            ")\n"
+            "select l.queryid, l.query, s.source_dbnames\n"
+            "from latest l\n"
+            "join sources s using (queryid)"
+        )
+    return (
+        "select distinct on (data->>'queryid')\n"
+        "    data->>'queryid' as queryid,\n"
+        "    data->>'query' as query\n"
+        "from public.pgss_queryid_queries\n"
+        "where\n"
+        f"              {where_sql}\n"
+        "order by data->>'queryid', time desc"
+    )
+
+
+def _warn_on_cross_source_duplicates(db_name: str, duplicates: list) -> None:
+    """
+    Log a one-shot warning when a single ``datname`` is observed under
+    more than one pgwatch source partition. ``DISTINCT ON`` silently
+    picks one row per queryid by ``time DESC``, so without this signal a
+    cross-tenant collision (two sources monitoring the same physical
+    database name) would surface query texts from a non-deterministic
+    source. Each duplicate is a tuple ``(queryid, source_dbnames)``.
+    """
+    if not duplicates:
+        return
+    # Dedupe by the full (datname, sorted source-set) tuple — the same
+    # collision will be observed on every refresh, no need to log twice.
+    fingerprint = (db_name, tuple(sorted({tuple(sorted(s[1])) for s in duplicates})))
+    if fingerprint in _logged_cross_source_warnings:
+        return
+    _logged_cross_source_warnings.add(fingerprint)
+    queryid_sample, sources_sample = duplicates[0]
+    logger.warning(
+        "Cross-source ambiguity for datname=%s: %d queryid(s) appear in "
+        "multiple pgwatch source partitions; DISTINCT ON picks one by "
+        "time DESC. Example: queryid=%s, sources=%s. Consider scoping "
+        "by source name as well, or changing the dedup trigger to "
+        "(real_dbname, queryid).",
+        db_name, len(duplicates), queryid_sample, sorted(sources_sample),
+    )
+
+
+def get_query_texts_from_sink(db_name: str | None = None, truncation_mode: str = 'smart',
+                              max_age_hours: int | None = None) -> dict:
     """
     Fetch queryid-to-query text mappings from the PostgreSQL sink database.
 
     Args:
-        db_name: Optional database name to filter results
+        db_name: Optional Postgres database name (``datname``) to filter
+            results. Matched against ``data->>'real_dbname'`` in the
+            JSONB payload, NOT the partition ``dbname`` column (which
+            holds the pgwatch source name).
         truncation_mode: 'smart' for smart truncation, 'raw' for simple truncation
         max_age_hours: Only return queryids seen within this many hours (None = use retention window)
 
@@ -578,51 +718,37 @@ def get_query_texts_from_sink(db_name: str = None, truncation_mode: str = 'smart
     try:
         conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            # Skip db_name filter if it's empty, "All", or contains special chars
-            use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
+            use_db_filter = _should_apply_db_filter(db_name)
+            sql = _build_query_text_lookup_sql(
+                with_db_filter=use_db_filter,
+                time_clause='time > now() - make_interval(hours => %s)',
+            )
             if use_db_filter:
-                query = """
-                    SELECT DISTINCT ON (data->>'queryid')
-                        data->>'queryid' as queryid,
-                        data->>'query' as query
-                    FROM public.pgss_queryid_queries
-                    WHERE
-                        dbname = %s
-                        AND time > now() - make_interval(hours => %s)
-                        AND data->>'queryid' IS NOT NULL
-                        AND data->>'query' IS NOT NULL
-                    ORDER BY data->>'queryid', time DESC
-                """
-                cursor.execute(query, (db_name, max_age_hours))
+                cursor.execute(sql, (db_name, max_age_hours))
             else:
-                query = """
-                    SELECT DISTINCT ON (data->>'queryid')
-                        data->>'queryid' as queryid,
-                        data->>'query' as query
-                    FROM public.pgss_queryid_queries
-                    WHERE
-                        time > now() - make_interval(hours => %s)
-                        AND data->>'queryid' IS NOT NULL
-                        AND data->>'query' IS NOT NULL
-                    ORDER BY data->>'queryid', time DESC
-                """
-                cursor.execute(query, (max_age_hours,))
+                cursor.execute(sql, (max_age_hours,))
 
+            cross_source_dupes = []
             for row in cursor:
                 queryid = row['queryid']
                 query_text = row['query']
+                if use_db_filter:
+                    sources = row['source_dbnames'] or []
+                    if len(sources) > 1:
+                        cross_source_dupes.append((queryid, list(sources)))
                 if queryid:
                     if query_text:
                         if truncation_mode == 'raw':
-                            # Raw truncation: normalize whitespace and truncate
                             normalized = ' '.join(query_text.split())
                             query_text = (normalized[:147] + '...') if len(normalized) > 150 else normalized
                         else:
-                            # Smart truncation (extracts table names)
                             query_text = smart_truncate_query(query_text, 150)
                     else:
                         query_text = ''
                     query_texts[queryid] = query_text
+
+            if use_db_filter:
+                _warn_on_cross_source_duplicates(db_name, cross_source_dupes)
     except Exception as e:
         logger.warning(f"Failed to fetch query texts from sink database: {e}")
     finally:
@@ -1510,42 +1636,34 @@ def get_query_texts():
         try:
             conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # Skip db_name filter if it's empty, "All", or contains special chars
-                use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
+                use_db_filter = _should_apply_db_filter(db_name)
+                # Bound the scan by ``QUERYID_RETENTION_HOURS`` — without
+                # a time predicate every dashboard load scans every
+                # partition end-to-end, which degrades as data accumulates.
+                sql = _build_query_text_lookup_sql(
+                    with_db_filter=use_db_filter,
+                    time_clause='time > now() - make_interval(hours => %s)',
+                )
                 if use_db_filter:
-                    query = """
-                        SELECT DISTINCT ON (data->>'queryid')
-                            data->>'queryid' as queryid,
-                            data->>'query' as query
-                        FROM public.pgss_queryid_queries
-                        WHERE
-                            dbname = %s
-                            AND data->>'queryid' IS NOT NULL
-                            AND data->>'query' IS NOT NULL
-                        ORDER BY data->>'queryid', time DESC
-                    """
-                    cursor.execute(query, (db_name,))
+                    cursor.execute(sql, (db_name, QUERYID_RETENTION_HOURS))
                 else:
-                    query = """
-                        SELECT DISTINCT ON (data->>'queryid')
-                            data->>'queryid' as queryid,
-                            data->>'query' as query
-                        FROM public.pgss_queryid_queries
-                        WHERE
-                            data->>'queryid' IS NOT NULL
-                            AND data->>'query' IS NOT NULL
-                        ORDER BY data->>'queryid', time DESC
-                    """
-                    cursor.execute(query)
+                    cursor.execute(sql, (QUERYID_RETENTION_HOURS,))
 
+                cross_source_dupes = []
                 for row in cursor:
                     queryid = row['queryid']
                     query_text = row['query']
+                    if use_db_filter:
+                        sources = row['source_dbnames'] or []
+                        if len(sources) > 1:
+                            cross_source_dupes.append((queryid, list(sources)))
                     if queryid:
-                        # Smart truncation for chart legend display
                         # Use defensive check for None (despite SQL filter, drivers may return None)
                         query_text = smart_truncate_query(query_text or '', truncate_len)
                         query_texts[queryid] = query_text or ''
+
+                if use_db_filter:
+                    _warn_on_cross_source_duplicates(db_name, cross_source_dupes)
         except Exception as e:
             logger.warning(f"Failed to fetch query texts from sink database: {e}")
         finally:
@@ -1631,38 +1749,24 @@ def get_query_info_metrics():
                 # Only export queryids recently seen in pg_stat_statements.
                 # The dedup trigger refreshes the timestamp on each collection,
                 # so active queryids have time within the last few minutes.
-                use_db_filter = db_name and db_name.lower() not in ('all', '') and not db_name.startswith('$')
+                use_db_filter = _should_apply_db_filter(db_name)
+                sql = _build_query_text_lookup_sql(
+                    with_db_filter=use_db_filter,
+                    time_clause='time > now() - make_interval(mins => %s)',
+                )
                 if use_db_filter:
-                    query = """
-                        SELECT DISTINCT ON (data->>'queryid')
-                            data->>'queryid' as queryid,
-                            data->>'query' as query
-                        FROM public.pgss_queryid_queries
-                        WHERE
-                            dbname = %s
-                            AND time > now() - make_interval(mins => %s)
-                            AND data->>'queryid' IS NOT NULL
-                            AND data->>'query' IS NOT NULL
-                        ORDER BY data->>'queryid', time DESC
-                    """
-                    cursor.execute(query, (db_name, QUERYID_ACTIVE_MINUTES))
+                    cursor.execute(sql, (db_name, QUERYID_ACTIVE_MINUTES))
                 else:
-                    query = """
-                        SELECT DISTINCT ON (data->>'queryid')
-                            data->>'queryid' as queryid,
-                            data->>'query' as query
-                        FROM public.pgss_queryid_queries
-                        WHERE
-                            time > now() - make_interval(mins => %s)
-                            AND data->>'queryid' IS NOT NULL
-                            AND data->>'query' IS NOT NULL
-                        ORDER BY data->>'queryid', time DESC
-                    """
-                    cursor.execute(query, (QUERYID_ACTIVE_MINUTES,))
+                    cursor.execute(sql, (QUERYID_ACTIVE_MINUTES,))
 
+                cross_source_dupes = []
                 for row in cursor:
                     queryid = row['queryid']
                     query_text = row['query'] or ''  # Defensive check for None
+                    if use_db_filter:
+                        sources = row['source_dbnames'] or []
+                        if len(sources) > 1:
+                            cross_source_dupes.append((queryid, list(sources)))
                     if queryid:
                         # Normalize whitespace for raw truncation
                         normalized_text = ' '.join(query_text.split()) if query_text else ''
@@ -1704,6 +1808,8 @@ def get_query_info_metrics():
                             'queryid_only': queryid_only,
                         }
 
+                if use_db_filter:
+                    _warn_on_cross_source_duplicates(db_name, cross_source_dupes)
                 logger.info(f"Exported {len(query_data)} active queryids for metrics")
         except Exception as e:
             logger.warning(f"Failed to fetch query texts from sink database: {e}")

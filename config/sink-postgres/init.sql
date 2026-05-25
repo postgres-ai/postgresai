@@ -37,6 +37,16 @@ create index if not exists pgss_queryid_queries_dbname_time_idx on public.pgss_q
 -- and causing duplicate rows to pile up across overlapping COPY batches.
 create index if not exists pgss_queryid_queries_queryid_idx on public.pgss_queryid_queries ((data->>'queryid'));
 
+-- Expression index supporting the queryid->query-text lookup in
+-- monitoring_flask_backend (``data->>'real_dbname' = $1``). The partition
+-- column ``dbname`` holds the pgwatch *source name*; the actual Postgres
+-- database name lives in the JSONB payload as ``real_dbname``. Dashboards
+-- pass the real database name (``datname``), so the API filter is on
+-- ``data->>'real_dbname'`` — this index keeps that lookup partition-local
+-- and avoids a per-partition sequential scan as data grows.
+create index if not exists pgss_queryid_queries_real_dbname_time_idx
+  on public.pgss_queryid_queries ((data->>'real_dbname'), time);
+
 -- Use existing subpartitions schema
 
 
