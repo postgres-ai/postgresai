@@ -1,6 +1,7 @@
 """Tests for the Flask monitoring backend."""
 import importlib
 import os
+import re
 import threading
 import pytest
 import json
@@ -507,7 +508,15 @@ class TestQueryInfoMetricsEndpoint:
 
         assert result == {}
         query, params = mock_cursor.execute.call_args[0]
-        assert 'dbname = %s' in query
+        # Filter must be against the JSONB ``real_dbname`` payload (the actual
+        # Postgres database name), not the partition ``dbname`` column (which
+        # stores the pgwatch source name and never matches the dashboard's
+        # datname).
+        assert "data->>'real_dbname' = %s" in query
+        # Locking the regression: the partition ``dbname = %s`` filter must
+        # NOT be present — a word-boundary check so we do not accidentally
+        # match ``real_dbname``.
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
         assert 'make_interval(hours => %s)' in query
         assert params == ('mydb', 48)
 
@@ -521,7 +530,11 @@ class TestQueryInfoMetricsEndpoint:
 
         assert result == {}
         query, params = mock_cursor.execute.call_args[0]
-        assert 'dbname = %s' not in query
+        assert "data->>'real_dbname'" not in query
+        # Even on the no-filter branch the buggy partition predicate must stay
+        # gone — a partial revert that left ``dbname = %s`` in either branch
+        # would still match all the substring checks otherwise.
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
         assert 'make_interval(hours => %s)' in query
         assert params == (app_module.QUERYID_RETENTION_HOURS,)
 
@@ -603,18 +616,24 @@ class TestQueryInfoMetricsEndpoint:
 
     @patch('app.psycopg2.connect')
     def test_db_name_filter(self, mock_connect, client):
-        """Test db_name parameter filters results."""
+        """Test db_name parameter filters results on the JSONB real_dbname payload."""
         mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
         mock_cursor.__iter__ = lambda self: iter([])
 
         response = client.get('/query_info_metrics?db_name=mydb')
         assert response.status_code == 200
 
-        # Verify the main query (last execute call) was called with db_name filter
+        # Verify the main query (last execute call) filters by the JSONB
+        # ``real_dbname`` payload — the partition ``dbname`` column holds
+        # the pgwatch source name and would never match the dashboard's
+        # datname value.
         call_args = mock_cursor.execute.call_args
         assert call_args is not None
         query = call_args[0][0]
-        assert 'dbname = %s' in query
+        assert "data->>'real_dbname' = %s" in query
+        # Lock in the regression: word-boundary check rejects a partial
+        # revert that left the buggy ``dbname = %s`` filter in place.
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
 
     @patch('app.psycopg2.connect')
     def test_db_name_all_skips_filter(self, mock_connect, client):
@@ -628,7 +647,8 @@ class TestQueryInfoMetricsEndpoint:
         # Verify the main query (last execute call) was called without db_name filter
         call_args = mock_cursor.execute.call_args
         query = call_args[0][0]
-        assert 'dbname = %s' not in query
+        assert "data->>'real_dbname'" not in query
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
 
     @patch('app.psycopg2.connect')
     def test_db_name_variable_skips_filter(self, mock_connect, client):
@@ -642,7 +662,8 @@ class TestQueryInfoMetricsEndpoint:
         # Verify the main query (last execute call) was called without db_name filter
         call_args = mock_cursor.execute.call_args
         query = call_args[0][0]
-        assert 'dbname = %s' not in query
+        assert "data->>'real_dbname'" not in query
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
 
     @patch('app.psycopg2.connect')
     def test_time_filter_applied(self, mock_connect, client):
@@ -684,7 +705,8 @@ class TestQueryInfoMetricsEndpoint:
             query = call_args[0][0]
             params = call_args[0][1]
 
-            assert 'dbname = %s' in query
+            assert "data->>'real_dbname' = %s" in query
+            assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, query
             assert 'make_interval(mins => %s)' in query
             # The db_filter branch passes (db_name, minutes) in that order.
             assert params == ('mydb', 42)
@@ -2161,3 +2183,542 @@ class TestExecuteQueryShowAllowed:
             data = json.loads(response.data)
             assert data['columns'] == ['statement_timeout']
             assert data['rows'] == [['10s']]
+
+
+class _SinkFake:
+    """
+    Behavioral in-memory fake for ``public.pgss_queryid_queries``.
+
+    Stores rows tagged with both ``partition_dbname`` (the pgwatch source
+    name held by the partition column) and ``real_dbname`` (the actual
+    Postgres database name embedded in the JSONB payload). When the
+    backend issues a SELECT, the fake parses the SQL's WHERE clause for
+    the predicates this MR exercises:
+
+      - ``dbname = %s`` (the buggy partition-column filter — matched with
+        a word boundary so it does not collide with ``real_dbname``)
+      - ``data->>'real_dbname' = %s`` (the corrected JSONB filter)
+      - ``data ? 'real_dbname'`` (explicit absent-key guard)
+
+    Rows that satisfy ALL applied predicates are sorted by recency, then
+    deduped by queryid (DISTINCT ON). When the SQL surfaces the
+    ``source_dbnames`` column, each result row also carries the set of
+    partition_dbnames that hold a row for the same queryid — used by
+    callers to detect cross-source ambiguity.
+
+    This fake is intentionally *not* a SQL string sniffer. Reintroducing
+    the buggy ``dbname = %s`` filter would still execute against the
+    fake; it would simply return zero rows because no real
+    ``partition_dbname`` matches the dashboard's ``datname`` value. The
+    test then fails — as it should.
+    """
+
+    def __init__(self):
+        self._rows = []
+
+    def add(self, *, partition_dbname, real_dbname, queryid, query,
+            time_age_sec=0, real_dbname_present=True):
+        self._rows.append({
+            'partition_dbname': partition_dbname,
+            'real_dbname': real_dbname if real_dbname_present else None,
+            'real_dbname_present': real_dbname_present,
+            'queryid': queryid,
+            'query': query,
+            'time_age_sec': time_age_sec,
+        })
+
+    def _bind_predicates(self, sql_lower, params):
+        """
+        Walk through %s placeholders in SQL order, classifying each by the
+        preceding text and pulling the corresponding value from params.
+        """
+        bindings = {}
+        param_iter = iter(params)
+        for m in re.finditer(r'%s', sql_lower):
+            start = max(0, m.start() - 80)
+            preceding = sql_lower[start:m.start()]
+            try:
+                val = next(param_iter)
+            except StopIteration:
+                break
+            if "data->>'real_dbname'" in preceding:
+                bindings['real_dbname'] = val
+            elif re.search(r"(?<!\w)dbname\s*=\s*$", preceding):
+                bindings['partition_dbname'] = val
+        return bindings
+
+    def run(self, sql, params):
+        sql_lower = (sql or '').lower()
+        if 'pgss_queryid_queries' not in sql_lower:
+            return []
+        params = tuple(params or ())
+        bindings = self._bind_predicates(sql_lower, params)
+        require_real_dbname_present = "data ? 'real_dbname'" in sql_lower
+
+        matched = []
+        for row in self._rows:
+            if require_real_dbname_present and not row['real_dbname_present']:
+                continue
+            if 'real_dbname' in bindings and row['real_dbname'] != bindings['real_dbname']:
+                continue
+            if 'partition_dbname' in bindings and row['partition_dbname'] != bindings['partition_dbname']:
+                continue
+            matched.append(row)
+
+        # DISTINCT ON (queryid) ORDER BY time DESC. ``time_age_sec`` is the
+        # age-since-now in seconds — smaller means more recent.
+        matched.sort(key=lambda r: r['time_age_sec'])
+        want_sources = 'source_dbnames' in sql_lower
+        sources_by_queryid = {}
+        if want_sources:
+            for row in matched:
+                sources_by_queryid.setdefault(row['queryid'], set()).add(row['partition_dbname'])
+
+        seen = set()
+        results = []
+        for row in matched:
+            if row['queryid'] in seen:
+                continue
+            seen.add(row['queryid'])
+            out = {'queryid': row['queryid'], 'query': row['query']}
+            if want_sources:
+                out['source_dbnames'] = sorted(sources_by_queryid.get(row['queryid'], set()))
+            results.append(out)
+        return results
+
+
+class _SinkFakeCursor:
+    """Cursor-shaped wrapper that delegates execute() to a _SinkFake."""
+
+    def __init__(self, fake):
+        self._fake = fake
+        self._rows = []
+        self.execute = MagicMock(side_effect=self._execute)
+        self.rowcount = 0
+
+    def _execute(self, sql, params=()):
+        self._rows = self._fake.run(sql, params)
+        return None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _wire_sink_connect(mock_connect, cursor):
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.autocommit = True
+    mock_connect.return_value = conn
+    return conn
+
+
+class TestPgssMetricsCsvQueryTextLookup:
+    """
+    Regression coverage for the ``query_text`` column on Dashboard 02's
+    "Detailed table view (pg_stat_statements)" panel.
+
+    The panel calls ``/pgss_metrics/csv?db_name=<datname>`` (Grafana's
+    ``$db_name`` variable resolves to the Prometheus ``datname`` label —
+    the actual Postgres database name). The Flask backend joins the
+    Prometheus pgss metrics with query texts read from the sink Postgres
+    table ``public.pgss_queryid_queries``.
+
+    The sink table is partitioned by ``dbname`` — that column holds the
+    pgwatch *source name* (e.g. ``my-host-cone-demo``), NOT the actual
+    Postgres database name. The actual database name is stored inside
+    the JSONB payload as ``data->>'real_dbname'``. Filtering by the
+    partition ``dbname`` column with the dashboard's ``datname`` value
+    never matches, so the resulting CSV has empty ``query_text`` for
+    every row.
+    """
+
+    def _build_prom_sample(self, datname, queryid, metric_name, value, ts):
+        return {
+            'metric': {
+                '__name__': metric_name,
+                'datname': datname,
+                'queryid': queryid,
+                'user': 'postgres',
+                'instance': 'pgwatch-prometheus:9091',
+            },
+            'values': [[ts, str(value)]],
+        }
+
+    @patch('app.PrometheusConnect')
+    @patch('app.psycopg2.connect')
+    def test_query_text_populated_when_dashboard_passes_datname(
+        self, mock_pg_connect, mock_prom_cls, client
+    ):
+        """
+        With ``db_name=<datname>`` (what Dashboard 02 sends), every CSV row
+        must carry the seeded ``query_text`` for its ``queryid``.
+        """
+        import csv as csv_module
+        import io as io_module
+
+        datname = 'cone_demo'
+        partition_dbname = 'my-host-cone-demo'  # pgwatch source name
+        queryid = '-364883030418038032'
+        query_text = 'WITH all_ledger AS (SELECT account_id FROM demo.ledger) SELECT 1'
+
+        ts_end = 1779458600.0
+        ts_start = ts_end - 60
+
+        prom_instance = mock_prom_cls.return_value
+
+        def range_data(metric_name, start_time, end_time):
+            base_name = metric_name.split('{', 1)[0]
+            if base_name != 'pgwatch_pg_stat_statements_calls':
+                return []
+            sample_ts = start_time.timestamp()
+            value = 100 if sample_ts < ts_end - 30 else 250
+            return [
+                self._build_prom_sample(datname, queryid, base_name, value, sample_ts)
+            ]
+        prom_instance.get_metric_range_data.side_effect = range_data
+
+        fake = _SinkFake()
+        fake.add(
+            partition_dbname=partition_dbname,
+            real_dbname=datname,
+            queryid=queryid,
+            query=query_text,
+        )
+        sink_cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_pg_connect, sink_cursor)
+
+        response = client.get(
+            f'/pgss_metrics/csv?time_start={ts_start}&time_end={ts_end}&db_name={datname}'
+        )
+
+        assert response.status_code == 200, response.data
+        rows = list(csv_module.DictReader(io_module.StringIO(response.data.decode())))
+        assert rows, 'expected at least one CSV row for the seeded queryid'
+        target = next((r for r in rows if r['queryid'] == queryid), None)
+        assert target is not None, (
+            f"queryid {queryid!r} missing from CSV; got: {[r['queryid'] for r in rows]}"
+        )
+        assert target['query_text'], (
+            "query_text column was empty even though the sink has the "
+            "queryid->text mapping under data->>'real_dbname' = datname"
+        )
+        # The truncator may shorten the text but the table identifier must survive.
+        assert 'demo.ledger' in target['query_text'], (
+            f"query_text does not reflect the seeded query: {target['query_text']!r}"
+        )
+
+        # Behavioral cross-check: the production SQL must have filtered on
+        # the JSONB real_dbname payload, not the partition dbname column.
+        sink_sqls = [c.args[0] for c in sink_cursor.execute.call_args_list]
+        assert any("data->>'real_dbname' = %s" in sql for sql in sink_sqls), sink_sqls
+        for sql in sink_sqls:
+            # Word-boundary check so this does not match ``real_dbname``.
+            assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_from_sink_filters_by_real_dbname(self, mock_connect):
+        """
+        Direct sink lookup must filter by ``data->>'real_dbname'`` (the
+        actual Postgres database name from pgwatch) — NOT by the partition
+        ``dbname`` column (which holds the pgwatch source name).
+        """
+        fake = _SinkFake()
+        cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_connect, cursor)
+
+        app_module.get_query_texts_from_sink(db_name='cone_demo', max_age_hours=48)
+
+        query, params = cursor.execute.call_args[0]
+        assert "data->>'real_dbname' = %s" in query, (
+            "sink lookup must filter on data->>'real_dbname' so the dashboard's "
+            "datname matches the JSONB payload, not the pgwatch source name. "
+            f"Got SQL: {query}"
+        )
+        # Word-boundary check: the buggy ``dbname = %s`` filter (matching the
+        # partition column) must be gone. A simple ``'dbname = %s' not in``
+        # would slip past ``real_dbname = %s``; this assertion catches both.
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", query) is None, (
+            "partition `dbname = %s` filter must not be present; got: " + query
+        )
+        assert params[0] == 'cone_demo'
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_from_sink_returns_text_for_matching_datname(self, mock_connect):
+        """
+        End-to-end behavioral check on the sink helper: the seeded query
+        text must be returned when ``db_name`` matches the row's
+        ``real_dbname`` even though the partition ``dbname`` is the
+        distinct pgwatch source name.
+        """
+        fake = _SinkFake()
+        fake.add(
+            partition_dbname='my-host-cone-demo',
+            real_dbname='cone_demo',
+            queryid='qid-1',
+            query='select 1 from demo.accounts',
+        )
+        cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_connect, cursor)
+
+        result = app_module.get_query_texts_from_sink(db_name='cone_demo', max_age_hours=48)
+        assert 'qid-1' in result, result
+        assert 'demo.accounts' in result['qid-1']
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_from_sink_drops_rows_with_absent_real_dbname(self, mock_connect):
+        """
+        Rows missing ``real_dbname`` in their JSONB payload (older pgwatch
+        versions, or non-pgss measurements) must be skipped when a
+        ``db_name`` filter is applied. The SQL guards this with
+        ``data ? 'real_dbname'`` so the behavior is explicit, not a
+        side effect of ``data->>'real_dbname' = %s`` returning NULL.
+        """
+        fake = _SinkFake()
+        fake.add(
+            partition_dbname='legacy-source',
+            real_dbname='cone_demo',
+            queryid='qid-1',
+            query='select 1',
+            real_dbname_present=False,
+        )
+        cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_connect, cursor)
+
+        result = app_module.get_query_texts_from_sink(db_name='cone_demo', max_age_hours=48)
+        assert result == {}, result
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_from_sink_warns_on_cross_source_duplicates(self, mock_connect, caplog):
+        """
+        Two distinct pgwatch sources reporting the same ``real_dbname``
+        produce a non-deterministic ``DISTINCT ON`` winner. The helper
+        must log a single warning so operators have a signal that query
+        texts are aggregating across sources (potential tenant leak).
+        """
+        app_module._logged_cross_source_warnings.clear()
+        fake = _SinkFake()
+        # Same queryid, same real_dbname, but two distinct source partitions.
+        fake.add(
+            partition_dbname='source-a',
+            real_dbname='shared_db',
+            queryid='qid-7',
+            query='select 1 -- from a',
+            time_age_sec=10,
+        )
+        fake.add(
+            partition_dbname='source-b',
+            real_dbname='shared_db',
+            queryid='qid-7',
+            query='select 2 -- from b',
+            time_age_sec=5,  # newer, will win DISTINCT ON
+        )
+        cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_connect, cursor)
+
+        with caplog.at_level('WARNING', logger='app'):
+            result = app_module.get_query_texts_from_sink(db_name='shared_db', max_age_hours=48)
+
+        assert 'qid-7' in result
+        # Either "from a" or "from b" wins by time; we don't care which here.
+        assert any('cross-source ambiguity' in r.message.lower() for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+    @patch('app.psycopg2.connect')
+    def test_get_query_texts_from_sink_skips_filter_when_db_name_is_all(self, mock_connect):
+        """
+        ``db_name='All'`` must skip the JSONB filter entirely — rows from
+        every datname should flow through.
+        """
+        fake = _SinkFake()
+        fake.add(
+            partition_dbname='source-a',
+            real_dbname='db_one',
+            queryid='qid-A',
+            query='select 1',
+        )
+        fake.add(
+            partition_dbname='source-b',
+            real_dbname='db_two',
+            queryid='qid-B',
+            query='select 2',
+        )
+        cursor = _SinkFakeCursor(fake)
+        _wire_sink_connect(mock_connect, cursor)
+
+        result = app_module.get_query_texts_from_sink(db_name='All', max_age_hours=48)
+        assert set(result.keys()) == {'qid-A', 'qid-B'}, result
+
+        sql = cursor.execute.call_args[0][0]
+        assert "data->>'real_dbname'" not in sql
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
+
+
+class TestQueryTextLookupSqlShape:
+    """
+    SQL-shape regression coverage for ``_build_query_text_lookup_sql``.
+
+    The behavioral tests above use ``_SinkFake``, which parses predicates
+    but never executes SQL. That means a syntactically valid but
+    semantically unsupported construct (e.g. ``array_agg(DISTINCT ...) OVER (...)``,
+    which PostgreSQL rejects with ``FeatureNotSupported``) would slip
+    past every fake-backed test and still ship to production — which is
+    exactly the regression QA caught on iteration 2 of MR !271.
+
+    These tests pin known-bad shapes that must not reappear in the
+    emitted SQL.
+    """
+
+    def test_emitted_sql_does_not_use_distinct_in_window_aggregate(self):
+        """
+        PostgreSQL does not support ``DISTINCT`` inside window aggregates
+        (``array_agg(DISTINCT x) OVER (...)`` raises ``FeatureNotSupported``).
+        The MR !271 fix originally emitted exactly this pattern, which
+        meant the filtered code path always errored out and the
+        dashboard's query_text column stayed empty.
+        """
+        for with_db_filter in (True, False):
+            sql = app_module._build_query_text_lookup_sql(
+                with_db_filter=with_db_filter,
+                time_clause='time > now() - make_interval(hours => %s)',
+            )
+            # Match ``array_agg ( distinct ... ) over`` allowing whitespace
+            # and any column expression between the parens. Multiline because
+            # the SQL is line-wrapped.
+            assert re.search(
+                r"array_agg\s*\(\s*distinct\b.*?\)\s*over\b",
+                sql,
+                flags=re.IGNORECASE | re.DOTALL,
+            ) is None, (
+                "PostgreSQL rejects DISTINCT inside window aggregates. "
+                "Use a CTE + GROUP BY instead. SQL was: " + sql
+            )
+
+    def test_filtered_sql_still_surfaces_source_dbnames(self):
+        """
+        The cross-source ambiguity warning (an MR !271 review request)
+        relies on the filtered path emitting a ``source_dbnames`` column.
+        Pin its presence so a future refactor that drops it (and thereby
+        silently disables the warning) fails loudly here.
+        """
+        sql = app_module._build_query_text_lookup_sql(
+            with_db_filter=True,
+            time_clause='time > now() - make_interval(hours => %s)',
+        )
+        assert 'source_dbnames' in sql, sql
+
+
+@pytest.mark.skipif(
+    not os.environ.get('PGSS_SINK_TEST_URL'),
+    reason='Requires PGSS_SINK_TEST_URL pointing at a disposable Postgres for syntax checks',
+)
+class TestQueryTextLookupSqlExecutesOnRealPostgres:
+    """
+    Integration guard: parse-on-Postgres each emitted SQL via ``PREPARE``.
+
+    Behavioral tests use a fake, so a syntactically-valid-but-semantically-
+    unsupported construct (the MR !271 iteration-1 regression where
+    ``array_agg(DISTINCT ...) OVER (...)`` raised ``FeatureNotSupported``
+    at runtime) was invisible. This test runs each emitted SQL through
+    ``PREPARE`` on a real Postgres so the planner validates it without
+    needing any data.
+
+    Gated on ``PGSS_SINK_TEST_URL`` so contributors without a local
+    Postgres can still run the suite; CI can opt-in by setting the env.
+    """
+
+    @pytest.fixture
+    def sink_conn(self):
+        url = os.environ['PGSS_SINK_TEST_URL']
+        conn = psycopg2.connect(url, connect_timeout=10)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                create table if not exists public.pgss_queryid_queries (
+                    dbname text not null,
+                    time timestamptz not null default now(),
+                    data jsonb not null
+                ) partition by list (dbname);
+                create table if not exists public.pgss_queryid_queries_default
+                    partition of public.pgss_queryid_queries default;
+            """)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize('with_db_filter', [True, False])
+    def test_emitted_sql_prepares_on_real_postgres(self, sink_conn, with_db_filter):
+        sql = app_module._build_query_text_lookup_sql(
+            with_db_filter=with_db_filter,
+            time_clause='time > now() - make_interval(hours => %s)',
+        )
+        # PREPARE wants $N placeholders; psycopg2's %s won't work here. We
+        # exercise the same SQL via a no-op execution that the planner
+        # still parses end-to-end: wrap as a subquery in EXPLAIN.
+        if with_db_filter:
+            params = ('cone_demo', 24)
+        else:
+            params = (24,)
+        with sink_conn.cursor() as cur:
+            cur.execute('explain ' + sql, params)
+            cur.fetchall()
+
+
+class TestQueryTextsRouteFilterShape:
+    """
+    Mirror coverage for the ``/query_texts`` route: the SQL change in
+    ``get_query_texts()`` (separate code path from
+    ``get_query_texts_from_sink``) also needs the three filter-shape
+    cases pinned and the buggy partition predicate locked out.
+    """
+
+    @patch('app.psycopg2.connect')
+    def test_db_name_filter_uses_real_dbname_payload(self, mock_connect, client):
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        response = client.get('/query_texts?db_name=mydb')
+        assert response.status_code == 200
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "data->>'real_dbname' = %s" in sql, sql
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
+        # Unbounded scans bring the lookup down at scale — the route must
+        # carry a time predicate too (one of the HIGH findings on MR !271).
+        assert 'make_interval' in sql, sql
+        # First %s binding is db_name; the second is the retention window.
+        assert params[0] == 'mydb'
+        assert params[1] == app_module.QUERYID_RETENTION_HOURS
+
+    @patch('app.psycopg2.connect')
+    def test_db_name_all_skips_filter(self, mock_connect, client):
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        response = client.get('/query_texts?db_name=All')
+        assert response.status_code == 200
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "data->>'real_dbname'" not in sql, sql
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
+        assert 'make_interval' in sql, sql
+
+    @patch('app.psycopg2.connect')
+    def test_db_name_unresolved_variable_skips_filter(self, mock_connect, client):
+        mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
+        mock_cursor.__iter__ = lambda self: iter([])
+
+        response = client.get('/query_texts?db_name=$db_name')
+        assert response.status_code == 200
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "data->>'real_dbname'" not in sql, sql
+        assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
+        assert 'make_interval' in sql, sql
