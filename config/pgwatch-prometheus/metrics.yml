@@ -434,8 +434,29 @@ metrics:
 
   table_stats:
     description: >
-      This metric collects statistics about user tables, including size, vacuum status, and transaction freeze age.
-      It provides insights into the health and performance of tables in the database.
+      Per-relation table activity, size and maintenance counters bounded
+      to the top 100 per database. Adapts the top-N + `'$other$'` bucket
+      pattern from !262 (and via that from pgwatch2 PostgresAI edition):
+      everything below the cap is summed/aggregated into a single
+      `'$other$'` row so dashboard totals stay correct. Reads
+      pg_stat_all_tables (not pg_stat_user_tables) so pg_catalog,
+      pg_toast and other system schemas stay rankable by size — the
+      top-N cap controls cardinality, not a schema filter (the existing
+      `_timescaledb%` schema filter on leaf rows is retained for
+      consistency with prior behaviour and because Timescale chunks
+      already roll up via their partition root). Ranks by
+      total_relation_size_b descending (size = relevance for a metric
+      that surfaces vacuum/freeze risk); stable tiebreakers
+      (`tag_schema`, `tag_table_name`) keep top-N membership from
+      churning between scrapes when sizes tie. Aggregate semantics on
+      the `'$other$'` row: sum for counters and sizes, min for
+      seconds_since_last_* (most recent maintenance across the tail),
+      max for tx/mxid freeze ages (oldest still-alive xid is the risk),
+      sum for no_autovacuum (count of tail tables with autovacuum off),
+      and `tag_table_size_cardinality_mb` is recomputed from the summed
+      table_size_b so it stays consistent. The `'$other$'` sentinel
+      cannot collide with a real Postgres identifier (`$` is illegal as
+      the first character of an unquoted identifier).
     sqls:
       11: |-
         with recursive
@@ -498,84 +519,119 @@ metrics:
                   -- leaving out fully locked tables as pg_relation_size also wants a lock and would wait
                     not exists(select 1 from pg_locks where relation = relid and mode = 'AccessExclusiveLock')
                   and c.relpersistence <> 't' -- and temp tables
-            )
-
-        select /* pgwatch_generated */
-            epoch_ns,
-            tag_datname,
-            tag_schema,
-            tag_table_name,
-            tag_table_full_name,
-            0 as is_part_root,
-            table_size_b,
-            tag_table_size_cardinality_mb, -- i.e. 0=<1MB, 1=<10MB, 2=<100MB,..
-            total_relation_size_b,
-            toast_size_b,
-            seconds_since_last_vacuum,
-            seconds_since_last_analyze,
-            no_autovacuum,
-            seq_scan,
-            seq_tup_read,
-            idx_scan,
-            idx_tup_fetch,
-            n_tup_ins,
-            n_tup_upd,
-            n_tup_del,
-            n_tup_hot_upd,
-            n_live_tup,
-            n_dead_tup,
-            vacuum_count,
-            autovacuum_count,
-            analyze_count,
-            autoanalyze_count,
-            tx_freeze_age,
-            mxid_freeze_age
-        from q_tstats
-        where not tag_schema like E'\\_timescaledb%'
-        and not exists (select * from q_root_part where oid = q_tstats.relid)
-
-        union all
-
-        select * from (
-            select
-                epoch_ns,
-                tag_datname,
-                quote_ident(qr.root_schema) as tag_schema,
-                quote_ident(qr.root_relname) as tag_table_name,
-                quote_ident(qr.root_schema) || '.' || quote_ident(qr.root_relname) as tag_table_full_name,
-                1 as is_part_root,
-                sum(table_size_b)::int8 table_size_b,
-                abs(greatest(ceil(log((sum(table_size_b) + 1) / 10 ^ 6)),
-                      0))::text as tag_table_size_cardinality_mb, -- i.e. 0=<1MB, 1=<10MB, 2=<100MB,..
-                sum(total_relation_size_b)::int8 total_relation_size_b,
-                sum(toast_size_b)::int8 toast_size_b,
-                min(seconds_since_last_vacuum)::int8 seconds_since_last_vacuum,
-                min(seconds_since_last_analyze)::int8 seconds_since_last_analyze,
-                sum(no_autovacuum)::int8 no_autovacuum,
-                sum(seq_scan)::int8 seq_scan,
-                sum(seq_tup_read)::int8 seq_tup_read,
-                sum(idx_scan)::int8 idx_scan,
-                sum(idx_tup_fetch)::int8 idx_tup_fetch,
-                sum(n_tup_ins)::int8 n_tup_ins,
-                sum(n_tup_upd)::int8 n_tup_upd,
-                sum(n_tup_del)::int8 n_tup_del,
-                sum(n_tup_hot_upd)::int8 n_tup_hot_upd,
-                sum(n_live_tup)::int8 n_live_tup,
-                sum(n_dead_tup)::int8 n_dead_tup,
-                sum(vacuum_count)::int8 vacuum_count,
-                sum(autovacuum_count)::int8 autovacuum_count,
-                sum(analyze_count)::int8 analyze_count,
-                sum(autoanalyze_count)::int8 autoanalyze_count,
-                max(tx_freeze_age)::int8 tx_freeze_age,
-                max(mxid_freeze_age)::int8 mxid_freeze_age
-              from
-                    q_tstats ts
+            ),
+            rows_pre_rank as (
+                -- Leaf tables (non-partition-children) excluding the timescale internal chunks
+                select
+                    epoch_ns, tag_datname, tag_schema, tag_table_name, tag_table_full_name,
+                    0 as is_part_root,
+                    table_size_b, tag_table_size_cardinality_mb,
+                    total_relation_size_b, toast_size_b,
+                    seconds_since_last_vacuum, seconds_since_last_analyze, no_autovacuum,
+                    seq_scan, seq_tup_read, idx_scan, idx_tup_fetch,
+                    n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+                    n_live_tup, n_dead_tup,
+                    vacuum_count, autovacuum_count, analyze_count, autoanalyze_count,
+                    tx_freeze_age, mxid_freeze_age
+                from q_tstats
+                where not tag_schema like E'\\_timescaledb%'
+                  and not exists (select * from q_root_part where oid = q_tstats.relid)
+                union all
+                -- Partition roots: aggregate of all their parts
+                select * from (
+                    select
+                        epoch_ns,
+                        tag_datname,
+                        quote_ident(qr.root_schema) as tag_schema,
+                        quote_ident(qr.root_relname) as tag_table_name,
+                        quote_ident(qr.root_schema) || '.' || quote_ident(qr.root_relname) as tag_table_full_name,
+                        1 as is_part_root,
+                        sum(table_size_b)::int8 as table_size_b,
+                        abs(greatest(ceil(log((sum(table_size_b) + 1) / 10 ^ 6)), 0))::text as tag_table_size_cardinality_mb,
+                        sum(total_relation_size_b)::int8 as total_relation_size_b,
+                        sum(toast_size_b)::int8 as toast_size_b,
+                        min(seconds_since_last_vacuum)::int8 as seconds_since_last_vacuum,
+                        min(seconds_since_last_analyze)::int8 as seconds_since_last_analyze,
+                        sum(no_autovacuum)::int8 as no_autovacuum,
+                        sum(seq_scan)::int8 as seq_scan,
+                        sum(seq_tup_read)::int8 as seq_tup_read,
+                        sum(idx_scan)::int8 as idx_scan,
+                        sum(idx_tup_fetch)::int8 as idx_tup_fetch,
+                        sum(n_tup_ins)::int8 as n_tup_ins,
+                        sum(n_tup_upd)::int8 as n_tup_upd,
+                        sum(n_tup_del)::int8 as n_tup_del,
+                        sum(n_tup_hot_upd)::int8 as n_tup_hot_upd,
+                        sum(n_live_tup)::int8 as n_live_tup,
+                        sum(n_dead_tup)::int8 as n_dead_tup,
+                        sum(vacuum_count)::int8 as vacuum_count,
+                        sum(autovacuum_count)::int8 as autovacuum_count,
+                        sum(analyze_count)::int8 as analyze_count,
+                        sum(autoanalyze_count)::int8 as autoanalyze_count,
+                        max(tx_freeze_age)::int8 as tx_freeze_age,
+                        max(mxid_freeze_age)::int8 as mxid_freeze_age
+                    from q_tstats ts
                     join q_parts qp on qp.relid = ts.relid
                     join q_root_part qr on qr.oid = qp.root
-              group by
-                    1, 2, 3, 4, 5, 6
-        ) x
-        order by table_size_b desc nulls last limit 300
+                    group by 1, 2, 3, 4, 5, 6
+                ) x
+            ),
+            ranked as (
+                select
+                    row_number() over (
+                        order by total_relation_size_b desc nulls last,
+                                 tag_schema, tag_table_name
+                    ) as rownum,
+                    rows_pre_rank.*
+                from rows_pre_rank
+            )
+        select /* pgwatch_generated */
+            epoch_ns, tag_datname, tag_schema, tag_table_name, tag_table_full_name,
+            is_part_root,
+            table_size_b, tag_table_size_cardinality_mb,
+            total_relation_size_b, toast_size_b,
+            seconds_since_last_vacuum, seconds_since_last_analyze, no_autovacuum,
+            seq_scan, seq_tup_read, idx_scan, idx_tup_fetch,
+            n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+            n_live_tup, n_dead_tup,
+            vacuum_count, autovacuum_count, analyze_count, autoanalyze_count,
+            tx_freeze_age, mxid_freeze_age
+        from ranked
+        where rownum <= 100
+        union all
+        select
+            (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+            current_database() as tag_datname,
+            '$other$'::text as tag_schema,
+            '$other$'::text as tag_table_name,
+            '$other$'::text as tag_table_full_name,
+            0 as is_part_root,
+            coalesce(sum(table_size_b), 0)::int8 as table_size_b,
+            abs(greatest(ceil(log((coalesce(sum(table_size_b), 0) + 1) / 10 ^ 6)), 0))::text as tag_table_size_cardinality_mb,
+            coalesce(sum(total_relation_size_b), 0)::int8 as total_relation_size_b,
+            coalesce(sum(toast_size_b), 0)::int8 as toast_size_b,
+            min(seconds_since_last_vacuum)::int8 as seconds_since_last_vacuum,
+            min(seconds_since_last_analyze)::int8 as seconds_since_last_analyze,
+            coalesce(sum(no_autovacuum), 0)::int8 as no_autovacuum,
+            coalesce(sum(seq_scan), 0)::int8 as seq_scan,
+            coalesce(sum(seq_tup_read), 0)::int8 as seq_tup_read,
+            coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+            coalesce(sum(idx_tup_fetch), 0)::int8 as idx_tup_fetch,
+            coalesce(sum(n_tup_ins), 0)::int8 as n_tup_ins,
+            coalesce(sum(n_tup_upd), 0)::int8 as n_tup_upd,
+            coalesce(sum(n_tup_del), 0)::int8 as n_tup_del,
+            coalesce(sum(n_tup_hot_upd), 0)::int8 as n_tup_hot_upd,
+            coalesce(sum(n_live_tup), 0)::int8 as n_live_tup,
+            coalesce(sum(n_dead_tup), 0)::int8 as n_dead_tup,
+            coalesce(sum(vacuum_count), 0)::int8 as vacuum_count,
+            coalesce(sum(autovacuum_count), 0)::int8 as autovacuum_count,
+            coalesce(sum(analyze_count), 0)::int8 as analyze_count,
+            coalesce(sum(autoanalyze_count), 0)::int8 as autoanalyze_count,
+            max(tx_freeze_age)::int8 as tx_freeze_age,
+            max(mxid_freeze_age)::int8 as mxid_freeze_age
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
       16: |-
         with recursive
             q_root_part as ( /* pgwatch_generated */
@@ -641,88 +697,128 @@ metrics:
                   not exists (select 1 from pg_locks where relation = relid and mode = 'AccessExclusiveLock')
                   and c.relpersistence <> 't' -- and temp tables
                 order by case when c.relkind = 'p' then 1e9::int else coalesce(c.relpages, 0) + coalesce(t.relpages, 0) + coalesce(tir.relpages, 0) end desc
-                limit 1500 /* NB! When changing the bottom final LIMIT also adjust this limit. Should be at least 5x bigger as approx sizes depend a lot on vacuum frequency.
-                            The general idea is to reduce filesystem "stat"-ing on tables that won't make it to final output anyways based on approximate size */
-            )
-
-        select /* pgwatch_generated */
-            epoch_ns,
-            tag_datname,
-            tag_schema,
-            tag_table_name,
-            tag_table_full_name,
-            0 as is_part_root,
-            table_size_b,
-            tag_table_size_cardinality_mb, -- i.e. 0=<1MB, 1=<10MB, 2=<100MB,..
-            total_relation_size_b,
-            toast_size_b,
-            seconds_since_last_vacuum,
-            seconds_since_last_analyze,
-            no_autovacuum,
-            seq_scan,
-            seq_tup_read,
-            idx_scan,
-            idx_tup_fetch,
-            n_tup_ins,
-            n_tup_upd,
-            n_tup_del,
-            n_tup_hot_upd,
-            n_live_tup,
-            n_dead_tup,
-            vacuum_count,
-            autovacuum_count,
-            analyze_count,
-            autoanalyze_count,
-            tx_freeze_age,
-            mxid_freeze_age,
-            last_seq_scan_s
-        from q_tstats
-        where not tag_schema like E'\\_timescaledb%'
-        and not exists (select * from q_root_part where oid = q_tstats.relid)
-
-        union all
-
-        select * from (
-            select
-                epoch_ns,
-                tag_datname,
-                quote_ident(qr.root_schema) as tag_schema,
-                quote_ident(qr.root_relname) as tag_table_name,
-                quote_ident(qr.root_schema) || '.' || quote_ident(qr.root_relname) as tag_table_full_name,
-                1 as is_part_root,
-                sum(table_size_b)::int8 table_size_b,
-                abs(greatest(ceil(log((sum(table_size_b) + 1) / 10 ^ 6)),
-                      0))::text as tag_table_size_cardinality_mb, -- i.e. 0=<1MB, 1=<10MB, 2=<100MB,..
-                sum(total_relation_size_b)::int8 total_relation_size_b,
-                sum(toast_size_b)::int8 toast_size_b,
-                min(seconds_since_last_vacuum)::int8 seconds_since_last_vacuum,
-                min(seconds_since_last_analyze)::int8 seconds_since_last_analyze,
-                sum(no_autovacuum)::int8 no_autovacuum,
-                sum(seq_scan)::int8 seq_scan,
-                sum(seq_tup_read)::int8 seq_tup_read,
-                sum(idx_scan)::int8 idx_scan,
-                sum(idx_tup_fetch)::int8 idx_tup_fetch,
-                sum(n_tup_ins)::int8 n_tup_ins,
-                sum(n_tup_upd)::int8 n_tup_upd,
-                sum(n_tup_del)::int8 n_tup_del,
-                sum(n_tup_hot_upd)::int8 n_tup_hot_upd,
-                sum(n_live_tup)::int8 n_live_tup,
-                sum(n_dead_tup)::int8 n_dead_tup,
-                sum(vacuum_count)::int8 vacuum_count,
-                sum(autovacuum_count)::int8 autovacuum_count,
-                sum(analyze_count)::int8 analyze_count,
-                sum(autoanalyze_count)::int8 autoanalyze_count,
-                max(tx_freeze_age)::int8 tx_freeze_age,
-                max(mxid_freeze_age)::int8 mxid_freeze_age,
-                min(last_seq_scan_s)::int8 last_seq_scan_s
-              from
-                    q_tstats ts
+                limit 1500 /* Inner pre-filter to avoid expensive pg_relation_size() on every catalog row.
+                            1500 (5x the previous final cap of 300) was sized for headroom before this metric
+                            adopted the top-100 + $other$ pattern from !262; left at 1500 to keep the $other$
+                            aggregate accurate up to 1500-row tail (above that the tail is approximate).
+                            Worst-case sample count is still bounded by the final 100 + $other$ row = 101. */
+            ),
+            rows_pre_rank as (
+                -- Leaf tables (non-partition-children) excluding the timescale internal chunks
+                select
+                    epoch_ns, tag_datname, tag_schema, tag_table_name, tag_table_full_name,
+                    0 as is_part_root,
+                    table_size_b, tag_table_size_cardinality_mb,
+                    total_relation_size_b, toast_size_b,
+                    seconds_since_last_vacuum, seconds_since_last_analyze, no_autovacuum,
+                    seq_scan, seq_tup_read, idx_scan, idx_tup_fetch,
+                    n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+                    n_live_tup, n_dead_tup,
+                    vacuum_count, autovacuum_count, analyze_count, autoanalyze_count,
+                    tx_freeze_age, mxid_freeze_age,
+                    last_seq_scan_s
+                from q_tstats
+                where not tag_schema like E'\\_timescaledb%'
+                  and not exists (select * from q_root_part where oid = q_tstats.relid)
+                union all
+                -- Partition roots: aggregate of all their parts
+                select * from (
+                    select
+                        epoch_ns,
+                        tag_datname,
+                        quote_ident(qr.root_schema) as tag_schema,
+                        quote_ident(qr.root_relname) as tag_table_name,
+                        quote_ident(qr.root_schema) || '.' || quote_ident(qr.root_relname) as tag_table_full_name,
+                        1 as is_part_root,
+                        sum(table_size_b)::int8 as table_size_b,
+                        abs(greatest(ceil(log((sum(table_size_b) + 1) / 10 ^ 6)), 0))::text as tag_table_size_cardinality_mb,
+                        sum(total_relation_size_b)::int8 as total_relation_size_b,
+                        sum(toast_size_b)::int8 as toast_size_b,
+                        min(seconds_since_last_vacuum)::int8 as seconds_since_last_vacuum,
+                        min(seconds_since_last_analyze)::int8 as seconds_since_last_analyze,
+                        sum(no_autovacuum)::int8 as no_autovacuum,
+                        sum(seq_scan)::int8 as seq_scan,
+                        sum(seq_tup_read)::int8 as seq_tup_read,
+                        sum(idx_scan)::int8 as idx_scan,
+                        sum(idx_tup_fetch)::int8 as idx_tup_fetch,
+                        sum(n_tup_ins)::int8 as n_tup_ins,
+                        sum(n_tup_upd)::int8 as n_tup_upd,
+                        sum(n_tup_del)::int8 as n_tup_del,
+                        sum(n_tup_hot_upd)::int8 as n_tup_hot_upd,
+                        sum(n_live_tup)::int8 as n_live_tup,
+                        sum(n_dead_tup)::int8 as n_dead_tup,
+                        sum(vacuum_count)::int8 as vacuum_count,
+                        sum(autovacuum_count)::int8 as autovacuum_count,
+                        sum(analyze_count)::int8 as analyze_count,
+                        sum(autoanalyze_count)::int8 as autoanalyze_count,
+                        max(tx_freeze_age)::int8 as tx_freeze_age,
+                        max(mxid_freeze_age)::int8 as mxid_freeze_age,
+                        min(last_seq_scan_s)::int8 as last_seq_scan_s
+                    from q_tstats ts
                     join q_parts qp on qp.relid = ts.relid
                     join q_root_part qr on qr.oid = qp.root
-              group by
-                    1, 2, 3, 4, 5
-        ) x
-        order by table_size_b desc nulls last limit 300
+                    group by 1, 2, 3, 4, 5, 6
+                ) x
+            ),
+            ranked as (
+                select
+                    row_number() over (
+                        order by total_relation_size_b desc nulls last,
+                                 tag_schema, tag_table_name
+                    ) as rownum,
+                    rows_pre_rank.*
+                from rows_pre_rank
+            )
+        select /* pgwatch_generated */
+            epoch_ns, tag_datname, tag_schema, tag_table_name, tag_table_full_name,
+            is_part_root,
+            table_size_b, tag_table_size_cardinality_mb,
+            total_relation_size_b, toast_size_b,
+            seconds_since_last_vacuum, seconds_since_last_analyze, no_autovacuum,
+            seq_scan, seq_tup_read, idx_scan, idx_tup_fetch,
+            n_tup_ins, n_tup_upd, n_tup_del, n_tup_hot_upd,
+            n_live_tup, n_dead_tup,
+            vacuum_count, autovacuum_count, analyze_count, autoanalyze_count,
+            tx_freeze_age, mxid_freeze_age,
+            last_seq_scan_s
+        from ranked
+        where rownum <= 100
+        union all
+        select
+            (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+            current_database() as tag_datname,
+            '$other$'::text as tag_schema,
+            '$other$'::text as tag_table_name,
+            '$other$'::text as tag_table_full_name,
+            0 as is_part_root,
+            coalesce(sum(table_size_b), 0)::int8 as table_size_b,
+            abs(greatest(ceil(log((coalesce(sum(table_size_b), 0) + 1) / 10 ^ 6)), 0))::text as tag_table_size_cardinality_mb,
+            coalesce(sum(total_relation_size_b), 0)::int8 as total_relation_size_b,
+            coalesce(sum(toast_size_b), 0)::int8 as toast_size_b,
+            min(seconds_since_last_vacuum)::int8 as seconds_since_last_vacuum,
+            min(seconds_since_last_analyze)::int8 as seconds_since_last_analyze,
+            coalesce(sum(no_autovacuum), 0)::int8 as no_autovacuum,
+            coalesce(sum(seq_scan), 0)::int8 as seq_scan,
+            coalesce(sum(seq_tup_read), 0)::int8 as seq_tup_read,
+            coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+            coalesce(sum(idx_tup_fetch), 0)::int8 as idx_tup_fetch,
+            coalesce(sum(n_tup_ins), 0)::int8 as n_tup_ins,
+            coalesce(sum(n_tup_upd), 0)::int8 as n_tup_upd,
+            coalesce(sum(n_tup_del), 0)::int8 as n_tup_del,
+            coalesce(sum(n_tup_hot_upd), 0)::int8 as n_tup_hot_upd,
+            coalesce(sum(n_live_tup), 0)::int8 as n_live_tup,
+            coalesce(sum(n_dead_tup), 0)::int8 as n_dead_tup,
+            coalesce(sum(vacuum_count), 0)::int8 as vacuum_count,
+            coalesce(sum(autovacuum_count), 0)::int8 as autovacuum_count,
+            coalesce(sum(analyze_count), 0)::int8 as analyze_count,
+            coalesce(sum(autoanalyze_count), 0)::int8 as autoanalyze_count,
+            max(tx_freeze_age)::int8 as tx_freeze_age,
+            max(mxid_freeze_age)::int8 as mxid_freeze_age,
+            min(last_seq_scan_s)::int8 as last_seq_scan_s
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - table_size_b
       - total_relation_size_b
@@ -1525,26 +1621,66 @@ metrics:
     statement_timeout_seconds: 15
   pg_class:
     description: >
-      Direct access to pg_class system catalog data for all relations (tables, indexes, etc).
-      Provides reltuples, relpages, and other pg_class columns with relname and schemaname
-      as tags for easy filtering and querying.
+      Direct access to pg_class system catalog data for all relations
+      (tables, indexes, materialized views, views), bounded to the top
+      100 per database. Adapts the top-N + `'$other$'` bucket pattern
+      from !262 (which ported it from pgwatch2 PostgresAI edition):
+      everything below the cap is summed into a single `'$other$'` row.
+      Ranks by `relpages` (catalog-cached page count — O(1) join, cannot
+      raise on concurrently-dropped relation), with stable
+      schemaname/relname/relkind tiebreakers. Reads `pg_class` for
+      relations in non-system schemas (the existing
+      `pg_catalog`/`information_schema` exclusion is preserved); the
+      `relkind` tag is kept as a tag on top-100 rows but rolled into a
+      `'$other$'` literal on the aggregate row (mixing relkinds in one
+      aggregate is meaningful for "what's not in the top 100").
+      Aggregate semantics: sum for reltuples / relpages / *_size_bytes.
+      Compatible with all Postgres versions.
     sqls:
       11: |
-        select /* pgwatch_generated */
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (
+              order by coalesce(c.relpages, 0) desc nulls last,
+                       n.nspname, c.relname, c.relkind
+            ) as rownum,
+            n.nspname as schemaname,
+            c.relname,
+            c.relkind::text as relkind,
+            c.reltuples,
+            c.relpages,
+            pg_relation_size(c.oid) as relation_size_bytes,
+            pg_total_relation_size(c.oid) as total_relation_size_bytes
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname not in ('information_schema', 'pg_catalog')
+            and c.relkind in ('r', 'i', 'm', 'v')
+        )
+        select
           current_database() as tag_datname,
-          n.nspname as tag_schemaname,
-          c.relname as tag_relname,
-          c.relkind as tag_relkind,
-          c.reltuples,
-          c.relpages,
-          pg_relation_size(c.oid) as relation_size_bytes,
-          pg_total_relation_size(c.oid) as total_relation_size_bytes
-        from pg_class c
-        join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname not in ('information_schema', 'pg_catalog')
-          and c.relkind in ('r', 'i', 'm', 'v')  -- tables, indexes, materialized views, views
-        order by pg_total_relation_size(c.oid) desc
-        limit 10000
+          schemaname as tag_schemaname,
+          relname as tag_relname,
+          relkind as tag_relkind,
+          reltuples,
+          relpages,
+          relation_size_bytes,
+          total_relation_size_bytes
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          '$other$'::text as tag_schemaname,
+          '$other$'::text as tag_relname,
+          '$other$'::text as tag_relkind,
+          coalesce(sum(reltuples), 0)::float4 as reltuples,
+          coalesce(sum(relpages), 0)::int4 as relpages,
+          coalesce(sum(relation_size_bytes), 0)::int8 as relation_size_bytes,
+          coalesce(sum(total_relation_size_bytes), 0)::int8 as total_relation_size_bytes
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - reltuples
       - relpages
@@ -1796,16 +1932,52 @@ metrics:
       - queries
     statement_timeout_seconds: 15
   pg_total_relation_size:
+    description: >
+      Retrieves per-relation total size (heap + toast + indexes) from
+      `pg_class`, bounded to the top 100 per database. Adapts the top-N
+      + `'$other$'` bucket pattern from !262 (which ported it from
+      pgwatch2 PostgresAI edition): everything below the cap is summed
+      into a single `'$other$'` row so dashboard size totals stay
+      correct. Ranks by `pg_total_relation_size(oid)` itself (relevance
+      == size for a size metric); reads `pg_class` directly so
+      pg_catalog, pg_toast and _timescaledb_internal stay visible — the
+      top-N cap controls cardinality, not a schema filter. Tiebreakers
+      `relnamespace::regnamespace::text, relname` keep top-N membership
+      stable across scrapes when sizes tie. The `'$other$'` sentinel
+      starts with `$`, not legal as the first character of an unquoted
+      Postgres identifier, so it cannot collide with a real schema or
+      relation name. Compatible with all Postgres versions.
     sqls:
       11: |
-        select current_database() as tag_datname, /* pgwatch_generated */
-        relnamespace::regnamespace as tag_schemaname,
-              relname as tag_relname,
-              pg_total_relation_size(oid) bytes
-          from pg_class
-        where relkind = 'r'
-        order by bytes desc
-        limit 5000
+        with ranked as ( /* pgwatch_generated */
+          select
+            row_number() over (
+              order by pg_total_relation_size(c.oid) desc nulls last,
+                       c.relnamespace::regnamespace::text, c.relname
+            ) as rownum,
+            c.relnamespace::regnamespace::text as schemaname,
+            c.relname,
+            pg_total_relation_size(c.oid) as bytes
+          from pg_class c
+          where c.relkind = 'r'
+        )
+        select
+          current_database() as tag_datname,
+          schemaname as tag_schemaname,
+          relname as tag_relname,
+          bytes
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          '$other$'::text as tag_schemaname,
+          '$other$'::text as tag_relname,
+          coalesce(sum(bytes), 0)::int8 as bytes
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - bytes
     statement_timeout_seconds: 15
@@ -1836,26 +2008,37 @@ metrics:
     statement_timeout_seconds: 15
   pg_btree_bloat:
     description: >
-      This metric analyzes estimated index bloat by calculating the estimated vs actual index pages and sizes.
-      It provides insights into estimated bloat percentage, real size, extra size due to estimated bloat, and estimated bloat size considering fill factor.
-      This metric helps administrators identify indexes that may need maintenance like VACUUM FULL or index reorganization.
+      Estimated per-btree-index bloat (index pages allocated vs index
+      pages needed at perfect packing), bounded to the top 100 per
+      database. Adapts the top-N + `'$other$'` bucket pattern from !262.
+      Ranks by `bloat_pct` descending with `is_na = 0` preferred and
+      stable schema/table/idx tiebreakers. Preserves the existing >1 MiB
+      filter. Aggregate semantics on the `'$other$'` row: sum for
+      real_size_mib / extra_size / bloat_size; recompute extra_pct and
+      bloat_pct from sum(relpages-est_pages) / sum(relpages) (weighted
+      avg over the tail); avg(fillfactor); max(is_na); table_size_mib
+      doesn't aggregate meaningfully across indexes on different tables,
+      so the `'$other$'` row reports 0. The `'$other$'` sentinel cannot
+      collide with a real Postgres identifier.
     sqls:
       11: |
-        select /* pgwatch_generated */
-          current_database() as tag_datname, nspname as tag_schemaname, tblname as tag_tblname, idxname as tag_idxname,
-          (bs*(relpages)/(1024*1024))::float as real_size_mib,
-          (pg_relation_size(tbloid)/(1024*1024))::float as table_size_mib,
-          (bs*(relpages-est_pages))::float as extra_size,
-          100 * (relpages-est_pages)::float / relpages as extra_pct,
-          fillfactor,
-          case when relpages > est_pages_ff
-            then bs*(relpages-est_pages_ff)
-            else 0
-          end as bloat_size,
-          100 * (relpages-est_pages_ff)::float / relpages as bloat_pct,
-          is_na
-          -- , 100-(pst).avg_leaf_density as pst_avg_bloat, est_pages, index_tuple_hdr_bm, maxalign, pagehdr, nulldatawidth, nulldatahdrwidth, reltuples, relpages -- (DEBUG INFO)
-        from (
+        with bloat_data as ( /* pgwatch_generated */
+          select
+            nspname, tblname, idxname,
+            (bs*(relpages)/(1024*1024))::float as real_size_mib,
+            (pg_relation_size(tbloid)/(1024*1024))::float as table_size_mib,
+            (bs*(relpages-est_pages))::float as extra_size,
+            100 * (relpages-est_pages)::float / relpages as extra_pct,
+            fillfactor,
+            case when relpages > est_pages_ff
+              then bs*(relpages-est_pages_ff)
+              else 0
+            end as bloat_size,
+            100 * (relpages-est_pages_ff)::float / relpages as bloat_pct,
+            is_na,
+            -- carried for the $other$ aggregate denominators
+            bs, relpages, est_pages, est_pages_ff
+          from (
           select coalesce(1 +
                 ceil(reltuples/floor((bs-pageopqdata-pagehdr)/(4+nulldatahdrwidth)::float)), 0 -- ItemIdData size + computed avg size of a tuple (nulldatahdrwidth)
               ) as est_pages,
@@ -1942,8 +2125,55 @@ metrics:
           ) as rows_hdr_pdg_stats
         ) as relation_stats
         where (bs * relpages::float / (1024 * 1024)) > 1 /* exclude indexes below 1 MiB */
-        order by is_na = 0 desc, bloat_pct desc
-        limit 1000
+        ),
+        ranked as (
+          select
+            row_number() over (
+              order by is_na = 0 desc, bloat_pct desc nulls last,
+                       nspname, tblname, idxname
+            ) as rownum,
+            *
+          from bloat_data
+        )
+        select
+          current_database() as tag_datname,
+          nspname as tag_schemaname,
+          tblname as tag_tblname,
+          idxname as tag_idxname,
+          real_size_mib,
+          table_size_mib,
+          extra_size,
+          extra_pct,
+          fillfactor,
+          bloat_size,
+          bloat_pct,
+          is_na
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          '$other$'::text as tag_schemaname,
+          '$other$'::text as tag_tblname,
+          '$other$'::text as tag_idxname,
+          coalesce(sum(real_size_mib), 0)::float as real_size_mib,
+          0::float as table_size_mib,
+          coalesce(sum(extra_size), 0)::float as extra_size,
+          case when sum(relpages) > 0
+            then 100 * sum(greatest(relpages - est_pages, 0))::float / sum(relpages)
+            else 0
+          end::float as extra_pct,
+          coalesce(avg(fillfactor), 90)::smallint as fillfactor,
+          coalesce(sum(bloat_size), 0)::float as bloat_size,
+          case when sum(relpages) > 0
+            then 100 * sum(greatest(relpages - est_pages_ff, 0))::float / sum(relpages)
+            else 0
+          end::float as bloat_pct,
+          coalesce(max(is_na), 0)::int as is_na
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - real_size_mib
       - table_size_mib
@@ -1957,73 +2187,130 @@ metrics:
     statement_timeout_seconds: 15
   pg_table_bloat:
     description: >
-      This metric analyzes estimated table bloat by calculating the estimated vs actual table pages and sizes.
-      It provides insights into estimated bloat percentage, real size, extra size due to estimated bloat, and estimated bloat size considering fill factor.
-      This metric helps administrators identify tables that may need maintenance like VACUUM FULL or table reorganization.
+      Estimated per-table bloat (heap pages allocated vs heap pages
+      needed at perfect packing), bounded to the top 100 per database.
+      Adapts the top-N + `'$other$'` bucket pattern from !262:
+      everything below the cap is summed into a single `'$other$'` row
+      so dashboard "total bloat across the DB" stays correct even when
+      the tail is large. Ranks by `bloat_pct` descending (most-bloated
+      tables first), with `is_na = 0` preferred (don't crowd top-N with
+      tables whose estimate is unreliable) and stable schemaname/tblname
+      tiebreakers. Preserves the existing >1 MiB filter (zero-byte and
+      tiny tables aren't interesting for bloat). Aggregate semantics on
+      the `'$other$'` row: sum for real_size_mib / extra_size /
+      bloat_size (total wasted bytes in the tail); recompute extra_pct
+      and bloat_pct from the summed numerator/denominator (weighted-avg
+      effectively); avg(fillfactor); max(is_na) (any tail row with bad
+      stats taints the aggregate). The `'$other$'` sentinel cannot
+      collide with a real Postgres identifier.
     sqls:
       11: |
-        select current_database() as tag_datname, schemaname as tag_schemaname, tblname as tag_tblname, (bs*tblpages)/(1024*1024)::float as real_size_mib, /* pgwatch_generated */
-          (tblpages-est_tblpages)*bs as extra_size,
-          case when tblpages > 0 and tblpages - est_tblpages > 0
-            then 100 * (tblpages - est_tblpages)/tblpages::float
-            else 0
-          end as extra_pct, fillfactor,
-          case when tblpages - est_tblpages_ff > 0
-            then (tblpages-est_tblpages_ff)*bs
-            else 0
-          end as bloat_size,
-          case when tblpages > 0 and tblpages - est_tblpages_ff > 0
-            then 100 * (tblpages - est_tblpages_ff)/tblpages::float
-            else 0
-          end as bloat_pct, is_na
-          -- , tpl_hdr_size, tpl_data_size, (pst).free_percent + (pst).dead_tuple_percent as real_frag -- (DEBUG INFO)
-        from (
-          select ceil( reltuples / ( (bs-page_hdr)/tpl_size ) ) + ceil( toasttuples / 4 ) as est_tblpages,
-            ceil( reltuples / ( (bs-page_hdr)*fillfactor/(tpl_size*100) ) ) + ceil( toasttuples / 4 ) as est_tblpages_ff,
-            tblpages, fillfactor, bs, tblid, schemaname, tblname, heappages, toastpages, is_na
-            -- , tpl_hdr_size, tpl_data_size, pgstattuple(tblid) as pst -- (DEBUG INFO)
+        with bloat_data as ( /* pgwatch_generated */
+          select schemaname, tblname,
+            (bs*tblpages)/(1024*1024)::float as real_size_mib,
+            (tblpages-est_tblpages)*bs as extra_size,
+            case when tblpages > 0 and tblpages - est_tblpages > 0
+              then 100 * (tblpages - est_tblpages)/tblpages::float
+              else 0
+            end as extra_pct,
+            fillfactor,
+            case when tblpages - est_tblpages_ff > 0
+              then (tblpages-est_tblpages_ff)*bs
+              else 0
+            end as bloat_size,
+            case when tblpages > 0 and tblpages - est_tblpages_ff > 0
+              then 100 * (tblpages - est_tblpages_ff)/tblpages::float
+              else 0
+            end as bloat_pct,
+            is_na,
+            -- carried for the $other$ aggregate denominators
+            bs, tblpages, est_tblpages, est_tblpages_ff
           from (
-            select
-              ( 4 + tpl_hdr_size + tpl_data_size + (2*ma)
-                - case when tpl_hdr_size%ma = 0 then ma else tpl_hdr_size%ma end
-                - case when ceil(tpl_data_size)::int%ma = 0 then ma else ceil(tpl_data_size)::int%ma end
-              ) as tpl_size, bs - page_hdr as size_per_block, (heappages + toastpages) as tblpages, heappages,
-              toastpages, reltuples, toasttuples, bs, page_hdr, tblid, schemaname, tblname, fillfactor, is_na
-              -- , tpl_hdr_size, tpl_data_size
+            select ceil( reltuples / ( (bs-page_hdr)/tpl_size ) ) + ceil( toasttuples / 4 ) as est_tblpages,
+              ceil( reltuples / ( (bs-page_hdr)*fillfactor/(tpl_size*100) ) ) + ceil( toasttuples / 4 ) as est_tblpages_ff,
+              tblpages, fillfactor, bs, tblid, schemaname, tblname, heappages, toastpages, is_na
             from (
               select
-                tbl.oid as tblid, ns.nspname as schemaname, tbl.relname as tblname, tbl.reltuples,
-                tbl.relpages as heappages, coalesce(toast.relpages, 0) as toastpages,
-                coalesce(toast.reltuples, 0) as toasttuples,
-                coalesce(substring(
-                  array_to_string(tbl.reloptions, ' ')
-                  from 'fillfactor=([0-9]+)')::smallint, 100) as fillfactor,
-                current_setting('block_size')::numeric as bs,
-                case when version()~'mingw32' or version()~'64-bit|x86_64|ppc64|ia64|amd64' then 8 else 4 end as ma,
-                24 as page_hdr,
-                23 + case when max(coalesce(s.null_frac,0)) > 0 then ( 7 + count(s.attname) ) / 8 else 0::int end
-                  + case when bool_or(att.attname = 'oid' and att.attnum < 0) then 4 else 0 end as tpl_hdr_size,
-                sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 0) ) as tpl_data_size,
-                (bool_or(att.atttypid = 'pg_catalog.name'::regtype)
-                  or sum(case when att.attnum > 0 then 1 else 0 end) <> count(s.attname))::int as is_na
-              from pg_attribute as att
-                join pg_class as tbl on att.attrelid = tbl.oid
-                join pg_namespace as ns on ns.oid = tbl.relnamespace
-                left join postgres_ai.pg_statistic as s on s.schemaname=ns.nspname
-                  and s.tablename = tbl.relname and s.inherited=false and s.attname=att.attname
-                left join pg_class as toast on tbl.reltoastrelid = toast.oid
-              where not att.attisdropped
-                and tbl.relkind in ('r','m')
-              group by 1,2,3,4,5,6,7,8,9,10
-              order by 2,3
-            ) as s
-          ) as s2
-        ) as s3
-        -- where not is_na
-        --   and tblpages*((pst).free_percent + (pst).dead_tuple_percent)::float4/100 >= 1
-        where (bs * tblpages::float / (1024 * 1024)) > 1 /* exclude tables below 1 MiB */
-        order by is_na = 0 desc, bloat_pct desc
-        limit 1000
+                ( 4 + tpl_hdr_size + tpl_data_size + (2*ma)
+                  - case when tpl_hdr_size%ma = 0 then ma else tpl_hdr_size%ma end
+                  - case when ceil(tpl_data_size)::int%ma = 0 then ma else ceil(tpl_data_size)::int%ma end
+                ) as tpl_size, bs - page_hdr as size_per_block, (heappages + toastpages) as tblpages, heappages,
+                toastpages, reltuples, toasttuples, bs, page_hdr, tblid, schemaname, tblname, fillfactor, is_na
+              from (
+                select
+                  tbl.oid as tblid, ns.nspname as schemaname, tbl.relname as tblname, tbl.reltuples,
+                  tbl.relpages as heappages, coalesce(toast.relpages, 0) as toastpages,
+                  coalesce(toast.reltuples, 0) as toasttuples,
+                  coalesce(substring(
+                    array_to_string(tbl.reloptions, ' ')
+                    from 'fillfactor=([0-9]+)')::smallint, 100) as fillfactor,
+                  current_setting('block_size')::numeric as bs,
+                  case when version()~'mingw32' or version()~'64-bit|x86_64|ppc64|ia64|amd64' then 8 else 4 end as ma,
+                  24 as page_hdr,
+                  23 + case when max(coalesce(s.null_frac,0)) > 0 then ( 7 + count(s.attname) ) / 8 else 0::int end
+                    + case when bool_or(att.attname = 'oid' and att.attnum < 0) then 4 else 0 end as tpl_hdr_size,
+                  sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 0) ) as tpl_data_size,
+                  (bool_or(att.atttypid = 'pg_catalog.name'::regtype)
+                    or sum(case when att.attnum > 0 then 1 else 0 end) <> count(s.attname))::int as is_na
+                from pg_attribute as att
+                  join pg_class as tbl on att.attrelid = tbl.oid
+                  join pg_namespace as ns on ns.oid = tbl.relnamespace
+                  left join postgres_ai.pg_statistic as s on s.schemaname=ns.nspname
+                    and s.tablename = tbl.relname and s.inherited=false and s.attname=att.attname
+                  left join pg_class as toast on tbl.reltoastrelid = toast.oid
+                where not att.attisdropped
+                  and tbl.relkind in ('r','m')
+                group by 1,2,3,4,5,6,7,8,9,10
+                order by 2,3
+              ) as s
+            ) as s2
+          ) as s3
+          where (bs * tblpages::float / (1024 * 1024)) > 1 /* exclude tables below 1 MiB */
+        ),
+        ranked as (
+          select
+            row_number() over (
+              order by is_na = 0 desc, bloat_pct desc nulls last,
+                       schemaname, tblname
+            ) as rownum,
+            *
+          from bloat_data
+        )
+        select
+          current_database() as tag_datname,
+          schemaname as tag_schemaname,
+          tblname as tag_tblname,
+          real_size_mib,
+          extra_size,
+          extra_pct,
+          fillfactor,
+          bloat_size,
+          bloat_pct,
+          is_na
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          current_database() as tag_datname,
+          '$other$'::text as tag_schemaname,
+          '$other$'::text as tag_tblname,
+          coalesce(sum(real_size_mib), 0)::float as real_size_mib,
+          coalesce(sum(extra_size), 0)::int8 as extra_size,
+          case when sum(tblpages) > 0
+            then 100 * sum(greatest(tblpages - est_tblpages, 0))::float / sum(tblpages)
+            else 0
+          end::float as extra_pct,
+          coalesce(avg(fillfactor), 100)::smallint as fillfactor,
+          coalesce(sum(bloat_size), 0)::int8 as bloat_size,
+          case when sum(tblpages) > 0
+            then 100 * sum(greatest(tblpages - est_tblpages_ff, 0))::float / sum(tblpages)
+            else 0
+          end::float as bloat_pct,
+          coalesce(max(is_na), 0)::int as is_na
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - real_size_mib
       - extra_size
@@ -2036,20 +2323,29 @@ metrics:
     statement_timeout_seconds: 300
   table_size_detailed:
     description: >
-      This metric provides comprehensive table size analysis including the actual table size (main data fork only),
-      TOAST table size, index size, free space map (FSM) size, and visibility map (VM) size.
-      It helps administrators understand detailed storage breakdown for each table component.
+      Detailed per-table storage breakdown (heap main/fsm/vm forks,
+      indexes, and toast components), bounded to the top 100 per
+      database. Adapts the top-N + `'$other$'` bucket pattern from
+      !262: everything below the cap is summed into a single
+      `'$other$'` row so dashboard size totals stay correct. Ranks by
+      total_relation_size_b descending (size = relevance for a size
+      metric); stable tiebreakers (`tag_schema`, `tag_table_name`)
+      keep top-N membership stable across scrapes. Filters out tables
+      with total_relation_size_b = 0 before ranking (empty/zero-byte
+      tables would crowd the tail without contributing signal). The
+      `tag_size_cardinality_mb` label on the `'$other$'` row is
+      recomputed from the summed total_relation_size_b. The `$other$`
+      sentinel cannot collide with a real schema/table identifier
+      (`$` is illegal as the first character of an unquoted identifier).
     sqls:
       11: |-
         with table_sizes as ( /* pgwatch_generated */
           select
-            (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
             current_database() as tag_datname,
             n.nspname as tag_schema,
             c.relname as tag_table_name,
             c.oid as table_oid,
             c.reltoastrelid,
-            -- Main table size components (bytes)
             pg_relation_size(c.oid, 'main') as table_main_size_b,
             pg_relation_size(c.oid, 'fsm') as table_fsm_size_b,
             pg_relation_size(c.oid, 'vm') as table_vm_size_b,
@@ -2059,24 +2355,32 @@ metrics:
             pg_relation_size(c.reltoastrelid, 'vm') as toast_vm_size_b,
             pg_indexes_size(c.reltoastrelid) as toast_indexes_size_b,
             pg_total_relation_size(c.reltoastrelid) as toast_total_size_b,
-            pg_total_relation_size(c.oid) as total_relation_size_b,
-            abs(greatest(ceil(log((pg_total_relation_size(c.oid) + 1) / 10 ^ 6)), 0))::text as tag_size_cardinality_mb
+            pg_total_relation_size(c.oid) as total_relation_size_b
           from pg_class c
           join pg_namespace n on n.oid = c.relnamespace
-          where c.relkind in ('r', 'p', 'm') -- regular tables, partitioned tables, materialized views
+          where c.relkind in ('r', 'p', 'm')
             and n.nspname not in ('information_schema', 'pg_toast')
             and not exists (
               select 1 from pg_locks
               where relation = c.oid and mode = 'AccessExclusiveLock'
             )
-          order by pg_total_relation_size(c.oid) desc
+        ),
+        ranked as (
+          select
+            row_number() over (
+              order by total_relation_size_b desc nulls last,
+                       tag_schema, tag_table_name
+            ) as rownum,
+            *
+          from table_sizes
+          where total_relation_size_b > 0
         )
         select
-          epoch_ns,
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           tag_datname,
           tag_schema,
           tag_table_name,
-          tag_size_cardinality_mb,
+          abs(greatest(ceil(log((total_relation_size_b + 1) / 10 ^ 6)), 0))::text as tag_size_cardinality_mb,
           table_main_size_b,
           table_fsm_size_b,
           table_vm_size_b,
@@ -2087,9 +2391,29 @@ metrics:
           toast_indexes_size_b,
           total_relation_size_b,
           (toast_main_size_b + toast_fsm_size_b + toast_vm_size_b + toast_indexes_size_b) as total_toast_size_b
-        from table_sizes
-        where total_relation_size_b > 0
-        limit 1000;
+        from ranked
+        where rownum <= 100
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          '$other$'::text as tag_schema,
+          '$other$'::text as tag_table_name,
+          abs(greatest(ceil(log((coalesce(sum(total_relation_size_b), 0) + 1) / 10 ^ 6)), 0))::text as tag_size_cardinality_mb,
+          coalesce(sum(table_main_size_b), 0)::int8 as table_main_size_b,
+          coalesce(sum(table_fsm_size_b), 0)::int8 as table_fsm_size_b,
+          coalesce(sum(table_vm_size_b), 0)::int8 as table_vm_size_b,
+          coalesce(sum(table_indexes_size_b), 0)::int8 as table_indexes_size_b,
+          coalesce(sum(toast_main_size_b), 0)::int8 as toast_main_size_b,
+          coalesce(sum(toast_fsm_size_b), 0)::int8 as toast_fsm_size_b,
+          coalesce(sum(toast_vm_size_b), 0)::int8 as toast_vm_size_b,
+          coalesce(sum(toast_indexes_size_b), 0)::int8 as toast_indexes_size_b,
+          coalesce(sum(total_relation_size_b), 0)::int8 as total_relation_size_b,
+          coalesce(sum(toast_main_size_b + toast_fsm_size_b + toast_vm_size_b + toast_indexes_size_b), 0)::int8 as total_toast_size_b
+        from ranked
+        where rownum > 100
+        group by ()
+        having count(*) > 0
     gauges:
       - table_main_size_b
       - table_fsm_size_b
@@ -2113,6 +2437,14 @@ metrics:
       Decision tree: 1) Valid duplicate exists -> DROP, 2) Backs PK/UNIQUE constraint -> RECREATE,
       3) Table < 10K rows -> RECREATE (small tables rebuild quickly, typically under 1 second),
       4) Otherwise -> UNCERTAIN (need query plan analysis to assess impact).
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      ranks invalid indexes by `index_size_bytes desc` (ties broken by schema,
+      table, then index name for stability), keeps the top 100, and folds the
+      tail into a single `'$other$'` row whose `index_size_bytes` /
+      `table_row_estimate` are summed and whose tag columns carry the literal
+      `'$other$'` sentinel. The `'$other$'` row is omitted entirely (via
+      `HAVING count(*) > 0`) when all invalid indexes fit within the top-100
+      cap, so its absence on healthy clusters is normal.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2181,18 +2513,58 @@ metrics:
           left join valid_duplicates vd on vd.invalid_indexrelid = pidx.indexrelid
           where pidx.indisvalid = false
         ),
-        num_data as (
+        ranked as (
           select
-            row_number() over () as num,
+            row_number() over (
+              order by index_size_bytes desc nulls last,
+                       tag_schema_name, tag_table_name, tag_index_name
+            ) as num,
             data.*
           from data
         )
         select
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           current_database() as tag_datname,
-          num_data.*
-        from num_data
-        limit 1000;
+          num,
+          tag_index_name,
+          tag_schema_name,
+          tag_table_name,
+          tag_relation_name,
+          index_definition,
+          index_size_bytes,
+          is_pk,
+          is_unique,
+          constraint_name,
+          table_row_estimate,
+          has_valid_duplicate,
+          valid_index_name,
+          valid_index_definition,
+          supports_fk
+        from ranked
+        where num <= 100
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          0::bigint as num,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_relation_name,
+          '$other$'::text as index_definition,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          false as is_pk,
+          false as is_unique,
+          '$other$'::text as constraint_name,
+          coalesce(sum(table_row_estimate), 0)::bigint as table_row_estimate,
+          bool_or(has_valid_duplicate) as has_valid_duplicate,
+          '$other$'::text as valid_index_name,
+          '$other$'::text as valid_index_definition,
+          coalesce(max(supports_fk), 0)::int as supports_fk
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2201,6 +2573,18 @@ metrics:
       This metric identifies redundant indexes that can potentially be dropped to save storage space and improve write performance.
       It analyzes index relationships and finds indexes that are covered by other indexes, considering column order, operator classes,
       and foreign key constraints. Uses the exact logic from tmp.sql with JSON aggregation and proper thresholds.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      ranks redundant indexes by `index_size_bytes desc` (ties broken by
+      `table_name`), keeps the top 100, and folds the tail into a single
+      `'$other$'` row whose `table_size_bytes`, `index_size_bytes` and
+      `index_usage` columns are summed and whose tag columns carry the literal
+      `'$other$'` sentinel. The `redundant_indexes_grouped` CTE intentionally
+      preserves duplicate column aliases (`tag_schema_name` / `tag_index_name`
+      appear twice — once from the raw name and once from the `formated_*`
+      variant) because the dashboards rely on both spellings; the duplication
+      is preserved on the `'$other$'` row for consistency. The `'$other$'`
+      row is omitted entirely (via `HAVING count(*) > 0`) when there are
+      ≤100 redundant pairs, so its absence on healthy clusters is normal.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2353,9 +2737,43 @@ metrics:
             formated_relation_name,
             supports_fk
           order by index_size_bytes desc
+        ),
+        -- redundant_indexes_grouped intentionally exposes duplicate aliases
+        -- (tag_schema_name / tag_index_name appear twice — once from the
+        -- raw name and once from the formated_* variant). select * over it
+        -- preserves both. Order by table_name (unique, non-duplicated).
+        ranked as (
+          select
+            row_number() over (
+              order by index_size_bytes desc nulls last, table_name
+            ) as num,
+            redundant_indexes_grouped.*
+          from redundant_indexes_grouped
         )
-        select * from redundant_indexes_grouped
-        limit 1000;
+        select * from ranked where num <= 100
+        union all
+        select
+          0::bigint as num,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as table_name,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_access_method,
+          '$other$'::text as tag_reason,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(index_usage), 0)::int8 as index_usage,
+          '$other$'::text as index_definition,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_relation_name,
+          coalesce(max(supports_fk), 0)::int as supports_fk,
+          '$other$'::text as redundant_to_json
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2364,6 +2782,18 @@ metrics:
       This metric identifies unused indexes in the database.
       It provides insights into the number of unused indexes and their details.
       This metric helps administrators identify and fix unused indexes to improve database performance.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      within the `idx_scan = 0 AND idx_is_btree` filter, ranks indexes by
+      `index_size_bytes desc` (ties broken by schema, table, index name),
+      keeps the top 100, and folds the tail into a single `'$other$'` row.
+      Counter columns (`idx_scan`, `all_scans`, `writes`, `index_size_bytes`,
+      `table_size_bytes`, `relpages`) are summed across the tail; ratio
+      columns (`index_scan_pct`, `scans_per_write`) and the `supports_fk`
+      boolean are deliberately zeroed/false on the aggregate row because the
+      tail-level average would mislead and the per-row FK relationship has
+      no meaningful aggregate. Tag columns carry the literal `'$other$'`
+      sentinel. The `'$other$'` row is omitted entirely (via
+      `HAVING count(*) > 0`) when ≤100 indexes match the unused filter.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2443,6 +2873,17 @@ metrics:
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
+        , ranked as (
+          select
+            row_number() over (
+              order by index_size_bytes desc nulls last,
+                       schema_name, table_name, index_name
+            ) as num,
+            *
+          from index_ratios
+          where idx_scan = 0
+            and idx_is_btree
+        )
         select
           'Never Used Indexes' as tag_reason,
           current_database() as tag_datname,
@@ -2462,12 +2903,32 @@ metrics:
           idx_is_btree,
           opclasses as tag_opclasses,
           supports_fk
-        from index_ratios
-        where
-          idx_scan = 0
-          and idx_is_btree
-        order by index_size_bytes desc
-        limit 1000;
+        from ranked
+        where num <= 100
+        union all
+        select
+          'Never Used Indexes' as tag_reason,
+          current_database() as tag_datname,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_index_name,
+          '$other$'::text as index_definition,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(all_scans), 0)::int8 as all_scans,
+          0::numeric as index_scan_pct,
+          coalesce(sum(writes), 0)::int8 as writes,
+          0::numeric as scans_per_write,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          coalesce(sum(relpages), 0)::int4 as relpages,
+          true as idx_is_btree,
+          '$other$'::text as tag_opclasses,
+          false as supports_fk
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -2476,6 +2937,19 @@ metrics:
       This metric identifies rarely used indexes in the database.
       It provides insights into the number of rarely used indexes and their details.
       This metric helps administrators identify and fix rarely used indexes to improve database performance.
+      Adapts the top-N + `'$other$'` bucket pattern from !262 to this metric:
+      the source is a 3-way UNION ALL of reason categories (Low Scans / Low
+      Scans Ratio / Old Indexes), ranked first by reason group `grp` and
+      then by `index_size_bytes desc`, keeping the top 100 across all
+      groups. The tail is folded into a single `'$other$'` row whose
+      `tag_reason` literal is `'$other$'` (deliberately not one of the
+      real reason categories, so dashboards can distinguish the aggregate
+      from a real bucket). Counter columns (`idx_scan`, `all_scans`,
+      `writes`, `index_size_bytes`, `table_size_bytes`, `relpages`) are
+      summed across the tail; ratio columns (`index_scan_pct`,
+      `scans_per_write`) and the `supports_fk` boolean are deliberately
+      zeroed/false on the aggregate row. The `'$other$'` row is omitted
+      entirely (via `HAVING count(*) > 0`) when ≤100 indexes match.
     sqls:
       11: |
         with fk_indexes as ( /* pgwatch_generated */
@@ -2558,25 +3032,7 @@ metrics:
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
-        select
-          tag_reason,
-          index_id,
-            schema_name as tag_schema_name,
-            table_name as tag_table_name,
-            index_name as tag_index_name,
-            idx_scan,
-            all_scans,
-            index_scan_pct,
-            writes,
-            scans_per_write,
-            index_size_bytes,
-            table_size_bytes,
-            relpages,
-            idx_is_btree,
-            opclasses as tag_opclasses,
-            supports_fk,
-            grp
-        from (
+        , flagged as (
           select
             'Low Scans, High Writes' as tag_reason,
             *,
@@ -2610,9 +3066,59 @@ metrics:
               ( writes::numeric / ( total_writes + 1 ) ) > 0.02
               and not idx_is_btree
               and index_size_bytes > 100000000
-        ) t
-        order by grp, index_size_bytes desc
-        limit 1000;
+        ),
+        ranked as (
+          select
+            row_number() over (
+              order by grp, index_size_bytes desc nulls last,
+                       schema_name, table_name, index_name
+            ) as num,
+            *
+          from flagged
+        )
+        select
+          tag_reason,
+          index_id,
+          schema_name as tag_schema_name,
+          table_name as tag_table_name,
+          index_name as tag_index_name,
+          idx_scan,
+          all_scans,
+          index_scan_pct,
+          writes,
+          scans_per_write,
+          index_size_bytes,
+          table_size_bytes,
+          relpages,
+          idx_is_btree,
+          opclasses as tag_opclasses,
+          supports_fk,
+          grp
+        from ranked
+        where num <= 100
+        union all
+        select
+          '$other$' as tag_reason,
+          0::oid as index_id,
+          '$other$'::text as tag_schema_name,
+          '$other$'::text as tag_table_name,
+          '$other$'::text as tag_index_name,
+          coalesce(sum(idx_scan), 0)::int8 as idx_scan,
+          coalesce(sum(all_scans), 0)::int8 as all_scans,
+          0::numeric as index_scan_pct,
+          coalesce(sum(writes), 0)::int8 as writes,
+          0::numeric as scans_per_write,
+          coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
+          coalesce(sum(table_size_bytes), 0)::int8 as table_size_bytes,
+          coalesce(sum(relpages), 0)::int4 as relpages,
+          false as idx_is_btree,
+          '$other$'::text as tag_opclasses,
+          false as supports_fk,
+          0 as grp
+        from ranked
+        where num > 100
+        group by ()
+        having count(*) > 0;
     gauges:
       - '*'
     statement_timeout_seconds: 15
