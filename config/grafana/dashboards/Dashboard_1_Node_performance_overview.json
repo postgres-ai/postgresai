@@ -261,7 +261,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"})",
+          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"})",
           "hide": false,
           "legendFormat": "__auto",
           "range": true,
@@ -512,7 +512,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum by (state) (pgwatch_pg_stat_activity_count{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}) > 0",
+          "expr": "sum by (state) (pgwatch_pg_stat_activity_count{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}) > 0",
           "hide": false,
           "instant": false,
           "legendFormat": "{{state}}",
@@ -745,7 +745,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum by (state) (pgwatch_pg_stat_activity_count{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\", state!=\"idle\"}) > 0",
+          "expr": "sum by (state) (pgwatch_pg_stat_activity_count{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\", state!=\"idle\"}) > 0",
           "hide": false,
           "instant": false,
           "legendFormat": "{{state}}",
@@ -893,7 +893,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_db_stats_xact_rollback{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_db_stats_xact_rollback{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "interval": "20",
@@ -903,7 +903,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_db_stats_xact_commit{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_db_stats_xact_commit{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "interval": "20",
           "legendFormat": "Commits",
           "range": true,
@@ -1003,7 +1003,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1106,7 +1106,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))/1000",
+          "expr": "sum(irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))/1000",
           "interval": "20",
           "legendFormat": "Execution time",
           "range": true,
@@ -1118,7 +1118,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))/1000",
+          "expr": "sum(irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))/1000",
           "hide": false,
           "instant": false,
           "interval": "20",
@@ -1220,7 +1220,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))/1000/ sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_pg_stat_statements_exec_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))/1000/ sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "interval": "20",
           "legendFormat": "Execution time per call",
           "range": true,
@@ -1232,7 +1232,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))/1000/ sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_pg_stat_statements_plan_time_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))/1000/ sum(irate(pgwatch_pg_stat_statements_calls{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "interval": "20",
@@ -1334,7 +1334,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_tup_returned{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_tup_returned{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1350,7 +1350,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_tup_fetched{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_tup_fetched{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1470,7 +1470,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "irate(pgwatch_db_stats_tup_inserted{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_tup_inserted{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1486,7 +1486,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_tup_updated{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_tup_updated{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1503,7 +1503,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_tup_deleted{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_tup_deleted{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1607,7 +1607,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "irate(pgwatch_db_stats_blks_read{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_blks_read{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1623,7 +1623,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "irate(pgwatch_db_stats_blks_hit{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_blks_hit{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1811,7 +1811,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_blk_read_time{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_blk_read_time{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1826,7 +1826,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_blk_write_time{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_blk_write_time{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "hide": false,
           "interval": "20",
           "legendFormat": "blk_write_time",
@@ -1928,7 +1928,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "sum(irate(pgwatch_wal_xlog_location_b{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "sum(irate(pgwatch_wal_xlog_location_b{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2031,7 +2031,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "irate(pgwatch_db_stats_temp_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+          "expr": "irate(pgwatch_db_stats_temp_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2138,7 +2138,7 @@
           "disableTextWrap": false,
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (lockmode) (rate(pgwatch_locks_mode_count{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]) * 60)",
+          "expr": "sum by (lockmode) (rate(pgwatch_locks_mode_count{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]) * 60)",
           "fullMetaSearch": false,
           "groupBy": [
             {
@@ -2270,7 +2270,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "pgwatch_pg_long_running_transactions_age_in_seconds{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}",
+          "expr": "pgwatch_pg_long_running_transactions_age_in_seconds{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "",
@@ -2401,7 +2401,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pgwatch_pg_database_wraparound_age_datfrozenxid{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}",
+          "expr": "pgwatch_pg_database_wraparound_age_datfrozenxid{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}",
           "legendFormat": "{{datname}}",
           "range": true,
           "refId": "A"
@@ -2552,7 +2552,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pgwatch_pg_database_wraparound_age_datminmxid{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}",
+          "expr": "pgwatch_pg_database_wraparound_age_datminmxid{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}",
           "legendFormat": "{{datname}}",
           "range": true,
           "refId": "A"
@@ -2782,7 +2782,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "irate(pgwatch_checkpointer_buffers_written{datname=\"$db_name\"}[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=\"$db_name\", setting_name=\"block_size\"}",
+          "expr": "irate(pgwatch_checkpointer_buffers_written{datname=~\"$db_name\"}[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=~\"$db_name\", setting_name=\"block_size\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2797,7 +2797,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "builder",
-          "expr": "irate(pgwatch_bgwriter_buffers_clean[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=\"$db_name\", setting_name=\"block_size\"}",
+          "expr": "irate(pgwatch_bgwriter_buffers_clean[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=~\"$db_name\", setting_name=\"block_size\"}",
           "hide": false,
           "instant": false,
           "interval": "20",
@@ -2812,7 +2812,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "irate(pg_stat_bgwriter_buffers_backend_total[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=\"$db_name\", setting_name=\"block_size\"}",
+          "expr": "irate(pg_stat_bgwriter_buffers_backend_total[$__rate_interval]) * on(datname) pgwatch_settings_numeric_value{datname=~\"$db_name\", setting_name=\"block_size\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -3069,7 +3069,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "sum(pgwatch_table_size_detailed_total_toast_size_b{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "sum(pgwatch_table_size_detailed_total_toast_size_b{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "TOAST",
@@ -3084,7 +3084,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(pgwatch_table_size_detailed_table_main_size_b{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "sum(pgwatch_table_size_detailed_table_main_size_b{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -3101,7 +3101,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "sum(pgwatch_table_size_detailed_table_indexes_size_b{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "sum(pgwatch_table_size_detailed_table_indexes_size_b{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -3118,7 +3118,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(pgwatch_table_size_detailed_table_vm_size_b{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "sum(pgwatch_table_size_detailed_table_vm_size_b{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -3135,7 +3135,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(pgwatch_table_size_detailed_table_fsm_size_b{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "sum(pgwatch_table_size_detailed_table_fsm_size_b{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -3471,6 +3471,8 @@
         "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
         "label": "DB name",
         "name": "db_name",
+        "multi": true,
+        "includeAll": true,
         "options": [],
         "query": {
           "qryType": 1,

@@ -353,7 +353,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -391,7 +391,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_class_relation_size_bytes{relkind=\"105\", cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_class_relation_size_bytes{relkind=\"105\", cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"})",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{relname}}",
           "range": true,
@@ -487,7 +487,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -525,7 +525,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_btree_bloat_bloat_pct{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_btree_bloat_bloat_pct{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"})",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{tblname}}.{{idxname}}",
           "range": true,
@@ -608,7 +608,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -646,7 +646,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_btree_bloat_bloat_size{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_btree_bloat_bloat_size{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"})",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{tblname}}.{{idxname}}",
           "range": true,
@@ -760,7 +760,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_indexes_idx_tup_read{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_indexes_idx_tup_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{relname}}.{{indexrelname}}",
           "range": true,
@@ -861,7 +861,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_indexes_idx_tup_fetch{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_indexes_idx_tup_fetch{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval]))",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{relname}}.{{indexrelname}}",
           "range": true,
@@ -975,7 +975,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_indexes_idx_blks_read{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_indexes_idx_blks_read{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\", setting_name=\"block_size\"}[1d])",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{relname}}.{{indexrelname}}",
           "range": true,
@@ -1076,7 +1076,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_indexes_idx_blks_hit{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_indexes_idx_blks_hit{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\", setting_name=\"block_size\"}[1d])",
           "interval": "20",
           "legendFormat": "{{schemaname}}.{{relname}}.{{indexrelname}}",
           "range": true,
@@ -1200,6 +1200,8 @@
         "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
         "label": "DB name",
         "name": "db_name",
+        "multi": true,
+        "includeAll": true,
         "options": [],
         "query": {
           "qryType": 1,

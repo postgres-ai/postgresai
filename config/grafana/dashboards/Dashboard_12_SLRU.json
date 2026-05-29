@@ -136,7 +136,7 @@
         "targets": [
           {
             "editorMode": "code",
-            "expr": "irate(pgwatch_pg_stat_slru_blks_hit{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_blks_hit{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}[$__rate_interval])",
             "interval": "10",
             "legendFormat": "{{name}}",
             "range": true,
@@ -235,7 +235,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "builder",
-            "expr": "irate(pgwatch_pg_stat_slru_blks_exists{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_blks_exists{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -337,7 +337,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "builder",
-            "expr": "irate(pgwatch_pg_stat_slru_blks_read{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_blks_read{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -439,7 +439,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "builder",
-            "expr": "irate(pgwatch_pg_stat_slru_blks_written{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_blks_written{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -541,7 +541,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "code",
-            "expr": "irate(pgwatch_pg_stat_slru_blks_zeroed{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_blks_zeroed{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -643,7 +643,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "builder",
-            "expr": "irate(pgwatch_pg_stat_slru_truncates{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_truncates{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -745,7 +745,7 @@
           {
             "disableTextWrap": false,
             "editorMode": "builder",
-            "expr": "irate(pgwatch_pg_stat_slru_flushes{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[$__rate_interval])",
+            "expr": "irate(pgwatch_pg_stat_slru_flushes{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__rate_interval])",
             "fullMetaSearch": false,
             "includeNullMetadata": true,
             "interval": "10",
@@ -813,6 +813,8 @@
             "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
             "label": "DB name",
             "name": "db_name",
+            "multi": true,
+            "includeAll": true,
             "options": [],
             "query": {
               "qryType": 1,

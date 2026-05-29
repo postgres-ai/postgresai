@@ -562,7 +562,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_class_total_relation_size_bytes{relkind=\"114\", schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_class_total_relation_size_bytes{relkind=\"114\", schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schemaname}}.{{relname}}",
@@ -663,7 +663,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_class_total_relation_size_bytes{relkind=\"114\", schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_class_total_relation_size_bytes{relkind=\"114\", schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -766,7 +766,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_table_size_detailed_table_main_size_b{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_table_size_detailed_table_main_size_b{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schema}}.{{table_name}}",
@@ -867,7 +867,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_table_main_size_b{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_table_main_size_b{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -970,7 +970,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_table_size_detailed_toast_indexes_size_b{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_table_size_detailed_toast_indexes_size_b{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schema}}.{{table_name}}",
@@ -1071,7 +1071,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_total_toast_size_b{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_total_toast_size_b{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1174,7 +1174,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_table_size_detailed_table_indexes_size_b\n{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_table_size_detailed_table_indexes_size_b\n{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schema}}.{{table_name}}",
@@ -1275,7 +1275,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_table_indexes_size_b{schema=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_table_size_detailed_table_indexes_size_b{schema=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1395,7 +1395,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_ins{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
+          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_ins{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "60",
@@ -1509,7 +1509,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_del{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
+          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_del{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "60",
@@ -1624,7 +1624,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_hot_upd{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
+          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_hot_upd{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "60",
@@ -1738,7 +1738,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_upd{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval]) - irate(pgwatch_table_stats_n_tup_hot_upd{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
+          "expr": "topk($top_n, sum by(schema, table_name, table_full_name) (irate(pgwatch_table_stats_n_tup_upd{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval]) - irate(pgwatch_table_stats_n_tup_hot_upd{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", schema=~\"$schema_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "60",
@@ -1843,7 +1843,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_tables_seq_tup_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_tables_seq_tup_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -1948,7 +1948,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_tables_idx_tup_fetch{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_stat_all_tables_idx_tup_fetch{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2064,7 +2064,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, \n  irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])\n) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, \n  irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])\n) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2168,7 +2168,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, \n  (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))/(irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))) \n) ",
+          "expr": "topk($top_n, \n  (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))/(irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))) \n) ",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2271,7 +2271,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \nirate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2375,7 +2375,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, \n  (irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))/(irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))) \n) ",
+          "expr": "topk($top_n, \n  (irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))/(irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + (irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]) + \n  irate(pgwatch_pg_statio_all_tables_tidx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))) \n) ",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2478,7 +2478,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2581,7 +2581,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_heap_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2684,7 +2684,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_toast_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2787,7 +2787,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_toast_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2890,7 +2890,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_idx_blks_hit{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) * on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -2993,7 +2993,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
+          "expr": "topk($top_n, irate(pgwatch_pg_statio_all_tables_idx_blks_read{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))* on() group_left() last_over_time(pgwatch_settings_numeric_value{datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"block_size\"}[1d])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "20",
@@ -3137,7 +3137,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_table_bloat_bloat_pct{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_table_bloat_bloat_pct{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schemaname}}.{{tblname}}",
@@ -3241,7 +3241,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "topk($top_n, pgwatch_pg_table_bloat_bloat_size{schemaname=~\"$schema_name\", datname=\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "expr": "topk($top_n, pgwatch_pg_table_bloat_bloat_size{schemaname=~\"$schema_name\", datname=~\"$db_name\", cluster=\"$cluster_name\", node_name=\"$node_name\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{schemaname}}.{{tblname}}",
@@ -3306,6 +3306,8 @@
         "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
         "label": "DB name",
         "name": "db_name",
+        "multi": true,
+        "includeAll": true,
         "options": [],
         "query": {
           "qryType": 1,

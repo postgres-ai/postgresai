@@ -172,7 +172,7 @@
                       {
                         "targetBlank": true,
                         "title": "Query Analysis",
-                        "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__value.queryid}\ufeff\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=\ufeff${__from:date}\ufeff&to=\ufeff${__to:date}"
+                        "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__value.queryid}\ufeff\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=\ufeff${__from:date}\ufeff&to=\ufeff${__to:date}"
                       }
                     ]
                   }
@@ -559,7 +559,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -685,7 +685,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -809,7 +809,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -935,7 +935,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1059,7 +1059,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1185,7 +1185,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1310,7 +1310,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1436,7 +1436,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1560,7 +1560,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1686,7 +1686,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1810,7 +1810,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -1936,7 +1936,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2060,7 +2060,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2186,7 +2186,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2310,7 +2310,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2436,7 +2436,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2560,7 +2560,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2684,7 +2684,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2807,7 +2807,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -2931,7 +2931,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -3055,7 +3055,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -3179,7 +3179,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
@@ -3303,7 +3303,7 @@
                     "oneClick": false,
                     "targetBlank": true,
                     "title": "Query Analysis",
-                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&var-db_name=$db_name&from=${__from:date}&to=${__to:date}"
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.queryid}\ufeff\ufeff&var-cluster_name=\ufeff$cluster_name\ufeff&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
               }
