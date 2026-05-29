@@ -10,9 +10,9 @@ Command-line interface for PostgresAI monitoring and database management.
 npm install -g postgresai
 ```
 
-Or install the latest beta release explicitly:
+For reproducible installs, pin the 0.15 release explicitly:
 ```bash
-npm install -g postgresai@beta
+npm install -g postgresai@0.15.0
 ```
 
 Note: in this repository, `cli/package.json` uses a placeholder version (`0.0.0-dev.0`). The real published version is set by the git tag in CI when publishing to npm.

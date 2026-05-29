@@ -265,12 +265,12 @@ To upgrade postgres_ai monitoring to a newer version:
 ### Step 1: Update the CLI
 
 ```bash
-npm install -g postgresai@latest
+npm install -g postgresai@0.15.0
 ```
 
 Or if you're using npx:
 ```bash
-npx postgresai@latest --version  # verify the new version
+npx postgresai@0.15.0 --version  # verify the new version
 ```
 
 ### Step 2: Stop running services
@@ -281,16 +281,20 @@ postgresai mon stop
 
 ### Step 3: Pull new Docker images and restart
 
-The simplest approach is to re-run local-install, which updates the image tag and pulls new images:
+`mon update` migrates `.env` (adds any newly-required keys) and pulls images while preserving your user-managed `instances.yml`. It does **not** change `PGAI_TAG`, so set the new image tag yourself first — otherwise `mon update` just re-pulls and restarts the *old* version:
 
 ```bash
-postgresai mon local-install -y
+# In your monitoring directory (typically ~/.postgres_ai/), edit .env and set
+# PGAI_TAG to the version you are upgrading to (it should match your new CLI
+# version), e.g. for the 0.15 line:  PGAI_TAG=0.15.0
+postgresai mon update
+postgresai mon start
 ```
 
 This will:
-- Update the `PGAI_TAG` in `.env` (located in your monitoring directory, typically `~/.postgres_ai/` or your current working directory) to match the new CLI version
-- Pull the latest Docker images
-- Start the services with the new images
+- Add any newly required `.env` keys for the newer stack (existing values, your secrets, and `instances.yml` targets are preserved)
+- Pull the Docker images for the `PGAI_TAG` you set
+- Start the services on the new images
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords.
 
@@ -301,9 +305,8 @@ This will:
 If you prefer more control:
 
 ```bash
-# Update the PGAI_TAG in .env to match your CLI version
-postgresai --version  # check your CLI version
-# Edit .env and set PGAI_TAG to the version number
+# Update the PGAI_TAG in .env to match your target stack version
+# Edit .env and set PGAI_TAG=0.15.0
 
 # Migrate .env to add any newly-required keys (e.g. VM_AUTH_* for 0.15+)
 postgresai mon update-config
