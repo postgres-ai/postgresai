@@ -2266,6 +2266,18 @@ function updatePgwatchConfig(configPath: string, updates: Record<string, string>
 }
 
 /**
+ * Regenerate pgwatch sources and recreate collectors so target changes take effect without `mon restart`.
+ */
+async function applyMonitoringTargetsConfig(): Promise<number> {
+  console.log("Applying monitoring target configuration...");
+  const generateCode = await runCompose(["run", "--rm", "sources-generator"]);
+  if (generateCode !== 0) return generateCode;
+
+  console.log("Restarting pgwatch collectors to pick up target changes...");
+  return runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
+}
+
+/**
  * Run docker compose command
  */
 async function runCompose(args: string[], grafanaPassword?: string): Promise<number> {
@@ -3341,6 +3353,14 @@ targets
     try {
       addInstanceToFile(file, buildInstance(instanceName, connStr));
       console.log(`Monitoring target '${instanceName}' added`);
+
+      const applyCode = await applyMonitoringTargetsConfig();
+      if (applyCode !== 0) {
+        console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+        process.exitCode = 1;
+        return;
+      }
+      console.log("✓ Monitoring target configuration applied");
     } catch (err) {
       // Surface InstancesParseError as-is so we don't silently overwrite a
       // corrupted file (which could discard several targets, including the
@@ -3369,6 +3389,14 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
+
+      const applyCode = await applyMonitoringTargetsConfig();
+      if (applyCode !== 0) {
+        console.error("Monitoring target was removed, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+        process.exitCode = 1;
+        return;
+      }
+      console.log("✓ Monitoring target configuration applied");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Error processing instances.yml: ${message}`);
