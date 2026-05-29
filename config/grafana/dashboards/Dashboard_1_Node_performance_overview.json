@@ -2946,7 +2946,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "(\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"7\"}) * 0 + 7 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"6\"}) * 0 + 6 or\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"5\"}) * 0 + 5 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"4\"}) * 0 + 4 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"3\"}) * 0 + 3 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"2\"}) * 0 + 2 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"1\"}) * 0 + 1\n)",
+          "expr": "(\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"7\"}) * 0 + 7 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"6\"}) * 0 + 6 or\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"5\"}) * 0 + 5 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"4\"}) * 0 + 4 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"3\"}) * 0 + 3 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"2\"}) * 0 + 2 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"1\"}) * 0 + 1\n)",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "",
@@ -3354,12 +3354,12 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 14,
+        "h": 10,
         "w": 12,
         "x": 12,
         "y": 113
       },
-      "id": 50,
+      "id": 51,
       "options": {
         "legend": {
           "calcs": [
@@ -3383,7 +3383,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "last_over_time(pgwatch_pg_wal_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}[1h])",
+          "expr": "last_over_time(pgwatch_pg_wal_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}[10m])",
           "legendFormat": "pg_wal_size",
           "range": true,
           "refId": "A"
@@ -3391,6 +3391,89 @@
       ],
       "title": "pg_wal directory size",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Explains why pg_wal size bytes are missing. 0 = OK, 1 = pg_ls_waldir() is unavailable, 2 = monitoring role lacks EXECUTE privilege.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "OK"
+                },
+                "1": {
+                  "text": "pg_ls_waldir() unavailable"
+                },
+                "2": {
+                  "text": "EXECUTE missing"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 123
+      },
+      "id": 52,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(pgwatch_pg_wal_size_status_code{cluster=\"$cluster_name\", node_name=\"$node_name\"}[10m])",
+          "legendFormat": "status_code",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "pg_wal size collection status",
+      "type": "stat"
     },
     {
       "fieldConfig": {

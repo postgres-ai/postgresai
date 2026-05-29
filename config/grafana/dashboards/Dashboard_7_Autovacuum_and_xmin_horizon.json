@@ -249,7 +249,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[5m]))",
+          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", schema!~\"pg_.*|information_schema|_timescaledb.*\"}[5m]))",
           "legendFormat": "{{schema}}.{{table_name}}",
           "range": true,
           "refId": "A"
@@ -492,7 +492,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_mxid_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[5m]))",
+          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_mxid_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", schema!~\"pg_.*|information_schema|_timescaledb.*\"}[5m]))",
           "legendFormat": "{{schema}}.{{table_name}}",
           "range": true,
           "refId": "A"
@@ -1598,7 +1598,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "(\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"7\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 7 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"6\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 6 or\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"5\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 5 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"4\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 4 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"3\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 3 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"2\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 2 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{phase=\"1\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 1\n)",
+          "expr": "(\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"7\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 7 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"6\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 6 or\n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"5\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 5 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"4\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 4 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"3\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 3 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"2\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 2 or \n    group by (schema_name, table_name, vacuum_mode) (\n        pgwatch_pg_vacuum_progress_index_vacuum_count{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", phase=\"1\", schema_name=~\"$schema_name\", table_name=~\"$table_name\"}) * 0 + 1\n)",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "",
@@ -1678,18 +1678,17 @@
         "type": "query"
       },
       {
-        "allValue": ".+",
         "current": {
           "text": "public",
           "value": "public"
         },
-        "definition": "label_values(pgwatch_table_stats_tx_freeze_age,schema)",
+        "definition": "label_values(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", schema!~\"pg_.*|information_schema|_timescaledb.*\"},schema)",
         "includeAll": true,
         "name": "schema_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pgwatch_table_stats_tx_freeze_age,schema)",
+          "query": "label_values(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", schema!~\"pg_.*|information_schema|_timescaledb.*\"},schema)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1704,14 +1703,14 @@
             "$__all"
           ]
         },
-        "definition": "label_values(pgwatch_table_stats_tx_freeze_age{schema=~\"$schema_name\"},table_name)",
+        "definition": "label_values(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", schema=~\"$schema_name\"},table_name)",
         "includeAll": true,
         "multi": true,
         "name": "table_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pgwatch_table_stats_tx_freeze_age{schema=~\"$schema_name\"},table_name)",
+          "query": "label_values(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\", schema=~\"$schema_name\"},table_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,

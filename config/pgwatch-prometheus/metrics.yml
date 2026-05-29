@@ -1061,6 +1061,7 @@ metrics:
             pid <> pg_backend_pid()
             and backend_type = 'client backend'
             and backend_xmin is not null
+            and usename <> current_user
         ),
         slots as (
           select
@@ -1179,6 +1180,7 @@ metrics:
             pid <> pg_backend_pid()
             and backend_type = 'client backend'
             and backend_xmin is not null
+            and usename <> current_user
           order by age(backend_xmin) desc, pid asc
           limit 1
         ),
