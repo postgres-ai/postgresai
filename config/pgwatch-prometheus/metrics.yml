@@ -996,7 +996,7 @@ metrics:
           order by pid, locktype
         )
         select
-          blocked.pid as blocked_pid,
+          blocked.pid::text as tag_blocked_pid,
           current_database() as tag_datname,
           blocked_stm.usename::text as tag_blocked_user,
           blocked_stm.application_name::text as tag_blocked_appname,
@@ -1005,7 +1005,7 @@ metrics:
           coalesce(blocked.relation::regclass::text, blocked_tbl.table_name, '') as tag_blocked_table,
           blocked_stm.query_id::text as tag_blocked_query_id,
           (extract(epoch from (clock_timestamp() - blocked_stm.state_change)) * 1000)::bigint as blocked_ms,
-          blocker.pid as blocker_pid,
+          blocker.pid::text as tag_blocker_pid,
           blocker_stm.usename::text as tag_blocker_user,
           blocker_stm.application_name::text as tag_blocker_appname,
           blocker.mode as blocker_mode,
