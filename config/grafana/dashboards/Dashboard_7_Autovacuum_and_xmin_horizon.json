@@ -249,7 +249,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[5m]))",
+          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_tx_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[5m]))",
           "legendFormat": "{{schema}}.{{table_name}}",
           "range": true,
           "refId": "A"
@@ -492,7 +492,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_mxid_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[5m]))",
+          "expr": "topk($top_n, last_over_time(pgwatch_table_stats_mxid_freeze_age{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[5m]))",
           "legendFormat": "{{schema}}.{{table_name}}",
           "range": true,
           "refId": "A"
@@ -795,7 +795,7 @@
         {
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "pgwatch_pg_long_running_transactions_age_in_seconds{cluster='$cluster_name', node_name='$node_name', datname=\"$db_name\"}",
+          "expr": "pgwatch_pg_long_running_transactions_age_in_seconds{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "interval": "",
@@ -1091,7 +1091,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "topk($top_n, last_over_time(pgwatch_pg_autovacuum_queue_autovacuum_overdue_factor{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[5m]))",
+          "expr": "topk($top_n, last_over_time(pgwatch_pg_autovacuum_queue_autovacuum_overdue_factor{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[5m]))",
           "legendFormat": "{{schemaname}}.{{relname}}",
           "range": true,
           "refId": "A"
@@ -1444,7 +1444,7 @@
             "uid": "P7A0D6631BB10B34F"
           },
           "editorMode": "code",
-          "expr": "last_over_time(pgwatch_pg_autovacuum_blocked_wait_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"$db_name\"}[1m])",
+          "expr": "last_over_time(pgwatch_pg_autovacuum_blocked_wait_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[1m])",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1665,6 +1665,8 @@
         "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
         "label": "DB name",
         "name": "db_name",
+        "multi": true,
+        "includeAll": true,
         "options": [],
         "query": {
           "qryType": 1,

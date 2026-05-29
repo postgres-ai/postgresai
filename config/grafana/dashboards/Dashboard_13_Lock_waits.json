@@ -1094,7 +1094,7 @@
         "hide": 0,
         "includeAll": true,
         "allValue": ".*",
-        "multi": false,
+        "multi": true,
         "name": "db_name",
         "options": [],
         "query": {
