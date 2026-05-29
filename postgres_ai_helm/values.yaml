@@ -70,19 +70,19 @@ victoriaMetrics:
 
 pgwatchPostgres:
   enabled: true
-  image: cybertecpostgresql/pgwatch:4.1.0
+  image: postgresai/pgwatch:0.15.0
   logLevel: error
   resources: {}
 
 pgwatchPrometheus:
   enabled: true
-  image: cybertecpostgresql/pgwatch:4.1.0
+  image: postgresai/pgwatch:0.15.0
   logLevel: error
   resources: {}
 
 flask:
   enabled: true
-  image: postgresai/monitoring-flask-backend:0.14.0
+  image: postgresai/monitoring-flask-backend:0.15.0
   imagePullPolicy: IfNotPresent
   containerPort: 8000
   healthPath: /health
@@ -109,7 +109,7 @@ flask:
 
 reporter:
   enabled: true
-  image: postgresai/reporter:1.0.3
+  image: postgresai/reporter:0.15.0
   imagePullPolicy: IfNotPresent
   schedule: "0 0 * * *"
   # Legacy: If clusterName/nodeName are set here, they override global settings
