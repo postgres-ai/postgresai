@@ -208,6 +208,7 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         self.assertIn("pid <> pg_backend_pid()", body)
         self.assertIn("backend_type = 'client backend'", body)
         self.assertIn("backend_xmin is not null", body)
+        self.assertIn("usename <> current_user", body)
 
     def test_blocker_activity_filters_client_backends_with_xmin(self) -> None:
         body = cte_body("xmin_horizon_blockers", "activity")
@@ -216,6 +217,7 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         self.assertIn("pid <> pg_backend_pid()", body)
         self.assertIn("backend_type = 'client backend'", body)
         self.assertIn("backend_xmin is not null", body)
+        self.assertIn("usename <> current_user", body)
 
     def test_blocker_slot_detail_separates_xmin_and_catalog_xmin(self) -> None:
         slots_body = cte_body("xmin_horizon_blockers", "slots")
