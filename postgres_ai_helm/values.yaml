@@ -238,6 +238,14 @@ grafana:
   plugins:
     - yesoreyeram-infinity-datasource
 
+  # Mirror config/grafana/provisioning/grafana.ini for the Helm-deployed
+  # Grafana. Without an explicit check_for_updates=false, Grafana phones
+  # home and renders a "New version available" banner across every
+  # dashboard — distracting for demo environments and offering no
+  # operator value when the Grafana image is pinned by this chart.
+  grafana.ini:
+    analytics:
+      check_for_updates: false
 
   persistence:
     enabled: true

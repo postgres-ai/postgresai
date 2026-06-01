@@ -92,7 +92,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH q AS ( SELECT data ->> 'query' AS qt FROM pgss_queryid_queries WHERE (data ->> 'queryid') = '$query_id' LIMIT 1 ) SELECT qt AS \"Query text\" FROM q UNION ALL SELECT '(query text not yet collected for this queryid — pgwatch writes it on the next scrape; refresh in ~30s)' WHERE NOT EXISTS (SELECT 1 FROM q)",
+          "rawSql": "WITH q AS ( SELECT data ->> 'query' AS qt FROM pgss_queryid_queries WHERE (data ->> 'queryid') = '$query_id' AND (data ? 'real_dbname') AND (data ->> 'real_dbname') = '${db_name}' ORDER BY time DESC LIMIT 1 ) SELECT qt AS \"Query text\" FROM q UNION ALL SELECT '(query text not yet collected for this queryid \u2014 pgwatch writes it on the next scrape; refresh in ~30s)' WHERE NOT EXISTS (SELECT 1 FROM q)",
           "refId": "A",
           "sql": {
             "columns": [
@@ -304,19 +304,6 @@
           "legendFormat": "{{wait_event_type}}:{{wait_event}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "editorMode": "code",
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total)>0",
-          "hide": false,
-          "interval": "20",
-          "legendFormat": " {{wait_event_type}}",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Active session history",
@@ -2226,7 +2213,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-      "title": "03. Single queryid analysis",
+  "title": "03. Single queryid analysis",
   "uid": "db52944d-b025-4e18-b70b-89c0af3e7e41",
   "version": 2
 }

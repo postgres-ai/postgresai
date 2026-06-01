@@ -7,6 +7,31 @@
 # These jobs add quality-specific checks to the CI pipeline.
 # They complement (not replace) the existing test jobs.
 
+# --- Grafana Dashboard Lint ---
+# Fast, dependency-light JSON-only lint that catches common dashboard bugs
+# surfaced by manual QA on the rc.6 demo:
+#   - Postgres-source panels not pinning the database via ${db_name}
+#     (silent "No data" with a tiny pink warning triangle)
+#   - Dashboard titles leaking TODO / WIP / FIXME markers
+#   - Duplicate targets within a panel (legend duplicates)
+#   - Default time ranges wider than 1 hour (empty-looking graphs on demo)
+#   - Grafana auto-update / "new version available" banner not disabled
+# The tests live under tests/grafana_dashboards/ and run on every MR.
+quality:grafana-dashboards-lint:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  before_script:
+    - pip install pytest pyyaml
+  script:
+    - python -m pytest tests/grafana_dashboards -v --tb=short
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 # --- Schema Validation ---
 # Ensures all health check JSON schemas are valid and consistent
 quality:schema-validation:

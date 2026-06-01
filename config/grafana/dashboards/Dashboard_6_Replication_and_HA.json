@@ -72,12 +72,12 @@
       "list": []
     },
     "time": {
-      "from": "now-6h",
+      "from": "now-1h",
       "to": "now"
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "06. Replication and HA  -- \"Metrics are collected (part of health check); dashboard – TODO\"",
+    "title": "06. Replication and HA",
     "uid": "9086b3ba-a250-429e-a968-9eabee4fb68a",
     "version": 1
   }
