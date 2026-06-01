@@ -323,19 +323,6 @@
           "legendFormat": "Idle Internal - {{wait_event_type}}",
           "range": true,
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "editorMode": "code",
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total)>0",
-          "hide": false,
-          "interval": "20",
-          "legendFormat": " {{wait_event_type}}",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Active session history",
@@ -603,19 +590,6 @@
           "legendFormat": "{{wait_event_type}} - {{wait_event}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "editorMode": "code",
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total)>0",
-          "hide": true,
-          "interval": "20",
-          "legendFormat": " {{wait_event_type}}",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Active session history by event type",
@@ -1050,7 +1024,7 @@
     ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
