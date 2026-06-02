@@ -281,7 +281,7 @@ postgresai mon stop
 
 ### Step 3: Pull new Docker images and restart
 
-`mon update` migrates `.env` (adds any newly-required keys) and pulls images while preserving your user-managed `instances.yml`. It does **not** change `PGAI_TAG`, so set the new image tag yourself first — otherwise `mon update` just re-pulls and restarts the *old* version:
+`mon update` migrates `.env` (adds any newly-required keys), refreshes `docker-compose.yml` to the new stack version, and pulls images — all while preserving your user-managed `instances.yml`. It does **not** change `PGAI_TAG`, so set the new image tag yourself first — otherwise `mon update` just re-pulls and restarts the *old* version:
 
 ```bash
 # In your monitoring directory (typically ~/.postgres_ai/), edit .env and set
@@ -293,12 +293,13 @@ postgresai mon start
 
 This will:
 - Add any newly required `.env` keys for the newer stack (existing values, your secrets, and `instances.yml` targets are preserved)
+- Refresh `docker-compose.yml` to match the new stack version on non-git installs (e.g. npx / `npm install -g`), backing up the old file as `docker-compose.yml.bak-<oldtag>-<hash>` (the original is never overwritten on repeated runs) — this is what wires newly-required service config such as `VM_AUTH_*` on `sink-prometheus`. The fetched compose is validated before it replaces your working one, so a network proxy/login page can never clobber it. Git checkouts already get this via `git pull`, so it is skipped for them.
 - Pull the Docker images for the `PGAI_TAG` you set
 - Start the services on the new images
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords.
 
-> **In-place upgrade note:** Newer stack versions can require additional `.env` keys (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` were added in 0.15 for VictoriaMetrics basic auth). Both `postgresai mon local-install -y` and `postgresai mon update` perform a purely-additive `.env` migration on every run: existing values are preserved verbatim, and any newly-required keys are appended with safe random defaults. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart.
+> **In-place upgrade note:** Newer stack versions can require both additional `.env` keys and a matching `docker-compose.yml` (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` and the `sink-prometheus` auth wiring were added in 0.15 for VictoriaMetrics basic auth). `postgresai mon local-install -y`, `postgresai mon update`, and `postgresai mon update-config` all perform a purely-additive `.env` migration on every run (existing values preserved verbatim; newly-required keys appended with safe random defaults) **and** refresh `docker-compose.yml` to the new stack version on non-git installs (npx / `npm install -g`), backing up the old compose as `docker-compose.yml.bak-<oldtag>-<hash>` (the pristine original is preserved across repeated runs; the fetched compose is validated as a real stack file before it replaces yours). This closes the prior gap where npx upgrades kept a stale 0.14 compose and `sink-prometheus` crashed with `missing "VM_AUTH_USERNAME" env var`. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in (and refresh the compose) for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart.
 
 **Alternative: Manual upgrade**
 
