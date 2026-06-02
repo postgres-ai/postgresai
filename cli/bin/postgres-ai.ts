@@ -591,6 +591,208 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
 }
 
 /**
+ * Sanitize a PGAI_TAG value before it is interpolated into the compose backup
+ * filename (`docker-compose.yml.bak-<tag>-<hash8>`). The value flows straight
+ * into a filename via path.resolve, so it is quote-stripped and validated
+ * against a conservative charset: a malformed or hostile tag (e.g.
+ * `../../../tmp/x`, or one carrying a path separator) is rejected to null so it
+ * can never escape projectDir or otherwise poison the backup path. Callers fall
+ * back to a timestamp suffix when this returns null.
+ *
+ * Applied centrally to BOTH tag sources — the .env read (readDeployedTag) and
+ * the OLD tag passed in by callers that rewrite .env first (e.g. local-install)
+ * — so neither path can bypass the validation.
+ */
+function sanitizeTagForBackup(tag: string | null | undefined): string | null {
+  if (tag == null) return null;
+  const stripped = stripMatchingQuotes(tag);
+  return /^[A-Za-z0-9._-]{1,64}$/.test(stripped) ? stripped : null;
+}
+
+/**
+ * Read the deployed PGAI_TAG out of a project's .env (returns null if absent or
+ * if the value fails {@link sanitizeTagForBackup}). Used only to compute the
+ * compose backup file suffix; callers fall back to a timestamp when this is null.
+ */
+function readDeployedTag(projectDir: string): string | null {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return null;
+  const m = fs.readFileSync(envFile, "utf8").match(/^PGAI_TAG=(.+)$/m);
+  return m ? sanitizeTagForBackup(m[1]) : null;
+}
+
+/**
+ * Validate that a freshly fetched payload is genuinely a postgres_ai
+ * docker-compose.yml, NOT an HTML login/captcha/proxy/maintenance page that a
+ * 200 response can still carry. `downloadText` only checks `response.ok`, so a
+ * non-compose 200 body would otherwise silently clobber a working compose with
+ * junk — strictly worse than keeping the stale-but-valid one.
+ *
+ * Requires:
+ *   - non-empty, and not an obvious HTML document (<!DOCTYPE / <html ...);
+ *   - parseable YAML resolving to an object;
+ *   - a `services` map that contains the keystone `sink-prometheus` service
+ *     (the very service whose VM_AUTH wiring this refresh exists to deliver).
+ */
+function isValidComposeYaml(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Cheap early reject for HTML error/login/proxy pages served with a 200.
+  if (/^<(?:!doctype|html|\?xml)\b/i.test(trimmed)) return false;
+
+  let doc: unknown;
+  try {
+    doc = yaml.load(trimmed);
+  } catch {
+    return false;
+  }
+  if (!doc || typeof doc !== "object") return false;
+  const services = (doc as { services?: unknown }).services;
+  if (!services || typeof services !== "object") return false;
+  // The keystone service must be present — this is what carries the VM_AUTH_*
+  // wiring that the whole refresh exists to deliver.
+  return Object.prototype.hasOwnProperty.call(services, "sink-prometheus");
+}
+
+/**
+ * Fetch the target docker-compose.yml for a given list of candidate refs.
+ *
+ * Test-only seam (PGAI_COMPOSE_SOURCE): when NODE_ENV === "test" AND the var is
+ * set to a local file path, the compose is read from disk instead of fetched
+ * over the network — keeping the refresh hermetically testable offline without
+ * exposing a local-file→compose injection surface in a normal user environment.
+ * The production path (GitLab raw fetch) is otherwise unchanged.
+ *
+ * Returns null if nothing could be obtained.
+ */
+async function fetchTargetCompose(refs: string[]): Promise<string | null> {
+  const localSource = process.env.PGAI_COMPOSE_SOURCE;
+  if (process.env.NODE_ENV === "test" && localSource && localSource.trim()) {
+    try {
+      return fs.readFileSync(localSource.trim(), "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  for (const ref of refs) {
+    const url = `https://gitlab.com/postgres-ai/postgres_ai/-/raw/${encodeURIComponent(ref)}/docker-compose.yml`;
+    try {
+      return await downloadText(url);
+    } catch {
+      // try next ref
+    }
+  }
+  return null;
+}
+
+/**
+ * Compare two compose documents ignoring trailing-whitespace-only differences,
+ * so a lone trailing-newline delta doesn't trigger needless churn + a backup.
+ */
+function composeContentEqual(a: string, b: string): boolean {
+  return a.replace(/\s+$/, "") === b.replace(/\s+$/, "");
+}
+
+/**
+ * Refresh the bundled, CLI-owned docker-compose.yml for NON-GIT installs when it
+ * is stale relative to the target stack version (the CLI's own pkg.version).
+ *
+ * Why this exists: docker-compose.yml is a version-coupled static asset. 0.15
+ * added VM basic auth, wiring VM_AUTH_* into the sink-prometheus (VictoriaMetrics)
+ * service and the Grafana datasource. `mon update` already refreshes the compose
+ * for git checkouts via `git pull`, and green-field installs fetch it once via
+ * ensureDefaultMonitoringProject(). But npx / global-npm upgrades are non-git and
+ * only advance PGAI_TAG — leaving the OLD compose in place. That mismatch crashes
+ * sink-prometheus (`missing "VM_AUTH_USERNAME" env var`) and blanks all dashboards.
+ *
+ * Contract:
+ *   - No-op for git checkouts (.git present) — they refresh via `git pull`.
+ *   - No-op when there is no deployed compose yet (bootstrap path handles it).
+ *   - No-op when the deployed compose content already matches the target.
+ *   - No-op (treated exactly like a fetch failure) when the fetched payload does
+ *     not validate as a real compose — keep the existing compose, no backup,
+ *     warn, return false. Prevents an HTML/proxy 200 body from clobbering a
+ *     working compose with junk.
+ *   - Backs up the prior compose before overwriting and NEVER overwrites an
+ *     existing backup, so the first/pristine compose is always preserved across
+ *     repeated runs (the backup name is uniquified by old-content hash).
+ *   - Touches ONLY docker-compose.yml. Never .env / instances.yml / .pgwatch-config.
+ *   - Best-effort: a fetch/validation failure warns and keeps the existing
+ *     compose (the upgrade still proceeds) — we must not turn a metrics-only
+ *     outage into a hard CLI failure.
+ *
+ * @param projectDir monitoring project directory.
+ * @param oldTag the PGAI_TAG of the *deployed* (pre-upgrade) compose, used to
+ *   label the backup. Callers that rewrite .env's PGAI_TAG before this runs
+ *   (e.g. local-install) MUST pass the captured OLD tag here so the backup
+ *   reflects the OLD version. When omitted, it is read from the project's .env.
+ * @returns true if the compose was refreshed, false otherwise.
+ */
+async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string | null): Promise<boolean> {
+  // Git checkouts manage docker-compose.yml via the repo itself (`git pull`).
+  if (fs.existsSync(path.resolve(projectDir, ".git"))) return false;
+
+  const composeFile = path.resolve(projectDir, "docker-compose.yml");
+  // Nothing deployed yet -> the green-field bootstrap path handles fetching it.
+  if (!fs.existsSync(composeFile)) return false;
+
+  const refs = [
+    process.env.PGAI_PROJECT_REF,
+    pkg.version,
+    `v${pkg.version}`,
+  ].filter((v): v is string => Boolean(v && v.trim()));
+
+  const fetched = await fetchTargetCompose(refs);
+  // Validate BEFORE doing anything destructive: an empty body, a fetch failure,
+  // or a non-compose 200 (HTML login/proxy/maintenance page) are all treated
+  // identically — keep the existing compose, write no backup, warn, no-op.
+  if (!fetched || !isValidComposeYaml(fetched)) {
+    console.error(`⚠ Could not refresh docker-compose.yml to ${pkg.version} (no valid compose was retrieved).`);
+    console.error("  Keeping the existing compose. If dashboards are blank after upgrade, re-run this command once network is available.");
+    return false;
+  }
+
+  // Compare on-disk CONTENT against the freshly fetched target (whitespace-only
+  // diffs ignored). This is correct regardless of when PGAI_TAG was rewritten in
+  // .env (local-install rewrites it before this runs), so we never rely on a
+  // possibly-stale tag heuristic.
+  const existing = fs.readFileSync(composeFile, "utf8");
+  if (composeContentEqual(existing, fetched)) return false; // already current
+
+  // Label the backup with the OLD (deployed) tag. Callers that already rewrote
+  // .env pass it in (raw); otherwise read it from .env. Sanitize centrally so the
+  // caller-supplied oldTag (e.g. local-install's previousTag) cannot bypass the
+  // filename validation — a hostile/malformed tag falls back to the timestamp.
+  const deployedTag = sanitizeTagForBackup(oldTag ?? readDeployedTag(projectDir));
+  const tagPart = deployedTag ?? new Date().toISOString().replace(/[:.]/g, "-");
+  // Uniquify with a short hash of the OLD content so repeated runs (e.g.
+  // update-config, where PGAI_TAG never advances) cannot overwrite the first,
+  // pristine backup. Always preserve the original compose.
+  const oldHash = crypto.createHash("sha256").update(existing).digest("hex").slice(0, 8);
+  const backup = path.resolve(projectDir, `docker-compose.yml.bak-${tagPart}-${oldHash}`);
+  let backupName: string | null = null;
+  try {
+    // "wx" => fail if the backup already exists, so we never clobber a prior
+    // backup. If this exact old content was already backed up, that's fine —
+    // the pristine copy is already on disk under the same name.
+    fs.writeFileSync(backup, existing, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    backupName = path.basename(backup);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e && e.code === "EEXIST") {
+      // Identical old content already backed up under this name — keep it.
+      backupName = path.basename(backup);
+    }
+    // Any other error: non-fatal, proceed with the refresh even without a backup.
+  }
+  fs.writeFileSync(composeFile, fetched, { encoding: "utf8", mode: 0o600 });
+  const backupNote = backupName ? ` (backup: ${backupName})` : "";
+  console.log(`✓ Refreshed docker-compose.yml to ${pkg.version}${backupNote}`);
+  return true;
+}
+
+/**
  * Get configuration from various sources
  * @param opts - Command line options
  * @returns Configuration object
@@ -2427,10 +2629,15 @@ mon
     let existingReplicatorPassword: string | null = null;
     let existingVmAuthUsername: string | null = null;
     let existingVmAuthPassword: string | null = null;
+    // Capture the OLD (deployed) tag BEFORE we rewrite PGAI_TAG below, so the
+    // compose-refresh backup is labeled with the version being upgraded FROM.
+    let previousTag: string | null = null;
 
     if (fs.existsSync(envFile)) {
       const existingEnv = fs.readFileSync(envFile, "utf8");
       // Extract existing values (except tag - always use CLI version)
+      const previousTagMatch = existingEnv.match(/^PGAI_TAG=(.+)$/m);
+      if (previousTagMatch) previousTag = previousTagMatch[1].trim();
       const registryMatch = existingEnv.match(/^PGAI_REGISTRY=(.+)$/m);
       if (registryMatch) existingRegistry = registryMatch[1].trim();
       const pwdMatch = existingEnv.match(/^GF_SECURITY_ADMIN_PASSWORD=(.+)$/m);
@@ -2462,6 +2669,14 @@ mon
     envLines.push(`VM_AUTH_USERNAME=${existingVmAuthUsername || "vmauth"}`);
     envLines.push(`VM_AUTH_PASSWORD=${existingVmAuthPassword || crypto.randomBytes(18).toString("base64")}`);
     fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+
+    // Non-git upgrade safety: bring the CLI-owned compose up to the target version
+    // so newly-required service wiring (e.g. VM_AUTH_* on sink-prometheus) is present.
+    // Compares deployed compose CONTENT against the target, so it's correct even
+    // though PGAI_TAG was just rewritten above. No-op for git checkouts / when current.
+    // Pass the OLD tag (captured before the .env rewrite) so the backup is labeled
+    // with the version we're upgrading FROM, not the new one.
+    await refreshBundledComposeIfStale(projectDir, previousTag);
 
     if (opts.tag) {
       console.log(`Using image tag: ${imageTag}\n`);
@@ -3069,6 +3284,12 @@ mon
       console.log("(existing values were preserved; missing keys filled with safe defaults)\n");
     }
 
+    // Non-git installs: refresh the CLI-owned compose so it matches the target
+    // stack version. Otherwise newly-required service wiring (e.g. VM_AUTH_* on
+    // sink-prometheus, added in 0.15) is missing and VictoriaMetrics crashes.
+    // No-op for git checkouts and when the compose already matches.
+    await refreshBundledComposeIfStale(projectDir);
+
     const code = await runCompose(["run", "--rm", "sources-generator"]);
     if (code !== 0) process.exitCode = code;
   });
@@ -3120,7 +3341,14 @@ mon
         const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
         console.log(pullOut);
       } else {
-        console.log("(not a git checkout — skipping git fetch/pull and going straight to image pull)");
+        // npx / global-npm installs are non-git: `git pull` can't refresh the
+        // compose, so bring the CLI-owned docker-compose.yml up to the target
+        // version in place (with a backup). This is what wires VM_AUTH_* into
+        // sink-prometheus for users upgrading from a pre-0.15 (no-VM-auth) stack.
+        // The helper logs only when it actually refreshes/warns, so don't
+        // pre-announce a refresh that may turn out to be a no-op.
+        console.log("(not a git checkout — checking bundled docker-compose.yml)");
+        await refreshBundledComposeIfStale(projectDir);
       }
 
       // Step 3: pull new images.
@@ -5068,6 +5296,16 @@ mcp
     }
   });
 
-program.parseAsync(process.argv).finally(() => {
-  closeReadline();
-});
+// Only parse argv when run as the CLI entrypoint (npx / `bun postgres-ai.ts`).
+// When the module is imported (e.g. unit tests exercising the exported helpers),
+// skip the auto-parse so importing doesn't kick off the whole command tree.
+// `import.meta.main` is honored both under bun and in the node-targeted build.
+if (import.meta.main) {
+  program.parseAsync(process.argv).finally(() => {
+    closeReadline();
+  });
+}
+
+// Exported for unit tests (the CLI surface above is unaffected; these are the
+// same functions used by the `mon` commands).
+export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };

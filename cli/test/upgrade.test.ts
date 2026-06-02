@@ -543,3 +543,514 @@ describe("in-place upgrade env migration (mon update / update-config)", () => {
     expect(envContent).not.toMatch(/PGAI_TAG=0\.14\.0VM_AUTH_USERNAME/);
   }, { timeout: TEST_TIMEOUT });
 });
+
+describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
+  /**
+   * Regression tests for the GA-blocking 0.14 -> 0.15 npx-upgrade gap (#186).
+   *
+   * The documented npx upgrade (`npm i -g postgresai@latest` then `pgai mon update`)
+   * only ever refreshed docker-compose.yml for *git* checkouts (via `git pull`).
+   * npx/global-npm installs are non-git, so the OLD 0.14 docker-compose.yml was
+   * retained while PGAI_TAG advanced to 0.15. VM basic auth is new in 0.15, so the
+   * retained 0.14 compose never wires VM_AUTH_* into the sink-prometheus
+   * (VictoriaMetrics) service. The 0.15 configs image ships a prometheus.yml that
+   * templates %{VM_AUTH_USERNAME}, so VictoriaMetrics aborts on boot:
+   *
+   *   Exited (255): missing "VM_AUTH_USERNAME" env var
+   *
+   * -> all dashboards are dataless after upgrade. This hits every existing npx
+   * self-hosted user and blocks 0.15.0 GA.
+   *
+   * The fix: for NON-GIT installs, refresh the CLI-owned docker-compose.yml from the
+   * target ref when it is stale, backing up the prior compose first, and never
+   * touching user-owned files (.env / instances.yml).
+   *
+   * Hermetic seam: PGAI_COMPOSE_SOURCE points the refresh at a local fixture file
+   * (instead of fetching over the network) so these tests are offline-safe. The
+   * seam is only honored when NODE_ENV === "test" (bun sets this automatically;
+   * we also set it explicitly), so it is never reachable in a user environment.
+   */
+
+  // A valid target 0.15 compose fixture: it carries the VM_AUTH_* wiring that the
+  // stale 0.14 compose lacks AND the keystone `sink-prometheus` service the
+  // validator requires. Self-contained so the test doesn't depend on the live
+  // repo compose changing under it.
+  const TARGET_0_15_COMPOSE = [
+    "version: '3.8'",
+    "services:",
+    "  sink-prometheus:",
+    "    image: victoriametrics/victoria-metrics:v1.140.0",
+    "    container_name: sink-prometheus",
+    "    environment:",
+    "      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}",
+    "      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}",
+    "  grafana:",
+    "    image: grafana/grafana:11.0.0",
+    "",
+  ].join("\n");
+
+  // A 0.14-shaped compose: a real-ish stack with ZERO VM_AUTH wiring.
+  const STALE_0_14_COMPOSE = [
+    "version: '3.8'",
+    "services:",
+    "  sink-prometheus:",
+    "    image: victoriametrics/victoria-metrics:v1.115.0",
+    "    container_name: sink-prometheus",
+    "    ports:",
+    '      - "9090:8428"',
+    "  grafana:",
+    "    image: grafana/grafana:11.0.0",
+    "",
+  ].join("\n");
+
+  let tempDir: string;
+  // Path to a written-out copy of TARGET_0_15_COMPOSE, used as the fetch fixture.
+  let targetComposePath: string;
+
+  const listBackups = (dir: string): string[] =>
+    fs.readdirSync(dir).filter((f) => f.startsWith("docker-compose.yml.bak")).sort();
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(resolve(os.tmpdir(), "pgai-upgrade-compose-refresh-"));
+    targetComposePath = resolve(tempDir, "fixture-target-compose.yml");
+    fs.writeFileSync(targetComposePath, TARGET_0_15_COMPOSE);
+  });
+
+  afterAll(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("non-git upgrade refreshes a stale docker-compose.yml to the target version (VM_AUTH wiring), preserves instances.yml, and writes a backup labeled with the OLD tag", () => {
+    const testDir = resolve(tempDir, "update-config-stale-compose");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // Arrange: a 0.14-shaped, NON-GIT install. Old compose has no VM_AUTH wiring.
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(
+      resolve(testDir, "instances.yml"),
+      "# PostgreSQL instances to monitor\n- name: keep-me\n  conn_str: postgresql://m:p@h:5432/db\n",
+    );
+
+    // Sanity: the stale compose really lacks VM_AUTH wiring before the upgrade.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).not.toMatch(/VM_AUTH_USERNAME/);
+
+    // Act: documented in-place upgrade step on a non-git install. The compose `run`
+    // will fail (no Docker in CI), but the compose refresh runs first. Point the
+    // refresh at the local fixture so the test is hermetic (no network).
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // Assert: deployed compose is REFRESHED to the target version (VM_AUTH wired).
+    const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
+    expect(after).toMatch(/VM_AUTH_USERNAME/);
+    expect(after).toMatch(/sink-prometheus/);
+
+    // Assert: instances.yml is PRESERVED (user-owned file untouched).
+    expect(fs.readFileSync(resolve(testDir, "instances.yml"), "utf8")).toMatch(/keep-me/);
+
+    // Assert: exactly one backup, labeled with the OLD (0.14.0) tag, containing
+    // the pristine pre-upgrade compose. Name is `bak-<oldtag>-<hash8>`.
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("non-git upgrade via `mon update` also refreshes a stale docker-compose.yml", () => {
+    const testDir = resolve(tempDir, "update-stale-compose");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n- name: keep-me\n");
+
+    runCliInDir(["mon", "update"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
+    expect(after).toMatch(/VM_AUTH_USERNAME/);
+    expect(fs.readFileSync(resolve(testDir, "instances.yml"), "utf8")).toMatch(/keep-me/);
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("git checkouts are left untouched (compose managed by git pull)", () => {
+    const testDir = resolve(tempDir, "git-checkout-no-refresh");
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.mkdirSync(resolve(testDir, ".git"), { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // Compose must be unchanged for git checkouts, and no backup written.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("already-current compose is not rewritten and no backup is created (idempotent)", () => {
+    const testDir = resolve(tempDir, "already-current-compose");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), TARGET_0_15_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // Content already matches target -> no rewrite, no backup.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(TARGET_0_15_COMPOSE);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("a trailing-newline-only difference is NOT treated as stale (no churn, no backup)", () => {
+    const testDir = resolve(tempDir, "trailing-newline-noop");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // Deployed compose == target but with extra trailing whitespace/newlines.
+    const deployed = TARGET_0_15_COMPOSE + "\n\n";
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), deployed);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // Whitespace-only delta must not trigger a rewrite or a backup.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(deployed);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  describe("fetched payload validation (BLOCKER #186 hardening)", () => {
+    /**
+     * A 200 response can still carry a NON-compose body (HTML login/captcha/
+     * proxy/maintenance page) or an empty/garbage body. Such a payload must
+     * NEVER clobber a working docker-compose.yml — that would be strictly worse
+     * than keeping the stale-but-valid one. The refresh must validate the fetched
+     * text and, on failure, behave EXACTLY like a clean fetch failure: keep the
+     * existing compose, write NO backup, warn, no-op.
+     */
+
+    test("an HTML (non-compose) 200 body leaves the deployed compose UNCHANGED, writes NO backup, and warns", () => {
+      const testDir = resolve(tempDir, "garbage-html-body");
+      fs.mkdirSync(testDir, { recursive: true });
+
+      // The "fetched" payload is an HTML login/proxy page served with a 200.
+      const htmlBody = "<!DOCTYPE html>\n<html><head><title>Sign in</title></head>\n<body>Please log in to continue.</body></html>\n";
+      const htmlSource = resolve(testDir, "html-source.html");
+      fs.writeFileSync(htmlSource, htmlBody);
+
+      fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+      const result = runCliInDir(["mon", "update-config"], testDir, {
+        NODE_ENV: "test",
+        PGAI_TAG: undefined,
+        PGAI_COMPOSE_SOURCE: htmlSource,
+      });
+
+      // The working compose must be left intact — NOT clobbered with HTML.
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      // No backup is written when nothing is refreshed.
+      expect(listBackups(testDir)).toEqual([]);
+      // The user is warned that no valid compose was retrieved.
+      expect(result.stderr).toMatch(/Could not refresh docker-compose\.yml/);
+    }, { timeout: TEST_TIMEOUT });
+
+    test("a YAML body WITHOUT a sink-prometheus service is rejected (compose untouched, no backup)", () => {
+      const testDir = resolve(tempDir, "yaml-missing-keystone");
+      fs.mkdirSync(testDir, { recursive: true });
+
+      // Valid YAML, has services, but lacks the keystone sink-prometheus service.
+      const wrongCompose = "version: '3.8'\nservices:\n  grafana:\n    image: grafana/grafana:11.0.0\n";
+      const wrongSource = resolve(testDir, "wrong-compose.yml");
+      fs.writeFileSync(wrongSource, wrongCompose);
+
+      fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+      runCliInDir(["mon", "update-config"], testDir, {
+        NODE_ENV: "test",
+        PGAI_TAG: undefined,
+        PGAI_COMPOSE_SOURCE: wrongSource,
+      });
+
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      expect(listBackups(testDir)).toEqual([]);
+    }, { timeout: TEST_TIMEOUT });
+
+    test("an empty fetched body leaves the deployed compose intact and writes NO backup", () => {
+      const testDir = resolve(tempDir, "empty-body");
+      fs.mkdirSync(testDir, { recursive: true });
+
+      const emptySource = resolve(testDir, "empty.yml");
+      fs.writeFileSync(emptySource, "");
+
+      fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+      runCliInDir(["mon", "update-config"], testDir, {
+        NODE_ENV: "test",
+        PGAI_TAG: undefined,
+        PGAI_COMPOSE_SOURCE: emptySource,
+      });
+
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      expect(listBackups(testDir)).toEqual([]);
+    }, { timeout: TEST_TIMEOUT });
+  });
+
+  test("repeated update-config runs preserve the FIRST/pristine backup (no overwrite)", () => {
+    const testDir = resolve(tempDir, "backup-collision");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // PGAI_TAG stays 0.14.0 across update-config runs (it doesn't advance there).
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    // First run: refreshes to target, backs up the pristine 0.14 compose.
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+    const afterFirst = listBackups(testDir);
+    expect(afterFirst.length).toBe(1);
+    const pristineBackup = afterFirst[0]!;
+    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_0_14_COMPOSE);
+
+    // Now the deployed compose IS the target. Simulate a second drift back to a
+    // (different) stale compose, then run update-config again with the SAME tag.
+    const SECOND_STALE = STALE_0_14_COMPOSE.replace("v1.115.0", "v1.116.0");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), SECOND_STALE);
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // The FIRST/pristine backup must still be intact (not overwritten), and the
+    // second distinct old content gets its own backup (unique by content hash).
+    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_0_14_COMPOSE);
+    const afterSecond = listBackups(testDir);
+    expect(afterSecond.length).toBe(2);
+    expect(afterSecond).toContain(pristineBackup);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("local-install labels the backup with the OLD tag, not the new CLI version", () => {
+    const testDir = resolve(tempDir, "local-install-old-tag-backup");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // 0.14 install. local-install rewrites .env PGAI_TAG to the CLI version
+    // BEFORE the compose refresh; the backup must still reflect the OLD (0.14.0)
+    // tag, not the new one.
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(
+      ["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"],
+      testDir,
+      {
+        NODE_ENV: "test",
+        PGAI_TAG: undefined,
+        PGAI_COMPOSE_SOURCE: targetComposePath,
+      },
+    );
+
+    // .env PGAI_TAG was advanced to the new CLI version...
+    const envAfter = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+    expect(envAfter).not.toMatch(/PGAI_TAG=0\.14\.0/);
+
+    // ...but the backup of the OLD compose must be labeled with 0.14.0, NOT the
+    // new tag, and must contain the pristine pre-upgrade compose.
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("a fetch failure (no payload retrieved) leaves the deployed compose intact, writes NO backup, warns, and does not crash", () => {
+    // Contract bullet: "Best-effort — a fetch failure warns and keeps the
+    // existing compose." Force fetchTargetCompose() -> null hermetically by
+    // pointing the test seam at a path that does not exist. This is the network
+    // -down / GitLab-5xx branch: it must NOT turn a metrics-only outage into a
+    // hard CLI failure, and must never clobber the stale-but-valid compose.
+    const testDir = resolve(tempDir, "fetch-failure-null");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    const result = runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      // Nonexistent fixture path -> fetchTargetCompose() returns null.
+      PGAI_COMPOSE_SOURCE: resolve(testDir, "does-not-exist.yml"),
+    });
+
+    // The working compose must be untouched, and no backup written.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(listBackups(testDir)).toEqual([]);
+    // The user is warned, and the CLI does not crash on the env-migration step.
+    expect(result.stderr).toMatch(/Could not refresh docker-compose\.yml/);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("no deployed compose yet is a clean no-op: returns false, writes nothing, no backup", async () => {
+    // Guard: `if (!fs.existsSync(composeFile)) return false` keeps the refresh
+    // from racing with the green-field bootstrap path. NOTE: this branch is not
+    // reachable through the black-box `mon update-config` flow — resolveOrInitPaths
+    // bootstraps (fetches) a compose BEFORE the refresh runs, so by then the file
+    // always exists. We therefore exercise the guard directly against the exported
+    // helper, which is the only faithful, hermetic way to cover it.
+    const { refreshBundledComposeIfStale } = await import("../bin/postgres-ai.ts");
+
+    const testDir = resolve(tempDir, "no-deployed-compose");
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+    // Intentionally NO docker-compose.yml.
+
+    process.env.NODE_ENV = "test";
+    process.env.PGAI_COMPOSE_SOURCE = targetComposePath;
+    const refreshed = await refreshBundledComposeIfStale(testDir);
+
+    // No compose on disk -> no-op: returns false, materializes no compose, and
+    // writes no backup. The bootstrap path owns the first fetch.
+    expect(refreshed).toBe(false);
+    expect(fs.existsSync(resolve(testDir, "docker-compose.yml"))).toBe(false);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("git checkout is a no-op even with a stale compose (direct helper guard)", async () => {
+    // Companion guard: `.git` present -> the repo manages the compose via
+    // `git pull`, so the helper must return false and touch nothing. Covered
+    // black-box too (below), but pinned here against the exported helper.
+    const { refreshBundledComposeIfStale } = await import("../bin/postgres-ai.ts");
+
+    const testDir = resolve(tempDir, "git-checkout-helper-noop");
+    fs.mkdirSync(resolve(testDir, ".git"), { recursive: true });
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+
+    process.env.NODE_ENV = "test";
+    process.env.PGAI_COMPOSE_SOURCE = targetComposePath;
+    const refreshed = await refreshBundledComposeIfStale(testDir);
+
+    expect(refreshed).toBe(false);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("backup falls back to a timestamp suffix when .env has no PGAI_TAG line", () => {
+    // When readDeployedTag() returns null (no PGAI_TAG to label the backup with),
+    // the backup name falls back to an ISO-8601 timestamp suffix
+    // (`bak-<YYYY-MM-DDTHH-MM-SS-mmmZ>-<hash8>`). Every other test seeds
+    // PGAI_TAG=0.14.0, so this branch was previously unexercised.
+    const testDir = resolve(tempDir, "timestamp-suffix-fallback");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // .env exists (non-git install) but carries NO PGAI_TAG line.
+    fs.writeFileSync(resolve(testDir, ".env"), "GRAFANA_PASSWORD=secret\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // The compose was refreshed, and the single backup is labeled with a
+    // timestamp suffix (NOT a tag), still uniquified by the content hash.
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-\d{4}-\d{2}-\d{2}T[\dZ-]+-[0-9a-f]{8}$/);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("a malformed/hostile PGAI_TAG is rejected and the backup falls back to a timestamp suffix (no path traversal)", () => {
+    // readDeployedTag() validates the tag against a conservative charset before
+    // it flows into the backup filename, so a path-traversal-shaped value cannot
+    // escape projectDir; it falls back to the timestamp suffix instead.
+    const testDir = resolve(tempDir, "hostile-tag-rejected");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=../../../../tmp/evil\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+    });
+
+    // The single backup stays inside projectDir with a timestamp suffix — the
+    // traversal value never reaches the filename.
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-\d{4}-\d{2}-\d{2}T[\dZ-]+-[0-9a-f]{8}$/);
+    // Nothing was written outside projectDir.
+    expect(fs.existsSync("/tmp/evil")).toBe(false);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("local-install sanitizes the OLD tag it passes in: a hostile PGAI_TAG falls back to a timestamp suffix", () => {
+    // local-install captures the OLD .env PGAI_TAG and passes it to the refresh as
+    // `oldTag`, BYPASSING readDeployedTag. Sanitization must therefore happen
+    // centrally inside the helper so a hostile tag on THIS path also cannot escape
+    // projectDir or land literal `/`/quote chars in the backup filename.
+    const testDir = resolve(tempDir, "local-install-hostile-old-tag");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), 'PGAI_TAG="../../../../tmp/evil"\n');
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(
+      ["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"],
+      testDir,
+      {
+        NODE_ENV: "test",
+        PGAI_TAG: undefined,
+        PGAI_COMPOSE_SOURCE: targetComposePath,
+      },
+    );
+
+    // The hostile oldTag never reaches the filename: the single backup stays
+    // inside projectDir with a timestamp suffix, and nothing escapes to /tmp.
+    const backups = listBackups(testDir);
+    expect(backups.length).toBe(1);
+    expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-\d{4}-\d{2}-\d{2}T[\dZ-]+-[0-9a-f]{8}$/);
+    expect(fs.existsSync("/tmp/evil")).toBe(false);
+  }, { timeout: TEST_TIMEOUT });
+});
