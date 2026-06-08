@@ -93,6 +93,26 @@ wrong decisions, or silent monitoring failures that erode customer trust.
 - Check for potential deadlock patterns (acquiring multiple locks in
   inconsistent order).
 
+### 11. Visual Change Verification (HIGH)
+- If the diff touches user-visible surfaces — Grafana dashboards
+  (`config/grafana/dashboards/*.json`, `postgres_ai_helm/.../dashboards/*.json`),
+  the Console UI (`console/` or similar frontend dirs), Joe UI, or marketing /
+  landing pages — the MR description must contain a **Visual changes** section
+  with one before/after screenshot pair per visual fix.
+- Flag any MR that modifies dashboard JSON or other rendered surfaces but
+  lacks the "Visual changes" section.
+- Text descriptions of the fix ("removed the TODO marker", "fixed the legend")
+  are not acceptable as the only proof — reviewers cannot verify the rendered
+  output without screenshots.
+- An exception is acceptable only when running the AFTER state would take
+  more than ~10 minutes of setup. In that case the AFTER may be replaced by
+  an explicit citation of the lint or unit test that proves the change
+  (example — substitute the actual test path:
+  `tests/grafana_dashboards/test_no_duplicate_targets_in_panel.py`). The
+  citation must name the test file and the asserted invariant.
+- See [Visual Change Verification](./QUALITY_ENGINEERING_GUIDE.md#visual-change-verification)
+  in the Quality Engineering Guide for the full standard.
+
 ## Review Output Format
 
 For each issue found, provide:
