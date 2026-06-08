@@ -260,6 +260,35 @@ postgresai mon health
 
 ## 🔄 Upgrading
 
+> ⚠️ **Breaking change in 0.15.0 — bundled PostgreSQL 15 → 17 requires a data migration.**
+>
+> 0.15.0 upgrades the stack's bundled PostgreSQL from 15 to 17 (`sink-postgres`, and on the
+> demo `target-db` / `target-standby`). PostgreSQL's on-disk format is not compatible across major
+> versions, so the new images **refuse to start** on a PostgreSQL 15 data directory — an in-place
+> upgrade will not come up until you migrate the data. Nothing is deleted automatically, and your
+> externally-monitored databases are unaffected, but you must act on the bundled databases before
+> bringing the stack up.
+>
+> **`sink-postgres`** stores your historical monitoring measurements, so choose one:
+> - **Preserve history** — while still on the old images, dump it, then restore after the upgrade:
+>   ```bash
+>   # before `mon stop`/upgrade, with sink-postgres (PG15) running:
+>   docker compose exec sink-postgres pg_dumpall -U postgres > sink-pg15.sql
+>   # after the stack is on PG17 (sink-postgres recreated empty):
+>   docker compose exec -T sink-postgres psql -U postgres < sink-pg15.sql
+>   ```
+> - **Start fresh** — remove its volume so PostgreSQL 17 initializes a clean data directory.
+>   This **discards all previously collected monitoring measurements** (new metrics accumulate
+>   from scratch); find the volume with `docker volume ls | grep sink_postgres_data`, then
+>   `docker volume rm <name>` while the stack is stopped.
+>
+> The demo `target-db` / `target-standby` hold only throwaway sample data — just reset their
+> volumes the same way (or re-run `postgresai mon local-install --demo` to recreate them).
+>
+> Keep the old PostgreSQL 15 volume as a backup until you have verified PostgreSQL 17. The full
+> upgrade steps are below; see also the
+> [monitoring upgrade docs](https://postgres.ai/docs/monitoring/getting-started).
+
 To upgrade postgres_ai monitoring to a newer version:
 
 ### Step 1: Update the CLI
