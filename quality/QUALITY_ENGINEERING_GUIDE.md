@@ -268,6 +268,82 @@ Before approving any PR, verify:
 - [ ] Error messages are actionable (not just "something went wrong")
 - [ ] PostgreSQL version-specific behavior is handled
 - [ ] No hardcoded credentials, tokens, or connection strings
+- [ ] **Visual changes**: if the MR touches any user-visible surface (Grafana
+      dashboards, Console UI, Joe UI, marketing or landing pages), the
+      description contains **before/after screenshots** for each visual fix.
+
+See the [Visual Change Verification](#visual-change-verification) section
+below for the full standard, and rule 11 in
+[`quality/pr-review-prompt.md`](./pr-review-prompt.md) for the canonical
+file-path globs the AI reviewer uses.
+
+### Visual Change Verification
+
+For every MR that modifies a user-visible surface, the description must include
+a **Visual changes** section with one before/after pair per fix:
+
+```markdown
+## Visual changes
+
+### Fix 1 — Dashboard 3 first panel "No data"
+**Before:**
+![before](before-d3-panel.png)
+**After:**
+![after](after-d3-panel.png)
+```
+
+This is the visual analogue of red/green TDD:
+
+- A failing unit test proves the bug existed and is now fixed *in code*.
+- A before/after screenshot pair proves the bug existed and is now fixed
+  *in the rendered output*.
+
+Text descriptions like "I fixed the layout" or "I changed the color" are not
+sufficient — reviewers should not have to spin up the demo to confirm a visual
+claim.
+
+**Scope (which surfaces trigger this rule):** Grafana dashboards
+(`config/grafana/dashboards/*.json`,
+`postgres_ai_helm/.../dashboards/*.json`), the Console UI (`console/` or
+similar frontend directories), Joe UI, and marketing or landing pages. See
+rule 11 in [`quality/pr-review-prompt.md`](./pr-review-prompt.md) for the
+authoritative list of path globs the AI reviewer uses.
+
+**Capture mechanics:**
+
+- `before` shots from the deployed staging/demo environment (the broken state
+  users currently see).
+- `after` shots from either the redeployed environment OR a local stack
+  running the patched JSON / build.
+- Upload to GitLab using a multipart `POST` to the project's `/uploads`
+  endpoint (the `%2F` between `<namespace>` and `<project>` is the
+  URL-encoded slash GitLab requires in the project identifier):
+
+  ```bash
+  curl --request POST \
+    --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+    --form "file=@shot.png" \
+    "https://gitlab.com/api/v4/projects/<namespace>%2F<project>/uploads"
+  ```
+
+  The response JSON contains a `markdown` field with the ready-to-paste
+  `![](/uploads/...)` reference — copy that string into the MR description.
+
+**Exception — render too expensive:**
+
+If running the AFTER state would take more than ~10 minutes of setup (e.g., a
+fix that requires the full monitoring stack with live data), the AFTER may be
+replaced by a citation of the lint/unit test that proves the change. The
+citation must name the test file path and the asserted invariant:
+
+```markdown
+**After (verified by test):** `tests/grafana_dashboards/test_xyz.py`
+asserts the invariant; see line 42.
+```
+
+Use this exception only when (a) the AFTER state cannot be rendered in
+under ~10 minutes, and (b) the cited test directly asserts the user-visible
+invariant the fix establishes. The default is screenshots.
 
 ---
 
