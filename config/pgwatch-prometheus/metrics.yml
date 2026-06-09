@@ -2449,7 +2449,7 @@ metrics:
       cap, so its absence on healthy clusters is normal.
     sqls:
       11: |
-        with fk_indexes as ( /* pgwatch_generated */
+        with fk_indexes as materialized ( /* pgwatch_generated */
           select
             schemaname as schema_name,
             indexrelid,
@@ -2589,7 +2589,7 @@ metrics:
       ≤100 redundant pairs, so its absence on healthy clusters is normal.
     sqls:
       11: |
-        with fk_indexes as ( /* pgwatch_generated */
+        with fk_indexes as materialized ( /* pgwatch_generated */
           select
             n.nspname as schema_name,
             ci.relname as index_name,
@@ -2798,7 +2798,7 @@ metrics:
       `HAVING count(*) > 0`) when ≤100 indexes match the unused filter.
     sqls:
       11: |
-        with fk_indexes as ( /* pgwatch_generated */
+        with fk_indexes as materialized ( /* pgwatch_generated */
           select
             n.nspname as schema_name,
             ci.relname as index_name,
@@ -2954,7 +2954,7 @@ metrics:
       entirely (via `HAVING count(*) > 0`) when ≤100 indexes match.
     sqls:
       11: |
-        with fk_indexes as ( /* pgwatch_generated */
+        with fk_indexes as materialized ( /* pgwatch_generated */
           select
             n.nspname as schema_name,
             ci.relname as index_name,
