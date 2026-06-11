@@ -1237,6 +1237,186 @@ describe("H004 - Redundant indexes", () => {
   // Top-level structure tests removed - covered by schema-validation.test.ts
 });
 
+// Tests for F003 (Autovacuum: dead tuples)
+describe("F003 - Dead tuples", () => {
+  // The seeded UX-test case that F004 missed: 8.27M dead tuples,
+  // dead:live ratio 1.3:1 (dead_pct ~56.5%), autovacuum disabled via reloptions.
+  const seededProblemRow = {
+    tag_schemaname: "public",
+    tag_relname: "events",
+    n_live_tup: "6361538",
+    n_dead_tup: "8270000",
+    dead_pct: 56.52,
+    last_autovacuum: "0",
+    last_vacuum: "0",
+    autovacuum_count: "0",
+    vacuum_count: "0",
+    autovacuum_disabled: 1,
+    table_size_b: "2147483648",
+  };
+
+  test("getDeadTuples maps rows and computes flags", async () => {
+    const mockClient = createMockClient({ deadTuplesRows: [seededProblemRow] });
+
+    const tables = await checkup.getDeadTuples(mockClient as any);
+    expect(tables.length).toBe(1);
+    const t = tables[0];
+    expect(t.schema_name).toBe("public");
+    expect(t.table_name).toBe("events");
+    expect(t.n_live_tup).toBe(6361538);
+    expect(t.n_dead_tup).toBe(8270000);
+    expect(t.dead_pct).toBe(56.52);
+    expect(t.autovacuum_disabled).toBe(true);
+    expect(t.last_autovacuum).toBeNull();
+    expect(t.last_autovacuum_epoch).toBe(0);
+    expect(t.last_vacuum).toBeNull();
+    expect(t.table_size_bytes).toBe(2147483648);
+    expect(t.table_size_pretty).toBe("2.00 GiB");
+    expect(t.exceeds_dead_tuple_thresholds).toBe(true);
+    expect(t.autovacuum_disabled_flagged).toBe(true);
+  });
+
+  test("getDeadTuples converts non-zero vacuum epochs to ISO timestamps", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [{
+        ...seededProblemRow,
+        last_autovacuum: "1704067200", // 2024-01-01T00:00:00Z
+        last_vacuum: "1706745600", // 2024-02-01T00:00:00Z
+        autovacuum_count: "3",
+        vacuum_count: "1",
+        autovacuum_disabled: 0,
+      }],
+    });
+
+    const [t] = await checkup.getDeadTuples(mockClient as any);
+    expect(t.last_autovacuum).toBe("2024-01-01T00:00:00.000Z");
+    expect(t.last_autovacuum_epoch).toBe(1704067200);
+    expect(t.last_vacuum).toBe("2024-02-01T00:00:00.000Z");
+    expect(t.autovacuum_count).toBe(3);
+    expect(t.vacuum_count).toBe(1);
+    expect(t.autovacuum_disabled).toBe(false);
+  });
+
+  test("dead-tuple thresholds require BOTH absolute and relative excess", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        // High count, low ratio (large healthy table churning under active autovacuum)
+        { ...seededProblemRow, tag_relname: "big_churn", n_live_tup: "100000000", n_dead_tup: "150000", dead_pct: 0.15, autovacuum_disabled: 0 },
+        // High ratio, low count (small table - not worth flagging)
+        { ...seededProblemRow, tag_relname: "tiny", n_live_tup: "100", n_dead_tup: "900", dead_pct: 90, autovacuum_disabled: 0 },
+        // Both high - must be flagged
+        { ...seededProblemRow, tag_relname: "problem", n_live_tup: "100000", n_dead_tup: "100000", dead_pct: 50, autovacuum_disabled: 0 },
+      ],
+    });
+
+    const tables = await checkup.getDeadTuples(mockClient as any);
+    const byName = new Map(tables.map((t) => [t.table_name, t]));
+    expect(byName.get("big_churn")!.exceeds_dead_tuple_thresholds).toBe(false);
+    expect(byName.get("tiny")!.exceeds_dead_tuple_thresholds).toBe(false);
+    expect(byName.get("problem")!.exceeds_dead_tuple_thresholds).toBe(true);
+  });
+
+  test("autovacuum disabled is flagged only on non-tiny tables", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        { ...seededProblemRow, tag_relname: "tiny_disabled", n_live_tup: "50", n_dead_tup: "0", dead_pct: 0 },
+        { ...seededProblemRow, tag_relname: "big_disabled", n_live_tup: "20000", n_dead_tup: "0", dead_pct: 0 },
+      ],
+    });
+
+    const tables = await checkup.getDeadTuples(mockClient as any);
+    const byName = new Map(tables.map((t) => [t.table_name, t]));
+    expect(byName.get("tiny_disabled")!.autovacuum_disabled).toBe(true);
+    expect(byName.get("tiny_disabled")!.autovacuum_disabled_flagged).toBe(false);
+    expect(byName.get("big_disabled")!.autovacuum_disabled_flagged).toBe(true);
+  });
+
+  test("buildDeadTuplesConclusions produces concrete conclusions and recommendations", async () => {
+    const mockClient = createMockClient({ deadTuplesRows: [seededProblemRow] });
+    const tables = await checkup.getDeadTuples(mockClient as any);
+
+    const { conclusions, recommendations } = checkup.buildDeadTuplesConclusions(tables);
+    expect(conclusions.length).toBe(1);
+    expect(conclusions[0]).toContain('"public"."events"');
+    expect(conclusions[0]).toContain("8,270,000 dead tuples");
+    expect(conclusions[0]).toContain("56.52% of all tuples");
+    expect(conclusions[0]).toContain("autovacuum is disabled");
+    expect(conclusions[0]).toContain("never vacuumed");
+
+    expect(recommendations.length).toBe(1);
+    expect(recommendations[0]).toContain('alter table "public"."events" reset (autovacuum_enabled);');
+    expect(recommendations[0]).toContain('vacuum (analyze) "public"."events";');
+  });
+
+  test("buildDeadTuplesConclusions distinguishes vacuum-lag from disabled-autovacuum cases", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        // Dead tuples high but autovacuum enabled -> vacuum + tuning advice
+        { ...seededProblemRow, tag_relname: "lagging", autovacuum_disabled: 0, last_autovacuum: "1704067200" },
+        // Autovacuum disabled, no dead tuples yet -> re-enable advice
+        { ...seededProblemRow, tag_relname: "disabled_only", n_live_tup: "50000", n_dead_tup: "0", dead_pct: 0 },
+      ],
+    });
+    const tables = await checkup.getDeadTuples(mockClient as any);
+
+    const { conclusions, recommendations } = checkup.buildDeadTuplesConclusions(tables);
+    expect(conclusions.length).toBe(2);
+    const laggingRec = recommendations.find((r) => r.includes('"public"."lagging"'))!;
+    expect(laggingRec).toContain("vacuum (analyze)");
+    expect(laggingRec).toContain("autovacuum_vacuum_scale_factor");
+    expect(laggingRec).not.toContain("reset (autovacuum_enabled)");
+
+    const disabledRec = recommendations.find((r) => r.includes('"public"."disabled_only"'))!;
+    expect(disabledRec).toContain('alter table "public"."disabled_only" reset (autovacuum_enabled);');
+  });
+
+  test("generateF003 creates report with counts, thresholds, and conclusions", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        seededProblemRow,
+        { ...seededProblemRow, tag_relname: "disabled_only", n_live_tup: "50000", n_dead_tup: "0", dead_pct: 0 },
+      ],
+    });
+
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "test-node");
+    expect(report.checkId).toBe("F003");
+    expect(report.checkTitle).toBe("Autovacuum: dead tuples");
+
+    const data = report.results["test-node"].data;
+    expect("testdb" in data).toBe(true);
+    const dbData = data["testdb"] as any;
+    expect(dbData.dead_tuples_tables.length).toBe(2);
+    expect(dbData.total_count).toBe(2);
+    expect(dbData.flagged_count).toBe(1);
+    expect(dbData.autovacuum_disabled_count).toBe(2);
+    expect(dbData.autovacuum_disabled_flagged_count).toBe(2);
+    expect(dbData.total_dead_tuples).toBe(8270000);
+    expect(dbData.thresholds).toEqual({
+      dead_tuples_min: checkup.F003_DEAD_TUPLES_MIN,
+      dead_pct_min: checkup.F003_DEAD_PCT_MIN,
+      autovacuum_disabled_min_rows: checkup.F003_AUTOVACUUM_DISABLED_MIN_ROWS,
+    });
+    expect(dbData.conclusions.length).toBe(2);
+    expect(dbData.recommendations.length).toBe(2);
+    expect(dbData.database_size_bytes).toBeTruthy();
+    expect(report.results["test-node"].postgres_version).toBeTruthy();
+  });
+
+  test("generateF003 handles a healthy database (no rows)", async () => {
+    const mockClient = createMockClient({ deadTuplesRows: [] });
+
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "test-node");
+    const dbData = report.results["test-node"].data["testdb"] as any;
+    expect(dbData.dead_tuples_tables).toEqual([]);
+    expect(dbData.total_count).toBe(0);
+    expect(dbData.flagged_count).toBe(0);
+    expect(dbData.autovacuum_disabled_count).toBe(0);
+    expect(dbData.autovacuum_disabled_flagged_count).toBe(0);
+    expect(dbData.conclusions).toEqual([]);
+    expect(dbData.recommendations).toEqual([]);
+  });
+});
+
 // CLI tests
 describe("CLI tests", () => {
   test("checkup command exists and shows help", () => {
@@ -1703,6 +1883,70 @@ describe("checkup-api", () => {
 // Tests for checkup-summary module
 describe("checkup-summary", () => {
   const summary = require("../lib/checkup-summary");
+
+  test("generateCheckSummary for F003 with no issues", () => {
+    const report = {
+      results: {
+        node1: {
+          data: {
+            db1: {
+              dead_tuples_tables: [],
+              total_count: 0,
+              flagged_count: 0,
+              autovacuum_disabled_count: 0,
+              autovacuum_disabled_flagged_count: 0,
+            },
+          },
+        },
+      },
+    };
+    const result = summary.generateCheckSummary("F003", report);
+    expect(result.status).toBe("ok");
+    expect(result.message).toMatch(/no significant dead tuple/i);
+  });
+
+  test("generateCheckSummary for F003 ignores tiny disabled-autovacuum tables", () => {
+    const report = {
+      results: {
+        node1: {
+          data: {
+            db1: {
+              dead_tuples_tables: [],
+              total_count: 2,
+              flagged_count: 0,
+              autovacuum_disabled_count: 2,
+              autovacuum_disabled_flagged_count: 0,
+            },
+          },
+        },
+      },
+    };
+    const result = summary.generateCheckSummary("F003", report);
+    expect(result.status).toBe("ok");
+  });
+
+  test("generateCheckSummary for F003 with problems", () => {
+    const report = {
+      results: {
+        node1: {
+          data: {
+            db1: {
+              dead_tuples_tables: [],
+              total_count: 3,
+              flagged_count: 1,
+              autovacuum_disabled_count: 2,
+              autovacuum_disabled_flagged_count: 2,
+            },
+          },
+        },
+      },
+    };
+    const result = summary.generateCheckSummary("F003", report);
+    expect(result.status).toBe("warning");
+    expect(result.message).toBe(
+      "1 table with excessive dead tuples, 2 tables with autovacuum disabled"
+    );
+  });
 
   test("generateCheckSummary for H001 with no issues", () => {
     const report = {
@@ -3099,6 +3343,7 @@ describe("Version-aware SQL query selection (PG13-PG18)", () => {
       H001: "pg_invalid_indexes",
       H002: "unused_indexes",
       H004: "redundant_indexes",
+      F003: "pg_dead_tuples",
       F004: "pg_table_bloat",
       F005: "pg_btree_bloat",
       settings: "settings",

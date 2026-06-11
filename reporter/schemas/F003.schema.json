@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "F003 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
+  "properties": {
+    "version": { "type": ["string", "null"] },
+    "build_ts": { "type": ["string", "null"] },
+    "generation_mode": { "type": ["string", "null"] },
+    "checkId": { "const": "F003" },
+    "checkTitle": { "const": "Autovacuum: dead tuples" },
+    "timestamptz": { "type": "string" },
+    "nodes": { "$ref": "#/$defs/nodes" },
+    "results": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/nodeResult" }
+    }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "standbys"],
+      "properties": {
+        "primary": { "type": "string" },
+        "standbys": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "postgresVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "server_version_num", "server_major_ver", "server_minor_ver"],
+      "properties": {
+        "version": { "type": "string" },
+        "server_version_num": { "type": "string" },
+        "server_major_ver": { "type": "string" },
+        "server_minor_ver": { "type": "string" }
+      }
+    },
+    "deadTuplesTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_name",
+        "table_name",
+        "n_live_tup",
+        "n_dead_tup",
+        "dead_pct",
+        "last_autovacuum",
+        "last_autovacuum_epoch",
+        "last_vacuum",
+        "last_vacuum_epoch",
+        "autovacuum_count",
+        "vacuum_count",
+        "autovacuum_disabled",
+        "table_size_bytes",
+        "table_size_pretty",
+        "exceeds_dead_tuple_thresholds",
+        "autovacuum_disabled_flagged"
+      ],
+      "properties": {
+        "schema_name": { "type": "string" },
+        "table_name": { "type": "string" },
+        "n_live_tup": { "type": "number" },
+        "n_dead_tup": { "type": "number" },
+        "dead_pct": { "type": "number" },
+        "last_autovacuum": { "type": ["string", "null"] },
+        "last_autovacuum_epoch": { "type": "number" },
+        "last_vacuum": { "type": ["string", "null"] },
+        "last_vacuum_epoch": { "type": "number" },
+        "autovacuum_count": { "type": "number" },
+        "vacuum_count": { "type": "number" },
+        "autovacuum_disabled": { "type": "boolean" },
+        "table_size_bytes": { "type": "number" },
+        "table_size_pretty": { "type": "string" },
+        "exceeds_dead_tuple_thresholds": { "type": "boolean" },
+        "autovacuum_disabled_flagged": { "type": "boolean" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dead_tuples_min", "dead_pct_min", "autovacuum_disabled_min_rows"],
+      "properties": {
+        "dead_tuples_min": { "type": "number" },
+        "dead_pct_min": { "type": "number" },
+        "autovacuum_disabled_min_rows": { "type": "number" }
+      }
+    },
+    "dbEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dead_tuples_tables",
+        "total_count",
+        "flagged_count",
+        "autovacuum_disabled_count",
+        "autovacuum_disabled_flagged_count",
+        "total_dead_tuples",
+        "thresholds",
+        "conclusions",
+        "recommendations",
+        "database_size_bytes",
+        "database_size_pretty"
+      ],
+      "properties": {
+        "dead_tuples_tables": { "type": "array", "items": { "$ref": "#/$defs/deadTuplesTable" } },
+        "total_count": { "type": "integer" },
+        "flagged_count": { "type": "integer" },
+        "autovacuum_disabled_count": { "type": "integer" },
+        "autovacuum_disabled_flagged_count": { "type": "integer" },
+        "total_dead_tuples": { "type": "number" },
+        "thresholds": { "$ref": "#/$defs/thresholds" },
+        "conclusions": { "type": "array", "items": { "type": "string" } },
+        "recommendations": { "type": "array", "items": { "type": "string" } },
+        "database_size_bytes": { "type": "number" },
+        "database_size_pretty": { "type": "string" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/dbEntry" }
+    },
+    "nodeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data"],
+      "properties": {
+        "data": { "$ref": "#/$defs/data" },
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+      }
+    }
+  }
+}

@@ -2323,6 +2323,91 @@ metrics:
       - is_na
       - reltuples
     statement_timeout_seconds: 300
+  pg_dead_tuples:
+    description: >
+      Per-table dead-tuple accumulation and per-table autovacuum
+      overrides for the F003 express check ("Autovacuum: dead tuples").
+      Reads the live counters in pg_stat_user_tables joined to pg_class
+      for reloptions, so dead tuples that have NEVER been vacuumed are
+      visible — unlike the statistical bloat estimators (F004/F005),
+      which completely miss a table where autovacuum is disabled and
+      dead tuples pile up unvacuumed. Returns relations that either
+      carry dead tuples or have autovacuum disabled per-table, bounded
+      to the top 100 by n_dead_tup so pathological schemas can't blow
+      up the report. autovacuum_disabled recognises every boolean
+      spelling Postgres accepts and stores verbatim in reloptions
+      (false/off/no/0 and their unique prefixes; confirmed against PG13
+      and PG16 that `alter table .. set (autovacuum_enabled =
+      false|off|0)` stores the literal text, so matching only
+      'autovacuum_enabled=off' misses the common '=false' spelling).
+      Timestamps are exported as epoch seconds (0 = never) because
+      Prometheus gauges must be numeric. The AccessExclusiveLock guard
+      mirrors table_stats: pg_table_size() takes a lock and would block
+      behind a fully locked relation. Compatible with all supported
+      Postgres versions.
+    sqls:
+      11: |
+        with dead_tuples as ( /* pgwatch_generated */
+          select
+            s.schemaname,
+            s.relname,
+            s.n_live_tup,
+            s.n_dead_tup,
+            coalesce(
+              round(100 * s.n_dead_tup::numeric / nullif(s.n_live_tup + s.n_dead_tup, 0), 2),
+              0
+            )::float as dead_pct,
+            extract(epoch from greatest(s.last_autovacuum, '1970-01-01Z'))::int8 as last_autovacuum,
+            extract(epoch from greatest(s.last_vacuum, '1970-01-01Z'))::int8 as last_vacuum,
+            s.autovacuum_count,
+            s.vacuum_count,
+            case when exists (
+              select 1
+              from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+              where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$'
+            ) then 1 else 0 end as autovacuum_disabled,
+            pg_table_size(c.oid) as table_size_b
+          from pg_stat_user_tables s
+          join pg_class c on c.oid = s.relid
+          where not exists (
+            select 1 from pg_locks
+            where relation = s.relid and mode = 'AccessExclusiveLock'
+          )
+        ), ranked as (
+          select
+            row_number() over (
+              order by n_dead_tup desc, schemaname, relname
+            ) as rownum,
+            *
+          from dead_tuples
+          where n_dead_tup > 0 or autovacuum_disabled = 1
+        )
+        select
+          current_database() as tag_datname,
+          schemaname as tag_schemaname,
+          relname as tag_relname,
+          n_live_tup,
+          n_dead_tup,
+          dead_pct,
+          last_autovacuum,
+          last_vacuum,
+          autovacuum_count,
+          vacuum_count,
+          autovacuum_disabled,
+          table_size_b
+        from ranked
+        where rownum <= 100
+    gauges:
+      - n_live_tup
+      - n_dead_tup
+      - dead_pct
+      - last_autovacuum
+      - last_vacuum
+      - autovacuum_count
+      - vacuum_count
+      - autovacuum_disabled
+      - table_size_b
+    statement_timeout_seconds: 15
   table_size_detailed:
     description: >
       Detailed per-table storage breakdown (heap main/fsm/vm forks,

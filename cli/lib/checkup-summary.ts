@@ -40,6 +40,7 @@ export function generateCheckSummary(checkId: string, report: any): CheckSummary
     case 'D001': return summarizeD001(nodeData);
     case 'D004': return summarizeD004(nodeData);
     case 'F001': return summarizeF001(nodeData);
+    case 'F003': return summarizeF003(nodeData);
     case 'G001': return summarizeG001(nodeData);
     case 'G003': return summarizeG003(nodeData);
     default:
@@ -241,6 +242,35 @@ function summarizeF001(nodeData: any): CheckSummary {
     status: 'info',
     message: `${settingsCount} autovacuum setting${settingsCount > 1 ? 's' : ''} collected`
   };
+}
+
+function summarizeF003(nodeData: any): CheckSummary {
+  const data = nodeData?.data || {};
+  let flaggedCount = 0;
+  let disabledCount = 0;
+
+  // Aggregate across all databases. Only non-tiny disabled-autovacuum tables
+  // (autovacuum_disabled_flagged_count) trigger a warning - tiny tables with
+  // autovacuum off are common and not worth alerting on.
+  for (const dbData of Object.values(data)) {
+    const dbEntry = dbData as any;
+    flaggedCount += dbEntry.flagged_count || 0;
+    disabledCount += dbEntry.autovacuum_disabled_flagged_count || 0;
+  }
+
+  if (flaggedCount === 0 && disabledCount === 0) {
+    return { status: 'ok', message: 'No significant dead tuple accumulation' };
+  }
+
+  const parts: string[] = [];
+  if (flaggedCount > 0) {
+    parts.push(`${flaggedCount} table${flaggedCount > 1 ? 's' : ''} with excessive dead tuples`);
+  }
+  if (disabledCount > 0) {
+    parts.push(`${disabledCount} table${disabledCount > 1 ? 's' : ''} with autovacuum disabled`);
+  }
+
+  return { status: 'warning', message: parts.join(', ') };
 }
 
 function summarizeG001(nodeData: any): CheckSummary {

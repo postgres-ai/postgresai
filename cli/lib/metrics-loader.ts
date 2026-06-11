@@ -17,25 +17,25 @@ import { METRICS, MetricDefinition } from "./metrics-embedded";
  */
 export function getMetricSql(metricName: string, pgMajorVersion: number = 16): string {
   const metric = METRICS[metricName];
-  
+
   if (!metric) {
     throw new Error(`Metric "${metricName}" not found. Available metrics: ${Object.keys(METRICS).join(", ")}`);
   }
-  
+
   // Find the best matching version: highest version <= pgMajorVersion
   const availableVersions = Object.keys(metric.sqls)
     .map(v => parseInt(v, 10))
     .sort((a, b) => b - a); // Sort descending
-  
+
   const matchingVersion = availableVersions.find(v => v <= pgMajorVersion);
-  
+
   if (matchingVersion === undefined) {
     throw new Error(
       `No compatible SQL version for metric "${metricName}" with PostgreSQL ${pgMajorVersion}. ` +
       `Available versions: ${availableVersions.join(", ")}`
     );
   }
-  
+
   return metric.sqls[matchingVersion];
 }
 
@@ -65,6 +65,8 @@ export const METRIC_NAMES = {
   H001: "pg_invalid_indexes",
   H002: "unused_indexes",
   H004: "redundant_indexes",
+  // Dead tuples and per-table autovacuum overrides
+  F003: "pg_dead_tuples",
   // Bloat estimation
   F004: "pg_table_bloat",
   F005: "pg_btree_bloat",
@@ -86,18 +88,18 @@ export const METRIC_NAMES = {
  */
 export function transformMetricRow(row: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  
+
   for (const [key, value] of Object.entries(row)) {
     // Skip Prometheus-specific fields
     if (key === "epoch_ns" || key === "num" || key === "tag_datname") {
       continue;
     }
-    
+
     // Strip tag_ prefix
     const newKey = key.startsWith("tag_") ? key.slice(4) : key;
     result[newKey] = value;
   }
-  
+
   return result;
 }
 
