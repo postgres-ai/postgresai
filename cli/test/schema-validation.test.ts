@@ -70,6 +70,35 @@ describe("Schema validation", () => {
     });
   }
 
+  // F003 (Autovacuum: dead tuples) - test empty and with data
+  test("F003 validates with empty data", async () => {
+    const mockClient = createMockClient({ deadTuplesRows: [] });
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F003");
+  });
+
+  test("F003 validates with sample data", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        {
+          tag_schemaname: "public",
+          tag_relname: "events",
+          n_live_tup: "6361538",
+          n_dead_tup: "8270000",
+          dead_pct: 56.52,
+          last_autovacuum: "0",
+          last_vacuum: "1704067200",
+          autovacuum_count: "0",
+          vacuum_count: "1",
+          autovacuum_disabled: 1,
+          table_size_b: "2147483648",
+        },
+      ],
+    });
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F003");
+  });
+
   // Settings reports (D004, F001, G001) - single test each
   for (const checkId of ["D004", "F001", "G001"]) {
     test(`${checkId} validates against schema`, async () => {

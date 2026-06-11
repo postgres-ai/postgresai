@@ -244,6 +244,58 @@ export interface RedundantIndex {
 }
 
 /**
+ * Dead tuples table entry (F003) - matches F003.schema.json deadTuplesTable
+ *
+ * Sourced from pg_stat_user_tables live counters (n_dead_tup / n_live_tup),
+ * so dead tuples that have never been vacuumed are visible - unlike the
+ * statistical bloat estimators (F004/F005), which miss them entirely.
+ */
+export interface DeadTuplesTable {
+  schema_name: string;
+  table_name: string;
+  n_live_tup: number;
+  n_dead_tup: number;
+  /** Dead tuples as percentage of all tuples: n_dead_tup / (n_live_tup + n_dead_tup) * 100 */
+  dead_pct: number;
+  last_autovacuum: string | null;
+  /** Epoch seconds of the last autovacuum; 0 = never */
+  last_autovacuum_epoch: number;
+  last_vacuum: string | null;
+  /** Epoch seconds of the last manual vacuum; 0 = never */
+  last_vacuum_epoch: number;
+  autovacuum_count: number;
+  vacuum_count: number;
+  /** True when autovacuum is disabled per-table via reloptions (autovacuum_enabled=off/false/0/...) */
+  autovacuum_disabled: boolean;
+  table_size_bytes: number;
+  table_size_pretty: string;
+  /** True when BOTH F003_DEAD_TUPLES_MIN and F003_DEAD_PCT_MIN thresholds are exceeded */
+  exceeds_dead_tuple_thresholds: boolean;
+  /** True when autovacuum is disabled per-table on a non-tiny table (>= F003_AUTOVACUUM_DISABLED_MIN_ROWS tuples) */
+  autovacuum_disabled_flagged: boolean;
+}
+
+/**
+ * F003 thresholds.
+ *
+ * A table's dead-tuple accumulation is flagged only when it is high in BOTH
+ * absolute and relative terms:
+ * - F003_DEAD_TUPLES_MIN keeps small/noisy tables out (100k dead tuples is
+ *   real work for vacuum regardless of table size);
+ * - F003_DEAD_PCT_MIN = 20 mirrors the default autovacuum_vacuum_scale_factor
+ *   of 0.2: with default settings autovacuum should have fired well before a
+ *   table is 20% dead, so reaching this level in a snapshot is an unambiguous
+ *   signal that vacuum is not keeping up (lagging, blocked, or disabled).
+ *
+ * Per-table disabled autovacuum is a classic footgun and is always flagged on
+ * non-tiny tables (>= F003_AUTOVACUUM_DISABLED_MIN_ROWS total tuples; same
+ * 10k-row "non-tiny" cutoff the classic postgres-checkup F003 uses).
+ */
+export const F003_DEAD_TUPLES_MIN = 100_000;
+export const F003_DEAD_PCT_MIN = 20;
+export const F003_AUTOVACUUM_DISABLED_MIN_ROWS = 10_000;
+
+/**
  * I/O statistics by backend type (I001) - matches I001.schema.json backendIOStats
  */
 export interface BackendIOStats {
@@ -361,11 +413,11 @@ function formatSettingPrettyValue(
   if (settingNormalized === null || unitNormalized === null) {
     return rawValue;
   }
-  
+
   if (unitNormalized === "bytes") {
     return formatBytes(settingNormalized);
   }
-  
+
   if (unitNormalized === "seconds") {
     // Format time values with appropriate units based on magnitude:
     // - Sub-second values (< 1s): show in milliseconds for precision
@@ -380,7 +432,7 @@ function formatSettingPrettyValue(
       return `${(settingNormalized / SECONDS_PER_MINUTE).toFixed(1)} min`;
     }
   }
-  
+
   return rawValue;
 }
 
@@ -436,7 +488,7 @@ export async function getSettings(client: Client, pgMajorVersion: number = 16): 
     const vartype = row.tag_vartype || "";
     const settingNormalized = row.setting_normalized !== null ? parseFloat(row.setting_normalized) : null;
     const unitNormalized = row.unit_normalized || null;
-    
+
     settings[name] = {
       setting: settingValue,
       unit,
@@ -468,7 +520,7 @@ export async function getAlteredSettings(client: Client, pgMajorVersion: number 
       const category = row.tag_category || "";
       const settingNormalized = row.setting_normalized !== null ? parseFloat(row.setting_normalized) : null;
       const unitNormalized = row.unit_normalized || null;
-      
+
       settings[name] = {
         value: settingValue,
         unit,
@@ -737,22 +789,22 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
   const sql = getMetricSql(METRIC_NAMES.statsReset, pgMajorVersion);
   const result = await client.query(sql);
   const row = result.rows[0] || {};
-  
+
   // The stats_reset metric returns stats_reset_epoch and seconds_since_reset
   // We need to calculate additional fields
   const statsResetEpoch = row.stats_reset_epoch ? parseFloat(row.stats_reset_epoch) : null;
   const secondsSinceReset = row.seconds_since_reset ? parseInt(row.seconds_since_reset, 10) : null;
-  
+
   // Calculate stats_reset_time from epoch
-  const statsResetTime = statsResetEpoch 
+  const statsResetTime = statsResetEpoch
     ? new Date(statsResetEpoch * 1000).toISOString()
     : null;
-  
+
   // Calculate days since reset
   const daysSinceReset = secondsSinceReset !== null
     ? Math.floor(secondsSinceReset / SECONDS_PER_DAY)
     : null;
-  
+
   // Get postmaster startup time separately (simple inline SQL)
   // This is supplementary data - errors are captured in output, not propagated
   let postmasterStartupEpoch: number | null = null;
@@ -765,8 +817,8 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
         pg_postmaster_start_time()::text as postmaster_startup_time
     `);
     if (pmResult.rows.length > 0) {
-      postmasterStartupEpoch = pmResult.rows[0].postmaster_startup_epoch 
-        ? parseFloat(pmResult.rows[0].postmaster_startup_epoch) 
+      postmasterStartupEpoch = pmResult.rows[0].postmaster_startup_epoch
+        ? parseFloat(pmResult.rows[0].postmaster_startup_epoch)
         : null;
       postmasterStartupTime = pmResult.rows[0].postmaster_startup_time || null;
     }
@@ -775,7 +827,7 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
     postmasterStartupError = `Failed to query postmaster start time: ${errorMsg}`;
     console.error(`[getStatsReset] Warning: ${postmasterStartupError}`);
   }
-  
+
   const statsResult: StatsReset = {
     stats_reset_epoch: statsResetEpoch,
     stats_reset_time: statsResetTime,
@@ -783,12 +835,12 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
     postmaster_startup_epoch: postmasterStartupEpoch,
     postmaster_startup_time: postmasterStartupTime,
   };
-  
+
   // Only include error field if there was an error (keeps output clean)
   if (postmasterStartupError) {
     statsResult.postmaster_startup_error = postmasterStartupError;
   }
-  
+
   return statsResult;
 }
 
@@ -800,7 +852,7 @@ export async function getCurrentDatabaseInfo(client: Client, pgMajorVersion: num
   const sql = getMetricSql(METRIC_NAMES.dbSize, pgMajorVersion);
   const result = await client.query(sql);
   const row = result.rows[0] || {};
-  
+
   // db_size metric returns tag_datname and size_b
   return {
     datname: row.tag_datname || "postgres",
@@ -831,7 +883,7 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
     const transformed = transformMetricRow(row);
     const indexSizeBytes = parseInt(String(transformed.index_size_bytes || 0), 10);
     const tableSizeBytes = parseInt(String(transformed.table_size_bytes || 0), 10);
-    
+
     // Parse redundant_to JSON array (indexes that make this one redundant)
     let redundantTo: RedundantToIndex[] = [];
     let parseError: string | undefined;
@@ -857,7 +909,7 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
       parseError = `Failed to parse redundant_to_json: ${errorMsg}`;
       console.error(`[H004] Warning: ${parseError} for index "${indexName}"`);
     }
-    
+
     const result: RedundantIndex = {
       schema_name: String(transformed.schema_name || ""),
       table_name: String(transformed.table_name || ""),
@@ -874,14 +926,115 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
       table_size_pretty: formatBytes(tableSizeBytes),
       redundant_to: redundantTo,
     };
-    
+
     // Only include parse error field if there was an error (keeps output clean)
     if (parseError) {
       result.redundant_to_parse_error = parseError;
     }
-    
+
     return result;
   });
+}
+
+/**
+ * Get per-table dead-tuple stats and per-table autovacuum overrides (F003).
+ * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples metric).
+ *
+ * Returns tables that carry dead tuples or have autovacuum disabled per-table,
+ * with threshold flags precomputed (see F003_* constants).
+ *
+ * @param client - Connected PostgreSQL client
+ * @param pgMajorVersion - PostgreSQL major version (default: 16)
+ * @throws {Error} If database query fails (propagating - critical data)
+ */
+export async function getDeadTuples(client: Client, pgMajorVersion: number = 16): Promise<DeadTuplesTable[]> {
+  const sql = getMetricSql(METRIC_NAMES.F003, pgMajorVersion);
+  const result = await client.query(sql);
+  return result.rows.map((row) => {
+    const t = transformMetricRow(row);
+    const nLive = parseInt(String(t.n_live_tup || 0), 10);
+    const nDead = parseInt(String(t.n_dead_tup || 0), 10);
+    const deadPct = parseFloat(String(t.dead_pct)) || 0;
+    const lastAutovacuumEpoch = parseInt(String(t.last_autovacuum || 0), 10);
+    const lastVacuumEpoch = parseInt(String(t.last_vacuum || 0), 10);
+    // The metric emits 0/1; be liberal in what we accept (driver may return strings)
+    const autovacuumDisabled = parseInt(String(t.autovacuum_disabled || 0), 10) === 1 || toBool(t.autovacuum_disabled);
+    const tableSizeBytes = parseInt(String(t.table_size_b || 0), 10);
+
+    return {
+      schema_name: String(t.schemaname || ""),
+      table_name: String(t.relname || ""),
+      n_live_tup: nLive,
+      n_dead_tup: nDead,
+      dead_pct: deadPct,
+      last_autovacuum: lastAutovacuumEpoch > 0 ? new Date(lastAutovacuumEpoch * 1000).toISOString() : null,
+      last_autovacuum_epoch: lastAutovacuumEpoch,
+      last_vacuum: lastVacuumEpoch > 0 ? new Date(lastVacuumEpoch * 1000).toISOString() : null,
+      last_vacuum_epoch: lastVacuumEpoch,
+      autovacuum_count: parseInt(String(t.autovacuum_count || 0), 10),
+      vacuum_count: parseInt(String(t.vacuum_count || 0), 10),
+      autovacuum_disabled: autovacuumDisabled,
+      table_size_bytes: tableSizeBytes,
+      table_size_pretty: formatBytes(tableSizeBytes),
+      exceeds_dead_tuple_thresholds: nDead >= F003_DEAD_TUPLES_MIN && deadPct >= F003_DEAD_PCT_MIN,
+      autovacuum_disabled_flagged: autovacuumDisabled && nLive + nDead >= F003_AUTOVACUUM_DISABLED_MIN_ROWS,
+    };
+  });
+}
+
+/**
+ * Build concrete, human-readable conclusions and recommendations for F003.
+ *
+ * Exported separately so the wording (which the console surfaces verbatim in
+ * auto-created issues) can be unit-tested without a database.
+ */
+export function buildDeadTuplesConclusions(tables: DeadTuplesTable[]): {
+  conclusions: string[];
+  recommendations: string[];
+} {
+  const conclusions: string[] = [];
+  const recommendations: string[] = [];
+
+  const fmt = (n: number) => n.toLocaleString("en-US");
+
+  for (const t of tables) {
+    const rel = `"${t.schema_name}"."${t.table_name}"`;
+    const lastAv = t.last_autovacuum
+      ? `last autovacuum: ${t.last_autovacuum}`
+      : "autovacuum has never vacuumed it";
+
+    if (t.exceeds_dead_tuple_thresholds && t.autovacuum_disabled) {
+      conclusions.push(
+        `Table ${rel} has ${fmt(t.n_dead_tup)} dead tuples (${t.dead_pct}% of all tuples) ` +
+        `and autovacuum is disabled on it via reloptions (${lastAv}).`
+      );
+      recommendations.push(
+        `Re-enable autovacuum on ${rel}: alter table ${rel} reset (autovacuum_enabled); ` +
+        `then run: vacuum (analyze) ${rel}; to clean up the accumulated dead tuples.`
+      );
+    } else if (t.exceeds_dead_tuple_thresholds) {
+      conclusions.push(
+        `Table ${rel} has ${fmt(t.n_dead_tup)} dead tuples (${t.dead_pct}% of all tuples; ${lastAv}).`
+      );
+      recommendations.push(
+        `Run: vacuum (analyze) ${rel}; and review autovacuum settings ` +
+        `(autovacuum_vacuum_scale_factor, autovacuum_vacuum_cost_delay, autovacuum_max_workers) ` +
+        `if dead tuples keep accumulating on ${rel}.`
+      );
+    } else if (t.autovacuum_disabled_flagged) {
+      conclusions.push(
+        `Autovacuum is disabled via reloptions on table ${rel} ` +
+        `(~${fmt(t.n_live_tup + t.n_dead_tup)} tuples); dead tuples and transaction ID age ` +
+        `will accumulate unchecked.`
+      );
+      recommendations.push(
+        `Re-enable autovacuum on ${rel}: alter table ${rel} reset (autovacuum_enabled); ` +
+        `unless this table is managed by a carefully scheduled manual vacuum job.`
+      );
+    }
+  }
+
+  return { conclusions, recommendations };
 }
 
 /**
@@ -1280,6 +1433,58 @@ async function generateF001(client: Client, nodeName: string): Promise<Report> {
 
   report.results[nodeName] = {
     data: autovacuumSettings,
+    postgres_version: postgresVersion,
+  };
+
+  return report;
+}
+
+/**
+ * Generate F003 report - Autovacuum: dead tuples
+ *
+ * Reads per-table dead-tuple counters from pg_stat_user_tables and per-table
+ * autovacuum overrides from pg_class.reloptions. Flags tables where dead
+ * tuples are high both in absolute terms and relative to live tuples, and
+ * tables where autovacuum is disabled per-table (a classic footgun).
+ *
+ * Unlike F004/F005 (statistical bloat estimators), this check sees dead
+ * tuples that have never been vacuumed.
+ * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples metric).
+ */
+async function generateF003(client: Client, nodeName: string): Promise<Report> {
+  const report = createBaseReport("F003", "Autovacuum: dead tuples", nodeName);
+  const postgresVersion = await getPostgresVersion(client);
+  const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
+
+  const tables = await getDeadTuples(client, pgMajorVersion);
+  const { datname: dbName, size_bytes: dbSizeBytes } = await getCurrentDatabaseInfo(client, pgMajorVersion);
+
+  const flaggedCount = tables.filter((t) => t.exceeds_dead_tuple_thresholds).length;
+  const autovacuumDisabledCount = tables.filter((t) => t.autovacuum_disabled).length;
+  const autovacuumDisabledFlaggedCount = tables.filter((t) => t.autovacuum_disabled_flagged).length;
+  const totalDeadTuples = tables.reduce((sum, t) => sum + t.n_dead_tup, 0);
+  const { conclusions, recommendations } = buildDeadTuplesConclusions(tables);
+
+  const dbEntry = {
+    dead_tuples_tables: tables,
+    total_count: tables.length,
+    flagged_count: flaggedCount,
+    autovacuum_disabled_count: autovacuumDisabledCount,
+    autovacuum_disabled_flagged_count: autovacuumDisabledFlaggedCount,
+    total_dead_tuples: totalDeadTuples,
+    thresholds: {
+      dead_tuples_min: F003_DEAD_TUPLES_MIN,
+      dead_pct_min: F003_DEAD_PCT_MIN,
+      autovacuum_disabled_min_rows: F003_AUTOVACUUM_DISABLED_MIN_ROWS,
+    },
+    conclusions,
+    recommendations,
+    database_size_bytes: dbSizeBytes,
+    database_size_pretty: formatBytes(dbSizeBytes),
+  };
+
+  report.results[nodeName] = {
+    data: { [dbName]: dbEntry },
     postgres_version: postgresVersion,
   };
 
@@ -1900,6 +2105,7 @@ export const REPORT_GENERATORS: Record<string, (client: Client, nodeName: string
   D001: generateD001,
   D004: generateD004,
   F001: generateF001,
+  F003: generateF003,
   F004: generateF004,
   F005: generateF005,
   G001: generateG001,

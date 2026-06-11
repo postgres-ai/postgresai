@@ -324,6 +324,61 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     expect(typeof nodeResult.data).toBe("object");
   });
 
+  test("F003 flags a table with dead tuples and per-table disabled autovacuum", async () => {
+    // Reproduce the footgun the check exists for: a table with autovacuum
+    // disabled via reloptions accumulating dead tuples from UPDATE/DELETE.
+    await client.query(`
+      CREATE TABLE f003_dead_tuples_test (id int PRIMARY KEY, payload text);
+      ALTER TABLE f003_dead_tuples_test SET (autovacuum_enabled = false);
+      INSERT INTO f003_dead_tuples_test SELECT g, repeat('x', 50) FROM generate_series(1, 20000) g;
+      UPDATE f003_dead_tuples_test SET payload = payload || 'y';
+    `);
+
+    try {
+      // Cumulative stats are flushed asynchronously; poll until the dead
+      // tuples from the UPDATE become visible in pg_stat_user_tables.
+      await waitFor(async () => {
+        const r = await client.query(
+          "select n_dead_tup from pg_stat_user_tables where relname = 'f003_dead_tuples_test'"
+        );
+        if (!r.rows.length || parseInt(r.rows[0].n_dead_tup, 10) < 20000) {
+          throw new Error("dead tuple stats not flushed yet");
+        }
+      }, { timeoutMs: 15000, intervalMs: 250 });
+
+      const report = await checkup.REPORT_GENERATORS.F003(client, "test-node");
+      validateAgainstSchema(report, "F003");
+
+      const nodeResult = report.results["test-node"];
+      const dbName = Object.keys(nodeResult.data)[0];
+      const dbData = nodeResult.data[dbName] as any;
+
+      const table = dbData.dead_tuples_tables.find(
+        (t: any) => t.table_name === "f003_dead_tuples_test"
+      );
+      expect(table).toBeDefined();
+      expect(table.autovacuum_disabled).toBe(true);
+      expect(table.n_dead_tup).toBeGreaterThanOrEqual(20000);
+      expect(table.dead_pct).toBeGreaterThanOrEqual(checkup.F003_DEAD_PCT_MIN);
+      // 20k dead tuples is below F003_DEAD_TUPLES_MIN (100k), so the
+      // dead-tuple thresholds must NOT fire, but the disabled-autovacuum
+      // flag must (>= 10k tuples with autovacuum off).
+      expect(table.exceeds_dead_tuple_thresholds).toBe(false);
+      expect(table.autovacuum_disabled_flagged).toBe(true);
+      expect(dbData.autovacuum_disabled_count).toBeGreaterThanOrEqual(1);
+      expect(
+        dbData.conclusions.some((c: string) => c.includes("f003_dead_tuples_test"))
+      ).toBe(true);
+      expect(
+        dbData.recommendations.some((r: string) =>
+          r.includes('alter table "public"."f003_dead_tuples_test" reset (autovacuum_enabled);')
+        )
+      ).toBe(true);
+    } finally {
+      await client.query("DROP TABLE IF EXISTS f003_dead_tuples_test;");
+    }
+  });
+
   test("CLI --markdown flag works without API key", async () => {
     // Test that --markdown works even without an API key
     const connString = `postgresql://postgres@${pg.socketDir}:${pg.port}/postgres`;

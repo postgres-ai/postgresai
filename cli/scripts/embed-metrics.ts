@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 /**
  * Build script to embed metrics.yml into the CLI bundle.
- * 
+ *
  * This script reads config/pgwatch-prometheus/metrics.yml and generates
  * cli/lib/metrics-embedded.ts with the metrics data embedded as TypeScript.
- * 
+ *
  * The generated file is NOT committed to git - it's regenerated at build time.
- * 
+ *
  * Usage: bun run scripts/embed-metrics.ts
  */
 
@@ -46,6 +46,8 @@ const REQUIRED_METRICS = [
   "redundant_indexes",
   // Stats reset info (H002)
   "stats_reset",
+  // Dead tuples and per-table autovacuum overrides (F003)
+  "pg_dead_tuples",
   // Bloat estimation (F004, F005)
   "pg_table_bloat",
   "pg_btree_bloat",
@@ -55,7 +57,7 @@ const REQUIRED_METRICS = [
 
 function main() {
   console.log(`Reading metrics from: ${METRICS_YML_PATH}`);
-  
+
   if (!fs.existsSync(METRICS_YML_PATH)) {
     console.error(`ERROR: metrics.yml not found at ${METRICS_YML_PATH}`);
     process.exit(1);
@@ -120,7 +122,7 @@ function generateTypeScript(metrics: Record<string, MetricDefinition>): string {
 
   for (const [name, metric] of Object.entries(metrics)) {
     lines.push(`  ${JSON.stringify(name)}: {`);
-    
+
     if (metric.description) {
       // Escape description for TypeScript string
       const desc = metric.description.trim().replace(/\n/g, " ").replace(/\s+/g, " ");
@@ -156,4 +158,3 @@ function generateTypeScript(metrics: Record<string, MetricDefinition>): string {
 }
 
 main();
-

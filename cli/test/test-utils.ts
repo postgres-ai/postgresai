@@ -17,6 +17,7 @@ export interface MockClientOptions {
   redundantIndexesRows?: any[];
   tableBloatRows?: any[];
   indexBloatRows?: any[];
+  deadTuplesRows?: any[];
   vacuumStatsRows?: any[];
   deadlockStatsRows?: any[];
   pgStatStatementsExtensionRows?: any[];
@@ -58,6 +59,7 @@ export function createMockClient(options: MockClientOptions = {}) {
     redundantIndexesRows = [],
     tableBloatRows = [],
     indexBloatRows = [],
+    deadTuplesRows = [],
     vacuumStatsRows = [],
     deadlockStatsRows = [{ deadlocks: "0", conflicts: "0", stats_reset: null }],
     pgStatStatementsExtensionRows = [],
@@ -118,6 +120,12 @@ export function createMockClient(options: MockClientOptions = {}) {
       // Redundant indexes (H004) - from metrics.yml
       if (sql.includes("redundant_indexes_grouped") && sql.includes("columns like")) {
         return { rows: redundantIndexesRows };
+      }
+      // F003: dead tuples metric from metrics.yml.
+      // Must be matched BEFORE the F004/F005 vacuum-stats route below: the
+      // pg_dead_tuples SQL also contains "pg_stat_user_tables" and "last_vacuum".
+      if (sql.includes("autovacuum_disabled") && sql.includes("n_dead_tup")) {
+        return { rows: deadTuplesRows };
       }
       // F004/F005: bloat metrics from metrics.yml
       if (sql.includes("tag_idxname") && sql.includes("bloat_size")) {
