@@ -16,6 +16,10 @@ import {
   extractSslmode,
   InstancesParseError,
 } from "../lib/instances";
+import {
+  registerMonitoringInstance,
+  resolveAdoptedProject,
+} from "../bin/postgres-ai";
 
 /**
  * Test updatePgwatchConfig function behavior.
@@ -190,14 +194,20 @@ describe("updatePgwatchConfig", () => {
 describe("registerMonitoringInstance", () => {
   let originalFetch: typeof global.fetch;
   let fetchCalls: Array<{ url: string; options: RequestInit }>;
+  // Each test sets `respond(call) => Response`; defaults to a 200 with no body.
+  let respond: (call: { url: string; options: RequestInit }) => Response;
+  const apiBaseUrl = "https://api.example.com";
+  const registerUrl = `${apiBaseUrl}/rpc/monitoring_instance_register`;
 
   beforeEach(() => {
     originalFetch = global.fetch;
     fetchCalls = [];
-    // Mock fetch to capture calls
+    respond = () => new Response(JSON.stringify({ project_id: 7 }), { status: 200 });
+    // Mock fetch to capture calls and return the test-configured response.
     global.fetch = async (url: RequestInfo | URL, options?: RequestInit) => {
-      fetchCalls.push({ url: url.toString(), options: options || {} });
-      return new Response(JSON.stringify({ success: true }), { status: 200 });
+      const call = { url: url.toString(), options: options || {} };
+      fetchCalls.push(call);
+      return respond(call);
     };
   });
 
@@ -205,72 +215,141 @@ describe("registerMonitoringInstance", () => {
     global.fetch = originalFetch;
   });
 
-  test("sends POST request with correct URL and body", async () => {
-    // Simulate what registerMonitoringInstance does
-    const apiKey = "test-api-key";
-    const projectName = "my-project";
-    const apiBaseUrl = "https://api.example.com";
+  // retryDelayMs: 0 keeps the retry path instant under test.
+  const opts = (extra?: Record<string, unknown>) => ({ apiBaseUrl, retryDelayMs: 0, ...extra });
 
-    await fetch(`${apiBaseUrl}/rpc/monitoring_instance_register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        api_token: apiKey,
-        project_name: projectName,
-      }),
-    });
+  test("posts api_token + project_name in the body (never in headers), legacy mode", async () => {
+    await registerMonitoringInstance("secret-key-12345", "my-project", opts());
 
     expect(fetchCalls.length).toBe(1);
-    expect(fetchCalls[0].url).toBe("https://api.example.com/rpc/monitoring_instance_register");
+    expect(fetchCalls[0].url).toBe(registerUrl);
     expect(fetchCalls[0].options.method).toBe("POST");
 
     const headers = fetchCalls[0].options.headers as Record<string, string>;
     expect(headers["Content-Type"]).toBe("application/json");
-    // Verify API key is NOT in headers (only in body per security review)
+    // API key only in body, never in an access-token header (security review).
     expect(headers["access-token"]).toBeUndefined();
 
     const body = JSON.parse(fetchCalls[0].options.body as string);
-    expect(body.api_token).toBe("test-api-key");
+    expect(body.api_token).toBe("secret-key-12345");
     expect(body.project_name).toBe("my-project");
   });
 
-  test("includes api_token in body, not in header", async () => {
-    const apiKey = "secret-key-12345";
-    const projectName = "test-project";
-    const apiBaseUrl = "https://postgres.ai/api/general";
-
-    await fetch(`${apiBaseUrl}/rpc/monitoring_instance_register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        api_token: apiKey,
-        project_name: projectName,
-      }),
-    });
-
-    const headers = fetchCalls[0].options.headers as Record<string, string>;
-    // Verify no access-token header
-    expect(Object.keys(headers)).not.toContain("access-token");
-
-    // Verify token is in body
-    const body = JSON.parse(fetchCalls[0].options.body as string);
-    expect(body.api_token).toBe("secret-key-12345");
+  test("honors a custom apiBaseUrl for the endpoint path", async () => {
+    await registerMonitoringInstance("key", "proj", opts({ apiBaseUrl: "https://custom.api.com/v2" }));
+    expect(fetchCalls[0].url).toBe("https://custom.api.com/v2/rpc/monitoring_instance_register");
   });
 
-  test("uses correct endpoint path", async () => {
-    const apiBaseUrl = "https://custom.api.com/v2";
+  // Issue platform-all#311: console-provisioned installs pass instance_id so
+  // the platform adopts the provisioned instance instead of self-registering
+  // a duplicate under an auto-created "postgres-ai-monitoring" project.
+  test("includes instance_id in body when adopting a provisioned instance", async () => {
+    const instanceId = "019eb300-3f2a-7a75-b54d-4f10572b25b8";
 
-    await fetch(`${apiBaseUrl}/rpc/monitoring_instance_register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_token: "key", project_name: "proj" }),
-    });
+    await registerMonitoringInstance("key", "postgres-ai-monitoring", opts({ instanceId }));
 
-    expect(fetchCalls[0].url).toBe("https://custom.api.com/v2/rpc/monitoring_instance_register");
+    const body = JSON.parse(fetchCalls[0].options.body as string);
+    expect(body.instance_id).toBe(instanceId);
+    // instance_id rides in the body next to api_token — never in headers.
+    const headers = fetchCalls[0].options.headers as Record<string, string>;
+    expect(headers["instance-id"]).toBeUndefined();
+  });
+
+  test("omits instance_id from the body for legacy self-registration", async () => {
+    await registerMonitoringInstance("key", "my-project", opts());
+
+    const body = JSON.parse(fetchCalls[0].options.body as string);
+    // PostgREST matches the 3-arg function via its default — the key must be
+    // ABSENT (not null) so legacy CLIs and the new one hit the same overload.
+    expect("instance_id" in body).toBe(false);
+  });
+
+  test("a 200 with {project_id, project_name} returns a populated result", async () => {
+    respond = () => new Response(JSON.stringify({ project_id: 42, project_name: "prod-db", created: false }), { status: 200 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(reg).toEqual({ instanceId: undefined, projectId: 42, projectName: "prod-db", created: false });
+  });
+
+  test("a non-JSON 200 returns {} (success, but no fields) — not null", async () => {
+    respond = () => new Response("<html>oops</html>", { status: 200 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(reg).toEqual({});
+  });
+
+  test("mistyped fields are dropped at runtime (project_id must be a number)", async () => {
+    // A spoofed/older platform returning a string id must not poison the
+    // persistence decision, which prefers a numeric project_id.
+    respond = () => new Response(JSON.stringify({ project_id: "13", project_name: "ok-name", created: "yes" }), { status: 200 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(reg).toEqual({ instanceId: undefined, projectId: undefined, projectName: "ok-name", created: undefined });
+  });
+
+  test("when adopting, a first non-OK response triggers one retry that succeeds", async () => {
+    respond = (call) => {
+      // First attempt 503, second 200.
+      return fetchCalls.length === 1
+        ? new Response("upstream down", { status: 503 })
+        : new Response(JSON.stringify({ project_id: 9 }), { status: 200 });
+    };
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(fetchCalls.length).toBe(2);
+    expect(reg).toEqual({ instanceId: undefined, projectId: 9, projectName: undefined, created: undefined });
+  });
+
+  test("when adopting, two failures exhaust the retry and return null", async () => {
+    respond = () => new Response("upstream down", { status: 503 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(fetchCalls.length).toBe(2); // one initial + one retry
+    expect(reg).toBeNull();
+  });
+
+  test("legacy mode does NOT retry — a single failure returns null after one attempt", async () => {
+    respond = () => new Response("upstream down", { status: 503 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts());
+
+    expect(fetchCalls.length).toBe(1);
+    expect(reg).toBeNull();
+  });
+});
+
+describe("resolveAdoptedProject — what gets persisted to .pgwatch-config", () => {
+  test("prefers the numeric project_id over the name (survives renames)", () => {
+    expect(resolveAdoptedProject({ projectId: 42, projectName: "prod-db" })).toBe("42");
+  });
+
+  test("project_id === 0 is a valid id and is honored", () => {
+    expect(resolveAdoptedProject({ projectId: 0, projectName: "prod-db" })).toBe("0");
+  });
+
+  test("falls back to project_name when there is no id", () => {
+    expect(resolveAdoptedProject({ projectName: "prod-db" })).toBe("prod-db");
+  });
+
+  test("returns null for a null response", () => {
+    expect(resolveAdoptedProject(null)).toBeNull();
+  });
+
+  test("returns null for a fieldless (succeeded-but-empty) response", () => {
+    expect(resolveAdoptedProject({})).toBeNull();
+  });
+
+  test("rejects a project_name with a newline (config-file injection, CWE-93)", () => {
+    expect(resolveAdoptedProject({ projectName: "prod\ninjected=evil" })).toBeNull();
+  });
+
+  test("rejects a project_name containing '='", () => {
+    expect(resolveAdoptedProject({ projectName: "a=b" })).toBeNull();
   });
 });
 

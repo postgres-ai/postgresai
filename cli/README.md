@@ -203,7 +203,10 @@ postgresai mon health [--wait <sec>]  # Check monitoring services health
 - `--demo` - Demo mode with sample database (testing only, cannot use with --api-key)
 - `--api-key <key>` - Postgres AI API key for automated report uploads
 - `--db-url <url>` - PostgreSQL connection URL to monitor (format: `postgresql://user:pass@host:port/db`)
+- `--instance-id <uuid>` - Adopt a console-provisioned monitoring instance (also via the `PGAI_INSTANCE_ID` env var)
 - `-y, --yes` - Accept all defaults and skip interactive prompts
+
+When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forwards the id to the platform, which **adopts** the already-provisioned monitoring instance instead of self-registering a duplicate under an auto-created `postgres-ai-monitoring` project. The CLI then persists the adopted instance's real project to `.pgwatch-config`, so checkup reports upload alongside the rest of that instance's health data. Adoption is awaited (with one automatic retry); if it fails, the CLI warns and reports fall back to the default project until you re-run `local-install`. Without the flag, the legacy self-registration path is byte-for-byte unchanged.
 
 `local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new random ones when missing; `VM_AUTH_USERNAME` defaults to `vmauth` when absent. The replication password is used by the demo PostgreSQL standby replication user, and the VM auth credentials are required before Docker Compose can provision Grafana datasources. If you run `docker compose` directly or maintain `.env` yourself, set both VM auth values before upgrading. For rotation, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory so `.env`, `sink-prometheus`, and `grafana` update together.
 

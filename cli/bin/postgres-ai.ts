@@ -2388,54 +2388,136 @@ function checkRunningContainers(): { running: boolean; containers: string[] } {
   }
 }
 
+/** Parsed result of v1.monitoring_instance_register. */
+interface MonitoringRegistration {
+  instanceId?: string;
+  projectId?: number;
+  projectName?: string;
+  created?: boolean;
+}
+
 /**
- * Register monitoring instance with the API (non-blocking).
- * Returns immediately, logs result in background.
+ * Register the monitoring instance with the API.
+ *
+ * Two modes (issue platform-all#311):
+ * - With `instanceId` (console-provisioned installs; passed via
+ *   `--instance-id` / PGAI_INSTANCE_ID, wired from the provisioning flow
+ *   through SI/ansible): the platform ADOPTS the existing provisioned
+ *   instance instead of self-registering a duplicate under an auto-created
+ *   "postgres-ai-monitoring" project. The returned project_name is what the
+ *   reporter must upload to, so callers should await the result and persist
+ *   it. One automatic retry, since a lost adoption splits the health matrix
+ *   across two projects.
+ * - Without it: legacy self-registration by project name.
+ *
+ * Never throws — registration is best-effort; returns null on failure.
  */
-function registerMonitoringInstance(
+async function registerMonitoringInstance(
   apiKey: string,
   projectName: string,
-  opts?: { apiBaseUrl?: string; debug?: boolean }
-): void {
+  opts?: { apiBaseUrl?: string; debug?: boolean; instanceId?: string; retries?: number; retryDelayMs?: number }
+): Promise<MonitoringRegistration | null> {
   const { apiBaseUrl } = resolveBaseUrls(opts);
   const url = `${apiBaseUrl}/rpc/monitoring_instance_register`;
   const debug = opts?.debug;
+  const instanceId = opts?.instanceId;
+  const retries = opts?.retries ?? (instanceId ? 1 : 0);
+  // Brief backoff before a retry so a transient 5xx / connection blip gets a
+  // moment to recover; skipped before the first attempt. Tests pass 0.
+  const retryDelayMs = opts?.retryDelayMs ?? 400;
 
   if (debug) {
     console.error(`\nDebug: Registering monitoring instance...`);
     console.error(`Debug: POST ${url}`);
-    console.error(`Debug: project_name=${projectName}`);
+    console.error(`Debug: project_name=${projectName}${instanceId ? ` instance_id=${instanceId}` : ""}`);
   }
 
-  // Fire and forget - don't block the main flow
-  fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      api_token: apiKey,
-      project_name: projectName,
-    }),
-  })
-    .then(async (res) => {
+  const requestBody: Record<string, string> = {
+    api_token: apiKey,
+    project_name: projectName,
+  };
+  if (instanceId) {
+    requestBody.instance_id = instanceId;
+  }
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0 && retryDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
       const body = await res.text().catch(() => "");
       if (!res.ok) {
         if (debug) {
           console.error(`Debug: Monitoring registration failed: HTTP ${res.status}`);
           console.error(`Debug: Response: ${body}`);
         }
-        return;
+        continue;
       }
       if (debug) {
         console.error(`Debug: Monitoring registration response: ${body}`);
       }
-    })
-    .catch((err) => {
-      if (debug) {
-        console.error(`Debug: Monitoring registration error: ${err.message}`);
+      try {
+        const parsed = JSON.parse(body) as {
+          instance_id?: unknown;
+          project_id?: unknown;
+          project_name?: unknown;
+          created?: unknown;
+        };
+        // Runtime-check each field: the `as` cast above is compile-time only,
+        // and a spoofed/older platform could return mistyped values. In
+        // particular `project_id` must be a real number before we trust it
+        // over the (string) project_name in the persistence decision below.
+        return {
+          instanceId: typeof parsed.instance_id === "string" ? parsed.instance_id : undefined,
+          projectId: typeof parsed.project_id === "number" ? parsed.project_id : undefined,
+          projectName: typeof parsed.project_name === "string" ? parsed.project_name : undefined,
+          created: typeof parsed.created === "boolean" ? parsed.created : undefined,
+        };
+      } catch {
+        return {};
       }
-    });
+    } catch (err) {
+      if (debug) {
+        console.error(`Debug: Monitoring registration error: ${(err as Error).message}`);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Decide what to persist as `.pgwatch-config`'s `project_name` from an
+ * adoption response, or `null` if the response carries no usable project.
+ *
+ * Pure (no I/O) so the branch logic is unit-testable.
+ *
+ * - Prefers the numeric `project_id`: `checkup_report_create` resolves
+ *   "project" as id-or-name, and the id survives project renames (a name
+ *   match would miss after a rename and silently re-create the old name as a
+ *   fresh project). `project_id === 0` is still a valid id and is honored.
+ * - Falls back to `project_name`, but only when it's a safe single-line token.
+ *   The value is server-supplied and written verbatim into a `key=value`
+ *   config file; a name containing `\r`, `\n`, or `=` could inject extra
+ *   config keys (config-file injection, CWE-93/74). Reject those rather than
+ *   risk it — over a trusted first-party endpoint this should never fire.
+ */
+const PROJECT_NAME_RE = /^[A-Za-z0-9._-]+$/;
+function resolveAdoptedProject(reg: MonitoringRegistration | null): string | null {
+  if (!reg) return null;
+  if (typeof reg.projectId === "number" && Number.isFinite(reg.projectId)) {
+    return String(reg.projectId);
+  }
+  if (typeof reg.projectName === "string" && PROJECT_NAME_RE.test(reg.projectName)) {
+    return reg.projectName;
+  }
+  return null;
 }
 
 /**
@@ -2596,8 +2678,12 @@ mon
   .option("--db-url <url>", "PostgreSQL connection URL to monitor")
   .option("--tag <tag>", "Docker image tag to use (e.g., 0.14.0, 0.14.0-dev.33)")
   .option("--project <name>", "Docker Compose project name (default: postgres_ai)")
+  .option(
+    "--instance-id <uuid>",
+    "adopt a console-provisioned monitoring instance instead of self-registering a new one (set automatically by the provisioning flow; PGAI_INSTANCE_ID env also works)"
+  )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; yes: boolean }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; yes: boolean }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -3009,13 +3095,49 @@ mon
     }
     console.log("✓ Services started\n");
 
-    // Register monitoring instance with API (non-blocking, only if API key is configured)
+    // Register monitoring instance with API (only if API key is configured).
+    // Console-provisioned installs pass --instance-id (or PGAI_INSTANCE_ID):
+    // the platform then ADOPTS the provisioned instance and tells us its real
+    // project, which the reporter must upload to — so that path is awaited
+    // and persisted; the legacy self-registration stays fire-and-forget
+    // (issue platform-all#311).
     if (apiKey && !opts.demo) {
       const projectName = opts.project || "postgres-ai-monitoring";
-      registerMonitoringInstance(apiKey, projectName, {
-        apiBaseUrl: globalOpts.apiBaseUrl,
-        debug: !!process.env.DEBUG,
-      });
+      const instanceId = opts.instanceId || process.env.PGAI_INSTANCE_ID;
+      if (instanceId) {
+        const reg = await registerMonitoringInstance(apiKey, projectName, {
+          apiBaseUrl: globalOpts.apiBaseUrl,
+          debug: !!process.env.DEBUG,
+          instanceId,
+        });
+        const adoptedProject = resolveAdoptedProject(reg);
+        if (adoptedProject != null) {
+          // Point the reporter at the adopted instance's project so checkup
+          // uploads land next to the rest of this instance's health data.
+          updatePgwatchConfig(path.resolve(projectDir, ".pgwatch-config"), {
+            project_name: adoptedProject,
+          });
+          // `created` distinguishes a fresh self-registration from adopting an
+          // existing provisioned row; with an instance_id we expect adoption.
+          const verb = reg?.created ? "Registered" : "Adopted";
+          console.log(`✓ ${verb} monitoring instance (project: ${adoptedProject})\n`);
+        } else if (reg) {
+          // Request succeeded but carried no usable project field — don't claim
+          // adoption, but don't report a hard failure either (no re-run needed).
+          console.error(
+            `⚠ Adopted provisioned instance ${instanceId} but the platform returned no project — reports will use project '${projectName}'`
+          );
+        } else {
+          console.error(
+            `⚠ Could not adopt provisioned instance ${instanceId} — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
+          );
+        }
+      } else {
+        void registerMonitoringInstance(apiKey, projectName, {
+          apiBaseUrl: globalOpts.apiBaseUrl,
+          debug: !!process.env.DEBUG,
+        });
+      }
     }
 
     // Final summary
@@ -5309,3 +5431,4 @@ if (import.meta.main) {
 // Exported for unit tests (the CLI surface above is unaffected; these are the
 // same functions used by the `mon` commands).
 export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };
+export { registerMonitoringInstance, resolveAdoptedProject, type MonitoringRegistration };
