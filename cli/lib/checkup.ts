@@ -309,7 +309,7 @@ export interface BackendIOStats {
   write_bytes_mb: number;
   write_time_ms: number;
   writebacks: number;
-  /** Writeback MiB. The historical `_mb` suffix is retained for schema compatibility. */
+  /** Writeback MiB. Always 0 on PG18+ (op_bytes removed, no writeback byte counts exposed). The historical `_mb` suffix is retained for schema compatibility. */
   writeback_bytes_mb: number;
   writeback_time_ms: number;
   fsyncs: number;

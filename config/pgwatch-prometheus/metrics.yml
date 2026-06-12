@@ -3906,8 +3906,8 @@ metrics:
             (sum(coalesce(write_bytes, 0)) / 1048576.0)::int8 as write_bytes_mb,
             sum(coalesce(write_time, 0))::int8 as write_time_ms,
             sum(coalesce(writebacks, 0))::int8 as writebacks,
-            -- PostgreSQL 18 has no writeback_bytes column; rows with NULL op_bytes contribute zero by design.
-            (sum(coalesce(writebacks, 0) * coalesce(op_bytes, 0)) / 1048576.0)::int8 as writeback_bytes_mb,
+            -- PostgreSQL 18 removed the per-operation byte size column and exposes no writeback byte counts, so this is always 0.
+            0::int8 as writeback_bytes_mb,
             sum(coalesce(writeback_time, 0))::int8 as writeback_time_ms,
             sum(coalesce(fsyncs, 0))::int8 as fsyncs,
             sum(coalesce(fsync_time, 0))::int8 as fsync_time_ms,
