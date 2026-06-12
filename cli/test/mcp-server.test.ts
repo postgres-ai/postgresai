@@ -238,6 +238,8 @@ describe("MCP Server", () => {
 
       expect(response.isError).toBe(true);
       expect(getResponseText(response)).toContain("401");
+      // Agent-facing remediation: invalid key must point at re-auth, not dead-end
+      expect(getResponseText(response)).toContain("Run 'postgresai auth'");
 
       readConfigSpy.mockRestore();
     });
@@ -1678,6 +1680,8 @@ describe("MCP Server", () => {
 
       expect(response.isError).toBe(true);
       expect(getResponseText(response)).toContain("401");
+      // Agent-facing remediation: invalid key must point at re-auth, not dead-end
+      expect(getResponseText(response)).toContain("Run 'postgresai auth'");
 
       readConfigSpy.mockRestore();
     });

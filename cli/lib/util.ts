@@ -23,18 +23,26 @@ function isHtmlContent(text: string): boolean {
 }
 
 /**
+ * Remediation hint appended to 401 errors so both humans and AI agents
+ * (MCP tool callers) know how to recover from an invalid/stale API key.
+ */
+const AUTH_REMEDIATION_HINT = "Run 'postgresai auth' to (re)authenticate, or set/update PGAI_API_KEY.";
+
+/**
  * Format an HTTP error response into a clean, developer-friendly message.
  * Handles HTML error pages (e.g., from Cloudflare) by showing just the status code and message.
+ * For 401 responses, appends a remediation hint pointing at `postgresai auth`.
  */
 export function formatHttpError(operation: string, status: number, responseBody?: string): string {
   const statusMessage = HTTP_STATUS_MESSAGES[status] || "Request failed";
   let errMsg = `${operation}: HTTP ${status} - ${statusMessage}`;
+  const remediation = status === 401 ? `\n${AUTH_REMEDIATION_HINT}` : "";
 
   if (responseBody) {
     // If it's HTML (like Cloudflare error pages), don't dump the raw HTML
     if (isHtmlContent(responseBody)) {
       // Just use the status message, don't append HTML
-      return errMsg;
+      return errMsg + remediation;
     }
 
     // Try to parse as JSON for structured error info
@@ -56,7 +64,7 @@ export function formatHttpError(operation: string, status: number, responseBody?
     }
   }
 
-  return errMsg;
+  return errMsg + remediation;
 }
 
 export function maskSecret(secret: string): string {
@@ -124,4 +132,3 @@ export function resolveBaseUrls(
     storageBaseUrl: normalizeBaseUrl(storageCandidate),
   };
 }
-
