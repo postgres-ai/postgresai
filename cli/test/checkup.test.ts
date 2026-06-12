@@ -403,7 +403,11 @@ describe("Report generators with mock client", () => {
     expect(pg16MetricSql).toContain("sum(coalesce(extends, 0) * op_bytes)");
     expect(pg18MetricSql).toContain("sum(coalesce(read_bytes, 0))");
     expect(pg18MetricSql).toContain("sum(coalesce(extend_bytes, 0))");
-    expect(pg18MetricSql).toContain("sum(coalesce(writebacks, 0) * coalesce(op_bytes, 0))");
+    // PG18 removed op_bytes entirely; writeback bytes cannot be derived, so the SQL emits a constant 0.
+    expect(pg18MetricSql).toContain("0::int8 as writeback_bytes_mb");
+    // Regression guard: any op_bytes reference in the PG18 branch makes the whole query
+    // fail with `column "op_bytes" does not exist`, degrading all of I001.
+    expect(pg18MetricSql).not.toContain("op_bytes");
   });
 
   test("generateI001 returns unavailable on PostgreSQL 16 when ioStats are empty", async () => {

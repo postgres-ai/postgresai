@@ -257,7 +257,7 @@ export interface BackendIOStats {
   write_bytes_mb: number;
   write_time_ms: number;
   writebacks: number;
-  /** Writeback MiB. The historical `_mb` suffix is retained for schema compatibility. */
+  /** Writeback MiB. Always 0 on PG18+ (op_bytes removed, no writeback byte counts exposed). The historical `_mb` suffix is retained for schema compatibility. */
   writeback_bytes_mb: number;
   writeback_time_ms: number;
   fsyncs: number;
@@ -361,11 +361,11 @@ function formatSettingPrettyValue(
   if (settingNormalized === null || unitNormalized === null) {
     return rawValue;
   }
-  
+
   if (unitNormalized === "bytes") {
     return formatBytes(settingNormalized);
   }
-  
+
   if (unitNormalized === "seconds") {
     // Format time values with appropriate units based on magnitude:
     // - Sub-second values (< 1s): show in milliseconds for precision
@@ -380,7 +380,7 @@ function formatSettingPrettyValue(
       return `${(settingNormalized / SECONDS_PER_MINUTE).toFixed(1)} min`;
     }
   }
-  
+
   return rawValue;
 }
 
@@ -436,7 +436,7 @@ export async function getSettings(client: Client, pgMajorVersion: number = 16): 
     const vartype = row.tag_vartype || "";
     const settingNormalized = row.setting_normalized !== null ? parseFloat(row.setting_normalized) : null;
     const unitNormalized = row.unit_normalized || null;
-    
+
     settings[name] = {
       setting: settingValue,
       unit,
@@ -468,7 +468,7 @@ export async function getAlteredSettings(client: Client, pgMajorVersion: number 
       const category = row.tag_category || "";
       const settingNormalized = row.setting_normalized !== null ? parseFloat(row.setting_normalized) : null;
       const unitNormalized = row.unit_normalized || null;
-      
+
       settings[name] = {
         value: settingValue,
         unit,
@@ -737,22 +737,22 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
   const sql = getMetricSql(METRIC_NAMES.statsReset, pgMajorVersion);
   const result = await client.query(sql);
   const row = result.rows[0] || {};
-  
+
   // The stats_reset metric returns stats_reset_epoch and seconds_since_reset
   // We need to calculate additional fields
   const statsResetEpoch = row.stats_reset_epoch ? parseFloat(row.stats_reset_epoch) : null;
   const secondsSinceReset = row.seconds_since_reset ? parseInt(row.seconds_since_reset, 10) : null;
-  
+
   // Calculate stats_reset_time from epoch
-  const statsResetTime = statsResetEpoch 
+  const statsResetTime = statsResetEpoch
     ? new Date(statsResetEpoch * 1000).toISOString()
     : null;
-  
+
   // Calculate days since reset
   const daysSinceReset = secondsSinceReset !== null
     ? Math.floor(secondsSinceReset / SECONDS_PER_DAY)
     : null;
-  
+
   // Get postmaster startup time separately (simple inline SQL)
   // This is supplementary data - errors are captured in output, not propagated
   let postmasterStartupEpoch: number | null = null;
@@ -765,8 +765,8 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
         pg_postmaster_start_time()::text as postmaster_startup_time
     `);
     if (pmResult.rows.length > 0) {
-      postmasterStartupEpoch = pmResult.rows[0].postmaster_startup_epoch 
-        ? parseFloat(pmResult.rows[0].postmaster_startup_epoch) 
+      postmasterStartupEpoch = pmResult.rows[0].postmaster_startup_epoch
+        ? parseFloat(pmResult.rows[0].postmaster_startup_epoch)
         : null;
       postmasterStartupTime = pmResult.rows[0].postmaster_startup_time || null;
     }
@@ -775,7 +775,7 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
     postmasterStartupError = `Failed to query postmaster start time: ${errorMsg}`;
     console.error(`[getStatsReset] Warning: ${postmasterStartupError}`);
   }
-  
+
   const statsResult: StatsReset = {
     stats_reset_epoch: statsResetEpoch,
     stats_reset_time: statsResetTime,
@@ -783,12 +783,12 @@ export async function getStatsReset(client: Client, pgMajorVersion: number = 16)
     postmaster_startup_epoch: postmasterStartupEpoch,
     postmaster_startup_time: postmasterStartupTime,
   };
-  
+
   // Only include error field if there was an error (keeps output clean)
   if (postmasterStartupError) {
     statsResult.postmaster_startup_error = postmasterStartupError;
   }
-  
+
   return statsResult;
 }
 
@@ -800,7 +800,7 @@ export async function getCurrentDatabaseInfo(client: Client, pgMajorVersion: num
   const sql = getMetricSql(METRIC_NAMES.dbSize, pgMajorVersion);
   const result = await client.query(sql);
   const row = result.rows[0] || {};
-  
+
   // db_size metric returns tag_datname and size_b
   return {
     datname: row.tag_datname || "postgres",
@@ -831,7 +831,7 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
     const transformed = transformMetricRow(row);
     const indexSizeBytes = parseInt(String(transformed.index_size_bytes || 0), 10);
     const tableSizeBytes = parseInt(String(transformed.table_size_bytes || 0), 10);
-    
+
     // Parse redundant_to JSON array (indexes that make this one redundant)
     let redundantTo: RedundantToIndex[] = [];
     let parseError: string | undefined;
@@ -857,7 +857,7 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
       parseError = `Failed to parse redundant_to_json: ${errorMsg}`;
       console.error(`[H004] Warning: ${parseError} for index "${indexName}"`);
     }
-    
+
     const result: RedundantIndex = {
       schema_name: String(transformed.schema_name || ""),
       table_name: String(transformed.table_name || ""),
@@ -874,12 +874,12 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
       table_size_pretty: formatBytes(tableSizeBytes),
       redundant_to: redundantTo,
     };
-    
+
     // Only include parse error field if there was an error (keeps output clean)
     if (parseError) {
       result.redundant_to_parse_error = parseError;
     }
-    
+
     return result;
   });
 }
