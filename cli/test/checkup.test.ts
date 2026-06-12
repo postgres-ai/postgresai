@@ -42,6 +42,24 @@ function runCli(args: string[], env: Record<string, string> = {}) {
   };
 }
 
+// Async variant for tests that need an in-process fake API (Bun.serve):
+// spawnSync would block the event loop and the fake server could never respond.
+async function runCliAsync(args: string[], env: Record<string, string> = {}) {
+  const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+  const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
+  const proc = Bun.spawn([bunBin, cliPath, ...args], {
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [status, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { status, stdout, stderr };
+}
+
 // Unit tests for parseVersionNum
 describe("parseVersionNum", () => {
   test("parses PG 16.3 version number", () => {
@@ -1636,6 +1654,113 @@ describe("CLI tests", () => {
   });
 });
 
+// CLI-level tests for the checkup auth pre-flight: missing/invalid credentials
+// must surface BEFORE checks run (previously the upload at the end of the run
+// was the first authenticated call, wasting minutes of work on a 401).
+describe("checkup auth pre-flight (CLI)", () => {
+  // Dead Postgres port: if the pre-flight correctly stops the run, the CLI
+  // never attempts this connection; if the run continues, the connection
+  // failure mentions this address.
+  const DEAD_DB = "postgresql://test:test@127.0.0.1:2/test";
+
+  test("no API key: prominent notice, run continues locally", () => {
+    const env = {
+      XDG_CONFIG_HOME: `/tmp/postgresai-test-preflight-nokey-${process.pid}`,
+      PGAI_API_KEY: "",
+    };
+    const r = runCli(["checkup", DEAD_DB], env);
+    expect(r.stderr).toMatch(/results will NOT be uploaded/i);
+    expect(r.stderr).toMatch(/auth login/);
+    expect(r.stderr).toMatch(/--no-upload/);
+    // Falls back to local-only mode instead of failing fast
+    expect(r.stderr).not.toMatch(/API key is required/i);
+    // Run continued to the database connection stage
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/127\.0\.0\.1:2|ECONNREFUSED|connect/i);
+  });
+
+  test("--no-upload: no notice, pre-flight skipped entirely", () => {
+    const env = {
+      XDG_CONFIG_HOME: `/tmp/postgresai-test-preflight-noupload-${process.pid}`,
+      PGAI_API_KEY: "",
+    };
+    const r = runCli(["checkup", DEAD_DB, "--no-upload"], env);
+    expect(r.stderr).not.toMatch(/results will NOT be uploaded/i);
+    expect(r.stderr).not.toMatch(/could not verify API key/i);
+    expect(r.stderr).not.toMatch(/API key is required/i);
+  });
+
+  test("invalid API key (HTTP 401): fails fast before running checks", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(JSON.stringify({ message: "Invalid token" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    try {
+      const env = {
+        XDG_CONFIG_HOME: `/tmp/postgresai-test-preflight-badkey-${process.pid}`,
+        PGAI_API_KEY: "bad-token",
+        PGAI_API_BASE_URL: `http://127.0.0.1:${server.port}`,
+      };
+      const r = await runCliAsync(["checkup", DEAD_DB, "--project", "preflight-test"], env);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/rejected by the PostgresAI API \(HTTP 401\)/);
+      expect(r.stderr).toMatch(/auth login/);
+      expect(r.stderr).toMatch(/--no-upload/);
+      // Stopped BEFORE connecting to the database / running checks
+      expect(r.stderr).not.toMatch(/127\.0\.0\.1:2|ECONNREFUSED/);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("--no-upload skips pre-flight even when an invalid key is configured", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(JSON.stringify({ message: "Invalid token" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    try {
+      const env = {
+        XDG_CONFIG_HOME: `/tmp/postgresai-test-preflight-badkey-noupload-${process.pid}`,
+        PGAI_API_KEY: "bad-token",
+        PGAI_API_BASE_URL: `http://127.0.0.1:${server.port}`,
+      };
+      const r = await runCliAsync(["checkup", DEAD_DB, "--no-upload"], env);
+      expect(r.stderr).not.toMatch(/rejected by the PostgresAI API/);
+      expect(r.stderr).not.toMatch(/could not verify API key/i);
+      // Fails later at the database connection stage instead
+      expect(r.status).not.toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("transient pre-flight failure (network error): warns and continues", () => {
+    const env = {
+      XDG_CONFIG_HOME: `/tmp/postgresai-test-preflight-netfail-${process.pid}`,
+      PGAI_API_KEY: "some-token",
+      PGAI_API_BASE_URL: "http://127.0.0.1:1", // connect refused — transient, not a 401/403
+    };
+    const r = runCli(["checkup", DEAD_DB, "--project", "preflight-test"], env);
+    expect(r.stderr).toMatch(/Warning: could not verify API key/i);
+    expect(r.stderr).not.toMatch(/rejected by the PostgresAI API/);
+    // Run continued to the database connection stage
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/127\.0\.0\.1:2|ECONNREFUSED|connect/i);
+  });
+});
+
 // Tests for checkup-api module
 describe("checkup-api", () => {
   test("formatRpcErrorForDisplay formats details/hint nicely", () => {
@@ -1879,6 +2004,102 @@ describe("checkup-api", () => {
       } finally {
         if (saved === undefined) delete process.env.CHECKUP_ALLOW_HTTP;
         else process.env.CHECKUP_ALLOW_HTTP = saved;
+      }
+    });
+  });
+
+  // Auth pre-flight: verifyApiKey checks the key with a cheap authenticated
+  // GET before checkup runs expensive checks. Only definitive 401/403 is
+  // "invalid"; anything transient must come back "unknown" (warn + continue).
+  describe("verifyApiKey (auth pre-flight)", () => {
+    function serveStatus(status: number, body = "[]") {
+      return Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch() {
+          return new Response(body, { status, headers: { "Content-Type": "application/json" } });
+        },
+      });
+    }
+
+    test("returns valid on HTTP 200", async () => {
+      const server = serveStatus(200);
+      try {
+        const r = await api.verifyApiKey({ apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}` });
+        expect(r.status).toBe("valid");
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("returns invalid on HTTP 401", async () => {
+      const server = serveStatus(401, JSON.stringify({ message: "Invalid token" }));
+      try {
+        const r = await api.verifyApiKey({ apiKey: "bad", apiBaseUrl: `http://127.0.0.1:${server.port}` });
+        expect(r.status).toBe("invalid");
+        expect((r as { statusCode: number }).statusCode).toBe(401);
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("returns invalid on HTTP 403", async () => {
+      const server = serveStatus(403);
+      try {
+        const r = await api.verifyApiKey({ apiKey: "bad", apiBaseUrl: `http://127.0.0.1:${server.port}` });
+        expect(r.status).toBe("invalid");
+        expect((r as { statusCode: number }).statusCode).toBe(403);
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("returns unknown on HTTP 500 (not a definitive rejection)", async () => {
+      const server = serveStatus(500);
+      try {
+        const r = await api.verifyApiKey({ apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}` });
+        expect(r.status).toBe("unknown");
+        expect((r as { detail: string }).detail).toMatch(/HTTP 500/);
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("returns unknown on connection refused", async () => {
+      const r = await api.verifyApiKey({ apiKey: "k", apiBaseUrl: "http://127.0.0.1:1" }); // port 1 — connect refused
+      expect(r.status).toBe("unknown");
+    });
+
+    test("returns unknown on timeout", async () => {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch() {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          return new Response("[]");
+        },
+      });
+      try {
+        const r = await api.verifyApiKey({
+          apiKey: "k",
+          apiBaseUrl: `http://127.0.0.1:${server.port}`,
+          timeoutMs: 100,
+        });
+        expect(r.status).toBe("unknown");
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("does not send the key over plaintext HTTP to non-loopback hosts", async () => {
+      const saved = process.env.CHECKUP_ALLOW_HTTP;
+      delete process.env.CHECKUP_ALLOW_HTTP;
+      try {
+        const r = await api.verifyApiKey({ apiKey: "k", apiBaseUrl: "http://example.com/api" });
+        expect(r.status).toBe("unknown");
+        expect((r as { detail: string }).detail).toMatch(/plaintext HTTP/);
+      } finally {
+        if (saved !== undefined) process.env.CHECKUP_ALLOW_HTTP = saved;
       }
     });
   });

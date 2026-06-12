@@ -24,7 +24,7 @@ import { createInterface } from "readline";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
-import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry } from "../lib/checkup-api";
+import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
 import {
   type Instance,
@@ -334,7 +334,13 @@ function prepareUploadConfig(
       console.error("Tip: run 'postgresai auth' or pass --api-key / set PGAI_API_KEY");
       return null; // Signal to exit
     }
-    return undefined; // Skip upload silently
+    // No credentials and upload not explicitly requested: fall back to
+    // local-only mode, but say so prominently — skipping the upload silently
+    // hides the fact that results never reach the Console.
+    console.error("Notice: no API key configured — results will NOT be uploaded to PostgresAI.");
+    console.error("        To upload: run 'postgresai auth login' or pass --api-key / set PGAI_API_KEY.");
+    console.error("        To run locally without this notice, pass --no-upload.");
+    return undefined; // Skip upload, run checks locally
   }
 
   const cfg = config.readConfig();
@@ -2075,6 +2081,30 @@ program
     const uploadCfg = uploadResult?.config;
     const projectWasGenerated = uploadResult?.projectWasGenerated ?? false;
     shouldUpload = !!uploadCfg;
+
+    // Preflight: validate the configured API key with a cheap authenticated
+    // call BEFORE connecting / running checks, so an invalid or expired token
+    // fails in seconds instead of after minutes of wasted work (previously the
+    // upload at the very end of the run was the first authenticated call).
+    // Only a definitive 401/403 stops the run; a transient pre-flight failure
+    // (network error, timeout, 5xx) warns and continues — the upload may still
+    // succeed.
+    if (uploadCfg) {
+      const verification = await verifyApiKey({
+        apiKey: uploadCfg.apiKey,
+        apiBaseUrl: uploadCfg.apiBaseUrl,
+      });
+      if (verification.status === "invalid") {
+        console.error(`Error: the configured API key was rejected by the PostgresAI API (HTTP ${verification.statusCode})`);
+        console.error("Tip: run 'postgresai auth login' to re-authenticate, or pass a valid --api-key / set PGAI_API_KEY");
+        console.error("Tip: pass --no-upload to run checks locally without uploading");
+        process.exitCode = 1;
+        return;
+      }
+      if (verification.status === "unknown") {
+        console.error(`Warning: could not verify API key before running checks (${verification.detail}); continuing — upload will still be attempted`);
+      }
+    }
 
     // Connect and run checks
     const adminConn = resolveAdminConnection({

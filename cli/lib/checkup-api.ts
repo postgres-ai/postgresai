@@ -321,6 +321,81 @@ async function postRpc<T>(params: {
 }
 
 /**
+ * Result of an API key pre-flight verification.
+ * - "valid": the key was accepted by the API
+ * - "invalid": the API definitively rejected the key (HTTP 401/403)
+ * - "unknown": verification could not be completed (network error, timeout,
+ *   unexpected status) — callers should warn and continue, not block the run
+ */
+export type ApiKeyVerification =
+  | { status: "valid" }
+  | { status: "invalid"; statusCode: number }
+  | { status: "unknown"; detail: string };
+
+// Timeout for the auth pre-flight (shorter than regular RPC timeout: this is
+// an optional fast check and must not noticeably delay the run when the API
+// is slow or unreachable).
+const VERIFY_API_KEY_TIMEOUT_MS = 10_000;
+
+/**
+ * Verify an API key with a cheap, side-effect-free authenticated call
+ * (GET /checkup_reports?limit=1 — the same endpoint the `reports` command
+ * uses) so expensive work can fail fast on bad credentials.
+ *
+ * Only a definitive HTTP 401/403 is reported as "invalid". Network errors,
+ * timeouts, and unexpected statuses are reported as "unknown" so a transient
+ * pre-flight failure never blocks a run that might otherwise succeed.
+ */
+export async function verifyApiKey(params: {
+  apiKey: string;
+  apiBaseUrl: string;
+  timeoutMs?: number;
+}): Promise<ApiKeyVerification> {
+  const { apiKey, apiBaseUrl, timeoutMs = VERIFY_API_KEY_TIMEOUT_MS } = params;
+  const base = normalizeBaseUrl(apiBaseUrl);
+  const url = new URL(`${base}/checkup_reports`);
+  url.searchParams.set("limit", "1");
+
+  // Same plaintext-HTTP guard as postRpc: never send the API key over plain
+  // HTTP to a non-loopback host. Report "unknown" rather than aborting the
+  // run — the upload path raises the definitive, actionable error.
+  if (url.protocol === "http:") {
+    const hostname = url.hostname.replace(/^\[|\]$/g, "");
+    const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(hostname);
+    if (!isLoopback && process.env.CHECKUP_ALLOW_HTTP !== "1") {
+      return {
+        status: "unknown",
+        detail: `refusing to send API key over plaintext HTTP to '${url.host}'`,
+      };
+    }
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { "access-token": apiKey },
+      signal: controller.signal,
+    });
+    // Drain the body so the connection is released cleanly.
+    await response.text().catch(() => "");
+    if (response.status === 401 || response.status === 403) {
+      return { status: "invalid", statusCode: response.status };
+    }
+    if (response.ok) {
+      return { status: "valid" };
+    }
+    return { status: "unknown", detail: `HTTP ${response.status}` };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { status: "unknown", detail: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Create a new checkup report in the PostgresAI backend.
  * This creates the parent report container; individual check results
  * are uploaded separately via uploadCheckupReportJson().
