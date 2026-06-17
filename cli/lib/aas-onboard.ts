@@ -75,8 +75,13 @@ async function grafanaApi(
 
 /**
  * Find-or-create the pgai-aas-collect Viewer service account on the local
- * Grafana, prune any prior tokens (so they don't accumulate across re-installs),
- * and mint a fresh glsa_ token. Returns the token or null on any failure.
+ * Grafana and mint a fresh glsa_ token. Returns the token or null on any failure.
+ *
+ * We deliberately do NOT prune prior tokens: deleting them here is racy — a
+ * concurrent or repeated install could delete the token the platform currently
+ * holds (stored encrypted), silently 401-ing collection until the next register.
+ * The unique mint name already avoids 409s, and orphaned Viewer tokens are
+ * benign; token hygiene is left to a separate, non-racy mechanism.
  */
 export async function mintAasServiceAccountToken(
   adminPassword: string,
@@ -104,18 +109,7 @@ export async function mintAasServiceAccountToken(
       saId = cj.id;
     }
 
-    // Prune existing tokens so live Viewer tokens don't pile up across re-runs.
-    const toks = await grafanaApi("GET", `/api/serviceaccounts/${saId}/tokens`, adminPassword);
-    if (toks.ok) {
-      const list = (await toks.json().catch(() => [])) as Array<{ id?: unknown }>;
-      for (const t of list) {
-        if (typeof t.id === "number") {
-          await grafanaApi("DELETE", `/api/serviceaccounts/${saId}/tokens/${t.id}`, adminPassword).catch(() => undefined);
-        }
-      }
-    }
-
-    // Unique token name avoids a 409 on a pre-existing name.
+    // Unique token name avoids a 409 on a pre-existing name (no prune needed).
     const mint = await grafanaApi("POST", `/api/serviceaccounts/${saId}/tokens`, adminPassword, {
       name: `aas-collect-${Date.now()}`,
       role: "Viewer",
@@ -132,7 +126,13 @@ export async function mintAasServiceAccountToken(
   }
 }
 
-/** Resolve the single Prometheus datasource's numeric id on the local Grafana. */
+/**
+ * Resolve the single Prometheus-typed datasource's numeric id on the local
+ * Grafana. The monitoring stack's VictoriaMetrics datasource is type
+ * "prometheus" (VM speaks PromQL), and the stack registers exactly one such
+ * datasource — the same one the collector queries. >1 or 0 → null (skip),
+ * matching v1.aas_onboard's discovery contract.
+ */
 export async function resolveDatasourceId(adminPassword: string, debug = false): Promise<number | null> {
   try {
     const res = await grafanaApi("GET", "/api/datasources", adminPassword);
@@ -203,8 +203,10 @@ export async function registerAasCollection(
       }),
     });
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      if (debug) console.error(`Debug: AAS register failed: HTTP ${res.status} ${body}`);
+      // Log status only — never the response body: a platform could echo the
+      // request payload (incl. sa_token) in an error body, which must not reach
+      // the user's debug log.
+      if (debug) console.error(`Debug: AAS register failed: HTTP ${res.status}`);
       return { ok: false, reason: `platform returned HTTP ${res.status}` };
     }
     return { ok: true };
