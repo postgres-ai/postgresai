@@ -8,6 +8,8 @@
  * Endpoint: POST /v1/projects/{ref}/database/query
  */
 
+import { PG_ERROR_FIELDS } from "./init";
+
 const SUPABASE_API_BASE = "https://api.supabase.com";
 
 export type SupabaseConfig = {
@@ -531,28 +533,11 @@ export async function applyInitPlanViaSupabase(params: {
         `Failed at step "${step.name}": ${msg}`
       ) as PgCompatibleError;
 
-      // Preserve PostgreSQL error fields for consistent error handling
-      const pgErrorFields = [
-        "code",
-        "detail",
-        "hint",
-        "position",
-        "internalPosition",
-        "internalQuery",
-        "where",
-        "schema",
-        "table",
-        "column",
-        "dataType",
-        "constraint",
-        "file",
-        "line",
-        "routine",
-        "httpStatus",
-        "supabaseErrorCode",
-      ] as const;
-
-      for (const field of pgErrorFields) {
+      // Preserve PostgreSQL error fields for consistent error handling.
+      // Use the shared PG_ERROR_FIELDS list plus Supabase-specific fields.
+      const supabaseExtraFields = ["httpStatus", "supabaseErrorCode"] as const;
+      const allFields = [...PG_ERROR_FIELDS, ...supabaseExtraFields] as const;
+      for (const field of allFields) {
         if (errAny[field] !== undefined) {
           (wrapped as unknown as Record<string, unknown>)[field] = errAny[field];
         }

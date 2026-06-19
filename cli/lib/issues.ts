@@ -1,4 +1,4 @@
-import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
+import { buildApiHeaders, debugLogRequest, debugLogResponse, formatHttpError, normalizeBaseUrl } from "./util";
 
 /**
  * Issue status constants.
@@ -10,6 +10,12 @@ export const IssueStatus = {
   /** Issue is closed/resolved */
   CLOSED: 1,
 } as const;
+
+/**
+ * UUID v4-ish regex used to validate IDs passed to PostgREST queries (defense
+ * against PostgREST filter injection by limiting allowed characters).
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Represents a PostgreSQL configuration parameter change recommendation.
@@ -121,30 +127,16 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
     url.searchParams.set("status", "eq.1");
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), {
     method: "GET",
     headers,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -179,30 +171,16 @@ export async function fetchIssueComments(params: FetchIssueCommentsParams): Prom
   const base = normalizeBaseUrl(apiBaseUrl);
   const url = new URL(`${base}/issue_comments?issue_id=eq.${encodeURIComponent(issueId)}`);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), {
     method: "GET",
     headers,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -239,30 +217,16 @@ export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail 
   url.searchParams.set("id", `eq.${issueId}`);
   url.searchParams.set("limit", "1");
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), {
     method: "GET",
     headers,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -360,21 +324,9 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -382,10 +334,7 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -433,21 +382,9 @@ export async function createIssueComment(params: CreateIssueCommentParams): Prom
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -455,10 +392,7 @@ export async function createIssueComment(params: CreateIssueCommentParams): Prom
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -541,21 +475,9 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -563,10 +485,7 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -630,21 +549,9 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
   };
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -652,10 +559,7 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -706,14 +610,12 @@ export async function fetchActionItem(params: FetchActionItemParams): Promise<Is
   if (!apiKey) {
     throw new Error("API key is required");
   }
-  // UUID format pattern for validation
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   // Normalize to array, filter out null/undefined, trim, and validate UUID format
   const rawIds = Array.isArray(actionItemIds) ? actionItemIds : [actionItemIds];
   const validIds = rawIds
     .filter((id): id is string => id != null && typeof id === "string")
     .map(id => id.trim())
-    .filter(id => id.length > 0 && uuidPattern.test(id));
+    .filter(id => id.length > 0 && UUID_PATTERN.test(id));
   if (validIds.length === 0) {
     throw new Error("actionItemId is required and must be a valid UUID");
   }
@@ -727,30 +629,16 @@ export async function fetchActionItem(params: FetchActionItemParams): Promise<Is
     url.searchParams.set("id", `in.(${validIds.join(",")})`)
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), {
     method: "GET",
     headers,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -796,8 +684,7 @@ export async function fetchActionItems(params: FetchActionItemsParams): Promise<
     throw new Error("issueId is required");
   }
   // Validate UUID format to prevent PostgREST injection
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(issueId.trim())) {
+  if (!UUID_PATTERN.test(issueId.trim())) {
     throw new Error("issueId must be a valid UUID");
   }
 
@@ -805,30 +692,16 @@ export async function fetchActionItems(params: FetchActionItemsParams): Promise<
   const url = new URL(`${base}/issue_action_items`);
   url.searchParams.set("issue_id", `eq.${issueId.trim()}`);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: GET URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-  }
+  debugLogRequest(debug, { base, method: "GET", url: url.toString(), headers, apiKey });
 
   const response = await fetch(url.toString(), {
     method: "GET",
     headers,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -878,8 +751,7 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
     throw new Error("issueId is required");
   }
   // Validate UUID format
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(issueId.trim())) {
+  if (!UUID_PATTERN.test(issueId.trim())) {
     throw new Error("issueId must be a valid UUID");
   }
   if (!title) {
@@ -904,21 +776,9 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -926,10 +786,7 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   const data = await response.text();
 
@@ -984,8 +841,7 @@ export async function updateActionItem(params: UpdateActionItemParams): Promise<
     throw new Error("actionItemId is required");
   }
   // Validate UUID format
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(actionItemId.trim())) {
+  if (!UUID_PATTERN.test(actionItemId.trim())) {
     throw new Error("actionItemId must be a valid UUID");
   }
 
@@ -1026,21 +882,9 @@ export async function updateActionItem(params: UpdateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers = buildApiHeaders(apiKey);
 
-  if (debug) {
-    const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
-    console.error(`Debug: Resolved API base URL: ${base}`);
-    console.error(`Debug: POST URL: ${url.toString()}`);
-    console.error(`Debug: Auth scheme: access-token`);
-    console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
-    console.error(`Debug: Request body: ${body}`);
-  }
+  debugLogRequest(debug, { base, method: "POST", url: url.toString(), headers, apiKey, body });
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -1048,10 +892,7 @@ export async function updateActionItem(params: UpdateActionItemParams): Promise<
     body,
   });
 
-  if (debug) {
-    console.error(`Debug: Response status: ${response.status}`);
-    console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
-  }
+  debugLogResponse(debug, response);
 
   if (!response.ok) {
     const data = await response.text();

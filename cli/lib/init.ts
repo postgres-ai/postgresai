@@ -27,6 +27,30 @@ const SKIP_ALTER_USER_PROVIDERS = ["supabase"];
 /** Providers where we skip search_path verification (not set via ALTER USER). */
 const SKIP_SEARCH_PATH_CHECK_PROVIDERS = ["supabase"];
 
+/**
+ * The set of node-postgres error fields we propagate when wrapping a database
+ * error in a higher-level message. Mirrors the diagnostic columns from
+ * PostgreSQL's error response so callers can produce better hints. Exported so
+ * other modules (e.g., lib/supabase.ts) share one source of truth.
+ */
+export const PG_ERROR_FIELDS = [
+  "code",
+  "detail",
+  "hint",
+  "position",
+  "internalPosition",
+  "internalQuery",
+  "where",
+  "schema",
+  "table",
+  "column",
+  "dataType",
+  "constraint",
+  "file",
+  "line",
+  "routine",
+] as const;
+
 /** Check if a provider is known and return a warning message if not. */
 export function validateProvider(provider: string | undefined): string | null {
   if (!provider || KNOWN_PROVIDERS.includes(provider as any)) return null;
@@ -587,6 +611,30 @@ end $$;`;
   return { monitoringUser, database, steps };
 }
 
+/**
+ * Run one InitStep inside an explicit BEGIN/COMMIT block. On failure issues a
+ * ROLLBACK (errors from rollback are swallowed so they don't mask the original
+ * failure) and re-throws.
+ *
+ * Shared by both applyInitPlan and applyUninitPlan — previously each had its
+ * own identical local helper.
+ */
+async function executeStepInTransaction(client: PgClient, step: InitStep): Promise<void> {
+  await client.query("begin;");
+  try {
+    await client.query(step.sql, step.params as any);
+    await client.query("commit;");
+  } catch (e) {
+    // Rollback errors should never mask the original failure.
+    try {
+      await client.query("rollback;");
+    } catch {
+      // ignore
+    }
+    throw e;
+  }
+}
+
 export async function applyInitPlan(params: {
   client: PgClient;
   plan: InitPlan;
@@ -595,22 +643,7 @@ export async function applyInitPlan(params: {
   const applied: string[] = [];
   const skippedOptional: string[] = [];
 
-  // Helper to wrap a step execution in begin/commit
-  const executeStep = async (step: InitStep): Promise<void> => {
-    await params.client.query("begin;");
-    try {
-      await params.client.query(step.sql, step.params as any);
-      await params.client.query("commit;");
-    } catch (e) {
-      // Rollback errors should never mask the original failure.
-      try {
-        await params.client.query("rollback;");
-      } catch {
-        // ignore
-      }
-      throw e;
-    }
-  };
+  const executeStep = (step: InitStep): Promise<void> => executeStepInTransaction(params.client, step);
 
   // Apply non-optional steps, each in its own transaction
   for (const step of params.plan.steps.filter((s) => !s.optional)) {
@@ -622,25 +655,8 @@ export async function applyInitPlan(params: {
       const errAny = e as any;
       const wrapped: any = new Error(`Failed at step "${step.name}": ${msg}`);
       // Preserve useful Postgres error fields so callers can provide better hints / diagnostics.
-      const pgErrorFields = [
-        "code",
-        "detail",
-        "hint",
-        "position",
-        "internalPosition",
-        "internalQuery",
-        "where",
-        "schema",
-        "table",
-        "column",
-        "dataType",
-        "constraint",
-        "file",
-        "line",
-        "routine",
-      ] as const;
       if (errAny && typeof errAny === "object") {
-        for (const field of pgErrorFields) {
+        for (const field of PG_ERROR_FIELDS) {
           if (errAny[field] !== undefined) wrapped[field] = errAny[field];
         }
       }
@@ -764,21 +780,7 @@ export async function applyUninitPlan(params: {
   const applied: string[] = [];
   const errors: string[] = [];
 
-  // Helper to wrap a step execution in begin/commit
-  const executeStep = async (step: InitStep): Promise<void> => {
-    await params.client.query("begin;");
-    try {
-      await params.client.query(step.sql, step.params as any);
-      await params.client.query("commit;");
-    } catch (e) {
-      try {
-        await params.client.query("rollback;");
-      } catch {
-        // ignore
-      }
-      throw e;
-    }
-  };
+  const executeStep = (step: InitStep): Promise<void> => executeStepInTransaction(params.client, step);
 
   // Apply steps in order - unlike init, uninit steps are not optional
   // but we continue on errors to clean up as much as possible

@@ -74,6 +74,62 @@ export function maskSecret(secret: string): string {
   return `${secret.slice(0, Math.min(12, secret.length - 8))}${"*".repeat(Math.max(4, secret.length - 16))}${secret.slice(-4)}`;
 }
 
+/**
+ * Build the standard PostgREST-compatible request headers used across the
+ * lib/issues.ts, lib/reports.ts API call sites. Centralizes the (previously
+ * duplicated) header object so future header changes only need one edit.
+ *
+ * Caller may pass additional headers via `extra` which are merged on top.
+ */
+export function buildApiHeaders(apiKey: string, extra?: Record<string, string>): Record<string, string> {
+  return {
+    "access-token": apiKey,
+    "Prefer": "return=representation",
+    "Content-Type": "application/json",
+    "Connection": "close",
+    ...(extra || {}),
+  };
+}
+
+/**
+ * Emit standard debug logs for an outgoing API request.
+ * No-op when `debug` is falsy.
+ *
+ * Replaces the previously duplicated "Debug: Resolved API base URL / METHOD URL /
+ * Auth scheme / Request headers / Request body" blocks scattered across
+ * lib/issues.ts and lib/reports.ts.
+ */
+export function debugLogRequest(
+  debug: boolean | undefined,
+  params: {
+    base: string;
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    apiKey: string;
+    body?: string;
+  }
+): void {
+  if (!debug) return;
+  const debugHeaders: Record<string, string> = { ...params.headers, "access-token": maskSecret(params.apiKey) };
+  console.error(`Debug: Resolved API base URL: ${params.base}`);
+  console.error(`Debug: ${params.method} URL: ${params.url}`);
+  console.error(`Debug: Auth scheme: access-token`);
+  console.error(`Debug: Request headers: ${JSON.stringify(debugHeaders)}`);
+  if (params.body !== undefined) {
+    console.error(`Debug: Request body: ${params.body}`);
+  }
+}
+
+/**
+ * Emit standard debug logs for an incoming API response.
+ * No-op when `debug` is falsy.
+ */
+export function debugLogResponse(debug: boolean | undefined, response: Response): void {
+  if (!debug) return;
+  console.error(`Debug: Response status: ${response.status}`);
+  console.error(`Debug: Response headers: ${JSON.stringify(Object.fromEntries(response.headers.entries()))}`);
+}
 
 export interface RootOptsLike {
   apiBaseUrl?: string;
