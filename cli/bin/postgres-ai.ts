@@ -14,6 +14,7 @@ import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import { resolveBaseUrls } from "../lib/util";
+import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
@@ -2712,8 +2713,12 @@ mon
     "--instance-id <uuid>",
     "adopt a console-provisioned monitoring instance instead of self-registering a new one (set automatically by the provisioning flow; PGAI_INSTANCE_ID env also works)"
   )
+  .option(
+    "--vcpus <n>",
+    "source DB vCPU count used for AAS zone thresholds (set automatically by the provisioning flow; PGAI_VCPUS env also works). Omit or 0 = unknown — AAS collection stays off until a real value is set."
+  )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; yes: boolean }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; yes: boolean }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -3160,6 +3165,27 @@ mon
         } else {
           console.error(
             `⚠ Could not adopt provisioned instance ${instanceId} — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
+          );
+        }
+
+        // Best-effort: arm hands-off AAS auto-collection for this adopted
+        // instance. Mints a Grafana Viewer SA on the LOCAL Grafana, resolves
+        // the datasource id + (cluster, node_name) labels from the pgwatch
+        // config we wrote, and hands the platform a finished token via the
+        // API-token RPC (v1.monitoring_instance_aas_register). Never fatal —
+        // it can be enabled later by re-running local-install.
+        const aas = await registerAasCollection(apiKey, instanceId, {
+          grafanaPassword,
+          instancesPath,
+          vcpus: parseVcpus(opts.vcpus ?? process.env.PGAI_VCPUS),
+          apiBaseUrl: globalOpts.apiBaseUrl,
+          debug: !!process.env.DEBUG,
+        });
+        if (aas.ok) {
+          console.log("✓ AAS auto-collection registered\n");
+        } else {
+          console.error(
+            `⚠ AAS auto-collection not registered (${aas.reason}); it can be enabled later by re-running 'postgresai mon local-install'\n`
           );
         }
       } else {
