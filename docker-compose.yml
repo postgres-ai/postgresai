@@ -286,6 +286,15 @@ services:
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
       - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+      # Upload checkup reports to the SAME platform that provisioned the
+      # instance. The console/SI passes the platform URL to the CLI as
+      # PGAI_API_BASE_URL (postgres-ai/postgres_ai-ansible) and it is in the
+      # environment when the CLI runs `docker compose up`; reuse it so reports
+      # upload to that backend instead of the production default. Empty
+      # (standalone CLI / unset) → the wrapper's REPORTER_API_URL default
+      # (https://postgres.ai/api/general) is used, so production is unchanged.
+      # See postgres-ai/platform-all#338.
+      - REPORTER_API_URL=${PGAI_API_BASE_URL:-}
       # Optional overrides:
       # - REPORTER_INITIAL_DELAY_SECONDS=1800
       # - REPORTER_INTERVAL_SECONDS=86400
