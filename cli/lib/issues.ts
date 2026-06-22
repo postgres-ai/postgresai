@@ -670,10 +670,6 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
   }
 }
 
-// ============================================================================
-// Action Items API Functions
-// ============================================================================
-
 export interface FetchActionItemParams {
   apiKey: string;
   apiBaseUrl: string;
