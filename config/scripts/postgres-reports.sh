@@ -11,7 +11,8 @@ use_current_time="${USE_CURRENT_TIME:-false}"
 
 pgwatch_config_path="${REPORTER_PGWATCH_CONFIG_PATH:-/app/.pgwatch-config}"
 api_url="${REPORTER_API_URL:-https://postgres.ai/api/general}"
-# Project name: env var takes priority, then config file, then default
+# Project name: env var takes priority, then config file. No default — uploads
+# require a project name (the hardcoded "postgres-ai-monitoring" default was removed).
 project_name="${REPORTER_PROJECT_NAME:-}"
 
 sleep_seconds() {
@@ -60,12 +61,11 @@ read_project_name() {
   return 1
 }
 
-# Resolve project name: env var > config file > default
+# Resolve project name: env var > config file. No default — uploads require a
+# project name (the hardcoded "postgres-ai-monitoring" default was removed).
 if [[ -z "${project_name}" ]]; then
   if config_project_name="$(read_project_name)"; then
     project_name="${config_project_name}"
-  else
-    project_name="postgres-ai-monitoring"
   fi
 fi
 
@@ -82,14 +82,20 @@ while true; do
   fi
 
   if api_key="$(read_api_key)"; then
-    echo "postgres-reports: generating reports (upload enabled) -> ${output_path}"
-    python -m reporter.postgres_reports \
-      --prometheus-url "${prometheus_url}" \
-      --output "${output_path}" \
-      --api-url "${api_url}" \
-      --project-name "${project_name}" \
-      --token "${api_key}" \
-      ${use_current_time_arg}
+    if [[ -z "${project_name}" ]]; then
+      # Upload requires a project name; there is no default. Skip this cycle's
+      # upload rather than send an empty --project-name.
+      echo "postgres-reports: ERROR project name is required for upload — set REPORTER_PROJECT_NAME or project_name in .pgwatch-config; skipping upload this cycle" >&2
+    else
+      echo "postgres-reports: generating reports (upload enabled) -> ${output_path}"
+      python -m reporter.postgres_reports \
+        --prometheus-url "${prometheus_url}" \
+        --output "${output_path}" \
+        --api-url "${api_url}" \
+        --project-name "${project_name}" \
+        --token "${api_key}" \
+        ${use_current_time_arg}
+    fi
   else
     echo "postgres-reports: generating reports (no upload) -> ${output_path}"
     python -m reporter.postgres_reports \

@@ -109,6 +109,20 @@ spec:
                 - |
                   set -eu
                   if [ -n "${API_KEY:-}" ]; then
+                    # Uploads require a project name; there is no default (the
+                    # hardcoded "postgres-ai-monitoring" default was removed).
+                    # Enforce it at runtime, not via Helm `required`: whether
+                    # uploads happen is decided here at runtime by the presence
+                    # of API_KEY (an optional secret key), so Helm cannot know it
+                    # at render time. A render-time `required` would also break
+                    # `helm template`/`lint` and the no-upload path. Fail loudly.
+                    # REPORTER_PROJECT comes from the env (see below), never
+                    # inlined into this script, so the value can't break out of
+                    # the shell command.
+                    if [ -z "${REPORTER_PROJECT:-}" ]; then
+                      echo "reporter.project is required for uploads (the 'postgres-ai-monitoring' default was removed); set reporter.project" >&2
+                      exit 1
+                    fi
                     exec python postgres_reports.py \
                       --prometheus-url "$PROMETHEUS_URL" \
                       --postgres-sink-url "postgresql://{{ $root.Values.sinkPostgres.user }}:${POSTGRES_PASSWORD}@{{ include "postgres-ai-monitoring.fullname" $root }}-sink-postgres:5432/{{ $root.Values.sinkPostgres.database }}" \
@@ -116,7 +130,7 @@ spec:
                       --node-name "$NODE_NAME" \
                       --output /app/reports/report.json \
                       --api-url "{{ $root.Values.reporter.apiUrl | default "https://postgres.ai/api/general" }}" \
-                      --project "{{ $root.Values.reporter.project | default "postgres-ai-monitoring" }}" \
+                      --project "$REPORTER_PROJECT" \
                       --token "$API_KEY"
                   else
                     exec python postgres_reports.py \
@@ -137,6 +151,8 @@ spec:
                       key: postgres-password
                 - name: CLUSTER
                   value: {{ $clusterName | default "k8s-cluster" | quote }}
+                - name: REPORTER_PROJECT
+                  value: {{ $root.Values.reporter.project | quote }}
                 - name: NODE_NAME
 {{- if $nodeName }}
                   value: {{ $nodeName | quote }}
@@ -153,7 +169,7 @@ spec:
                       key: pgai-api-key
                       optional: true
                 {{- end }}
-                
+
                 {{- if $root.Values.victoriaMetrics.auth.enabled }}
                 - name: VM_AUTH_USERNAME
                   value: {{ $root.Values.victoriaMetrics.auth.username | quote }}

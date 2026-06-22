@@ -19,6 +19,7 @@ import {
 import {
   registerMonitoringInstance,
   resolveAdoptedProject,
+  planMonitoringRegistration,
 } from "../bin/postgres-ai";
 
 /**
@@ -241,18 +242,35 @@ describe("registerMonitoringInstance", () => {
   });
 
   // Issue platform-all#311: console-provisioned installs pass instance_id so
-  // the platform adopts the provisioned instance instead of self-registering
-  // a duplicate under an auto-created "postgres-ai-monitoring" project.
+  // the platform adopts the provisioned instance and returns its real project
+  // — the CLI sends NO project_name on the adopt path (the hardcoded
+  // "postgres-ai-monitoring" default was removed).
   test("includes instance_id in body when adopting a provisioned instance", async () => {
     const instanceId = "019eb300-3f2a-7a75-b54d-4f10572b25b8";
 
-    await registerMonitoringInstance("key", "postgres-ai-monitoring", opts({ instanceId }));
+    await registerMonitoringInstance("key", undefined, opts({ instanceId }));
 
     const body = JSON.parse(fetchCalls[0].options.body as string);
     expect(body.instance_id).toBe(instanceId);
     // instance_id rides in the body next to api_token — never in headers.
     const headers = fetchCalls[0].options.headers as Record<string, string>;
     expect(headers["instance-id"]).toBeUndefined();
+  });
+
+  test("omits project_name from the body when undefined (adopt path)", async () => {
+    await registerMonitoringInstance("key", undefined, opts({ instanceId: "i" }));
+
+    const body = JSON.parse(fetchCalls[0].options.body as string);
+    // The adopt path sends no name; the platform returns the real project.
+    expect("project_name" in body).toBe(false);
+    expect(body.api_token).toBe("key");
+  });
+
+  test("omits project_name from the body when empty/whitespace", async () => {
+    await registerMonitoringInstance("key", "   ", opts({ instanceId: "i" }));
+
+    const body = JSON.parse(fetchCalls[0].options.body as string);
+    expect("project_name" in body).toBe(false);
   });
 
   test("omits instance_id from the body for legacy self-registration", async () => {
@@ -262,6 +280,8 @@ describe("registerMonitoringInstance", () => {
     // PostgREST matches the 3-arg function via its default — the key must be
     // ABSENT (not null) so legacy CLIs and the new one hit the same overload.
     expect("instance_id" in body).toBe(false);
+    // A real project name still rides in the body for legacy registration.
+    expect(body.project_name).toBe("my-project");
   });
 
   test("a 200 with {project_id, project_name} returns a populated result", async () => {
@@ -320,6 +340,37 @@ describe("registerMonitoringInstance", () => {
 
     expect(fetchCalls.length).toBe(1);
     expect(reg).toBeNull();
+  });
+});
+
+describe("planMonitoringRegistration — mon local-install registration decision", () => {
+  test("instance id present → adopt, no project name required", () => {
+    const plan = planMonitoringRegistration({ instanceId: "i-123" });
+    expect(plan.kind).toBe("adopt");
+    expect(plan.projectName).toBeUndefined();
+  });
+
+  test("instance id present + project → adopt, carries the trimmed name", () => {
+    const plan = planMonitoringRegistration({ instanceId: "i-123", project: "  prod-db  " });
+    expect(plan.kind).toBe("adopt");
+    expect(plan.projectName).toBe("prod-db");
+  });
+
+  test("no instance id + no project → error-missing-project (exit 1 path)", () => {
+    const plan = planMonitoringRegistration({});
+    expect(plan.kind).toBe("error-missing-project");
+    expect(plan.projectName).toBeUndefined();
+  });
+
+  test("no instance id + empty/whitespace project → error-missing-project", () => {
+    expect(planMonitoringRegistration({ project: "" }).kind).toBe("error-missing-project");
+    expect(planMonitoringRegistration({ project: "   " }).kind).toBe("error-missing-project");
+  });
+
+  test("no instance id + real project → legacy self-register with the trimmed name", () => {
+    const plan = planMonitoringRegistration({ project: "  my-project  " });
+    expect(plan.kind).toBe("self-register");
+    expect(plan.projectName).toBe("my-project");
   });
 });
 

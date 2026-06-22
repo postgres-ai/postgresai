@@ -2443,9 +2443,44 @@ interface MonitoringRegistration {
  *
  * Never throws — registration is best-effort; returns null on failure.
  */
+
+/**
+ * Classify how `mon local-install` should register the monitoring instance,
+ * given the raw `--project` value and the resolved instance id.
+ *
+ * - With an instance id: ADOPT the provisioned instance. No project name is
+ *   required (the platform returns the real project); a provided name is
+ *   normalized and carried through for messaging/fallback.
+ * - No instance id and no project name: ERROR. The hardcoded
+ *   "postgres-ai-monitoring" default was removed, and a nameless legacy
+ *   self-registration is rejected by v1.monitoring_instance_register (PT400).
+ * - No instance id but a project name: legacy SELF-REGISTER.
+ *
+ * Pure (no I/O) so the decision is unit-testable independently of the large
+ * install command. `projectName` is the trimmed value, or undefined when empty.
+ */
+type MonRegistrationPlan =
+  | { kind: "adopt"; projectName: string | undefined }
+  | { kind: "self-register"; projectName: string }
+  | { kind: "error-missing-project"; projectName: undefined };
+
+function planMonitoringRegistration(args: {
+  project?: string;
+  instanceId?: string;
+}): MonRegistrationPlan {
+  const projectName = args.project?.trim() || undefined;
+  if (args.instanceId) {
+    return { kind: "adopt", projectName };
+  }
+  if (!projectName) {
+    return { kind: "error-missing-project", projectName: undefined };
+  }
+  return { kind: "self-register", projectName };
+}
+
 async function registerMonitoringInstance(
   apiKey: string,
-  projectName: string,
+  projectName: string | undefined,
   opts?: { apiBaseUrl?: string; debug?: boolean; instanceId?: string; retries?: number; retryDelayMs?: number }
 ): Promise<MonitoringRegistration | null> {
   const { apiBaseUrl } = resolveBaseUrls(opts);
@@ -2457,16 +2492,25 @@ async function registerMonitoringInstance(
   // moment to recover; skipped before the first attempt. Tests pass 0.
   const retryDelayMs = opts?.retryDelayMs ?? 400;
 
+  // Omit project_name entirely when empty: the adopt path (instance_id present)
+  // relies on the platform returning the real project, and a nameless legacy
+  // self-registration is rejected by v1.monitoring_instance_register (PT400).
+  const hasProjectName = !!(projectName && projectName.trim());
+
   if (debug) {
     console.error(`\nDebug: Registering monitoring instance...`);
     console.error(`Debug: POST ${url}`);
-    console.error(`Debug: project_name=${projectName}${instanceId ? ` instance_id=${instanceId}` : ""}`);
+    console.error(
+      `Debug: ${hasProjectName ? `project_name=${projectName}` : "project_name=(omitted)"}${instanceId ? ` instance_id=${instanceId}` : ""}`
+    );
   }
 
   const requestBody: Record<string, string> = {
     api_token: apiKey,
-    project_name: projectName,
   };
+  if (hasProjectName) {
+    requestBody.project_name = projectName as string;
+  }
   if (instanceId) {
     requestBody.instance_id = instanceId;
   }
@@ -3137,8 +3181,11 @@ mon
     // and persisted; the legacy self-registration stays fire-and-forget
     // (issue platform-all#311).
     if (apiKey && !opts.demo) {
-      const projectName = opts.project || "postgres-ai-monitoring";
       const instanceId = opts.instanceId || process.env.PGAI_INSTANCE_ID;
+      const plan = planMonitoringRegistration({ project: opts.project, instanceId });
+      const projectName = plan.projectName;
+      // `instanceId` truthy ⟺ plan.kind === "adopt"; branch on it directly so
+      // TypeScript narrows instanceId to a defined string in the adopt path.
       if (instanceId) {
         const reg = await registerMonitoringInstance(apiKey, projectName, {
           apiBaseUrl: globalOpts.apiBaseUrl,
@@ -3160,11 +3207,17 @@ mon
           // Request succeeded but carried no usable project field — don't claim
           // adoption, but don't report a hard failure either (no re-run needed).
           console.error(
-            `⚠ Adopted provisioned instance ${instanceId} but the platform returned no project — reports will use project '${projectName}'`
+            `⚠ Adopted provisioned instance ${instanceId} but the platform returned no project` +
+              (projectName
+                ? ` — reports will use project '${projectName}'`
+                : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
           );
         } else {
           console.error(
-            `⚠ Could not adopt provisioned instance ${instanceId} — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
+            `⚠ Could not adopt provisioned instance ${instanceId}` +
+              (projectName
+                ? ` — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
+                : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
           );
         }
 
@@ -3188,6 +3241,17 @@ mon
             `⚠ AAS auto-collection not registered (${aas.reason}); it can be enabled later by re-running 'postgresai mon local-install'\n`
           );
         }
+      } else if (plan.kind === "error-missing-project") {
+        // Legacy self-registration (no --instance-id) now requires a project
+        // name: the hardcoded "postgres-ai-monitoring" default was removed, and
+        // v1.monitoring_instance_register raises PT400 for a nameless legacy
+        // registration. Console-provisioned installs should adopt with
+        // --instance-id instead.
+        console.error(
+          "✗ A project name is required for self-registration (the 'postgres-ai-monitoring' default was removed). " +
+            "Re-run with --project <name>, or adopt a console-provisioned instance with --instance-id <uuid>."
+        );
+        process.exitCode = 1;
       } else {
         void registerMonitoringInstance(apiKey, projectName, {
           apiBaseUrl: globalOpts.apiBaseUrl,
@@ -5488,3 +5552,4 @@ if (import.meta.main) {
 // same functions used by the `mon` commands).
 export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };
 export { registerMonitoringInstance, resolveAdoptedProject, type MonitoringRegistration };
+export { planMonitoringRegistration, type MonRegistrationPlan };

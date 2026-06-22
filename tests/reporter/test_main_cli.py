@@ -215,6 +215,7 @@ def test_main_skips_upload_when_report_creation_fails() -> None:
         '--postgres-sink-url', 'postgresql://user@host:5432/db',
         '--api-url', 'https://api.test',
         '--token', 'test-token',
+        '--project-name', 'some-project',
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
@@ -276,8 +277,12 @@ def test_main_with_specific_cluster() -> None:
 
 
 @pytest.mark.unit
-def test_main_uses_cluster_name_as_project_when_not_specified() -> None:
-    """Test that cluster name is used as project name when project-name is default."""
+def test_main_skips_upload_when_project_name_missing() -> None:
+    """Without --project-name, upload is skipped (no cluster-name fallback).
+
+    The hardcoded/cluster-name project default was removed: a project name is
+    required to upload, so create_report must NOT be called.
+    """
     test_args = [
         'postgres_reports.py',
         '--prometheus-url', 'http://prom.test',
@@ -302,10 +307,42 @@ def test_main_uses_cluster_name_as_project_when_not_specified() -> None:
             except SystemExit:
                 pass
 
-            # create_report should be called with cluster name as project name
+            # No project name -> no upload attempt.
+            mock_generator.create_report.assert_not_called()
+
+
+def test_main_uses_explicit_project_name() -> None:
+    """An explicit --project-name is passed verbatim to create_report (no fallback)."""
+    test_args = [
+        'postgres_reports.py',
+        '--prometheus-url', 'http://prom.test',
+        '--postgres-sink-url', 'postgresql://user@host:5432/db',
+        '--cluster', 'my-cluster',
+        '--api-url', 'https://api.test',
+        '--token', 'test-token',
+        '--project-name', 'explicit-project',
+    ]
+
+    mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.pg_conn = None
+    mock_generator.test_connection.return_value = True
+    mock_generator.create_report.return_value = 'report-123'
+    mock_generator.generate_all_reports.return_value = {}
+    mock_generator.generate_per_query_jsons.return_value = []
+
+    with patch.object(sys, 'argv', test_args):
+        with patch('reporter.postgres_reports.PostgresReportGenerator', return_value=mock_generator):
+            try:
+                from reporter import postgres_reports
+                postgres_reports.main()
+            except SystemExit:
+                pass
+
+            # create_report should be called with the explicit project name
+            # (NOT the cluster name).
             call_args = mock_generator.create_report.call_args[0]
             project_name = call_args[2]  # Third arg
-            assert project_name == 'my-cluster'
+            assert project_name == 'explicit-project'
 
 
 @pytest.mark.unit
