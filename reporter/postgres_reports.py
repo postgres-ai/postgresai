@@ -5129,8 +5129,8 @@ def main():
                         help='Output file (default: stdout)')
     parser.add_argument('--api-url', default='https://postgres.ai/api/general')
     parser.add_argument('--token', default='')
-    parser.add_argument('--project-name', default='project-name',
-                        help='Project name for API upload (default: project-name)')
+    parser.add_argument('--project-name', default=None,
+                        help='Project name for API upload (required when uploading)')
     parser.add_argument('--epoch', default='1')
     parser.add_argument('--no-upload', action='store_true', default=False,
                         help='Do not upload reports to the API')
@@ -5186,12 +5186,18 @@ def main():
                 # Generate all reports for this cluster
                 report_id = None
                 if not args.no_upload:
-                    # Use cluster name as project name if not specified
-                    project_name = args.project_name if args.project_name != 'project-name' else cluster
-                    report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
-                    # If report creation failed, disable uploads for this cluster
-                    if report_id is None:
-                        logger.info(f"Skipping API uploads for cluster {cluster}")
+                    project_name = args.project_name
+                    if not project_name:
+                        # No default (cluster-name fallback removed): a project
+                        # name is required to upload. Skip the upload for this
+                        # cluster; report_id stays None so all downstream
+                        # uploads are disabled too.
+                        logger.error("project name is required for upload (--project-name); skipping upload")
+                    else:
+                        report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
+                        # If report creation failed, disable uploads for this cluster
+                        if report_id is None:
+                            logger.info(f"Skipping API uploads for cluster {cluster}")
                 
                 reports = generator.generate_all_reports(cluster, args.node_name, combine_nodes)
                 
@@ -5310,10 +5316,16 @@ def main():
                         json.dump(report, f, indent=2)
                     logger.info(f"Report written to {output_filename}")
                     if not args.no_upload:
-                        project_name = args.project_name if args.project_name != 'project-name' else cluster
-                        report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
-                        if report_id:
-                            generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                        project_name = args.project_name
+                        if not project_name:
+                            # No default (cluster-name fallback removed): a
+                            # project name is required to upload. Skip the
+                            # upload for this report.
+                            logger.error("project name is required for upload (--project-name); skipping upload")
+                        else:
+                            report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
+                            if report_id:
+                                generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
             
             # Free memory after processing each cluster
             logger.info(f"Freeing memory after processing cluster {cluster}...")

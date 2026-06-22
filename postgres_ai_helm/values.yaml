@@ -117,6 +117,12 @@ reporter:
   # clusterName/nodeName per database in monitoredDatabases.
   clusterName: ""
   nodeName: ""
+  # REQUIRED for uploads: the console project name reports are uploaded to.
+  # There is no default (the hardcoded "postgres-ai-monitoring" was removed).
+  # If uploads are enabled (an API key is present) but this is empty, the
+  # reporter cronjob exits with an error at runtime. Chart rendering and the
+  # no-upload path are unaffected by an empty value.
+  project: ""
   apiUrl: https://postgres.ai/api/general
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
