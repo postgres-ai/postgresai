@@ -924,14 +924,6 @@ export async function verifyInitSetup(params: {
     }
 
     // Check for helper functions
-    const explainFnRes = await params.client.query(
-      "select has_function_privilege($1, 'postgres_ai.explain_generic(text, text, text)', 'EXECUTE') as ok",
-      [role]
-    );
-    if (!explainFnRes.rows?.[0]?.ok) {
-      missingRequired.push("EXECUTE on postgres_ai.explain_generic(text, text, text)");
-    }
-
     const tableDescribeFnRes = await params.client.query(
       "select has_function_privilege($1, 'postgres_ai.table_describe(text)', 'EXECUTE') as ok",
       [role]

@@ -733,24 +733,6 @@ export async function verifyInitSetupViaSupabase(params: {
   }
 
   // Check helper functions - first verify they exist to avoid has_function_privilege errors
-  const explainFnExistsRes = await params.client.query(
-    "SELECT oid FROM pg_proc WHERE proname = 'explain_generic' AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'postgres_ai')",
-    true
-  );
-  if (explainFnExistsRes.rowCount === 0) {
-    missingRequired.push("function postgres_ai.explain_generic exists");
-  } else {
-    const explainFnRes = await params.client.query(
-      `SELECT has_function_privilege('${escapeLiteral(role)}', 'postgres_ai.explain_generic(text, text, text)', 'EXECUTE') as ok`,
-      true
-    );
-    if (!explainFnRes.rows?.[0]?.ok) {
-      missingRequired.push(
-        "EXECUTE on postgres_ai.explain_generic(text, text, text)"
-      );
-    }
-  }
-
   const tableDescribeFnExistsRes = await params.client.query(
     "SELECT oid FROM pg_proc WHERE proname = 'table_describe' AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'postgres_ai')",
     true
