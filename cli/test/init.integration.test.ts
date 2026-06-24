@@ -407,12 +407,14 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     }
   }, { timeout: TEST_TIMEOUT });
 
-  // 60s timeout for PostgreSQL startup + multiple SQL queries in slow CI
-  test("explain_generic validates input and prevents SQL injection", async () => {
+  // Security regression for #387: explain_generic was a SECURITY DEFINER helper that
+  // ran caller-supplied SQL through EXPLAIN. The planner folds IMMUTABLE/STABLE functions
+  // at plan time in the definer's (superuser) context, making it an RCE/data-exfil vector.
+  // It has been removed; prepare-db must NOT create it.
+  test("explain_generic is not created by prepare-db (RCE helper removed, #387)", async () => {
     pg = await createTempPostgres();
 
     try {
-      // Run init first
       {
         const r = runCliInit([pg.adminUri, "--password", "pw1", "--skip-optional-permissions"]);
         expect(r.status).toBe(0);
@@ -422,82 +424,10 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
       await c.connect();
 
       try {
-        // Check PostgreSQL version - generic_plan requires 16+
-        const versionRes = await c.query("show server_version_num");
-        const version = parseInt(versionRes.rows[0].server_version_num, 10);
-
-        if (version < 160000) {
-          // Skip this test on older PostgreSQL versions
-          console.log("Skipping explain_generic tests: requires PostgreSQL 16+");
-          return;
-        }
-
-        // Test 1: Empty query should be rejected
-        await expect(
-          c.query("select postgres_ai.explain_generic('')")
-        ).rejects.toThrow(/query cannot be empty/);
-
-        // Test 2: Null query should be rejected
-        await expect(
-          c.query("select postgres_ai.explain_generic(null)")
-        ).rejects.toThrow(/query cannot be empty/);
-
-        // Test 3: Multiple statements (semicolon in middle) should be rejected
-        await expect(
-          c.query("select postgres_ai.explain_generic('select 1; select 2')")
-        ).rejects.toThrow(/semicolon|multiple statements/i);
-
-        // Test 4: Trailing semicolon should be stripped and work
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select 1;') as result");
-          expect(res.rows[0].result).toBeTruthy();
-          expect(res.rows[0].result).toMatch(/Result/i);
-        }
-
-        // Test 5: Valid query should work
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select $1::int', 'text') as result");
-          expect(res.rows[0].result).toBeTruthy();
-        }
-
-        // Test 6: JSON format should work
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select 1', 'json') as result");
-          const plan = JSON.parse(res.rows[0].result);
-          expect(Array.isArray(plan)).toBe(true);
-          expect(plan[0].Plan).toBeTruthy();
-        }
-
-        // Test 7: Whitespace-only query should be rejected
-        await expect(
-          c.query("select postgres_ai.explain_generic('   ')")
-        ).rejects.toThrow(/query cannot be empty/);
-
-        // Test 8: Semicolon in string literal is rejected (documented limitation)
-        // Note: This is a known limitation - the simple heuristic cannot parse SQL strings
-        await expect(
-          c.query("select postgres_ai.explain_generic('select ''hello;world''')")
-        ).rejects.toThrow(/semicolon/i);
-
-        // Test 9: SQL comments should work (no semicolons)
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select 1 -- comment') as result");
-          expect(res.rows[0].result).toBeTruthy();
-        }
-
-        // Test 10: Escaped quotes should work (no semicolons)
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select ''test''''s value''') as result");
-          expect(res.rows[0].result).toBeTruthy();
-        }
-
-        // Test 11: Case-insensitive format parameter
-        {
-          const res = await c.query("select postgres_ai.explain_generic('select 1', 'JSON') as result");
-          const plan = JSON.parse(res.rows[0].result);
-          expect(Array.isArray(plan)).toBe(true);
-        }
-
+        const res = await c.query(
+          "select count(*)::int as n from pg_proc where proname = 'explain_generic' and pronamespace = (select oid from pg_namespace where nspname = 'postgres_ai')"
+        );
+        expect(res.rows[0].n).toBe(0);
       } finally {
         await c.end();
       }
