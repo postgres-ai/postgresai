@@ -217,6 +217,7 @@ npx postgresai checkup --json postgresql://... | claude -p "find issues and sugg
 |---|---|
 | **Demo** | [demo.postgres.ai](https://demo.postgres.ai) (login: `demo` / `demo`) |
 | **Docs** | [postgres.ai/docs](https://postgres.ai/docs) |
+| **Architecture** | [C4 model](docs/architecture/README.md) |
 | **Issues** | [GitLab](https://gitlab.com/postgres-ai/postgresai/-/issues) |
 | **Community** | [Postgres.FM](https://postgres.fm) · [Postgres.TV](https://postgres.tv) |
 
