@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { resolve } from "path";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 
 import * as util from "../lib/util";
 import * as pkce from "../lib/pkce";
@@ -212,6 +214,33 @@ describe("Auth callback server", () => {
 });
 
 describe("CLI auth commands", () => {
+  test("cli: login --help shows all options", () => {
+    const r = runCli(["login", "--help"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/--set-key/);
+    expect(r.stdout).toMatch(/--debug/);
+  });
+
+  test("cli: login --set-key aliases auth login", () => {
+    const home = mkdtempSync(join(tmpdir(), "postgresai-login-"));
+
+    try {
+      const r = runCli(["login", "--set-key", "test-token"], {
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, ".config"),
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toMatch(/API key saved/);
+
+      const saved = JSON.parse(
+        readFileSync(join(home, ".config", "postgresai", "config.json"), "utf8")
+      );
+      expect(saved.apiKey).toBe("test-token");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("cli: auth login --help shows all options", () => {
     const r = runCli(["auth", "login", "--help"]);
     expect(r.status).toBe(0);
