@@ -3931,13 +3931,9 @@ targets
 // Authentication and API key management
 const auth = program.command("auth").description("authentication and API key management");
 
-auth
-  .command("login", { isDefault: true })
-  .description("authenticate via browser (OAuth) or store API key directly")
-  .option("--set-key <key>", "store API key directly without OAuth flow")
-  .option("--port <port>", "local callback server port (default: random)", parseInt)
-  .option("--debug", "enable debug output")
-  .action(async (opts: { setKey?: string; port?: number; debug?: boolean }) => {
+type AuthLoginOptions = { setKey?: string; port?: number; debug?: boolean };
+
+async function runAuthLogin(opts: AuthLoginOptions) {
     // If --set-key is provided, store it directly without OAuth
     if (opts.setKey) {
       const trimmedKey = opts.setKey.trim();
@@ -4191,7 +4187,21 @@ auth
       console.error(`Authentication error: ${message}`);
       process.exit(1);
     }
-  });
+}
+
+function configureLoginCommand(command: Command): Command {
+  return command
+    .description("authenticate via browser (OAuth) or store API key directly")
+    .option("--set-key <key>", "store API key directly without OAuth flow")
+    .option("--port <port>", "local callback server port (default: random)", parseInt)
+    .option("--debug", "enable debug output");
+}
+
+configureLoginCommand(auth.command("login", { isDefault: true }))
+  .action(runAuthLogin);
+
+configureLoginCommand(program.command("login"))
+  .action(runAuthLogin);
 
 auth
   .command("show-key")
