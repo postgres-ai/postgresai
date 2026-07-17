@@ -335,12 +335,18 @@ function prepareUploadConfig(
       console.error("Tip: run 'postgresai auth' or pass --api-key / set PGAI_API_KEY");
       return null; // Signal to exit
     }
-    // No credentials and upload not explicitly requested: fall back to
-    // local-only mode, but say so prominently — skipping the upload silently
-    // hides the fact that results never reach the Console.
-    console.error("Notice: no API key configured — results will NOT be uploaded to PostgresAI.");
-    console.error("        To upload: run 'postgresai auth login' or pass --api-key / set PGAI_API_KEY.");
-    console.error("        To run locally without this notice, pass --no-upload.");
+    if (opts.markdown) {
+      console.error("Notice: no API key configured — regular report upload is disabled.");
+      console.error("        The full report JSON will still be sent to the PostgresAI API for markdown conversion.");
+      console.error("        To avoid sending report data, replace --markdown with --no-upload and --json or --output.");
+    } else {
+      // No credentials and upload not explicitly requested: fall back to
+      // local-only mode, but say so prominently — skipping the upload silently
+      // hides the fact that results never reach the Console.
+      console.error("Notice: no API key configured — results will NOT be uploaded to PostgresAI.");
+      console.error("        To upload: run 'postgresai auth login' or pass --api-key / set PGAI_API_KEY.");
+      console.error("        To run locally without this notice, pass --no-upload.");
+    }
     return undefined; // Skip upload, run checks locally
   }
 
@@ -1996,7 +2002,7 @@ program
     "project name or ID for remote upload (used with --upload; defaults to config defaultProject; auto-generated on first run)"
   )
   .option("--json", "output JSON to stdout")
-  .option("--markdown", "output markdown to stdout")
+  .option("--markdown", "output markdown via PostgresAI API (transmits the full report JSON)")
   .addHelpText(
     "after",
     [
@@ -2010,7 +2016,7 @@ program
       "  postgresai checkup postgresql://user:pass@host:5432/db --check-id H002",
       "  postgresai checkup postgresql://user:pass@host:5432/db --output ./reports",
       "  postgresai checkup postgresql://user:pass@host:5432/db --no-upload --json",
-      "  postgresai checkup postgresql://user:pass@host:5432/db --no-upload --markdown",
+      "  postgresai checkup postgresql://user:pass@host:5432/db --markdown",
     ].join("\n")
   )
   .action(async (checkIdOrConn: string | undefined, connArg: string | undefined, opts: CheckupOptions, cmd: Command) => {
@@ -2060,9 +2066,14 @@ program
       process.exitCode = 1;
       return;
     }
-    // Note: --json, --markdown and --upload/--no-upload are independent flags.
-    // Use --no-upload to explicitly disable upload when using --json or --markdown.
     const uploadExplicitlyDisabled = opts.upload === false;
+    if (uploadExplicitlyDisabled && shouldConvertMarkdown) {
+      console.error("Error: --no-upload and --markdown are mutually exclusive");
+      console.error("Markdown conversion is performed by the PostgresAI API and transmits the full report JSON.");
+      console.error("Drop --no-upload to allow transmission, or use --json or --output for local-only output.");
+      process.exitCode = 1;
+      return;
+    }
     let shouldUpload = !uploadExplicitlyDisabled;
 
     // Preflight: validate/create output directory BEFORE connecting / running checks.
@@ -2308,7 +2319,9 @@ program
 
         console.log('\nFor details:');
         console.log('  --json          Output JSON');
-        console.log('  --markdown      Output markdown');
+        if (!uploadExplicitlyDisabled) {
+          console.log('  --markdown      Output markdown via PostgresAI API');
+        }
         console.log('  --output <dir>  Save to directory');
       }
     } catch (error) {

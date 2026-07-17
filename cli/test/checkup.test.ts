@@ -1539,12 +1539,13 @@ describe("CLI tests", () => {
     const r = runCli(["checkup", "--help"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/--markdown/);
-    expect(r.stdout).toMatch(/output markdown to stdout/i);
+    expect(r.stdout).toMatch(/PostgresAI API/i);
+    expect(r.stdout).toMatch(/transmits the full\s+report JSON/i);
   });
 
   test("checkup --markdown is recognized as valid option", () => {
     // Should not produce "unknown option" error for --markdown
-    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown", "--no-upload"]);
+    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown"]);
     // Connection will fail, but option parsing should succeed
     expect(r.stderr).not.toMatch(/unknown option/i);
     expect(r.stderr).not.toMatch(/did you mean/i);
@@ -1554,11 +1555,13 @@ describe("CLI tests", () => {
     // Use empty config dir to ensure no API key is configured
     const env = { XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config" };
     // --markdown should work even without API key
-    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown", "--no-upload"], env);
+    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown"], env);
     // Connection will fail, but --markdown flag should be recognized
     expect(r.status).not.toBe(0);
     expect(r.stderr).not.toMatch(/unknown option/i);
     expect(r.stderr).not.toMatch(/API key is required/i);
+    expect(r.stderr).toMatch(/full report JSON will still be sent/i);
+    expect(r.stderr).toMatch(/markdown conversion/i);
   });
 
   test("checkup with --no-upload and no output flags shows summary", () => {
@@ -1662,6 +1665,21 @@ describe("checkup auth pre-flight (CLI)", () => {
   // never attempts this connection; if the run continues, the connection
   // failure mentions this address.
   const DEAD_DB = "postgresql://test:test@127.0.0.1:2/test";
+
+  test("--no-upload rejects --markdown before database or API work", () => {
+    const env = {
+      XDG_CONFIG_HOME: `/tmp/postgresai-test-no-upload-markdown-${process.pid}`,
+      PGAI_API_KEY: "configured-token",
+      PGAI_API_BASE_URL: "http://127.0.0.1:1",
+    };
+    const r = runCli(["checkup", DEAD_DB, "--no-upload", "--markdown"], env);
+
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/--no-upload and --markdown are mutually exclusive/i);
+    expect(r.stderr).toMatch(/markdown conversion is performed by the PostgresAI API/i);
+    expect(r.stderr).toMatch(/use --json or --output/i);
+    expect(r.stderr).not.toMatch(/127\.0\.0\.1:2|ECONNREFUSED/);
+  });
 
   test("no API key: prominent notice, run continues locally", () => {
     const env = {
