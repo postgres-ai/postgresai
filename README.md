@@ -64,7 +64,7 @@ Open [console.postgres.ai](https://console.postgres.ai) to see:
 - Issues workflow to track remediation
 - Historical data across all your projects
 
-> **Offline mode:** Add `--no-upload` to run locally without an account.
+> **Offline mode:** Add `--no-upload` to run locally without an account or sending report data to the PostgresAI API.
 
 <details open>
 <summary>See demo</summary>
@@ -84,6 +84,10 @@ npx postgresai checkup --check-id H002 postgresql://...
 # Local JSON output only (no upload)
 npx postgresai checkup --no-upload --check-id H002 postgresql://...
 ```
+
+Markdown conversion is performed by the PostgresAI API and transmits the full
+report JSON. Therefore, `--markdown` cannot be combined with `--no-upload`. For
+local-only output, use `--json` or `--output` instead.
 
 > **Tips:** `npx pgai checkup` also works. `bunx postgresai` if you prefer Bun.
 

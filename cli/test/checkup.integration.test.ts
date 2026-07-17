@@ -410,25 +410,4 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     }
   });
 
-  test("CLI --markdown flag works without API key", async () => {
-    // Test that --markdown works even without an API key
-    const connString = `postgresql://postgres@${pg.socketDir}:${pg.port}/postgres`;
-    const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-
-    const result = Bun.spawnSync(
-      [bunBin, cliPath, "checkup", connString, "--check-id", "H002", "--markdown", "--no-upload"],
-      {
-        env: {
-          ...process.env,
-          XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config",
-        },
-      }
-    );
-
-    const stderr = new TextDecoder().decode(result.stderr);
-
-    // Should not complain about missing API key
-    expect(stderr).not.toMatch(/API key is required/i);
-  });
 });
