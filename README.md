@@ -226,6 +226,8 @@ npx postgresai checkup --json postgresql://... | claude -p "find issues and sugg
 
 **[PostgresAI](https://postgres.ai)** — Self-Driving Postgres
 
+</div>
+
 ## 🎯 Use cases
 
 **For developers:**
@@ -570,5 +572,3 @@ postgres_ai monitoring is developed by [PostgresAI](https://postgres.ai), bringi
 - 🎙️ [Postgres FM Podcast](https://postgres.fm)
 - 🐛 [Report issues](https://gitlab.com/postgres-ai/postgresai/-/issues)
 - 📧 [Enterprise support](https://postgres.ai/consulting)
-
-</div>
