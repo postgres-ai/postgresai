@@ -99,6 +99,46 @@ describe("Schema validation", () => {
     validateAgainstSchema(report, "F003");
   });
 
+  for (const checkId of ["F004", "F005"]) {
+    test(`${checkId} distinguishes a healthy empty result from missing schema`, async () => {
+      const healthyClient = createMockClient();
+      const healthy = await checkup.REPORT_GENERATORS[checkId](healthyClient as any, "node-01");
+      const healthyDb = healthy.results["node-01"].data.testdb;
+      expect(healthyDb.status).toEqual({ ok: true, reason: null, error: null });
+      validateAgainstSchema(healthy, checkId);
+
+      const missingSchemaClient = createMockClient({
+        bloatCapabilityRows: [
+          { schema_exists: false, schema_usage: false, view_exists: false, view_select: false },
+        ],
+      });
+      const degraded = await checkup.REPORT_GENERATORS[checkId](missingSchemaClient as any, "node-01");
+      const degradedDb = degraded.results["node-01"].data.testdb;
+      expect(degradedDb.status).toEqual({
+        ok: false,
+        reason: "missing_schema",
+        error: 'schema "postgres_ai" does not exist',
+      });
+      validateAgainstSchema(degraded, checkId);
+    });
+
+    test(`${checkId} exposes missing-grant degradation`, async () => {
+      const client = createMockClient({
+        bloatCapabilityRows: [
+          { schema_exists: true, schema_usage: true, view_exists: true, view_select: false },
+        ],
+      });
+      const report = await checkup.REPORT_GENERATORS[checkId](client as any, "node-01");
+      const dbEntry = report.results["node-01"].data.testdb;
+      expect(dbEntry.status).toEqual({
+        ok: false,
+        reason: "missing_grant",
+        error: "permission denied for relation postgres_ai.pg_statistic",
+      });
+      validateAgainstSchema(report, checkId);
+    });
+  }
+
   // Settings reports (D004, F001, G001) - single test each
   for (const checkId of ["D004", "F001", "G001"]) {
     test(`${checkId} validates against schema`, async () => {

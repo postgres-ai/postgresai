@@ -19,6 +19,7 @@ export interface MockClientOptions {
   indexBloatRows?: any[];
   deadTuplesRows?: any[];
   vacuumStatsRows?: any[];
+  bloatCapabilityRows?: any[];
   deadlockStatsRows?: any[];
   pgStatStatementsExtensionRows?: any[];
   pgStatStatementsStatsRows?: any[];
@@ -61,6 +62,7 @@ export function createMockClient(options: MockClientOptions = {}) {
     indexBloatRows = [],
     deadTuplesRows = [],
     vacuumStatsRows = [],
+    bloatCapabilityRows = [{ schema_exists: true, schema_usage: true, view_exists: true, view_select: true }],
     deadlockStatsRows = [{ deadlocks: "0", conflicts: "0", stats_reset: null }],
     pgStatStatementsExtensionRows = [],
     pgStatStatementsStatsRows = [],
@@ -128,6 +130,9 @@ export function createMockClient(options: MockClientOptions = {}) {
         return { rows: deadTuplesRows };
       }
       // F004/F005: bloat metrics from metrics.yml
+      if (sql.includes("to_regnamespace('postgres_ai')") && sql.includes("view_select")) {
+        return { rows: bloatCapabilityRows };
+      }
       if (sql.includes("tag_idxname") && sql.includes("bloat_size")) {
         return { rows: indexBloatRows };
       }

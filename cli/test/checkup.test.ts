@@ -2173,6 +2173,31 @@ describe("checkup-summary", () => {
     );
   });
 
+  for (const checkId of ["F004", "F005"]) {
+    test(`generateCheckSummary for degraded ${checkId} is never ok`, () => {
+      const report = {
+        results: {
+          node1: {
+            data: {
+              db1: {
+                status: {
+                  ok: false,
+                  reason: "missing_schema",
+                  error: 'schema "postgres_ai" does not exist',
+                },
+                total_count: 0,
+              },
+            },
+          },
+        },
+      };
+
+      const result = summary.generateCheckSummary(checkId, report);
+      expect(result.status).toBe("warning");
+      expect(result.message).toMatch(/degraded.*missing schema/i);
+    });
+  }
+
   test("generateCheckSummary for H001 with no issues", () => {
     const report = {
       results: {
@@ -3371,6 +3396,7 @@ describe("Postgres version compatibility (PG13-PG18)", () => {
           autovacuum_vacuum_scale_factor: expectedAutovacuumSetting,
         });
         expect(reports.F004.results["test-node"].data.testdb).toEqual({
+          status: { ok: true, reason: null, error: null },
           bloated_tables: [],
           total_count: 0,
           total_bloat_size_bytes: 0,
@@ -3379,6 +3405,7 @@ describe("Postgres version compatibility (PG13-PG18)", () => {
           database_size_pretty: "1.00 GiB",
         });
         expect(reports.F005.results["test-node"].data.testdb).toEqual({
+          status: { ok: true, reason: null, error: null },
           bloated_indexes: [],
           total_count: 0,
           total_bloat_size_bytes: 0,
