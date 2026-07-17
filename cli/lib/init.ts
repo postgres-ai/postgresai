@@ -1020,9 +1020,27 @@ export async function checkCurrentUserPermissions(
       union all
 
       select
+        'postgres_ai schema exists' as permission_name,
+        'optional' as status,
+        to_regnamespace('postgres_ai') is not null as granted
+
+      union all
+
+      select
+        'usage on postgres_ai schema' as permission_name,
+        'optional' as status,
+        case
+          when to_regnamespace('postgres_ai') is null then null
+          else has_schema_privilege(current_user, 'postgres_ai', 'USAGE')
+        end as granted
+
+      union all
+
+      select
         'postgres_ai.pg_statistic view exists' as permission_name,
         'optional' as status,
         case
+          when to_regnamespace('postgres_ai') is null then null
           when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
           else to_regclass('postgres_ai.pg_statistic') is not null
         end as granted
@@ -1033,6 +1051,7 @@ export async function checkCurrentUserPermissions(
         'select on postgres_ai.pg_statistic' as permission_name,
         'optional' as status,
         case
+          when to_regnamespace('postgres_ai') is null then null
           when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
           when to_regclass('postgres_ai.pg_statistic') is null then null
           else has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select')
@@ -1052,6 +1071,10 @@ export async function checkCurrentUserPermissions(
             when permission_name like 'select on pg_catalog.pg_index' then
               format('grant select on pg_catalog.pg_index to %I;', current_user)
           end
+        when permission_name = 'postgres_ai schema exists' and granted = false then
+          '-- run postgresai prepare-db or create the postgres_ai schema and pg_statistic view manually'
+        when permission_name = 'usage on postgres_ai schema' and granted = false then
+          format('grant usage on schema postgres_ai to %I;', current_user)
         when permission_name = 'postgres_ai.pg_statistic view exists' and granted = false then
           '-- create postgres_ai.pg_statistic view (see setup script)'
         when permission_name = 'select on postgres_ai.pg_statistic' and granted = false then
@@ -1097,6 +1120,12 @@ export function formatPermissionCheckMessages(result: PreflightPermissionResult)
   const errors: string[] = [];
 
   for (const row of result.missingOptional) {
+    if (row.permission_name === "postgres_ai schema exists") {
+      warnings.push(
+        "Warning: optional: postgres_ai schema not found — F004/F005 (bloat estimates) will be skipped; run prepare-db or create the view manually to enable them."
+      );
+      continue;
+    }
     const fix = row.fix_command ? ` Fix: ${row.fix_command}` : "";
     warnings.push(`Warning: optional permission missing — ${row.permission_name}.${fix}`);
   }

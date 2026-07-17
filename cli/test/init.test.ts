@@ -1489,6 +1489,24 @@ describe("checkCurrentUserPermissions", () => {
     ).rejects.toThrow("permission denied for relation pg_roles");
   });
 
+  test("guards optional postgres_ai privilege probes when the schema is absent", async () => {
+    let capturedSql = "";
+    const client = {
+      query: async (sql: string) => {
+        capturedSql = sql;
+        return { rows: [] };
+      },
+    };
+
+    await init.checkCurrentUserPermissions(client as any);
+
+    expect(capturedSql).toContain("to_regnamespace('postgres_ai') is null");
+    expect(capturedSql).toContain("'postgres_ai schema exists' as permission_name");
+    expect(capturedSql).toMatch(
+      /when to_regnamespace\('postgres_ai'\) is null then null\s+when not has_schema_privilege/
+    );
+  });
+
   test("returns all rows for inspection", async () => {
     const rows: init.PermissionCheckRow[] = [
       { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },
@@ -1543,6 +1561,23 @@ describe("formatPermissionCheckMessages", () => {
     expect(messages.warnings[0]).toContain("postgres_ai.pg_statistic view exists");
     expect(messages.warnings[0]).toContain("Fix: -- create view");
     expect(messages.errors).toHaveLength(0);
+  });
+
+  test("explains that a missing postgres_ai schema only degrades F004/F005", () => {
+    const result: init.PreflightPermissionResult = {
+      ok: true,
+      rows: [],
+      missingRequired: [],
+      missingOptional: [
+        { permission_name: "postgres_ai schema exists", status: "optional", granted: false, fix_command: null },
+      ],
+    };
+
+    const messages = init.formatPermissionCheckMessages(result);
+    expect(messages.failed).toBe(false);
+    expect(messages.warnings).toEqual([
+      "Warning: optional: postgres_ai schema not found — F004/F005 (bloat estimates) will be skipped; run prepare-db or create the view manually to enable them.",
+    ]);
   });
 
   test("returns errors with fix commands for missing required permissions", () => {

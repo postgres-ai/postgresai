@@ -85,12 +85,25 @@
         "database_size_pretty"
       ],
       "properties": {
+        "status": { "$ref": "#/$defs/status" },
         "bloated_tables": { "type": "array", "items": { "$ref": "#/$defs/bloatedTable" } },
         "total_count": { "type": "integer" },
         "total_bloat_size_bytes": { "type": "number" },
         "total_bloat_size_pretty": { "type": "string" },
         "database_size_bytes": { "type": "number" },
         "database_size_pretty": { "type": "string" }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "reason", "error"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "reason": {
+          "enum": [null, "missing_schema", "missing_view", "missing_grant", "query_error"]
+        },
+        "error": { "type": ["string", "null"] }
       }
     },
     "data": {
@@ -108,5 +121,3 @@
     }
   }
 }
-
-

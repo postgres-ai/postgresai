@@ -41,6 +41,8 @@ export function generateCheckSummary(checkId: string, report: any): CheckSummary
     case 'D004': return summarizeD004(nodeData);
     case 'F001': return summarizeF001(nodeData);
     case 'F003': return summarizeF003(nodeData);
+    case 'F004': return summarizeBloat(nodeData, 'table');
+    case 'F005': return summarizeBloat(nodeData, 'index');
     case 'G001': return summarizeG001(nodeData);
     case 'G003': return summarizeG003(nodeData);
     default:
@@ -271,6 +273,29 @@ function summarizeF003(nodeData: any): CheckSummary {
   }
 
   return { status: 'warning', message: parts.join(', ') };
+}
+
+function summarizeBloat(nodeData: any, kind: 'table' | 'index'): CheckSummary {
+  const data = nodeData?.data || {};
+  let totalCount = 0;
+
+  for (const dbData of Object.values(data)) {
+    const dbEntry = dbData as any;
+    if (dbEntry?.status?.ok === false) {
+      const reason = String(dbEntry.status.reason || 'query_error').replaceAll('_', ' ');
+      return { status: 'warning', message: `Bloat estimate degraded: ${reason}` };
+    }
+    totalCount += dbEntry?.total_count || 0;
+  }
+
+  if (totalCount === 0) {
+    return { status: 'ok', message: `No bloated ${kind}${kind === 'index' ? 'es' : 's'} found` };
+  }
+
+  return {
+    status: 'warning',
+    message: `Found ${totalCount} bloated ${kind}${totalCount === 1 ? '' : kind === 'index' ? 'es' : 's'}`,
+  };
 }
 
 function summarizeG001(nodeData: any): CheckSummary {

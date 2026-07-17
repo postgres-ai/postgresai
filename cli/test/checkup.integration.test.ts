@@ -14,6 +14,7 @@ import { readFileSync } from "fs";
 import Ajv2020 from "ajv/dist/2020";
 
 import * as checkup from "../lib/checkup";
+import { checkCurrentUserPermissions } from "../lib/init";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
@@ -190,6 +191,36 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
 
   // Test all checks supported by express mode
   const expressChecks = Object.keys(checkup.CHECK_INFO);
+
+  test("vanilla database preflight is non-fatal and full CLI output marks F004/F005 degraded", async () => {
+    const permissions = await checkCurrentUserPermissions(client);
+    expect(permissions.ok).toBe(true);
+    expect(permissions.missingOptional.some(
+      (row) => row.permission_name === "postgres_ai schema exists"
+    )).toBe(true);
+
+    const connString = `postgresql://postgres@localhost:${pg.port}/postgres?host=${encodeURIComponent(pg.socketDir)}`;
+    const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
+    const result = Bun.spawnSync(
+      [bunBin, cliPath, "checkup", connString, "--no-upload", "--json"],
+      { env: { ...process.env, XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config" } }
+    );
+
+    const stderr = new TextDecoder().decode(result.stderr);
+    if (result.exitCode !== 0) {
+      throw new Error(`CLI exited ${result.exitCode}: ${stderr}`);
+    }
+    const reports = JSON.parse(new TextDecoder().decode(result.stdout));
+    expect(Object.keys(reports)).toHaveLength(17);
+    expect(stderr).toContain("optional: postgres_ai schema not found");
+    for (const checkId of ["F004", "F005"]) {
+      const dbEntry = reports[checkId].results["node-01"].data.postgres;
+      expect(dbEntry.status.ok).toBe(false);
+      expect(dbEntry.status.reason).toBe("missing_schema");
+      expect(dbEntry.status.error).toMatch(/schema "postgres_ai" does not exist/i);
+    }
+  }, { timeout: 60000 });
 
   for (const checkId of expressChecks) {
     test(`${checkId} report validates against shared schema`, async () => {

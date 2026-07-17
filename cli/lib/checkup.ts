@@ -1498,6 +1498,74 @@ async function generateF003(client: Client, nodeName: string): Promise<Report> {
  * Uses pg_stats for column statistics to estimate row sizes.
  * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_table_bloat metric).
  */
+type BloatCheckReason = "missing_schema" | "missing_view" | "missing_grant" | "query_error";
+
+interface BloatCheckStatus {
+  ok: boolean;
+  reason: BloatCheckReason | null;
+  error: string | null;
+}
+
+function bloatErrorStatus(err: unknown): BloatCheckStatus {
+  const error = err instanceof Error ? err.message : String(err);
+  const code = typeof err === "object" && err !== null && "code" in err
+    ? String((err as { code?: unknown }).code || "")
+    : "";
+  const normalized = error.toLowerCase();
+
+  let reason: BloatCheckReason = "query_error";
+  if (code === "3F000" || normalized.includes('schema "postgres_ai" does not exist')) {
+    reason = "missing_schema";
+  } else if (code === "42P01" || normalized.includes('relation "postgres_ai.pg_statistic" does not exist')) {
+    reason = "missing_view";
+  } else if (code === "42501" || normalized.includes("permission denied")) {
+    reason = "missing_grant";
+  }
+
+  return { ok: false, reason, error };
+}
+
+async function getBloatCheckStatus(client: Client): Promise<BloatCheckStatus> {
+  try {
+    const result = await client.query(`
+      select
+        to_regnamespace('postgres_ai') is not null as schema_exists,
+        case
+          when to_regnamespace('postgres_ai') is null then false
+          else has_schema_privilege(current_user, 'postgres_ai', 'USAGE')
+        end as schema_usage,
+        case
+          when to_regnamespace('postgres_ai') is null then false
+          when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then false
+          else to_regclass('postgres_ai.pg_statistic') is not null
+        end as view_exists,
+        case
+          when to_regnamespace('postgres_ai') is null then false
+          when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then false
+          when to_regclass('postgres_ai.pg_statistic') is null then false
+          else has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'SELECT')
+        end as view_select
+    `);
+    const capability = result.rows[0] || {};
+
+    if (!capability.schema_exists) {
+      return { ok: false, reason: "missing_schema", error: 'schema "postgres_ai" does not exist' };
+    }
+    if (!capability.schema_usage) {
+      return { ok: false, reason: "missing_grant", error: "permission denied for schema postgres_ai" };
+    }
+    if (!capability.view_exists) {
+      return { ok: false, reason: "missing_view", error: 'relation "postgres_ai.pg_statistic" does not exist' };
+    }
+    if (!capability.view_select) {
+      return { ok: false, reason: "missing_grant", error: "permission denied for relation postgres_ai.pg_statistic" };
+    }
+    return { ok: true, reason: null, error: null };
+  } catch (err) {
+    return bloatErrorStatus(err);
+  }
+}
+
 async function generateF004(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("F004", "Autovacuum: heap bloat (estimated)", nodeName);
   const postgresVersion = await getPostgresVersion(client);
@@ -1520,8 +1588,15 @@ async function generateF004(client: Client, nodeName: string): Promise<Report> {
   }
 
   let bloatedTables: BloatedTable[] = [];
+  let status = await getBloatCheckStatus(client);
 
   try {
+    if (!status.ok) throw Object.assign(new Error(status.error || "Bloat prerequisites unavailable"), {
+      code: status.reason === "missing_schema" ? "3F000"
+        : status.reason === "missing_view" ? "42P01"
+        : status.reason === "missing_grant" ? "42501"
+        : undefined,
+    });
     // Get bloat data
     const sql = getMetricSql(METRIC_NAMES.F004, pgMajorVersion);
     const bloatResult = await client.query(sql);
@@ -1572,7 +1647,8 @@ async function generateF004(client: Client, nodeName: string): Promise<Report> {
       };
     });
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    status = bloatErrorStatus(err);
+    const errorMsg = status.error || "Unknown error";
     console.error(`[F004] Error estimating table bloat: ${errorMsg}`);
     if (errorMsg.includes("postgres_ai.")) {
       console.error(`  Hint: Run "postgresai prepare-db <connection>" to create required objects.`);
@@ -1587,6 +1663,7 @@ async function generateF004(client: Client, nodeName: string): Promise<Report> {
   const totalBloatSizeBytes = bloatedTables.reduce((sum, t) => sum + t.bloat_size, 0);
 
   const dbEntry = {
+    status,
     bloated_tables: bloatedTables,
     total_count: totalCount,
     total_bloat_size_bytes: totalBloatSizeBytes,
@@ -1634,8 +1711,15 @@ async function generateF005(client: Client, nodeName: string): Promise<Report> {
   }
 
   let bloatedIndexes: BloatedIndex[] = [];
+  let status = await getBloatCheckStatus(client);
 
   try {
+    if (!status.ok) throw Object.assign(new Error(status.error || "Bloat prerequisites unavailable"), {
+      code: status.reason === "missing_schema" ? "3F000"
+        : status.reason === "missing_view" ? "42P01"
+        : status.reason === "missing_grant" ? "42501"
+        : undefined,
+    });
     // Get bloat data
     const sql = getMetricSql(METRIC_NAMES.F005, pgMajorVersion);
     const bloatResult = await client.query(sql);
@@ -1690,7 +1774,8 @@ async function generateF005(client: Client, nodeName: string): Promise<Report> {
       };
     });
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    status = bloatErrorStatus(err);
+    const errorMsg = status.error || "Unknown error";
     console.error(`[F005] Error estimating index bloat: ${errorMsg}`);
     if (errorMsg.includes("postgres_ai.")) {
       console.error(`  Hint: Run "postgresai prepare-db <connection>" to create required objects.`);
@@ -1705,6 +1790,7 @@ async function generateF005(client: Client, nodeName: string): Promise<Report> {
   const totalBloatSizeBytes = bloatedIndexes.reduce((sum, idx) => sum + idx.bloat_size, 0);
 
   const dbEntry = {
+    status,
     bloated_indexes: bloatedIndexes,
     total_count: totalCount,
     total_bloat_size_bytes: totalBloatSizeBytes,
