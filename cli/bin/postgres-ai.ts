@@ -13,6 +13,16 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
+import {
+  executeJoeCommand,
+  listProjects,
+  getCommandOutput,
+  formatJoeOutput,
+  formatProjectsTable,
+  DEFAULT_BUDGET_MS,
+  type JoeCommand,
+  type ExecuteJoeOutcome,
+} from "../lib/joe";
 import { resolveBaseUrls } from "../lib/util";
 import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
@@ -5398,6 +5408,291 @@ reports
 function tryParseJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
 }
+
+// ---------------------------------------------------------------------------
+// Joe command surface (Joe API v2 CLI v1, issue #438). Every verb builds the
+// RAW command text Joe's /webui/command dispatches (`plan <sql>`, `\d users`),
+// runs it via the synchronous `v1.joe_command_run`, and polls
+// `v1.joe_command_output` until `ok`/`error` within the one-shot budget.
+// `--project` accepts a numeric id OR an alias/name/label. The backend rpcs
+// are mocked in tests.
+// ---------------------------------------------------------------------------
+
+interface JoeCliOpts {
+  project?: string;
+  instanceId?: string;
+  budget?: number;
+  variant?: string;
+  debug?: boolean;
+  json?: boolean;
+}
+
+function printJoeOutcome(outcome: ExecuteJoeOutcome, json: boolean, budgetMs?: number): void {
+  // The expiry hint reports the ACTUAL effective budget (--budget when given,
+  // the default otherwise) — not a hardcoded DEFAULT_BUDGET_MS.
+  const effectiveBudgetMs =
+    typeof budgetMs === "number" && Number.isFinite(budgetMs) ? budgetMs : DEFAULT_BUDGET_MS;
+  const budgetSeconds = Math.round(effectiveBudgetMs / 1000);
+  // One-shot budget reached before a terminal state — hand back a resume handle.
+  // This is expected (a cold clone), NOT a failure: exit 0.
+  if (outcome.budgetExpired) {
+    if (json) {
+      console.log(
+        JSON.stringify(
+          {
+            command_id: outcome.commandId,
+            status: outcome.status,
+            budget_expired: true,
+            resume: `pgai joe result ${outcome.commandId}`,
+          },
+          null,
+          2
+        )
+      );
+    } else {
+      console.log(
+        `started ${outcome.commandId} · ${outcome.status} · budget ${budgetSeconds}s reached — resume:  pgai joe result ${outcome.commandId}`
+      );
+    }
+    return;
+  }
+
+  const output = outcome.output;
+  if (outcome.status === "ok") {
+    if (!output) {
+      console.error(`command ${outcome.commandId} ok but output is empty`);
+      process.exitCode = 1;
+      return;
+    }
+    if (json) console.log(JSON.stringify(output, null, 2));
+    else {
+      console.log(`command ${outcome.commandId} · ok`);
+      const body = formatJoeOutput(output);
+      if (body) console.log(body);
+    }
+    return;
+  }
+
+  // Terminal error.
+  if (json && output) console.log(JSON.stringify(output, null, 2));
+  console.error(`command ${outcome.commandId} error: ${output?.error ?? "command failed"}`);
+  process.exitCode = 1;
+}
+
+async function runJoeCli(
+  command: JoeCommand,
+  arg: string | null,
+  opts: JoeCliOpts
+): Promise<void> {
+  try {
+    const rootOpts = program.opts<CliOptions>();
+    const cfg = config.readConfig();
+    const { apiKey } = getConfig(rootOpts);
+    if (!apiKey) {
+      console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+      process.exitCode = 1;
+      return;
+    }
+    const projectRef = (opts.project ?? cfg.defaultProject ?? "").toString().trim();
+    const instanceRef = (opts.instanceId ?? "").toString().trim();
+    if (!projectRef && !instanceRef) {
+      console.error(
+        "Specify --instance-id <id> (or --project <id|alias> once projects_list is available)."
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+    if (typeof opts.budget === "number" && (!Number.isFinite(opts.budget) || opts.budget < 0)) {
+      throw new Error("--budget must be a non-negative number of seconds");
+    }
+    const budgetMs = typeof opts.budget === "number" ? opts.budget * 1000 : undefined;
+
+    const outcome = await executeJoeCommand({
+      apiKey,
+      apiBaseUrl,
+      command,
+      project: projectRef || undefined,
+      instanceId: instanceRef || undefined,
+      input: { arg, variant: opts.variant ?? null },
+      orgId: cfg.orgId ?? undefined,
+      budgetMs,
+      debug: !!opts.debug,
+    });
+
+    printJoeOutcome(outcome, !!opts.json, budgetMs);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    process.exitCode = 1;
+  }
+}
+
+/** Attach the shared Joe options (--instance-id / --project / --budget / --debug / --json). */
+function withJoeOptions(cmd: import("commander").Command): import("commander").Command {
+  return cmd
+    .option(
+      "--instance-id <id>",
+      "target the Joe instance id directly (skips --project resolution; the v1 path while projects_list is unavailable)"
+    )
+    .option("--project <id|alias>", "target project by numeric id OR alias/name (requires projects_list)")
+    .option("--budget <seconds>", "one-shot poll budget in seconds (default 25)", (v) => parseFloat(v))
+    .option("--debug", "enable debug output")
+    .option("--json", "output raw JSON");
+}
+
+const joe = program
+  .command("joe")
+  .description("Joe — plan/EXPLAIN/exec queries on ephemeral DBLab clones");
+
+withJoeOptions(
+  joe
+    .command("plan <sql>")
+    .description("plan a query (EXPLAIN, plan-only — no execution; the fast/safe default)")
+).action(async (sql: string, opts: JoeCliOpts) => {
+  await runJoeCli("plan", sql, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("explain <sql>")
+    .description("EXPLAIN + EXPLAIN ANALYZE a query (EXECUTES on the ephemeral clone)")
+).action(async (sql: string, opts: JoeCliOpts) => {
+  await runJoeCli("explain", sql, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("exec <sql>")
+    .description("run arbitrary DDL/DML on the clone (e.g. create index, analyze)")
+).action(async (sql: string, opts: JoeCliOpts) => {
+  await runJoeCli("exec", sql, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("hypo <args>")
+    .description("HypoPG hypothetical indexes (e.g. `hypo create index on users (email)`, `hypo desc`, `hypo reset`)")
+).action(async (args: string, opts: JoeCliOpts) => {
+  await runJoeCli("hypo", args, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("activity")
+    .description("running-activity snapshot (pg_stat_activity) on the clone")
+).action(async (opts: JoeCliOpts) => {
+  await runJoeCli("activity", null, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("terminate <pid>")
+    .description("pg_terminate_backend(pid) on the clone")
+).action(async (pid: string, opts: JoeCliOpts) => {
+  // The bare-positive-integer pid guard lives in buildJoeCommandText, which
+  // runs before any network call — a mistyped pid never reaches an rpc.
+  await runJoeCli("terminate", pid, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("reset")
+    .description("reset/recreate the session's thin clone")
+).action(async (opts: JoeCliOpts) => {
+  await runJoeCli("reset", null, opts);
+});
+
+withJoeOptions(
+  joe
+    .command("describe <object>")
+    .description("\\d-family schema/relation/index metadata")
+    .option("--variant <variant>", "\\d-family variant (e.g. \\d+, \\di, \\dt)")
+).action(async (object: string, opts: JoeCliOpts) => {
+  await runJoeCli("describe", object, opts);
+});
+
+// Resume / inspect a previously started command by id (the budget-expiry
+// resume handle printed by the one-shot verbs).
+joe
+  .command("result <commandId>")
+  .description("fetch a Joe command's output by id (resume a budget-expired one-shot)")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (commandId: string, opts: { debug?: boolean; json?: boolean }) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const cfg = config.readConfig();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) {
+        console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+        process.exitCode = 1;
+        return;
+      }
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const output = await getCommandOutput({ apiKey, apiBaseUrl, commandId, debug: !!opts.debug });
+      if (opts.json) {
+        console.log(JSON.stringify(output, null, 2));
+        // Same exit contract as the human output and the one-shot path
+        // (printJoeOutcome): only `ok` is a result — scripts consuming --json
+        // must not proceed on `pending`/`error`.
+        if (output.status !== "ok") {
+          process.exitCode = 1;
+        }
+        return;
+      }
+      if (output.status === "ok") {
+        console.log(`command ${output.command_id} · ok`);
+        const body = formatJoeOutput(output);
+        if (body) console.log(body);
+      } else if (output.status === "error") {
+        console.error(`command ${output.command_id} error: ${output.error ?? "command failed"}`);
+        process.exitCode = 1;
+      } else {
+        console.error(`command ${output.command_id} · ${output.status} — result is not ready`);
+        process.exitCode = 1;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(message);
+      process.exitCode = 1;
+    }
+  });
+
+// Org-level discovery — a general postgresai command, NOT a Joe endpoint.
+program
+  .command("projects")
+  .description("list the org's projects (shows which have Joe ready) — org-level, not a Joe endpoint")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: { debug?: boolean; json?: boolean }) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const cfg = config.readConfig();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) {
+        console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+        process.exitCode = 1;
+        return;
+      }
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+      const projects = await listProjects({
+        apiKey,
+        apiBaseUrl,
+        orgId: cfg.orgId ?? undefined,
+        debug: !!opts.debug,
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(projects, null, 2));
+      } else {
+        console.log(formatProjectsTable(projects));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(message);
+      process.exitCode = 1;
+    }
+  });
 
 // MCP server
 const mcp = program.command("mcp").description("MCP server integration");
