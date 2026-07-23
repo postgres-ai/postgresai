@@ -13,6 +13,8 @@ export interface Config {
   defaultProject: string | null;
   /** Docker Compose project name for monitoring stack */
   projectName: string | null;
+  /** Epoch ms when the occasional feedback tip was last shown (see lib/feedback.ts) */
+  feedbackTipLastShownAt?: number | null;
 }
 
 /**
@@ -53,6 +55,7 @@ export function readConfig(): Config {
     orgId: null,
     defaultProject: null,
     projectName: null,
+    feedbackTipLastShownAt: null,
   };
 
   // Try user-level config first
@@ -67,6 +70,7 @@ export function readConfig(): Config {
       config.orgId = parsed.orgId ?? null;
       config.defaultProject = parsed.defaultProject ?? null;
       config.projectName = parsed.projectName ?? null;
+      config.feedbackTipLastShownAt = parsed.feedbackTipLastShownAt ?? null;
       return config;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

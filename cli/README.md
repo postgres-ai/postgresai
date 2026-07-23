@@ -471,7 +471,12 @@ Coverage configuration is in `bunfig.toml`. Reports are generated in `coverage/`
 - Node.js 18 or higher
 - Docker and Docker Compose
 
+## Feedback
+
+Have an idea or found a rough edge? Run `pgai feedback` (or `pgai feedback --open`) or share it directly at https://gitlab.com/postgres-ai/postgresai/-/work_items/300. Set `PGAI_NO_FEEDBACK_TIP=1` to silence the occasional in-CLI reminder.
+
 ## Learn more
 
 - Documentation: https://postgres.ai/docs
 - Issues: https://gitlab.com/postgres-ai/postgres_ai/-/issues
+- Ideas / feedback: https://gitlab.com/postgres-ai/postgresai/-/work_items/300
