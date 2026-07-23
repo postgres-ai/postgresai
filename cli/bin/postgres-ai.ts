@@ -31,6 +31,7 @@ import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyI
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
 import { maskSecret } from "../lib/util";
+import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports } from "../lib/checkup";
@@ -875,6 +876,50 @@ program
     "--storage-base-url <url>",
     "Storage base URL for file uploads (overrides PGAI_STORAGE_BASE_URL)"
   );
+
+// Subtle, discoverable feedback line at the bottom of the top-level `--help`
+// only (addHelpText on the program does not propagate to subcommand help).
+program.addHelpText("after", () => `\n💡 Ideas / feedback: ${FEEDBACK_URL}\n`);
+
+// Occasionally surface the feedback link after a successful interactive command
+// (first run, then at most ~weekly). maybeEmitFeedbackTip enforces that it never
+// appears with --json, on a non-TTY, or when suppressed, so agents/CI/scripts
+// never see it. Skipped for `feedback`/`help` themselves and for failed runs.
+program.hook("postAction", (_thisCommand, actionCommand) => {
+  const name = actionCommand.name();
+  if (name === "feedback" || name === "help") return;
+  if (process.exitCode && process.exitCode !== 0) return;
+  const opts = actionCommand.opts<{ json?: boolean }>();
+  maybeEmitFeedbackTip({
+    isTTY: !!process.stdout.isTTY,
+    json: !!opts.json,
+    suppress: process.env[FEEDBACK_SUPPRESS_ENV],
+  });
+});
+
+program
+  .command("feedback")
+  .description("share ideas or feedback about the CLI")
+  .option("--open", "open the feedback page in your browser", false)
+  .option("--json", "output the feedback URL as JSON (machine-readable)", false)
+  .action(async (opts: { open?: boolean; json?: boolean }) => {
+    if (opts.json) {
+      console.log(feedbackJson());
+      return;
+    }
+    console.log(feedbackMessage());
+    if (opts.open) {
+      const openCommand =
+        process.platform === "darwin" ? "open" :
+        process.platform === "win32" ? "start" :
+        "xdg-open";
+      try {
+        spawn(openCommand, [FEEDBACK_URL], { detached: true, stdio: "ignore" }).unref();
+      } catch {
+        // Best-effort: the URL is already printed above.
+      }
+    }
+  });
 
 program
   .command("set-default-project <project>")
