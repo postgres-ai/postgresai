@@ -197,6 +197,10 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
     for (const verb of ["plan", "explain", "exec", "hypo", "activity", "terminate", "reset", "describe", "result"]) {
       expect(out).toContain(verb);
     }
+    // The --project/--instance-id requirement is stated up front, not only at
+    // runtime — every verb except `result` needs one of them. Pin the actual
+    // sentence (not loose per-word checks) so a garbled description fails.
+    expect(out).toContain("require --project <id|alias> or --instance-id <id>");
     // The async surface's session flags and status/history verbs are gone.
     expect(out).not.toContain("--session");
     expect(out).not.toContain("new-session");
@@ -345,9 +349,9 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
   });
 
   test("pgai joe explain --instance-id targets the instance directly (no projects_list)", async () => {
-    // The v1 path: projects_list is not deployed on main/.green, so the joe
-    // verbs must be fully usable with a manual instance id — resolution is
-    // skipped entirely and the id goes on the wire as the given string.
+    // The direct path: --instance-id makes the joe verbs fully usable with a
+    // manual instance id — project resolution is skipped entirely and the id
+    // goes on the wire as the given string.
     const api = startFakeApi();
     try {
       const r = await runCliAsync(
@@ -614,10 +618,14 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
     }
   });
 
-  test("neither --project nor --instance-id fails fast with the v1 hint", () => {
+  test("neither --project nor --instance-id fails fast with the targeting hint", () => {
     const r = runCli(["joe", "plan", "select 1"], isolatedEnv({ PGAI_API_KEY: "k" }));
     expect(r.status).toBe(1);
-    expect(`${r.stdout}\n${r.stderr}`).toContain("--instance-id");
+    // Pin the exact message so a wording regression (e.g. dropping --project)
+    // fails here rather than passing on a loose substring.
+    expect(`${r.stdout}\n${r.stderr}`).toContain(
+      "Specify --project <id|alias> or --instance-id <id>."
+    );
   });
 
   test("missing API key fails fast", () => {

@@ -540,10 +540,10 @@ export interface ExecuteJoeParams {
   /** Raw `--project <id|alias>` value (resolved via `projects_list`). */
   project?: string;
   /**
-   * Direct `--instance-id` value — skips project resolution entirely (the v1
-   * path while `projects_list` is not deployed). Kept a string end-to-end so
-   * a 64-bit id never rounds through a JS number; PostgREST casts it to the
-   * rpc's bigint param. Wins over `project` when both are given.
+   * Direct `--instance-id` value — skips project resolution entirely. Kept a
+   * string end-to-end so a 64-bit id never rounds through a JS number;
+   * PostgREST casts it to the rpc's bigint param. Wins over `project` when both
+   * are given.
    */
   instanceId?: number | string;
   input?: JoeVerbInput;
