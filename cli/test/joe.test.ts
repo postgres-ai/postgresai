@@ -642,9 +642,9 @@ describe("executeJoeCommand — target → build → run", () => {
   });
 
   test("a direct instanceId skips project resolution entirely", async () => {
-    // The v1 path: projects_list is not deployed, so the instance id is given
-    // directly and must go straight to joe_command_run — as the exact string,
-    // never resolved, never Number()ed.
+    // The direct path: --instance-id skips project resolution, so the id is
+    // given directly and must go straight to joe_command_run — as the exact
+    // string, never resolved, never Number()ed.
     const captured = installFetch({
       joe_command_run: () => json("80"),
       joe_command_output: () => json({ command_id: "80", status: "ok", response: "ok", error: null }),

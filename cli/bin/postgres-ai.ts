@@ -877,6 +877,12 @@ program
     "Storage base URL for file uploads (overrides PGAI_STORAGE_BASE_URL)"
   );
 
+// After Commander errors (e.g. an unknown command), reprint the full help
+// text to stderr so the error line is followed by the available commands and
+// options instead of a bare error line. (The no-arg form shows the whole help
+// screen; pass a string here instead to show a short one-line hint.)
+program.showHelpAfterError();
+
 // Subtle, discoverable feedback line at the bottom of the top-level `--help`
 // only (addHelpText on the program does not propagate to subcommand help).
 program.addHelpText("after", () => `\n💡 Ideas / feedback: ${FEEDBACK_URL}\n`);
@@ -2794,7 +2800,14 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
   });
 }
 
-program.command("help", { isDefault: true }).description("show help").action(() => {
+// `help` is intentionally NOT the default command: making it default causes
+// Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
+// as an excess positional argument, producing a misleading "too many arguments
+// for 'help'" error. With no default command, Commander instead emits its
+// standard `error: unknown command '<x>'` on stderr and exits non-zero. The
+// bare-`pgai` nicety (show help, exit 0) is preserved explicitly at the parse
+// entrypoint below.
+program.command("help").description("show help").action(() => {
   program.outputHelp();
 });
 
@@ -5542,7 +5555,7 @@ async function runJoeCli(
     const instanceRef = (opts.instanceId ?? "").toString().trim();
     if (!projectRef && !instanceRef) {
       console.error(
-        "Specify --instance-id <id> (or --project <id|alias> once projects_list is available)."
+        "Specify --project <id|alias> or --instance-id <id>."
       );
       process.exitCode = 1;
       return;
@@ -5578,9 +5591,9 @@ function withJoeOptions(cmd: import("commander").Command): import("commander").C
   return cmd
     .option(
       "--instance-id <id>",
-      "target the Joe instance id directly (skips --project resolution; the v1 path while projects_list is unavailable)"
+      "target the Joe instance id directly (skips --project resolution); required unless --project is given"
     )
-    .option("--project <id|alias>", "target project by numeric id OR alias/name (requires projects_list)")
+    .option("--project <id|alias>", "target project by numeric id OR alias/name; required unless --instance-id is given")
     .option("--budget <seconds>", "one-shot poll budget in seconds (default 25)", (v) => parseFloat(v))
     .option("--debug", "enable debug output")
     .option("--json", "output raw JSON");
@@ -5588,7 +5601,10 @@ function withJoeOptions(cmd: import("commander").Command): import("commander").C
 
 const joe = program
   .command("joe")
-  .description("Joe — plan/EXPLAIN/exec queries on ephemeral DBLab clones");
+  .description(
+    "Joe — plan/EXPLAIN/exec queries on ephemeral DBLab clones. " +
+      "All subcommands except 'result' require --project <id|alias> or --instance-id <id>."
+  );
 
 withJoeOptions(
   joe
@@ -5906,9 +5922,19 @@ mcp
 // skip the auto-parse so importing doesn't kick off the whole command tree.
 // `import.meta.main` is honored both under bun and in the node-targeted build.
 if (import.meta.main) {
-  program.parseAsync(process.argv).finally(() => {
+  // Bare `pgai` (no args at all): keep the long-standing nicety of showing help
+  // and exiting 0. Without a default `help` command, Commander would otherwise
+  // print help to stderr and exit 1 here. Unknown commands still flow through
+  // parseAsync, where Commander emits `error: unknown command '<x>'` on stderr
+  // and exits non-zero (see the `help` command and showHelpAfterError above).
+  if (process.argv.length <= 2) {
+    program.outputHelp();
     closeReadline();
-  });
+  } else {
+    program.parseAsync(process.argv).finally(() => {
+      closeReadline();
+    });
+  }
 }
 
 // Exported for unit tests (the CLI surface above is unaffected; these are the
