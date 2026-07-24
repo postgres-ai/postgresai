@@ -23,6 +23,21 @@ import {
   type JoeCommand,
   type ExecuteJoeOutcome,
 } from "../lib/joe";
+import {
+  resolveDblabInstanceId,
+  createClone,
+  listClones,
+  getClone,
+  resetClone,
+  destroyClone,
+  listBranches,
+  createBranch,
+  deleteBranch,
+  branchLog,
+  listSnapshots,
+  createSnapshot,
+  destroySnapshot,
+} from "../lib/dblab";
 import { resolveBaseUrls } from "../lib/util";
 import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
@@ -5690,6 +5705,324 @@ program
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(message);
+      process.exitCode = 1;
+    }
+  });
+
+// ============================================================================
+// DBLab companion command surface (Joe API v2 · SPEC §8)
+//
+// `pgai dblab clone|branch|snapshot …` proxy the SAME Platform DBLab API the
+// Console already drives (v1.dblab_api_call). Every verb is `--project
+// <id|alias>` scoped: the project's single DBLab instance is resolved via the
+// projects listing, then the verb is proxied. The DESTRUCTIVE verbs — the HTTP
+// DELETEs: clone destroy, branch delete, snapshot destroy — require the access
+// token's OWNER to hold the Admin or AllFeaturesUser role in the token org
+// (the same role gate as the joe verbs); clone reset is a POST and is NOT
+// gated. Read/list/create verbs stay at plain org-token level. All enforced
+// backend-side — a PT403 surfaces here as an HTTP 403.
+// ============================================================================
+
+interface DblabCmdOpts {
+  project?: string;
+  debug?: boolean;
+  json?: boolean;
+}
+
+/**
+ * Resolve the shared inputs every DBLab verb needs: the api key, the api base
+ * url, and the project's single DBLab `instance_id`. Throws (caught by each
+ * action → exit 1) when the api key or `--project` is missing, or when no DBLab
+ * instance can be resolved for the project.
+ */
+async function resolveDblabTarget(
+  project: string | undefined,
+  debug: boolean
+): Promise<{ apiKey: string; apiBaseUrl: string; orgId?: number; instanceId: string }> {
+  const rootOpts = program.opts<CliOptions>();
+  const cfg = config.readConfig();
+  const { apiKey } = getConfig(rootOpts);
+  if (!apiKey) {
+    throw new Error("API key is required. Run 'pgai auth' first or set --api-key.");
+  }
+  const ref = (project ?? "").trim();
+  if (!ref) {
+    throw new Error("--project <id|alias> is required");
+  }
+  const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+  const orgId = cfg.orgId ?? undefined;
+  const instanceId = await resolveDblabInstanceId({ apiKey, apiBaseUrl, project: ref, orgId, debug });
+  return { apiKey, apiBaseUrl, orgId, instanceId };
+}
+
+const dblab = program
+  .command("dblab")
+  .description("DBLab thin-clone / branch / snapshot management (proxies the Platform DBLab API)");
+
+// ---- clone ----------------------------------------------------------------
+
+const clone = dblab.command("clone").description("DBLab thin-clone management (proxies the Platform DBLab API)");
+
+clone
+  .command("create")
+  .description("create a thin clone of the project's database")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--branch <branch>", "branch to clone from")
+  .option("--snapshot <id>", "snapshot id to clone from")
+  .option("--id <id>", "clone id (DBLab generates one when omitted)")
+  .option("--db-user <user>", "clone DB user (set password via PGAI_CLONE_DB_PASSWORD)")
+  .option("--protected", "protect the clone from auto-deletion")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: DblabCmdOpts & { branch?: string; snapshot?: string; id?: string; dbUser?: string; protected?: boolean }) => {
+    try {
+      const dbPassword = process.env.PGAI_CLONE_DB_PASSWORD;
+      if ((opts.dbUser && !dbPassword) || (!opts.dbUser && dbPassword)) {
+        throw new Error("--db-user and PGAI_CLONE_DB_PASSWORD must be provided together");
+      }
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await createClone({
+        apiKey, apiBaseUrl, instanceId,
+        cloneId: opts.id,
+        branch: opts.branch,
+        snapshotId: opts.snapshot,
+        dbUser: opts.dbUser,
+        dbPassword,
+        isProtected: !!opts.protected,
+        debug: !!opts.debug,
+      });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+clone
+  .command("list")
+  .description("list the project's thin clones")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await listClones({ apiKey, apiBaseUrl, instanceId, debug: !!opts.debug });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+clone
+  .command("status <cloneId>")
+  .description("show a clone's status")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (cloneId: string, opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await getClone({ apiKey, apiBaseUrl, instanceId, cloneId, debug: !!opts.debug });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+clone
+  .command("reset <cloneId>")
+  .description("reset a clone to a pristine snapshot")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--snapshot <id>", "snapshot id to reset to (default: latest)")
+  .option("--latest", "reset to the latest snapshot")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (cloneId: string, opts: DblabCmdOpts & { snapshot?: string; latest?: boolean }) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await resetClone({
+        apiKey, apiBaseUrl, instanceId, cloneId,
+        snapshotId: opts.snapshot,
+        latest: opts.latest,
+        debug: !!opts.debug,
+      });
+      printResult(result ?? { reset: true, cloneId }, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+clone
+  .command("destroy <cloneId>")
+  .description("destroy a clone (requires the Admin or AllFeaturesUser role)")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (cloneId: string, opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await destroyClone({ apiKey, apiBaseUrl, instanceId, cloneId, debug: !!opts.debug });
+      printResult(result ?? { destroyed: true, cloneId }, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+// ---- branch ---------------------------------------------------------------
+
+const branch = dblab.command("branch").description("DBLab branch management (proxies the Platform DBLab API)");
+
+branch
+  .command("list")
+  .description("list the project's branches")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await listBranches({ apiKey, apiBaseUrl, instanceId, debug: !!opts.debug });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+branch
+  .command("create <name>")
+  .description("create a branch")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--snapshot <id>", "snapshot id to base the branch on")
+  .option("--base-branch <branch>", "parent branch to fork from")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (name: string, opts: DblabCmdOpts & { snapshot?: string; baseBranch?: string }) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await createBranch({
+        apiKey, apiBaseUrl, instanceId,
+        branchName: name,
+        baseBranch: opts.baseBranch,
+        snapshotId: opts.snapshot,
+        debug: !!opts.debug,
+      });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+branch
+  .command("delete <name>")
+  .description("delete a branch (requires the Admin or AllFeaturesUser role)")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (name: string, opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await deleteBranch({ apiKey, apiBaseUrl, instanceId, branchName: name, debug: !!opts.debug });
+      printResult(result ?? { deleted: true, branch: name }, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+branch
+  .command("log <name>")
+  .description("show a branch's snapshot log")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (name: string, opts: DblabCmdOpts) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await branchLog({ apiKey, apiBaseUrl, instanceId, branchName: name, debug: !!opts.debug });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+// ---- snapshot -------------------------------------------------------------
+
+const snapshot = dblab.command("snapshot").description("DBLab snapshot management (proxies the Platform DBLab API)");
+
+snapshot
+  .command("list")
+  .description("list the project's snapshots")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--branch <branch>", "filter by branch")
+  .option("--dataset <dataset>", "filter by dataset")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: DblabCmdOpts & { branch?: string; dataset?: string }) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await listSnapshots({
+        apiKey, apiBaseUrl, instanceId,
+        branchName: opts.branch,
+        dataset: opts.dataset,
+        debug: !!opts.debug,
+      });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+snapshot
+  .command("create")
+  .description("create a snapshot from a clone")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .requiredOption("--clone <id>", "clone id to snapshot")
+  .option("--message <message>", "snapshot message")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: DblabCmdOpts & { clone?: string; message?: string }) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await createSnapshot({
+        apiKey, apiBaseUrl, instanceId,
+        cloneId: opts.clone as string,
+        message: opts.message,
+        debug: !!opts.debug,
+      });
+      printResult(result, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+snapshot
+  .command("destroy <snapshotId>")
+  .description("destroy a snapshot (requires the Admin or AllFeaturesUser role)")
+  .requiredOption("--project <id|alias>", "project id or alias")
+  .option("--force", "force-delete even when dependent clones exist")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (snapshotId: string, opts: DblabCmdOpts & { force?: boolean }) => {
+    try {
+      const { apiKey, apiBaseUrl, instanceId } = await resolveDblabTarget(opts.project, !!opts.debug);
+      const result = await destroySnapshot({
+        apiKey, apiBaseUrl, instanceId, snapshotId,
+        force: !!opts.force,
+        debug: !!opts.debug,
+      });
+      printResult(result ?? { destroyed: true, snapshot: snapshotId }, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;
     }
   });
