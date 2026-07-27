@@ -2229,10 +2229,26 @@ program
 
       // Generate reports
       let reports: Record<string, any>;
+      // Checks whose generator threw (ALL mode only). The run continues with
+      // the remaining checks; a non-empty list marks the run as PARTIAL:
+      // completed reports are still written/uploaded, but the exit code is
+      // non-zero so automation notices. A total failure (every check failed)
+      // still throws out of generateAllReports and hard-fails the run.
+      const failedChecks: Array<{ checkId: string; checkTitle: string; error: Error }> = [];
       if (checkId === "ALL") {
-        reports = await generateAllReports(client, opts.nodeName, (p) => {
-          spinner.update(`Running ${p.checkId}: ${p.checkTitle} (${p.index}/${p.total})`);
-        });
+        reports = await generateAllReports(
+          client,
+          opts.nodeName,
+          (p) => {
+            spinner.update(`Running ${p.checkId}: ${p.checkTitle} (${p.index}/${p.total})`);
+          },
+          (failure) => {
+            failedChecks.push(failure);
+            console.error(
+              `Warning: check ${failure.checkId} (${failure.checkTitle}) failed: ${failure.error.message} — continuing with remaining checks`
+            );
+          }
+        );
       } else {
         const generator = REPORT_GENERATORS[checkId];
         if (!generator) {
@@ -2399,6 +2415,17 @@ program
           console.log('  --markdown      Output markdown via PostgresAI API');
         }
         console.log('  --output <dir>  Save to directory');
+      }
+
+      // Partial failure: some checks failed but others completed (their
+      // reports were written/uploaded above). Summarize what is missing and
+      // exit non-zero so scripts and CI notice the run was incomplete.
+      if (failedChecks.length > 0) {
+        const ids = failedChecks.map((f) => f.checkId).join(", ");
+        console.error(
+          `Warning: ${failedChecks.length} of ${failedChecks.length + Object.keys(reports).length} checks failed (${ids}); results are partial`
+        );
+        process.exitCode = 1;
       }
     } catch (error) {
       if (error instanceof RpcError) {

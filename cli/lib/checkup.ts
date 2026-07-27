@@ -2226,21 +2226,47 @@ export const CHECK_INFO: Record<string, string> = (() => {
 })();
 
 /**
+ * A single check that failed during generateAllReports. Reported through the
+ * onCheckError callback so callers can warn, mark the run as partial, and
+ * still keep every report that DID complete.
+ */
+export interface CheckGenerationFailure {
+  checkId: string;
+  checkTitle: string;
+  error: Error;
+}
+
+/**
  * Generate all available health check reports.
  * This is the main entry point for express mode checkup generation.
+ *
+ * Per-check error isolation (work item 260, finding 4): one throwing check
+ * must not abort the whole checkup and discard the reports that already
+ * completed. Each generator runs in its own try/catch; failures are reported
+ * through onCheckError and the remaining checks still run. A TOTAL failure
+ * (every check failed — e.g. the connection died) still throws loudly, so a
+ * fully broken run can never masquerade as an empty-but-successful one.
+ *
+ * Single-check runs (`--check-id <id>`) do NOT go through this function —
+ * they call the generator directly and keep hard-fail (throw) semantics.
  *
  * @param client - Connected PostgreSQL client
  * @param nodeName - Node identifier for the report (default: "node-01")
  * @param onProgress - Optional callback for progress updates during generation
- * @returns Object mapping check IDs (e.g., "H001", "A002") to their reports
- * @throws {Error} If any critical report generation fails
+ * @param onCheckError - Optional callback invoked for each check whose
+ *   generator threw; the run continues with the remaining checks
+ * @returns Object mapping check IDs (e.g., "H001", "A002") to their reports;
+ *   checks that failed are absent from the result
+ * @throws {Error} Only when EVERY check fails (total failure)
  */
 export async function generateAllReports(
   client: Client,
   nodeName: string = "node-01",
-  onProgress?: (info: { checkId: string; checkTitle: string; index: number; total: number }) => void
+  onProgress?: (info: { checkId: string; checkTitle: string; index: number; total: number }) => void,
+  onCheckError?: (failure: CheckGenerationFailure) => void
 ): Promise<Record<string, Report>> {
   const reports: Record<string, Report> = {};
+  const failures: CheckGenerationFailure[] = [];
 
   const entries = Object.entries(REPORT_GENERATORS);
   const total = entries.length;
@@ -2248,13 +2274,35 @@ export async function generateAllReports(
 
   for (const [checkId, generator] of entries) {
     index += 1;
+    const checkTitle = CHECK_INFO[checkId] || checkId;
     onProgress?.({
       checkId,
-      checkTitle: CHECK_INFO[checkId] || checkId,
+      checkTitle,
       index,
       total,
     });
-    reports[checkId] = await generator(client, nodeName);
+    try {
+      reports[checkId] = await generator(client, nodeName);
+    } catch (err) {
+      const failure: CheckGenerationFailure = {
+        checkId,
+        checkTitle,
+        error: err instanceof Error ? err : new Error(String(err)),
+      };
+      failures.push(failure);
+      onCheckError?.(failure);
+    }
+  }
+
+  // Preserve the loud-failure contract for a TOTAL failure: if nothing at all
+  // succeeded (dead connection, catastrophic permission problem, ...), throw
+  // instead of returning an empty result that downstream code would happily
+  // upload / write as a "successful" checkup with zero findings.
+  if (total > 0 && Object.keys(reports).length === 0) {
+    const first = failures[0];
+    throw new Error(
+      `All ${total} checks failed — first error (${first.checkId}): ${first.error.message}`
+    );
   }
 
   return reports;
