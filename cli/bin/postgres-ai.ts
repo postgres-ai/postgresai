@@ -4183,7 +4183,15 @@ async function runAuthLogin(opts: AuthLoginOptions) {
       const openCommand = process.platform === "darwin" ? "open" :
                          process.platform === "win32" ? "start" :
                          "xdg-open";
-      spawn(openCommand, [authUrl], { detached: true, stdio: "ignore" }).unref();
+      // A missing/unspawnable opener (e.g. no xdg-open on a minimal Linux, or
+      // "start" being a cmd.exe builtin rather than an executable on Windows)
+      // emits an async "error" event; without a handler it would crash the whole
+      // login flow. Swallow it — the URL is already printed above for manual use.
+      const browserProcess = spawn(openCommand, [authUrl], { detached: true, stdio: "ignore" });
+      browserProcess.on("error", () => {
+        // Ignore: fall back to the manually printed URL
+      });
+      browserProcess.unref();
 
       // Step 4: Wait for callback
       console.log("Waiting for authorization...");
@@ -4253,12 +4261,33 @@ async function runAuthLogin(opts: AuthLoginOptions) {
           const apiToken = result.api_token || result?.[0]?.result?.api_token; // There is a bug with PostgREST Caching that may return an array, not single object, it's a workaround to support both cases.
           const orgId = result.org_id || result?.[0]?.result?.org_id; // There is a bug with PostgREST Caching that may return an array, not single object, it's a workaround to support both cases.
 
+          // Guard: a 200 response with valid JSON may still lack the API token
+          // or the org id (e.g. an error object returned with 200, or a response
+          // schema change). config.writeConfig merges new values over the existing
+          // config and JSON.stringify drops undefined keys, so writing an undefined
+          // apiKey/orgId would silently wipe the user's existing credentials — and
+          // an undefined orgId is also treated as an "org change", spuriously
+          // clearing defaultProject. Fail loudly and leave the existing config
+          // untouched when either field is missing.
+          const tokenValid = typeof apiToken === "string" && apiToken.length > 0;
+          const orgIdValid = orgId !== undefined && orgId !== null && orgId !== "";
+          if (!tokenValid || !orgIdValid) {
+            const missingField = !tokenValid ? "an API token" : "an organization ID";
+            console.error(`Authentication failed: server response did not include ${missingField}.`);
+            console.error("Your existing configuration has been left unchanged.");
+            if (opts.debug) {
+              console.error(`Debug: exchange response body: ${exchangeBody}`);
+            }
+            process.exit(1);
+            return;
+          }
+
           // Step 6: Save token to config
           // Check if org changed to decide whether to preserve defaultProject
           const existingConfig = config.readConfig();
           const existingOrgId = existingConfig.orgId;
           const existingProject = existingConfig.defaultProject;
-          const orgChanged = existingOrgId && existingOrgId !== orgId;
+          const orgChanged = existingOrgId != null && existingOrgId !== orgId;
 
           config.writeConfig({
             apiKey: apiToken,

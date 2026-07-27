@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
@@ -284,4 +284,239 @@ describe("maskSecret utility", () => {
   test("handles empty string", () => {
     expect(util.maskSecret("")).toBe("");
   });
+});
+
+describe("OAuth login flow hardening", () => {
+  const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+  const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
+
+  // Bun startup + the CLI's full import graph is heavy, so give slow/loaded CI
+  // runners generous margins. PORT_WAIT_MS waits for the callback server to bind;
+  // EXIT_WAIT_MS is the hard kill deadline. TEST_TIMEOUT_MS bounds each test and
+  // stays comfortably above PORT_WAIT_MS + EXIT_WAIT_MS.
+  const PORT_WAIT_MS = 20000;
+  const EXIT_WAIT_MS = 20000;
+  const TEST_TIMEOUT_MS = 60000;
+
+  interface LoginFlowResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    configAfter: Record<string, unknown> | null;
+  }
+
+  /**
+   * Drives a full `pgai auth login` OAuth flow end-to-end against a local mock API:
+   * 1. starts a mock backend serving /rpc/oauth_init and /rpc/oauth_token_exchange
+   * 2. spawns the CLI with HOME/XDG_CONFIG_HOME pointing at a temp dir
+   * 3. captures the PKCE state from the oauth_init request and the callback port
+   *    from CLI stdout, then simulates the browser redirect to the callback server
+   * 4. returns the CLI exit code, output, and the resulting config.json contents
+   *
+   * PATH for the CLI subprocess controls the browser-opener lookup:
+   * - default: fake `open`/`xdg-open` executables that succeed without opening anything
+   * - breakOpener: an empty dir, so spawning the opener fails with ENOENT
+   */
+  async function runLoginFlow(options: {
+    exchangeResponse: { status: number; body: string };
+    breakOpener?: boolean;
+    existingConfig?: Record<string, unknown>;
+  }): Promise<LoginFlowResult> {
+    const home = mkdtempSync(join(tmpdir(), "postgresai-oauth-"));
+    const configDir = join(home, ".config", "postgresai");
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, "config.json");
+    if (options.existingConfig) {
+      writeFileSync(configPath, JSON.stringify(options.existingConfig, null, 2) + "\n");
+    }
+
+    const binDir = join(home, "fakebin");
+    mkdirSync(binDir);
+    if (!options.breakOpener) {
+      for (const name of ["open", "xdg-open"]) {
+        writeFileSync(join(binDir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      }
+    }
+
+    let capturedState: string | null = null;
+    const mockApi = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (req) => {
+        const url = new URL(req.url);
+        if (req.method === "POST" && url.pathname.endsWith("/rpc/oauth_init")) {
+          const body = (await req.json()) as { state?: string };
+          capturedState = body.state ?? null;
+          return Response.json({});
+        }
+        if (req.method === "POST" && url.pathname.endsWith("/rpc/oauth_token_exchange")) {
+          return new Response(options.exchangeResponse.body, {
+            status: options.exchangeResponse.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    let proc: ReturnType<typeof Bun.spawn> | null = null;
+    try {
+      proc = Bun.spawn([bunBin, cliPath, "auth", "login"], {
+        env: {
+          ...process.env,
+          HOME: home,
+          XDG_CONFIG_HOME: join(home, ".config"),
+          PGAI_API_BASE_URL: `http://127.0.0.1:${mockApi.port}/api/general`,
+          PATH: binDir,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      // Accumulate stdout incrementally so we can react mid-flow
+      let stdoutBuf = "";
+      const stdoutDone = (async () => {
+        const decoder = new TextDecoder();
+        for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+          stdoutBuf += decoder.decode(chunk, { stream: true });
+        }
+      })();
+      const stderrPromise = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+
+      // Wait until the CLI registered with the mock backend and printed its callback port,
+      // or until it exits early (e.g. crashes before reaching the callback wait)
+      let exitedEarly = false;
+      proc.exited.then(() => { exitedEarly = true; });
+      const deadline = Date.now() + PORT_WAIT_MS;
+      let callbackPort: number | null = null;
+      while (Date.now() < deadline) {
+        const portMatch = stdoutBuf.match(/listening on port (\d+)/);
+        if (portMatch && capturedState !== null) {
+          callbackPort = parseInt(portMatch[1], 10);
+          break;
+        }
+        if (exitedEarly) break;
+        await Bun.sleep(50);
+      }
+
+      // Simulate the browser hitting the local callback server. If the CLI already
+      // crashed, the connection is refused — swallow that so the test can assert on it.
+      if (callbackPort !== null && capturedState !== null) {
+        try {
+          await fetch(
+            `http://127.0.0.1:${callbackPort}/callback?code=test-auth-code&state=${encodeURIComponent(capturedState)}`
+          );
+        } catch {
+          // callback server is gone; the CLI process must have exited
+        }
+      }
+
+      let timedOut = false;
+      const exitCode = await Promise.race([
+        proc.exited,
+        Bun.sleep(EXIT_WAIT_MS).then(() => {
+          timedOut = true;
+          proc?.kill();
+          return -1;
+        }),
+      ]);
+      await stdoutDone.catch(() => {});
+      const stderr = await stderrPromise.catch(() => "");
+
+      // A timeout surfaces as `exitCode === -1`; without context that reads as a
+      // bare "expected 0, got -1". Emit the captured output so a slow-runner flake
+      // is diagnosable rather than mysterious.
+      if (timedOut) {
+        console.error(
+          `runLoginFlow: CLI did not exit within ${EXIT_WAIT_MS}ms; killed.\n` +
+            `--- stdout ---\n${stdoutBuf}\n--- stderr ---\n${stderr}`
+        );
+      }
+
+      const configAfter = existsSync(configPath)
+        ? (JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>)
+        : null;
+
+      return { exitCode, stdout: stdoutBuf, stderr, configAfter };
+    } finally {
+      try { proc?.kill(); } catch { /* already exited */ }
+      mockApi.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  test("exchange response without api_token fails and preserves existing config", async () => {
+    const existingConfig = {
+      apiKey: "existing-key",
+      orgId: 42,
+      defaultProject: "prod-project",
+    };
+
+    const result = await runLoginFlow({
+      // Valid JSON, HTTP 200, but no api_token (e.g. error object or schema change)
+      exchangeResponse: { status: 200, body: JSON.stringify({ hint: "no token here" }) },
+      existingConfig,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toMatch(/Authentication successful/);
+    expect(result.stderr).toMatch(/API token/i);
+    // The pre-existing config must be untouched
+    expect(result.configAfter).toEqual(existingConfig);
+  }, TEST_TIMEOUT_MS);
+
+  test("exchange response with a token but no org_id fails and preserves existing config", async () => {
+    const existingConfig = {
+      apiKey: "existing-key",
+      orgId: 42,
+      defaultProject: "prod-project",
+    };
+
+    const result = await runLoginFlow({
+      // Valid token but no org_id: writing orgId=undefined would drop the stored
+      // orgId and spuriously clear defaultProject (undefined counts as an org change).
+      exchangeResponse: { status: 200, body: JSON.stringify({ api_token: "new-token-123" }) },
+      existingConfig,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toMatch(/Authentication successful/);
+    expect(result.stderr).toMatch(/organization ID/i);
+    // The pre-existing config (including orgId and defaultProject) must be untouched
+    expect(result.configAfter).toEqual(existingConfig);
+  }, TEST_TIMEOUT_MS);
+
+  test("login continues when the browser opener cannot be spawned", async () => {
+    const result = await runLoginFlow({
+      exchangeResponse: {
+        status: 200,
+        body: JSON.stringify({ api_token: "new-token-123", org_id: 7 }),
+      },
+      // PATH contains no `open`/`xdg-open`, so spawning the opener emits ENOENT
+      breakOpener: true,
+    });
+
+    // The flow must fall back to the manually printed URL and complete normally
+    expect(result.stdout).toMatch(/Waiting for authorization/);
+    expect(result.stdout).toMatch(/Authentication successful/);
+    expect(result.exitCode).toBe(0);
+    expect(result.configAfter?.apiKey).toBe("new-token-123");
+    expect(result.configAfter?.orgId).toBe(7);
+  }, TEST_TIMEOUT_MS);
+
+  test("login accepts the PostgREST array-shape exchange response", async () => {
+    // PostgREST caching can wrap the RPC result in an array; the CLI unwraps
+    // `result[0].result`. Exercise that fallback for both api_token and org_id.
+    const result = await runLoginFlow({
+      exchangeResponse: {
+        status: 200,
+        body: JSON.stringify([{ result: { api_token: "array-token-456", org_id: 9 } }]),
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toMatch(/Authentication successful/);
+    expect(result.configAfter?.apiKey).toBe("array-token-456");
+    expect(result.configAfter?.orgId).toBe(9);
+  }, TEST_TIMEOUT_MS);
 });
