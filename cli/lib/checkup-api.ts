@@ -260,6 +260,11 @@ async function postRpc<T>(params: {
           clearTimeout(timeoutId);
           timeoutId = null;
         }
+        // Decode as UTF-8 at the stream level. Without setEncoding, chunks
+        // arrive as Buffers and `data += chunk` stringifies each chunk
+        // independently — a multibyte UTF-8 character whose bytes span a
+        // chunk boundary gets corrupted into U+FFFD replacement characters.
+        res.setEncoding("utf8");
         let data = "";
         res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {
