@@ -47,7 +47,9 @@ postgresai mon local-install --demo
 | H002 | Unused indexes |
 | H004 | Redundant indexes |
 | F004 | Table bloat |
-| K003 | Top queries |
+| F003 | Dead tuples, autovacuum activity |
+
+(K003 "Top queries" exists in the full monitoring reporter only — not in express mode.)
 
 ## Quality
 
