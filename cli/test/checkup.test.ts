@@ -677,6 +677,73 @@ describe("Report generators with mock client", () => {
     expect(reports.H002.checkId).toBe("H002");
     expect(reports.H004.checkId).toBe("H004");
   });
+
+  // Per-check error isolation (work item 260, finding 4): one throwing check
+  // must not abort the whole checkup and discard already-completed reports.
+  test("generateAllReports isolates a failing check: others still complete, failure is reported via onCheckError", async () => {
+    const mockClient = createMockClient({
+      versionRows: [
+        { name: "server_version", setting: "16.3" },
+        { name: "server_version_num", setting: "160003" },
+      ],
+      invalidIndexesRows: [],
+      unusedIndexesRows: [],
+      redundantIndexesRows: [],
+      sensitiveColumnsRows: [],
+    });
+
+    const originalH002 = checkup.REPORT_GENERATORS.H002;
+    const failures: Array<{ checkId: string; checkTitle: string; error: Error }> = [];
+    try {
+      // Sabotage exactly one check's generator (simulates e.g. F003's
+      // getDeadTuples propagating a DB error on an exotic server).
+      checkup.REPORT_GENERATORS.H002 = async () => {
+        throw new Error("boom: relation pg_stat_user_indexes vanished");
+      };
+
+      const reports = await checkup.generateAllReports(
+        mockClient as any,
+        "test-node",
+        undefined,
+        (f) => failures.push(f)
+      );
+
+      // The failing check is absent, every other check still produced a report.
+      expect("H002" in reports).toBe(false);
+      expect("A002" in reports).toBe(true);
+      expect("A013" in reports).toBe(true);
+      expect("H001" in reports).toBe(true);
+      expect("H004" in reports).toBe(true);
+      expect(Object.keys(reports).length).toBe(Object.keys(checkup.REPORT_GENERATORS).length - 1);
+
+      // The failure was surfaced (named check + original error), not swallowed.
+      expect(failures.length).toBe(1);
+      expect(failures[0].checkId).toBe("H002");
+      expect(failures[0].error.message).toContain("boom");
+    } finally {
+      checkup.REPORT_GENERATORS.H002 = originalH002;
+    }
+  });
+
+  test("generateAllReports still throws loudly on TOTAL failure (every check fails)", async () => {
+    // Contract guard: a fully broken run (e.g. dead connection) must NOT come
+    // back as an empty-but-successful result that would be uploaded/written as
+    // a checkup with zero findings.
+    const mockClient = createMockClient({});
+    const originals = { ...checkup.REPORT_GENERATORS };
+    try {
+      for (const id of Object.keys(checkup.REPORT_GENERATORS)) {
+        checkup.REPORT_GENERATORS[id] = async () => {
+          throw new Error("connection terminated unexpectedly");
+        };
+      }
+      await expect(
+        checkup.generateAllReports(mockClient as any, "test-node")
+      ).rejects.toThrow(/All \d+ checks failed/);
+    } finally {
+      Object.assign(checkup.REPORT_GENERATORS, originals);
+    }
+  });
 });
 
 // Tests for A007 (Altered settings)
