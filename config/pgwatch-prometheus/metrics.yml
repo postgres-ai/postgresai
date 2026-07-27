@@ -280,7 +280,7 @@ metrics:
       Retrieves lock mode statistics from the PostgreSQL `pg_locks` view, providing insights into the different lock modes currently held in the database.
       It returns the lock mode and the count of locks for each mode. This metric helps administrators monitor lock contention and performance.
     sqls:
-      13: |-
+      12: |-
         with q_locks as ( /* pgwatch_generated */
           select
             *
@@ -3246,6 +3246,12 @@ metrics:
                 ('x' || substr(last_archived_wal, 17, 8))::bit(32)::bigint as segment_dec,
                 archived_count,
                 failed_count,
+                -- standby-safe current LSN: WAL control functions such as
+                -- pg_current_wal_lsn() raise an error during recovery
+                case
+                    when pg_is_in_recovery() then pg_last_wal_replay_lsn()
+                    else pg_current_wal_lsn()
+                end as current_lsn,
                 -- wal_segment_size is already in bytes!
                 (select setting::bigint
                 from pg_settings
@@ -3254,12 +3260,12 @@ metrics:
             where last_archived_wal is not null
         )
         select
-            pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint as current_lsn_numeric,
+            pg_wal_lsn_diff(current_lsn, '0/0')::bigint as current_lsn_numeric,
             pg_wal_lsn_diff((log_id_hex || '/' || lpad(to_hex((segment_dec + 1) * wal_segment_size_bytes), 8, '0'))::pg_lsn, '0/0')::bigint as archived_wal_finish_lsn_numeric,
 
             round(
                 pg_wal_lsn_diff(
-                    pg_current_wal_lsn(),
+                    current_lsn,
                     (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                 )::numeric / wal_segment_size_bytes,
                 2
@@ -3271,11 +3277,11 @@ metrics:
             -- alert thresholds based on segment size
             case
                 when pg_wal_lsn_diff(
-                        pg_current_wal_lsn(),
+                        current_lsn,
                         (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                     ) > 6 * wal_segment_size_bytes then 'critical'
                 when pg_wal_lsn_diff(
-                        pg_current_wal_lsn(),
+                        current_lsn,
                         (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                     ) > 3 * wal_segment_size_bytes then 'warning'
                 else 'ok'
