@@ -170,6 +170,23 @@ describe("registerAasCollection", () => {
     expect(calls.length).toBe(0); // bailed before any HTTP
   });
 
+  test("vcpus 0/omitted → ok:false with a vcpus reason and NO outbound calls (AAS stays off until a real value is set)", async () => {
+    // Work item 260, finding 3: the --vcpus help promises "Omit or 0 = unknown
+    // — AAS collection stays off until a real value is set". Before the fix,
+    // arming proceeded client-side with vcpus 0 (minting a Grafana token and
+    // POSTing the RPC), relying only on a server-side gate.
+    installFetch();
+    const r = await registerAasCollection("apikey-1", "inst-123", {
+      grafanaPassword: "pw",
+      instancesPath,
+      vcpus: 0,
+      apiBaseUrl: "https://api.test",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/vcpus/i);
+    expect(calls.length).toBe(0); // bailed before any HTTP (no SA token minted, no RPC)
+  });
+
   test("missing api key / instance id → ok:false, no calls", async () => {
     installFetch();
     const r = await registerAasCollection("", "inst-123", {

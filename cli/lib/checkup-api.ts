@@ -328,9 +328,14 @@ async function postRpc<T>(params: {
 /**
  * Result of an API key pre-flight verification.
  * - "valid": the key was accepted by the API
- * - "invalid": the API definitively rejected the key (HTTP 401/403)
+ * - "invalid": the API definitively rejected the key (HTTP 401 — bad/expired
+ *   credentials)
  * - "unknown": verification could not be completed (network error, timeout,
- *   unexpected status) — callers should warn and continue, not block the run
+ *   unexpected status) OR was inconclusive (HTTP 403: the probe hits
+ *   GET /checkup_reports, a different PostgREST authz surface than the
+ *   checkup_report_create RPC the upload uses, so a list-denied token may
+ *   still be allowed to upload) — callers should warn and continue, not
+ *   block the run
  */
 export type ApiKeyVerification =
   | { status: "valid" }
@@ -347,9 +352,13 @@ const VERIFY_API_KEY_TIMEOUT_MS = 10_000;
  * (GET /checkup_reports?limit=1 — the same endpoint the `reports` command
  * uses) so expensive work can fail fast on bad credentials.
  *
- * Only a definitive HTTP 401/403 is reported as "invalid". Network errors,
- * timeouts, and unexpected statuses are reported as "unknown" so a transient
- * pre-flight failure never blocks a run that might otherwise succeed.
+ * Only a definitive HTTP 401 is reported as "invalid". HTTP 403 is reported
+ * as "unknown": the probe endpoint (checkup_reports list) is a different
+ * PostgREST authz surface than the checkup_report_create RPC the upload path
+ * uses, so a token scoped for upload-but-not-list must not be rejected here.
+ * Network errors, timeouts, and unexpected statuses are likewise "unknown" so
+ * a transient pre-flight failure never blocks a run that might otherwise
+ * succeed.
  */
 export async function verifyApiKey(params: {
   apiKey: string;
@@ -385,8 +394,19 @@ export async function verifyApiKey(params: {
     });
     // Drain the body so the connection is released cleanly.
     await response.text().catch(() => "");
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       return { status: "invalid", statusCode: response.status };
+    }
+    if (response.status === 403) {
+      // 403 on the list endpoint is NOT proof the upload will fail: the
+      // upload goes through the checkup_report_create RPC, a different
+      // authz surface. Continue and let the upload raise the definitive,
+      // actionable error if the token really lacks upload permission.
+      return {
+        status: "unknown",
+        detail:
+          "HTTP 403 from GET /checkup_reports — the token may still be allowed to upload (different permission surface)",
+      };
     }
     if (response.ok) {
       return { status: "valid" };

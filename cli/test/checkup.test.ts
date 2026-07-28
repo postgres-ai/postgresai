@@ -2094,8 +2094,10 @@ describe("checkup-api", () => {
   });
 
   // Auth pre-flight: verifyApiKey checks the key with a cheap authenticated
-  // GET before checkup runs expensive checks. Only definitive 401/403 is
-  // "invalid"; anything transient must come back "unknown" (warn + continue).
+  // GET before checkup runs expensive checks. Only a definitive 401 is
+  // "invalid"; 403 is inconclusive (the probe endpoint is a different authz
+  // surface than the upload RPC) and anything transient must come back
+  // "unknown" (warn + continue).
   describe("verifyApiKey (auth pre-flight)", () => {
     function serveStatus(status: number, body = "[]") {
       return Bun.serve({
@@ -2128,12 +2130,16 @@ describe("checkup-api", () => {
       }
     });
 
-    test("returns invalid on HTTP 403", async () => {
+    test("returns unknown on HTTP 403 (list endpoint is a different authz surface than the upload RPC)", async () => {
+      // Work item 260, finding 2: the probe GETs /checkup_reports (list),
+      // but the upload uses the checkup_report_create RPC. A token scoped
+      // for upload-but-not-list would 403 here yet upload fine — so 403 must
+      // NOT hard-fail the run. Only 401 (bad credentials) is definitive.
       const server = serveStatus(403);
       try {
         const r = await api.verifyApiKey({ apiKey: "bad", apiBaseUrl: `http://127.0.0.1:${server.port}` });
-        expect(r.status).toBe("invalid");
-        expect((r as { statusCode: number }).statusCode).toBe(403);
+        expect(r.status).toBe("unknown");
+        expect((r as { detail: string }).detail).toMatch(/403/);
       } finally {
         server.stop(true);
       }

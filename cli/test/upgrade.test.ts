@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import { resolve } from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -969,6 +969,57 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     expect(refreshed).toBe(false);
     expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("falls back to the `main` ref when the version tag is not published (unpublished-tag upgrade)", async () => {
+    // Regression guard (work item 260, finding 1): refreshBundledComposeIfStale
+    // must share the SAME ref candidates as ensureDefaultMonitoringProject —
+    // including the final `main` fallback. Without it, a non-git upgrade to a
+    // version whose tag is not (yet) on GitLab fetches nothing and silently
+    // keeps a stale pre-0.15 compose (missing VM_AUTH wiring -> VictoriaMetrics
+    // crash + blank dashboards) — the exact failure the refresh exists to
+    // prevent. Exercised in-process with a stubbed fetch: every version-pinned
+    // ref 404s, only /raw/main/ serves a valid compose.
+    const { refreshBundledComposeIfStale } = await import("../bin/postgres-ai.ts");
+
+    const testDir = resolve(tempDir, "main-fallback-unpublished-tag");
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+
+    const savedNodeEnv = process.env.NODE_ENV;
+    const savedSource = process.env.PGAI_COMPOSE_SOURCE;
+    const savedRef = process.env.PGAI_PROJECT_REF;
+    process.env.NODE_ENV = "test";
+    delete process.env.PGAI_COMPOSE_SOURCE; // force the (stubbed) network path
+    delete process.env.PGAI_PROJECT_REF;
+
+    const requested: string[] = [];
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: unknown) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/-/raw/main/")) {
+        return new Response(TARGET_0_15_COMPOSE, { status: 200 });
+      }
+      return new Response("404 Not Found", { status: 404 }); // unpublished tag
+    }) as unknown as typeof fetch);
+
+    try {
+      const refreshed = await refreshBundledComposeIfStale(testDir);
+
+      // The version-pinned refs were tried first, then `main` succeeded.
+      expect(requested.some((u) => u.includes("/-/raw/main/"))).toBe(true);
+      expect(refreshed).toBe(true);
+      const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
+      expect(after).toMatch(/VM_AUTH_USERNAME/);
+      // The pristine stale compose was backed up.
+      expect(listBackups(testDir).length).toBe(1);
+    } finally {
+      fetchSpy.mockRestore();
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedNodeEnv;
+      if (savedSource === undefined) delete process.env.PGAI_COMPOSE_SOURCE; else process.env.PGAI_COMPOSE_SOURCE = savedSource;
+      if (savedRef === undefined) delete process.env.PGAI_PROJECT_REF; else process.env.PGAI_PROJECT_REF = savedRef;
+    }
   }, { timeout: TEST_TIMEOUT });
 
   test("backup falls back to a timestamp suffix when .env has no PGAI_TAG line", () => {
