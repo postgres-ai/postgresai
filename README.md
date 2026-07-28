@@ -442,6 +442,11 @@ postgres_ai monitoring generates automated health check reports based on [postgr
 | F001 | Autovacuum: current settings |
 | F004 | Autovacuum: heap bloat (estimated) |
 | F005 | Autovacuum: index bloat (estimated) |
+| F009 | Xmin horizon and blockers |
+
+F009 includes a 500-character query preview only when the checkup role can read all
+statistics. Disable preview capture with
+`PGOPTIONS='-c postgresai.capture_query_preview=off' postgresai checkup ...`.
 
 ### G. Performance / Connections / Memory-related settings
 | Check ID | Title |

@@ -43,6 +43,7 @@ export function generateCheckSummary(checkId: string, report: any): CheckSummary
     case 'F003': return summarizeF003(nodeData);
     case 'F004': return summarizeBloat(nodeData, 'table');
     case 'F005': return summarizeBloat(nodeData, 'index');
+    case 'F009': return summarizeF009(nodeData);
     case 'G001': return summarizeG001(nodeData);
     case 'G003': return summarizeG003(nodeData);
     default:
@@ -273,6 +274,35 @@ function summarizeF003(nodeData: any): CheckSummary {
   }
 
   return { status: 'warning', message: parts.join(', ') };
+}
+
+function summarizeF009(nodeData: any): CheckSummary {
+  const data = nodeData?.data || {};
+  if (data.skipped) {
+    return { status: 'info', message: data.skip_reason || 'Primary-only check skipped on replica' };
+  }
+  const severity = String(data.severity || 'OK');
+  const age = Math.max(Number(data.data_horizon_age_tx || 0), Number(data.catalog_horizon_age_tx || 0));
+  if (severity === 'OK') {
+    return { status: 'ok', message: `Xmin horizons healthy (oldest holder: ${age} transactions)` };
+  }
+  const holder = data.dominant_holder?.source ? `; dominant holder: ${data.dominant_holder.source}` : '';
+  const activityAgeSeconds = Number(data.components?.pg_stat_activity?.top_blocker?.xact_age_seconds || 0);
+  if (
+    severity === 'NOTICE'
+    && data.data_horizon_severity === 'OK'
+    && data.catalog_horizon_severity === 'OK'
+    && activityAgeSeconds > 0
+  ) {
+    return {
+      status: 'info',
+      message: `NOTICE: transaction open for ${activityAgeSeconds} seconds${holder}`,
+    };
+  }
+  return {
+    status: severity === 'NOTICE' ? 'info' : 'warning',
+    message: `${severity}: xmin horizon age ${age} transactions${holder}`,
+  };
 }
 
 function summarizeBloat(nodeData: any, kind: 'table' | 'index'): CheckSummary {

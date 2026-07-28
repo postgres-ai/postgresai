@@ -99,6 +99,37 @@ describe("Schema validation", () => {
     validateAgainstSchema(report, "F003");
   });
 
+  test("F009 validates with healthy snapshot data", async () => {
+    const mockClient = createMockClient();
+    const report = await checkup.REPORT_GENERATORS.F009(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F009");
+  });
+
+  test("F009 validates with pg_flight_recorder history", async () => {
+    const mockClient = createMockClient({
+      xminHorizonRows: [{
+        is_in_recovery: false,
+        skip_reason: null,
+        snapshot_xmin: "1000",
+        autovacuum_freeze_max_age: "200000000",
+        has_full_visibility: true,
+        query_preview_enabled: true,
+        pg_flight_recorder_detected: true,
+        data_horizon_age_tx: "0",
+        catalog_horizon_age_tx: "0",
+        components: {
+          pg_stat_activity: { age_tx: 0, count: 0, top_blocker: null },
+          pg_replication_slots: { age_tx: 0, count: 0, top_blocker: null },
+          pg_replication_slots_catalog: { age_tx: 0, count: 0, top_blocker: null },
+          pg_stat_replication: { age_tx: 0, count: 0, top_blocker: null },
+          pg_prepared_xacts: { age_tx: 0, count: 0, top_blocker: null },
+        },
+      }],
+    });
+    const report = await checkup.REPORT_GENERATORS.F009(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F009");
+  });
+
   for (const checkId of ["F004", "F005"]) {
     test(`${checkId} distinguishes a healthy empty result from missing schema`, async () => {
       const healthyClient = createMockClient();

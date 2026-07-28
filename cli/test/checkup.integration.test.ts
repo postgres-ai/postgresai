@@ -212,7 +212,7 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       throw new Error(`CLI exited ${result.exitCode}: ${stderr}`);
     }
     const reports = JSON.parse(new TextDecoder().decode(result.stdout));
-    expect(Object.keys(reports)).toHaveLength(17);
+    expect(Object.keys(reports)).toHaveLength(expressChecks.length);
     expect(stderr).toContain("optional: postgres_ai schema not found");
     for (const checkId of ["F004", "F005"]) {
       const dbEntry = reports[checkId].results["node-01"].data.postgres;
@@ -407,6 +407,46 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       ).toBe(true);
     } finally {
       await client.query("DROP TABLE IF EXISTS f003_dead_tuples_test;");
+    }
+  });
+
+  test("F009 identifies a read-committed idle-in-transaction xid holder", async () => {
+    const holder = await pg.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT txid_current()");
+      // READ COMMITTED releases its snapshot between statements, leaving only
+      // backend_xid to pin the horizon. Advance the current XID so its age and
+      // holder attribution are deterministic.
+      await client.query("SELECT txid_current()");
+
+      await waitFor(async () => {
+        const state = await client.query(
+          "select state, backend_xid, backend_xmin from pg_stat_activity where pid = $1",
+          [(holder as any).processID],
+        );
+        if (
+          state.rows[0]?.state !== "idle in transaction" ||
+          !state.rows[0]?.backend_xid ||
+          state.rows[0]?.backend_xmin
+        ) {
+          throw new Error("xid-only holder is not visible yet");
+        }
+      });
+
+      const report = await checkup.REPORT_GENERATORS.F009(client, "test-node");
+      validateAgainstSchema(report, "F009");
+      const data = report.results["test-node"].data as any;
+      const activity = data.components.pg_stat_activity;
+      expect(activity.count).toBeGreaterThanOrEqual(1);
+      expect(activity.top_blocker.pid).toBe((holder as any).processID);
+      expect(activity.top_blocker.state).toBe("idle in transaction");
+      expect(data.dominant_holder.source).toBe("activity");
+      expect(data.recommendations.join(" ")).toContain("pg_terminate_backend");
+      expect(data.recommendations.join(" ")).toContain("idle_in_transaction_session_timeout");
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      await holder.end().catch(() => undefined);
     }
   });
 

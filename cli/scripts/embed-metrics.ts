@@ -51,6 +51,8 @@ const REQUIRED_METRICS = [
   // Bloat estimation (F004, F005)
   "pg_table_bloat",
   "pg_btree_bloat",
+  // Single-snapshot xmin horizon RCA (F009)
+  "xmin_horizon_snapshot",
   // I/O statistics (I001)
   "pg_stat_io",
 ];
