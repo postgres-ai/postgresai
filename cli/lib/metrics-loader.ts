@@ -70,6 +70,8 @@ export const METRIC_NAMES = {
   // Bloat estimation
   F004: "pg_table_bloat",
   F005: "pg_btree_bloat",
+  // Single-snapshot xmin horizon RCA (F009)
+  F009: "xmin_horizon_snapshot",
   // Settings and version info (A002, A003, A007, A013)
   settings: "settings",
   // Database statistics (A004)

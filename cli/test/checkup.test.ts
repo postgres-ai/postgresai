@@ -117,6 +117,178 @@ describe("parseVersionNum", () => {
   });
 });
 
+describe("F009 - xmin horizon analysis", () => {
+  const components = (overrides: Record<string, any> = {}) => ({
+    pg_stat_activity: { age_tx: 0, count: 0, top_blocker: null },
+    pg_replication_slots: { age_tx: 0, count: 0, top_blocker: null },
+    pg_replication_slots_catalog: { age_tx: 0, count: 0, top_blocker: null },
+    pg_stat_replication: { age_tx: 0, count: 0, top_blocker: null },
+    pg_prepared_xacts: { age_tx: 0, count: 0, top_blocker: null },
+    ...overrides,
+  });
+
+  test("uses the documented severity boundaries", () => {
+    const maxAge = 200_000_000;
+    expect(checkup.getF009Severity(19_999_999, maxAge)).toBe("OK");
+    expect(checkup.getF009Severity(20_000_000, maxAge)).toBe("NOTICE");
+    expect(checkup.getF009Severity(100_000_000, maxAge)).toBe("WARNING");
+    expect(checkup.getF009Severity(160_000_000, maxAge)).toBe("CRITICAL");
+  });
+
+  test("ships PostgreSQL 12-compatible metric SQL", () => {
+    const sql = metricsLoader.getMetricSql(metricsLoader.METRIC_NAMES.F009, 12);
+    expect(sql).toContain("xmin_horizon_snapshot");
+    expect(sql).toContain("not in ('', 'off', 'false', '0')");
+    expect(sql).toContain("greatest(age(a.backend_xmin), age(a.backend_xid))");
+    expect(sql).toContain("a.backend_xmin is not null or a.backend_xid is not null");
+  });
+
+  test("uses slot > prepared > activity > replication for equal ages", () => {
+    const equal = { age_tx: 100, count: 1 };
+    const dominant = checkup.selectF009DominantHolder(components({
+      pg_stat_activity: { ...equal, top_blocker: { pid: 1 } },
+      pg_replication_slots: { ...equal, top_blocker: { slot_name: "logical_1" } },
+      pg_stat_replication: { ...equal, top_blocker: { pid: 2 } },
+      pg_prepared_xacts: { ...equal, top_blocker: { gid: "g1" } },
+    }) as any);
+    expect(dominant?.source).toBe("slot");
+    expect(dominant?.detail.slot_name).toBe("logical_1");
+  });
+
+  test("evaluates catalog and data holders independently", async () => {
+    const mockClient = createMockClient({
+      xminHorizonRows: [{
+        is_in_recovery: false,
+        snapshot_xmin: "123",
+        autovacuum_freeze_max_age: "200000000",
+        has_full_visibility: true,
+        query_preview_enabled: false,
+        pg_flight_recorder_detected: false,
+        data_horizon_age_tx: "1000",
+        catalog_horizon_age_tx: "160000000",
+        components: components({
+          pg_replication_slots_catalog: {
+            age_tx: 160000000, count: 1,
+            top_blocker: { slot_name: "catalog_slot", status: "inactive", wal_status: "extended" },
+          },
+        }),
+      }],
+    });
+    const report = await checkup.generateF009(mockClient as any, "node-01");
+    const data = report.results["node-01"].data as any;
+    expect(data.data_horizon_severity).toBe("OK");
+    expect(data.catalog_horizon_severity).toBe("CRITICAL");
+    expect(data.dominant_holder.horizon_type).toBe("catalog");
+  });
+
+  test("remediation distinguishes active, idle, autovacuum, slot, feedback, and prepared holders", () => {
+    const analyze = (source: any, detail: any) => checkup.buildF009Analysis(
+      components() as any,
+      { source, component: "pg_stat_activity", horizon_type: "data", age_tx: 100, detail } as any,
+      "NOTICE", "OK", { limitedVisibility: false, historyDetected: false, skipped: false },
+    ).recommendations.join(" ");
+    expect(analyze("activity", { pid: 10, state: "active", backend_type: "client backend" })).toContain("pg_cancel_backend(10)");
+    expect(analyze("activity", { pid: 11, state: "idle in transaction", backend_type: "client backend" })).toContain("pg_terminate_backend(11)");
+    expect(analyze("activity", { pid: 12, state: "active", backend_type: "autovacuum worker" })).toContain("pg_stat_progress_vacuum");
+    expect(analyze("slot", { slot_name: "s1", status: "inactive", wal_status: "extended" })).toContain("Confirm subscriber state");
+    expect(analyze("replication", { application_name: "standby-1" })).toContain("Do not disable hot_standby_feedback");
+    expect(analyze("prepared", { gid: "g1", owner: "alice", database: "app" })).toContain("ROLLBACK PREPARED 'g1'");
+  });
+
+  test("replica skips and limited visibility degrades gracefully", async () => {
+    const replica = createMockClient({
+      xminHorizonRows: [{
+        is_in_recovery: true,
+        skip_reason: "replica: xmin horizon analysis is primary-only",
+        snapshot_xmin: null,
+        autovacuum_freeze_max_age: "200000000",
+        has_full_visibility: false,
+        query_preview_enabled: true,
+        pg_flight_recorder_detected: false,
+        data_horizon_age_tx: 0,
+        catalog_horizon_age_tx: 0,
+        components: components(),
+      }],
+    });
+    const replicaData = (await checkup.generateF009(replica as any, "node-01")).results["node-01"].data as any;
+    expect(replicaData.skipped).toBe(true);
+    expect(replicaData.dominant_holder).toBeNull();
+    expect(replicaData.query_preview_captured).toBe(false);
+
+    const analysis = checkup.buildF009Analysis(
+      components() as any, null, "OK", "OK",
+      { limitedVisibility: true, historyDetected: false, skipped: false },
+    );
+    expect(analysis.conclusions.join(" ")).toContain("limited visibility");
+  });
+
+  test("captures query previews and pg_flight_recorder history when available", async () => {
+    const mockClient = createMockClient({
+      xminHorizonRows: [{
+        is_in_recovery: false,
+        skip_reason: null,
+        snapshot_xmin: "123",
+        autovacuum_freeze_max_age: "200000000",
+        has_full_visibility: true,
+        query_preview_enabled: true,
+        pg_flight_recorder_detected: true,
+        data_horizon_age_tx: "0",
+        catalog_horizon_age_tx: "0",
+        components: components(),
+      }],
+    });
+
+    const data = (await checkup.generateF009(mockClient as any, "node-01")).results["node-01"].data as any;
+    expect(data.visibility).toBe("full");
+    expect(data.query_preview_captured).toBe(true);
+    expect(data.history).toEqual({
+      available: true,
+      source: "pg_flight_recorder",
+      message: "Historical xmin timeline is available via pgfr_analyze.xmin_horizon_history().",
+    });
+  });
+
+  test("long activity promotes the generated report severity to notice", async () => {
+    const mockClient = createMockClient({
+      xminHorizonRows: [{
+        is_in_recovery: false,
+        skip_reason: null,
+        snapshot_xmin: "123",
+        autovacuum_freeze_max_age: "200000000",
+        has_full_visibility: true,
+        query_preview_enabled: false,
+        pg_flight_recorder_detected: false,
+        data_horizon_age_tx: "1",
+        catalog_horizon_age_tx: "0",
+        components: components({
+          pg_stat_activity: {
+            age_tx: 1,
+            count: 1,
+            top_blocker: { pid: 42, xact_age_seconds: 3600 },
+          },
+        }),
+      }],
+    });
+
+    const data = (await checkup.generateF009(mockClient as any, "node-01")).results["node-01"].data as any;
+    expect(data.data_horizon_severity).toBe("OK");
+    expect(data.catalog_horizon_severity).toBe("OK");
+    expect(data.severity).toBe("NOTICE");
+  });
+
+  test("long activity produces an absolute wall-clock notice", () => {
+    const c = components({
+      pg_stat_activity: { age_tx: 1, count: 1, top_blocker: { pid: 42, xact_age_seconds: 3600 } },
+    });
+    const dominant = checkup.selectF009DominantHolder(c as any);
+    const analysis = checkup.buildF009Analysis(
+      c as any, dominant, "OK", "OK",
+      { limitedVisibility: false, historyDetected: false, skipped: false },
+    );
+    expect(analysis.conclusions.join(" ")).toContain("3600 seconds");
+  });
+});
+
 // Unit tests for createBaseReport
 describe("createBaseReport", () => {
   test("creates correct structure", () => {
@@ -2200,6 +2372,49 @@ describe("checkup-api", () => {
 describe("checkup-summary", () => {
   const summary = require("../lib/checkup-summary");
 
+  test("generateCheckSummary for F009 reports severity and dominant holder", () => {
+    const result = summary.generateCheckSummary("F009", {
+      results: { node1: { data: {
+        skipped: false,
+        severity: "CRITICAL",
+        data_horizon_age_tx: 160000000,
+        catalog_horizon_age_tx: 0,
+        dominant_holder: { source: "slot" },
+      } } },
+    });
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("CRITICAL");
+    expect(result.message).toContain("slot");
+  });
+
+  test("generateCheckSummary for F009 handles replica skip", () => {
+    const result = summary.generateCheckSummary("F009", {
+      results: { node1: { data: { skipped: true, skip_reason: "primary-only" } } },
+    });
+    expect(result).toEqual({ status: "info", message: "primary-only" });
+  });
+
+  test("generateCheckSummary for F009 describes wall-clock notices", () => {
+    const result = summary.generateCheckSummary("F009", {
+      results: { node1: { data: {
+        skipped: false,
+        severity: "NOTICE",
+        data_horizon_severity: "OK",
+        catalog_horizon_severity: "OK",
+        data_horizon_age_tx: 1,
+        catalog_horizon_age_tx: 0,
+        components: {
+          pg_stat_activity: { top_blocker: { xact_age_seconds: 3600 } },
+        },
+        dominant_holder: { source: "activity" },
+      } } },
+    });
+    expect(result).toEqual({
+      status: "info",
+      message: "NOTICE: transaction open for 3600 seconds; dominant holder: activity",
+    });
+  });
+
   test("generateCheckSummary for F003 with no issues", () => {
     const report = {
       results: {
@@ -3689,6 +3904,7 @@ describe("Version-aware SQL query selection (PG13-PG18)", () => {
       F003: "pg_dead_tuples",
       F004: "pg_table_bloat",
       F005: "pg_btree_bloat",
+      F009: "xmin_horizon_snapshot",
       settings: "settings",
       dbStats: "db_stats",
       dbSize: "db_size",

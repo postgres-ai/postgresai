@@ -1040,6 +1040,207 @@ metrics:
       - blocked_ms
       - blocker_tx_ms
     statement_timeout_seconds: 15
+  xmin_horizon_snapshot:
+    description: >
+      Express-checkup single snapshot of xmin horizon ages and the oldest blocker
+      for each holder class. Returns one row with component JSON, privilege/privacy
+      metadata, and a pg_flight_recorder availability hint. Primary-only analysis is
+      enforced in SQL; replicas return an informational skip row.
+    sqls:
+      12: |-
+        with context as materialized (
+          select
+            pg_is_in_recovery() as is_in_recovery,
+            case when pg_is_in_recovery() then null
+                 else txid_snapshot_xmin(txid_current_snapshot())::int8 end as snapshot_xmin,
+            current_setting('autovacuum_freeze_max_age')::int8 as autovacuum_freeze_max_age,
+            coalesce(
+              (select rolsuper from pg_roles where rolname = current_user), false
+            ) or coalesce(
+              (select pg_has_role(current_user, oid, 'member') from pg_roles where rolname = 'pg_monitor'), false
+            ) or coalesce(
+              (select pg_has_role(current_user, oid, 'member') from pg_roles where rolname = 'pg_read_all_stats'), false
+            )
+              as has_full_visibility,
+            lower(coalesce(current_setting('postgresai.capture_query_preview', true), 'on'))
+              not in ('', 'off', 'false', '0') as query_preview_enabled,
+            to_regnamespace('pgfr_analyze') is not null as pg_flight_recorder_detected
+        ),
+        activity_rows as materialized (
+          select
+            greatest(age(a.backend_xmin), age(a.backend_xid))::int8 as age_tx,
+            jsonb_strip_nulls(jsonb_build_object(
+              'pid', a.pid,
+              'database', a.datname,
+              'user', a.usename,
+              'application_name', a.application_name,
+              'state', a.state,
+              'backend_type', to_jsonb(a)->>'backend_type',
+              'queryid', to_jsonb(a)->>'query_id',
+              'xact_age_seconds', extract(epoch from now() - a.xact_start)::int8,
+              'state_age_seconds', extract(epoch from now() - a.state_change)::int8,
+              'query_age_seconds', extract(epoch from now() - a.query_start)::int8,
+              'query_preview', case
+                when c.has_full_visibility and c.query_preview_enabled
+                then left(regexp_replace(a.query, E'[\\r\\n\\t]+', ' ', 'g'), 500)
+                else null
+              end
+            )) as detail
+          from pg_stat_activity a
+          cross join context c
+          where not c.is_in_recovery
+            and a.pid <> pg_backend_pid()
+            and (a.backend_xmin is not null or a.backend_xid is not null)
+            and coalesce(to_jsonb(a)->>'leader_pid', '') = ''
+            and coalesce(to_jsonb(a)->>'backend_type', 'client backend')
+              in ('client backend', 'autovacuum worker')
+        ),
+        activity as (
+          select
+            coalesce(max(age_tx), 0)::int8 as age_tx,
+            count(*)::int8 as count,
+            (array_agg(detail order by age_tx desc, (detail->>'pid')::int asc))[1] as top_blocker
+          from activity_rows
+        ),
+        slot_rows as materialized (
+          select
+            age(s.xmin)::int8 as age_tx,
+            age(s.catalog_xmin)::int8 as catalog_age_tx,
+            jsonb_strip_nulls(jsonb_build_object(
+              'slot_name', s.slot_name,
+              'slot_type', s.slot_type,
+              'plugin', s.plugin,
+              'database', s.database,
+              'active', s.active,
+              'active_pid', s.active_pid,
+              'status', case
+                when coalesce(to_jsonb(s)->>'invalidation_reason', '') <> '' then 'invalidated'
+                when coalesce(to_jsonb(s)->>'conflicting', 'false') = 'true' then 'conflicting'
+                when not s.active and coalesce(to_jsonb(s)->>'inactive_since', '') <> '' then 'inactive'
+                when not s.active then 'unused'
+                else 'active'
+              end,
+              'inactive_since', to_jsonb(s)->>'inactive_since',
+              'wal_status', to_jsonb(s)->>'wal_status',
+              'conflicting', (to_jsonb(s)->>'conflicting')::boolean,
+              'invalidation_reason', to_jsonb(s)->>'invalidation_reason'
+            )) as detail
+          from pg_replication_slots s
+          cross join context c
+          where not c.is_in_recovery
+            and (s.xmin is not null or s.catalog_xmin is not null)
+        ),
+        slots as (
+          select
+            coalesce(max(age_tx), 0)::int8 as age_tx,
+            count(*) filter (where age_tx is not null)::int8 as count,
+            (array_agg(detail order by age_tx desc nulls last, detail->>'slot_name')
+              filter (where age_tx is not null))[1] as top_blocker
+          from slot_rows
+        ),
+        slots_catalog as (
+          select
+            coalesce(max(catalog_age_tx), 0)::int8 as age_tx,
+            count(*) filter (where catalog_age_tx is not null)::int8 as count,
+            (array_agg(detail order by catalog_age_tx desc nulls last, detail->>'slot_name')
+              filter (where catalog_age_tx is not null))[1] as top_blocker
+          from slot_rows
+        ),
+        replication_rows as materialized (
+          select
+            age(r.backend_xmin)::int8 as age_tx,
+            jsonb_strip_nulls(jsonb_build_object(
+              'pid', r.pid,
+              'user', r.usename,
+              'application_name', r.application_name,
+              'client_addr', r.client_addr,
+              'state', r.state,
+              'sync_state', r.sync_state
+            )) as detail
+          from pg_stat_replication r
+          cross join context c
+          where not c.is_in_recovery and r.backend_xmin is not null
+        ),
+        replication as (
+          select
+            coalesce(max(age_tx), 0)::int8 as age_tx,
+            count(*)::int8 as count,
+            (array_agg(detail order by age_tx desc, (detail->>'pid')::int asc))[1] as top_blocker
+          from replication_rows
+        ),
+        prepared_rows as materialized (
+          select
+            age(p.transaction)::int8 as age_tx,
+            jsonb_strip_nulls(jsonb_build_object(
+              'gid', p.gid,
+              'owner', p.owner,
+              'database', p.database,
+              'prepared_at', p.prepared,
+              'prepared_age_seconds', extract(epoch from now() - p.prepared)::int8
+            )) as detail
+          from pg_prepared_xacts p
+          cross join context c
+          where not c.is_in_recovery
+        ),
+        prepared as (
+          select
+            coalesce(max(age_tx), 0)::int8 as age_tx,
+            count(*)::int8 as count,
+            (array_agg(detail order by age_tx desc, detail->>'gid' asc))[1] as top_blocker
+          from prepared_rows
+        )
+        select /* pgwatch_generated xmin_horizon_snapshot */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          c.is_in_recovery,
+          case when c.is_in_recovery then 'replica: xmin horizon analysis is primary-only' end as skip_reason,
+          c.snapshot_xmin,
+          c.autovacuum_freeze_max_age,
+          c.has_full_visibility,
+          c.query_preview_enabled,
+          c.pg_flight_recorder_detected,
+          case when c.is_in_recovery then 0 else greatest(a.age_tx, s.age_tx, r.age_tx, p.age_tx) end
+            as data_horizon_age_tx,
+          case when c.is_in_recovery then 0 else sc.age_tx end as catalog_horizon_age_tx,
+          jsonb_build_object(
+            'pg_stat_activity', jsonb_build_object(
+              'age_tx', case when c.is_in_recovery then 0 else a.age_tx end,
+              'count', case when c.is_in_recovery then 0 else a.count end,
+              'top_blocker', case when c.is_in_recovery then null else a.top_blocker end
+            ),
+            'pg_replication_slots', jsonb_build_object(
+              'age_tx', case when c.is_in_recovery then 0 else s.age_tx end,
+              'count', case when c.is_in_recovery then 0 else s.count end,
+              'top_blocker', case when c.is_in_recovery then null else s.top_blocker end
+            ),
+            'pg_replication_slots_catalog', jsonb_build_object(
+              'age_tx', case when c.is_in_recovery then 0 else sc.age_tx end,
+              'count', case when c.is_in_recovery then 0 else sc.count end,
+              'top_blocker', case when c.is_in_recovery then null else sc.top_blocker end
+            ),
+            'pg_stat_replication', jsonb_build_object(
+              'age_tx', case when c.is_in_recovery then 0 else r.age_tx end,
+              'count', case when c.is_in_recovery then 0 else r.count end,
+              'top_blocker', case when c.is_in_recovery then null else r.top_blocker end
+            ),
+            'pg_prepared_xacts', jsonb_build_object(
+              'age_tx', case when c.is_in_recovery then 0 else p.age_tx end,
+              'count', case when c.is_in_recovery then 0 else p.count end,
+              'top_blocker', case when c.is_in_recovery then null else p.top_blocker end
+            )
+          ) as components
+        from context c
+        cross join activity a
+        cross join slots s
+        cross join slots_catalog sc
+        cross join replication r
+        cross join prepared p
+    gauges:
+      - data_horizon_age_tx
+      - catalog_horizon_age_tx
+    is_instance_level: true
+    node_status: all
+    statement_timeout_seconds: 15
   xmin_horizon:
     description: >
       Tracks the current xmin horizon age split by blocker class and horizon type:

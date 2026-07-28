@@ -1535,6 +1535,237 @@ async function generateF003(client: Client, nodeName: string): Promise<Report> {
   return report;
 }
 
+export const F009_NOTICE_FRACTION = 0.10;
+export const F009_WARNING_FRACTION = 0.50;
+export const F009_CRITICAL_FRACTION = 0.80;
+export const F009_ACTIVITY_NOTICE_SECONDS = SECONDS_PER_HOUR;
+
+export type F009Severity = "OK" | "NOTICE" | "WARNING" | "CRITICAL";
+
+export interface F009Component {
+  age_tx: number;
+  count: number;
+  top_blocker: Record<string, unknown> | null;
+}
+
+export interface F009Components {
+  pg_stat_activity: F009Component;
+  pg_replication_slots: F009Component;
+  pg_replication_slots_catalog: F009Component;
+  pg_stat_replication: F009Component;
+  pg_prepared_xacts: F009Component;
+}
+
+export interface F009DominantHolder {
+  source: "slot" | "prepared" | "activity" | "replication";
+  component: keyof F009Components;
+  horizon_type: "data" | "catalog";
+  age_tx: number;
+  detail: Record<string, unknown>;
+}
+
+const F009_SEVERITY_RANK: Record<F009Severity, number> = {
+  OK: 0,
+  NOTICE: 1,
+  WARNING: 2,
+  CRITICAL: 3,
+};
+
+function numberValue(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseJsonObject(value: unknown): Record<string, any> {
+  if (value && typeof value === "object") return value as Record<string, any>;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // Graceful fallback for drivers that return malformed JSON as text.
+    }
+  }
+  return {};
+}
+
+function normalizeF009Components(value: unknown): F009Components {
+  const raw = parseJsonObject(value);
+  const component = (name: keyof F009Components): F009Component => {
+    const item = parseJsonObject(raw[name]);
+    const detail = item.top_blocker;
+    return {
+      age_tx: numberValue(item.age_tx),
+      count: numberValue(item.count),
+      top_blocker: detail && typeof detail === "object" ? detail : null,
+    };
+  };
+  return {
+    pg_stat_activity: component("pg_stat_activity"),
+    pg_replication_slots: component("pg_replication_slots"),
+    pg_replication_slots_catalog: component("pg_replication_slots_catalog"),
+    pg_stat_replication: component("pg_stat_replication"),
+    pg_prepared_xacts: component("pg_prepared_xacts"),
+  };
+}
+
+export function getF009Severity(ageTx: number, freezeMaxAge: number): F009Severity {
+  if (freezeMaxAge <= 0) return "OK";
+  const fraction = ageTx / freezeMaxAge;
+  if (fraction >= F009_CRITICAL_FRACTION) return "CRITICAL";
+  if (fraction >= F009_WARNING_FRACTION) return "WARNING";
+  if (fraction >= F009_NOTICE_FRACTION) return "NOTICE";
+  return "OK";
+}
+
+export function selectF009DominantHolder(components: F009Components): F009DominantHolder | null {
+  const candidates: Array<F009DominantHolder & { priority: number }> = [];
+  const add = (
+    source: F009DominantHolder["source"],
+    component: keyof F009Components,
+    horizonType: F009DominantHolder["horizon_type"],
+    priority: number,
+  ) => {
+    const item = components[component];
+    if (item.count > 0 && item.top_blocker) {
+      candidates.push({ source, component, horizon_type: horizonType, age_tx: item.age_tx, detail: item.top_blocker, priority });
+    }
+  };
+  // PFR-aligned tie-break: slot > prepared > activity > replication.
+  add("slot", "pg_replication_slots", "data", 4);
+  add("slot", "pg_replication_slots_catalog", "catalog", 4);
+  add("prepared", "pg_prepared_xacts", "data", 3);
+  add("activity", "pg_stat_activity", "data", 2);
+  add("replication", "pg_stat_replication", "data", 1);
+  candidates.sort((a, b) => b.age_tx - a.age_tx || b.priority - a.priority || a.component.localeCompare(b.component));
+  if (candidates.length === 0) return null;
+  const { priority: _priority, ...dominant } = candidates[0];
+  return dominant;
+}
+
+function sqlLiteral(value: unknown): string {
+  return String(value ?? "").replace(/'/g, "''");
+}
+
+export function buildF009Analysis(
+  components: F009Components,
+  dominantHolder: F009DominantHolder | null,
+  dataSeverity: F009Severity,
+  catalogSeverity: F009Severity,
+  options: { limitedVisibility: boolean; historyDetected: boolean; skipped: boolean },
+): { conclusions: string[]; recommendations: string[] } {
+  const conclusions: string[] = [];
+  const recommendations: string[] = [];
+
+  if (options.skipped) {
+    return { conclusions: ["INFO: xmin horizon analysis is primary-only; this replica was skipped."], recommendations };
+  }
+  if (options.limitedVisibility) {
+    conclusions.push("NOTICE: the check ran with limited visibility; sessions owned by other users may hide query text or xmin details. Grant pg_monitor or pg_read_all_stats for complete RCA context.");
+  }
+  if (options.historyDetected) {
+    conclusions.push("INFO: pg_flight_recorder detected — historical xmin timeline is available via pgfr_analyze.xmin_horizon_history().");
+  }
+
+  const dataAge = Math.max(
+    components.pg_stat_activity.age_tx,
+    components.pg_replication_slots.age_tx,
+    components.pg_stat_replication.age_tx,
+    components.pg_prepared_xacts.age_tx,
+  );
+  const catalogAge = components.pg_replication_slots_catalog.age_tx;
+  if (dataSeverity !== "OK") conclusions.push(`${dataSeverity}: data xmin horizon age is ${dataAge} transactions.`);
+  if (catalogSeverity !== "OK") conclusions.push(`${catalogSeverity}: catalog xmin horizon age is ${catalogAge} transactions.`);
+
+  const activity = components.pg_stat_activity.top_blocker;
+  const xactAgeSeconds = numberValue(activity?.xact_age_seconds);
+  if (activity && xactAgeSeconds >= F009_ACTIVITY_NOTICE_SECONDS) {
+    conclusions.push(`NOTICE: activity PID ${activity.pid} has held a transaction open for ${xactAgeSeconds} seconds.`);
+  }
+
+  if (!dominantHolder) {
+    if (conclusions.length === 0) conclusions.push("OK: no xmin horizon blocker is currently visible.");
+    return { conclusions, recommendations };
+  }
+
+  const d = dominantHolder.detail;
+  conclusions.unshift(`${dataSeverity === "OK" && catalogSeverity === "OK" ? "INFO" : "CAUSE"}: dominant xmin holder is ${dominantHolder.source} (${dominantHolder.age_tx} transactions, ${dominantHolder.horizon_type} horizon).`);
+  if (dominantHolder.source === "activity") {
+    const pid = numberValue(d.pid);
+    const backendType = String(d.backend_type || "").toLowerCase();
+    const state = String(d.state || "").toLowerCase();
+    if (backendType.includes("autovacuum")) {
+      recommendations.push(`Inspect pg_stat_progress_vacuum for autovacuum worker PID ${pid}; do not kill it until its progress and table size are understood.`);
+    } else if (state.includes("idle in transaction")) {
+      recommendations.push(`Terminate the idle-in-transaction holder with SELECT pg_terminate_backend(${pid}); pg_cancel_backend() is a no-op while it is idle. Prevent recurrence with idle_in_transaction_session_timeout.`);
+    } else {
+      recommendations.push(`Cancel the active statement first with SELECT pg_cancel_backend(${pid}); if backend_xmin reappears, the query is inside an explicit BEGIN and SELECT pg_terminate_backend(${pid}) may be required. Prevent recurrence with statement_timeout and, on PostgreSQL 17+, transaction_timeout.`);
+    }
+  } else if (dominantHolder.source === "slot") {
+    const slotName = sqlLiteral(d.slot_name);
+    recommendations.push(`Confirm subscriber state for replication slot '${slotName}' before intervening. Then advance it with pg_replication_slot_advance() or, only if obsolete, SELECT pg_drop_replication_slot('${slotName}'). Slot status=${d.status || "unknown"}, wal_status=${d.wal_status || "unknown"}.`);
+  } else if (dominantHolder.source === "replication") {
+    recommendations.push(`On standby '${d.application_name || "unknown"}', find and cancel the long query responsible for hot_standby_feedback. Do not disable hot_standby_feedback as a first response; that trades xmin holdback for recovery-conflict cancellations.`);
+  } else {
+    const gid = sqlLiteral(d.gid);
+    recommendations.push(`After confirming the transaction outcome, resolve the prepared transaction with ROLLBACK PREPARED '${gid}'. Owner=${d.owner || "unknown"}, database=${d.database || "unknown"}, prepared_at=${d.prepared_at || "unknown"}.`);
+  }
+  return { conclusions, recommendations };
+}
+
+/** Generate F009 - xmin horizon age and top blockers from one database snapshot. */
+export async function generateF009(client: Client, nodeName: string): Promise<Report> {
+  const report = createBaseReport("F009", "Xmin horizon and blockers", nodeName);
+  const postgresVersion = await getPostgresVersion(client);
+  const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
+  const result = await client.query(getMetricSql(METRIC_NAMES.F009, pgMajorVersion));
+  const row = result.rows[0] || {};
+  const components = normalizeF009Components(row.components);
+  const skipped = toBool(row.is_in_recovery);
+  const freezeMaxAge = numberValue(row.autovacuum_freeze_max_age);
+  const dataAge = numberValue(row.data_horizon_age_tx);
+  const catalogAge = numberValue(row.catalog_horizon_age_tx);
+  const dataSeverity = skipped ? "OK" : getF009Severity(dataAge, freezeMaxAge);
+  const catalogSeverity = skipped ? "OK" : getF009Severity(catalogAge, freezeMaxAge);
+  const activityAgeSeconds = numberValue(components.pg_stat_activity.top_blocker?.xact_age_seconds);
+  let severity = F009_SEVERITY_RANK[dataSeverity] >= F009_SEVERITY_RANK[catalogSeverity] ? dataSeverity : catalogSeverity;
+  if (severity === "OK" && activityAgeSeconds >= F009_ACTIVITY_NOTICE_SECONDS) severity = "NOTICE";
+  const dominantHolder = skipped ? null : selectF009DominantHolder(components);
+  const limitedVisibility = !toBool(row.has_full_visibility);
+  const historyDetected = toBool(row.pg_flight_recorder_detected);
+  const { conclusions, recommendations } = buildF009Analysis(
+    components, dominantHolder, dataSeverity, catalogSeverity,
+    { limitedVisibility, historyDetected, skipped },
+  );
+
+  const data: Record<string, unknown> = {
+    skipped,
+    skip_reason: row.skip_reason || null,
+    snapshot_xmin: row.snapshot_xmin === null || row.snapshot_xmin === undefined ? null : numberValue(row.snapshot_xmin),
+    data_horizon_age_tx: dataAge,
+    catalog_horizon_age_tx: catalogAge,
+    autovacuum_freeze_max_age: freezeMaxAge,
+    severity,
+    data_horizon_severity: dataSeverity,
+    catalog_horizon_severity: catalogSeverity,
+    visibility: limitedVisibility ? "limited" : "full",
+    query_preview_captured: toBool(row.query_preview_enabled) && !limitedVisibility,
+    components,
+    dominant_holder: dominantHolder,
+    conclusions,
+    recommendations,
+  };
+  if (historyDetected) {
+    data.history = {
+      available: true,
+      source: "pg_flight_recorder",
+      message: "Historical xmin timeline is available via pgfr_analyze.xmin_horizon_history().",
+    };
+  }
+  report.results[nodeName] = { data, postgres_version: postgresVersion };
+  return report;
+}
+
 /**
  * Generate F004 report - Autovacuum: heap bloat (estimated)
  *
@@ -2238,6 +2469,7 @@ export const REPORT_GENERATORS: Record<string, (client: Client, nodeName: string
   F003: generateF003,
   F004: generateF004,
   F005: generateF005,
+  F009: generateF009,
   G001: generateG001,
   G003: generateG003,
   H001: generateH001,

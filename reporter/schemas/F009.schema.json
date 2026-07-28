@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "F009 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
+  "properties": {
+    "contract_version": { "type": ["string", "null"] },
+    "summary": { "type": "object", "additionalProperties": false, "required": ["status", "message"], "properties": { "status": { "enum": ["ok", "warning", "info"] }, "message": { "type": "string" } } },
+    "version": { "type": ["string", "null"] },
+    "build_ts": { "type": ["string", "null"] },
+    "generation_mode": { "type": ["string", "null"] },
+    "checkId": { "const": "F009" },
+    "checkTitle": { "const": "Xmin horizon and blockers" },
+    "timestamptz": { "type": "string" },
+    "nodes": { "$ref": "#/$defs/nodes" },
+    "results": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/nodeResult" }
+    }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "standbys"],
+      "properties": {
+        "primary": { "type": "string" },
+        "standbys": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "postgresVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "server_version_num", "server_major_ver", "server_minor_ver"],
+      "properties": {
+        "version": { "type": "string" },
+        "server_version_num": { "type": "string" },
+        "server_major_ver": { "type": "string" },
+        "server_minor_ver": { "type": "string" }
+      }
+    },
+    "blocker": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["age_tx", "count", "top_blocker"],
+      "properties": {
+        "age_tx": { "type": "number", "minimum": 0 },
+        "count": { "type": "number", "minimum": 0 },
+        "top_blocker": { "$ref": "#/$defs/blocker" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pg_stat_activity",
+        "pg_replication_slots",
+        "pg_replication_slots_catalog",
+        "pg_stat_replication",
+        "pg_prepared_xacts"
+      ],
+      "properties": {
+        "pg_stat_activity": { "$ref": "#/$defs/component" },
+        "pg_replication_slots": { "$ref": "#/$defs/component" },
+        "pg_replication_slots_catalog": { "$ref": "#/$defs/component" },
+        "pg_stat_replication": { "$ref": "#/$defs/component" },
+        "pg_prepared_xacts": { "$ref": "#/$defs/component" }
+      }
+    },
+    "dominantHolder": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["source", "component", "horizon_type", "age_tx", "detail"],
+      "properties": {
+        "source": { "enum": ["slot", "prepared", "activity", "replication"] },
+        "component": {
+          "enum": [
+            "pg_stat_activity",
+            "pg_replication_slots",
+            "pg_replication_slots_catalog",
+            "pg_stat_replication",
+            "pg_prepared_xacts"
+          ]
+        },
+        "horizon_type": { "enum": ["data", "catalog"] },
+        "age_tx": { "type": "number", "minimum": 0 },
+        "detail": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "source", "message"],
+      "properties": {
+        "available": { "const": true },
+        "source": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skipped",
+        "skip_reason",
+        "snapshot_xmin",
+        "data_horizon_age_tx",
+        "catalog_horizon_age_tx",
+        "autovacuum_freeze_max_age",
+        "severity",
+        "data_horizon_severity",
+        "catalog_horizon_severity",
+        "visibility",
+        "query_preview_captured",
+        "components",
+        "dominant_holder",
+        "conclusions",
+        "recommendations"
+      ],
+      "properties": {
+        "skipped": { "type": "boolean" },
+        "skip_reason": { "type": ["string", "null"] },
+        "snapshot_xmin": { "type": ["number", "null"] },
+        "data_horizon_age_tx": { "type": "number", "minimum": 0 },
+        "catalog_horizon_age_tx": { "type": "number", "minimum": 0 },
+        "autovacuum_freeze_max_age": { "type": "number", "minimum": 0 },
+        "severity": { "enum": ["OK", "NOTICE", "WARNING", "CRITICAL"] },
+        "data_horizon_severity": { "enum": ["OK", "NOTICE", "WARNING", "CRITICAL"] },
+        "catalog_horizon_severity": { "enum": ["OK", "NOTICE", "WARNING", "CRITICAL"] },
+        "visibility": { "enum": ["full", "limited"] },
+        "query_preview_captured": { "type": "boolean" },
+        "components": { "$ref": "#/$defs/components" },
+        "dominant_holder": { "$ref": "#/$defs/dominantHolder" },
+        "conclusions": { "type": "array", "items": { "type": "string" } },
+        "recommendations": { "type": "array", "items": { "type": "string" } },
+        "history": { "$ref": "#/$defs/history" }
+      }
+    },
+    "nodeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data"],
+      "properties": {
+        "data": { "$ref": "#/$defs/data" },
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+      }
+    }
+  }
+}

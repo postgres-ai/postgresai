@@ -28,6 +28,7 @@ export interface MockClientOptions {
   pgStatKcacheStatsRows?: any[];
   pgStatKcacheSampleRows?: any[];
   sensitiveColumnsRows?: any[];
+  xminHorizonRows?: any[];
 }
 
 const DEFAULT_VERSION_ROWS = [
@@ -41,6 +42,25 @@ const defaultSettingsRows = [
   { tag_setting_name: "autovacuum", tag_setting_value: "on", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "bool", is_default: 1, setting_normalized: null, unit_normalized: null },
   { tag_setting_name: "pg_stat_statements.max", tag_setting_value: "5000", tag_unit: "", tag_category: "Custom", tag_vartype: "integer", is_default: 0, setting_normalized: null, unit_normalized: null },
 ];
+
+const defaultXminHorizonRows = [{
+  is_in_recovery: false,
+  skip_reason: null,
+  snapshot_xmin: "1000",
+  autovacuum_freeze_max_age: "200000000",
+  has_full_visibility: true,
+  query_preview_enabled: true,
+  pg_flight_recorder_detected: false,
+  data_horizon_age_tx: "0",
+  catalog_horizon_age_tx: "0",
+  components: {
+    pg_stat_activity: { age_tx: 0, count: 0, top_blocker: null },
+    pg_replication_slots: { age_tx: 0, count: 0, top_blocker: null },
+    pg_replication_slots_catalog: { age_tx: 0, count: 0, top_blocker: null },
+    pg_stat_replication: { age_tx: 0, count: 0, top_blocker: null },
+    pg_prepared_xacts: { age_tx: 0, count: 0, top_blocker: null },
+  },
+}];
 
 /**
  * Create a mock PostgreSQL client for testing report generators.
@@ -71,6 +91,7 @@ export function createMockClient(options: MockClientOptions = {}) {
     pgStatKcacheStatsRows = [],
     pgStatKcacheSampleRows = [],
     sensitiveColumnsRows = [],
+    xminHorizonRows = defaultXminHorizonRows,
   } = options;
 
   return {
@@ -78,6 +99,10 @@ export function createMockClient(options: MockClientOptions = {}) {
       // Version query (simple inline - used by getPostgresVersion)
       if (sql.includes("server_version") && sql.includes("server_version_num") && sql.includes("pg_settings") && !sql.includes("tag_setting_name")) {
         return { rows: versionRows };
+      }
+      // F009: one-round-trip xmin horizon snapshot.
+      if (sql.includes("xmin_horizon_snapshot")) {
+        return { rows: xminHorizonRows };
       }
       // Settings metric query (from metrics.yml - has tag_setting_name, tag_setting_value)
       if (sql.includes("tag_setting_name") && sql.includes("tag_setting_value") && sql.includes("pg_settings")) {
