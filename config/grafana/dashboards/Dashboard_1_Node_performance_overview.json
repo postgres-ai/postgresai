@@ -240,6 +240,7 @@
         "y": 1
       },
       "id": 38,
+      "interval": "30s",
       "options": {
         "legend": {
           "calcs": [
@@ -261,7 +262,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"})",
+          "expr": "sum by (wait_event_type) (\n  (\n    sum by (wait_event_type, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "__auto",
           "range": true,
@@ -274,7 +275,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{datname=\"server_process\", wait_event_type!~\".*- Activity.*\"})",
+          "expr": "sum by (wait_event_type) (\n  (\n    sum by (wait_event_type, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"server_process\", wait_event_type!=\"Activity\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "Postgres - {{wait_event_type}}",
           "range": true,
@@ -287,7 +288,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{datname=\"server_process\", wait_event_type=~\".*- Activity.*\"})",
+          "expr": "sum by (wait_event_type) (\n  (\n    sum by (wait_event_type, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"server_process\", wait_event_type=\"Activity\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "Idle Internal - {{wait_event_type}}",
           "range": true,

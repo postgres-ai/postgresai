@@ -278,6 +278,7 @@
         "y": 18
       },
       "id": 19,
+      "interval": "30s",
       "options": {
         "legend": {
           "calcs": [
@@ -299,7 +300,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (wait_event_type, wait_event) (pgwatch_wait_events_total{query_id=\"$query_id\"})",
+          "expr": "sum by (wait_event_type, wait_event) (\n  (\n    sum by (wait_event_type, wait_event, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", query_id=\"$query_id\", query_id!=\"\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "{{wait_event_type}}:{{wait_event}}",
           "range": true,

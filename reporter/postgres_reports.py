@@ -56,6 +56,12 @@ class PostgresReportGenerator:
     # Default databases to always exclude
     DEFAULT_EXCLUDED_DATABASES = {'template0', 'template1', 'rdsadmin', 'azure_maintenance', 'cloudsqladmin'}
 
+    WAIT_EVENT_SAMPLING_NOTE = (
+        "Counts stored active-session gauge observations. Values depend on the "
+        "collection cadence and missed scrapes; they are neither distinct "
+        "wait-event starts nor Average Active Sessions."
+    )
+
     # Settings filter lists for reports based on A003
     D004_SETTINGS = [
         'pg_stat_statements.max',
@@ -2892,6 +2898,10 @@ class PostgresReportGenerator:
                                          hours: int = 24) -> Dict[str, Any]:
         """
         Generate N001 Wait Events report with hourly breakdown grouped by wait_event_type and query_id.
+
+        Occurrences are sampled active-session ticks: a backend observed in the same
+        wait event on two collection ticks contributes two occurrences. They are not
+        distinct wait-event starts.
         
         Args:
             cluster: Cluster name
@@ -2913,7 +2923,8 @@ class PostgresReportGenerator:
         # Build timeline
         now = int(time.time())
         end_s = self._floor_hour(now)
-        start_s, timeline = self._build_timeline(end_s, hours, step_s=3600)
+        first_bucket_end_s, timeline = self._build_timeline(end_s, hours, step_s=3600)
+        range_start_s = first_bucket_end_s - 3600
 
         wait_events_by_db = {}
         
@@ -2929,11 +2940,19 @@ class PostgresReportGenerator:
             ]
             filter_str = '{' + ','.join(filters) + '}'
             
-            # Get wait events data over the time range with hourly step
-            metric_name = f'pgwatch_wait_events_total{filter_str}'
+            # Integrate the raw sparse gauge samples inside each hour before the
+            # range query downsamples them. Querying the bare metric at a 1h step
+            # asks the TSDB for a last-value rollup and combines sessions observed
+            # at different times. The grouped sum below instead returns sampled
+            # active-session ticks per query and wait event for each hour.
+            metric_name = (
+                'sum by (wait_event_type, wait_event, query_id) ('
+                f'sum_over_time(pgwatch_wait_events_total{filter_str}[1h])'
+                ')'
+            )
             
             try:
-                result = self.query_range(metric_name, datetime.fromtimestamp(start_s), 
+                result = self.query_range(metric_name, datetime.fromtimestamp(first_bucket_end_s),
                                         datetime.fromtimestamp(end_s), step="3600s")
                 
                 if not result:
@@ -3035,11 +3054,13 @@ class PostgresReportGenerator:
                     'wait_event_types': wait_events_grouped,
                     'summary': {
                         'time_range_hours': hours,
-                        'start_time': datetime.fromtimestamp(start_s).isoformat(),
+                        'start_time': datetime.fromtimestamp(range_start_s).isoformat(),
                         'end_time': datetime.fromtimestamp(end_s).isoformat(),
                         'wait_event_types_count': len(wait_events_grouped),
                         'total_occurrences': sum(wt['total_occurrences'] for wt in wait_events_grouped.values()),
-                        'hourly_timestamps': timeline
+                        'hourly_timestamps': timeline,
+                        'sampling_semantics': 'sampled_active_session_ticks',
+                        'sampling_note': self.WAIT_EVENT_SAMPLING_NOTE
                     }
                 }
                 
@@ -4905,11 +4926,19 @@ class PostgresReportGenerator:
                 add_db(item["metric"].get("datname", ""))
         
         # 5) Wait events
-        wait_q = f'last_over_time(pgwatch_wait_events_total{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
+        wait_q = (
+            'group by (datname) ('
+            f'last_over_time(pgwatch_wait_events_total{{cluster="{_esc(cluster)}", '
+            f'node_name="{_esc(node_name)}", datname=~".+", '
+            'datname!="server_process"}[3h])'
+            ')'
+        )
         wait_res = self.query_instant(wait_q)
         if wait_res.get('status') == 'success' and wait_res.get('data', {}).get('result'):
             for item in wait_res['data']['result']:
-                add_db(item["metric"].get("datname", ""))
+                datname = item["metric"].get("datname", "")
+                if datname != "server_process":
+                    add_db(datname)
 
         return databases
 

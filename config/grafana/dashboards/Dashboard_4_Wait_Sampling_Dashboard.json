@@ -271,6 +271,7 @@
         "y": 0
       },
       "id": 1,
+      "interval": "30s",
       "options": {
         "legend": {
           "calcs": [
@@ -292,7 +293,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_by_label(sum by (wait_event_type) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\"}), 'wait_event_type')",
+          "expr": "sort_by_label(\n  sum by (wait_event_type) (\n    (\n      sum by (wait_event_type, instance) (\n        sum_over_time(\n          pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"}[$__interval]\n        )\n      ) default 0\n    )\n    / on (instance) group_left()\n    (\n      sum by (instance) (\n        sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n      ) > 0\n    )\n  ),\n  \"wait_event_type\"\n)",
           "hide": false,
           "legendFormat": "__auto",
           "range": true,
@@ -305,7 +306,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{datname=\"server_process\", wait_event_type!~\".*- Activity.*\"})",
+          "expr": "sum by (wait_event_type) (\n  (\n    sum by (wait_event_type, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"server_process\", wait_event_type!=\"Activity\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "Postgres - {{wait_event_type}}",
           "range": true,
@@ -318,7 +319,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (wait_event_type) (pgwatch_wait_events_total{datname=\"server_process\", wait_event_type=~\".*- Activity.*\"})",
+          "expr": "sum by (wait_event_type) (\n  (\n    sum by (wait_event_type, instance) (\n      sum_over_time(\n        pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=\"server_process\", wait_event_type=\"Activity\"}[$__interval]\n      )\n    ) default 0\n  )\n  / on (instance) group_left()\n  (\n    sum by (instance) (\n      sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n    ) > 0\n  )\n)",
           "hide": false,
           "legendFormat": "Idle Internal - {{wait_event_type}}",
           "range": true,
@@ -564,6 +565,7 @@
         "y": 21
       },
       "id": 2,
+      "interval": "30s",
       "options": {
         "legend": {
           "calcs": [
@@ -585,7 +587,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_by_label(sum by (wait_event_type, wait_event) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\"}), 'wait_event_type')",
+          "expr": "sort_by_label(\n  sum by (wait_event_type, wait_event) (\n    (\n      sum by (wait_event_type, wait_event, instance) (\n        sum_over_time(\n          pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\"}[$__interval]\n        )\n      ) default 0\n    )\n    / on (instance) group_left()\n    (\n      sum by (instance) (\n        sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n      ) > 0\n    )\n  ),\n  \"wait_event_type\"\n)",
           "hide": false,
           "legendFormat": "{{wait_event_type}} - {{wait_event}}",
           "range": true,
@@ -849,6 +851,7 @@
         "y": 42
       },
       "id": 3,
+      "interval": "30s",
       "options": {
         "legend": {
           "calcs": [
@@ -870,7 +873,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_by_label(sum by (wait_event_type, wait_event, query_id) (pgwatch_wait_events_total{cluster='$cluster_name', node_name='$node_name', datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\", wait_event=~\"$wait_event\"}), 'wait_event_type', 'query_id')",
+          "expr": "sort_by_label(\n  sum by (wait_event_type, wait_event, query_id) (\n    (\n      sum by (wait_event_type, wait_event, query_id, instance) (\n        sum_over_time(\n          pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\", wait_event=~\"$wait_event\"}[$__interval]\n        )\n      ) default 0\n    )\n    / on (instance) group_left()\n    (\n      sum by (instance) (\n        sum_over_time(up{job=\"pgwatch-prometheus\"}[$__interval])\n      ) > 0\n    )\n  ),\n  \"wait_event_type\", \"query_id\"\n)",
           "hide": false,
           "legendFormat": "{{wait_event_type}} - {{wait_event}} - {{query_id}}",
           "range": true,
@@ -916,52 +919,6 @@
   ],
   "templating": {
     "list": [
-      {
-        "allowCustomValue": false,
-        "current": {
-          "text": "All",
-          "value": [
-            "$__all"
-          ]
-        },
-        "definition": "label_values(pgwatch_wait_events_total,wait_event_type)",
-        "includeAll": true,
-        "label": "Wait event type",
-        "multi": true,
-        "name": "wait_event_type",
-        "options": [],
-        "query": {
-          "qryType": 1,
-          "query": "label_values(pgwatch_wait_events_total,wait_event_type)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "refresh": 1,
-        "regex": "",
-        "type": "query"
-      },
-      {
-        "allowCustomValue": false,
-        "current": {
-          "text": "All",
-          "value": [
-            "$__all"
-          ]
-        },
-        "definition": "label_values(pgwatch_wait_events_total{wait_event_type=~\"$wait_event_type\"},wait_event)",
-        "includeAll": true,
-        "label": "Wait event",
-        "multi": true,
-        "name": "wait_event",
-        "options": [],
-        "query": {
-          "qryType": 1,
-          "query": "label_values(pgwatch_wait_events_total{wait_event_type=~\"$wait_event_type\"},wait_event)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "refresh": 1,
-        "regex": "",
-        "type": "query"
-      },
       {
         "current": {
           "text": "default",
@@ -1015,6 +972,52 @@
         "query": {
           "qryType": 1,
           "query": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\", node_name=\"$node_name\", datname!=\"template1\"},datname)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allowCustomValue": false,
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "definition": "label_values(pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"},wait_event_type)",
+        "includeAll": true,
+        "label": "Wait event type",
+        "multi": true,
+        "name": "wait_event_type",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\"},wait_event_type)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allowCustomValue": false,
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "definition": "label_values(pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\"},wait_event)",
+        "includeAll": true,
+        "label": "Wait event",
+        "multi": true,
+        "name": "wait_event",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pgwatch_wait_events_total{cluster=\"$cluster_name\", node_name=\"$node_name\", datname=~\"$db_name\", wait_event_type=~\"$wait_event_type\"},wait_event)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
