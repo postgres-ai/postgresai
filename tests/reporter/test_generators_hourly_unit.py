@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -251,8 +252,12 @@ def test_generate_n001_groups_wait_events(monkeypatch: pytest.MonkeyPatch, gener
     # Fix timeline deterministically: end_s=7200 for hours=3 -> [0,3600,7200]
     monkeypatch.setattr(generator, "_floor_hour", lambda *_: 7200)
 
-    def fake_query_range(_query: str, start, end, step: str = "3600s") -> list[dict[str, Any]]:
-        _ = (start, end, step)
+    captured: dict[str, Any] = {}
+
+    def fake_query_range(query: str, start, end, step: str = "3600s") -> list[dict[str, Any]]:
+        captured.update(query=query, start=start, end=end, step=step)
+        # Values are already aggregated sampled active-session ticks per hour.
+        # Missing timestamps must remain zero in the initialized output arrays.
         return [
             {
                 "metric": {
@@ -260,7 +265,7 @@ def test_generate_n001_groups_wait_events(monkeypatch: pytest.MonkeyPatch, gener
                     "wait_event": "DataFileRead",
                     "query_id": "123",
                 },
-                "values": [[0, "1"], [3600, "2"], [7200, "0"]],
+                "values": [[0, "3"], [7200, "2"]],
             },
             {
                 "metric": {
@@ -268,7 +273,7 @@ def test_generate_n001_groups_wait_events(monkeypatch: pytest.MonkeyPatch, gener
                     "wait_event": "DataFileRead",
                     "query_id": "456",
                 },
-                "values": [[0, "0"], [3600, "1"], [7200, "1"]],
+                "values": [[3600, "4"]],
             },
         ]
 
@@ -277,12 +282,27 @@ def test_generate_n001_groups_wait_events(monkeypatch: pytest.MonkeyPatch, gener
     report = generator.generate_n001_wait_events_report("local", "node-1", hours=3)
     db = report["results"]["node-1"]["data"]["db1"]
     io = db["wait_event_types"]["IO"]
+
+    query = captured["query"]
+    assert query.startswith("sum by (wait_event_type, wait_event, query_id) (")
+    assert 'sum_over_time(pgwatch_wait_events_total{cluster="local",node_name="node-1",datname="db1"}[1h])' in query
+    assert captured["step"] == "3600s"
+    assert int(captured["start"].timestamp()) == 0
+    assert int(captured["end"].timestamp()) == 7200
+
+    summary = db["summary"]
+    assert int(datetime.fromisoformat(summary["start_time"]).timestamp()) == -3600
+    assert int(datetime.fromisoformat(summary["end_time"]).timestamp()) == 7200
+    assert summary["time_range_hours"] == 3
+    assert summary["hourly_timestamps"] == [0, 3600, 7200]
+    assert summary["sampling_semantics"] == "sampled_active_session_ticks"
+    assert "collection cadence" in summary["sampling_note"]
+    assert "missed scrapes" in summary["sampling_note"]
+
     assert io["unique_queries"] == 2
-    assert io["total_occurrences"] == 5
-    # Sorted by occurrences desc: q123 has 3, q456 has 2
+    assert io["total_occurrences"] == 9
+    # Sorted by sampled ticks desc: q123 has 5, q456 has 4.
     assert io["queries_list"][0]["query_id"] == "123"
-    assert io["queries_list"][0]["hourly_occurrences"] == [1, 2, 0]
+    assert io["queries_list"][0]["hourly_occurrences"] == [3, 0, 2]
     assert io["queries_list"][1]["query_id"] == "456"
-    assert io["queries_list"][1]["hourly_occurrences"] == [0, 1, 1]
-
-
+    assert io["queries_list"][1]["hourly_occurrences"] == [0, 4, 0]

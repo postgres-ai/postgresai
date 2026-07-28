@@ -41,10 +41,12 @@
     },
     "timeline": {
       "type": "array",
+      "description": "End timestamps for the one-hour buckets. Each value describes the preceding hour.",
       "items": { "type": "integer" }
     },
     "hourlyIntegers": {
       "type": "array",
+      "description": "Sampled active-session ticks per hour, not distinct wait-event starts.",
       "items": { "type": "integer" }
     },
     "waitEventEntry": {
@@ -52,7 +54,10 @@
       "additionalProperties": false,
       "required": ["occurrences"],
       "properties": {
-        "occurrences": { "type": "integer" }
+        "occurrences": {
+          "type": "integer",
+          "description": "Sampled active-session ticks, not distinct wait-event starts."
+        }
       }
     },
     "queryEntry": {
@@ -61,7 +66,10 @@
       "required": ["query_id", "occurrences", "hourly_occurrences", "wait_events"],
       "properties": {
         "query_id": { "type": "string" },
-        "occurrences": { "type": "integer" },
+        "occurrences": {
+          "type": "integer",
+          "description": "Sampled active-session ticks, not distinct wait-event starts."
+        },
         "hourly_occurrences": { "$ref": "#/$defs/hourlyIntegers" },
         "wait_events": {
           "type": "object",
@@ -74,7 +82,10 @@
       "additionalProperties": false,
       "required": ["total_occurrences", "unique_queries", "queries_list"],
       "properties": {
-        "total_occurrences": { "type": "integer" },
+        "total_occurrences": {
+          "type": "integer",
+          "description": "Sampled active-session ticks, not distinct wait-event starts."
+        },
         "unique_queries": { "type": "integer" },
         "queries_list": { "type": "array", "items": { "$ref": "#/$defs/queryEntry" } }
       }
@@ -88,15 +99,35 @@
         "end_time",
         "wait_event_types_count",
         "total_occurrences",
-        "hourly_timestamps"
+        "hourly_timestamps",
+        "sampling_semantics",
+        "sampling_note"
       ],
       "properties": {
         "time_range_hours": { "type": "integer" },
-        "start_time": { "type": "string" },
-        "end_time": { "type": "string" },
+        "start_time": {
+          "type": "string",
+          "description": "Start of the first one-hour bucket."
+        },
+        "end_time": {
+          "type": "string",
+          "description": "End of the final one-hour bucket."
+        },
         "wait_event_types_count": { "type": "integer" },
-        "total_occurrences": { "type": "integer" },
-        "hourly_timestamps": { "$ref": "#/$defs/timeline" }
+        "total_occurrences": {
+          "type": "integer",
+          "description": "Sampled active-session ticks, not distinct wait-event starts."
+        },
+        "hourly_timestamps": { "$ref": "#/$defs/timeline" },
+        "sampling_semantics": {
+          "const": "sampled_active_session_ticks",
+          "description": "Identifies the cadence-dependent measurement represented by occurrence fields."
+        },
+        "sampling_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explains cadence, scrape-gap, and non-event-count limitations."
+        }
       }
     },
     "dbEntry": {
@@ -126,5 +157,3 @@
     }
   }
 }
-
-

@@ -402,7 +402,10 @@ def test_generate_a007_altered_settings_report(monkeypatch: pytest.MonkeyPatch, 
 
 @pytest.mark.unit
 def test_get_all_databases_merges_sources(monkeypatch: pytest.MonkeyPatch, generator: PostgresReportGenerator) -> None:
+    queries: list[str] = []
+
     def fake_query(query: str) -> dict[str, Any]:
+        queries.append(query)
         if "wraparound" in query:
             return {
                 "status": "success",
@@ -442,13 +445,28 @@ def test_get_all_databases_merges_sources(monkeypatch: pytest.MonkeyPatch, gener
                     ]
                 },
             }
+        if "pgwatch_wait_events_total" in query:
+            return {
+                "status": "success",
+                "data": {
+                    "result": [
+                        {"metric": {"datname": "eventsdb"}, "value": [0, "1"]},
+                        {"metric": {"datname": "server_process"}, "value": [0, "1"]},
+                    ]
+                },
+            }
         return {"status": "success", "data": {"result": []}}
 
     monkeypatch.setattr(generator, "query_instant", fake_query)
 
     databases = generator.get_all_databases("local", "node-1")
 
-    assert databases == ["appdb", "analytics", "warehouse", "inventory"]
+    assert databases == ["appdb", "analytics", "warehouse", "inventory", "eventsdb"]
+
+    wait_query = next(query for query in queries if "pgwatch_wait_events_total" in query)
+    assert wait_query.startswith("group by (datname) (last_over_time(")
+    assert 'datname=~".+"' in wait_query
+    assert 'datname!="server_process"' in wait_query
 
 
 @pytest.mark.unit
