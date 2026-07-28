@@ -540,6 +540,24 @@ async function downloadText(url: string): Promise<string> {
   }
 }
 
+/**
+ * Candidate git refs to fetch the version-coupled docker-compose.yml from, in
+ * priority order: explicit override (PGAI_PROJECT_REF), the CLI's own version
+ * (tag with and without the `v` prefix), then `main` as the final fallback so
+ * a version whose tag is not (yet) published on GitLab still gets a working
+ * compose instead of nothing. Shared by the green-field bootstrap
+ * (ensureDefaultMonitoringProject) and the non-git upgrade refresh
+ * (refreshBundledComposeIfStale) so the two paths can never drift apart.
+ */
+function composeRefCandidates(): string[] {
+  return [
+    process.env.PGAI_PROJECT_REF,
+    pkg.version,
+    `v${pkg.version}`,
+    "main",
+  ].filter((v): v is string => Boolean(v && v.trim()));
+}
+
 async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
   const projectDir = getDefaultMonitoringProjectDir();
   const composeFile = path.resolve(projectDir, "docker-compose.yml");
@@ -550,12 +568,7 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
   }
 
   if (!fs.existsSync(composeFile)) {
-    const refs = [
-      process.env.PGAI_PROJECT_REF,
-      pkg.version,
-      `v${pkg.version}`,
-      "main",
-    ].filter((v): v is string => Boolean(v && v.trim()));
+    const refs = composeRefCandidates();
 
     let lastErr: unknown;
     for (const ref of refs) {
@@ -750,11 +763,11 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   // Nothing deployed yet -> the green-field bootstrap path handles fetching it.
   if (!fs.existsSync(composeFile)) return false;
 
-  const refs = [
-    process.env.PGAI_PROJECT_REF,
-    pkg.version,
-    `v${pkg.version}`,
-  ].filter((v): v is string => Boolean(v && v.trim()));
+  // Same candidate refs as the green-field bootstrap — including the final
+  // `main` fallback, so a non-git upgrade to a version whose tag is not (yet)
+  // published still refreshes the compose instead of silently keeping a stale
+  // pre-0.15 one (the exact failure this function exists to prevent).
+  const refs = composeRefCandidates();
 
   const fetched = await fetchTargetCompose(refs);
   // Validate BEFORE doing anything destructive: an empty body, a fetch failure,
@@ -2098,9 +2111,10 @@ program
     // call BEFORE connecting / running checks, so an invalid or expired token
     // fails in seconds instead of after minutes of wasted work (previously the
     // upload at the very end of the run was the first authenticated call).
-    // Only a definitive 401/403 stops the run; a transient pre-flight failure
-    // (network error, timeout, 5xx) warns and continues — the upload may still
-    // succeed.
+    // Only a definitive 401 stops the run; a 403 (the probe hits the list
+    // endpoint, a different authz surface than the upload RPC) or a transient
+    // pre-flight failure (network error, timeout, 5xx) warns and continues —
+    // the upload may still succeed.
     if (uploadCfg) {
       const verification = await verifyApiKey({
         apiKey: uploadCfg.apiKey,
@@ -3240,19 +3254,30 @@ mon
         // config we wrote, and hands the platform a finished token via the
         // API-token RPC (v1.monitoring_instance_aas_register). Never fatal —
         // it can be enabled later by re-running local-install.
-        const aas = await registerAasCollection(apiKey, instanceId, {
-          grafanaPassword,
-          instancesPath,
-          vcpus: parseVcpus(opts.vcpus ?? process.env.PGAI_VCPUS),
-          apiBaseUrl: globalOpts.apiBaseUrl,
-          debug: !!process.env.DEBUG,
-        });
-        if (aas.ok) {
-          console.log("✓ AAS auto-collection registered\n");
-        } else {
+        // Skipped when adoption itself failed (reg === null): arming an
+        // instance the platform did not acknowledge would hand out a Grafana
+        // token for a registration that never happened. (A 0/omitted --vcpus
+        // is additionally gated inside registerAasCollection, per its help
+        // text: "AAS collection stays off until a real value is set".)
+        if (reg === null) {
           console.error(
-            `⚠ AAS auto-collection not registered (${aas.reason}); it can be enabled later by re-running 'postgresai mon local-install'\n`
+            "⚠ Skipping AAS auto-collection arming because instance adoption failed; it can be enabled later by re-running 'postgresai mon local-install'\n"
           );
+        } else {
+          const aas = await registerAasCollection(apiKey, instanceId, {
+            grafanaPassword,
+            instancesPath,
+            vcpus: parseVcpus(opts.vcpus ?? process.env.PGAI_VCPUS),
+            apiBaseUrl: globalOpts.apiBaseUrl,
+            debug: !!process.env.DEBUG,
+          });
+          if (aas.ok) {
+            console.log("✓ AAS auto-collection registered\n");
+          } else {
+            console.error(
+              `⚠ AAS auto-collection not registered (${aas.reason}); it can be enabled later by re-running 'postgresai mon local-install'\n`
+            );
+          }
         }
       } else if (plan.kind === "error-missing-project") {
         // Legacy self-registration (no --instance-id) now requires a project
