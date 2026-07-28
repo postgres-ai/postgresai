@@ -46,6 +46,11 @@ const REQUIRED_METRICS = [
   "redundant_indexes",
   // Stats reset info (H002)
   "stats_reset",
+  // Wraparound ages, thresholds, per-table overrides, and SLRU size (F002)
+  "pg_database_wraparound",
+  "pg_settings_wraparound",
+  "pg_table_wraparound",
+  "multixact_size",
   // Dead tuples and per-table autovacuum overrides (F003)
   "pg_dead_tuples",
   // Bloat estimation (F004, F005)

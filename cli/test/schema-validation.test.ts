@@ -71,6 +71,19 @@ describe("Schema validation", () => {
   }
 
   // F003 (Autovacuum: dead tuples) - test empty and with data
+  test("F002 validates with sample data", async () => {
+    const mockClient = createMockClient({
+      wraparoundDatabaseRows: [{ tag_datname: "testdb", age_datfrozenxid: "250000000", age_datminmxid: "1000" }],
+      wraparoundTableRows: [{
+        tag_schema_name: "public", tag_table_name: "events", tag_ranked_by: "xid",
+        xid_age: "250000000", multixact_age: "1000", effective_freeze_max_age: "200000000",
+        effective_multixact_freeze_max_age: "400000000", table_size_bytes: "1048576",
+      }],
+    });
+    const report = await checkup.REPORT_GENERATORS.F002(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F002");
+  });
+
   test("F003 validates with empty data", async () => {
     const mockClient = createMockClient({ deadTuplesRows: [] });
     const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "node-01");

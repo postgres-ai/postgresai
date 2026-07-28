@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "F002 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
+  "properties": {
+    "version": { "type": ["string", "null"] },
+    "build_ts": { "type": ["string", "null"] },
+    "contract_version": { "type": ["string", "null"] },
+    "generation_mode": { "type": ["string", "null"], "enum": ["full", "express", null] },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "message"],
+      "properties": {
+        "status": { "enum": ["ok", "warning", "info"] },
+        "message": { "type": "string" }
+      }
+    },
+    "checkId": { "const": "F002" },
+    "checkTitle": { "const": "Autovacuum: transaction ID and MultiXact wraparound" },
+    "timestamptz": { "type": "string" },
+    "nodes": { "$ref": "#/$defs/nodes" },
+    "results": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/nodeResult" } }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object", "additionalProperties": false, "required": ["primary", "standbys"],
+      "properties": { "primary": { "type": "string" }, "standbys": { "type": "array", "items": { "type": "string" } } }
+    },
+    "postgresVersion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "server_version_num", "server_major_ver", "server_minor_ver"],
+      "properties": {
+        "version": { "type": "string" }, "server_version_num": { "type": "string" },
+        "server_major_ver": { "type": "string" }, "server_minor_ver": { "type": "string" }
+      }
+    },
+    "settings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["autovacuum_freeze_max_age", "vacuum_freeze_min_age", "vacuum_freeze_table_age", "autovacuum_multixact_freeze_max_age", "vacuum_multixact_freeze_min_age", "vacuum_multixact_freeze_table_age", "vacuum_failsafe_age", "vacuum_multixact_failsafe_age"],
+      "properties": {
+        "autovacuum_freeze_max_age": { "type": "number" }, "vacuum_freeze_min_age": { "type": "number" },
+        "vacuum_freeze_table_age": { "type": "number" }, "autovacuum_multixact_freeze_max_age": { "type": "number" },
+        "vacuum_multixact_freeze_min_age": { "type": "number" }, "vacuum_multixact_freeze_table_age": { "type": "number" },
+        "vacuum_failsafe_age": { "type": ["number", "null"] }, "vacuum_multixact_failsafe_age": { "type": ["number", "null"] }
+      }
+    },
+    "risk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["age", "emergency_age", "failsafe_age", "pct_towards_wraparound", "pct_towards_emergency", "pct_towards_failsafe", "severity"],
+      "properties": {
+        "age": { "type": "number" }, "emergency_age": { "type": "number" }, "failsafe_age": { "type": ["number", "null"] },
+        "pct_towards_wraparound": { "type": "number" }, "pct_towards_emergency": { "type": "number" },
+        "pct_towards_failsafe": { "type": ["number", "null"] },
+        "severity": { "type": "string", "enum": ["info", "warning", "high", "critical"] }
+      }
+    },
+    "database": {
+      "type": "object", "additionalProperties": false, "required": ["database_name", "xid", "multixact"],
+      "properties": { "database_name": { "type": "string" }, "xid": { "$ref": "#/$defs/risk" }, "multixact": { "$ref": "#/$defs/risk" } }
+    },
+    "table": {
+      "type": "object", "additionalProperties": false,
+      "required": ["database_name", "schema_name", "table_name", "ranked_by", "table_size_bytes", "table_size_pretty", "xid", "multixact"],
+      "properties": {
+        "database_name": { "type": "string" }, "schema_name": { "type": "string" }, "table_name": { "type": "string" },
+        "ranked_by": { "type": "array", "items": { "type": "string", "enum": ["xid", "multixact"] } },
+        "table_size_bytes": { "type": "number" }, "table_size_pretty": { "type": "string" },
+        "xid": { "$ref": "#/$defs/risk" }, "multixact": { "$ref": "#/$defs/risk" }
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["wraparound_limit", "critical_age", "failsafe_high_pct", "table_limit_per_age"],
+      "properties": {
+        "wraparound_limit": { "type": "number" }, "critical_age": { "type": "number" },
+        "failsafe_high_pct": { "type": "number" }, "table_limit_per_age": { "type": "integer" }
+      }
+    },
+    "multixactSize": {
+      "type": "object", "additionalProperties": false, "required": ["bytes", "size_pretty", "status_code"],
+      "properties": {
+        "bytes": { "type": ["number", "null"] }, "size_pretty": { "type": ["string", "null"] },
+        "status_code": { "type": "integer" }
+      }
+    },
+    "data": {
+      "type": "object", "additionalProperties": false,
+      "required": ["settings", "settings_available", "databases", "tables", "multixact_size", "severity", "thresholds", "conclusions", "recommendations"],
+      "properties": {
+        "settings": { "$ref": "#/$defs/settings" }, "settings_available": { "type": "boolean" },
+        "databases": { "type": "array", "items": { "$ref": "#/$defs/database" } },
+        "tables": { "type": "array", "items": { "$ref": "#/$defs/table" } },
+        "multixact_size": { "$ref": "#/$defs/multixactSize" },
+        "severity": { "type": "string", "enum": ["info", "warning", "high", "critical"] },
+        "thresholds": { "$ref": "#/$defs/thresholds" },
+        "conclusions": { "type": "array", "items": { "type": "string" } },
+        "recommendations": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "nodeResult": {
+      "type": "object", "additionalProperties": false, "required": ["data"],
+      "properties": { "data": { "$ref": "#/$defs/data" }, "postgres_version": { "$ref": "#/$defs/postgresVersion" } }
+    }
+  }
+}

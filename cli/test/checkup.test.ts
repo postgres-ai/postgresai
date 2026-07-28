@@ -1498,6 +1498,77 @@ describe("H004 - Redundant indexes", () => {
   // Top-level structure tests removed - covered by schema-validation.test.ts
 });
 
+describe("F002 - wraparound", () => {
+  test("evaluates warning, high, failsafe-high, and critical thresholds", () => {
+    expect(checkup.evaluateWraparoundRisk(500_000_000, 0, null).severity).toBe("info");
+    expect(checkup.evaluateWraparoundRisk(199_999_999, 200_000_000, 1_600_000_000).severity).toBe("info");
+    expect(checkup.evaluateWraparoundRisk(200_000_000, 200_000_000, 1_600_000_000).severity).toBe("warning");
+    expect(checkup.evaluateWraparoundRisk(400_000_000, 200_000_000, 1_600_000_000).severity).toBe("high");
+    expect(checkup.evaluateWraparoundRisk(720_000_000, 500_000_000, 900_000_000).severity).toBe("high");
+    expect(checkup.evaluateWraparoundRisk(1_000_000_000, 800_000_000, 1_600_000_000).severity).toBe("critical");
+  });
+
+  test("honors table overrides and gates failsafe fields on PostgreSQL 13", async () => {
+    const mockClient = createMockClient({
+      versionRows: [{ name: "server_version", setting: "13.16" }, { name: "server_version_num", setting: "130016" }],
+      wraparoundDatabaseRows: [{ tag_datname: "testdb", age_datfrozenxid: "120000000", age_datminmxid: "10" }],
+      wraparoundTableRows: [{
+        tag_schema_name: "public", tag_table_name: "events", tag_ranked_by: "multixact,xid",
+        xid_age: "120000000", multixact_age: "410000000", effective_freeze_max_age: "100000000",
+        effective_multixact_freeze_max_age: "400000000", table_size_bytes: "1048576",
+      }],
+    });
+    const data = await checkup.getWraparoundData(mockClient as any, 13);
+    expect(data.settings.vacuum_failsafe_age).toBeNull();
+    expect(data.settings.vacuum_multixact_failsafe_age).toBeNull();
+    expect(data.databases[0].xid.severity).toBe("info");
+    expect(data.tables[0].xid.emergency_age).toBe(100_000_000);
+    expect(data.tables[0].xid.severity).toBe("warning");
+    expect(data.tables[0].multixact.severity).toBe("warning");
+    expect(data.tables[0].ranked_by).toEqual(["multixact", "xid"]);
+  });
+
+  test("generates conclusions and a report for severe offenders", async () => {
+    const mockClient = createMockClient({
+      wraparoundDatabaseRows: [{ tag_datname: "testdb", age_datfrozenxid: "1000000000", age_datminmxid: "10" }],
+      wraparoundTableRows: [],
+    });
+    const report = await checkup.REPORT_GENERATORS.F002(mockClient as any, "test-node");
+    const data = report.results["test-node"].data as any;
+    expect(report.checkId).toBe("F002");
+    expect(data.severity).toBe("critical");
+    expect(data.conclusions[0]).toContain('database "testdb"');
+    expect(data.recommendations.join(" ")).toContain("VACUUM (FREEZE, VERBOSE)");
+  });
+
+  test("uses real MultiXact size fields and reports unavailable settings without false positives", async () => {
+    const mockClient = createMockClient({
+      wraparoundSettingsRows: [],
+      wraparoundDatabaseRows: [{ tag_datname: "testdb", age_datfrozenxid: "500000000", age_datminmxid: "500000000" }],
+      multixactSizeRows: [{ members_bytes: "1048576", offsets_bytes: "524288", status_code: "0" }],
+    });
+    const report = await checkup.REPORT_GENERATORS.F002(mockClient as any, "test-node");
+    const data = report.results["test-node"].data as any;
+    expect(data.settings_available).toBe(false);
+    expect(data.severity).toBe("info");
+    expect(data.databases[0].xid.severity).toBe("info");
+    expect(data.conclusions[0]).toMatch(/settings are unavailable/i);
+    expect(data.multixact_size).toEqual({
+      bytes: 1572864,
+      size_pretty: "1.50 MiB",
+      status_code: 0,
+    });
+  });
+
+  test("preserves degraded MultiXact size status when byte counts are unavailable", async () => {
+    const mockClient = createMockClient({
+      multixactSizeRows: [{ members_bytes: null, offsets_bytes: null, status_code: "2" }],
+    });
+    const data = await checkup.getWraparoundData(mockClient as any, 16);
+    expect(data.multixact_size).toEqual({ bytes: null, size_pretty: null, status_code: 2 });
+  });
+});
+
 // Tests for F003 (Autovacuum: dead tuples)
 describe("F003 - Dead tuples", () => {
   // The seeded UX-test case that F004 missed: 8.27M dead tuples,
@@ -2371,6 +2442,19 @@ describe("checkup-api", () => {
 // Tests for checkup-summary module
 describe("checkup-summary", () => {
   const summary = require("../lib/checkup-summary");
+
+  test("generateCheckSummary for F002 handles healthy, risky, and unavailable reports", () => {
+    const base = { databases: [{ database_name: "db1" }], tables: [], settings_available: true };
+    expect(summary.generateCheckSummary("F002", { results: { node1: { data: { ...base, severity: "info" } } } })).toEqual({
+      status: "ok", message: "1 database below wraparound thresholds",
+    });
+    expect(summary.generateCheckSummary("F002", { results: { node1: { data: {
+      ...base, severity: "high", tables: [{ xid: { severity: "high" }, multixact: { severity: "info" } }],
+    } } } })).toEqual({ status: "warning", message: "HIGH wraparound risk; 1 table affected" });
+    expect(summary.generateCheckSummary("F002", { results: { node1: { data: {
+      ...base, settings_available: false, severity: "info",
+    } } } })).toEqual({ status: "info", message: "Wraparound settings unavailable" });
+  });
 
   test("generateCheckSummary for F009 reports severity and dominant holder", () => {
     const result = summary.generateCheckSummary("F009", {
@@ -3901,6 +3985,10 @@ describe("Version-aware SQL query selection (PG13-PG18)", () => {
       H001: "pg_invalid_indexes",
       H002: "unused_indexes",
       H004: "redundant_indexes",
+      F002Database: "pg_database_wraparound",
+      F002Settings: "pg_settings_wraparound",
+      F002Tables: "pg_table_wraparound",
+      F002MultixactSize: "multixact_size",
       F003: "pg_dead_tuples",
       F004: "pg_table_bloat",
       F005: "pg_btree_bloat",

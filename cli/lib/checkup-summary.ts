@@ -40,6 +40,7 @@ export function generateCheckSummary(checkId: string, report: any): CheckSummary
     case 'D001': return summarizeD001(nodeData);
     case 'D004': return summarizeD004(nodeData);
     case 'F001': return summarizeF001(nodeData);
+    case 'F002': return summarizeF002(nodeData);
     case 'F003': return summarizeF003(nodeData);
     case 'F004': return summarizeBloat(nodeData, 'table');
     case 'F005': return summarizeBloat(nodeData, 'index');
@@ -244,6 +245,27 @@ function summarizeF001(nodeData: any): CheckSummary {
   return {
     status: 'info',
     message: `${settingsCount} autovacuum setting${settingsCount > 1 ? 's' : ''} collected`
+  };
+}
+
+function summarizeF002(nodeData: any): CheckSummary {
+  if (nodeData?.data?.settings_available === false) {
+    return { status: 'info', message: 'Wraparound settings unavailable' };
+  }
+  const severity = nodeData?.data?.severity;
+  const databases = nodeData?.data?.databases?.length || 0;
+  const tables = nodeData?.data?.tables || [];
+  const offenders = tables.filter((table: any) =>
+    table?.xid?.severity !== 'info' || table?.multixact?.severity !== 'info'
+  ).length;
+
+  if (!severity) return { status: 'info', message: 'No wraparound data' };
+  if (severity === 'info') {
+    return { status: 'ok', message: `${databases} database${databases === 1 ? '' : 's'} below wraparound thresholds` };
+  }
+  return {
+    status: 'warning',
+    message: `${severity.toUpperCase()} wraparound risk${offenders ? `; ${offenders} table${offenders === 1 ? '' : 's'} affected` : ''}`,
   };
 }
 

@@ -72,6 +72,26 @@ class PostgresReportGenerator:
     # Default databases to always exclude
     DEFAULT_EXCLUDED_DATABASES = {'template0', 'template1', 'rdsadmin', 'azure_maintenance', 'cloudsqladmin'}
 
+    # F002 transaction ID / MultiXact wraparound severity policy. Kept in sync
+    # with the express-mode implementation in cli/lib/checkup.ts (same-named
+    # constants and evaluateWraparoundRisk). The severity ladder:
+    #   - info (guard): emergency_age <= 0. The emergency threshold is unknown
+    #     (settings unavailable — a realistic full-mode monitoring gap where the
+    #     pg_settings_wraparound series are missing and default to 0). Without
+    #     this guard every 2*0 / 1*0 comparison is trivially true and a gap turns
+    #     into a false-positive "everything is high" storm; the report-level
+    #     settings_available flag additionally forces the whole check to info.
+    #   - critical: age >= F002_CRITICAL_AGE (half of the 2^31 wrap limit).
+    #   - high: age >= 2 * emergency_age, OR age >= F002_FAILSAFE_HIGH_PCT% of
+    #     the failsafe age (PG14+); 2x the soft emergency threshold is where
+    #     anti-wraparound autovacuum should be running yet isn't keeping up.
+    #   - warning: age >= emergency_age (the per-table/effective
+    #     autovacuum_freeze_max_age at which anti-wraparound vacuum starts).
+    F002_WRAPAROUND_LIMIT = 2_147_483_648
+    F002_CRITICAL_AGE = 1_000_000_000
+    F002_FAILSAFE_HIGH_PCT = 80
+    F002_TABLE_LIMIT_PER_AGE = 50
+
     WAIT_EVENT_SAMPLING_NOTE = (
         "Counts stored active-session gauge observations. Values depend on the "
         "collection cadence and missed scrapes; they are neither distinct "
@@ -1314,6 +1334,197 @@ class PostgresReportGenerator:
                     }
 
         return self.format_report_data("F001", autovacuum_data, node_name, postgres_version=self._get_postgres_version_info(cluster, node_name))
+
+    @staticmethod
+    def _wraparound_risk(age: float, emergency_age: float, failsafe_age: Optional[float]) -> Dict[str, Any]:
+        """Evaluate one XID/MultiXact age using the F002 severity policy."""
+        age = int(age or 0)
+        emergency_age = int(emergency_age or 0)
+        failsafe = int(failsafe_age) if failsafe_age else None
+        severity = "info"
+        if emergency_age <= 0:
+            severity = "info"
+        elif age >= PostgresReportGenerator.F002_CRITICAL_AGE:
+            severity = "critical"
+        elif age >= 2 * emergency_age or (
+            failsafe and age >= failsafe * (PostgresReportGenerator.F002_FAILSAFE_HIGH_PCT / 100)
+        ):
+            severity = "high"
+        elif age >= emergency_age:
+            severity = "warning"
+
+        def pct(limit: Optional[int]) -> Optional[float]:
+            if not limit:
+                return None
+            # Match JavaScript Math.round for positive age percentages.
+            scaled = age / limit * 10_000
+            return int(scaled + 0.5) / 100
+
+        return {
+            "age": age,
+            "emergency_age": emergency_age,
+            "failsafe_age": failsafe,
+            "pct_towards_wraparound": pct(PostgresReportGenerator.F002_WRAPAROUND_LIMIT) or 0,
+            "pct_towards_emergency": pct(emergency_age) or 0,
+            "pct_towards_failsafe": pct(failsafe),
+            "severity": severity,
+        }
+
+    def generate_f002_wraparound_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
+        """Generate F002 from bounded wraparound metrics collected by pgwatch."""
+        _esc = self._escape_promql_label
+        filters = f'{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}'
+
+        def samples(metric: str, lookback: str = "10m") -> List[Dict[str, Any]]:
+            result = self.query_instant(f'last_over_time({metric}{filters}[{lookback}])')
+            if result.get("status") != "success":
+                return []
+            return result.get("data", {}).get("result", [])
+
+        setting_names = [
+            "autovacuum_freeze_max_age", "vacuum_freeze_min_age", "vacuum_freeze_table_age",
+            "autovacuum_multixact_freeze_max_age", "vacuum_multixact_freeze_min_age",
+            "vacuum_multixact_freeze_table_age", "vacuum_failsafe_age",
+            "vacuum_multixact_failsafe_age",
+        ]
+        settings: Dict[str, Any] = {}
+        for name in setting_names:
+            rows = samples(f"pgwatch_pg_settings_wraparound_{name}")
+            value = int(float(rows[0]["value"][1])) if rows else 0
+            settings[name] = value
+
+        pg_version = self._get_postgres_version_info(cluster, node_name)
+        raw_pg_major = str(pg_version.get("server_major_ver", "0") or "0")
+        pg_major = int(raw_pg_major) if raw_pg_major.isdigit() else 0
+        if pg_major < 14 or not settings["vacuum_failsafe_age"]:
+            settings["vacuum_failsafe_age"] = None
+        if pg_major < 14 or not settings["vacuum_multixact_failsafe_age"]:
+            settings["vacuum_multixact_failsafe_age"] = None
+        settings_available = (
+            settings["autovacuum_freeze_max_age"] > 0 and
+            settings["autovacuum_multixact_freeze_max_age"] > 0
+        )
+
+        database_values: Dict[str, Dict[str, int]] = {}
+        for field in ("age_datfrozenxid", "age_datminmxid"):
+            for item in samples(f"pgwatch_pg_database_wraparound_{field}", "5m"):
+                datname = item.get("metric", {}).get("datname", "")
+                database_values.setdefault(datname, {})[field] = int(float(item["value"][1]))
+        databases = []
+        for datname, values in database_values.items():
+            databases.append({
+                "database_name": datname,
+                "xid": self._wraparound_risk(
+                    values.get("age_datfrozenxid", 0), settings["autovacuum_freeze_max_age"],
+                    settings["vacuum_failsafe_age"],
+                ),
+                "multixact": self._wraparound_risk(
+                    values.get("age_datminmxid", 0), settings["autovacuum_multixact_freeze_max_age"],
+                    settings["vacuum_multixact_failsafe_age"],
+                ),
+            })
+        databases.sort(key=lambda db: max(db["xid"]["age"], db["multixact"]["age"]), reverse=True)
+
+        table_fields = ["xid_age", "multixact_age", "effective_freeze_max_age",
+                        "effective_multixact_freeze_max_age", "table_size_bytes"]
+        table_values: Dict[tuple, Dict[str, Any]] = {}
+        for field in table_fields:
+            for item in samples(f"pgwatch_pg_table_wraparound_{field}"):
+                labels = item.get("metric", {})
+                key = (labels.get("datname", ""), labels.get("schema_name", ""),
+                       labels.get("table_name", ""))
+                values = table_values.setdefault(key, {"ranked_by": set()})
+                values["ranked_by"].update(value for value in labels.get("ranked_by", "").split(",") if value)
+                candidate = int(float(item["value"][1]))
+                if field in ("effective_freeze_max_age", "effective_multixact_freeze_max_age"):
+                    current = values.get(field)
+                    values[field] = candidate if current is None else min(current, candidate)
+                else:
+                    values[field] = max(values.get(field, candidate), candidate)
+        tables = []
+        for (database_name, schema_name, table_name), values in table_values.items():
+            table_size = values.get("table_size_bytes", 0)
+            tables.append({
+                "database_name": database_name,
+                "schema_name": schema_name,
+                "table_name": table_name,
+                "ranked_by": sorted(values["ranked_by"]),
+                "table_size_bytes": table_size,
+                "table_size_pretty": self.format_bytes(table_size),
+                "xid": self._wraparound_risk(
+                    values.get("xid_age", 0),
+                    values.get("effective_freeze_max_age") or settings["autovacuum_freeze_max_age"],
+                    settings["vacuum_failsafe_age"],
+                ),
+                "multixact": self._wraparound_risk(
+                    values.get("multixact_age", 0),
+                    values.get("effective_multixact_freeze_max_age") or settings["autovacuum_multixact_freeze_max_age"],
+                    settings["vacuum_multixact_failsafe_age"],
+                ),
+            })
+        tables.sort(key=lambda table: (
+            -max(table["xid"]["age"], table["multixact"]["age"]),
+            table["database_name"], table["schema_name"], table["table_name"],
+        ))
+
+        multixact_size_values = {}
+        for field in ("members_bytes", "offsets_bytes", "status_code"):
+            rows = samples(f"pgwatch_multixact_size_{field}")
+            if rows:
+                multixact_size_values[field] = int(float(rows[0]["value"][1]))
+        members_bytes = multixact_size_values.get("members_bytes")
+        offsets_bytes = multixact_size_values.get("offsets_bytes")
+        multixact_bytes = (
+            members_bytes + offsets_bytes
+            if members_bytes is not None and offsets_bytes is not None
+            else None
+        )
+        multixact_size = {
+            "bytes": multixact_bytes,
+            "size_pretty": self.format_bytes(multixact_bytes) if multixact_bytes is not None else None,
+            "status_code": multixact_size_values.get("status_code", 2),
+        }
+
+        severity_order = {"info": 0, "warning": 1, "high": 2, "critical": 3}
+        offenders = []
+        for db in databases:
+            offenders.extend([(f'database "{db["database_name"]}"', "transaction ID", db["xid"]),
+                              (f'database "{db["database_name"]}"', "MultiXact", db["multixact"])])
+        for table in tables:
+            rel = f'table "{table["database_name"]}"."{table["schema_name"]}"."{table["table_name"]}"'
+            offenders.extend([(rel, "transaction ID", table["xid"]), (rel, "MultiXact", table["multixact"])])
+        offenders = [item for item in offenders if item[2]["severity"] != "info"]
+        offenders.sort(key=lambda item: (severity_order[item[2]["severity"]], item[2]["age"]), reverse=True)
+        severity = offenders[0][2]["severity"] if offenders else "info"
+        conclusions = [
+            f"{name} has {kind} age {risk['age']:,} ({risk['pct_towards_emergency']}% of its "
+            f"emergency vacuum threshold; {risk['severity']})."
+            for name, kind, risk in offenders[:10]
+        ] or ["Transaction ID and MultiXact ages are below their emergency vacuum thresholds."]
+        recommendations = []
+        if not settings_available:
+            severity = "info"
+            conclusions = ["Wraparound settings are unavailable; severity could not be evaluated."]
+            recommendations = ["Verify pg_settings_wraparound collection and rerun F002 before assessing wraparound risk."]
+        elif offenders:
+            recommendations = [
+                "Check pg_stat_activity for 'autovacuum: %to prevent wraparound%' workers and inspect pg_stat_progress_vacuum for progress.",
+                "Check xmin-horizon holders (long transactions, stale replication slots, and prepared transactions) and the F003 autovacuum queue analysis; high age is usually a symptom of vacuum starvation or a blocked horizon.",
+            ]
+        if settings_available and severity in ("high", "critical"):
+            recommendations.append("Run VACUUM (FREEZE, VERBOSE) on the highest-age offender tables after confirming operational impact. Do not raise freeze_max_age merely to silence the check; that reduces the remaining safety margin.")
+
+        data = {
+            "settings": settings, "settings_available": settings_available,
+            "databases": databases, "tables": tables,
+            "multixact_size": multixact_size, "severity": severity,
+            "thresholds": {"wraparound_limit": self.F002_WRAPAROUND_LIMIT,
+                           "critical_age": self.F002_CRITICAL_AGE,
+                           "failsafe_high_pct": self.F002_FAILSAFE_HIGH_PCT,
+                           "table_limit_per_age": self.F002_TABLE_LIMIT_PER_AGE},
+            "conclusions": conclusions, "recommendations": recommendations,
+        }
+        return self.format_report_data("F002", data, node_name, postgres_version=pg_version)
 
     def generate_f005_btree_bloat_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
         """
@@ -4048,7 +4259,7 @@ class PostgresReportGenerator:
             "E001": "WAL/checkpoint settings, IO",
             "E002": "Checkpoints, bgwriter, IO",
             "F001": "Autovacuum: current settings",
-            "F002": "Autovacuum: transaction ID wraparound check",
+            "F002": "Autovacuum: transaction ID and MultiXact wraparound",
             "F003": "Autovacuum: dead tuples",
             "F004": "Autovacuum: heap bloat (estimated)",
             "F005": "Autovacuum: index bloat (estimated)",
@@ -4292,6 +4503,7 @@ class PostgresReportGenerator:
             ('A003', self.generate_a003_settings_report),
             ('A004', self.generate_a004_cluster_report),
             ('A007', self.generate_a007_altered_settings_report),
+            ('F002', self.generate_f002_wraparound_report),
             ('F004', self.generate_f004_heap_bloat_report),
             ('F005', self.generate_f005_btree_bloat_report),
             ('H001', self.generate_h001_invalid_indexes_report),
@@ -5168,7 +5380,7 @@ def main():
     parser.add_argument('--no-combine-nodes', action='store_true', default=False,
                         help='Disable combining primary and replica reports into single report')
     parser.add_argument('--check-id',
-                        choices=['A002', 'A003', 'A004', 'A007', 'D004', 'F001', 'F004', 'F005', 'G001', 'H001', 'H002',
+                        choices=['A002', 'A003', 'A004', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'H001', 'H002',
                                  'H004', 'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008', 'M001', 'M002', 'M003', 'N001', 'ALL'],
                         help='Specific check ID to generate (default: ALL)')
     parser.add_argument('--output', default='-',
@@ -5311,6 +5523,8 @@ def main():
                         report = generator.generate_f001_from_a003(a003_report, args.node_name)
                     else:
                         report = generator.generate_f001_autovacuum_settings_report(cluster, args.node_name)
+                elif args.check_id == 'F002':
+                    report = generator.generate_f002_wraparound_report(cluster, args.node_name)
                 elif args.check_id == 'F004':
                     report = generator.generate_f004_heap_bloat_report(cluster, args.node_name)
                 elif args.check_id == 'F005':
