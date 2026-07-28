@@ -377,6 +377,14 @@ class PgSettingsWraparoundTest(unittest.TestCase):
         self.assertIn("'autovacuum_multixact_freeze_max_age'", sql_text)
         self.assertIn("as autovacuum_freeze_max_age", sql_text)
         self.assertIn("as autovacuum_multixact_freeze_max_age", sql_text)
+        for setting in (
+            "vacuum_freeze_min_age",
+            "vacuum_freeze_table_age",
+            "vacuum_multixact_freeze_min_age",
+            "vacuum_multixact_freeze_table_age",
+        ):
+            self.assertIn(f"'{setting}'", sql_text)
+            self.assertIn(f"as {setting}", sql_text)
         # Failsafe GUCs are PG14+ only — must be coalesced to 0 so the
         # query does not blow up on PG 11–13 where the setting is missing.
         self.assertIn("'vacuum_failsafe_age'", sql_text)
@@ -391,6 +399,68 @@ class PgSettingsWraparoundTest(unittest.TestCase):
             r"coalesce\(\s*\(\s*select setting::int8 from pg_settings "
             r"where name = 'vacuum_multixact_failsafe_age'\s*\)\s*,\s*0\s*\)",
         )
+
+
+class PgTableWraparoundTest(unittest.TestCase):
+    def test_metric_is_bounded_before_size_lookup(self) -> None:
+        definition = metric_def("pg_table_wraparound")
+        self.assertEqual(definition.get("statement_timeout_seconds"), 15)
+        sql_text = normalized(metric_sql("pg_table_wraparound"))
+        self.assertEqual(sql_text.count("limit 50"), 2)
+        candidates = sql_text.split("ranked as", 1)[0]
+        self.assertIn("from pg_catalog.pg_class", candidates)
+        self.assertNotIn("pg_total_relation_size", candidates)
+        self.assertIn("pg_total_relation_size(s.oid)", sql_text)
+
+    def test_metric_exposes_ages_and_per_table_overrides(self) -> None:
+        sql_text = normalized(metric_sql("pg_table_wraparound"))
+        self.assertIn("age(c.relfrozenxid)", sql_text)
+        self.assertIn("mxid_age(c.relminmxid)", sql_text)
+        self.assertIn("autovacuum_freeze_max_age", sql_text)
+        self.assertIn("autovacuum_multixact_freeze_max_age", sql_text)
+        self.assertIn("as effective_freeze_max_age", sql_text)
+        self.assertIn("as effective_multixact_freeze_max_age", sql_text)
+
+
+class PgDatabaseWraparoundTest(unittest.TestCase):
+    def test_metric_definition_contract(self) -> None:
+        definition = metric_def("pg_database_wraparound")
+        self.assertEqual(definition.get("gauges"), ["age_datfrozenxid", "age_datminmxid"])
+        self.assertEqual(definition.get("statement_timeout_seconds"), 15)
+
+    def test_sql_uses_mxid_age_for_minmxid(self) -> None:
+        # datminmxid age must use mxid_age(), not age(): age(relminmxid) wraps to
+        # ~2^31 on a fresh cluster where datminmxid = 1, faking a wraparound risk.
+        sql_text = normalized(metric_sql("pg_database_wraparound"))
+        self.assertIn("age(d.datfrozenxid) as age_datfrozenxid", sql_text)
+        self.assertIn("mxid_age(d.datminmxid) as age_datminmxid", sql_text)
+        self.assertIn("d.datallowconn", sql_text)
+
+
+class MultixactSizeTest(unittest.TestCase):
+    def test_gauges_are_member_and_offset_bytes_not_a_single_bytes_column(self) -> None:
+        # Regression guard for the drift both reporter consumers hit: the metric
+        # emits members_bytes + offsets_bytes (+ status_code), NOT a single
+        # `bytes` gauge. cli/lib/checkup.ts and reporter/postgres_reports.py sum
+        # the two byte columns; renaming or collapsing them here would silently
+        # break both again (bytes -> always null), so pin the exact gauge names.
+        definition = metric_def("multixact_size")
+        self.assertEqual(
+            definition.get("gauges"),
+            ["members_bytes", "offsets_bytes", "status_code"],
+        )
+        self.assertNotIn("bytes", definition.get("gauges", []))
+        self.assertEqual(definition.get("statement_timeout_seconds"), 15)
+
+    def test_sql_projects_members_offsets_and_status_code(self) -> None:
+        sql_text = normalized(metric_sql("multixact_size"))
+        self.assertIn("as members_bytes", sql_text)
+        self.assertIn("as offsets_bytes", sql_text)
+        self.assertIn("as status_code", sql_text)
+        # Degraded fallback row: when nothing could be probed, status_code = 2
+        # and the byte columns are null (so full mode reports bytes = null).
+        self.assertIn("null::bigint as members_bytes", sql_text)
+        self.assertIn("null::bigint as offsets_bytes", sql_text)
 
 
 class PgAutovacuumWorkersTest(unittest.TestCase):

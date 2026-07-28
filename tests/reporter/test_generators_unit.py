@@ -1452,6 +1452,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
         "generate_a003_settings_report",
         "generate_a004_cluster_report",
         "generate_a007_altered_settings_report",
+        "generate_f002_wraparound_report",
         "generate_f004_heap_bloat_report",
         "generate_f005_btree_bloat_report",
         "generate_h001_invalid_indexes_report",
@@ -1490,7 +1491,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
     # All report types should be generated
     expected_report_codes = {
         'A002', 'A003', 'A004', 'A007',
-        'D004', 'F001', 'F004', 'F005', 'G001',
+        'D004', 'F001', 'F002', 'F004', 'F005', 'G001',
         'H001', 'H002', 'H004',
         'I001',
         'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008',

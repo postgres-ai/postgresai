@@ -208,6 +208,124 @@ def test_schema_f001(
 
 
 @pytest.mark.unit
+def test_schema_f002(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    fixed_pg_version,
+    prom_result,
+) -> None:
+    monkeypatch.setattr(generator, "_get_postgres_version_info", lambda *args, **kwargs: fixed_pg_version)
+
+    settings = {
+        "autovacuum_freeze_max_age": 200_000_000,
+        "vacuum_freeze_min_age": 50_000_000,
+        "vacuum_freeze_table_age": 150_000_000,
+        "autovacuum_multixact_freeze_max_age": 400_000_000,
+        "vacuum_multixact_freeze_min_age": 5_000_000,
+        "vacuum_multixact_freeze_table_age": 150_000_000,
+        "vacuum_failsafe_age": 1_600_000_000,
+        "vacuum_multixact_failsafe_age": 1_600_000_000,
+    }
+
+    def fake_query(query: str) -> dict[str, Any]:
+        for name, value in settings.items():
+            if f"pgwatch_pg_settings_wraparound_{name}" in query:
+                return prom_result([{"value": [0, str(value)]}])
+        if "pgwatch_pg_database_wraparound_age_datfrozenxid" in query:
+            return prom_result([{"metric": {"datname": "db1"}, "value": [0, "250000000"]}])
+        if "pgwatch_pg_database_wraparound_age_datminmxid" in query:
+            return prom_result([{"metric": {"datname": "db1"}, "value": [0, "1000"]}])
+        table_values = {
+            "xid_age": 250_000_000, "multixact_age": 1000,
+            "effective_freeze_max_age": 200_000_000,
+            "effective_multixact_freeze_max_age": 400_000_000,
+            "table_size_bytes": 1_048_576,
+        }
+        for name, value in table_values.items():
+            if f"pgwatch_pg_table_wraparound_{name}" in query:
+                return prom_result([{
+                    "metric": {"datname": "db1", "schema_name": "public", "table_name": "events", "ranked_by": "xid"},
+                    "value": [0, str(value)],
+                }])
+        if "pgwatch_multixact_size_members_bytes" in query:
+            return prom_result([{"value": [0, "1048576"]}])
+        if "pgwatch_multixact_size_offsets_bytes" in query:
+            return prom_result([{"value": [0, "524288"]}])
+        if "pgwatch_multixact_size_status_code" in query:
+            return prom_result([{"value": [0, "0"]}])
+        return prom_result([])
+
+    monkeypatch.setattr(generator, "query_instant", fake_query)
+    report = generator.generate_f002_wraparound_report("local", "node-1")
+    validate_report(report)
+    assert report["generation_mode"] == "full"
+    assert report["results"]["node-1"]["data"]["severity"] == "warning"
+    assert report["results"]["node-1"]["data"]["multixact_size"]["bytes"] == 1_572_864
+
+
+@pytest.mark.unit
+def test_f002_threshold_boundaries(generator: PostgresReportGenerator) -> None:
+    assert generator._wraparound_risk(199_999_999, 200_000_000, 1_600_000_000)["severity"] == "info"
+    assert generator._wraparound_risk(200_000_000, 200_000_000, 1_600_000_000)["severity"] == "warning"
+    assert generator._wraparound_risk(400_000_000, 200_000_000, 1_600_000_000)["severity"] == "high"
+    assert generator._wraparound_risk(720_000_000, 500_000_000, 900_000_000)["severity"] == "high"
+    assert generator._wraparound_risk(1_000_000_000, 800_000_000, 1_600_000_000)["severity"] == "critical"
+    assert generator._wraparound_risk(500_000_000, 0, None)["severity"] == "info"
+
+
+@pytest.mark.unit
+def test_f002_handles_missing_monitoring_data(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    prom_result,
+) -> None:
+    monkeypatch.setattr(
+        generator,
+        "_get_postgres_version_info",
+        lambda *args, **kwargs: {
+            "version": "Unknown", "server_version_num": "Unknown",
+            "server_major_ver": "Unknown", "server_minor_ver": "Unknown",
+        },
+    )
+    monkeypatch.setattr(generator, "query_instant", lambda query: prom_result([]))
+    report = generator.generate_f002_wraparound_report("local", "node-1")
+    validate_report(report)
+    data = report["results"]["node-1"]["data"]
+    assert data["settings_available"] is False
+    assert data["severity"] == "info"
+    assert "settings are unavailable" in data["conclusions"][0]
+    assert data["multixact_size"] == {"bytes": None, "size_pretty": None, "status_code": 2}
+
+
+@pytest.mark.unit
+def test_f002_deduplicates_stale_rank_labels(
+    monkeypatch: pytest.MonkeyPatch,
+    generator: PostgresReportGenerator,
+    fixed_pg_version,
+    prom_result,
+) -> None:
+    monkeypatch.setattr(generator, "_get_postgres_version_info", lambda *args, **kwargs: fixed_pg_version)
+
+    def fake_query(query: str) -> dict[str, Any]:
+        if "pgwatch_pg_settings_wraparound_autovacuum_freeze_max_age" in query:
+            return prom_result([{"value": [0, "200000000"]}])
+        if "pgwatch_pg_settings_wraparound_autovacuum_multixact_freeze_max_age" in query:
+            return prom_result([{"value": [0, "400000000"]}])
+        if "pgwatch_pg_table_wraparound_xid_age" in query:
+            return prom_result([
+                {"metric": {"datname": "db1", "schema_name": "public", "table_name": "t", "ranked_by": "xid"}, "value": [0, "100"]},
+                {"metric": {"datname": "db1", "schema_name": "public", "table_name": "t", "ranked_by": "multixact"}, "value": [0, "200"]},
+            ])
+        return prom_result([])
+
+    monkeypatch.setattr(generator, "query_instant", fake_query)
+    data = generator.generate_f002_wraparound_report("local", "node-1")["results"]["node-1"]["data"]
+    assert len(data["tables"]) == 1
+    assert data["tables"][0]["ranked_by"] == ["multixact", "xid"]
+    assert data["tables"][0]["xid"]["age"] == 200
+
+
+@pytest.mark.unit
 def test_schema_f004(
     monkeypatch: pytest.MonkeyPatch,
     generator: PostgresReportGenerator,
@@ -541,5 +659,3 @@ def test_schema_query_file() -> None:
         "timestamptz": "2025-01-02T00:00:00+00:00",
     }
     validate_query_file(payload)
-
-

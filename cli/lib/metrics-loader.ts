@@ -65,7 +65,12 @@ export const METRIC_NAMES = {
   H001: "pg_invalid_indexes",
   H002: "unused_indexes",
   H004: "redundant_indexes",
-  // Dead tuples and per-table autovacuum overrides
+  // Wraparound ages, thresholds, per-table overrides, and SLRU size (F002)
+  F002Database: "pg_database_wraparound",
+  F002Settings: "pg_settings_wraparound",
+  F002Tables: "pg_table_wraparound",
+  F002MultixactSize: "multixact_size",
+  // Dead tuples and per-table autovacuum overrides (F003)
   F003: "pg_dead_tuples",
   // Bloat estimation
   F004: "pg_table_bloat",

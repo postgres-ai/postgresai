@@ -18,6 +18,10 @@ export interface MockClientOptions {
   tableBloatRows?: any[];
   indexBloatRows?: any[];
   deadTuplesRows?: any[];
+  wraparoundSettingsRows?: any[];
+  wraparoundDatabaseRows?: any[];
+  wraparoundTableRows?: any[];
+  multixactSizeRows?: any[];
   vacuumStatsRows?: any[];
   bloatCapabilityRows?: any[];
   deadlockStatsRows?: any[];
@@ -81,6 +85,19 @@ export function createMockClient(options: MockClientOptions = {}) {
     tableBloatRows = [],
     indexBloatRows = [],
     deadTuplesRows = [],
+    wraparoundSettingsRows = [{
+      autovacuum_freeze_max_age: "200000000",
+      vacuum_freeze_min_age: "50000000",
+      vacuum_freeze_table_age: "150000000",
+      autovacuum_multixact_freeze_max_age: "400000000",
+      vacuum_multixact_freeze_min_age: "5000000",
+      vacuum_multixact_freeze_table_age: "150000000",
+      vacuum_failsafe_age: "1600000000",
+      vacuum_multixact_failsafe_age: "1600000000",
+    }],
+    wraparoundDatabaseRows = [],
+    wraparoundTableRows = [],
+    multixactSizeRows = [{ members_bytes: "0", offsets_bytes: "0", status_code: "0" }],
     vacuumStatsRows = [],
     bloatCapabilityRows = [{ schema_exists: true, schema_usage: true, view_exists: true, view_select: true }],
     deadlockStatsRows = [{ deadlocks: "0", conflicts: "0", stats_reset: null }],
@@ -99,6 +116,18 @@ export function createMockClient(options: MockClientOptions = {}) {
       // Version query (simple inline - used by getPostgresVersion)
       if (sql.includes("server_version") && sql.includes("server_version_num") && sql.includes("pg_settings") && !sql.includes("tag_setting_name")) {
         return { rows: versionRows };
+      }
+      if (sql.includes("vacuum_failsafe_age") && sql.includes("autovacuum_freeze_max_age")) {
+        return { rows: wraparoundSettingsRows };
+      }
+      if (sql.includes("age(d.datfrozenxid)")) {
+        return { rows: wraparoundDatabaseRows };
+      }
+      if (sql.includes("effective_freeze_max_age") && sql.includes("ranked_by")) {
+        return { rows: wraparoundTableRows };
+      }
+      if (sql.includes("pg_ls_multixactdir") && sql.includes("status_code")) {
+        return { rows: multixactSizeRows };
       }
       // F009: one-round-trip xmin horizon snapshot.
       if (sql.includes("xmin_horizon_snapshot")) {

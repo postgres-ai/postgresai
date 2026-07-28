@@ -1671,6 +1671,81 @@ metrics:
       - age_datfrozenxid
       - age_datminmxid
     statement_timeout_seconds: 15
+  pg_table_wraparound:
+    description: >
+      Top relations at risk of transaction ID or MultiXact wraparound. Ranking
+      reads pg_class only and is independently bounded to 50 relations for
+      each age. Exact relation sizes are evaluated only after the bounded
+      candidate set has been selected. Per-table freeze age overrides are
+      exposed so F002 can evaluate the effective emergency threshold.
+    sqls:
+      11: |-
+        with candidates as ( /* pgwatch_generated */
+          select
+            c.oid,
+            n.nspname,
+            c.relname,
+            age(c.relfrozenxid)::int8 as xid_age,
+            mxid_age(c.relminmxid)::int8 as multixact_age,
+            coalesce(
+              -- Follow-up: toast.* overrides live on the parent heap's
+              -- reloptions, so relkind 't' currently uses the global value.
+              (select split_part(option, '=', 2)::int8
+               from unnest(coalesce(c.reloptions, '{}'::text[])) option
+               where split_part(option, '=', 1) = 'autovacuum_freeze_max_age'),
+              current_setting('autovacuum_freeze_max_age')::int8
+            ) as effective_freeze_max_age,
+            coalesce(
+              (select split_part(option, '=', 2)::int8
+               from unnest(coalesce(c.reloptions, '{}'::text[])) option
+               where split_part(option, '=', 1) = 'autovacuum_multixact_freeze_max_age'),
+              current_setting('autovacuum_multixact_freeze_max_age')::int8
+            ) as effective_multixact_freeze_max_age
+          from pg_catalog.pg_class c
+          join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+          where c.relkind in ('r', 'm', 't')
+            and c.relpersistence <> 't'
+            and n.nspname <> 'information_schema'
+        ),
+        ranked as (
+          (select *, 'xid'::text as ranked_by
+           from candidates
+           order by xid_age desc, nspname, relname
+           limit 50)
+          union all
+          (select *, 'multixact'::text as ranked_by
+           from candidates
+           order by multixact_age desc, nspname, relname
+           limit 50)
+        ),
+        selected as (
+          select
+            oid, nspname, relname, xid_age, multixact_age,
+            effective_freeze_max_age, effective_multixact_freeze_max_age,
+            string_agg(ranked_by, ',' order by ranked_by) as ranked_by
+          from ranked
+          group by oid, nspname, relname, xid_age, multixact_age,
+                   effective_freeze_max_age, effective_multixact_freeze_max_age
+        )
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          s.nspname as tag_schema_name,
+          s.relname as tag_table_name,
+          s.ranked_by as tag_ranked_by,
+          s.xid_age,
+          s.multixact_age,
+          s.effective_freeze_max_age,
+          s.effective_multixact_freeze_max_age,
+          pg_catalog.pg_total_relation_size(s.oid)::int8 as table_size_bytes
+        from selected s
+    gauges:
+      - xid_age
+      - multixact_age
+      - effective_freeze_max_age
+      - effective_multixact_freeze_max_age
+      - table_size_bytes
+    statement_timeout_seconds: 15
   pg_long_running_transactions:
     sqls:
       11: |
@@ -4217,7 +4292,11 @@ metrics:
         select /* pgwatch_generated */
           (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
           (select setting::int8 from pg_settings where name = 'autovacuum_freeze_max_age') as autovacuum_freeze_max_age,
+          (select setting::int8 from pg_settings where name = 'vacuum_freeze_min_age') as vacuum_freeze_min_age,
+          (select setting::int8 from pg_settings where name = 'vacuum_freeze_table_age') as vacuum_freeze_table_age,
           (select setting::int8 from pg_settings where name = 'autovacuum_multixact_freeze_max_age') as autovacuum_multixact_freeze_max_age,
+          (select setting::int8 from pg_settings where name = 'vacuum_multixact_freeze_min_age') as vacuum_multixact_freeze_min_age,
+          (select setting::int8 from pg_settings where name = 'vacuum_multixact_freeze_table_age') as vacuum_multixact_freeze_table_age,
           coalesce((select setting::int8 from pg_settings where name = 'vacuum_failsafe_age'), 0) as vacuum_failsafe_age,
           coalesce((select setting::int8 from pg_settings where name = 'vacuum_multixact_failsafe_age'), 0) as vacuum_multixact_failsafe_age
     gauges:
@@ -4261,6 +4340,7 @@ presets:
       pg_stuck_idle_in_transaction: 30
       pg_txid: 30
       pg_database_wraparound: 30
+      pg_table_wraparound: 300
       pg_xlog_position: 30
       pg_table_bloat: 7200
       table_size_detailed: 30

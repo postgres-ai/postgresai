@@ -309,6 +309,119 @@ export interface DeadTuplesTable {
   autovacuum_disabled_flagged: boolean;
 }
 
+export type WraparoundSeverity = "info" | "warning" | "high" | "critical";
+
+export interface WraparoundSettings {
+  autovacuum_freeze_max_age: number;
+  vacuum_freeze_min_age: number;
+  vacuum_freeze_table_age: number;
+  autovacuum_multixact_freeze_max_age: number;
+  vacuum_multixact_freeze_min_age: number;
+  vacuum_multixact_freeze_table_age: number;
+  vacuum_failsafe_age: number | null;
+  vacuum_multixact_failsafe_age: number | null;
+}
+
+export interface WraparoundRisk {
+  age: number;
+  emergency_age: number;
+  failsafe_age: number | null;
+  pct_towards_wraparound: number;
+  pct_towards_emergency: number;
+  pct_towards_failsafe: number | null;
+  severity: WraparoundSeverity;
+}
+
+export interface WraparoundDatabase {
+  database_name: string;
+  xid: WraparoundRisk;
+  multixact: WraparoundRisk;
+}
+
+export interface WraparoundTable {
+  database_name: string;
+  schema_name: string;
+  table_name: string;
+  ranked_by: string[];
+  table_size_bytes: number;
+  table_size_pretty: string;
+  xid: WraparoundRisk;
+  multixact: WraparoundRisk;
+}
+
+export interface MultixactSize {
+  bytes: number | null;
+  size_pretty: string | null;
+  status_code: number;
+}
+
+/**
+ * F002 transaction ID / MultiXact wraparound severity policy.
+ *
+ * Kept in sync with the full-mode implementation in
+ * reporter/postgres_reports.py (same-named constants and `_wraparound_risk`).
+ * The severity ladder:
+ * - info (guard): emergencyAge <= 0. The emergency threshold is unknown
+ *   (settings unavailable — a realistic full-mode monitoring gap where the
+ *   pg_settings_wraparound series are missing and default to 0). Without this
+ *   guard every `age >= 2*0`/`age >= 0` comparison is trivially true and a
+ *   monitoring gap turns into a false-positive "everything is high" storm, so
+ *   the risk is reported as info instead of being classified against a bogus 0.
+ * - critical: age >= F002_CRITICAL_AGE (half of the 2^31 wrap limit).
+ * - high: age >= 2 * emergencyAge, OR age >= F002_FAILSAFE_HIGH_PCT% of the
+ *   failsafe age (PG14+). Twice the soft emergency threshold is where
+ *   anti-wraparound autovacuum should already be running yet isn't keeping up.
+ * - warning: age >= emergencyAge (the per-table/effective
+ *   autovacuum_freeze_max_age at which anti-wraparound vacuum starts).
+ */
+export const F002_WRAPAROUND_LIMIT = 2_147_483_648;
+export const F002_CRITICAL_AGE = 1_000_000_000;
+export const F002_FAILSAFE_HIGH_PCT = 80;
+
+const severityRank: Record<WraparoundSeverity, number> = {
+  info: 0,
+  warning: 1,
+  high: 2,
+  critical: 3,
+};
+
+export function evaluateWraparoundRisk(
+  age: number,
+  emergencyAge: number,
+  failsafeAge: number | null,
+): WraparoundRisk {
+  let severity: WraparoundSeverity = "info";
+  if (emergencyAge <= 0) {
+    severity = "info";
+  } else if (age >= F002_CRITICAL_AGE) {
+    severity = "critical";
+  } else if (
+    age >= 2 * emergencyAge ||
+    (failsafeAge !== null && age >= failsafeAge * (F002_FAILSAFE_HIGH_PCT / 100))
+  ) {
+    severity = "high";
+  } else if (age >= emergencyAge) {
+    severity = "warning";
+  }
+
+  const pct = (value: number, limit: number): number =>
+    limit > 0 ? Math.round((value / limit) * 10_000) / 100 : 0;
+
+  return {
+    age,
+    emergency_age: emergencyAge,
+    failsafe_age: failsafeAge,
+    pct_towards_wraparound: pct(age, F002_WRAPAROUND_LIMIT),
+    pct_towards_emergency: pct(age, emergencyAge),
+    pct_towards_failsafe: failsafeAge === null ? null : pct(age, failsafeAge),
+    severity,
+  };
+}
+
+function maxSeverity(...severities: WraparoundSeverity[]): WraparoundSeverity {
+  return severities.reduce((max, value) => severityRank[value] > severityRank[max] ? value : max, "info");
+}
+
 /**
  * F003 thresholds.
  *
@@ -1025,6 +1138,143 @@ export async function getDeadTuples(client: Client, pgMajorVersion: number = 16)
   });
 }
 
+export async function getWraparoundData(client: Client, pgMajorVersion: number = 16): Promise<{
+  settings: WraparoundSettings;
+  databases: WraparoundDatabase[];
+  tables: WraparoundTable[];
+  multixact_size: MultixactSize;
+  settings_available: boolean;
+}> {
+  const [settingsResult, databaseResult, tableResult, multixactSizeResult] = await Promise.all([
+    client.query(getMetricSql(METRIC_NAMES.F002Settings, pgMajorVersion)),
+    client.query(getMetricSql(METRIC_NAMES.F002Database, pgMajorVersion)),
+    client.query(getMetricSql(METRIC_NAMES.F002Tables, pgMajorVersion)),
+    client.query(getMetricSql(METRIC_NAMES.F002MultixactSize, pgMajorVersion)),
+  ]);
+
+  const numberValue = (value: unknown): number => parseInt(String(value ?? 0), 10) || 0;
+  const rawSettings = settingsResult.rows[0] || {};
+  const failsafe = pgMajorVersion >= 14 ? numberValue(rawSettings.vacuum_failsafe_age) : 0;
+  const multixactFailsafe = pgMajorVersion >= 14 ? numberValue(rawSettings.vacuum_multixact_failsafe_age) : 0;
+  const settings: WraparoundSettings = {
+    autovacuum_freeze_max_age: numberValue(rawSettings.autovacuum_freeze_max_age),
+    vacuum_freeze_min_age: numberValue(rawSettings.vacuum_freeze_min_age),
+    vacuum_freeze_table_age: numberValue(rawSettings.vacuum_freeze_table_age),
+    autovacuum_multixact_freeze_max_age: numberValue(rawSettings.autovacuum_multixact_freeze_max_age),
+    vacuum_multixact_freeze_min_age: numberValue(rawSettings.vacuum_multixact_freeze_min_age),
+    vacuum_multixact_freeze_table_age: numberValue(rawSettings.vacuum_multixact_freeze_table_age),
+    vacuum_failsafe_age: failsafe > 0 ? failsafe : null,
+    vacuum_multixact_failsafe_age: multixactFailsafe > 0 ? multixactFailsafe : null,
+  };
+  const settings_available = settings.autovacuum_freeze_max_age > 0 &&
+    settings.autovacuum_multixact_freeze_max_age > 0;
+
+  const databases = databaseResult.rows.map((row) => {
+    const xidAge = numberValue(row.age_datfrozenxid);
+    const multixactAge = numberValue(row.age_datminmxid);
+    return {
+      database_name: String(row.tag_datname || ""),
+      xid: evaluateWraparoundRisk(xidAge, settings.autovacuum_freeze_max_age, settings.vacuum_failsafe_age),
+      multixact: evaluateWraparoundRisk(
+        multixactAge,
+        settings.autovacuum_multixact_freeze_max_age,
+        settings.vacuum_multixact_failsafe_age,
+      ),
+    };
+  }).sort((a, b) => Math.max(b.xid.age, b.multixact.age) - Math.max(a.xid.age, a.multixact.age));
+
+  const tables = tableResult.rows.map((row) => {
+    const xidAge = numberValue(row.xid_age);
+    const multixactAge = numberValue(row.multixact_age);
+    const tableSizeBytes = numberValue(row.table_size_bytes);
+    return {
+      database_name: String(row.tag_datname || ""),
+      schema_name: String(row.tag_schema_name || ""),
+      table_name: String(row.tag_table_name || ""),
+      ranked_by: String(row.tag_ranked_by || "").split(",").filter(Boolean),
+      table_size_bytes: tableSizeBytes,
+      table_size_pretty: formatBytes(tableSizeBytes),
+      xid: evaluateWraparoundRisk(
+        xidAge,
+        numberValue(row.effective_freeze_max_age) || settings.autovacuum_freeze_max_age,
+        settings.vacuum_failsafe_age,
+      ),
+      multixact: evaluateWraparoundRisk(
+        multixactAge,
+        numberValue(row.effective_multixact_freeze_max_age) || settings.autovacuum_multixact_freeze_max_age,
+        settings.vacuum_multixact_failsafe_age,
+      ),
+    };
+  }).sort((a, b) =>
+    Math.max(b.xid.age, b.multixact.age) - Math.max(a.xid.age, a.multixact.age) ||
+    a.database_name.localeCompare(b.database_name) ||
+    a.schema_name.localeCompare(b.schema_name) ||
+    a.table_name.localeCompare(b.table_name)
+  );
+
+  const rawMultixactSize = multixactSizeResult.rows[0] || {};
+  const multixactBytes = rawMultixactSize.members_bytes === null || rawMultixactSize.members_bytes === undefined ||
+    rawMultixactSize.offsets_bytes === null || rawMultixactSize.offsets_bytes === undefined
+    ? null
+    : numberValue(rawMultixactSize.members_bytes) + numberValue(rawMultixactSize.offsets_bytes);
+  const multixact_size: MultixactSize = {
+    bytes: multixactBytes,
+    size_pretty: multixactBytes === null ? null : formatBytes(multixactBytes),
+    status_code: numberValue(rawMultixactSize.status_code),
+  };
+
+  return { settings, databases, tables, multixact_size, settings_available };
+}
+
+export function buildWraparoundConclusions(
+  databases: WraparoundDatabase[],
+  tables: WraparoundTable[],
+  settingsAvailable: boolean = true,
+): { severity: WraparoundSeverity; conclusions: string[]; recommendations: string[] } {
+  if (!settingsAvailable) {
+    return {
+      severity: "info",
+      conclusions: ["Wraparound settings are unavailable; severity could not be evaluated."],
+      recommendations: ["Verify pg_settings_wraparound collection and rerun F002 before assessing wraparound risk."],
+    };
+  }
+  const offenders = [
+    ...databases.flatMap((db) => [
+      { name: `database "${db.database_name}"`, kind: "transaction ID", risk: db.xid },
+      { name: `database "${db.database_name}"`, kind: "MultiXact", risk: db.multixact },
+    ]),
+    ...tables.flatMap((table) => [
+      { name: `table "${table.database_name}"."${table.schema_name}"."${table.table_name}"`, kind: "transaction ID", risk: table.xid },
+      { name: `table "${table.database_name}"."${table.schema_name}"."${table.table_name}"`, kind: "MultiXact", risk: table.multixact },
+    ]),
+  ].filter((item) => item.risk.severity !== "info")
+    .sort((a, b) => severityRank[b.risk.severity] - severityRank[a.risk.severity] || b.risk.age - a.risk.age);
+
+  const severity = maxSeverity(...offenders.map((item) => item.risk.severity));
+  if (offenders.length === 0) {
+    return {
+      severity,
+      conclusions: ["Transaction ID and MultiXact ages are below their emergency vacuum thresholds."],
+      recommendations: [],
+    };
+  }
+
+  const conclusions = offenders.slice(0, 10).map((item) =>
+    `${item.name} has ${item.kind} age ${item.risk.age.toLocaleString("en-US")} ` +
+    `(${item.risk.pct_towards_emergency}% of its emergency vacuum threshold; ${item.risk.severity}).`
+  );
+  const recommendations = [
+    "Check pg_stat_activity for 'autovacuum: %to prevent wraparound%' workers and inspect pg_stat_progress_vacuum for progress.",
+    "Check xmin-horizon holders (long transactions, stale replication slots, and prepared transactions) and the F003 autovacuum queue analysis; high age is usually a symptom of vacuum starvation or a blocked horizon.",
+  ];
+  if (severity === "high" || severity === "critical") {
+    recommendations.push(
+      "Run VACUUM (FREEZE, VERBOSE) on the highest-age offender tables after confirming operational impact. Do not raise freeze_max_age merely to silence the check; that reduces the remaining safety margin."
+    );
+  }
+  return { severity, conclusions, recommendations };
+}
+
 /**
  * Build concrete, human-readable conclusions and recommendations for F003.
  *
@@ -1477,6 +1727,39 @@ async function generateF001(client: Client, nodeName: string): Promise<Report> {
 
   report.results[nodeName] = {
     data: autovacuumSettings,
+    postgres_version: postgresVersion,
+  };
+
+  return report;
+}
+
+/** Generate F002 report - transaction ID and MultiXact wraparound risk. */
+async function generateF002(client: Client, nodeName: string): Promise<Report> {
+  const report = createBaseReport("F002", "Autovacuum: transaction ID and MultiXact wraparound", nodeName);
+  const postgresVersion = await getPostgresVersion(client);
+  const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
+  const { settings, databases, tables, multixact_size, settings_available } = await getWraparoundData(client, pgMajorVersion);
+  const { severity, conclusions, recommendations } = buildWraparoundConclusions(
+    databases, tables, settings_available,
+  );
+
+  report.results[nodeName] = {
+    data: {
+      settings,
+      databases,
+      tables,
+      multixact_size,
+      settings_available,
+      severity,
+      thresholds: {
+        wraparound_limit: F002_WRAPAROUND_LIMIT,
+        critical_age: F002_CRITICAL_AGE,
+        failsafe_high_pct: F002_FAILSAFE_HIGH_PCT,
+        table_limit_per_age: 50,
+      },
+      conclusions,
+      recommendations,
+    },
     postgres_version: postgresVersion,
   };
 
@@ -2466,6 +2749,7 @@ export const REPORT_GENERATORS: Record<string, (client: Client, nodeName: string
   D001: generateD001,
   D004: generateD004,
   F001: generateF001,
+  F002: generateF002,
   F003: generateF003,
   F004: generateF004,
   F005: generateF005,
