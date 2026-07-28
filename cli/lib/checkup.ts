@@ -20,7 +20,10 @@
  *    - Express checkup output
  *
  *    Before adding or modifying a report, verify the corresponding schema exists
- *    and ensure the output matches. Run schema validation tests to confirm.
+ *    and ensure the output matches. Every new or updated check must also emit
+ *    local `conclusions` and `recommendations` in its JSON; server-side markdown
+ *    may enrich those verdicts, but must not be their only source. Run schema
+ *    validation tests to confirm.
  *
  * 3. ERROR HANDLING STRATEGY
  *    Functions follow two patterns based on criticality:
@@ -43,7 +46,8 @@
  * 2. Add the metric name mapping to METRIC_NAMES in metrics-loader.ts
  * 3. Verify JSON schema exists in reporter/schemas/{CHECK_ID}.schema.json
  * 4. Implement the generator function using getMetricSql()
- * 5. Add schema validation test in test/schema-validation.test.ts
+ * 5. Emit local conclusions and recommendations from the generator
+ * 6. Add schema validation test in test/schema-validation.test.ts
  */
 
 import { Client } from "pg";
@@ -52,6 +56,36 @@ import * as path from "path";
 import * as pkg from "../package.json";
 import { getMetricSql, transformMetricRow, METRIC_NAMES } from "./metrics-loader";
 import { buildCheckInfoMap } from "./checkup-dictionary";
+import { generateCheckSummary, CheckSummary } from "./checkup-summary";
+
+/**
+ * Version of the checkup JSON report contract (the report envelope + the
+ * per-check JSON schemas in reporter/schemas/, plus the `checkup --no-upload
+ * --json` stdout/stderr/exit-code ABI).
+ *
+ * This is the versioned public surface that host applications embedding express
+ * checkup depend on. It is intentionally independent of the CLI/package version
+ * (`version` in the envelope): the CLI can be released many times without the
+ * contract changing.
+ *
+ * COMPATIBILITY POLICY (semver applied to the contract, not the code):
+ *   - PATCH (x.y.Z): editorial/no-op changes that cannot affect a consumer
+ *     (documentation, clarifications).
+ *   - MINOR (x.Y.0): ADDITIVE, backward-compatible changes — new optional
+ *     fields in the envelope or a report, new checks, new schema files. Existing
+ *     valid reports stay valid; existing consumers keep working untouched.
+ *   - MAJOR (X.0.0): BREAKING changes — removing/renaming a field, tightening a
+ *     type, making an optional field required, or changing the CLI JSON ABI in a
+ *     way that could break a consumer parsing the previous format.
+ *
+ * A consumer should accept any report whose contract_version has the same MAJOR
+ * and a MINOR >= the minimum it was built against.
+ *
+ * The Python reporter (reporter/postgres_reports.py) emits the SAME value; a
+ * cross-language test (cli/test/contract-version.test.ts) asserts the two
+ * sources cannot drift.
+ */
+export const CONTRACT_VERSION = "1.0.0";
 
 // Time constants
 const SECONDS_PER_DAY = 86400;
@@ -351,6 +385,8 @@ export interface NodeResult {
  * Report structure matching JSON schemas
  */
 export interface Report {
+  /** Version of the JSON report contract (see {@link CONTRACT_VERSION}). */
+  contract_version: string;
   version: string | null;
   build_ts: string | null;
   generation_mode: string | null;
@@ -362,6 +398,13 @@ export interface Report {
     standbys: string[];
   };
   results: Record<string, NodeResult>;
+  /**
+   * Severity summary for this check (status + human-readable message), derived
+   * from the report data. Optional and additive: attached to the `--json`
+   * output so embedders never reimplement severity logic. See
+   * {@link withCheckSummary}.
+   */
+  summary?: CheckSummary;
 }
 
 /**
@@ -1047,6 +1090,7 @@ export function createBaseReport(
 ): Report {
   const buildTs = resolveBuildTs();
   return {
+    contract_version: CONTRACT_VERSION,
     version: pkg.version || null,
     build_ts: buildTs,
     generation_mode: "express",
@@ -2282,7 +2326,7 @@ export async function generateAllReports(
       total,
     });
     try {
-      reports[checkId] = await generator(client, nodeName);
+      reports[checkId] = withCheckSummary(await generator(client, nodeName));
     } catch (err) {
       const failure: CheckGenerationFailure = {
         checkId,
@@ -2306,4 +2350,19 @@ export async function generateAllReports(
   }
 
   return reports;
+}
+
+/**
+ * Attach the severity summary (status + message) to a report, mutating and
+ * returning it. Idempotent. This folds the CLI's severity logic
+ * (checkup-summary.ts) into the report envelope so that consumers of the JSON
+ * contract — the `--json` CLI output and any host application embedding
+ * checkup — get severity without reimplementing it.
+ *
+ * The summary is additive and optional in the schemas; existing consumers that
+ * ignore it are unaffected.
+ */
+export function withCheckSummary(report: Report): Report {
+  report.summary = generateCheckSummary(report.checkId, report);
+  return report;
 }

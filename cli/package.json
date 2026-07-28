@@ -18,8 +18,15 @@
   },
   "exports": {
     ".": "./dist/bin/postgres-ai.js",
-    "./cli": "./dist/bin/postgres-ai.js"
+    "./cli": "./dist/bin/postgres-ai.js",
+    "./schemas/*.schema.json": "./schemas/*.schema.json"
   },
+  "files": [
+    "dist/",
+    "instances.demo.yml",
+    "schemas/",
+    "sql/"
+  ],
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -28,7 +35,9 @@
     "embed-metrics": "bun run scripts/embed-metrics.ts",
     "embed-checkup-dictionary": "bun run scripts/embed-checkup-dictionary.ts",
     "embed-all": "bun run embed-metrics && bun run embed-checkup-dictionary",
-    "build": "bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && cp -r ./sql ./dist/sql && cp ../instances.demo.yml ./instances.demo.yml",
+    "sync-schemas": "node scripts/sync-schemas.mjs",
+    "build": "bun run sync-schemas && bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && cp -r ./sql ./dist/sql && cp ../instances.demo.yml ./instances.demo.yml",
+    "prepack": "npm run sync-schemas",
     "prepublishOnly": "npm run build",
     "start": "bun ./bin/postgres-ai.ts --help",
     "start:node": "node ./dist/bin/postgres-ai.js --help",

@@ -76,6 +76,8 @@ wrong decisions, or silent monitoring failures that erode customer trust.
 ### 8. Schema Compliance (MEDIUM)
 - New health checks must have a corresponding JSON schema in reporter/schemas/.
 - Check output must conform to the existing schema structure.
+- New or updated checks must emit local `conclusions` and `recommendations` in
+  JSON; server-side markdown may enrich, but must not be the only verdict source.
 - Schema changes must be backward-compatible (additive only).
 
 ### 9. Performance (MEDIUM)
