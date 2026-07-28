@@ -24,6 +24,7 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 
 - [ ] New check has JSON schema in `reporter/schemas/<ID>.schema.json`
 - [ ] Check output conforms to schema (validated in tests)
+- [ ] New or updated check emits local `conclusions` and `recommendations` in JSON
 - [ ] Check handles empty database gracefully (no errors, returns empty results)
 - [ ] Check handles missing pg_stat_statements gracefully
 - [ ] Check works on PostgreSQL 14-17 (version-specific SQL handled)

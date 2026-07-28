@@ -5,6 +5,8 @@
   "additionalProperties": false,
   "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
   "properties": {
+    "contract_version": { "type": ["string", "null"] },
+    "summary": { "type": "object", "additionalProperties": false, "required": ["status", "message"], "properties": { "status": { "enum": ["ok", "warning", "info"] }, "message": { "type": "string" } } },
     "version": { "type": ["string", "null"] },
     "build_ts": { "type": ["string", "null"] },
     "generation_mode": { "type": ["string", "null"] },
@@ -71,7 +73,8 @@
         "extension_available": { "type": "boolean" },
         "metrics_count": { "type": "number" },
         "total_calls": { "type": "number" },
-        "sample_queries": { "type": "array", "items": { "$ref": "#/$defs/pgssSampleQuery" } }
+        "sample_queries": { "type": "array", "items": { "$ref": "#/$defs/pgssSampleQuery" } },
+        "error": { "type": "string" }
       }
     },
     "kcacheSampleQuery": {
@@ -101,7 +104,8 @@
         "total_exec_time": { "type": "number" },
         "total_user_time": { "type": "number" },
         "total_system_time": { "type": "number" },
-        "sample_queries": { "type": "array", "items": { "$ref": "#/$defs/kcacheSampleQuery" } }
+        "sample_queries": { "type": "array", "items": { "$ref": "#/$defs/kcacheSampleQuery" } },
+        "error": { "type": "string" }
       }
     },
     "data": {

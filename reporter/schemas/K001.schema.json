@@ -5,6 +5,8 @@
   "additionalProperties": false,
   "required": ["checkId", "checkTitle", "timestamptz", "nodes", "results"],
   "properties": {
+    "contract_version": { "type": ["string", "null"] },
+    "summary": { "type": "object", "additionalProperties": false, "required": ["status", "message"], "properties": { "status": { "enum": ["ok", "warning", "info"] }, "message": { "type": "string" } } },
     "version": { "type": ["string", "null"] },
     "build_ts": { "type": ["string", "null"] },
     "generation_mode": { "type": ["string", "null"] },

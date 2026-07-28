@@ -410,4 +410,147 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // CLI JSON contract (ABI) tests
+  //
+  // These exercise the *real* CLI path — `checkup --no-upload --json` — that
+  // host applications embedding checkup depend on, and assert the stable
+  // contract: single JSON object keyed by check ID on stdout, schema-valid
+  // reports, envelope invariants (contract_version + generation_mode +
+  // summary), stderr free of report JSON, and exit-code semantics.
+  //
+  // The CLI runs a permissions preflight, so we first provision the database
+  // with `prepare-db` (creating the monitoring role) and then run checkup as
+  // that role, passing its password via PGPASSWORD (never argv) — the exact
+  // embedding flow documented for host applications.
+  // ---------------------------------------------------------------------------
+  const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+  const bunBin =
+    typeof process.execPath === "string" && process.execPath.length > 0
+      ? process.execPath
+      : "bun";
+  const MON_USER = "postgres_ai_mon";
+  const MON_PASSWORD = "checkup_contract_test_pw";
+  let dbPrepared = false;
+
+  function runCli(
+    args: string[],
+    extraEnv: Record<string, string> = {}
+  ): { code: number | null; stdout: string; stderr: string } {
+    const result = Bun.spawnSync([bunBin, cliPath, ...args], {
+      // Explicit separate pipes: the contract requires stdout to carry ONLY the
+      // JSON payload and stderr the diagnostics. Under `bun test` the default
+      // stdio must not be left to merge the two streams.
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config",
+        ...extraEnv,
+      },
+    });
+    return {
+      code: result.exitCode,
+      stdout: new TextDecoder().decode(result.stdout),
+      stderr: new TextDecoder().decode(result.stderr),
+    };
+  }
+
+  // TCP connection string (the temp Postgres also listens on 127.0.0.1).
+  const adminConn = () => `postgresql://postgres@127.0.0.1:${pg.port}/postgres`;
+  const monConn = () => `postgresql://${MON_USER}@127.0.0.1:${pg.port}/postgres`;
+
+  // Provision the monitoring role once, via the real `prepare-db` command.
+  function ensurePrepared(): void {
+    if (dbPrepared) return;
+    const { code, stderr } = runCli([
+      "prepare-db",
+      adminConn(),
+      "--monitoring-user",
+      MON_USER,
+      "--password",
+      MON_PASSWORD,
+    ]);
+    if (code !== 0) {
+      throw new Error(`prepare-db failed (exit ${code}): ${stderr}`);
+    }
+    dbPrepared = true;
+  }
+
+  test("checkup --no-upload --json: stdout is a single JSON object keyed by check ID, schema-valid, with envelope invariants", () => {
+    ensurePrepared();
+    const { code, stdout, stderr } = runCli(
+      ["checkup", monConn(), "--no-upload", "--json"],
+      { PGPASSWORD: MON_PASSWORD }
+    );
+
+    // Exit code 0 on success
+    expect(code).toBe(0);
+
+    // stdout is exactly one JSON object (not NDJSON, not multiple documents)
+    let payload: Record<string, any>;
+    expect(() => {
+      payload = JSON.parse(stdout);
+    }).not.toThrow();
+    payload = JSON.parse(stdout);
+    expect(typeof payload).toBe("object");
+    expect(Array.isArray(payload)).toBe(false);
+
+    // Keyed by check ID; every value is that check's report and validates
+    // against its shared schema, with the required envelope invariants.
+    const keys = Object.keys(payload);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const checkId of keys) {
+      expect(checkId).toMatch(/^[A-Z]\d{3}$/);
+      const report = payload[checkId];
+      expect(report.checkId).toBe(checkId);
+
+      // Envelope invariants that make up the versioned contract.
+      expect(typeof report.contract_version).toBe("string");
+      expect(report.contract_version).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(report.contract_version).toBe(checkup.CONTRACT_VERSION);
+      expect(report.generation_mode).toBe("express");
+
+      // Folded-in severity summary (D4): status + message.
+      expect(report.summary).toBeDefined();
+      expect(["ok", "warning", "info"]).toContain(report.summary.status);
+      expect(typeof report.summary.message).toBe("string");
+
+      validateAgainstSchema(report, checkId);
+    }
+
+    // stderr must not carry report JSON — machine consumers read only stdout.
+    // Diagnostics (plain-text warnings) on stderr are fine; report objects are
+    // not. The report envelope's distinctive keys must never appear there.
+    expect(stderr).not.toContain('"checkId"');
+    expect(stderr).not.toContain('"contract_version"');
+    expect(stderr).not.toContain('"results"');
+  });
+
+  test("checkup --check-id --no-upload --json: single-check payload carries contract_version + summary", () => {
+    ensurePrepared();
+    const { code, stdout } = runCli(
+      ["checkup", monConn(), "--check-id", "H002", "--no-upload", "--json"],
+      { PGPASSWORD: MON_PASSWORD }
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout);
+    expect(Object.keys(payload)).toEqual(["H002"]);
+    expect(payload.H002.contract_version).toBe(checkup.CONTRACT_VERSION);
+    expect(payload.H002.summary).toBeDefined();
+    validateAgainstSchema(payload.H002, "H002");
+  });
+
+  test("checkup with an unknown check ID exits non-zero and writes no JSON to stdout", () => {
+    ensurePrepared();
+    const { code, stdout } = runCli(
+      ["checkup", monConn(), "--check-id", "Z999", "--no-upload", "--json"],
+      { PGPASSWORD: MON_PASSWORD }
+    );
+
+    expect(code).not.toBe(0);
+    expect(stdout.trim()).toBe("");
+  });
 });

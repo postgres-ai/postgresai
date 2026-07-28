@@ -23,6 +23,22 @@ The JSON output from this module serves as input for downstream processing.
 
 __version__ = "1.0.2"
 
+# Version of the checkup JSON report contract (the report envelope + the
+# per-check JSON schemas in reporter/schemas/). This is the versioned public
+# surface that host applications embedding checkup depend on, and is independent
+# of __version__ (the module/code version).
+#
+# Compatibility policy (semver applied to the contract, not the code):
+#   - PATCH: editorial/no-op changes that cannot affect a consumer.
+#   - MINOR: additive, backward-compatible changes (new optional fields, new
+#     checks/schemas). Existing valid reports stay valid.
+#   - MAJOR: breaking changes (removing/renaming a field, tightening a type,
+#     making an optional field required).
+#
+# MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
+# test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
+CONTRACT_VERSION = "1.0.0"
+
 import requests
 import json
 import time
@@ -3802,6 +3818,7 @@ class PostgresReportGenerator:
             results = {host: node_result}
 
         template_data = {
+            "contract_version": CONTRACT_VERSION,
             "version": self._build_metadata.get("version"),
             "build_ts": self._build_metadata.get("build_ts"),
             "generation_mode": "full",

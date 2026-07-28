@@ -49,7 +49,7 @@ import { maskSecret } from "../lib/util";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
 import * as childProcess from "child_process";
-import { REPORT_GENERATORS, CHECK_INFO, generateAllReports } from "../lib/checkup";
+import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
@@ -2280,7 +2280,7 @@ program
           return;
         }
         spinner.update(`Running ${checkId}: ${CHECK_INFO[checkId] || checkId}`);
-        reports = { [checkId]: await generator(client, opts.nodeName) };
+        reports = { [checkId]: withCheckSummary(await generator(client, opts.nodeName)) };
       }
 
       // Upload to PostgresAI API (if configured)

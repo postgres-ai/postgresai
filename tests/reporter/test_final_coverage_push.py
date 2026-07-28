@@ -210,6 +210,38 @@ def test_format_report_data_sets_generation_mode(generator) -> None:
 
 
 @pytest.mark.unit
+def test_format_report_data_sets_contract_version(generator) -> None:
+    """The report envelope must carry the versioned contract identifier."""
+    from reporter.postgres_reports import CONTRACT_VERSION
+
+    result = generator.format_report_data("A002", {}, "node-01")
+
+    assert "contract_version" in result
+    assert result["contract_version"] == CONTRACT_VERSION
+
+
+@pytest.mark.unit
+def test_contract_version_matches_typescript_engine() -> None:
+    """
+    The Python reporter and the TypeScript express engine emit the same
+    contract_version. They live in separate source files and can drift, so
+    assert the TS source declares the identical value. Mirror of the guard in
+    cli/test/contract-version.test.ts.
+    """
+    import re
+    from pathlib import Path
+
+    from reporter.postgres_reports import CONTRACT_VERSION
+
+    ts_source = (
+        Path(__file__).resolve().parents[2] / "cli" / "lib" / "checkup.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r'export const CONTRACT_VERSION\s*=\s*"([^"]+)"', ts_source)
+    assert match, "CONTRACT_VERSION not found in cli/lib/checkup.ts"
+    assert match.group(1) == CONTRACT_VERSION
+
+
+@pytest.mark.unit
 def test_format_report_data_includes_check_title(generator) -> None:
     """Test that format_report_data includes checkTitle."""
     result = generator.format_report_data("A002", {}, "node-01")

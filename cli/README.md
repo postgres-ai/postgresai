@@ -445,6 +445,155 @@ postgresai auth --debug \
 Notes:
 - If `PGAI_UI_BASE_URL` is not set, the default is `https://console.postgres.ai`.
 
+## Embedding checkup
+
+Express checkup is designed to be embedded by **host applications** — for
+example Rails/Django/Node applications and database-diagnostics admin UIs that
+want to run PostgreSQL health checks and render the findings themselves. The
+supported integration surface is the CLI's machine contract: run the checkup
+command, read a single JSON document from stdout, and parse it against the
+published JSON schemas.
+
+### The `--no-upload --json` ABI
+
+```bash
+PGPASSWORD=... postgresai checkup \
+  postgresql://monitoring_user@host:5432/dbname \
+  --no-upload --json
+```
+
+- **stdout** carries **exactly one JSON object**, keyed by check ID:
+
+  ```json
+  {
+    "H002": { "contract_version": "1.0.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.0.0", "checkId": "F003", "...": "..." }
+  }
+  ```
+
+  It is a single document (not newline-delimited JSON). Each value is a report
+  that validates against the schema shipped at
+  `postgresai/schemas/<CHECK_ID>.schema.json`.
+- Restrict the run to one check with `--check-id <ID>` (or the positional form
+  `postgresai checkup <ID> <conn>`); stdout is then a one-key object.
+- **stderr** carries only human-readable diagnostics (progress, warnings,
+  errors). It never contains report JSON — machine consumers should read stdout
+  only. Do not parse stderr as JSON.
+- **Exit codes**: `0` on success; non-zero when the run fails (connection
+  failure, insufficient permissions, an unknown/unavailable check ID, or a
+  failing check). On a non-zero exit, no JSON report object is written to
+  stdout.
+- Pass `--no-upload` to keep the run fully local (no network calls to the
+  PostgresAI API and no API key required).
+
+### Passing credentials
+
+Pass the database password via the **`PGPASSWORD`** environment variable (the
+libpq standard), never on the command line. Credentials in `argv` are visible to
+other processes (e.g. `ps`); `PGPASSWORD` is not. All other libpq environment
+variables (`PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGSSLMODE`) are also
+honored.
+
+### Permissions the connection needs
+
+The checkup command runs a permissions preflight and expects a prepared
+monitoring role. Provision it once with `prepare-db` (run as an admin/superuser):
+
+```bash
+PGPASSWORD=<admin-pw> postgresai prepare-db \
+  postgresql://admin@host:5432/dbname \
+  --monitoring-user postgres_ai_mon \
+  --password <monitoring-pw>
+```
+
+This creates the monitoring role, the `postgres_ai` schema and helper
+function(s), and grants the required read-only privileges (`pg_monitor`
+membership, `SELECT` on the relevant catalogs/views, and the appropriate
+`search_path`). Host applications then run checkup as that role. See
+[prepare-db](#prepare-db-create-monitoring-user-in-postgres) for details and
+provider-specific behavior.
+
+### What runs locally vs. server-side
+
+| Output | Where it is produced | Available offline (`--no-upload`) |
+|--------|----------------------|-----------------------------------|
+| Schema-valid JSON reports | Local (CLI) | Yes |
+| Severity summaries (`summary`: `status` + `message`) | Local (CLI) | Yes |
+| Local conclusions/recommendations for the checks that implement them (e.g. F003, H001) | Local (CLI) | Yes |
+| Rich markdown analysis and prose recommendations | **Server-side** (PostgresAI API, via `--markdown`) | No — requires a network call and, for full detail, an API key |
+
+In short: the local embed gives you structured JSON, per-check severity, and
+the conclusions each check implements today. The full narrative analysis is an
+API-side capability. Embedders that only need structured findings and severity
+never have to call the API.
+
+For every new or updated check, local JSON must include `conclusions` and
+`recommendations`. Server-side markdown analysis can enrich those verdicts, but
+must never be their only source. The coverage checklist in
+[work item #285](https://gitlab.com/postgres-ai/postgresai/-/work_items/285)
+tracks which existing checks have completed this migration.
+
+### Loading a check schema
+
+Every published `postgresai` package contains the JSON Schemas used by that
+exact CLI build. Resolve schemas through the public package subpath instead of
+depending on the tarball layout:
+
+```js
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const schemaPath = require.resolve("postgresai/schemas/H002.schema.json");
+const schema = JSON.parse(await readFile(schemaPath, "utf8"));
+```
+
+Schemas are generated during build and package lifecycle hooks. For an unbuilt
+linked checkout or workspace dependency, run `npm run sync-schemas` first.
+
+Replace `H002` with the report's `checkId`. The package ships one
+`*.schema.json` file per check, plus `query.schema.json`. These files follow the
+`contract_version` policy below: additive schema changes require a minor
+contract-version bump, while breaking changes require a major bump.
+
+### The versioned JSON contract
+
+Every report envelope carries a **`contract_version`** (semver). This is the
+public compatibility surface — the report envelope plus the per-check JSON
+schemas shipped in `postgresai/schemas/` plus this stdout/stderr/exit-code ABI. It is
+independent of the CLI/package `version`: the CLI can be released many times
+without the contract changing.
+
+Compatibility policy (semver applied to the contract, not the code):
+
+- **PATCH** (`x.y.Z`) — editorial/no-op changes that cannot affect a consumer.
+- **MINOR** (`x.Y.0`) — **additive, backward-compatible** changes: new optional
+  fields in the envelope or a report, new checks, new schema files. Existing
+  valid reports stay valid and existing consumers keep working untouched.
+- **MAJOR** (`X.0.0`) — **breaking** changes: removing/renaming a field,
+  tightening a type, making an optional field required, or changing the JSON ABI
+  in a way that could break a consumer parsing the previous format.
+
+A consumer should accept any report whose `contract_version` shares its **major**
+and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
+additive minors, and treat a major bump as a required review.
+
+The current contract version is **`1.0.0`**.
+
+### Envelope fields
+
+Beyond the check-specific `results`, every report includes:
+
+| Field | Meaning |
+|-------|---------|
+| `contract_version` | Version of the JSON report contract (see above). |
+| `checkId` / `checkTitle` | The check identifier and its human title. |
+| `generation_mode` | `"express"` for CLI-generated reports. |
+| `summary` | Optional `{ "status": "ok" \| "warning" \| "info", "message": string }` severity summary. |
+| `timestamptz` | Report generation time (ISO 8601). |
+| `nodes` | `{ "primary": string, "standbys": string[] }`. |
+| `version` / `build_ts` | CLI/package version and build timestamp (may be null). |
+
 ## Development
 
 ### Testing
