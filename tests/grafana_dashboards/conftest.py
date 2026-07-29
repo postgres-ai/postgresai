@@ -13,12 +13,20 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from pathlib import Path
 from typing import Iterable
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Matches a reference to the db_name template variable in any Grafana syntax,
+# with or without a format spec ($db_name, ${db_name}, ${db_name:sqlstring}),
+# while rejecting an unrelated name that merely starts the same
+# (${db_name_source}). Shared so the two tests that ask "is db_name
+# referenced here?" cannot drift apart on the answer.
+DB_NAME_VAR_PATTERN = re.compile(r"\$(?:db_name\b|\{db_name(?::\w+)?\})")
 
 DASHBOARD_DIRS = (
     REPO_ROOT / "config" / "grafana" / "dashboards",
