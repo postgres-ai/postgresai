@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.grafana_dashboards.conftest import iter_panels
+from tests.grafana_dashboards.conftest import DB_NAME_VAR_PATTERN, iter_panels
 
 # The Postgres data source UID provisioned in
 # config/grafana/provisioning/datasources/datasources.yml
@@ -40,8 +40,10 @@ POSTGRES_DS_UID = "P031DD592934B2F1F"
 POSTGRES_DS_TYPE = "postgres"
 
 # Accept either a templated ${db_name} substitution OR an explicit database
-# pinned in the target via a `database` field (older Grafana schemas).
-DB_NAME_TOKENS = ("${db_name}", "$db_name")
+# pinned in the target via a `database` field (older Grafana schemas). The
+# matcher lives in conftest so this file and
+# test_d3_query_text_panel_compose.py cannot disagree on what counts as a
+# db_name reference.
 
 
 def _is_postgres_target(panel: dict, target: dict) -> bool:
@@ -57,7 +59,7 @@ def _is_postgres_target(panel: dict, target: dict) -> bool:
 
 def _target_pins_database(target: dict) -> bool:
     raw_sql = target.get("rawSql") or ""
-    if any(tok in raw_sql for tok in DB_NAME_TOKENS):
+    if DB_NAME_VAR_PATTERN.search(raw_sql):
         return True
     # Some Grafana schemas pin via an explicit `database` target field.
     db = target.get("database")

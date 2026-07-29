@@ -17,6 +17,8 @@ type GrafanaDatasource = {
   uid?: unknown;
   editable?: unknown;
   basicAuth?: unknown;
+  database?: unknown;
+  jsonData?: Record<string, unknown>;
 };
 
 type GrafanaDatasourceConfig = {
@@ -223,6 +225,25 @@ describe("Config consistency", () => {
       expect(datasource.uid).toBe(expectedUid);
       expect(datasource.editable).toBe(false);
     }
+  });
+
+  test("Grafana Postgres datasource pins connection database in jsonData", () => {
+    // The Postgres datasource plugin's SQL query editor reads the connection
+    // database from jsonData.database (its move of `database` into jsonData
+    // predates Grafana 10 and is specific to that plugin, not Grafana broadly).
+    // Without it every panel on this datasource fails client-side with "no
+    // default database configured" (postgresai#314, F-1). The top-level
+    // `database` key is retained for the backend/backward-compat.
+    const datasourceConfig = parseGrafanaDatasourceConfig(
+      readFileSync(datasourcePath, "utf8")
+    );
+    const postgresDatasource = (datasourceConfig.datasources ?? []).find(
+      (datasource) => datasource.name === "PGWatch-PostgreSQL"
+    );
+    expect(postgresDatasource).toBeDefined();
+    expect(postgresDatasource?.jsonData?.database).toBe("measurements");
+    // Keep the top-level key in sync for the backend/older Grafana API readers.
+    expect(postgresDatasource?.database).toBe("measurements");
   });
 
   test("Grafana Prometheus datasource requires VM auth environment", () => {

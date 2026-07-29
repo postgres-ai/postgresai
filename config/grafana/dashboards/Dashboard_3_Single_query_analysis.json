@@ -92,7 +92,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH q AS ( SELECT data ->> 'query' AS qt FROM pgss_queryid_queries WHERE (data ->> 'queryid') = '$query_id' AND (data ? 'real_dbname') AND (data ->> 'real_dbname') = '${db_name}' ORDER BY time DESC LIMIT 1 ) SELECT qt AS \"Query text\" FROM q UNION ALL SELECT '(query text not yet collected for this queryid \u2014 pgwatch writes it on the next scrape; refresh in ~30s)' WHERE NOT EXISTS (SELECT 1 FROM q)",
+          "rawSql": "WITH q AS ( SELECT data ->> 'query' AS qt FROM pgss_queryid_queries WHERE (data ->> 'queryid') = ${query_id:sqlstring} AND (data ? 'real_dbname') AND (data ->> 'real_dbname') = ANY(ARRAY[${db_name:sqlstring}]::text[]) ORDER BY time DESC LIMIT 1 ) SELECT qt AS \"Query text\" FROM q UNION ALL SELECT '(query text not yet collected for this queryid \u2014 pgwatch writes it on the next scrape; refresh in ~30s)' WHERE NOT EXISTS (SELECT 1 FROM q)",
           "refId": "A",
           "sql": {
             "columns": [

@@ -35,6 +35,14 @@ datasources:
     secureJsonData:
       password: pgwatchadmin
     jsonData:
+      # The Postgres datasource plugin's SQL query editor reads the connection
+      # database from jsonData.database; without it the frontend fails every
+      # panel query with "no default database configured" (postgresai#314, F-1).
+      # This is a property of that plugin (the move of `database` into jsonData
+      # predates Grafana 10), not Grafana in general. The top-level `database`
+      # key above is retained for the backend/backward-compat, so keep both in
+      # sync.
+      database: measurements
       sslmode: disable
       # Grafana encoding: PG major version * 100 (1700 = PG 17). PG 17 is
       # not in Grafana's official dropdown yet; this value overrides it.
