@@ -3717,6 +3717,12 @@ metrics:
     statement_timeout_seconds: 15
 
   multixact_size:
+    description: >
+      Reports storage used by multixact member and offset data. PostgreSQL 19+
+      uses pg_get_multixact_stats() for a fast, privilege-aware native probe;
+      older versions retain the Aurora, RDS, and local-filesystem probes.
+      status_code is 0 on success, 1 when a legacy probe found no data, and 2
+      when the required data or privileges are unavailable.
     sqls:
       11: |
         with env as ( /* pgwatch_generated */
@@ -3853,6 +3859,25 @@ metrics:
           null::bigint as offsets_bytes,
           2::int       as status_code
         where not exists (select 1 from parsed);
+      19: |
+        with stats as ( /* pgwatch_generated */
+          select
+            num_mxids,
+            members_size
+          from pg_catalog.pg_get_multixact_stats()
+        )
+        select
+          members_size::bigint as members_bytes,
+          -- PG19 MultiXact offsets use 8-byte entries in 256 KiB SLRU
+          -- segments (32,768 entries per segment). The native function
+          -- exposes the live MultiXact count but not offset storage size,
+          -- so report the corresponding allocated-segment estimate.
+          (ceiling(num_mxids::numeric / 32768) * 262144)::bigint as offsets_bytes,
+          case
+            when num_mxids is not null and members_size is not null then 0
+            else 2
+          end::int as status_code
+        from stats;
     gauges:
       - members_bytes
       - offsets_bytes
