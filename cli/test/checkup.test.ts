@@ -15,6 +15,7 @@ const SUPPORTED_PG_VERSIONS = [
   { major: 16, minor: 3, versionNum: "160003" },
   { major: 17, minor: 2, versionNum: "170002" },
   { major: 18, minor: 0, versionNum: "180000" },
+  { major: 19, minor: 0, versionNum: "190000" },
 ];
 const SUPPORTED_PG_MAJOR_VERSIONS = SUPPORTED_PG_VERSIONS.map(({ major }) => major);
 const SECONDS_PER_DAY = 86400;
@@ -95,6 +96,14 @@ describe("parseVersionNum", () => {
   test("parses PG 18.0 version number", () => {
     const result = checkup.parseVersionNum("180000");
     expect(result.major).toBe("18");
+    expect(result.minor).toBe("0");
+  });
+
+  test("parses PG 19 beta version number", () => {
+    // PostgreSQL development/beta releases use the future major's x0000
+    // server_version_num while server_version carries the beta suffix.
+    const result = checkup.parseVersionNum("190000");
+    expect(result.major).toBe("19");
     expect(result.minor).toBe("0");
   });
 
@@ -479,6 +488,21 @@ describe("Report generators with mock client", () => {
     expect(version.server_version_num).toBe("160003");
     expect(version.server_major_ver).toBe("16");
     expect(version.server_minor_ver).toBe("3");
+  });
+
+  test("getPostgresVersion preserves the PG19 beta version label", async () => {
+    const mockClient = createMockClient({
+      versionRows: [
+        { name: "server_version", setting: "19beta2" },
+        { name: "server_version_num", setting: "190000" },
+      ],
+    });
+
+    const version = await checkup.getPostgresVersion(mockClient as any);
+    expect(version.version).toBe("19beta2");
+    expect(version.server_version_num).toBe("190000");
+    expect(version.server_major_ver).toBe("19");
+    expect(version.server_minor_ver).toBe("0");
   });
 
   test("getIOStatistics returns empty for PostgreSQL versions before 16", async () => {
@@ -3114,8 +3138,8 @@ describe("checkup-summary", () => {
   });
 });
 
-// Postgres version compatibility tests (PG13-PG18)
-describe("Postgres version compatibility (PG13-PG18)", () => {
+// Postgres version compatibility tests (PG13-PG19)
+describe("Postgres version compatibility (PG13-PG19)", () => {
   /**
    * Version-matrix fixture invariants:
    * - version_num uses Postgres major * 10000 + minor encoding.
@@ -3854,7 +3878,7 @@ describe("Postgres version compatibility (PG13-PG18)", () => {
 });
 
 // Tests for version-aware SQL query selection
-describe("Version-aware SQL query selection (PG13-PG18)", () => {
+describe("Version-aware SQL query selection (PG13-PG19)", () => {
   const pgVersions = SUPPORTED_PG_MAJOR_VERSIONS;
 
   // All metrics registered in metrics.yml.

@@ -126,7 +126,9 @@ export function createMockClient(options: MockClientOptions = {}) {
       if (sql.includes("effective_freeze_max_age") && sql.includes("ranked_by")) {
         return { rows: wraparoundTableRows };
       }
-      if (sql.includes("pg_ls_multixactdir") && sql.includes("status_code")) {
+      // multixact_size metric: pre-PG19 probes (pg_ls_multixactdir et al.)
+      // and the PG19+ native pg_get_multixact_stats() probe.
+      if ((sql.includes("pg_ls_multixactdir") || sql.includes("pg_get_multixact_stats")) && sql.includes("status_code")) {
         return { rows: multixactSizeRows };
       }
       // F009: one-round-trip xmin horizon snapshot.

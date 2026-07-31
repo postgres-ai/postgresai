@@ -26,13 +26,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
 
 
-def _load_sql(metric_name: str) -> str:
+def _load_sqls(metric_name: str) -> dict:
+    """All SQL variants for a metric, keyed by minimum PG major version."""
     metrics = yaml.safe_load(METRICS_YML.read_text())
     sqls = metrics["metrics"][metric_name]["sqls"]
-    # Every F002 metric ships a single (PG11+) SQL variant today; assert that so
-    # a future per-version split forces this test to iterate every variant.
+    return {int(v): s.rstrip().rstrip(";") for v, s in sqls.items()}
+
+
+def _load_sql(metric_name: str) -> str:
+    sqls = _load_sqls(metric_name)
+    # These metrics ship a single (PG11+) SQL variant; assert that so a future
+    # per-version split forces the test to iterate every variant (as
+    # test_multixact_size_executes does).
     assert len(sqls) == 1, f"{metric_name}: expected one SQL variant, got {list(sqls)}"
-    return next(iter(sqls.values())).rstrip().rstrip(";")
+    return next(iter(sqls.values()))
 
 
 @pytest.fixture(scope="function")
@@ -164,12 +171,23 @@ def test_pg_table_wraparound_executes_caps_and_exposes_overrides(wraparound_cur)
 @pytest.mark.integration
 @pytest.mark.requires_postgres
 def test_multixact_size_executes(wraparound_cur):
-    # Reads the data directory via pg_stat_file/pg_ls_dir (or the RDS/Aurora
-    # probes); on a stock superuser CI cluster the local branch runs. Assert it
-    # parses/executes and returns exactly the member/offset/status columns the
-    # reporter sums — never a single `bytes` column.
-    wraparound_cur.execute(_load_sql("multixact_size"))
-    colnames = [c.name for c in wraparound_cur.description]
-    assert colnames == ["members_bytes", "offsets_bytes", "status_code"]
-    rows = wraparound_cur.fetchall()
-    assert len(rows) == 1
+    # multixact_size is per-version since PG19 (native pg_get_multixact_stats()
+    # vs the pg_stat_file/pg_ls_dir + RDS/Aurora probes). Run every variant the
+    # live cluster supports and assert each parses, executes, and returns
+    # exactly the member/offset/status columns the reporter sums — never a
+    # single `bytes` column.
+    wraparound_cur.execute("select current_setting('server_version_num')::int / 10000")
+    server_major = wraparound_cur.fetchone()[0]
+    executed = 0
+    for min_version, sql_text in sorted(_load_sqls("multixact_size").items()):
+        if server_major < min_version:
+            continue
+        wraparound_cur.execute(sql_text)
+        colnames = [c.name for c in wraparound_cur.description]
+        assert colnames == ["members_bytes", "offsets_bytes", "status_code"], (
+            f"multixact_size PG{min_version}+ variant returned {colnames}"
+        )
+        rows = wraparound_cur.fetchall()
+        assert len(rows) == 1, f"multixact_size PG{min_version}+ variant returned {len(rows)} rows"
+        executed += 1
+    assert executed >= 1, f"no multixact_size variant executable on PG {server_major}"
