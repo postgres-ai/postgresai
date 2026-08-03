@@ -237,14 +237,37 @@ function summarizeD004(nodeData: any): CheckSummary {
 function summarizeF001(nodeData: any): CheckSummary {
   const data = nodeData?.data || {};
   const settingsCount = Object.keys(data).length;
+  const analysis = nodeData?.settings_analysis;
+  const fired = analysis?.rules_fired || [];
+
+  // Map the highest fired rule severity to a CLI status. CRITICAL/WARNING are
+  // actionable (warning); NOTICE/INFO are informational.
+  if (fired.length > 0) {
+    const severity: string | null = analysis?.severity ?? null;
+    const summarize = () => {
+      const critical = fired.filter((r: any) => r.severity === 'CRITICAL').length;
+      const warning = fired.filter((r: any) => r.severity === 'WARNING').length;
+      const parts: string[] = [];
+      if (critical > 0) parts.push(`${critical} critical`);
+      if (warning > 0) parts.push(`${warning} warning`);
+      const other = fired.length - critical - warning;
+      if (other > 0) parts.push(`${other} advisory`);
+      return `Autovacuum config: ${parts.join(', ')} finding${fired.length > 1 ? 's' : ''}`;
+    };
+
+    if (severity === 'CRITICAL' || severity === 'WARNING') {
+      return { status: 'warning', message: summarize() };
+    }
+    return { status: 'info', message: summarize() };
+  }
 
   if (settingsCount === 0) {
     return { status: 'info', message: 'No autovacuum settings found' };
   }
 
   return {
-    status: 'info',
-    message: `${settingsCount} autovacuum setting${settingsCount > 1 ? 's' : ''} collected`
+    status: 'ok',
+    message: `Autovacuum config looks healthy (${settingsCount} setting${settingsCount > 1 ? 's' : ''} analyzed)`
   };
 }
 

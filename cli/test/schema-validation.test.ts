@@ -192,6 +192,27 @@ describe("Schema validation", () => {
     });
   }
 
+  // F001 with a rich analysis payload (fired rules, throughput, largest tables)
+  test("F001 validates with autovacuum-linter findings", async () => {
+    const mockClient = createMockClient({
+      settingsRows: [
+        { tag_setting_name: "autovacuum", tag_setting_value: "off", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "bool", is_default: 0, setting_normalized: null, unit_normalized: null },
+        { tag_setting_name: "autovacuum_vacuum_cost_delay", tag_setting_value: "20", tag_unit: "ms", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 0, setting_normalized: 0.02, unit_normalized: "seconds" },
+        { tag_setting_name: "autovacuum_vacuum_cost_limit", tag_setting_value: "-1", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+        { tag_setting_name: "vacuum_cost_limit", tag_setting_value: "200", tag_unit: "", tag_category: "Resource Usage", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+        { tag_setting_name: "autovacuum_work_mem", tag_setting_value: "-1", tag_unit: "kB", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+        { tag_setting_name: "maintenance_work_mem", tag_setting_value: "65536", tag_unit: "kB", tag_category: "Resource Usage", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+        { tag_setting_name: "autovacuum_vacuum_scale_factor", tag_setting_value: "0.2", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "real", is_default: 1, setting_normalized: null, unit_normalized: null },
+      ],
+      autovacuumReloptsRows: [
+        { tag_schemaname: "public", tag_relname: "events", tag_relkind: "r", tag_category: "largest", relpages: "9999999", total_relation_size_b: String(2 * 1024 * 1024 * 1024 * 1024), has_av_override: 0, reloptions: "", relations_total: "12000", tables_with_av_overrides: "1" },
+        { tag_schemaname: "public", tag_relname: "hot", tag_relkind: "r", tag_category: "override", relpages: "5", total_relation_size_b: "8192", has_av_override: 1, reloptions: "autovacuum_vacuum_cost_delay=0", relations_total: "12000", tables_with_av_overrides: "1" },
+      ],
+    });
+    const report = await checkup.REPORT_GENERATORS.F001(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F001");
+  });
+
   test("I001 validates with available pg_stat_io data", () => {
     const report = {
       version: null,
