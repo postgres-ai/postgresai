@@ -18,6 +18,8 @@ export interface MockClientOptions {
   tableBloatRows?: any[];
   indexBloatRows?: any[];
   deadTuplesRows?: any[];
+  /** Rows for the pg_autovacuum_relopts metric (F001 largest-tables / reloptions cross-reference). */
+  autovacuumReloptsRows?: any[];
   wraparoundSettingsRows?: any[];
   wraparoundDatabaseRows?: any[];
   wraparoundTableRows?: any[];
@@ -85,6 +87,7 @@ export function createMockClient(options: MockClientOptions = {}) {
     tableBloatRows = [],
     indexBloatRows = [],
     deadTuplesRows = [],
+    autovacuumReloptsRows = [],
     wraparoundSettingsRows = [{
       autovacuum_freeze_max_age: "200000000",
       vacuum_freeze_min_age: "50000000",
@@ -184,6 +187,10 @@ export function createMockClient(options: MockClientOptions = {}) {
       // pg_dead_tuples SQL also contains "pg_stat_user_tables" and "last_vacuum".
       if (sql.includes("autovacuum_disabled") && sql.includes("n_dead_tup")) {
         return { rows: deadTuplesRows };
+      }
+      // F001: pg_autovacuum_relopts metric (largest tables + reloptions overview)
+      if (sql.includes("has_av_override") && sql.includes("total_relation_size_b")) {
+        return { rows: autovacuumReloptsRows };
       }
       // F004/F005: bloat metrics from metrics.yml
       if (sql.includes("to_regnamespace('postgres_ai')") && sql.includes("view_select")) {

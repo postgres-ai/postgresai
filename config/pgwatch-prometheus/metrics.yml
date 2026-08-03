@@ -2703,6 +2703,132 @@ metrics:
       - autovacuum_disabled
       - table_size_b
     statement_timeout_seconds: 15
+  pg_autovacuum_relopts:
+    description: >
+      Largest tables and per-table autovacuum reloptions overrides for the
+      F001 express check ("Autovacuum: current settings"). Feeds two F001
+      analyses: (1) the scale-factor cross-reference — a global
+      autovacuum_vacuum_scale_factor of 0.2 means 20% of a large table's
+      tuples must die before autovacuum triggers, so the report needs the
+      actual sizes of the biggest tables to translate that into concrete
+      dead-tuple debt; (2) the reloptions overview — how many relations
+      carry per-table autovacuum_* overrides (including toast.* ones) and
+      which notable ones (autovacuum_enabled=off, per-table cost_delay=0)
+      exist. Catalog-only ranking by pg_class.relpages (the two-stage
+      prefilter mandated for 100k+ relation instances: rank by the
+      catalog-cached page count, then compute exact pg_total_relation_size()
+      only for the ≤100 finalists, and report ≤20 per category). Returns two
+      row categories tagged in `category`: 'largest' (top 20 by exact size)
+      and 'override' (top 20 override-carrying tables by exact size), so a
+      per-table cost_delay=0 on a small table is still surfaced even when the
+      table is not among the biggest. Coverage counters (relations_total,
+      tables_with_av_overrides) let bounded scans never be mistaken for full
+      scans. The AccessExclusiveLock guard mirrors pg_dead_tuples:
+      pg_total_relation_size() takes a lock and would block behind a fully
+      locked relation. Compatible with all supported Postgres versions.
+    sqls:
+      11: |
+        with candidates_raw as ( /* pgwatch_generated */
+          -- toast.* autovacuum options are stored on the toast relation
+          -- (pg_class.reltoastrelid, relkind 't') as plain autovacuum_* options,
+          -- NOT as 'toast.'-prefixed options on the parent. Join the toast
+          -- relation so those overrides are attributed back to the owning heap.
+          select
+            c.oid,
+            n.nspname as schemaname,
+            c.relname,
+            c.relkind::text as relkind,
+            coalesce(c.relpages, 0) as relpages,
+            coalesce(c.reloptions, '{}'::text[]) as heap_reloptions,
+            coalesce(tc.reloptions, '{}'::text[]) as toast_reloptions
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          left join pg_class tc on tc.oid = c.reltoastrelid
+          where n.nspname not in ('information_schema', 'pg_catalog')
+            and c.relkind in ('r', 'm', 'p')
+        ),
+        candidates as (
+          select
+            oid,
+            schemaname,
+            relname,
+            relkind,
+            relpages,
+            -- Present toast options to callers as 'toast.'-prefixed entries so a
+            -- toast-level override is visible alongside the heap's own options.
+            heap_reloptions || coalesce(
+              (select array_agg('toast.' || topt) from unnest(toast_reloptions) as topt),
+              '{}'::text[]
+            ) as reloptions,
+            (
+              exists (select 1 from unnest(heap_reloptions) as o where o like 'autovacuum\_%')
+              or exists (select 1 from unnest(toast_reloptions) as o where o like 'autovacuum\_%')
+            ) as has_av_override
+          from candidates_raw
+        ),
+        ranked_size as (
+          select *, row_number() over (order by relpages desc, schemaname, relname) as rn_size
+          from candidates
+        ),
+        ranked_override as (
+          select *, row_number() over (order by relpages desc, schemaname, relname) as rn_ovr
+          from candidates
+          where has_av_override
+        ),
+        finalist_size as (
+          select
+            oid, schemaname, relname, relkind, relpages, reloptions, has_av_override,
+            'largest'::text as category,
+            pg_total_relation_size(oid) as total_relation_size_b
+          from ranked_size
+          where rn_size <= 100
+            and not exists (
+              select 1 from pg_locks where relation = oid and mode = 'AccessExclusiveLock'
+            )
+        ),
+        finalist_override as (
+          select
+            oid, schemaname, relname, relkind, relpages, reloptions, has_av_override,
+            'override'::text as category,
+            pg_total_relation_size(oid) as total_relation_size_b
+          from ranked_override
+          where rn_ovr <= 100
+            and not exists (
+              select 1 from pg_locks where relation = oid and mode = 'AccessExclusiveLock'
+            )
+        ),
+        top_size as (
+          select * from finalist_size order by total_relation_size_b desc, schemaname, relname limit 20
+        ),
+        top_override as (
+          select * from finalist_override order by total_relation_size_b desc, schemaname, relname limit 20
+        ),
+        combined as (
+          select * from top_size
+          union
+          select * from top_override
+        )
+        select
+          current_database() as tag_datname,
+          cmb.schemaname as tag_schemaname,
+          cmb.relname as tag_relname,
+          cmb.relkind as tag_relkind,
+          cmb.category as tag_category,
+          cmb.relpages,
+          cmb.total_relation_size_b,
+          case when cmb.has_av_override then 1 else 0 end as has_av_override,
+          array_to_string(cmb.reloptions, ',') as reloptions,
+          (select count(*) from candidates) as relations_total,
+          (select count(*) from candidates where has_av_override) as tables_with_av_overrides
+        from combined cmb
+        order by cmb.total_relation_size_b desc, cmb.schemaname, cmb.relname
+    gauges:
+      - relpages
+      - total_relation_size_b
+      - has_av_override
+      - relations_total
+      - tables_with_av_overrides
+    statement_timeout_seconds: 15
   table_size_detailed:
     description: >
       Detailed per-table storage breakdown (heap main/fsm/vm forks,

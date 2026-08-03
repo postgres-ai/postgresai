@@ -65,6 +65,8 @@ export const METRIC_NAMES = {
   H001: "pg_invalid_indexes",
   H002: "unused_indexes",
   H004: "redundant_indexes",
+  // Largest tables + per-table autovacuum reloptions overrides (F001 analysis)
+  F001: "pg_autovacuum_relopts",
   // Wraparound ages, thresholds, per-table overrides, and SLRU size (F002)
   F002Database: "pg_database_wraparound",
   F002Settings: "pg_settings_wraparound",

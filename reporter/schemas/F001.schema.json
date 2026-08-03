@@ -58,16 +58,151 @@
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/setting" }
     },
+    "effectiveValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw", "effective", "unit", "inherited_from", "inheritance_chain"],
+      "properties": {
+        "raw": { "type": ["string", "null"] },
+        "effective": { "type": ["number", "null"] },
+        "unit": { "type": "string" },
+        "inherited_from": { "type": ["string", "null"] },
+        "inheritance_chain": { "type": "string" }
+      }
+    },
+    "effectiveValues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cost_delay_ms", "cost_limit", "work_mem_kb"],
+      "properties": {
+        "autovacuum": { "type": ["boolean", "null"] },
+        "track_counts": { "type": ["boolean", "null"] },
+        "cost_delay_ms": { "$ref": "#/$defs/effectiveValue" },
+        "cost_limit": { "$ref": "#/$defs/effectiveValue" },
+        "work_mem_kb": { "$ref": "#/$defs/effectiveValue" },
+        "naptime_s": { "type": ["number", "null"] },
+        "scale_factor": { "type": ["number", "null"] },
+        "analyze_scale_factor": { "type": ["number", "null"] },
+        "vacuum_insert_threshold": { "type": ["number", "null"] },
+        "log_min_duration_ms": { "type": ["number", "null"] },
+        "max_workers": { "type": ["number", "null"] },
+        "page_cost_hit": { "type": "number" },
+        "page_cost_miss": { "type": "number" },
+        "page_cost_dirty": { "type": "number" }
+      }
+    },
+    "throughputBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effective_cost_delay_ms",
+        "effective_cost_limit",
+        "page_cost_hit",
+        "page_cost_miss",
+        "page_cost_dirty",
+        "tokens_per_sec",
+        "read_hit_mbps",
+        "read_miss_mbps",
+        "dirty_write_mbps",
+        "throttling_disabled"
+      ],
+      "properties": {
+        "effective_cost_delay_ms": { "type": ["number", "null"] },
+        "effective_cost_limit": { "type": ["number", "null"] },
+        "page_cost_hit": { "type": "number" },
+        "page_cost_miss": { "type": "number" },
+        "page_cost_dirty": { "type": "number" },
+        "tokens_per_sec": { "type": ["number", "null"] },
+        "read_hit_mbps": { "type": ["number", "null"] },
+        "read_miss_mbps": { "type": ["number", "null"] },
+        "dirty_write_mbps": { "type": ["number", "null"] },
+        "throttling_disabled": { "type": "boolean" }
+      }
+    },
+    "largestTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_name",
+        "table_name",
+        "relkind",
+        "relpages",
+        "total_relation_size_bytes",
+        "total_relation_size_pretty",
+        "has_av_override",
+        "reloptions",
+        "scale_factor_override"
+      ],
+      "properties": {
+        "schema_name": { "type": "string" },
+        "table_name": { "type": "string" },
+        "relkind": { "type": "string" },
+        "relpages": { "type": "number" },
+        "total_relation_size_bytes": { "type": "number" },
+        "total_relation_size_pretty": { "type": "string" },
+        "has_av_override": { "type": "boolean" },
+        "reloptions": { "type": "string" },
+        "scale_factor_override": { "type": ["number", "null"] }
+      }
+    },
+    "reloptionsOverview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relations_total",
+        "candidates_considered",
+        "tables_with_av_overrides",
+        "autovacuum_disabled_tables",
+        "cost_delay_zero_tables",
+        "cost_delay_zero_toast_only_tables"
+      ],
+      "properties": {
+        "relations_total": { "type": "number" },
+        "candidates_considered": { "type": "number" },
+        "tables_with_av_overrides": { "type": "number" },
+        "autovacuum_disabled_tables": { "type": "array", "items": { "type": "string" } },
+        "cost_delay_zero_tables": { "type": "array", "items": { "type": "string" } },
+        "cost_delay_zero_toast_only_tables": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "firedRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "conclusion", "recommendation"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": { "enum": ["CRITICAL", "WARNING", "NOTICE", "INFO"] },
+        "conclusion": { "type": "string" },
+        "recommendation": { "type": "string" }
+      }
+    },
+    "settingsAnalysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "rules_fired", "largest_tables", "reloptions_overview"],
+      "properties": {
+        "severity": { "enum": ["CRITICAL", "WARNING", "NOTICE", "INFO", null] },
+        "rules_fired": { "type": "array", "items": { "$ref": "#/$defs/firedRule" } },
+        "largest_tables": { "type": "array", "items": { "$ref": "#/$defs/largestTable" } },
+        "reloptions_overview": { "$ref": "#/$defs/reloptionsOverview" },
+        "database_size_bytes": { "type": "number" },
+        "database_size_pretty": { "type": "string" },
+        "thresholds": { "type": "object" }
+      }
+    },
     "nodeResult": {
       "type": "object",
       "additionalProperties": false,
       "required": ["data"],
       "properties": {
         "data": { "$ref": "#/$defs/data" },
-        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" },
+        "effective_values": { "$ref": "#/$defs/effectiveValues" },
+        "throughput_budget": { "$ref": "#/$defs/throughputBudget" },
+        "conclusions": { "type": "array", "items": { "type": "string" } },
+        "recommendations": { "type": "array", "items": { "type": "string" } },
+        "settings_analysis": { "$ref": "#/$defs/settingsAnalysis" }
       }
     }
   }
 }
-
-

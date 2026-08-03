@@ -1773,6 +1773,675 @@ describe("F003 - Dead tuples", () => {
   });
 });
 
+// ===========================================================================
+// F001 (Autovacuum: configuration linter) - WI 274
+// ===========================================================================
+describe("F001 - Autovacuum configuration linter", () => {
+  function mkSetting(value: string, unit = ""): checkup.SettingInfo {
+    return { setting: value, unit, category: "Autovacuum", context: "sighup", vartype: "integer", pretty_value: value };
+  }
+
+  /** A tuned, healthy autovacuum config where NO Tier-1 rule should fire. */
+  function healthySettings(): Record<string, checkup.SettingInfo> {
+    return {
+      autovacuum: mkSetting("on"),
+      track_counts: mkSetting("on"),
+      autovacuum_vacuum_cost_delay: mkSetting("2", "ms"),
+      vacuum_cost_delay: mkSetting("0", "ms"),
+      autovacuum_vacuum_cost_limit: mkSetting("2000"),
+      vacuum_cost_limit: mkSetting("200"),
+      autovacuum_work_mem: mkSetting("262144", "kB"),
+      maintenance_work_mem: mkSetting("262144", "kB"),
+      autovacuum_naptime: mkSetting("60", "s"),
+      autovacuum_vacuum_scale_factor: mkSetting("0.05"),
+      autovacuum_analyze_scale_factor: mkSetting("0.02"),
+      autovacuum_vacuum_insert_threshold: mkSetting("1000"),
+      log_autovacuum_min_duration: mkSetting("10000", "ms"),
+      autovacuum_max_workers: mkSetting("5"),
+      vacuum_cost_page_hit: mkSetting("1"),
+      vacuum_cost_page_miss: mkSetting("2"),
+      vacuum_cost_page_dirty: mkSetting("20"),
+    };
+  }
+
+  const emptyOverview: checkup.ReloptionsOverview = {
+    relations_total: 0,
+    candidates_considered: 0,
+    tables_with_av_overrides: 0,
+    autovacuum_disabled_tables: [],
+    cost_delay_zero_tables: [],
+    cost_delay_zero_toast_only_tables: [],
+  };
+
+  function mkTable(overrides: Partial<checkup.LargestTable> = {}): checkup.LargestTable {
+    const bytes = overrides.total_relation_size_bytes ?? 1024;
+    return {
+      schema_name: "public",
+      table_name: "big",
+      relkind: "r",
+      relpages: 100,
+      total_relation_size_bytes: bytes,
+      total_relation_size_pretty: checkup.formatBytes(bytes),
+      has_av_override: false,
+      reloptions: "",
+      scale_factor_override: null,
+      ...overrides,
+    };
+  }
+
+  function mkCtx(
+    settings: Record<string, checkup.SettingInfo>,
+    opts: {
+      pgMajorVersion?: number;
+      largestTables?: checkup.LargestTable[];
+      reloptions?: checkup.ReloptionsOverview;
+      databaseSizeBytes?: number;
+    } = {},
+  ): checkup.AutovacuumRuleContext {
+    const effective = checkup.resolveEffectiveAutovacuumSettings(settings);
+    const throughput = checkup.computeThroughputBudget(effective);
+    return {
+      pgMajorVersion: opts.pgMajorVersion ?? 16,
+      effective,
+      throughput,
+      largestTables: opts.largestTables ?? [],
+      reloptions: opts.reloptions ?? emptyOverview,
+      databaseSizeBytes: opts.databaseSizeBytes ?? 0,
+      env: null,
+    };
+  }
+
+  const firedIds = (ctx: checkup.AutovacuumRuleContext) =>
+    checkup.evaluateAutovacuumRules(ctx).fired.map((f) => f.id);
+
+  // --- inheritance resolution ---------------------------------------------
+  describe("effective-value inheritance resolution", () => {
+    test("cost_limit = -1 falls back to vacuum_cost_limit", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_limit = mkSetting("-1");
+      s.vacuum_cost_limit = mkSetting("300");
+      const eff = checkup.resolveEffectiveAutovacuumSettings(s);
+      expect(eff.cost_limit.effective).toBe(300);
+      expect(eff.cost_limit.inherited_from).toBe("vacuum_cost_limit");
+      expect(eff.cost_limit.inheritance_chain).toContain("vacuum_cost_limit = 300");
+    });
+
+    test("cost_delay = -1 falls back to vacuum_cost_delay", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_delay = mkSetting("-1", "ms");
+      s.vacuum_cost_delay = mkSetting("5", "ms");
+      const eff = checkup.resolveEffectiveAutovacuumSettings(s);
+      expect(eff.cost_delay_ms.effective).toBe(5);
+      expect(eff.cost_delay_ms.inherited_from).toBe("vacuum_cost_delay");
+    });
+
+    test("work_mem = -1 falls back to maintenance_work_mem", () => {
+      const s = healthySettings();
+      s.autovacuum_work_mem = mkSetting("-1", "kB");
+      s.maintenance_work_mem = mkSetting("524288", "kB");
+      const eff = checkup.resolveEffectiveAutovacuumSettings(s);
+      expect(eff.work_mem_kb.effective).toBe(524288);
+      expect(eff.work_mem_kb.inherited_from).toBe("maintenance_work_mem");
+    });
+
+    test("explicit (non -1) values are not marked inherited", () => {
+      const eff = checkup.resolveEffectiveAutovacuumSettings(healthySettings());
+      expect(eff.cost_limit.inherited_from).toBeNull();
+      expect(eff.cost_delay_ms.inherited_from).toBeNull();
+      expect(eff.work_mem_kb.inherited_from).toBeNull();
+    });
+  });
+
+  // --- throughput math ----------------------------------------------------
+  describe("effective throughput budget", () => {
+    test("default 200/2ms yields ~800/400/40 MB/s", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_limit = mkSetting("200");
+      s.autovacuum_vacuum_cost_delay = mkSetting("2", "ms");
+      const budget = checkup.computeThroughputBudget(checkup.resolveEffectiveAutovacuumSettings(s));
+      expect(budget.tokens_per_sec).toBe(100000);
+      expect(budget.throttling_disabled).toBe(false);
+      // 8KB pages, MB = 1e6: hit ~819.2, miss ~409.6, dirty ~41.0
+      expect(budget.read_hit_mbps).toBeCloseTo(819.2, 1);
+      expect(budget.read_miss_mbps).toBeCloseTo(409.6, 1);
+      expect(budget.dirty_write_mbps).toBeCloseTo(41.0, 1);
+    });
+
+    test("cost_delay = 0 marks throttling disabled and leaves budgets null", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_delay = mkSetting("0", "ms");
+      const budget = checkup.computeThroughputBudget(checkup.resolveEffectiveAutovacuumSettings(s));
+      expect(budget.throttling_disabled).toBe(true);
+      expect(budget.tokens_per_sec).toBeNull();
+      expect(budget.dirty_write_mbps).toBeNull();
+    });
+  });
+
+  // --- healthy baseline: no rules fire ------------------------------------
+  test("tuned healthy config fires no rules", () => {
+    expect(firedIds(mkCtx(healthySettings()))).toEqual([]);
+    expect(checkup.evaluateAutovacuumRules(mkCtx(healthySettings())).severity).toBeNull();
+  });
+
+  // --- per-rule fire / not-fire -------------------------------------------
+  describe("Tier-1 rules fire and do not fire", () => {
+    test("autovacuum_off", () => {
+      const s = healthySettings();
+      s.autovacuum = mkSetting("off");
+      expect(firedIds(mkCtx(s))).toContain("autovacuum_off");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("autovacuum_off");
+    });
+
+    test("track_counts_off", () => {
+      const s = healthySettings();
+      s.track_counts = mkSetting("off");
+      expect(firedIds(mkCtx(s))).toContain("track_counts_off");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("track_counts_off");
+    });
+
+    test("cost_delay_zero (direct and via inheritance)", () => {
+      const direct = healthySettings();
+      direct.autovacuum_vacuum_cost_delay = mkSetting("0", "ms");
+      expect(firedIds(mkCtx(direct))).toContain("cost_delay_zero");
+
+      const inherited = healthySettings();
+      inherited.autovacuum_vacuum_cost_delay = mkSetting("-1", "ms");
+      inherited.vacuum_cost_delay = mkSetting("0", "ms");
+      expect(firedIds(mkCtx(inherited))).toContain("cost_delay_zero");
+
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("cost_delay_zero");
+    });
+
+    test("cost_delay_pg11_legacy fires on explicit 20ms, not when inherited", () => {
+      const explicit = healthySettings();
+      explicit.autovacuum_vacuum_cost_delay = mkSetting("20", "ms");
+      expect(firedIds(mkCtx(explicit))).toContain("cost_delay_pg11_legacy");
+
+      const inherited = healthySettings();
+      inherited.autovacuum_vacuum_cost_delay = mkSetting("-1", "ms");
+      inherited.vacuum_cost_delay = mkSetting("20", "ms");
+      expect(firedIds(mkCtx(inherited))).not.toContain("cost_delay_pg11_legacy");
+    });
+
+    test("cost_limit_low", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_limit = mkSetting("200");
+      expect(firedIds(mkCtx(s))).toContain("cost_limit_low");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("cost_limit_low");
+    });
+
+    test("work_mem_inherits with PG-version-gated note", () => {
+      const s = healthySettings();
+      s.autovacuum_work_mem = mkSetting("-1", "kB");
+      const pg16 = checkup.evaluateAutovacuumRules(mkCtx(s, { pgMajorVersion: 16 }));
+      const fired16 = pg16.fired.find((f) => f.id === "work_mem_inherits");
+      expect(fired16).toBeDefined();
+      expect(fired16!.conclusion).toContain("After a PG17 upgrade");
+
+      const pg17 = checkup.evaluateAutovacuumRules(mkCtx(s, { pgMajorVersion: 17 }));
+      const fired17 = pg17.fired.find((f) => f.id === "work_mem_inherits");
+      expect(fired17!.conclusion).toContain("1 GB per-worker cap was removed");
+
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("work_mem_inherits");
+    });
+
+    test("scale_factor_high_global with large-table debt detail", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_scale_factor = mkSetting("0.2");
+      const bigTable = mkTable({ table_name: "events", total_relation_size_bytes: 1024 * 1024 * 1024 * 1024 });
+      const res = checkup.evaluateAutovacuumRules(mkCtx(s, { largestTables: [bigTable] }));
+      const fired = res.fired.find((f) => f.id === "scale_factor_high_global");
+      expect(fired).toBeDefined();
+      expect(fired!.conclusion).toContain("events");
+      expect(fired!.conclusion).toContain("dead-tuple debt");
+      expect(fired!.conclusion).toContain("the default");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("scale_factor_high_global");
+    });
+
+    test("scale_factor_high_global does NOT fire without any large table (WI gate)", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_scale_factor = mkSetting("0.2");
+      // no large tables -> the gate suppresses it on a stock/empty instance
+      expect(firedIds(mkCtx(s, { largestTables: [] }))).not.toContain("scale_factor_high_global");
+      const smallTable = mkTable({ total_relation_size_bytes: 5 * 1024 * 1024 });
+      expect(firedIds(mkCtx(s, { largestTables: [smallTable] }))).not.toContain("scale_factor_high_global");
+    });
+
+    test("scale_factor_high_global omits 'the default' for an above-default value", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_scale_factor = mkSetting("0.5");
+      const bigTable = mkTable({ total_relation_size_bytes: 1024 * 1024 * 1024 * 1024 });
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(s, { largestTables: [bigTable] }))
+        .fired.find((f) => f.id === "scale_factor_high_global");
+      expect(fired!.conclusion).toContain("(50%)");
+      expect(fired!.conclusion).not.toContain("the default");
+    });
+
+    test("analyze_scale_factor_high_global fire and not-fire", () => {
+      const bigTable = mkTable({ total_relation_size_bytes: 1024 * 1024 * 1024 * 1024 });
+      // fire: default 0.1 + a large table present
+      const s = healthySettings();
+      s.autovacuum_analyze_scale_factor = mkSetting("0.1");
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(s, { largestTables: [bigTable] }))
+        .fired.find((f) => f.id === "analyze_scale_factor_high_global");
+      expect(fired).toBeDefined();
+      expect(fired!.conclusion).toContain("(the default)");
+      // not-fire: no large table
+      expect(firedIds(mkCtx(s, { largestTables: [] }))).not.toContain("analyze_scale_factor_high_global");
+      // not-fire: below-threshold factor even with a large table
+      const below = healthySettings();
+      below.autovacuum_analyze_scale_factor = mkSetting("0.09");
+      expect(firedIds(mkCtx(below, { largestTables: [bigTable] }))).not.toContain("analyze_scale_factor_high_global");
+    });
+
+    test("boundary not-fire cases (just past each threshold)", () => {
+      const bigTable = mkTable({ total_relation_size_bytes: 1024 * 1024 * 1024 * 1024 });
+      // cost_limit just above the low threshold
+      const costLimit = healthySettings();
+      costLimit.autovacuum_vacuum_cost_limit = mkSetting("201");
+      expect(firedIds(mkCtx(costLimit))).not.toContain("cost_limit_low");
+      // scale_factor just below default
+      const scale = healthySettings();
+      scale.autovacuum_vacuum_scale_factor = mkSetting("0.19");
+      expect(firedIds(mkCtx(scale, { largestTables: [bigTable] }))).not.toContain("scale_factor_high_global");
+      // naptime exactly at the ceiling (not strictly greater)
+      const nap = healthySettings();
+      nap.autovacuum_naptime = mkSetting("60", "s");
+      expect(firedIds(mkCtx(nap))).not.toContain("naptime_high");
+    });
+
+    test("scale_factor_high_global does not cite tables that carry their own override", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_scale_factor = mkSetting("0.2");
+      const overridden = mkTable({
+        table_name: "events",
+        total_relation_size_bytes: 1024 * 1024 * 1024 * 1024,
+        has_av_override: true,
+        scale_factor_override: 0.01,
+      });
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(s, { largestTables: [overridden] }))
+        .fired.find((f) => f.id === "scale_factor_high_global");
+      expect(fired!.conclusion).not.toContain("dead-tuple debt");
+    });
+
+    test("log_autovacuum_disabled with PG15 note gating", () => {
+      const s = healthySettings();
+      s.log_autovacuum_min_duration = mkSetting("-1", "ms");
+      const pg15 = checkup.evaluateAutovacuumRules(mkCtx(s, { pgMajorVersion: 15 }));
+      const f15 = pg15.fired.find((f) => f.id === "log_autovacuum_disabled");
+      expect(f15).toBeDefined();
+      expect(f15!.conclusion).toContain("PG15+");
+      const f13 = checkup
+        .evaluateAutovacuumRules(mkCtx(s, { pgMajorVersion: 13 }))
+        .fired.find((f) => f.id === "log_autovacuum_disabled");
+      expect(f13!.conclusion).not.toContain("PG15+");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("log_autovacuum_disabled");
+    });
+
+    test("naptime_high", () => {
+      const s = healthySettings();
+      s.autovacuum_naptime = mkSetting("120", "s");
+      expect(firedIds(mkCtx(s))).toContain("naptime_high");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("naptime_high");
+    });
+
+    test("max_workers_default", () => {
+      const s = healthySettings();
+      s.autovacuum_max_workers = mkSetting("3");
+      expect(firedIds(mkCtx(s))).toContain("max_workers_default");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("max_workers_default");
+    });
+
+    test("insert_vacuum_disabled is PG13+ gated", () => {
+      const s = healthySettings();
+      s.autovacuum_vacuum_insert_threshold = mkSetting("-1");
+      expect(firedIds(mkCtx(s, { pgMajorVersion: 13 }))).toContain("insert_vacuum_disabled");
+
+      // PG12: the setting does not exist -> null -> rule does not apply
+      const pg12 = healthySettings();
+      delete pg12.autovacuum_vacuum_insert_threshold;
+      expect(firedIds(mkCtx(pg12, { pgMajorVersion: 12 }))).not.toContain("insert_vacuum_disabled");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("insert_vacuum_disabled");
+    });
+
+    test("dirty_budget_small_large_db fires at stock defaults on a large DB", () => {
+      // Realistic PG12+ defaults: 200 / 2ms -> dirty budget ~40.96 MB/s (<= 41).
+      const s = healthySettings();
+      s.autovacuum_vacuum_cost_limit = mkSetting("200");
+      s.autovacuum_vacuum_cost_delay = mkSetting("2", "ms");
+      const bigDb = 200 * 1024 * 1024 * 1024;
+      const budget = checkup.computeThroughputBudget(checkup.resolveEffectiveAutovacuumSettings(s));
+      expect(budget.dirty_write_mbps).toBeCloseTo(41.0, 1);
+      expect(firedIds(mkCtx(s, { databaseSizeBytes: bigDb }))).toContain("dirty_budget_small_large_db");
+      // small DB: not flagged
+      expect(firedIds(mkCtx(s, { databaseSizeBytes: 1024 }))).not.toContain("dirty_budget_small_large_db");
+      // ample budget (tuned cost_limit): not flagged even on a large DB
+      const tuned = healthySettings(); // cost_limit 2000 -> ~410 MB/s dirty
+      expect(firedIds(mkCtx(tuned, { databaseSizeBytes: bigDb }))).not.toContain("dirty_budget_small_large_db");
+    });
+
+    test("per_table_cost_delay_zero", () => {
+      const reloptions: checkup.ReloptionsOverview = {
+        ...emptyOverview,
+        tables_with_av_overrides: 1,
+        cost_delay_zero_tables: ['"public"."hot"'],
+      };
+      expect(firedIds(mkCtx(healthySettings(), { reloptions }))).toContain("per_table_cost_delay_zero");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("per_table_cost_delay_zero");
+    });
+
+    test("per_table_cost_delay_zero distinguishes heap-level from toast-level overrides", () => {
+      // Two tables flagged; only the toast one is in the toast-only subset.
+      const reloptions: checkup.ReloptionsOverview = {
+        ...emptyOverview,
+        tables_with_av_overrides: 2,
+        cost_delay_zero_tables: ['"public"."hot"', '"public"."docs"'],
+        cost_delay_zero_toast_only_tables: ['"public"."docs"'],
+      };
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(healthySettings(), { reloptions }))
+        .fired.find((f) => f.id === "per_table_cost_delay_zero");
+      expect(fired).toBeDefined();
+      // The toast-only table is annotated; the heap-level one is left plain.
+      expect(fired!.conclusion).toContain('"public"."docs" (toast-level)');
+      expect(fired!.conclusion).toContain('"public"."hot"');
+      expect(fired!.conclusion).not.toContain('"public"."hot" (toast-level)');
+      // The remediation calls out the toast.* reset for the toast-level ones.
+      expect(fired!.recommendation).toContain("toast.autovacuum_vacuum_cost_delay");
+    });
+
+    test("per_table_cost_delay_zero omits the toast note when all overrides are heap-level", () => {
+      const reloptions: checkup.ReloptionsOverview = {
+        ...emptyOverview,
+        tables_with_av_overrides: 1,
+        cost_delay_zero_tables: ['"public"."hot"'],
+      };
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(healthySettings(), { reloptions }))
+        .fired.find((f) => f.id === "per_table_cost_delay_zero");
+      expect(fired!.conclusion).not.toContain("(toast-level)");
+      expect(fired!.recommendation).not.toContain("toast.autovacuum_vacuum_cost_delay");
+    });
+
+    test("reloptions_overview", () => {
+      const reloptions: checkup.ReloptionsOverview = {
+        ...emptyOverview,
+        relations_total: 5000,
+        tables_with_av_overrides: 3,
+        autovacuum_disabled_tables: ['"public"."cache"'],
+      };
+      const fired = checkup
+        .evaluateAutovacuumRules(mkCtx(healthySettings(), { reloptions }))
+        .fired.find((f) => f.id === "reloptions_overview");
+      expect(fired).toBeDefined();
+      expect(fired!.conclusion).toContain("3");
+      expect(firedIds(mkCtx(healthySettings()))).not.toContain("reloptions_overview");
+    });
+  });
+
+  // --- never-recommend list (hard rules, test-enforced) -------------------
+  describe("never-recommend list is enforced", () => {
+    // A battery of contexts that trigger as many rules as possible.
+    function allTriggeringContexts(): checkup.AutovacuumRuleContext[] {
+      const bigTable = mkTable({ total_relation_size_bytes: 1024 * 1024 * 1024 * 1024 });
+      const bigDb = 500 * 1024 * 1024 * 1024;
+      const reloptions: checkup.ReloptionsOverview = {
+        relations_total: 100000,
+        candidates_considered: 100,
+        tables_with_av_overrides: 5,
+        autovacuum_disabled_tables: ['"public"."x"'],
+        cost_delay_zero_tables: ['"public"."y"'],
+        cost_delay_zero_toast_only_tables: [],
+      };
+      const contexts: checkup.AutovacuumRuleContext[] = [];
+      const mutators: Array<(s: Record<string, checkup.SettingInfo>) => void> = [
+        (s) => (s.autovacuum = mkSetting("off")),
+        (s) => (s.track_counts = mkSetting("off")),
+        (s) => (s.autovacuum_vacuum_cost_delay = mkSetting("0", "ms")),
+        (s) => (s.autovacuum_vacuum_cost_delay = mkSetting("20", "ms")),
+        (s) => (s.autovacuum_vacuum_cost_limit = mkSetting("200")),
+        (s) => (s.autovacuum_work_mem = mkSetting("-1", "kB")),
+        (s) => (s.autovacuum_vacuum_scale_factor = mkSetting("0.2")),
+        (s) => (s.autovacuum_analyze_scale_factor = mkSetting("0.1")),
+        (s) => (s.log_autovacuum_min_duration = mkSetting("-1", "ms")),
+        (s) => (s.autovacuum_naptime = mkSetting("300", "s")),
+        (s) => (s.autovacuum_max_workers = mkSetting("3")),
+        (s) => (s.autovacuum_vacuum_insert_threshold = mkSetting("-1")),
+      ];
+      for (const pg of [12, 13, 15, 17]) {
+        for (const m of mutators) {
+          const s = healthySettings();
+          m(s);
+          contexts.push(mkCtx(s, { pgMajorVersion: pg, largestTables: [bigTable], reloptions, databaseSizeBytes: bigDb }));
+        }
+      }
+      return contexts;
+    }
+
+    test("no recommendation ever suggests cost_delay = 0, disabling autovacuum, or per-table off", () => {
+      const banned = [
+        /cost_delay\s*=\s*0(?![.\d])/i,
+        /disabl(e|ing)\s+autovacuum/i,
+        /(?:^|[^_])autovacuum\s*=\s*off/i,
+        /autovacuum_enabled\s*=\s*(?:off|false|0)/i,
+      ];
+      for (const ctx of allTriggeringContexts()) {
+        for (const rec of checkup.evaluateAutovacuumRules(ctx).recommendations) {
+          for (const pat of banned) {
+            expect(rec).not.toMatch(pat);
+          }
+        }
+      }
+    });
+
+    test("any recommendation to add workers also raises the cost budget", () => {
+      for (const ctx of allTriggeringContexts()) {
+        for (const rec of checkup.evaluateAutovacuumRules(ctx).recommendations) {
+          if (/autovacuum_max_workers/i.test(rec)) {
+            expect(rec.toLowerCase()).toContain("cost_limit");
+          }
+        }
+      }
+    });
+
+    test("the battery collectively fires every F001 rule (including dirty_budget_small_large_db)", () => {
+      const fired = new Set<string>();
+      for (const ctx of allTriggeringContexts()) {
+        for (const f of checkup.evaluateAutovacuumRules(ctx).fired) fired.add(f.id);
+      }
+      const allRuleIds = checkup.F001_RULES.map((r) => r.id);
+      for (const id of allRuleIds) {
+        expect(fired.has(id)).toBe(true);
+      }
+    });
+  });
+
+  // --- generator integration ----------------------------------------------
+  describe("getAutovacuumRelopts", () => {
+    // toast.* autovacuum options are stored on the toast relation as plain
+    // autovacuum_* options; the SQL surfaces them 'toast.'-prefixed on the
+    // parent. Simulate that shape and assert the toast-level cost_delay=0 is
+    // attributed to the owning heap and flags the per-table rule.
+    test("attributes a toast-level cost_delay=0 override to the owning table", async () => {
+      const mockClient = createMockClient({
+        autovacuumReloptsRows: [
+          {
+            tag_schemaname: "public",
+            tag_relname: "docs",
+            tag_relkind: "r",
+            tag_category: "override",
+            relpages: "500",
+            total_relation_size_b: "1048576",
+            has_av_override: 1,
+            reloptions: "toast.autovacuum_vacuum_cost_delay=0",
+            relations_total: "10",
+            tables_with_av_overrides: "1",
+          },
+        ],
+      });
+      const { overview } = await checkup.getAutovacuumRelopts(mockClient as any, 16);
+      expect(overview.cost_delay_zero_tables).toContain('"public"."docs"');
+      // A toast-only override is classified as such (heap has no cost_delay=0).
+      expect(overview.cost_delay_zero_toast_only_tables).toContain('"public"."docs"');
+      expect(overview.tables_with_av_overrides).toBe(1);
+    });
+
+    test("a heap-level cost_delay=0 is NOT classified as toast-only", async () => {
+      const mockClient = createMockClient({
+        autovacuumReloptsRows: [
+          {
+            tag_schemaname: "public",
+            tag_relname: "hot",
+            tag_relkind: "r",
+            tag_category: "override",
+            relpages: "5",
+            total_relation_size_b: "8192",
+            has_av_override: 1,
+            // Heap-level zero plus a toast-level zero: heap wins, so not toast-only.
+            reloptions: "autovacuum_vacuum_cost_delay=0,toast.autovacuum_vacuum_cost_delay=0",
+            relations_total: "10",
+            tables_with_av_overrides: "1",
+          },
+        ],
+      });
+      const { overview } = await checkup.getAutovacuumRelopts(mockClient as any, 16);
+      expect(overview.cost_delay_zero_tables).toContain('"public"."hot"');
+      expect(overview.cost_delay_zero_toast_only_tables).not.toContain('"public"."hot"');
+    });
+
+    test("counts distinct relations (not rows) for candidates_considered", async () => {
+      // Same relation appears in both 'largest' and 'override' categories.
+      const shared = {
+        tag_schemaname: "public",
+        tag_relname: "events",
+        tag_relkind: "r",
+        relpages: "999",
+        total_relation_size_b: "8192",
+        has_av_override: 1,
+        reloptions: "autovacuum_vacuum_scale_factor=0.01",
+        relations_total: "3",
+        tables_with_av_overrides: "1",
+      };
+      const mockClient = createMockClient({
+        autovacuumReloptsRows: [
+          { ...shared, tag_category: "largest" },
+          { ...shared, tag_category: "override" },
+        ],
+      });
+      const { overview } = await checkup.getAutovacuumRelopts(mockClient as any, 16);
+      // 2 rows, 1 distinct relation -> must not exceed relations_total
+      expect(overview.candidates_considered).toBe(1);
+      expect(overview.candidates_considered).toBeLessThanOrEqual(overview.relations_total);
+    });
+
+    test("a toast.* scale_factor is not mistaken for the heap's own override", async () => {
+      const mockClient = createMockClient({
+        autovacuumReloptsRows: [
+          {
+            tag_schemaname: "public",
+            tag_relname: "events",
+            tag_relkind: "r",
+            tag_category: "largest",
+            relpages: "999",
+            total_relation_size_b: String(1024 * 1024 * 1024 * 1024),
+            has_av_override: 1,
+            reloptions: "toast.autovacuum_vacuum_scale_factor=0.5",
+            relations_total: "1",
+            tables_with_av_overrides: "1",
+          },
+        ],
+      });
+      const { largestTables } = await checkup.getAutovacuumRelopts(mockClient as any, 16);
+      expect(largestTables[0].scale_factor_override).toBeNull();
+    });
+  });
+
+  describe("generateF001", () => {
+    const richSettingsRows = [
+      { tag_setting_name: "autovacuum", tag_setting_value: "on", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "bool", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "track_counts", tag_setting_value: "on", tag_unit: "", tag_category: "Statistics", tag_vartype: "bool", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "autovacuum_vacuum_cost_delay", tag_setting_value: "20", tag_unit: "ms", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 0, setting_normalized: 0.02, unit_normalized: "seconds" },
+      { tag_setting_name: "autovacuum_vacuum_cost_limit", tag_setting_value: "-1", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "vacuum_cost_limit", tag_setting_value: "200", tag_unit: "", tag_category: "Resource Usage", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "autovacuum_vacuum_scale_factor", tag_setting_value: "0.2", tag_unit: "", tag_category: "Autovacuum", tag_vartype: "real", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "autovacuum_work_mem", tag_setting_value: "-1", tag_unit: "kB", tag_category: "Autovacuum", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+      { tag_setting_name: "maintenance_work_mem", tag_setting_value: "65536", tag_unit: "kB", tag_category: "Resource Usage", tag_vartype: "integer", is_default: 1, setting_normalized: null, unit_normalized: null },
+    ];
+
+    test("produces effective values, throughput budget, conclusions and recommendations", async () => {
+      const mockClient = createMockClient({
+        settingsRows: richSettingsRows,
+        autovacuumReloptsRows: [
+          {
+            tag_schemaname: "public",
+            tag_relname: "events",
+            tag_relkind: "r",
+            tag_category: "largest",
+            relpages: "9999999",
+            total_relation_size_b: String(2 * 1024 * 1024 * 1024 * 1024),
+            has_av_override: 0,
+            reloptions: "",
+            relations_total: "42000",
+            tables_with_av_overrides: "2",
+          },
+          {
+            tag_schemaname: "public",
+            tag_relname: "hot",
+            tag_relkind: "r",
+            tag_category: "override",
+            relpages: "10",
+            total_relation_size_b: "8192",
+            has_av_override: 1,
+            reloptions: "autovacuum_vacuum_cost_delay=0",
+            relations_total: "42000",
+            tables_with_av_overrides: "2",
+          },
+        ],
+      });
+      const report = await checkup.REPORT_GENERATORS.F001(mockClient as any, "node-1");
+      const node = report.results["node-1"] as any;
+
+      expect(report.checkId).toBe("F001");
+      // raw dump preserved (backward compatible)
+      expect(node.data.autovacuum).toBeDefined();
+      // inheritance chain resolved
+      expect(node.effective_values.cost_limit.inherited_from).toBe("vacuum_cost_limit");
+      expect(node.effective_values.cost_limit.effective).toBe(200);
+      // throughput budget present
+      expect(node.throughput_budget.tokens_per_sec).toBeGreaterThan(0);
+      // rule findings surfaced
+      const ids = node.settings_analysis.rules_fired.map((r: any) => r.id);
+      expect(ids).toContain("cost_delay_pg11_legacy");
+      expect(ids).toContain("cost_limit_low");
+      expect(ids).toContain("scale_factor_high_global");
+      expect(ids).toContain("per_table_cost_delay_zero");
+      // reloptions coverage counters
+      expect(node.settings_analysis.reloptions_overview.relations_total).toBe(42000);
+      expect(node.settings_analysis.reloptions_overview.cost_delay_zero_tables.length).toBe(1);
+      expect(node.conclusions.length).toBeGreaterThan(0);
+      expect(node.recommendations.length).toBe(node.conclusions.length);
+    });
+
+    test("degrades gracefully when the largest-tables query fails", async () => {
+      const failingClient = {
+        query: async (sql: string) => {
+          if (sql.includes("has_av_override")) throw new Error("statement timeout");
+          return (createMockClient({ settingsRows: richSettingsRows }) as any).query(sql);
+        },
+      };
+      const report = await checkup.REPORT_GENERATORS.F001(failingClient as any, "node-1");
+      const node = report.results["node-1"] as any;
+      // still produces effective values + throughput even without table cross-ref
+      expect(node.effective_values).toBeDefined();
+      expect(node.throughput_budget).toBeDefined();
+      expect(node.settings_analysis.largest_tables).toEqual([]);
+    });
+  });
+});
+
 // CLI tests
 describe("CLI tests", () => {
   test("checkup command exists and shows help", () => {
@@ -2873,7 +3542,7 @@ describe("checkup-summary", () => {
     expect(result.message).toBe("2 pg_stat_statements settings collected");
   });
 
-  test("generateCheckSummary for F001 (autovacuum)", () => {
+  test("generateCheckSummary for F001 (autovacuum) with no findings is healthy", () => {
     const report = {
       results: {
         "node1": {
@@ -2885,8 +3554,47 @@ describe("checkup-summary", () => {
       }
     };
     const result = summary.generateCheckSummary("F001", report);
+    expect(result.status).toBe("ok");
+    expect(result.message).toContain("healthy");
+  });
+
+  test("generateCheckSummary for F001 maps CRITICAL findings to warning", () => {
+    const report = {
+      results: {
+        "node1": {
+          data: { "autovacuum": { value: "off" } },
+          settings_analysis: {
+            severity: "CRITICAL",
+            rules_fired: [
+              { id: "autovacuum_off", severity: "CRITICAL", conclusion: "x", recommendation: "y" },
+              { id: "cost_limit_low", severity: "WARNING", conclusion: "x", recommendation: "y" },
+            ],
+          },
+        },
+      },
+    };
+    const result = summary.generateCheckSummary("F001", report);
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("1 critical");
+    expect(result.message).toContain("1 warning");
+  });
+
+  test("generateCheckSummary for F001 maps NOTICE-only findings to info", () => {
+    const report = {
+      results: {
+        "node1": {
+          data: { "autovacuum": { value: "on" } },
+          settings_analysis: {
+            severity: "NOTICE",
+            rules_fired: [
+              { id: "naptime_high", severity: "NOTICE", conclusion: "x", recommendation: "y" },
+            ],
+          },
+        },
+      },
+    };
+    const result = summary.generateCheckSummary("F001", report);
     expect(result.status).toBe("info");
-    expect(result.message).toBe("2 autovacuum settings collected");
   });
 
   test("generateCheckSummary for G001 (memory settings)", () => {
@@ -4009,6 +4717,7 @@ describe("Version-aware SQL query selection (PG13-PG19)", () => {
       H001: "pg_invalid_indexes",
       H002: "unused_indexes",
       H004: "redundant_indexes",
+      F001: "pg_autovacuum_relopts",
       F002Database: "pg_database_wraparound",
       F002Settings: "pg_settings_wraparound",
       F002Tables: "pg_table_wraparound",

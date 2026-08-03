@@ -410,6 +410,86 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     }
   });
 
+  test("F001 resolves effective values, throughput budget, and flags a per-table cost_delay=0", async () => {
+    // A per-table autovacuum_vacuum_cost_delay=0 override (write-storm footgun)
+    // must be surfaced by the reloptions overview + the per-table rule, and the
+    // report must carry the effective-value resolution and throughput budget.
+    await client.query(`
+      CREATE TABLE f001_cost_delay_test (id int PRIMARY KEY, payload text);
+      ALTER TABLE f001_cost_delay_test SET (autovacuum_vacuum_cost_delay = 0);
+    `);
+
+    try {
+      const report = await checkup.REPORT_GENERATORS.F001(client, "test-node");
+      validateAgainstSchema(report, "F001");
+
+      const node = report.results["test-node"] as any;
+
+      // Effective-value resolution + inheritance chains are present.
+      expect(node.effective_values).toBeDefined();
+      expect(node.effective_values.cost_limit).toHaveProperty("inheritance_chain");
+      expect(node.effective_values.cost_delay_ms).toHaveProperty("effective");
+
+      // Throughput budget is computed from the effective cost model.
+      expect(node.throughput_budget).toHaveProperty("tokens_per_sec");
+      expect(node.throughput_budget).toHaveProperty("dirty_write_mbps");
+
+      // The per-table cost_delay=0 override is surfaced (rule + overview).
+      const relopts = node.settings_analysis.reloptions_overview;
+      expect(
+        relopts.cost_delay_zero_tables.some((t: string) => t.includes("f001_cost_delay_test"))
+      ).toBe(true);
+      const firedIds = node.settings_analysis.rules_fired.map((r: any) => r.id);
+      expect(firedIds).toContain("per_table_cost_delay_zero");
+
+      // Never-recommend list holds on real output: no recommendation sets cost_delay=0.
+      for (const rec of node.recommendations as string[]) {
+        expect(rec).not.toMatch(/cost_delay\s*=\s*0(?![.\d])/i);
+      }
+    } finally {
+      await client.query("DROP TABLE IF EXISTS f001_cost_delay_test;");
+    }
+  });
+
+  test("F001 surfaces a toast-level cost_delay=0 override (stored on the toast relation)", async () => {
+    // A toast.* option is stored on the toast relation (relkind 't') as a plain
+    // autovacuum_* option, NOT as a 'toast.'-prefixed option on the parent. The
+    // metric must join heap->toast and attribute it back to the owning table.
+    await client.query(`
+      CREATE TABLE f001_toast_test (id int PRIMARY KEY, blob text)
+        WITH (toast.autovacuum_vacuum_cost_delay = 0);
+    `);
+
+    try {
+      // Confirm the option really lives on the toast relation, not the parent.
+      const parentOpts = await client.query(
+        "select reloptions from pg_class where relname = 'f001_toast_test'"
+      );
+      expect(parentOpts.rows[0].reloptions).toBeNull();
+
+      const report = await checkup.REPORT_GENERATORS.F001(client, "test-node");
+      validateAgainstSchema(report, "F001");
+
+      const node = report.results["test-node"] as any;
+      const relopts = node.settings_analysis.reloptions_overview;
+      expect(
+        relopts.cost_delay_zero_tables.some((t: string) => t.includes("f001_toast_test"))
+      ).toBe(true);
+      // The zero lives only on the toast relation, so it is classified toast-only
+      // and the rule names it as such.
+      expect(
+        relopts.cost_delay_zero_toast_only_tables.some((t: string) => t.includes("f001_toast_test"))
+      ).toBe(true);
+      const costDelayRule = node.settings_analysis.rules_fired.find(
+        (r: any) => r.id === "per_table_cost_delay_zero"
+      );
+      expect(costDelayRule).toBeDefined();
+      expect(costDelayRule.conclusion).toContain("(toast-level)");
+    } finally {
+      await client.query("DROP TABLE IF EXISTS f001_toast_test;");
+    }
+  });
+
   test("F009 identifies a read-committed idle-in-transaction xid holder", async () => {
     const holder = await pg.connect();
     try {

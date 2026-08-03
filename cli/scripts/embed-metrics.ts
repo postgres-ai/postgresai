@@ -46,6 +46,8 @@ const REQUIRED_METRICS = [
   "redundant_indexes",
   // Stats reset info (H002)
   "stats_reset",
+  // Largest tables + per-table autovacuum reloptions overrides (F001)
+  "pg_autovacuum_relopts",
   // Wraparound ages, thresholds, per-table overrides, and SLRU size (F002)
   "pg_database_wraparound",
   "pg_settings_wraparound",

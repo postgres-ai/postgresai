@@ -492,6 +492,12 @@ export interface IOAnalysis {
 export interface NodeResult {
   data: Record<string, any>;
   postgres_version?: PostgresVersion;
+  // F001 autovacuum configuration linter (WI 274) — additive siblings of `data`.
+  effective_values?: EffectiveAutovacuumSettings;
+  throughput_budget?: ThroughputBudget;
+  conclusions?: string[];
+  recommendations?: string[];
+  settings_analysis?: Record<string, any>;
 }
 
 /**
@@ -1708,8 +1714,743 @@ async function generateD001(client: Client, nodeName: string): Promise<Report> {
   return report;
 }
 
+// ===========================================================================
+// F001 autovacuum configuration linter (WI 274)
+// ===========================================================================
+//
+// F001 analyses the EFFECTIVE runtime autovacuum settings from pg_settings
+// (the same source generateF001 already reads via getSettings()) plus per-table
+// pg_class.reloptions, and emits F003-style conclusions/recommendations from a
+// curated rule set. The rule set is expressed as DATA (an array of predicate +
+// severity + message-template objects) so tests can enumerate every rule and
+// assert its fire / not-fire behaviour and its never-recommend guarantees.
+//
+// Scope here is Tier-1 (context-free) rules + the effective-throughput math +
+// the largest-tables scale-factor cross-reference. Tier-2 hardware-aware rules
+// (WI 269 environment context) are NOT implemented; where a recommendation's
+// concrete value would need vCPU/RAM/disk facts, the rule degrades to
+// conditional text and never fabricates a number.
+
+/** Severity levels for F001 rules, in descending order of urgency. */
+export type F001Severity = "CRITICAL" | "WARNING" | "NOTICE" | "INFO";
+
+const F001_SEVERITY_ORDER: Record<F001Severity, number> = {
+  CRITICAL: 4,
+  WARNING: 3,
+  NOTICE: 2,
+  INFO: 1,
+};
+
 /**
- * Generate F001 report - Autovacuum: current settings
+ * F001 thresholds and reference constants (exported so tests and the report
+ * can reference them without magic numbers).
+ *
+ * - PG12 raised the default autovacuum_vacuum_cost_delay from 20ms to 2ms and
+ *   is the effective project minimum; the 20ms value is therefore a PG11-era
+ *   leftover worth flagging.
+ * - The default cost_limit (200) is widely considered too low for modern
+ *   storage; EDB's autovacuum-tuning guidance suggests 1000–2000 as a starting
+ *   point (hardware-aware refinement is Tier 2).
+ * - The default scale_factor (0.2) means 20% of a table must die before
+ *   autovacuum triggers; on large tables that is a large dead-tuple debt.
+ */
+export const F001_COST_LIMIT_DEFAULT = 200;
+export const F001_COST_LIMIT_LOW_MAX = 200; // <= this is flagged as likely-too-low
+export const F001_COST_DELAY_DEFAULT_MS = 2; // PG12+ default
+export const F001_COST_DELAY_PG11_MS = 20; // pre-PG12 default (~8 MB/s)
+export const F001_SCALE_FACTOR_DEFAULT = 0.2;
+export const F001_ANALYZE_SCALE_FACTOR_DEFAULT = 0.1;
+export const F001_NAPTIME_HIGH_S = 60; // naptime strictly greater than this is flagged
+export const F001_MAX_WORKERS_DEFAULT = 3;
+/** A large table for the scale-factor cross-reference (dead-tuple debt matters here). */
+export const F001_LARGE_TABLE_BYTES = 10 * 1024 * 1024 * 1024; // 10 GiB
+/** Cap on rows the largest-tables cross-reference reports (mirrors the SQL LIMIT). */
+export const F001_LARGEST_TABLES_CAP = 20;
+/** Default page costs (pg_settings defaults) used by the throughput math. */
+export const F001_PAGE_COST_HIT_DEFAULT = 1;
+export const F001_PAGE_COST_MISS_DEFAULT = 2;
+export const F001_PAGE_COST_DIRTY_DEFAULT = 20;
+/**
+ * Dirty-write budget at or below this (MB/s) is "small" and, on a large
+ * database, worth calling out: at this rate vacuum may never catch up with
+ * write churn. Set to the PG12+ default budget itself (100000 tokens/s ÷
+ * vacuum_cost_page_dirty=20 × 8 KiB ≈ 40.96 MB/s, emitted rounded as 41.0),
+ * so a large database running at stock defaults IS flagged here — a message
+ * distinct from the generic cost_limit_low finding.
+ */
+export const F001_DIRTY_WRITE_SMALL_MBPS = 41;
+/** A "large" database for the small-dirty-budget conclusion. */
+export const F001_LARGE_DB_BYTES = 100 * 1024 * 1024 * 1024; // 100 GiB
+const PG_BLOCK_BYTES = 8192;
+
+/**
+ * An effective (inheritance-resolved) autovacuum value plus the chain that
+ * produced it. `-1` sentinels fall back to a cluster-wide sibling setting;
+ * the report shows the chain so the reader sees WHY the effective value is
+ * what it is.
+ */
+export interface EffectiveAutovacuumValue {
+  /** The setting's own raw value as configured (e.g. "-1", "2", "200"). */
+  raw: string | null;
+  /** Effective numeric value after resolving -1 inheritance; null if unknown. */
+  effective: number | null;
+  /** pg_settings unit (e.g. "ms", "kB", ""). */
+  unit: string;
+  /** Name of the setting the effective value was inherited from (when raw == -1). */
+  inherited_from: string | null;
+  /** Human-readable inheritance chain, e.g. "autovacuum_vacuum_cost_limit = -1 -> vacuum_cost_limit = 200". */
+  inheritance_chain: string;
+}
+
+/** Resolved effective autovacuum settings used by the rule engine. */
+export interface EffectiveAutovacuumSettings {
+  autovacuum: boolean | null;
+  track_counts: boolean | null;
+  cost_delay_ms: EffectiveAutovacuumValue;
+  cost_limit: EffectiveAutovacuumValue;
+  work_mem_kb: EffectiveAutovacuumValue;
+  naptime_s: number | null;
+  scale_factor: number | null;
+  analyze_scale_factor: number | null;
+  /** PG13+; -1 means insert-driven autovacuum is disabled. null when unavailable (<PG13). */
+  vacuum_insert_threshold: number | null;
+  log_min_duration_ms: number | null;
+  max_workers: number | null;
+  page_cost_hit: number;
+  page_cost_miss: number;
+  page_cost_dirty: number;
+}
+
+/** Effective vacuum throughput budget derived from the cost-based delay model. */
+export interface ThroughputBudget {
+  effective_cost_delay_ms: number | null;
+  effective_cost_limit: number | null;
+  page_cost_hit: number;
+  page_cost_miss: number;
+  page_cost_dirty: number;
+  /** cost tokens spent per second across ALL workers (shared budget); null when throttling disabled. */
+  tokens_per_sec: number | null;
+  /** MB/s ceilings for all-in-cache reads, cache-miss reads, and dirtied pages. null when unthrottled. */
+  read_hit_mbps: number | null;
+  read_miss_mbps: number | null;
+  dirty_write_mbps: number | null;
+  /** True when effective cost_delay is 0 → throttling fully disabled (budget is unbounded). */
+  throttling_disabled: boolean;
+}
+
+/** A largest-table / override-carrying table row for the scale-factor cross-reference. */
+export interface LargestTable {
+  schema_name: string;
+  table_name: string;
+  relkind: string;
+  relpages: number;
+  total_relation_size_bytes: number;
+  total_relation_size_pretty: string;
+  /** Whether the table carries any autovacuum_* / toast.autovacuum_* reloption. */
+  has_av_override: boolean;
+  /** Raw reloptions text (comma-joined). */
+  reloptions: string;
+  /** Per-table autovacuum_vacuum_scale_factor override, if set. */
+  scale_factor_override: number | null;
+}
+
+/** Per-table reloptions overview (counts + notable overrides). */
+export interface ReloptionsOverview {
+  relations_total: number;
+  candidates_considered: number;
+  tables_with_av_overrides: number;
+  /** Tables with autovacuum disabled per-table (already flagged in detail by F003). */
+  autovacuum_disabled_tables: string[];
+  /** Tables with a per-table cost_delay=0 (write-storm risk, ardentperf). */
+  cost_delay_zero_tables: string[];
+  /**
+   * Subset of cost_delay_zero_tables whose zero lives ONLY on the toast relation
+   * (toast.autovacuum_vacuum_cost_delay=0), not on the heap itself. Tracked
+   * separately so the per-table rule can name the toast-level ones distinctly —
+   * their remediation targets the toast.* option, not the heap option.
+   */
+  cost_delay_zero_toast_only_tables: string[];
+}
+
+/** Context passed to every F001 rule predicate / message builder. */
+export interface AutovacuumRuleContext {
+  pgMajorVersion: number;
+  effective: EffectiveAutovacuumSettings;
+  throughput: ThroughputBudget;
+  largestTables: LargestTable[];
+  reloptions: ReloptionsOverview;
+  databaseSizeBytes: number;
+  /** WI 269 environment context (vCPU/RAM/disk/provider). Not implemented yet. */
+  env: null;
+}
+
+/** A single fired rule's output. */
+export interface FiredRule {
+  id: string;
+  severity: F001Severity;
+  conclusion: string;
+  recommendation: string;
+}
+
+/**
+ * A data-driven F001 rule. `predicate` decides whether the rule fires from the
+ * resolved context; `message` builds the conclusion + recommendation (only
+ * called when the predicate is true). `appliesTo`, when present, version-gates
+ * the rule (e.g. insert-driven vacuum is PG13+).
+ */
+export interface AutovacuumRule {
+  id: string;
+  severity: F001Severity;
+  appliesTo?: (ctx: AutovacuumRuleContext) => boolean;
+  predicate: (ctx: AutovacuumRuleContext) => boolean;
+  message: (ctx: AutovacuumRuleContext) => { conclusion: string; recommendation: string };
+}
+
+// --- parse helpers ---------------------------------------------------------
+
+function avNum(settings: Record<string, SettingInfo>, name: string): number | null {
+  const s = settings[name];
+  if (!s || s.setting === undefined || s.setting === null || s.setting === "") return null;
+  const n = parseFloat(String(s.setting));
+  return Number.isFinite(n) ? n : null;
+}
+
+function avBool(settings: Record<string, SettingInfo>, name: string): boolean | null {
+  const s = settings[name];
+  if (!s) return null;
+  const v = String(s.setting).toLowerCase();
+  if (v === "on" || v === "true" || v === "t" || v === "1" || v === "yes") return true;
+  if (v === "off" || v === "false" || v === "f" || v === "0" || v === "no") return false;
+  return null;
+}
+
+function avUnit(settings: Record<string, SettingInfo>, name: string): string {
+  return settings[name]?.unit || "";
+}
+
+function avRaw(settings: Record<string, SettingInfo>, name: string): string | null {
+  const s = settings[name];
+  return s && s.setting !== undefined && s.setting !== null ? String(s.setting) : null;
+}
+
+/**
+ * Resolve the effective autovacuum settings, following the `-1` inheritance
+ * chains that Postgres uses:
+ *   autovacuum_vacuum_cost_delay = -1 -> vacuum_cost_delay
+ *   autovacuum_vacuum_cost_limit = -1 -> vacuum_cost_limit
+ *   autovacuum_work_mem          = -1 -> maintenance_work_mem
+ * Each resolved value carries the chain that produced it.
+ */
+export function resolveEffectiveAutovacuumSettings(
+  settings: Record<string, SettingInfo>,
+): EffectiveAutovacuumSettings {
+  // cost_delay: autovacuum_vacuum_cost_delay = -1 inherits vacuum_cost_delay
+  const avDelayRaw = avNum(settings, "autovacuum_vacuum_cost_delay");
+  const baseDelay = avNum(settings, "vacuum_cost_delay");
+  const delayInherits = avDelayRaw !== null && avDelayRaw < 0;
+  const cost_delay_ms: EffectiveAutovacuumValue = {
+    raw: avRaw(settings, "autovacuum_vacuum_cost_delay"),
+    effective: delayInherits ? baseDelay : avDelayRaw,
+    unit: avUnit(settings, "autovacuum_vacuum_cost_delay") || "ms",
+    inherited_from: delayInherits ? "vacuum_cost_delay" : null,
+    inheritance_chain: delayInherits
+      ? `autovacuum_vacuum_cost_delay = -1 -> vacuum_cost_delay = ${baseDelay ?? "?"}ms`
+      : `autovacuum_vacuum_cost_delay = ${avDelayRaw ?? "?"}ms`,
+  };
+
+  // cost_limit: autovacuum_vacuum_cost_limit = -1 inherits vacuum_cost_limit
+  const avLimitRaw = avNum(settings, "autovacuum_vacuum_cost_limit");
+  const baseLimit = avNum(settings, "vacuum_cost_limit");
+  const limitInherits = avLimitRaw !== null && avLimitRaw < 0;
+  const cost_limit: EffectiveAutovacuumValue = {
+    raw: avRaw(settings, "autovacuum_vacuum_cost_limit"),
+    effective: limitInherits ? baseLimit : avLimitRaw,
+    unit: avUnit(settings, "autovacuum_vacuum_cost_limit"),
+    inherited_from: limitInherits ? "vacuum_cost_limit" : null,
+    inheritance_chain: limitInherits
+      ? `autovacuum_vacuum_cost_limit = -1 -> vacuum_cost_limit = ${baseLimit ?? "?"}`
+      : `autovacuum_vacuum_cost_limit = ${avLimitRaw ?? "?"}`,
+  };
+
+  // work_mem: autovacuum_work_mem = -1 inherits maintenance_work_mem
+  const avWorkMemRaw = avNum(settings, "autovacuum_work_mem");
+  const baseWorkMem = avNum(settings, "maintenance_work_mem");
+  const workMemInherits = avWorkMemRaw !== null && avWorkMemRaw < 0;
+  const work_mem_kb: EffectiveAutovacuumValue = {
+    raw: avRaw(settings, "autovacuum_work_mem"),
+    effective: workMemInherits ? baseWorkMem : avWorkMemRaw,
+    unit: avUnit(settings, "autovacuum_work_mem") || "kB",
+    inherited_from: workMemInherits ? "maintenance_work_mem" : null,
+    inheritance_chain: workMemInherits
+      ? `autovacuum_work_mem = -1 -> maintenance_work_mem = ${baseWorkMem ?? "?"}kB`
+      : `autovacuum_work_mem = ${avWorkMemRaw ?? "?"}kB`,
+  };
+
+  return {
+    autovacuum: avBool(settings, "autovacuum"),
+    track_counts: avBool(settings, "track_counts"),
+    cost_delay_ms,
+    cost_limit,
+    work_mem_kb,
+    naptime_s: avNum(settings, "autovacuum_naptime"),
+    scale_factor: avNum(settings, "autovacuum_vacuum_scale_factor"),
+    analyze_scale_factor: avNum(settings, "autovacuum_analyze_scale_factor"),
+    vacuum_insert_threshold: avNum(settings, "autovacuum_vacuum_insert_threshold"),
+    log_min_duration_ms: avNum(settings, "log_autovacuum_min_duration"),
+    max_workers: avNum(settings, "autovacuum_max_workers"),
+    page_cost_hit: avNum(settings, "vacuum_cost_page_hit") ?? F001_PAGE_COST_HIT_DEFAULT,
+    page_cost_miss: avNum(settings, "vacuum_cost_page_miss") ?? F001_PAGE_COST_MISS_DEFAULT,
+    page_cost_dirty: avNum(settings, "vacuum_cost_page_dirty") ?? F001_PAGE_COST_DIRTY_DEFAULT,
+  };
+}
+
+/**
+ * Compute the effective vacuum throughput budget from the cost-based model
+ * (see https://www.enterprisedb.com/blog/autovacuum-tuning-basics):
+ *
+ *   tokens_per_sec   = 1000 / cost_delay_ms * cost_limit
+ *   read_hit_mbps    = tokens_per_sec / vacuum_cost_page_hit   * 8KB
+ *   read_miss_mbps   = tokens_per_sec / vacuum_cost_page_miss  * 8KB
+ *   dirty_write_mbps = tokens_per_sec / vacuum_cost_page_dirty * 8KB
+ *
+ * This budget is SHARED across all workers. cost_delay = 0 means throttling is
+ * fully disabled (unbounded budget) — reported as such, never recommended.
+ */
+export function computeThroughputBudget(eff: EffectiveAutovacuumSettings): ThroughputBudget {
+  const delay = eff.cost_delay_ms.effective;
+  const limit = eff.cost_limit.effective;
+  const throttlingDisabled = delay === 0;
+
+  let tokens: number | null = null;
+  let readHit: number | null = null;
+  let readMiss: number | null = null;
+  let dirty: number | null = null;
+
+  if (delay !== null && limit !== null && delay > 0) {
+    tokens = (1000 / delay) * limit;
+    const toMbps = (cost: number) => (cost > 0 ? (tokens! / cost) * PG_BLOCK_BYTES / 1_000_000 : null);
+    readHit = toMbps(eff.page_cost_hit);
+    readMiss = toMbps(eff.page_cost_miss);
+    dirty = toMbps(eff.page_cost_dirty);
+  }
+
+  const round1 = (n: number | null) => (n === null ? null : Math.round(n * 10) / 10);
+
+  return {
+    effective_cost_delay_ms: delay,
+    effective_cost_limit: limit,
+    page_cost_hit: eff.page_cost_hit,
+    page_cost_miss: eff.page_cost_miss,
+    page_cost_dirty: eff.page_cost_dirty,
+    tokens_per_sec: tokens === null ? null : Math.round(tokens),
+    read_hit_mbps: round1(readHit),
+    read_miss_mbps: round1(readMiss),
+    dirty_write_mbps: round1(dirty),
+    throttling_disabled: throttlingDisabled,
+  };
+}
+
+/**
+ * Fetch the largest tables and per-table autovacuum reloptions overrides for
+ * the F001 scale-factor cross-reference and reloptions overview. Catalog-only
+ * two-stage prefilter (see the pg_autovacuum_relopts metric): rank by relpages,
+ * exact size for the finalists, report <= F001_LARGEST_TABLES_CAP per category.
+ */
+export async function getAutovacuumRelopts(
+  client: Client,
+  pgMajorVersion: number = 16,
+): Promise<{ largestTables: LargestTable[]; overview: ReloptionsOverview }> {
+  const sql = getMetricSql(METRIC_NAMES.F001, pgMajorVersion);
+  const result = await client.query(sql);
+
+  // The heap's own scale_factor override (anchored to start/comma so a
+  // toast.autovacuum_vacuum_scale_factor entry is NOT mistaken for the heap's).
+  const parseScaleFactorOverride = (reloptions: string): number | null => {
+    const m = reloptions.match(/(?:^|,)autovacuum_vacuum_scale_factor=([0-9.]+)/);
+    return m ? parseFloat(m[1]) : null;
+  };
+  // cost_delay=0 on the heap itself (anchored so a toast.* entry is NOT matched).
+  const hasHeapCostDelayZero = (reloptions: string): boolean =>
+    /(?:^|,)\s*autovacuum_vacuum_cost_delay=0(?:\.0*)?(?:,|$)/.test(reloptions);
+  // cost_delay=0 on the table's toast relation (SQL re-emits it 'toast.'-prefixed).
+  const hasToastCostDelayZero = (reloptions: string): boolean =>
+    /(?:^|,)\s*toast\.autovacuum_vacuum_cost_delay=0(?:\.0*)?(?:,|$)/.test(reloptions);
+  const hasAutovacuumDisabled = (reloptions: string): boolean =>
+    /(?:^|,)\s*autovacuum_enabled=(?:false|fals|fal|fa|f|no|n|off|of|0)(?:,|$)/i.test(reloptions);
+
+  const byOid = new Map<string, LargestTable>();
+  const largestTables: LargestTable[] = [];
+  const distinctRelations = new Set<string>();
+  const autovacuumDisabledTables = new Set<string>();
+  const costDelayZeroTables = new Set<string>();
+  const costDelayZeroToastOnlyTables = new Set<string>();
+  let relationsTotal = 0;
+  let tablesWithOverrides = 0;
+
+  for (const row of result.rows) {
+    const t = transformMetricRow(row);
+    const schema = String(t.schemaname || "");
+    const relname = String(t.relname || "");
+    const rel = `"${schema}"."${relname}"`;
+    const reloptions = String(t.reloptions || "");
+    const category = String(t.category || "");
+    const sizeBytes = parseInt(String(t.total_relation_size_b || 0), 10);
+
+    relationsTotal = Math.max(relationsTotal, parseInt(String(t.relations_total || 0), 10));
+    tablesWithOverrides = Math.max(tablesWithOverrides, parseInt(String(t.tables_with_av_overrides || 0), 10));
+    // Count DISTINCT relations (a table can appear in both the 'largest' and
+    // 'override' categories) so the coverage counter never exceeds the total.
+    distinctRelations.add(rel);
+
+    const table: LargestTable = {
+      schema_name: schema,
+      table_name: relname,
+      relkind: String(t.relkind || ""),
+      relpages: parseInt(String(t.relpages || 0), 10),
+      total_relation_size_bytes: sizeBytes,
+      total_relation_size_pretty: formatBytes(sizeBytes),
+      has_av_override: parseInt(String(t.has_av_override || 0), 10) === 1,
+      reloptions,
+      scale_factor_override: parseScaleFactorOverride(reloptions),
+    };
+
+    if (hasAutovacuumDisabled(reloptions)) autovacuumDisabledTables.add(rel);
+    const heapZero = hasHeapCostDelayZero(reloptions);
+    const toastZero = hasToastCostDelayZero(reloptions);
+    if (heapZero || toastZero) costDelayZeroTables.add(rel);
+    // Track toast-only overrides distinctly (a heap-level zero on any row for
+    // this relation wins, so the flag is retracted if the heap sets it too).
+    if (heapZero) costDelayZeroToastOnlyTables.delete(rel);
+    else if (toastZero) costDelayZeroToastOnlyTables.add(rel);
+
+    // The 'largest' category feeds the scale-factor cross-reference; dedupe the
+    // 'override' rows that also appear as largest.
+    if (category === "largest" && !byOid.has(rel)) {
+      byOid.set(rel, table);
+      largestTables.push(table);
+    }
+  }
+
+  largestTables.sort((a, b) => b.total_relation_size_bytes - a.total_relation_size_bytes);
+
+  return {
+    largestTables: largestTables.slice(0, F001_LARGEST_TABLES_CAP),
+    overview: {
+      relations_total: relationsTotal,
+      candidates_considered: distinctRelations.size,
+      tables_with_av_overrides: tablesWithOverrides,
+      autovacuum_disabled_tables: [...autovacuumDisabledTables],
+      cost_delay_zero_tables: [...costDelayZeroTables],
+      cost_delay_zero_toast_only_tables: [...costDelayZeroToastOnlyTables],
+    },
+  };
+}
+
+// --- the rule set (data) ---------------------------------------------------
+
+const fmtInt = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * Tier-1 (context-free) F001 rules plus the throughput and scale-factor rules.
+ *
+ * Every rule's recommendation obeys the never-recommend list (test-enforced):
+ * never recommend cost_delay=0, never recommend more workers without more cost
+ * budget, never recommend disabling autovacuum. Tier-2 (hardware-aware) numbers
+ * degrade to conditional text because WI 269 environment context is not wired in.
+ */
+export const F001_RULES: AutovacuumRule[] = [
+  {
+    id: "autovacuum_off",
+    severity: "CRITICAL",
+    predicate: (c) => c.effective.autovacuum === false,
+    message: () => ({
+      conclusion:
+        "autovacuum is turned OFF cluster-wide. Dead tuples, bloat and transaction-ID age will accumulate unchecked, risking bloat and eventual wraparound shutdown.",
+      recommendation:
+        "Re-enable autovacuum now: set autovacuum = on (and reload). If it was disabled for a one-off bulk load, that window is over — turn it back on.",
+    }),
+  },
+  {
+    id: "track_counts_off",
+    severity: "CRITICAL",
+    predicate: (c) => c.effective.track_counts === false,
+    message: () => ({
+      conclusion:
+        "track_counts is OFF, so the statistics collector is blind and autovacuum cannot see dead-tuple counts — autovacuum effectively does not run.",
+      recommendation: "Re-enable statistics collection: set track_counts = on (requires reload).",
+    }),
+  },
+  {
+    id: "cost_delay_zero",
+    severity: "CRITICAL",
+    predicate: (c) => c.throughput.throttling_disabled,
+    message: (c) => ({
+      conclusion:
+        `Effective autovacuum cost delay is 0ms (${c.effective.cost_delay_ms.inheritance_chain}), so autovacuum I/O throttling is fully disabled. ` +
+        "Unthrottled hint-bit writes force full-page images after checkpoints → WAL bursts → replication lag and IPC:SyncRep commit stalls.",
+      recommendation:
+        `Restore a small cost delay (the PG12+ default is ${F001_COST_DELAY_DEFAULT_MS}ms): set autovacuum_vacuum_cost_delay = ${F001_COST_DELAY_DEFAULT_MS}ms. ` +
+        "Even one millisecond of cost delay keeps autovacuum from overwhelming the system (https://ardentperf.com/2026/04/12/zero-autovacuum_cost_delay-write-storms-and-you/).",
+    }),
+  },
+  {
+    id: "cost_delay_pg11_legacy",
+    severity: "WARNING",
+    // Only when NOT inheriting: an explicit 20ms autovacuum_vacuum_cost_delay is the pre-PG12 default.
+    predicate: (c) =>
+      c.effective.cost_delay_ms.inherited_from === null &&
+      c.effective.cost_delay_ms.effective === F001_COST_DELAY_PG11_MS,
+    message: () => ({
+      conclusion:
+        `autovacuum_vacuum_cost_delay is ${F001_COST_DELAY_PG11_MS}ms — the pre-PG12 default that caps vacuum at roughly 8 MB/s of reads. ` +
+        "This is a common leftover after a major-version upgrade.",
+      recommendation: `Lower it to the modern default: set autovacuum_vacuum_cost_delay = ${F001_COST_DELAY_DEFAULT_MS}ms.`,
+    }),
+  },
+  {
+    id: "cost_limit_low",
+    severity: "WARNING",
+    predicate: (c) =>
+      c.effective.cost_limit.effective !== null &&
+      c.effective.cost_limit.effective > 0 &&
+      c.effective.cost_limit.effective <= F001_COST_LIMIT_LOW_MAX,
+    message: (c) => ({
+      conclusion:
+        `Effective autovacuum cost limit is ${c.effective.cost_limit.effective} (${c.effective.cost_limit.inheritance_chain}) — at or below the default of ${F001_COST_LIMIT_DEFAULT}, ` +
+        "which is likely too low for modern SSD/NVMe storage.",
+      recommendation:
+        "Raise the vacuum cost budget as a starting point: set autovacuum_vacuum_cost_limit = 1000 (range 1000–2000) " +
+        "(https://www.enterprisedb.com/blog/autovacuum-tuning-basics). Size it to your disk's real write bandwidth once hardware facts are available.",
+    }),
+  },
+  {
+    id: "work_mem_inherits",
+    severity: "WARNING",
+    predicate: (c) => c.effective.work_mem_kb.inherited_from !== null,
+    message: (c) => {
+      const pg17Note =
+        c.pgMajorVersion >= 17
+          ? " On PG17 the 1 GB per-worker cap was removed, so each worker can now consume the full maintenance_work_mem × autovacuum_max_workers — set autovacuum_work_mem explicitly to bound total memory."
+          : " After a PG17 upgrade note that the 1 GB per-worker cap is removed, so workers can suddenly consume the full maintenance_work_mem each.";
+      return {
+        conclusion:
+          `autovacuum_work_mem = -1, so each autovacuum worker inherits maintenance_work_mem (${c.effective.work_mem_kb.inheritance_chain}).${pg17Note}`,
+        recommendation:
+          "Set autovacuum_work_mem explicitly (e.g. a bounded fraction of maintenance_work_mem) so autovacuum memory is decoupled from one-off maintenance operations and total worker memory stays predictable.",
+      };
+    },
+  },
+  {
+    id: "scale_factor_high_global",
+    severity: "WARNING",
+    // Per WI #274: flag the global default "on a database with large tables".
+    // The gate (mirroring the analyze twin) keeps it from firing on a stock
+    // instance that has no large tables to accumulate dead-tuple debt.
+    predicate: (c) =>
+      c.effective.scale_factor !== null &&
+      c.effective.scale_factor >= F001_SCALE_FACTOR_DEFAULT &&
+      c.largestTables.some((t) => t.total_relation_size_bytes >= F001_LARGE_TABLE_BYTES),
+    message: (c) => {
+      const big = c.largestTables.filter(
+        (t) => t.total_relation_size_bytes >= F001_LARGE_TABLE_BYTES && t.scale_factor_override === null,
+      );
+      const pct = Math.round((c.effective.scale_factor ?? 0) * 100);
+      const defaultNote = c.effective.scale_factor === F001_SCALE_FACTOR_DEFAULT ? ", the default" : "";
+      let detail = "";
+      if (big.length > 0) {
+        const top = big[0];
+        const debt = Math.round(top.total_relation_size_bytes * (c.effective.scale_factor ?? 0));
+        detail =
+          ` The largest table without a per-table override, ${top.schema_name}.${top.table_name} (${top.total_relation_size_pretty}), ` +
+          `would accumulate roughly ${formatBytes(debt)} of dead-tuple debt before autovacuum triggers.`;
+      }
+      return {
+        conclusion:
+          `Global autovacuum_vacuum_scale_factor is ${c.effective.scale_factor} (${pct}%)${defaultNote}. ` +
+          `On large tables that means ${pct}% of the table must die before autovacuum triggers.${detail}`,
+        recommendation:
+          "For OLTP workloads lower the global autovacuum_vacuum_scale_factor to 0.01–0.05 and/or add per-table overrides on the largest tables " +
+          "(alter table … set (autovacuum_vacuum_scale_factor = 0.01)). Review autovacuum_analyze_scale_factor the same way.",
+      };
+    },
+  },
+  {
+    id: "analyze_scale_factor_high_global",
+    severity: "NOTICE",
+    predicate: (c) =>
+      c.effective.analyze_scale_factor !== null &&
+      c.effective.analyze_scale_factor >= F001_ANALYZE_SCALE_FACTOR_DEFAULT &&
+      c.largestTables.some((t) => t.total_relation_size_bytes >= F001_LARGE_TABLE_BYTES),
+    message: (c) => {
+      const defaultNote =
+        c.effective.analyze_scale_factor === F001_ANALYZE_SCALE_FACTOR_DEFAULT ? " (the default)" : "";
+      return {
+        conclusion:
+          `Global autovacuum_analyze_scale_factor is ${c.effective.analyze_scale_factor}${defaultNote}, so on large tables statistics are refreshed only after a large fraction of rows change — stale stats degrade planning.`,
+        recommendation:
+          "Lower autovacuum_analyze_scale_factor (e.g. 0.02–0.05) globally and/or per-table on the largest tables so the planner sees fresher statistics.",
+      };
+    },
+  },
+  {
+    id: "log_autovacuum_disabled",
+    severity: "WARNING",
+    predicate: (c) => c.effective.log_min_duration_ms !== null && c.effective.log_min_duration_ms < 0,
+    message: (c) => {
+      const pg15Note =
+        c.pgMajorVersion >= 15
+          ? " (PG15+ ships a 10-minute default, so this was explicitly turned off.)"
+          : "";
+      return {
+        conclusion:
+          `log_autovacuum_min_duration = -1 (disabled)${pg15Note}. Without autovacuum logging there is no record of what autovacuum did — a precondition for any autovacuum root-cause analysis is missing.`,
+        recommendation:
+          "Enable autovacuum logging: set log_autovacuum_min_duration = '10s' (or 0 to log every run) so slow/looping autovacuum is visible in the logs.",
+      };
+    },
+  },
+  {
+    id: "naptime_high",
+    severity: "NOTICE",
+    predicate: (c) => c.effective.naptime_s !== null && c.effective.naptime_s > F001_NAPTIME_HIGH_S,
+    message: (c) => ({
+      conclusion:
+        `autovacuum_naptime is ${c.effective.naptime_s}s (> ${F001_NAPTIME_HIGH_S}s). The autovacuum launcher checks each database only that often, slowing autovacuum's reaction loop; this is rarely justified.`,
+      recommendation: `Lower autovacuum_naptime back toward the ${F001_NAPTIME_HIGH_S}s default unless there is a specific reason it was raised.`,
+    }),
+  },
+  {
+    id: "max_workers_default",
+    severity: "NOTICE",
+    predicate: (c) => c.effective.max_workers === F001_MAX_WORKERS_DEFAULT,
+    message: () => ({
+      conclusion:
+        `autovacuum_max_workers is at the default of ${F001_MAX_WORKERS_DEFAULT}. On large hosts with many tables this is often too few, but the right number depends on the vCPU count.`,
+      recommendation:
+        "On servers with many cores consider raising autovacuum_max_workers (a rule of thumb is up to ~30% of vCPUs). " +
+        "Because the cost budget is SHARED across all workers, ALWAYS raise autovacuum_vacuum_cost_limit proportionally when you add workers — otherwise the workers simply go slower. " +
+        "Re-run with environment context (vCPU count) for a concrete number.",
+    }),
+  },
+  {
+    id: "insert_vacuum_disabled",
+    severity: "NOTICE",
+    appliesTo: (c) => c.pgMajorVersion >= 13 && c.effective.vacuum_insert_threshold !== null,
+    predicate: (c) =>
+      c.effective.vacuum_insert_threshold !== null && c.effective.vacuum_insert_threshold < 0,
+    message: () => ({
+      conclusion:
+        "autovacuum_vacuum_insert_threshold = -1 disables insert-driven autovacuum (PG13+). Append-only / insert-mostly tables will not be vacuumed for freezing or visibility-map maintenance, hurting index-only scans and inviting a wraparound-vacuum surprise.",
+      recommendation:
+        "Re-enable insert-driven autovacuum: set autovacuum_vacuum_insert_threshold to a positive value (the default is 1000) so insert-heavy tables get frozen and their visibility maps stay current.",
+    }),
+  },
+  {
+    id: "dirty_budget_small_large_db",
+    severity: "NOTICE",
+    predicate: (c) =>
+      !c.throughput.throttling_disabled &&
+      c.throughput.dirty_write_mbps !== null &&
+      c.throughput.dirty_write_mbps <= F001_DIRTY_WRITE_SMALL_MBPS &&
+      c.databaseSizeBytes >= F001_LARGE_DB_BYTES,
+    message: (c) => ({
+      conclusion:
+        `At the configured budget autovacuum can dirty at most ~${c.throughput.dirty_write_mbps} MB/s across ALL workers combined, while the database is ${formatBytes(c.databaseSizeBytes)}. ` +
+        "That write budget is small relative to the data volume, so vacuum may struggle to keep up with write churn.",
+      recommendation:
+        "Increase throughput by raising autovacuum_vacuum_cost_limit (keep the cost delay on). Size the new limit to a sane fraction of the disk's real write bandwidth once hardware facts are available.",
+    }),
+  },
+  {
+    id: "per_table_cost_delay_zero",
+    severity: "WARNING",
+    predicate: (c) => c.reloptions.cost_delay_zero_tables.length > 0,
+    message: (c) => {
+      // Annotate the toast-level overrides so operators know the zero lives on
+      // the table's toast relation, not the heap — the remediation differs.
+      const toastOnly = new Set(c.reloptions.cost_delay_zero_toast_only_tables);
+      const labeled = c.reloptions.cost_delay_zero_tables
+        .map((t) => (toastOnly.has(t) ? `${t} (toast-level)` : t))
+        .join(", ");
+      const hasToast = toastOnly.size > 0;
+      return {
+        conclusion:
+          `Per-table autovacuum_vacuum_cost_delay = 0 is set on: ${labeled}. ` +
+          "On those tables autovacuum runs unthrottled, risking the same write-storm / replication-lag pattern as the global setting.",
+        recommendation:
+          `Remove the per-table override so the table inherits a throttled delay: alter table … reset (autovacuum_vacuum_cost_delay)` +
+          (hasToast ? " (use reset (toast.autovacuum_vacuum_cost_delay) for the toast-level ones)" : "") +
+          "; or set it to a small non-zero value. Never leave cost_delay at 0 (https://ardentperf.com/2026/04/12/zero-autovacuum_cost_delay-write-storms-and-you/).",
+      };
+    },
+  },
+  {
+    id: "reloptions_overview",
+    severity: "INFO",
+    predicate: (c) => c.reloptions.tables_with_av_overrides > 0,
+    message: (c) => {
+      const parts = [
+        `${fmtInt(c.reloptions.tables_with_av_overrides)} relation(s) carry per-table autovacuum_* overrides (out of ${fmtInt(c.reloptions.relations_total)} scanned).`,
+      ];
+      if (c.reloptions.autovacuum_disabled_tables.length > 0) {
+        parts.push(
+          `autovacuum is disabled per-table on: ${c.reloptions.autovacuum_disabled_tables.join(", ")} (see F003 for details).`,
+        );
+      }
+      return {
+        conclusion: parts.join(" "),
+        recommendation:
+          "Per-table overrides are good practice for hot/large tables; review that each override is still intentional and that no non-tiny table has autovacuum disabled.",
+      };
+    },
+  },
+];
+
+/**
+ * Evaluate the F001 rule set against the resolved context. Returns the fired
+ * rules (in the rule-set order) plus the aggregate conclusions/recommendations
+ * and the highest severity fired.
+ *
+ * Exported so the wording (which the console surfaces verbatim in auto-created
+ * issues) and the never-recommend guarantees can be unit-tested without a DB.
+ */
+export function evaluateAutovacuumRules(ctx: AutovacuumRuleContext): {
+  fired: FiredRule[];
+  conclusions: string[];
+  recommendations: string[];
+  severity: F001Severity | null;
+} {
+  const fired: FiredRule[] = [];
+  for (const rule of F001_RULES) {
+    if (rule.appliesTo && !rule.appliesTo(ctx)) continue;
+    if (!rule.predicate(ctx)) continue;
+    const { conclusion, recommendation } = rule.message(ctx);
+    fired.push({ id: rule.id, severity: rule.severity, conclusion, recommendation });
+  }
+
+  let severity: F001Severity | null = null;
+  for (const f of fired) {
+    if (severity === null || F001_SEVERITY_ORDER[f.severity] > F001_SEVERITY_ORDER[severity]) {
+      severity = f.severity;
+    }
+  }
+
+  return {
+    fired,
+    conclusions: fired.map((f) => f.conclusion),
+    recommendations: fired.map((f) => f.recommendation),
+    severity,
+  };
+}
+
+/**
+ * Generate F001 report - Autovacuum: current settings + configuration linting.
+ *
+ * Keeps the raw autovacuum settings dump (backward compatible `data` map) and
+ * adds effective-value resolution, the data-driven rule engine, the effective
+ * throughput budget, and the largest-tables scale-factor cross-reference.
+ * SQL for the largest-tables/reloptions cross-reference is loaded from
+ * config/pgwatch-prometheus/metrics.yml (pg_autovacuum_relopts metric).
  */
 async function generateF001(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("F001", "Autovacuum: current settings", nodeName);
@@ -1717,7 +2458,7 @@ async function generateF001(client: Client, nodeName: string): Promise<Report> {
   const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
   const allSettings = await getSettings(client, pgMajorVersion);
 
-  // Filter autovacuum-related settings
+  // Filter autovacuum-related settings (raw dump; unchanged, backward compatible)
   const autovacuumSettings: Record<string, SettingInfo> = {};
   for (const [name, setting] of Object.entries(allSettings)) {
     if (name.includes("autovacuum") || name.includes("vacuum")) {
@@ -1725,9 +2466,66 @@ async function generateF001(client: Client, nodeName: string): Promise<Report> {
     }
   }
 
+  // Effective-value resolution + throughput math (context-free; always runs).
+  const effective = resolveEffectiveAutovacuumSettings(allSettings);
+  const throughput = computeThroughputBudget(effective);
+
+  // Largest-tables scale-factor cross-reference + reloptions overview.
+  // Optional/supplementary: a failure here must not sink the whole report.
+  let largestTables: LargestTable[] = [];
+  let overview: ReloptionsOverview = {
+    relations_total: 0,
+    candidates_considered: 0,
+    tables_with_av_overrides: 0,
+    autovacuum_disabled_tables: [],
+    cost_delay_zero_tables: [],
+    cost_delay_zero_toast_only_tables: [],
+  };
+  let databaseSizeBytes = 0;
+  try {
+    const relopts = await getAutovacuumRelopts(client, pgMajorVersion);
+    largestTables = relopts.largestTables;
+    overview = relopts.overview;
+    const dbInfo = await getCurrentDatabaseInfo(client, pgMajorVersion);
+    databaseSizeBytes = dbInfo.size_bytes;
+  } catch (err) {
+    console.error(`[F001] Warning: largest-tables cross-reference failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const ctx: AutovacuumRuleContext = {
+    pgMajorVersion,
+    effective,
+    throughput,
+    largestTables,
+    reloptions: overview,
+    databaseSizeBytes,
+    env: null,
+  };
+
+  const { fired, conclusions, recommendations, severity } = evaluateAutovacuumRules(ctx);
+
   report.results[nodeName] = {
     data: autovacuumSettings,
     postgres_version: postgresVersion,
+    effective_values: effective,
+    throughput_budget: throughput,
+    conclusions,
+    recommendations,
+    settings_analysis: {
+      severity,
+      rules_fired: fired,
+      largest_tables: largestTables,
+      reloptions_overview: overview,
+      database_size_bytes: databaseSizeBytes,
+      database_size_pretty: formatBytes(databaseSizeBytes),
+      thresholds: {
+        cost_limit_low_max: F001_COST_LIMIT_LOW_MAX,
+        scale_factor_default: F001_SCALE_FACTOR_DEFAULT,
+        large_table_bytes: F001_LARGE_TABLE_BYTES,
+        dirty_write_small_mbps: F001_DIRTY_WRITE_SMALL_MBPS,
+        large_db_bytes: F001_LARGE_DB_BYTES,
+      },
+    },
   };
 
   return report;
