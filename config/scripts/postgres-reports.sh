@@ -83,9 +83,15 @@ while true; do
 
   if api_key="$(read_api_key)"; then
     if [[ -z "${project_name}" ]]; then
-      # Upload requires a project name; there is no default. Skip this cycle's
-      # upload rather than send an empty --project-name.
+      # Upload requires a project name; there is no default. Still generate
+      # reports locally (like the no-api-key branch) and only skip the upload.
       echo "postgres-reports: ERROR project name is required for upload — set REPORTER_PROJECT_NAME or project_name in .pgwatch-config; skipping upload this cycle" >&2
+      echo "postgres-reports: generating reports (no upload) -> ${output_path}"
+      python -m reporter.postgres_reports \
+        --prometheus-url "${prometheus_url}" \
+        --output "${output_path}" \
+        --no-upload \
+        ${use_current_time_arg}
     else
       echo "postgres-reports: generating reports (upload enabled) -> ${output_path}"
       python -m reporter.postgres_reports \
