@@ -2533,6 +2533,11 @@ async function registerMonitoringInstance(
           console.error(`Debug: Monitoring registration failed: HTTP ${res.status}`);
           console.error(`Debug: Response: ${body}`);
         }
+        // Retry only transient 5xx; a 4xx is deterministic (bad instance_id,
+        // conflict, auth) and would just fail again.
+        if (res.status < 500) {
+          return null;
+        }
         continue;
       }
       if (debug) {

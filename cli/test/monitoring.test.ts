@@ -341,6 +341,17 @@ describe("registerMonitoringInstance", () => {
     expect(fetchCalls.length).toBe(1);
     expect(reg).toBeNull();
   });
+
+  test("when adopting, a deterministic 4xx is NOT retried — returns null after one attempt", async () => {
+    // Retry exists for transient 5xx/connection blips; a 4xx (bad
+    // instance_id, conflict, auth) is deterministic and must fail fast.
+    respond = () => new Response('{"message":"instance not found"}', { status: 404 });
+
+    const reg = await registerMonitoringInstance("key", "p", opts({ instanceId: "i" }));
+
+    expect(fetchCalls.length).toBe(1);
+    expect(reg).toBeNull();
+  });
 });
 
 describe("planMonitoringRegistration — mon local-install registration decision", () => {
