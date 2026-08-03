@@ -112,6 +112,73 @@ describe("Schema validation", () => {
     validateAgainstSchema(report, "F003");
   });
 
+  // WI #271: additive keeping-up fields (trigger math + queue/worker snapshot).
+  test("F003 validates with keeping-up trigger + saturation data", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        {
+          tag_schemaname: "public",
+          tag_relname: "orders",
+          n_live_tup: "10000000",
+          n_dead_tup: "5000000",
+          dead_pct: 33.33,
+          n_mod_since_analyze: "0",
+          n_ins_since_vacuum: "0",
+          last_autovacuum: "0",
+          last_vacuum: "0",
+          last_autoanalyze: "0",
+          autovacuum_count: "0",
+          vacuum_count: "0",
+          autovacuum_disabled: 0,
+          toast_autovacuum_disabled: 0,
+          reltuples: "10000000",
+          relpages: "500000",
+          eff_vacuum_threshold: "50",
+          eff_vacuum_scale_factor: "0.2",
+          vacuum_settings_from_reloptions: 0,
+          eff_analyze_threshold: "50",
+          eff_analyze_scale_factor: "0.1",
+          eff_insert_threshold: "1000",
+          eff_insert_scale_factor: "0.2",
+          insert_settings_from_reloptions: 0,
+          vacuum_trigger_point: "2000050",
+          analyze_trigger_point: "1000050",
+          insert_trigger_point: "2000050",
+          over_trigger_ratio: "2.5",
+          over_vacuum_trigger: 1,
+          over_analyze_trigger: 0,
+          over_insert_trigger: 0,
+          table_size_b: "4294967296",
+          relations_total: "120000",
+          candidates_considered: "8000",
+          queue_length: "3",
+          analyze_queue_length: "0",
+          insert_queue_length: "0",
+          total_dead_tuples_all: "5000000",
+        },
+      ],
+      autovacuumWorkerRows: [{ max_workers: "2", active_workers: "2", anti_wraparound_workers: "1" }],
+      autovacuumBlockedRows: [
+        { tag_worker_pid: "4242", tag_blocker_pid: "9001", tag_blocker_queryid: "12345", wait_seconds: "63.4" },
+      ],
+      vacuumProgressRows: [
+        {
+          tag_schema_name: "public",
+          tag_table_name: "orders",
+          tag_vacuum_mode: "aggressive_autovacuum",
+          tag_phase: "3",
+          heap_blks_total: "1000",
+          heap_blks_scanned: "400",
+          heap_blks_vacuumed: "200",
+          index_vacuum_count: "1",
+          is_anti_wraparound: "1",
+        },
+      ],
+    });
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "node-01");
+    validateAgainstSchema(report, "F003");
+  });
+
   test("F009 validates with healthy snapshot data", async () => {
     const mockClient = createMockClient();
     const report = await checkup.REPORT_GENERATORS.F009(mockClient as any, "node-01");

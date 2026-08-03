@@ -25,6 +25,10 @@ export interface MockClientOptions {
   wraparoundTableRows?: any[];
   multixactSizeRows?: any[];
   vacuumStatsRows?: any[];
+  // WI #271 F003 keeping-up snapshot fixtures
+  autovacuumWorkerRows?: any[];
+  autovacuumBlockedRows?: any[];
+  vacuumProgressRows?: any[];
   bloatCapabilityRows?: any[];
   deadlockStatsRows?: any[];
   pgStatStatementsExtensionRows?: any[];
@@ -102,6 +106,9 @@ export function createMockClient(options: MockClientOptions = {}) {
     wraparoundTableRows = [],
     multixactSizeRows = [{ members_bytes: "0", offsets_bytes: "0", status_code: "0" }],
     vacuumStatsRows = [],
+    autovacuumWorkerRows = [],
+    autovacuumBlockedRows = [],
+    vacuumProgressRows = [],
     bloatCapabilityRows = [{ schema_exists: true, schema_usage: true, view_exists: true, view_select: true }],
     deadlockStatsRows = [{ deadlocks: "0", conflicts: "0", stats_reset: null }],
     pgStatStatementsExtensionRows = [],
@@ -187,6 +194,18 @@ export function createMockClient(options: MockClientOptions = {}) {
       // pg_dead_tuples SQL also contains "pg_stat_user_tables" and "last_vacuum".
       if (sql.includes("autovacuum_disabled") && sql.includes("n_dead_tup")) {
         return { rows: deadTuplesRows };
+      }
+      // F003 (WI #271): autovacuum worker snapshot metric
+      if (sql.includes("anti_wraparound_workers") && sql.includes("autovacuum_max_workers")) {
+        return { rows: autovacuumWorkerRows };
+      }
+      // F003 (WI #271): autovacuum blocked-workers metric
+      if (sql.includes("av_workers_blocked")) {
+        return { rows: autovacuumBlockedRows };
+      }
+      // F003 (WI #271): vacuum progress metric
+      if (sql.includes("pg_stat_progress_vacuum")) {
+        return { rows: vacuumProgressRows };
       }
       // F001: pg_autovacuum_relopts metric (largest tables + reloptions overview)
       if (sql.includes("has_av_override") && sql.includes("total_relation_size_b")) {

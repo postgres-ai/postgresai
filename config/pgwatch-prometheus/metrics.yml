@@ -2703,6 +2703,349 @@ metrics:
       - autovacuum_disabled
       - table_size_b
     statement_timeout_seconds: 15
+  pg_dead_tuples_keepup:
+    description: >
+      Settings-aware autovacuum trigger analysis for the F003 express check
+      ("is autovacuum keeping up?"). Extends pg_dead_tuples: in a SINGLE
+      materialized pass over pg_stat_user_tables joined to pg_class it
+      resolves each table's EFFECTIVE autovacuum settings (global GUC
+      overridden by per-table pg_class.reloptions via pg_options_to_table)
+      and computes the real per-table trigger points:
+        vacuum:  n_dead_tup           > vacuum_threshold  + vacuum_scale_factor  * reltuples
+        analyze: n_mod_since_analyze  > analyze_threshold + analyze_scale_factor * reltuples
+      over_trigger_ratio = n_dead_tup / vacuum_trigger_point (1.0 = exactly at
+      the trigger; >=2 means it should have been vacuumed long ago). Aggregate
+      coverage counters (relations_total, candidates_considered, queue_length =
+      tables past their vacuum trigger) are computed over the full scan and
+      carried on every returned row so bounded output is never mistaken for a
+      full scan. Scale discipline for 100k+ relations: ONE pg_stat_user_tables
+      scan (base CTE is MATERIALIZED); NO per-row pg_total_relation_size loop —
+      candidates are ranked catalog-only by n_dead_tup and over_trigger_ratio
+      (both free) and exact pg_table_size() is called only for the bounded
+      finalist set (top 100 by dead tuples UNION top 50 by over_trigger_ratio;
+      the 100 retains parity with the legacy pg_dead_tuples top-100 so express
+      does not regress). pg_class.relpages is emitted for context only. The
+      aggregate coverage row is always present (agg LEFT JOIN finalists) so the
+      counters survive on healthy databases with no finalists. The
+      AccessExclusiveLock guard mirrors pg_dead_tuples
+      (pg_table_size takes a lock and would block behind a fully locked
+      relation). The 10000-tuple noise gate mirrors
+      F003_AUTOVACUUM_DISABLED_MIN_ROWS. PG13+ variant adds the insert trigger
+      (n_ins_since_vacuum vs autovacuum_vacuum_insert_threshold/scale_factor),
+      absent on PG12. Express-only (booleans emitted as int for numeric
+      consumers); not part of any pgwatch preset.
+    sqls:
+      12: |
+        with settings as (
+          select
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_threshold')     as g_vac_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_scale_factor')   as g_vac_scale,
+            (select setting::float8 from pg_settings where name = 'autovacuum_analyze_threshold')     as g_ana_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_analyze_scale_factor')  as g_ana_scale
+        ),
+        base as materialized ( /* pgwatch_generated */
+          select
+            s.schemaname,
+            s.relname,
+            s.relid,
+            s.n_live_tup,
+            s.n_dead_tup,
+            coalesce(round(100 * s.n_dead_tup::numeric / nullif(s.n_live_tup + s.n_dead_tup, 0), 2), 0)::float as dead_pct,
+            s.n_mod_since_analyze,
+            extract(epoch from greatest(s.last_autovacuum, '1970-01-01Z'))::int8 as last_autovacuum,
+            extract(epoch from greatest(s.last_vacuum, '1970-01-01Z'))::int8 as last_vacuum,
+            extract(epoch from greatest(s.last_autoanalyze, '1970-01-01Z'))::int8 as last_autoanalyze,
+            s.autovacuum_count,
+            s.vacuum_count,
+            greatest(c.reltuples, 0)::float8 as reltuples,
+            c.relpages::int8 as relpages,
+            case when exists (
+              select 1 from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+              where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$'
+            ) then 1 else 0 end as autovacuum_disabled,
+            case when ct.reloptions is not null and exists (
+              -- toast.autovacuum_enabled is stored PREFIX-STRIPPED on the TOAST
+              -- relation's own pg_class row, not on the main relation, so match
+              -- the unprefixed key against the toast rel's reloptions.
+              select 1 from unnest(ct.reloptions) as opt
+              where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$'
+            ) then 1 else 0 end as toast_autovacuum_disabled,
+            coalesce(ro.ro_vac_threshold, st.g_vac_threshold) as eff_vacuum_threshold,
+            coalesce(ro.ro_vac_scale, st.g_vac_scale) as eff_vacuum_scale_factor,
+            (ro.ro_vac_threshold is not null or ro.ro_vac_scale is not null) as vacuum_settings_from_reloptions,
+            coalesce(ro.ro_ana_threshold, st.g_ana_threshold) as eff_analyze_threshold,
+            coalesce(ro.ro_ana_scale, st.g_ana_scale) as eff_analyze_scale_factor
+          from pg_stat_user_tables s
+          join pg_class c on c.oid = s.relid
+          left join pg_class ct on ct.oid = c.reltoastrelid
+          cross join settings st
+          left join lateral (
+            select
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_threshold'))::float8    as ro_vac_threshold,
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_scale_factor'))::float8  as ro_vac_scale,
+              (max(option_value) filter (where option_name = 'autovacuum_analyze_threshold'))::float8    as ro_ana_threshold,
+              (max(option_value) filter (where option_name = 'autovacuum_analyze_scale_factor'))::float8 as ro_ana_scale
+            from pg_options_to_table(c.reloptions)
+          ) ro on true
+          where not exists (
+            select 1 from pg_locks where relation = s.relid and mode = 'AccessExclusiveLock'
+          )
+        ),
+        scored as (
+          select
+            b.*,
+            (b.eff_vacuum_threshold + b.eff_vacuum_scale_factor * b.reltuples) as vacuum_trigger_point,
+            (b.eff_analyze_threshold + b.eff_analyze_scale_factor * b.reltuples) as analyze_trigger_point
+          from base b
+        ),
+        flagged as (
+          select
+            sc.*,
+            case when sc.vacuum_trigger_point > 0 then sc.n_dead_tup::float8 / sc.vacuum_trigger_point else 0 end as over_trigger_ratio,
+            (sc.n_dead_tup > sc.vacuum_trigger_point) as over_vacuum_trigger,
+            (sc.n_mod_since_analyze > sc.analyze_trigger_point) as over_analyze_trigger,
+            ((sc.n_live_tup + sc.n_dead_tup) >= 10000) as passes_noise_gate
+          from scored sc
+        ),
+        agg as (
+          select
+            count(*)::int8 as relations_total,
+            count(*) filter (where passes_noise_gate)::int8 as candidates_considered,
+            count(*) filter (where over_vacuum_trigger and passes_noise_gate)::int8 as queue_length,
+            count(*) filter (where over_analyze_trigger and passes_noise_gate)::int8 as analyze_queue_length,
+            coalesce(sum(n_dead_tup), 0)::int8 as total_dead_tuples_all
+          from flagged
+        ),
+        ranked as (
+          select
+            f.*,
+            row_number() over (order by f.n_dead_tup desc, f.schemaname, f.relname) as rn_dead,
+            row_number() over (order by f.over_trigger_ratio desc, f.n_dead_tup desc, f.schemaname, f.relname) as rn_ratio
+          from flagged f
+          where f.n_dead_tup > 0
+             or f.autovacuum_disabled = 1
+             or (f.over_vacuum_trigger and f.passes_noise_gate)
+             or (f.over_analyze_trigger and f.passes_noise_gate)
+        ),
+        finalists as (
+          select * from ranked where rn_dead <= 100 or rn_ratio <= 50
+        )
+        select /* pgwatch_generated */
+          current_database() as tag_datname,
+          f.schemaname as tag_schemaname,
+          f.relname as tag_relname,
+          f.n_live_tup,
+          f.n_dead_tup,
+          f.dead_pct,
+          f.n_mod_since_analyze,
+          f.last_autovacuum,
+          f.last_vacuum,
+          f.last_autoanalyze,
+          f.autovacuum_count,
+          f.vacuum_count,
+          f.autovacuum_disabled,
+          f.toast_autovacuum_disabled,
+          f.reltuples,
+          f.relpages,
+          f.eff_vacuum_threshold,
+          f.eff_vacuum_scale_factor,
+          f.vacuum_settings_from_reloptions::int as vacuum_settings_from_reloptions,
+          f.eff_analyze_threshold,
+          f.eff_analyze_scale_factor,
+          f.vacuum_trigger_point,
+          f.analyze_trigger_point,
+          f.over_trigger_ratio,
+          f.over_vacuum_trigger::int as over_vacuum_trigger,
+          f.over_analyze_trigger::int as over_analyze_trigger,
+          pg_table_size(f.relid) as table_size_b,
+          a.relations_total,
+          a.candidates_considered,
+          a.queue_length,
+          a.analyze_queue_length,
+          a.total_dead_tuples_all
+        from agg a
+        left join finalists f on true
+        order by f.rn_dead nulls last
+      13: |
+        with settings as (
+          select
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_threshold')          as g_vac_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_scale_factor')        as g_vac_scale,
+            (select setting::float8 from pg_settings where name = 'autovacuum_analyze_threshold')          as g_ana_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_analyze_scale_factor')       as g_ana_scale,
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_insert_threshold')    as g_ins_threshold,
+            (select setting::float8 from pg_settings where name = 'autovacuum_vacuum_insert_scale_factor') as g_ins_scale
+        ),
+        base as materialized ( /* pgwatch_generated */
+          select
+            s.schemaname,
+            s.relname,
+            s.relid,
+            s.n_live_tup,
+            s.n_dead_tup,
+            coalesce(round(100 * s.n_dead_tup::numeric / nullif(s.n_live_tup + s.n_dead_tup, 0), 2), 0)::float as dead_pct,
+            s.n_mod_since_analyze,
+            s.n_ins_since_vacuum,
+            extract(epoch from greatest(s.last_autovacuum, '1970-01-01Z'))::int8 as last_autovacuum,
+            extract(epoch from greatest(s.last_vacuum, '1970-01-01Z'))::int8 as last_vacuum,
+            extract(epoch from greatest(s.last_autoanalyze, '1970-01-01Z'))::int8 as last_autoanalyze,
+            s.autovacuum_count,
+            s.vacuum_count,
+            greatest(c.reltuples, 0)::float8 as reltuples,
+            c.relpages::int8 as relpages,
+            case when exists (
+              select 1 from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+              where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$'
+            ) then 1 else 0 end as autovacuum_disabled,
+            case when ct.reloptions is not null and exists (
+              -- toast.autovacuum_enabled is stored PREFIX-STRIPPED on the TOAST
+              -- relation's own pg_class row, not on the main relation, so match
+              -- the unprefixed key against the toast rel's reloptions.
+              select 1 from unnest(ct.reloptions) as opt
+              where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$'
+            ) then 1 else 0 end as toast_autovacuum_disabled,
+            coalesce(ro.ro_vac_threshold, st.g_vac_threshold) as eff_vacuum_threshold,
+            coalesce(ro.ro_vac_scale, st.g_vac_scale) as eff_vacuum_scale_factor,
+            (ro.ro_vac_threshold is not null or ro.ro_vac_scale is not null) as vacuum_settings_from_reloptions,
+            coalesce(ro.ro_ana_threshold, st.g_ana_threshold) as eff_analyze_threshold,
+            coalesce(ro.ro_ana_scale, st.g_ana_scale) as eff_analyze_scale_factor,
+            coalesce(ro.ro_ins_threshold, st.g_ins_threshold) as eff_insert_threshold,
+            coalesce(ro.ro_ins_scale, st.g_ins_scale) as eff_insert_scale_factor,
+            (ro.ro_ins_threshold is not null or ro.ro_ins_scale is not null) as insert_settings_from_reloptions
+          from pg_stat_user_tables s
+          join pg_class c on c.oid = s.relid
+          left join pg_class ct on ct.oid = c.reltoastrelid
+          cross join settings st
+          left join lateral (
+            select
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_threshold'))::float8           as ro_vac_threshold,
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_scale_factor'))::float8         as ro_vac_scale,
+              (max(option_value) filter (where option_name = 'autovacuum_analyze_threshold'))::float8           as ro_ana_threshold,
+              (max(option_value) filter (where option_name = 'autovacuum_analyze_scale_factor'))::float8        as ro_ana_scale,
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_insert_threshold'))::float8     as ro_ins_threshold,
+              (max(option_value) filter (where option_name = 'autovacuum_vacuum_insert_scale_factor'))::float8  as ro_ins_scale
+            from pg_options_to_table(c.reloptions)
+          ) ro on true
+          where not exists (
+            select 1 from pg_locks where relation = s.relid and mode = 'AccessExclusiveLock'
+          )
+        ),
+        scored as (
+          select
+            b.*,
+            (b.eff_vacuum_threshold + b.eff_vacuum_scale_factor * b.reltuples) as vacuum_trigger_point,
+            (b.eff_analyze_threshold + b.eff_analyze_scale_factor * b.reltuples) as analyze_trigger_point,
+            (b.eff_insert_threshold + b.eff_insert_scale_factor * b.reltuples) as insert_trigger_point
+          from base b
+        ),
+        flagged as (
+          select
+            sc.*,
+            case when sc.vacuum_trigger_point > 0 then sc.n_dead_tup::float8 / sc.vacuum_trigger_point else 0 end as over_trigger_ratio,
+            (sc.n_dead_tup > sc.vacuum_trigger_point) as over_vacuum_trigger,
+            (sc.n_mod_since_analyze > sc.analyze_trigger_point) as over_analyze_trigger,
+            (sc.n_ins_since_vacuum > sc.insert_trigger_point) as over_insert_trigger,
+            ((sc.n_live_tup + sc.n_dead_tup) >= 10000) as passes_noise_gate
+          from scored sc
+        ),
+        agg as (
+          select
+            count(*)::int8 as relations_total,
+            count(*) filter (where passes_noise_gate)::int8 as candidates_considered,
+            count(*) filter (where over_vacuum_trigger and passes_noise_gate)::int8 as queue_length,
+            count(*) filter (where over_analyze_trigger and passes_noise_gate)::int8 as analyze_queue_length,
+            count(*) filter (where over_insert_trigger and passes_noise_gate)::int8 as insert_queue_length,
+            coalesce(sum(n_dead_tup), 0)::int8 as total_dead_tuples_all
+          from flagged
+        ),
+        ranked as (
+          select
+            f.*,
+            row_number() over (order by f.n_dead_tup desc, f.schemaname, f.relname) as rn_dead,
+            row_number() over (order by f.over_trigger_ratio desc, f.n_dead_tup desc, f.schemaname, f.relname) as rn_ratio
+          from flagged f
+          where f.n_dead_tup > 0
+             or f.autovacuum_disabled = 1
+             or (f.over_vacuum_trigger and f.passes_noise_gate)
+             or (f.over_analyze_trigger and f.passes_noise_gate)
+             or (f.over_insert_trigger and f.passes_noise_gate)
+        ),
+        finalists as (
+          select * from ranked where rn_dead <= 100 or rn_ratio <= 50
+        )
+        select /* pgwatch_generated */
+          current_database() as tag_datname,
+          f.schemaname as tag_schemaname,
+          f.relname as tag_relname,
+          f.n_live_tup,
+          f.n_dead_tup,
+          f.dead_pct,
+          f.n_mod_since_analyze,
+          f.n_ins_since_vacuum,
+          f.last_autovacuum,
+          f.last_vacuum,
+          f.last_autoanalyze,
+          f.autovacuum_count,
+          f.vacuum_count,
+          f.autovacuum_disabled,
+          f.toast_autovacuum_disabled,
+          f.reltuples,
+          f.relpages,
+          f.eff_vacuum_threshold,
+          f.eff_vacuum_scale_factor,
+          f.vacuum_settings_from_reloptions::int as vacuum_settings_from_reloptions,
+          f.eff_analyze_threshold,
+          f.eff_analyze_scale_factor,
+          f.eff_insert_threshold,
+          f.eff_insert_scale_factor,
+          f.insert_settings_from_reloptions::int as insert_settings_from_reloptions,
+          f.vacuum_trigger_point,
+          f.analyze_trigger_point,
+          f.insert_trigger_point,
+          f.over_trigger_ratio,
+          f.over_vacuum_trigger::int as over_vacuum_trigger,
+          f.over_analyze_trigger::int as over_analyze_trigger,
+          f.over_insert_trigger::int as over_insert_trigger,
+          pg_table_size(f.relid) as table_size_b,
+          a.relations_total,
+          a.candidates_considered,
+          a.queue_length,
+          a.analyze_queue_length,
+          a.insert_queue_length,
+          a.total_dead_tuples_all
+        from agg a
+        left join finalists f on true
+        order by f.rn_dead nulls last
+    gauges:
+      - '*'
+    statement_timeout_seconds: 15
+  pg_autovacuum_worker_snapshot:
+    description: >
+      Single-snapshot autovacuum worker capacity vs demand for the F003
+      express check. Deliberately kept separate from the pgwatch
+      pg_autovacuum_workers metric: this one adds anti_wraparound_workers
+      (needed for the F003 escalation) and is consumed only by the express
+      generator, so extending the shared pgwatch metric — and perturbing its
+      monitoring consumers — is avoided. active_workers and
+      anti_wraparound_workers are INSTANCE-LEVEL / cluster-wide
+      (pg_stat_activity shows all backends regardless of the scrape database);
+      max_workers is the configured pool size. Used to judge whether autovacuum
+      can currently keep up: queue > 0 while every worker is busy = saturated.
+      anti_wraparound_workers counts workers running "to prevent wraparound"
+      (visible only to roles that can read other backends' query text, e.g.
+      pg_monitor; degrades to 0 otherwise).
+    sqls:
+      11: |-
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          (select setting::int8 from pg_settings where name = 'autovacuum_max_workers') as max_workers,
+          (select count(*)::int8 from pg_stat_activity where backend_type = 'autovacuum worker') as active_workers,
+          (select count(*)::int8 from pg_stat_activity
+             where backend_type = 'autovacuum worker' and query ~* 'to prevent wraparound') as anti_wraparound_workers
+    gauges:
+      - '*'
+    is_instance_level: true
+    statement_timeout_seconds: 15
   pg_autovacuum_relopts:
     description: >
       Largest tables and per-table autovacuum reloptions overrides for the

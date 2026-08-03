@@ -296,6 +296,15 @@ function summarizeF003(nodeData: any): CheckSummary {
   const data = nodeData?.data || {};
   let flaggedCount = 0;
   let disabledCount = 0;
+  // WI #271 keeping-up signals aggregated across databases.
+  let queueLength = 0;
+  let saturated = false;
+  let chronic = false;
+  let antiWraparound = false;
+  // Worker/blocked snapshots are cluster-wide (pg_stat_activity), but F003 runs
+  // per database, so summing per-DB counts would double-count. Dedupe blocked
+  // workers by pid across databases.
+  const blockedPids = new Set<number>();
 
   // Aggregate across all databases. Only non-tiny disabled-autovacuum tables
   // (autovacuum_disabled_flagged_count) trigger a warning - tiny tables with
@@ -304,11 +313,19 @@ function summarizeF003(nodeData: any): CheckSummary {
     const dbEntry = dbData as any;
     flaggedCount += dbEntry.flagged_count || 0;
     disabledCount += dbEntry.autovacuum_disabled_flagged_count || 0;
+    const keepup = dbEntry.autovacuum_keepup;
+    if (keepup) {
+      // queue_length is per-database (tables in that DB), so summing is correct.
+      queueLength += keepup.queue_length || 0;
+      saturated = saturated || Boolean(keepup.saturated);
+      chronic = chronic || Boolean(keepup.chronic_under_provisioning);
+      antiWraparound = antiWraparound || Boolean(keepup.anti_wraparound_present);
+      for (const b of keepup.blocked_workers || []) {
+        if (typeof b?.worker_pid === 'number') blockedPids.add(b.worker_pid);
+      }
+    }
   }
-
-  if (flaggedCount === 0 && disabledCount === 0) {
-    return { status: 'ok', message: 'No significant dead tuple accumulation' };
-  }
+  const blockedCount = blockedPids.size;
 
   const parts: string[] = [];
   if (flaggedCount > 0) {
@@ -316,6 +333,39 @@ function summarizeF003(nodeData: any): CheckSummary {
   }
   if (disabledCount > 0) {
     parts.push(`${disabledCount} table${disabledCount > 1 ? 's' : ''} with autovacuum disabled`);
+  }
+  if (saturated) {
+    parts.push('autovacuum saturated (cannot keep up)');
+  } else if (chronic) {
+    parts.push('autovacuum queue far exceeds worker pool');
+  }
+  if (blockedCount > 0) {
+    parts.push(`${blockedCount} autovacuum worker${blockedCount > 1 ? 's' : ''} blocked`);
+  }
+
+  // Whether a queue that is actively being worked (free workers) escalates:
+  // it does NOT. This mirrors judgeKeepingUp, which reports such a queue as
+  // status 'ok' ("queue is being worked"). On any busy DB a snapshot almost
+  // always catches some >=10k-row table momentarily past its trigger, so
+  // flipping to warning on that alone would keep F003 warning near-permanently.
+  const warn = flaggedCount > 0 || disabledCount > 0 || saturated || chronic || blockedCount > 0 || antiWraparound;
+
+  // Anti-wraparound autovacuum in progress is a wraparound-risk signal: escalate
+  // the message (report-level autovacuum_keepup.status carries 'critical'; the
+  // lightweight CheckSummary enum tops out at 'warning').
+  if (antiWraparound) {
+    parts.unshift('anti-wraparound autovacuum running (see F002)');
+  }
+
+  if (!warn) {
+    const suffix = queueLength > 0
+      ? `; ${queueLength} table${queueLength > 1 ? 's' : ''} past vacuum trigger but being worked`
+      : '';
+    return { status: 'ok', message: `No significant dead tuple accumulation; autovacuum keeping up${suffix}` };
+  }
+
+  if (queueLength > 0 && !saturated && !chronic) {
+    parts.push(`${queueLength} table${queueLength > 1 ? 's' : ''} past vacuum trigger (being worked)`);
   }
 
   return { status: 'warning', message: parts.join(', ') };
