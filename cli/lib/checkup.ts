@@ -307,6 +307,114 @@ export interface DeadTuplesTable {
   exceeds_dead_tuple_thresholds: boolean;
   /** True when autovacuum is disabled per-table on a non-tiny table (>= F003_AUTOVACUUM_DISABLED_MIN_ROWS tuples) */
   autovacuum_disabled_flagged: boolean;
+
+  // --- WI #271: settings-aware trigger analysis. Optional/additive: present
+  //     only when the table comes from getAutovacuumKeepup(); the legacy
+  //     getDeadTuples() path leaves them undefined. ---
+  /** pg_class.reltuples estimate used as the base for the trigger formulas (clamped to >= 0). */
+  reltuples?: number;
+  /** pg_class.relpages — catalog-only size proxy used for two-stage ranking. */
+  relpages?: number;
+  /** Modified tuples since the last analyze (drives the analyze trigger). */
+  n_mod_since_analyze?: number;
+  /** Inserted tuples since the last vacuum (drives the PG13+ insert trigger); null on PG12. */
+  n_ins_since_vacuum?: number | null;
+  last_autoanalyze?: string | null;
+  last_autoanalyze_epoch?: number;
+  /** Effective autovacuum_vacuum_threshold (reloption override or global GUC). */
+  eff_vacuum_threshold?: number;
+  /** Effective autovacuum_vacuum_scale_factor (reloption override or global GUC). */
+  eff_vacuum_scale_factor?: number;
+  /** True when the effective vacuum threshold/scale factor came from pg_class.reloptions. */
+  vacuum_settings_from_reloptions?: boolean;
+  eff_analyze_threshold?: number;
+  eff_analyze_scale_factor?: number;
+  /** Effective insert threshold/scale factor (PG13+); null on PG12. */
+  eff_insert_threshold?: number | null;
+  eff_insert_scale_factor?: number | null;
+  insert_settings_from_reloptions?: boolean;
+  /** vacuum_threshold + vacuum_scale_factor * reltuples. */
+  vacuum_trigger_point?: number;
+  analyze_trigger_point?: number;
+  insert_trigger_point?: number | null;
+  /** n_dead_tup / vacuum_trigger_point (1.0 = exactly at trigger; >=2 = long overdue). */
+  over_trigger_ratio?: number;
+  over_vacuum_trigger?: boolean;
+  over_analyze_trigger?: boolean;
+  over_insert_trigger?: boolean;
+  /** True when autovacuum is disabled on the table's TOAST relation via toast.autovacuum_enabled. */
+  toast_autovacuum_disabled?: boolean;
+  /** Over vacuum trigger, last autovacuum older than F003_STARVATION_HOURS (or never), and no worker processing it now. */
+  starving?: boolean;
+}
+
+/** Aggregate coverage counters from the pg_dead_tuples_keepup single-scan (WI #271). */
+export interface AutovacuumKeepupAggregates {
+  /** Total user relations seen in the single pg_stat_user_tables pass. */
+  relations_total: number;
+  /** Relations passing the noise gate (>= F003_KEEPUP_MIN_ROWS tuples). */
+  candidates_considered: number;
+  /** Tables past their vacuum trigger and above the noise gate = the autovacuum queue. */
+  queue_length: number;
+  /** Tables past their analyze trigger and above the noise gate. */
+  analyze_queue_length: number;
+  /** Tables past their insert trigger (PG13+); null on PG12. */
+  insert_queue_length: number | null;
+  /** Sum of n_dead_tup across all relations in the scan. */
+  total_dead_tuples_all: number;
+}
+
+/** Single-snapshot autovacuum worker capacity vs demand (WI #271). */
+export interface AutovacuumWorkerSnapshot {
+  active_workers: number;
+  /** autovacuum_max_workers; null if the setting could not be read. */
+  max_workers: number | null;
+  free_slots: number | null;
+  /** Workers running "to prevent wraparound" (visible only to privileged roles; 0 otherwise). */
+  anti_wraparound_workers: number;
+}
+
+/** An autovacuum worker blocked on a lock, with blocker info (WI #271). */
+export interface BlockedAutovacuumWorker {
+  worker_pid: number;
+  blocker_pid: number | null;
+  blocker_queryid: string | null;
+  wait_seconds: number;
+}
+
+/** A running vacuum from pg_stat_progress_vacuum (WI #271). */
+export interface VacuumProgressEntry {
+  schema_name: string;
+  table_name: string;
+  /** autovacuum | aggressive_autovacuum | manual_vacuum | unknown */
+  vacuum_mode: string;
+  /** Human-readable phase name. */
+  phase: string;
+  /** Numeric phase code (1..7); null if unknown. */
+  phase_code: number | null;
+  heap_blks_total: number;
+  heap_blks_scanned: number;
+  heap_blks_vacuumed: number;
+  index_vacuum_count: number;
+  is_anti_wraparound: boolean;
+}
+
+/** Assembled keeping-up snapshot + judgment for the F003 report (WI #271). */
+export interface AutovacuumKeepup extends AutovacuumKeepupAggregates {
+  active_workers: number;
+  max_workers: number | null;
+  free_slots: number | null;
+  anti_wraparound_workers: number;
+  anti_wraparound_present: boolean;
+  /** queue > 0 while every worker is busy: autovacuum cannot currently keep up. */
+  saturated: boolean;
+  /** queue > F003_QUEUE_SATURATION_MULTIPLIER * max_workers: chronic under-provisioning. */
+  chronic_under_provisioning: boolean;
+  starving_tables_count: number;
+  blocked_workers: BlockedAutovacuumWorker[];
+  vacuum_progress: VacuumProgressEntry[];
+  judgment: string;
+  status: "ok" | "warning" | "critical";
 }
 
 export type WraparoundSeverity = "info" | "warning" | "high" | "critical";
@@ -441,6 +549,45 @@ function maxSeverity(...severities: WraparoundSeverity[]): WraparoundSeverity {
 export const F003_DEAD_TUPLES_MIN = 100_000;
 export const F003_DEAD_PCT_MIN = 20;
 export const F003_AUTOVACUUM_DISABLED_MIN_ROWS = 10_000;
+
+/**
+ * F003 "is autovacuum keeping up?" analysis constants (WI #271).
+ *
+ * Part 1 evaluates each table against its *actual* trigger point under the
+ * *effective* settings (global GUC overridden by pg_class.reloptions); Part 2
+ * takes a single-snapshot queue/worker-saturation reading. Express has no time
+ * series, so the judgment is deliberately snapshot-only — the back-to-back
+ * vacuum timeline judgment belongs to full monitoring / Dashboard 7.
+ */
+/**
+ * Top-K offenders returned by over_trigger_ratio. Mirrors the SQL `rn_ratio <= 50`
+ * cap in the pg_dead_tuples_keepup metric. The metric's actual returned set is
+ * `rn_dead <= 100 OR rn_ratio <= F003_TOP_K` (≤ ~150 rows): top-50 by
+ * over_trigger_ratio UNION top-100 by n_dead_tup — the 100 retains parity with
+ * the legacy pg_dead_tuples top-100 so express does not regress. Either way the
+ * report stays bounded on 100k-relation databases (top-K + aggregates only).
+ */
+export const F003_TOP_K = 50;
+/**
+ * The noise gate (minimum total tuples) applied to the queue/trigger analysis.
+ * Reuses the F003_AUTOVACUUM_DISABLED_MIN_ROWS semantics: a 1000-row table
+ * sitting 51 dead tuples over its trigger is not a finding. The same value is
+ * hard-coded in the pg_dead_tuples_keepup SQL (`>= 10000`); keep them in sync.
+ */
+export const F003_KEEPUP_MIN_ROWS = F003_AUTOVACUUM_DISABLED_MIN_ROWS;
+/**
+ * queue_length > F003_QUEUE_SATURATION_MULTIPLIER * autovacuum_max_workers is a
+ * chronic under-provisioning signal regardless of the instantaneous worker
+ * state: a single snapshot cannot see back-to-back vacuums, but a queue many
+ * times deeper than the worker pool cannot be a transient blip.
+ */
+export const F003_QUEUE_SATURATION_MULTIPLIER = 5;
+/**
+ * A table over its vacuum trigger whose last (auto)vacuum is older than this
+ * many hours (or which was never autovacuumed) and which no worker is
+ * currently processing is flagged as starving.
+ */
+export const F003_STARVATION_HOURS = 24;
 
 /**
  * I/O statistics by backend type (I001) - matches I001.schema.json backendIOStats
@@ -1112,36 +1259,451 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
 export async function getDeadTuples(client: Client, pgMajorVersion: number = 16): Promise<DeadTuplesTable[]> {
   const sql = getMetricSql(METRIC_NAMES.F003, pgMajorVersion);
   const result = await client.query(sql);
-  return result.rows.map((row) => {
-    const t = transformMetricRow(row);
-    const nLive = parseInt(String(t.n_live_tup || 0), 10);
-    const nDead = parseInt(String(t.n_dead_tup || 0), 10);
-    const deadPct = parseFloat(String(t.dead_pct)) || 0;
-    const lastAutovacuumEpoch = parseInt(String(t.last_autovacuum || 0), 10);
-    const lastVacuumEpoch = parseInt(String(t.last_vacuum || 0), 10);
-    // The metric emits 0/1; be liberal in what we accept (driver may return strings)
-    const autovacuumDisabled = parseInt(String(t.autovacuum_disabled || 0), 10) === 1 || toBool(t.autovacuum_disabled);
-    const tableSizeBytes = parseInt(String(t.table_size_b || 0), 10);
+  return result.rows.map((row) => mapDeadTupleBaseRow(transformMetricRow(row)));
+}
 
+/**
+ * Map one transformed metric row to the base DeadTuplesTable fields shared by
+ * the legacy pg_dead_tuples metric and the WI #271 pg_dead_tuples_keepup
+ * metric. Exported for unit testing of the mapping in isolation.
+ */
+export function mapDeadTupleBaseRow(t: Record<string, unknown>): DeadTuplesTable {
+  const nLive = parseInt(String(t.n_live_tup || 0), 10);
+  const nDead = parseInt(String(t.n_dead_tup || 0), 10);
+  const deadPct = parseFloat(String(t.dead_pct)) || 0;
+  const lastAutovacuumEpoch = parseInt(String(t.last_autovacuum || 0), 10);
+  const lastVacuumEpoch = parseInt(String(t.last_vacuum || 0), 10);
+  // The metric emits 0/1; be liberal in what we accept (driver may return strings)
+  const autovacuumDisabled = parseInt(String(t.autovacuum_disabled || 0), 10) === 1 || toBool(t.autovacuum_disabled);
+  const tableSizeBytes = parseInt(String(t.table_size_b || 0), 10);
+
+  return {
+    schema_name: String(t.schemaname || ""),
+    table_name: String(t.relname || ""),
+    n_live_tup: nLive,
+    n_dead_tup: nDead,
+    dead_pct: deadPct,
+    last_autovacuum: lastAutovacuumEpoch > 0 ? new Date(lastAutovacuumEpoch * 1000).toISOString() : null,
+    last_autovacuum_epoch: lastAutovacuumEpoch,
+    last_vacuum: lastVacuumEpoch > 0 ? new Date(lastVacuumEpoch * 1000).toISOString() : null,
+    last_vacuum_epoch: lastVacuumEpoch,
+    autovacuum_count: parseInt(String(t.autovacuum_count || 0), 10),
+    vacuum_count: parseInt(String(t.vacuum_count || 0), 10),
+    autovacuum_disabled: autovacuumDisabled,
+    table_size_bytes: tableSizeBytes,
+    table_size_pretty: formatBytes(tableSizeBytes),
+    exceeds_dead_tuple_thresholds: nDead >= F003_DEAD_TUPLES_MIN && deadPct >= F003_DEAD_PCT_MIN,
+    autovacuum_disabled_flagged: autovacuumDisabled && nLive + nDead >= F003_AUTOVACUUM_DISABLED_MIN_ROWS,
+  };
+}
+
+/** Parse a nullable numeric column that may arrive as string | number | null | undefined. */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = parseFloat(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Attach the WI #271 settings-aware trigger fields to a base DeadTuplesTable.
+ * Exported for unit testing of the trigger math parsing/gating.
+ */
+export function mapDeadTupleTriggerFields(t: Record<string, unknown>): Partial<DeadTuplesTable> {
+  const lastAutoanalyzeEpoch = parseInt(String(t.last_autoanalyze || 0), 10);
+  const insertThreshold = numOrNull(t.eff_insert_threshold);
+  const insertScale = numOrNull(t.eff_insert_scale_factor);
+  const insertTrigger = numOrNull(t.insert_trigger_point);
+  const nInsSinceVacuum = numOrNull(t.n_ins_since_vacuum);
+  // over_insert_trigger only meaningful on PG13+ (insert columns present).
+  const hasInsert = insertTrigger !== null || nInsSinceVacuum !== null;
+
+  return {
+    reltuples: Math.round(parseFloat(String(t.reltuples || 0)) || 0),
+    relpages: parseInt(String(t.relpages || 0), 10) || 0,
+    n_mod_since_analyze: parseInt(String(t.n_mod_since_analyze || 0), 10) || 0,
+    n_ins_since_vacuum: nInsSinceVacuum,
+    last_autoanalyze: lastAutoanalyzeEpoch > 0 ? new Date(lastAutoanalyzeEpoch * 1000).toISOString() : null,
+    last_autoanalyze_epoch: lastAutoanalyzeEpoch,
+    eff_vacuum_threshold: parseFloat(String(t.eff_vacuum_threshold || 0)) || 0,
+    eff_vacuum_scale_factor: parseFloat(String(t.eff_vacuum_scale_factor || 0)) || 0,
+    vacuum_settings_from_reloptions: toBool(t.vacuum_settings_from_reloptions),
+    eff_analyze_threshold: parseFloat(String(t.eff_analyze_threshold || 0)) || 0,
+    eff_analyze_scale_factor: parseFloat(String(t.eff_analyze_scale_factor || 0)) || 0,
+    eff_insert_threshold: insertThreshold,
+    eff_insert_scale_factor: insertScale,
+    insert_settings_from_reloptions: toBool(t.insert_settings_from_reloptions),
+    vacuum_trigger_point: parseFloat(String(t.vacuum_trigger_point || 0)) || 0,
+    analyze_trigger_point: parseFloat(String(t.analyze_trigger_point || 0)) || 0,
+    insert_trigger_point: insertTrigger,
+    over_trigger_ratio: parseFloat(String(t.over_trigger_ratio || 0)) || 0,
+    over_vacuum_trigger: toBool(t.over_vacuum_trigger),
+    over_analyze_trigger: toBool(t.over_analyze_trigger),
+    over_insert_trigger: hasInsert ? toBool(t.over_insert_trigger) : false,
+    toast_autovacuum_disabled: toBool(t.toast_autovacuum_disabled),
+  };
+}
+
+/** Parse the aggregate coverage counters carried on every keepup row (WI #271). */
+export function parseKeepupAggregates(rows: Record<string, unknown>[]): AutovacuumKeepupAggregates {
+  // All rows carry the same aggregate columns (cross join agg); read the first.
+  // When there are zero rows the queue is empty and everything defaults to 0.
+  const r = rows[0] || {};
+  const insertQueue = numOrNull(r.insert_queue_length);
+  return {
+    relations_total: parseInt(String(r.relations_total || 0), 10) || 0,
+    candidates_considered: parseInt(String(r.candidates_considered || 0), 10) || 0,
+    queue_length: parseInt(String(r.queue_length || 0), 10) || 0,
+    analyze_queue_length: parseInt(String(r.analyze_queue_length || 0), 10) || 0,
+    insert_queue_length: insertQueue === null ? null : Math.round(insertQueue),
+    total_dead_tuples_all: parseInt(String(r.total_dead_tuples_all || 0), 10) || 0,
+  };
+}
+
+/**
+ * Settings-aware autovacuum trigger analysis (WI #271, Part 1).
+ *
+ * Single materialized pass over pg_stat_user_tables joined to pg_class:
+ * resolves each table's effective autovacuum settings (global GUC overridden by
+ * pg_class.reloptions incl. toast.* variants) and computes the real per-table
+ * vacuum/analyze/(PG13+)insert trigger points and over_trigger_ratio. Returns
+ * the bounded top-K offenders plus the full-scan aggregate coverage counters.
+ * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples_keepup).
+ */
+export async function getAutovacuumKeepup(
+  client: Client,
+  pgMajorVersion: number = 16
+): Promise<{ tables: DeadTuplesTable[]; aggregates: AutovacuumKeepupAggregates }> {
+  const sql = getMetricSql(METRIC_NAMES.F003_KEEPUP, pgMajorVersion);
+  const result = await client.query(sql);
+  const rows = result.rows.map(transformMetricRow);
+  // The metric always emits an aggregate-coverage row (agg LEFT JOIN finalists),
+  // which carries the counters but no relation (relname empty) when there are no
+  // finalists. Skip that synthetic row when building the per-table list; the
+  // aggregates are still read from it via parseKeepupAggregates.
+  const tables = rows
+    .filter((t) => String(t.relname || "") !== "")
+    .map((t) => ({ ...mapDeadTupleBaseRow(t), ...mapDeadTupleTriggerFields(t) }));
+  return { tables, aggregates: parseKeepupAggregates(rows) };
+}
+
+/**
+ * Single-snapshot autovacuum worker capacity vs demand (WI #271, Part 2).
+ * SQL loaded from metrics.yml (pg_autovacuum_worker_snapshot). Degrades to a
+ * safe empty snapshot on any error (the worker view is best-effort telemetry).
+ */
+export async function getAutovacuumWorkerSnapshot(
+  client: Client,
+  pgMajorVersion: number = 16
+): Promise<AutovacuumWorkerSnapshot> {
+  try {
+    const sql = getMetricSql(METRIC_NAMES.F003_WORKER_SNAPSHOT, pgMajorVersion);
+    const result = await client.query(sql);
+    const r = transformMetricRow(result.rows[0] || {});
+    const maxWorkers = numOrNull(r.max_workers);
+    const activeWorkers = parseInt(String(r.active_workers || 0), 10) || 0;
     return {
-      schema_name: String(t.schemaname || ""),
-      table_name: String(t.relname || ""),
-      n_live_tup: nLive,
-      n_dead_tup: nDead,
-      dead_pct: deadPct,
-      last_autovacuum: lastAutovacuumEpoch > 0 ? new Date(lastAutovacuumEpoch * 1000).toISOString() : null,
-      last_autovacuum_epoch: lastAutovacuumEpoch,
-      last_vacuum: lastVacuumEpoch > 0 ? new Date(lastVacuumEpoch * 1000).toISOString() : null,
-      last_vacuum_epoch: lastVacuumEpoch,
-      autovacuum_count: parseInt(String(t.autovacuum_count || 0), 10),
-      vacuum_count: parseInt(String(t.vacuum_count || 0), 10),
-      autovacuum_disabled: autovacuumDisabled,
-      table_size_bytes: tableSizeBytes,
-      table_size_pretty: formatBytes(tableSizeBytes),
-      exceeds_dead_tuple_thresholds: nDead >= F003_DEAD_TUPLES_MIN && deadPct >= F003_DEAD_PCT_MIN,
-      autovacuum_disabled_flagged: autovacuumDisabled && nLive + nDead >= F003_AUTOVACUUM_DISABLED_MIN_ROWS,
+      active_workers: activeWorkers,
+      max_workers: maxWorkers === null ? null : Math.round(maxWorkers),
+      free_slots: maxWorkers === null ? null : Math.max(0, Math.round(maxWorkers) - activeWorkers),
+      anti_wraparound_workers: parseInt(String(r.anti_wraparound_workers || 0), 10) || 0,
     };
-  });
+  } catch {
+    return { active_workers: 0, max_workers: null, free_slots: null, anti_wraparound_workers: 0 };
+  }
+}
+
+/**
+ * Autovacuum workers currently blocked on locks, with blocker info
+ * (WI #271, Part 2). SQL loaded from metrics.yml (pg_autovacuum_blocked).
+ */
+export async function getAutovacuumBlocked(
+  client: Client,
+  pgMajorVersion: number = 16
+): Promise<BlockedAutovacuumWorker[]> {
+  try {
+    const sql = getMetricSql(METRIC_NAMES.F003_BLOCKED, pgMajorVersion);
+    const result = await client.query(sql);
+    return result.rows.map((row) => {
+      const r = transformMetricRow(row);
+      const blockerPid = parseInt(String(r.blocker_pid || 0), 10) || 0;
+      const queryid = r.blocker_queryid !== undefined && r.blocker_queryid !== null ? String(r.blocker_queryid) : "";
+      return {
+        worker_pid: parseInt(String(r.worker_pid || 0), 10) || 0,
+        blocker_pid: blockerPid > 0 ? blockerPid : null,
+        blocker_queryid: queryid !== "" && queryid !== "0" ? queryid : null,
+        wait_seconds: Math.round((parseFloat(String(r.wait_seconds || 0)) || 0) * 100) / 100,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+const VACUUM_PHASE_NAMES: Record<number, string> = {
+  1: "initializing",
+  2: "scanning heap",
+  3: "vacuuming indexes",
+  4: "vacuuming heap",
+  5: "cleaning up indexes",
+  6: "truncating heap",
+  7: "performing final cleanup",
+};
+
+/**
+ * Running vacuums from pg_stat_progress_vacuum (WI #271, Part 2).
+ * SQL loaded from metrics.yml (pg_vacuum_progress).
+ */
+export async function getVacuumProgress(
+  client: Client,
+  pgMajorVersion: number = 16
+): Promise<VacuumProgressEntry[]> {
+  try {
+    const sql = getMetricSql(METRIC_NAMES.F003_PROGRESS, pgMajorVersion);
+    const result = await client.query(sql);
+    return result.rows.map((row) => {
+      const r = transformMetricRow(row);
+      const phaseCode = numOrNull(r.phase);
+      return {
+        schema_name: String(r.schema_name || ""),
+        table_name: String(r.table_name || ""),
+        vacuum_mode: String(r.vacuum_mode || "unknown"),
+        phase: phaseCode !== null ? (VACUUM_PHASE_NAMES[phaseCode] || "unknown") : "unknown",
+        phase_code: phaseCode === null ? null : Math.round(phaseCode),
+        heap_blks_total: Math.round(parseFloat(String(r.heap_blks_total || 0)) || 0),
+        heap_blks_scanned: Math.round(parseFloat(String(r.heap_blks_scanned || 0)) || 0),
+        heap_blks_vacuumed: Math.round(parseFloat(String(r.heap_blks_vacuumed || 0)) || 0),
+        index_vacuum_count: Math.round(parseFloat(String(r.index_vacuum_count || 0)) || 0),
+        is_anti_wraparound:
+          toBool(r.is_anti_wraparound) || String(r.vacuum_mode || "") === "aggressive_autovacuum",
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Single-snapshot "is autovacuum keeping up?" judgment (WI #271, Part 2).
+ *
+ * Deliberately snapshot-only (express has no time series). Flags:
+ * - saturated: queue > 0 while every worker is busy — cannot currently keep up.
+ * - chronic under-provisioning: queue many times deeper than the worker pool.
+ * - anti-wraparound present: escalate (see F002 cross-reference).
+ */
+export function judgeKeepingUp(
+  aggregates: AutovacuumKeepupAggregates,
+  workers: AutovacuumWorkerSnapshot,
+  blocked: BlockedAutovacuumWorker[],
+  progress: VacuumProgressEntry[],
+  starvingTablesCount: number
+): AutovacuumKeepup {
+  const antiWraparoundPresent =
+    workers.anti_wraparound_workers > 0 || progress.some((p) => p.is_anti_wraparound);
+  const saturated =
+    aggregates.queue_length > 0 &&
+    workers.max_workers !== null &&
+    workers.active_workers >= workers.max_workers;
+  const chronic =
+    workers.max_workers !== null &&
+    aggregates.queue_length > F003_QUEUE_SATURATION_MULTIPLIER * workers.max_workers;
+
+  let status: "ok" | "warning" | "critical" = "ok";
+  if (antiWraparoundPresent) {
+    status = "critical";
+  } else if (saturated || chronic || blocked.length > 0) {
+    status = "warning";
+  }
+
+  const judgmentParts: string[] = [];
+  // Worker counts are cluster-wide (pg_stat_activity), while the queue is scoped
+  // to this database — make that explicit so the saturation reading isn't
+  // misread as per-database worker capacity.
+  const workerText =
+    workers.max_workers !== null
+      ? `${workers.active_workers}/${workers.max_workers} workers busy cluster-wide`
+      : `${workers.active_workers} workers busy cluster-wide`;
+  if (saturated) {
+    judgmentParts.push(
+      `Autovacuum cannot currently keep up: ${aggregates.queue_length} table(s) in this database past their vacuum trigger and ${workerText}.`
+    );
+  } else if (chronic) {
+    judgmentParts.push(
+      `Autovacuum queue (${aggregates.queue_length}) is more than ${F003_QUEUE_SATURATION_MULTIPLIER}x the worker pool (${workerText}): chronic under-provisioning.`
+    );
+  } else if (aggregates.queue_length > 0) {
+    judgmentParts.push(
+      `${aggregates.queue_length} table(s) past their vacuum trigger; ${workerText} (queue is being worked).`
+    );
+  } else {
+    judgmentParts.push(`Autovacuum is keeping up: no tables past their vacuum trigger; ${workerText}.`);
+  }
+  if (antiWraparoundPresent) {
+    judgmentParts.push(
+      `${workers.anti_wraparound_workers || progress.filter((p) => p.is_anti_wraparound).length} anti-wraparound worker(s) running (see F002).`
+    );
+  }
+  if (blocked.length > 0) {
+    judgmentParts.push(`${blocked.length} autovacuum worker(s) blocked on locks.`);
+  }
+  if (starvingTablesCount > 0) {
+    judgmentParts.push(`${starvingTablesCount} table(s) starving (over trigger, not vacuumed recently, not being processed).`);
+  }
+
+  return {
+    ...aggregates,
+    active_workers: workers.active_workers,
+    max_workers: workers.max_workers,
+    free_slots: workers.free_slots,
+    anti_wraparound_workers: workers.anti_wraparound_workers,
+    anti_wraparound_present: antiWraparoundPresent,
+    saturated,
+    chronic_under_provisioning: chronic,
+    starving_tables_count: starvingTablesCount,
+    blocked_workers: blocked,
+    vacuum_progress: progress,
+    judgment: judgmentParts.join(" "),
+    status,
+  };
+}
+
+/**
+ * Quote a schema-qualified identifier for copy-paste DDL, doubling any embedded
+ * double quotes (CWE-116). e.g. ("public", `weird"name`) -> "public"."weird""name".
+ */
+export function quoteIdent(schema: string, table: string): string {
+  const q = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+  return `${q(schema)}.${q(table)}`;
+}
+
+/**
+ * Build keeping-up conclusions and recommendations for F003 (WI #271).
+ *
+ * Exported separately so the wording can be unit-tested without a database.
+ * NEVER-RECOMMEND list (test-enforced): no recommendation ever proposes
+ * autovacuum_vacuum_cost_delay = 0 (write-storm risk) or raising
+ * autovacuum_max_workers without also raising the shared cost budget
+ * (autovacuum_vacuum_cost_limit).
+ */
+export function buildKeepupConclusions(
+  tables: DeadTuplesTable[],
+  keepup: AutovacuumKeepup
+): { conclusions: string[]; recommendations: string[] } {
+  const conclusions: string[] = [];
+  const recommendations: string[] = [];
+  const fmt = (n: number) => n.toLocaleString("en-US");
+  const rel = (t: DeadTuplesTable) => quoteIdent(t.schema_name, t.table_name);
+  const overGate = (t: DeadTuplesTable) => (t.n_live_tup + t.n_dead_tup) >= F003_KEEPUP_MIN_ROWS;
+
+  // Per-table over-trigger findings, most overdue first, bounded to avoid spam.
+  const overTrigger = tables
+    .filter((t) => t.over_vacuum_trigger && overGate(t))
+    .sort((a, b) => (b.over_trigger_ratio || 0) - (a.over_trigger_ratio || 0))
+    .slice(0, 5);
+
+  for (const t of overTrigger) {
+    const ratio = t.over_trigger_ratio || 0;
+    const src = t.vacuum_settings_from_reloptions ? "per-table reloptions" : "global settings";
+    conclusions.push(
+      `Table ${rel(t)} has ${fmt(t.n_dead_tup)} dead tuples, ${ratio.toFixed(1)}x its vacuum trigger ` +
+      `(~${fmt(Math.round(t.vacuum_trigger_point || 0))}; effective autovacuum_vacuum_scale_factor=` +
+      `${t.eff_vacuum_scale_factor}, autovacuum_vacuum_threshold=${t.eff_vacuum_threshold}, from ${src}).`
+    );
+    // Per-table reloption recommendation: big table still on a large scale
+    // factor and not already overridden per-table. Per-table overrides are
+    // preferred over global changes.
+    if (
+      !t.vacuum_settings_from_reloptions &&
+      (t.eff_vacuum_scale_factor || 0) >= 0.1 &&
+      (t.reltuples || 0) >= 1_000_000
+    ) {
+      recommendations.push(
+        `Lower the autovacuum trigger for the large table ${rel(t)} with a per-table override ` +
+        `(preferred over changing the global setting): ` +
+        `alter table ${rel(t)} set (autovacuum_vacuum_scale_factor = 0.02); ` +
+        `for very large tables an absolute autovacuum_vacuum_threshold can be more predictable. ` +
+        `Then run: vacuum (analyze) ${rel(t)}; to clear the current backlog.`
+      );
+    }
+  }
+
+  // Analyze-trigger findings (stale planner statistics): surface top offenders.
+  const overAnalyze = tables
+    .filter((t) => t.over_analyze_trigger && overGate(t))
+    .sort((a, b) => (b.n_mod_since_analyze || 0) - (a.n_mod_since_analyze || 0))
+    .slice(0, 3);
+  for (const t of overAnalyze) {
+    conclusions.push(
+      `Table ${rel(t)} is past its autovacuum analyze trigger ` +
+      `(${fmt(t.n_mod_since_analyze || 0)} modified tuples > ~${fmt(Math.round(t.analyze_trigger_point || 0))}); ` +
+      `its planner statistics are stale.`
+    );
+    recommendations.push(
+      `Run: analyze ${rel(t)}; and, if stale statistics keep recurring on it, lower its ` +
+      `analyze scale factor: alter table ${rel(t)} set (autovacuum_analyze_scale_factor = 0.02);`
+    );
+  }
+
+  // Insert-trigger findings (append-only tables). PG13+ only: over_insert_trigger
+  // is always false on PG12 (the insert-trigger settings do not exist there).
+  const overInsert = tables
+    .filter((t) => t.over_insert_trigger && overGate(t))
+    .sort((a, b) => (b.n_ins_since_vacuum || 0) - (a.n_ins_since_vacuum || 0))
+    .slice(0, 3);
+  for (const t of overInsert) {
+    conclusions.push(
+      `Append-only table ${rel(t)} is past its autovacuum insert trigger ` +
+      `(${fmt(t.n_ins_since_vacuum || 0)} inserts since last vacuum > ~${fmt(Math.round(t.insert_trigger_point || 0))}); ` +
+      `insert-driven vacuums keep the visibility and freeze maps current (index-only scans, cheaper freezing).`
+    );
+    recommendations.push(
+      `Keep insert-triggered autovacuum current on ${rel(t)} ` +
+      `(PG13+: autovacuum_vacuum_insert_scale_factor / autovacuum_vacuum_insert_threshold); ` +
+      `a periodic vacuum (analyze) ${rel(t)}; also refreshes its visibility and freeze maps.`
+    );
+  }
+
+  // Anti-wraparound escalation with F002 cross-reference.
+  if (keepup.anti_wraparound_present) {
+    const n = keepup.anti_wraparound_workers || keepup.vacuum_progress.filter((p) => p.is_anti_wraparound).length;
+    conclusions.push(
+      `${n} anti-wraparound autovacuum worker(s) are running (vacuuming "to prevent wraparound"). ` +
+      `This is transaction-ID-wraparound prevention and must be allowed to complete.`
+    );
+    recommendations.push(
+      `Do not cancel the anti-wraparound autovacuum worker(s); remove anything blocking them ` +
+      `(long-running transactions, conflicting DDL) so they can finish. ` +
+      `Cross-reference check F002 (transaction ID / MultiXact wraparound) for the XID age picture.`
+    );
+  }
+
+  // Saturation / chronic under-provisioning: cost-budget-first recommendation.
+  if (keepup.saturated || keepup.chronic_under_provisioning) {
+    conclusions.push(keepup.judgment);
+    recommendations.push(
+      `Raise autovacuum throughput by increasing the shared cost budget: raise ` +
+      `autovacuum_vacuum_cost_limit, and only together with it raise autovacuum_max_workers ` +
+      `— all workers share one cost budget, so adding workers without also raising ` +
+      `autovacuum_vacuum_cost_limit just makes each vacuum slower. Keep autovacuum's ` +
+      `cost-delay throttle enabled. Also lower per-table autovacuum_vacuum_scale_factor on the ` +
+      `busiest tables so they are vacuumed more frequently in smaller batches.`
+    );
+  }
+
+  // Blocked workers: surface blocker PIDs/queries.
+  for (const b of keepup.blocked_workers) {
+    const blocker = b.blocker_pid ? `pid ${b.blocker_pid}` : "an unknown backend";
+    const q = b.blocker_queryid ? ` (query id ${b.blocker_queryid})` : "";
+    conclusions.push(
+      `Autovacuum worker pid ${b.worker_pid} has been blocked on a lock held by ${blocker}${q} ` +
+      `for ${b.wait_seconds}s.`
+    );
+    recommendations.push(
+      `Investigate the lock holder ${blocker} blocking autovacuum worker pid ${b.worker_pid} ` +
+      `(look it up in pg_stat_activity); autovacuum cannot make progress on that table until it is released.`
+    );
+  }
+
+  return { conclusions, recommendations };
 }
 
 export async function getWraparoundData(client: Client, pgMajorVersion: number = 16): Promise<{
@@ -1297,7 +1859,7 @@ export function buildDeadTuplesConclusions(tables: DeadTuplesTable[]): {
   const fmt = (n: number) => n.toLocaleString("en-US");
 
   for (const t of tables) {
-    const rel = `"${t.schema_name}"."${t.table_name}"`;
+    const rel = quoteIdent(t.schema_name, t.table_name);
     const lastAv = t.last_autovacuum
       ? `last autovacuum: ${t.last_autovacuum}`
       : "autovacuum has never vacuumed it";
@@ -2581,14 +3143,51 @@ async function generateF003(client: Client, nodeName: string): Promise<Report> {
   const postgresVersion = await getPostgresVersion(client);
   const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
 
-  const tables = await getDeadTuples(client, pgMajorVersion);
+  // Part 1: single-scan settings-aware trigger analysis + dead-tuple detection.
+  // This ONE pg_stat_user_tables pass serves both the legacy dead-tuple flags
+  // and the WI #271 per-table trigger math + queue aggregates (they share the
+  // scan; see the pg_dead_tuples_keepup metric).
+  const { tables, aggregates } = await getAutovacuumKeepup(client, pgMajorVersion);
   const { datname: dbName, size_bytes: dbSizeBytes } = await getCurrentDatabaseInfo(client, pgMajorVersion);
+
+  // Part 2: single-snapshot queue / worker-saturation reading. These read
+  // pg_stat_activity and pg_stat_progress_vacuum (bounded, cheap) — not a
+  // second pg_stat_user_tables scan.
+  const workers = await getAutovacuumWorkerSnapshot(client, pgMajorVersion);
+  const blocked = await getAutovacuumBlocked(client, pgMajorVersion);
+  const progress = await getVacuumProgress(client, pgMajorVersion);
+
+  // Per-table starvation flag: over the vacuum trigger, last (auto)vacuum older
+  // than F003_STARVATION_HOURS (or never), and no worker currently processing.
+  // A recent MANUAL vacuum counts as service too, so use the newer of the
+  // autovacuum / manual vacuum timestamps.
+  const processing = new Set(progress.map((p) => `${p.schema_name}.${p.table_name}`));
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const starvationCutoff = F003_STARVATION_HOURS * 3600;
+  for (const t of tables) {
+    const lastVacuumEpoch = Math.max(t.last_autovacuum_epoch, t.last_vacuum_epoch);
+    const stale = lastVacuumEpoch === 0 || nowEpoch - lastVacuumEpoch > starvationCutoff;
+    t.starving =
+      Boolean(t.over_vacuum_trigger) &&
+      (t.n_live_tup + t.n_dead_tup) >= F003_KEEPUP_MIN_ROWS &&
+      stale &&
+      !processing.has(`${t.schema_name}.${t.table_name}`);
+  }
+  const starvingCount = tables.filter((t) => t.starving).length;
+
+  const keepup = judgeKeepingUp(aggregates, workers, blocked, progress, starvingCount);
 
   const flaggedCount = tables.filter((t) => t.exceeds_dead_tuple_thresholds).length;
   const autovacuumDisabledCount = tables.filter((t) => t.autovacuum_disabled).length;
   const autovacuumDisabledFlaggedCount = tables.filter((t) => t.autovacuum_disabled_flagged).length;
   const totalDeadTuples = tables.reduce((sum, t) => sum + t.n_dead_tup, 0);
-  const { conclusions, recommendations } = buildDeadTuplesConclusions(tables);
+
+  // Existing dead-tuple / disabled-autovacuum conclusions, then the WI #271
+  // keeping-up conclusions (trigger, saturation, anti-wraparound, blocked).
+  const base = buildDeadTuplesConclusions(tables);
+  const keep = buildKeepupConclusions(tables, keepup);
+  const conclusions = [...base.conclusions, ...keep.conclusions];
+  const recommendations = [...base.recommendations, ...keep.recommendations];
 
   const dbEntry = {
     dead_tuples_tables: tables,
@@ -2602,6 +3201,13 @@ async function generateF003(client: Client, nodeName: string): Promise<Report> {
       dead_pct_min: F003_DEAD_PCT_MIN,
       autovacuum_disabled_min_rows: F003_AUTOVACUUM_DISABLED_MIN_ROWS,
     },
+    trigger_thresholds: {
+      top_k: F003_TOP_K,
+      keepup_min_rows: F003_KEEPUP_MIN_ROWS,
+      queue_saturation_multiplier: F003_QUEUE_SATURATION_MULTIPLIER,
+      starvation_hours: F003_STARVATION_HOURS,
+    },
+    autovacuum_keepup: keepup,
     conclusions,
     recommendations,
     database_size_bytes: dbSizeBytes,

@@ -1773,6 +1773,374 @@ describe("F003 - Dead tuples", () => {
   });
 });
 
+// Tests for F003 keeping-up analysis (WI #271): settings-aware trigger math +
+// queue/worker-saturation snapshot.
+describe("F003 - keeping up (WI #271)", () => {
+  // A large table long overdue for vacuum on the default 0.2 scale factor,
+  // carrying the aggregate coverage counters the keepup metric emits per row.
+  const overdueRow = {
+    tag_schemaname: "public",
+    tag_relname: "orders",
+    n_live_tup: "10000000",
+    n_dead_tup: "5000000",
+    dead_pct: 33.33,
+    n_mod_since_analyze: "0",
+    n_ins_since_vacuum: "0",
+    last_autovacuum: "0",
+    last_vacuum: "0",
+    last_autoanalyze: "0",
+    autovacuum_count: "0",
+    vacuum_count: "0",
+    autovacuum_disabled: 0,
+    toast_autovacuum_disabled: 0,
+    reltuples: "10000000",
+    relpages: "500000",
+    eff_vacuum_threshold: "50",
+    eff_vacuum_scale_factor: "0.2",
+    vacuum_settings_from_reloptions: 0,
+    eff_analyze_threshold: "50",
+    eff_analyze_scale_factor: "0.1",
+    eff_insert_threshold: "1000",
+    eff_insert_scale_factor: "0.2",
+    insert_settings_from_reloptions: 0,
+    vacuum_trigger_point: "2000050",
+    analyze_trigger_point: "1000050",
+    insert_trigger_point: "2000050",
+    over_trigger_ratio: "2.5",
+    over_vacuum_trigger: 1,
+    over_analyze_trigger: 0,
+    over_insert_trigger: 0,
+    table_size_b: "4294967296",
+    relations_total: "120000",
+    candidates_considered: "8000",
+    queue_length: "3",
+    analyze_queue_length: "0",
+    insert_queue_length: "0",
+    total_dead_tuples_all: "5000000",
+  };
+
+  test("mapDeadTupleTriggerFields parses trigger math and reloption source (PG13)", () => {
+    const f = checkup.mapDeadTupleTriggerFields({
+      over_trigger_ratio: "2.5",
+      over_vacuum_trigger: 1,
+      over_analyze_trigger: 0,
+      over_insert_trigger: 1,
+      vacuum_trigger_point: "2000050",
+      insert_trigger_point: "3000",
+      n_ins_since_vacuum: "9000",
+      eff_vacuum_scale_factor: "0.02",
+      eff_vacuum_threshold: "50",
+      vacuum_settings_from_reloptions: 1,
+      eff_insert_threshold: "1000",
+      eff_insert_scale_factor: "0.2",
+      reltuples: "10000000",
+      relpages: "500000",
+    });
+    expect(f.over_trigger_ratio).toBe(2.5);
+    expect(f.over_vacuum_trigger).toBe(true);
+    expect(f.over_insert_trigger).toBe(true);
+    expect(f.vacuum_settings_from_reloptions).toBe(true);
+    expect(f.eff_vacuum_scale_factor).toBe(0.02);
+    expect(f.insert_trigger_point).toBe(3000);
+    expect(f.n_ins_since_vacuum).toBe(9000);
+    expect(f.reltuples).toBe(10000000);
+  });
+
+  test("mapDeadTupleTriggerFields gates the insert trigger off on PG12 (columns absent)", () => {
+    const f = checkup.mapDeadTupleTriggerFields({
+      over_trigger_ratio: "1.2",
+      over_vacuum_trigger: 1,
+      over_analyze_trigger: 1,
+      vacuum_trigger_point: "1000",
+      eff_vacuum_scale_factor: "0.2",
+      // no n_ins_since_vacuum / insert_trigger_point / over_insert_trigger
+    });
+    expect(f.over_insert_trigger).toBe(false);
+    expect(f.n_ins_since_vacuum).toBeNull();
+    expect(f.eff_insert_threshold).toBeNull();
+    expect(f.insert_trigger_point).toBeNull();
+    expect(f.over_analyze_trigger).toBe(true);
+  });
+
+  test("parseKeepupAggregates reads the carried coverage counters; empty -> zeros", () => {
+    const agg = checkup.parseKeepupAggregates([{ ...overdueRow }]);
+    expect(agg.relations_total).toBe(120000);
+    expect(agg.candidates_considered).toBe(8000);
+    expect(agg.queue_length).toBe(3);
+    expect(agg.insert_queue_length).toBe(0);
+    expect(agg.total_dead_tuples_all).toBe(5000000);
+
+    const empty = checkup.parseKeepupAggregates([]);
+    expect(empty.relations_total).toBe(0);
+    expect(empty.queue_length).toBe(0);
+    // PG12 rows carry no insert_queue_length column -> null
+    const pg12 = checkup.parseKeepupAggregates([{ queue_length: "2" }]);
+    expect(pg12.insert_queue_length).toBeNull();
+  });
+
+  test("getAutovacuumWorkerSnapshot maps workers and free slots", async () => {
+    const mockClient = createMockClient({
+      autovacuumWorkerRows: [{ max_workers: "3", active_workers: "2", anti_wraparound_workers: "1" }],
+    });
+    const w = await checkup.getAutovacuumWorkerSnapshot(mockClient as any, 16);
+    expect(w.max_workers).toBe(3);
+    expect(w.active_workers).toBe(2);
+    expect(w.free_slots).toBe(1);
+    expect(w.anti_wraparound_workers).toBe(1);
+  });
+
+  test("getAutovacuumBlocked and getVacuumProgress map rows", async () => {
+    const mockClient = createMockClient({
+      autovacuumBlockedRows: [
+        { tag_worker_pid: "4242", tag_blocker_pid: "9001", tag_blocker_queryid: "12345", wait_seconds: "63.4" },
+      ],
+      vacuumProgressRows: [
+        {
+          tag_schema_name: "public",
+          tag_table_name: "orders",
+          tag_vacuum_mode: "aggressive_autovacuum",
+          tag_phase: "3",
+          heap_blks_total: "1000",
+          heap_blks_scanned: "400",
+          heap_blks_vacuumed: "200",
+          index_vacuum_count: "1",
+          is_anti_wraparound: "1",
+        },
+      ],
+    });
+    const blocked = await checkup.getAutovacuumBlocked(mockClient as any, 16);
+    expect(blocked.length).toBe(1);
+    expect(blocked[0].worker_pid).toBe(4242);
+    expect(blocked[0].blocker_pid).toBe(9001);
+    expect(blocked[0].blocker_queryid).toBe("12345");
+    expect(blocked[0].wait_seconds).toBe(63.4);
+
+    const progress = await checkup.getVacuumProgress(mockClient as any, 16);
+    expect(progress.length).toBe(1);
+    expect(progress[0].phase).toBe("vacuuming indexes");
+    expect(progress[0].phase_code).toBe(3);
+    expect(progress[0].is_anti_wraparound).toBe(true);
+    expect(progress[0].vacuum_mode).toBe("aggressive_autovacuum");
+  });
+
+  test("judgeKeepingUp: saturation is WARNING; anti-wraparound is CRITICAL", () => {
+    const aggregates = {
+      relations_total: 100, candidates_considered: 20, queue_length: 3,
+      analyze_queue_length: 0, insert_queue_length: 0, total_dead_tuples_all: 999,
+    };
+    const busy = { active_workers: 3, max_workers: 3, free_slots: 0, anti_wraparound_workers: 0 };
+    const sat = checkup.judgeKeepingUp(aggregates, busy, [], [], 0);
+    expect(sat.saturated).toBe(true);
+    expect(sat.status).toBe("warning");
+    expect(sat.judgment).toContain("cannot currently keep up");
+
+    const anti = checkup.judgeKeepingUp(
+      aggregates,
+      { active_workers: 1, max_workers: 3, free_slots: 2, anti_wraparound_workers: 1 },
+      [], [], 0
+    );
+    expect(anti.anti_wraparound_present).toBe(true);
+    expect(anti.status).toBe("critical");
+  });
+
+  test("judgeKeepingUp: chronic under-provisioning and blocked workers -> WARNING; empty -> OK", () => {
+    const chronic = checkup.judgeKeepingUp(
+      { relations_total: 500, candidates_considered: 100, queue_length: 20, analyze_queue_length: 0, insert_queue_length: 0, total_dead_tuples_all: 1 },
+      { active_workers: 1, max_workers: 3, free_slots: 2, anti_wraparound_workers: 0 },
+      [], [], 0
+    );
+    expect(chronic.chronic_under_provisioning).toBe(true); // 20 > 5*3
+    expect(chronic.status).toBe("warning");
+
+    const ok = checkup.judgeKeepingUp(
+      { relations_total: 10, candidates_considered: 2, queue_length: 0, analyze_queue_length: 0, insert_queue_length: 0, total_dead_tuples_all: 0 },
+      { active_workers: 0, max_workers: 3, free_slots: 3, anti_wraparound_workers: 0 },
+      [], [], 0
+    );
+    expect(ok.status).toBe("ok");
+    expect(ok.saturated).toBe(false);
+  });
+
+  test("buildKeepupConclusions never recommends cost_delay=0 or workers without cost budget", () => {
+    const to = metricsLoader.transformMetricRow(overdueRow);
+    const overdue = { ...checkup.mapDeadTupleBaseRow(to), ...checkup.mapDeadTupleTriggerFields(to) };
+    const keepup = checkup.judgeKeepingUp(
+      { relations_total: 120000, candidates_considered: 8000, queue_length: 3, analyze_queue_length: 0, insert_queue_length: 0, total_dead_tuples_all: 5000000 },
+      { active_workers: 3, max_workers: 3, free_slots: 0, anti_wraparound_workers: 1 },
+      [{ worker_pid: 4242, blocker_pid: 9001, blocker_queryid: "12345", wait_seconds: 63.4 }],
+      [{ schema_name: "public", table_name: "orders", vacuum_mode: "aggressive_autovacuum", phase: "vacuuming heap", phase_code: 4, heap_blks_total: 1, heap_blks_scanned: 1, heap_blks_vacuumed: 1, index_vacuum_count: 0, is_anti_wraparound: true }],
+      0
+    );
+    const { conclusions, recommendations } = checkup.buildKeepupConclusions([overdue], keepup);
+    const allRecs = recommendations.join("\n");
+
+    // NEVER-RECOMMEND list (test-enforced):
+    for (const r of recommendations) {
+      expect(r).not.toMatch(/cost_delay\s*=\s*0/i);
+      expect(r).not.toMatch(/autovacuum_enabled\s*=\s*(off|false|0)/i);
+      // Any rec touching worker count must also touch the shared cost budget.
+      if (/autovacuum_max_workers/.test(r)) {
+        expect(r).toMatch(/autovacuum_vacuum_cost_limit/);
+      }
+    }
+    // Cost-budget-first saturation recommendation is present.
+    expect(allRecs).toContain("autovacuum_vacuum_cost_limit");
+    // Per-table override preferred for the big overdue table.
+    expect(allRecs).toContain("autovacuum_vacuum_scale_factor = 0.02");
+    expect(allRecs).toContain('"public"."orders"');
+    // Anti-wraparound escalation cross-references F002.
+    expect(allRecs).toContain("F002");
+    // Blocked worker surfaced with blocker pid.
+    expect(allRecs).toContain("9001");
+    expect(conclusions.some((c) => c.includes("2.5x its vacuum trigger"))).toBe(true);
+  });
+
+  test("generateF003 assembles the keeping-up snapshot and validates against schema", async () => {
+    const mockClient = createMockClient({
+      deadTuplesRows: [overdueRow],
+      autovacuumWorkerRows: [{ max_workers: "2", active_workers: "2", anti_wraparound_workers: "0" }],
+    });
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "test-node");
+    const dbData = report.results["test-node"].data["testdb"] as any;
+
+    expect(dbData.autovacuum_keepup).toBeTruthy();
+    expect(dbData.autovacuum_keepup.queue_length).toBe(3);
+    expect(dbData.autovacuum_keepup.relations_total).toBe(120000);
+    expect(dbData.autovacuum_keepup.candidates_considered).toBe(8000);
+    // queue 3 > 0 and 2/2 workers busy -> saturated.
+    expect(dbData.autovacuum_keepup.saturated).toBe(true);
+    expect(dbData.autovacuum_keepup.status).toBe("warning");
+    expect(dbData.trigger_thresholds).toEqual({
+      top_k: checkup.F003_TOP_K,
+      keepup_min_rows: checkup.F003_KEEPUP_MIN_ROWS,
+      queue_saturation_multiplier: checkup.F003_QUEUE_SATURATION_MULTIPLIER,
+      starvation_hours: checkup.F003_STARVATION_HOURS,
+    });
+    // Per-table trigger fields are attached.
+    const t = dbData.dead_tuples_tables[0];
+    expect(t.over_vacuum_trigger).toBe(true);
+    expect(t.over_trigger_ratio).toBe(2.5);
+    // Never-autovacuumed, over trigger, not being processed -> starving.
+    expect(t.starving).toBe(true);
+  });
+
+  test("mapDeadTupleTriggerFields maps toast_autovacuum_disabled from the toast-rel resolution", () => {
+    // The SQL resolves toast.autovacuum_enabled on the TOAST relation and emits
+    // toast_autovacuum_disabled=1; the mapper must carry it through.
+    const f = checkup.mapDeadTupleTriggerFields({ toast_autovacuum_disabled: 1, over_vacuum_trigger: 0 });
+    expect(f.toast_autovacuum_disabled).toBe(true);
+    const f0 = checkup.mapDeadTupleTriggerFields({ toast_autovacuum_disabled: 0 });
+    expect(f0.toast_autovacuum_disabled).toBe(false);
+  });
+
+  test("getAutovacuumKeepup keeps coverage counters when there are no finalists", async () => {
+    // The metric always emits an aggregate-only row (relname empty) carrying the
+    // counters; it must be excluded from the table list but still power aggregates.
+    const mockClient = createMockClient({
+      deadTuplesRows: [
+        { tag_datname: "testdb", relations_total: "42", candidates_considered: "7", queue_length: "0", analyze_queue_length: "0", insert_queue_length: "0", total_dead_tuples_all: "0" },
+      ],
+    });
+    const { tables, aggregates } = await checkup.getAutovacuumKeepup(mockClient as any, 16);
+    expect(tables.length).toBe(0); // agg-only row skipped
+    expect(aggregates.relations_total).toBe(42);
+    expect(aggregates.candidates_considered).toBe(7);
+  });
+
+  test("judgeKeepingUp degrades safely when max_workers is unknown (null)", () => {
+    const j = checkup.judgeKeepingUp(
+      { relations_total: 10, candidates_considered: 5, queue_length: 8, analyze_queue_length: 0, insert_queue_length: 0, total_dead_tuples_all: 1 },
+      { active_workers: 2, max_workers: null, free_slots: null, anti_wraparound_workers: 0 },
+      [], [], 0
+    );
+    // Cannot judge saturation/chronic without the worker cap.
+    expect(j.saturated).toBe(false);
+    expect(j.chronic_under_provisioning).toBe(false);
+    expect(j.status).toBe("ok");
+  });
+
+  test("buildKeepupConclusions surfaces analyze- and insert-trigger findings", () => {
+    const analyzeTable = { ...checkup.mapDeadTupleBaseRow(metricsLoader.transformMetricRow({ ...overdueRow, tag_relname: "stale_stats", n_dead_tup: "0", over_vacuum_trigger: 0 })), ...checkup.mapDeadTupleTriggerFields(metricsLoader.transformMetricRow({ ...overdueRow, tag_relname: "stale_stats", over_vacuum_trigger: 0, over_analyze_trigger: 1, n_mod_since_analyze: "5000000", analyze_trigger_point: "1000050" })) };
+    const insertTable = { ...checkup.mapDeadTupleBaseRow(metricsLoader.transformMetricRow({ ...overdueRow, tag_relname: "append_only", n_dead_tup: "0", over_vacuum_trigger: 0 })), ...checkup.mapDeadTupleTriggerFields(metricsLoader.transformMetricRow({ ...overdueRow, tag_relname: "append_only", over_vacuum_trigger: 0, over_insert_trigger: 1, n_ins_since_vacuum: "9000000", insert_trigger_point: "2000050" })) };
+    const okKeepup = checkup.judgeKeepingUp(
+      { relations_total: 3, candidates_considered: 2, queue_length: 0, analyze_queue_length: 1, insert_queue_length: 1, total_dead_tuples_all: 0 },
+      { active_workers: 0, max_workers: 3, free_slots: 3, anti_wraparound_workers: 0 }, [], [], 0
+    );
+    const { conclusions, recommendations } = checkup.buildKeepupConclusions([analyzeTable, insertTable], okKeepup);
+    const c = conclusions.join("\n");
+    const r = recommendations.join("\n");
+    expect(c).toMatch(/analyze trigger/i);
+    expect(r).toContain('analyze "public"."stale_stats";');
+    expect(c).toMatch(/insert trigger/i);
+    expect(r).toContain("autovacuum_vacuum_insert_scale_factor");
+    // Insert/analyze recs never touch the never-recommend levers.
+    for (const rec of recommendations) {
+      expect(rec).not.toMatch(/cost_delay\s*=\s*0/i);
+      expect(rec).not.toMatch(/autovacuum_max_workers/);
+    }
+  });
+
+  test("generateF003 runs on PG12 (no insert trigger) and stays schema-shaped", async () => {
+    const pg12Row = { ...overdueRow };
+    // PG12 keepup SQL emits no insert columns.
+    delete (pg12Row as any).n_ins_since_vacuum;
+    delete (pg12Row as any).eff_insert_threshold;
+    delete (pg12Row as any).eff_insert_scale_factor;
+    delete (pg12Row as any).insert_settings_from_reloptions;
+    delete (pg12Row as any).insert_trigger_point;
+    delete (pg12Row as any).over_insert_trigger;
+    delete (pg12Row as any).insert_queue_length;
+    const mockClient = createMockClient({
+      versionRows: [
+        { name: "server_version", setting: "12.19" },
+        { name: "server_version_num", setting: "120019" },
+      ],
+      deadTuplesRows: [pg12Row],
+    });
+    const report = await checkup.REPORT_GENERATORS.F003(mockClient as any, "test-node");
+    const dbData = report.results["test-node"].data["testdb"] as any;
+    expect(dbData.autovacuum_keepup.insert_queue_length).toBeNull();
+    const t = dbData.dead_tuples_tables[0];
+    expect(t.over_insert_trigger).toBe(false);
+    expect(t.n_ins_since_vacuum).toBeNull();
+    expect(t.over_vacuum_trigger).toBe(true);
+  });
+
+  test("quoteIdent doubles embedded double quotes (CWE-116)", () => {
+    expect(checkup.quoteIdent("public", "orders")).toBe('"public"."orders"');
+    expect(checkup.quoteIdent("we\"ird", 'ta"ble')).toBe('"we""ird"."ta""ble"');
+  });
+
+  test("pg_dead_tuples_keepup SQL is bounded and does not do a per-row size loop", () => {
+    for (const ver of [12, 13]) {
+      const sql = metricsLoader.getMetricSql("pg_dead_tuples_keepup", ver);
+      // Single scan: base CTE materialized.
+      expect(sql).toContain("base as materialized");
+      // Two-stage bounding: top-100 by dead tuples UNION top-50 by ratio.
+      expect(sql).toContain("rn_dead <= 100");
+      expect(sql).toContain("rn_ratio <= 50");
+      // Exact size only for finalists (pg_table_size); never the unbounded
+      // pg_total_relation_size over every relation.
+      expect(sql).toContain("pg_table_size(f.relid)");
+      expect(sql).not.toContain("pg_total_relation_size");
+      // Reloptions resolved via pg_options_to_table.
+      expect(sql).toContain("pg_options_to_table");
+      // TOAST autovacuum-disabled resolved on the TOAST relation's own pg_class
+      // row (unprefixed key), not by grepping the main relation for 'toast.*'.
+      expect(sql).toContain("left join pg_class ct on ct.oid = c.reltoastrelid");
+      expect(sql).not.toContain("toast[.]autovacuum_enabled");
+      // Coverage counters survive on healthy DBs (aggregate row always present).
+      expect(sql).toContain("from agg a");
+      expect(sql).toContain("left join finalists f on true");
+      // AccessExclusiveLock guard preserved.
+      expect(sql).toContain("AccessExclusiveLock");
+    }
+    // Insert trigger only on PG13+.
+    expect(metricsLoader.getMetricSql("pg_dead_tuples_keepup", 13)).toContain("n_ins_since_vacuum");
+    expect(metricsLoader.getMetricSql("pg_dead_tuples_keepup", 12)).not.toContain("n_ins_since_vacuum");
+  });
+});
+
 // ===========================================================================
 // F001 (Autovacuum: configuration linter) - WI 274
 // ===========================================================================
@@ -3256,6 +3624,56 @@ describe("checkup-summary", () => {
     );
   });
 
+  // WI #271 summary branches (previously untested).
+  const f003Report = (keepup: any, extra: any = {}) => ({
+    results: { node1: { data: { db1: {
+      dead_tuples_tables: [], total_count: 0, flagged_count: 0,
+      autovacuum_disabled_count: 0, autovacuum_disabled_flagged_count: 0,
+      autovacuum_keepup: keepup, ...extra,
+    } } } },
+  });
+
+  test("generateCheckSummary for F003: queue being worked stays OK (no false warning)", () => {
+    const result = summary.generateCheckSummary("F003", f003Report({
+      queue_length: 4, saturated: false, chronic_under_provisioning: false,
+      anti_wraparound_present: false, blocked_workers: [],
+    }));
+    // Mirrors judgeKeepingUp status 'ok' for a queue with free capacity.
+    expect(result.status).toBe("ok");
+    expect(result.message).toMatch(/being worked/);
+  });
+
+  test("generateCheckSummary for F003: saturation is a warning", () => {
+    const result = summary.generateCheckSummary("F003", f003Report({
+      queue_length: 4, saturated: true, chronic_under_provisioning: false,
+      anti_wraparound_present: false, blocked_workers: [],
+    }));
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("saturated");
+  });
+
+  test("generateCheckSummary for F003: anti-wraparound escalates the message", () => {
+    const result = summary.generateCheckSummary("F003", f003Report({
+      queue_length: 0, saturated: false, chronic_under_provisioning: false,
+      anti_wraparound_present: true, blocked_workers: [],
+    }));
+    expect(result.status).toBe("warning");
+    expect(result.message).toMatch(/^anti-wraparound autovacuum running \(see F002\)/);
+  });
+
+  test("generateCheckSummary for F003: cluster-wide blocked workers deduped across DBs", () => {
+    // Same worker pid 4242 reported in two per-DB entries -> counted once.
+    const report = {
+      results: { node1: { data: {
+        db1: { flagged_count: 0, autovacuum_disabled_flagged_count: 0, autovacuum_keepup: { queue_length: 0, saturated: false, chronic_under_provisioning: false, anti_wraparound_present: false, blocked_workers: [{ worker_pid: 4242 }] } },
+        db2: { flagged_count: 0, autovacuum_disabled_flagged_count: 0, autovacuum_keepup: { queue_length: 0, saturated: false, chronic_under_provisioning: false, anti_wraparound_present: false, blocked_workers: [{ worker_pid: 4242 }] } },
+      } } },
+    };
+    const result = summary.generateCheckSummary("F003", report);
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("1 autovacuum worker blocked");
+  });
+
   for (const checkId of ["F004", "F005"]) {
     test(`generateCheckSummary for degraded ${checkId} is never ok`, () => {
       const report = {
@@ -4723,6 +5141,10 @@ describe("Version-aware SQL query selection (PG13-PG19)", () => {
       F002Tables: "pg_table_wraparound",
       F002MultixactSize: "multixact_size",
       F003: "pg_dead_tuples",
+      F003_KEEPUP: "pg_dead_tuples_keepup",
+      F003_WORKER_SNAPSHOT: "pg_autovacuum_worker_snapshot",
+      F003_BLOCKED: "pg_autovacuum_blocked",
+      F003_PROGRESS: "pg_vacuum_progress",
       F004: "pg_table_bloat",
       F005: "pg_btree_bloat",
       F009: "xmin_horizon_snapshot",

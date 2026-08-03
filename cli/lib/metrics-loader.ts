@@ -74,6 +74,11 @@ export const METRIC_NAMES = {
   F002MultixactSize: "multixact_size",
   // Dead tuples and per-table autovacuum overrides (F003)
   F003: "pg_dead_tuples",
+  // F003 keeping-up analysis: settings-aware trigger math + queue/worker saturation
+  F003_KEEPUP: "pg_dead_tuples_keepup",
+  F003_WORKER_SNAPSHOT: "pg_autovacuum_worker_snapshot",
+  F003_BLOCKED: "pg_autovacuum_blocked",
+  F003_PROGRESS: "pg_vacuum_progress",
   // Bloat estimation
   F004: "pg_table_bloat",
   F005: "pg_btree_bloat",

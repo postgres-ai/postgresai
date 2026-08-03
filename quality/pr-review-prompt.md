@@ -59,6 +59,12 @@ wrong decisions, or silent monitoring failures that erode customer trust.
   - pg_stat_statements.toplevel (PG14+)
   - Generated columns (PG12+)
   - MERGE statement (PG15+)
+  - TOAST reloptions (`toast.autovacuum_enabled`, `toast.autovacuum_vacuum_scale_factor`, …)
+    live **prefix-stripped on the TOAST relation's own `pg_class` row**, not on the
+    main relation. SQL that greps the main relation's `reloptions` for a `toast.`
+    prefix (e.g. `unnest(c.reloptions) ~ '^toast\.'`) is **dead code** — it can never
+    match. Resolve via `join pg_class ct on ct.oid = c.reltoastrelid` and test the
+    unprefixed key on `ct.reloptions`. (This bug shipped twice in one week.)
 
 ### 6. Error Handling (MEDIUM)
 - Database operations must have explicit error handling.

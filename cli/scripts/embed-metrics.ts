@@ -55,6 +55,11 @@ const REQUIRED_METRICS = [
   "multixact_size",
   // Dead tuples and per-table autovacuum overrides (F003)
   "pg_dead_tuples",
+  // F003 keeping-up analysis: trigger math + queue/worker saturation snapshot
+  "pg_dead_tuples_keepup",
+  "pg_autovacuum_worker_snapshot",
+  "pg_autovacuum_blocked",
+  "pg_vacuum_progress",
   // Bloat estimation (F004, F005)
   "pg_table_bloat",
   "pg_btree_bloat",
