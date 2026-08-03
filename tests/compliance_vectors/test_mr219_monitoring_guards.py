@@ -77,7 +77,41 @@ def test_pgwatch_metrics_yml_pg_stat_statements_has_top_n_filter():
             compact_sql = _compact_sql(sql)
             assert "calls >= 3" in compact_sql
             assert f"{exec_time_column} >= 1000" in compact_sql
-            assert "limit 100" in compact_sql
+            # The 100-row cap may be expressed either as a global LIMIT (single-database
+            # collection) or as a per-database window rank (cluster-wide collection).
+            # Both bound cardinality; only the partitioning differs.
+            assert (
+                "limit 100" in compact_sql or "rn <= 100" in compact_sql
+            ), f"{metric_name} lost its top-100 cardinality bound"
+
+
+def test_pgwatch_prometheus_pg_stat_statements_is_cluster_wide():
+    """pg_stat_statements is backed by shared memory and holds entries for every
+    database in the cluster. Collecting it per-connected-database means a fleet is
+    only visible where pgwatch happens to hold a connection, which on a multi-tenant
+    instance silently hides almost all query activity.
+
+    Collect cluster-wide instead, and bound cardinality per database so a busy
+    tenant cannot crowd the others out of the top-N.
+    """
+    metrics = yaml.safe_load(
+        (PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml").read_text()
+    )
+    metric = metrics["metrics"]["pg_stat_statements"]
+
+    # Collected once per instance, not once per monitored database, so that several
+    # sources pointing at one cluster do not each emit the same series.
+    assert metric.get("is_instance_level") is True
+
+    for version, sql in metric["sqls"].items():
+        compact_sql = _compact_sql(sql)
+        assert (
+            "datname = current_database()" not in compact_sql
+        ), f"v{version} restricts pg_stat_statements to the connected database"
+        assert (
+            "partition by datname" in compact_sql
+        ), f"v{version} must rank statements within each database, not globally"
+        assert "tag_datname" in compact_sql
 
 
 def test_pgwatch_stat_views_use_topn_and_other_bucket():

@@ -1808,8 +1808,17 @@ metrics:
             sum(current_setting('block_size')::int * pg_stat_statements.temp_blks_written) as temp_bytes_written
             from pg_stat_statements
             join pg_database on pg_database.oid = pg_stat_statements.dbid
-            where pg_database.datname = current_database()
+            where not pg_database.datistemplate
             group by pg_database.datname, pg_stat_statements.queryid
+        ),
+        ranked_statements as (
+          select
+            aggregated_statements.*,
+            row_number() over (
+              partition by datname order by exec_time_total desc, queryid
+            ) as rn
+          from aggregated_statements
+          where calls >= 3 and exec_time_total >= 1000
         )
         select
           datname as tag_datname,
@@ -1830,10 +1839,8 @@ metrics:
           wal_bytes::int8 as wal_bytes,
           temp_bytes_read::int8 as temp_bytes_read,
           temp_bytes_written::int8 as temp_bytes_written
-          from aggregated_statements
-          where calls >= 3 and exec_time_total >= 1000
-          order by exec_time_total desc
-          limit 100
+          from ranked_statements
+          where rn <= 100
       17: |
         with aggregated_statements as ( /* pgwatch_generated */
           select
@@ -1857,8 +1864,17 @@ metrics:
             sum(current_setting('block_size')::int * pg_stat_statements.temp_blks_written) as temp_bytes_written
             from pg_stat_statements
             join pg_database on pg_database.oid = pg_stat_statements.dbid
-            where pg_database.datname = current_database()
+            where not pg_database.datistemplate
             group by pg_database.datname, pg_stat_statements.queryid
+        ),
+        ranked_statements as (
+          select
+            aggregated_statements.*,
+            row_number() over (
+              partition by datname order by exec_time_total desc, queryid
+            ) as rn
+          from aggregated_statements
+          where calls >= 3 and exec_time_total >= 1000
         )
         select
           datname as tag_datname,
@@ -1879,10 +1895,8 @@ metrics:
           wal_bytes::int8 as wal_bytes,
           temp_bytes_read::int8 as temp_bytes_read,
           temp_bytes_written::int8 as temp_bytes_written
-          from aggregated_statements
-          where calls >= 3 and exec_time_total >= 1000
-          order by exec_time_total desc
-          limit 100
+          from ranked_statements
+          where rn <= 100
     gauges:
       - calls
       - plans_total
@@ -1900,6 +1914,7 @@ metrics:
       - wal_bytes
       - temp_bytes_read
       - temp_bytes_written
+    is_instance_level: true
     statement_timeout_seconds: 15
   pg_class:
     description: >
