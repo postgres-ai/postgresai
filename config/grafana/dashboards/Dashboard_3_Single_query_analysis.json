@@ -47,9 +47,10 @@
           "custom": {
             "align": "auto",
             "cellOptions": {
-              "type": "auto"
+              "type": "auto",
+              "wrapText": true
             },
-            "inspect": false
+            "inspect": true
           },
           "mappings": [],
           "thresholds": {
