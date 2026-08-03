@@ -19,6 +19,7 @@ Thumbs.db
 *~
 
 # Docker generated files
+.env
 .env.local
 .env.*.local
 
