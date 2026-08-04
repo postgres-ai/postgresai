@@ -1384,6 +1384,42 @@ describe("checkCurrentUserPermissions", () => {
     };
   }
 
+  // Regression for issue #229: has_schema_privilege() RAISES (does not return
+  // false) when the schema does not exist, which used to abort the whole
+  // pre-flight query with a bare `Error: schema "postgres_ai" does not exist`
+  // on any database where prepare-db has not been run. The SQL must guard
+  // schema existence (to_regnamespace) BEFORE calling has_schema_privilege in
+  // every optional postgres_ai check.
+  test("pre-flight SQL guards postgres_ai schema existence before has_schema_privilege (issue #229)", async () => {
+    let capturedSql = "";
+    const client = {
+      query: async (sql: string) => {
+        capturedSql = sql;
+        return { rows: [] };
+      },
+    };
+
+    await init.checkCurrentUserPermissions(client as any);
+
+    const schemaGuard = "to_regnamespace('postgres_ai') is null";
+    const guardOccurrences = capturedSql.split(schemaGuard).length - 1;
+    const privilegeOccurrences = capturedSql.split("has_schema_privilege(current_user, 'postgres_ai', 'USAGE')").length - 1;
+
+    // Every check that calls has_schema_privilege must carry the
+    // schema-existence guard in its CASE (lazy evaluation order).
+    expect(privilegeOccurrences).toBe(3);
+    expect(guardOccurrences).toBe(3);
+
+    // Within each CASE, the guard branch must come before has_schema_privilege.
+    const caseBlocks = capturedSql.split("has_schema_privilege(current_user, 'postgres_ai', 'USAGE')");
+    for (const block of caseBlocks.slice(0, 3)) {
+      expect(block).toContain(schemaGuard);
+    }
+
+    // The fix command for the missing-schema case must point at prepare-db.
+    expect(capturedSql).toContain("postgresai prepare-db");
+  });
+
   test("returns ok when all required permissions are granted", async () => {
     const rows: init.PermissionCheckRow[] = [
       { permission_name: "connect on database postgres", status: "required", granted: true, fix_command: null },

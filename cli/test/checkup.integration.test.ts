@@ -14,7 +14,7 @@ import { readFileSync } from "fs";
 import Ajv2020 from "ajv/dist/2020";
 
 import * as checkup from "../lib/checkup";
-import { checkCurrentUserPermissions } from "../lib/init";
+import { checkCurrentUserPermissions, formatPermissionCheckMessages } from "../lib/init";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
@@ -220,6 +220,77 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       expect(dbEntry.status.reason).toBe("missing_schema");
       expect(dbEntry.status.error).toMatch(/schema "postgres_ai" does not exist/i);
     }
+  }, { timeout: 60000 });
+
+  // Regression for issue #229: on a database where prepare-db has never been
+  // run (no postgres_ai schema), has_schema_privilege() used to RAISE
+  // `schema "postgres_ai" does not exist`, aborting the whole pre-flight query
+  // and killing checkup with a bare error before any check ran. These must run
+  // BEFORE the CLI contract tests below, which prepare the shared temp
+  // instance and thereby create the postgres_ai schema.
+  test("pre-flight permission check does not throw on a DB without postgres_ai schema", async () => {
+    // The temp instance has not run prepare-db yet, so postgres_ai must not exist.
+    const schemaRes = await client.query(
+      "select 1 from pg_namespace where nspname = 'postgres_ai'"
+    );
+    expect(schemaRes.rowCount).toBe(0);
+
+    // Must not throw.
+    const permCheck = await checkCurrentUserPermissions(client);
+
+    // Required permissions are fine (superuser), so checkup may proceed.
+    expect(permCheck.ok).toBe(true);
+
+    // The missing schema degrades to an actionable optional warning.
+    const schemaExists = permCheck.rows.find(
+      (r) => r.permission_name === "postgres_ai schema exists"
+    );
+    expect(schemaExists?.granted).toBe(false);
+    expect(schemaExists?.fix_command).toContain("postgresai prepare-db");
+
+    // The dependent checks are skipped (null), not reported as missing.
+    for (const name of [
+      "usage on postgres_ai schema",
+      "postgres_ai.pg_statistic view exists",
+      "select on postgres_ai.pg_statistic",
+    ]) {
+      const row = permCheck.rows.find((r) => r.permission_name === name);
+      expect(row?.granted).toBeNull();
+    }
+
+    const messages = formatPermissionCheckMessages(permCheck);
+    expect(messages.failed).toBe(false);
+    expect(messages.warnings.some((w) => w.includes("prepare-db"))).toBe(true);
+  });
+
+  test("CLI checkup completes on a DB without postgres_ai schema (no prepare-db)", async () => {
+    const connString = `postgresql://postgres@/postgres?host=${pg.socketDir}&port=${pg.port}`;
+    const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
+
+    const result = Bun.spawnSync(
+      [bunBin, cliPath, "checkup", connString, "--check-id", "H002", "--no-upload"],
+      {
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config",
+        },
+      }
+    );
+
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+
+    // Used to die with: Error: schema "postgres_ai" does not exist
+    expect(stderr).not.toContain('schema "postgres_ai" does not exist');
+    expect(result.exitCode).toBe(0);
+
+    // Degrades to a warning pointing the user at prepare-db.
+    expect(stderr).toContain("postgres_ai schema not found");
+    expect(stderr).toContain("prepare-db");
+
+    // The check actually ran and produced a report.
+    expect(stdout).toContain("H002");
   }, { timeout: 60000 });
 
   for (const checkId of expressChecks) {
