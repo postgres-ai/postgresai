@@ -12,10 +12,10 @@ Single EC2 instance deployment with Docker Compose.
 - **Best for**: Small to medium deployments (1-10 databases)
 - **Documentation**: [aws/README.md](aws/README.md)
 
-### GCP (Coming soon)
+### GCP (coming soon)
 Deploy to Google Cloud Platform using Compute Engine or Cloud Run.
 
-### Azure (Coming soon)
+### Azure (coming soon)
 Deploy to Microsoft Azure using Virtual Machines or Container Instances.
 
 ## Quick start

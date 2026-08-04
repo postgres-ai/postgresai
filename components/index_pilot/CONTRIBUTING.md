@@ -14,7 +14,7 @@ Thank you for your interest in contributing! This document describes how to set 
 ### Prerequisites
 - PostgreSQL 13 or higher (psql client required)
 - Bash shell (Linux/macOS)
-- Docker (optional, for local PG quickly)
+- Docker (optional, to spin up a local Postgres instance quickly)
 
 ### Quick local Postgres (optional)
 ```bash

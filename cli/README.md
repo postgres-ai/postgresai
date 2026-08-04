@@ -201,7 +201,7 @@ postgresai mon health [--wait <sec>]  # Check monitoring services health
 
 ##### local-install options
 - `--demo` - Demo mode with sample database (testing only, cannot use with --api-key)
-- `--api-key <key>` - Postgres AI API key for automated report uploads
+- `--api-key <key>` - PostgresAI API key for automated report uploads
 - `--db-url <url>` - PostgreSQL connection URL to monitor (format: `postgresql://user:pass@host:port/db`)
 - `--instance-id <uuid>` - Adopt a console-provisioned monitoring instance (also via the `PGAI_INSTANCE_ID` env var)
 - `-y, --yes` - Accept all defaults and skip interactive prompts

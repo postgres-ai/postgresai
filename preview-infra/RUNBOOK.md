@@ -1,4 +1,4 @@
-# Preview Environment Runbook
+# Preview environment runbook
 
 Operations guide for the PostgresAI monitoring preview environments.
 
@@ -11,58 +11,58 @@ Operations guide for the PostgresAI monitoring preview environments.
 
 ## Access
 
-### SSH to Preview VM
+### SSH to the preview VM
 
 ```bash
 ssh -i ~/.ssh/preview-deploy deploy@<PREVIEW_VM_HOST>
 ```
 
-### Traefik Dashboard (via SSH tunnel)
+### Traefik dashboard (via SSH tunnel)
 
 ```bash
 ssh -L 8080:localhost:8080 -i ~/.ssh/preview-deploy deploy@<PREVIEW_VM_HOST>
 # Then open http://localhost:8080
 ```
 
-## Common Operations
+## Common operations
 
-### List Running Previews
+### List running previews
 
 ```bash
 ssh deploy@<VM> "docker ps --filter 'label=pgai.preview=true' --format '{{.Names}}' | grep grafana"
 ```
 
-### View Preview Credentials
+### View preview credentials
 
 ```bash
 ssh deploy@<VM> "cat /opt/postgres-ai-previews/previews/{BRANCH_SLUG}/.env"
 ```
 
-### View Preview State
+### View preview state
 
 ```bash
 ssh deploy@<VM> "cat /opt/postgres-ai-previews/previews/{BRANCH_SLUG}/state.json"
 ```
 
-### Manually Deploy a Preview
+### Manually deploy a preview
 
 ```bash
 ssh deploy@<VM> "BRANCH_SLUG=my-branch COMMIT_SHA=abc123 /opt/postgres-ai-previews/manager/deploy.sh"
 ```
 
-### Manually Destroy a Preview
+### Manually destroy a preview
 
 ```bash
 ssh deploy@<VM> "BRANCH_SLUG=my-branch /opt/postgres-ai-previews/manager/destroy.sh"
 ```
 
-### View Cleanup Logs
+### View cleanup logs
 
 ```bash
 ssh deploy@<VM> "tail -50 /opt/postgres-ai-previews/manager/cleanup.log"
 ```
 
-### Run Cleanup Manually
+### Run cleanup manually
 
 ```bash
 ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
@@ -70,7 +70,7 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
 
 ## Troubleshooting
 
-### Preview Deployment Fails
+### Preview deployment fails
 
 1. Check quota:
    ```bash
@@ -93,7 +93,7 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
    ssh deploy@<VM> "ls -la /opt/postgres-ai-previews/previews/{BRANCH_SLUG}/"
    ```
 
-### Grafana Not Accessible
+### Grafana not accessible
 
 1. Check if container is running:
    ```bash
@@ -110,7 +110,7 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
    ssh deploy@<VM> "docker logs preview-{BRANCH_SLUG}-grafana-1 --tail=50"
    ```
 
-### DNS Not Resolving
+### DNS not resolving
 
 1. Check Cloudflare DNS record:
    ```bash
@@ -122,7 +122,7 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
    ssh deploy@<VM> "source /opt/postgres-ai-previews/.env && /opt/postgres-ai-previews/scripts/cloudflare-dns.sh create preview-{BRANCH_SLUG}"
    ```
 
-### SSL Certificate Issues
+### SSL certificate issues
 
 1. Check Traefik logs:
    ```bash
@@ -134,7 +134,7 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
    ssh deploy@<VM> "ls -la /opt/postgres-ai-previews/traefik/acme.json"
    ```
 
-### Metrics Not Showing in Grafana
+### Metrics not showing in Grafana
 
 1. Check pgwatch is running:
    ```bash
@@ -151,21 +151,21 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
    ssh deploy@<VM> "docker exec preview-{BRANCH_SLUG}-sink-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=up'"
    ```
 
-## Recovery Procedures
+## Recovery procedures
 
-### Full Preview Stack Restart
+### Full preview stack restart
 
 ```bash
 ssh deploy@<VM> "cd /opt/postgres-ai-previews/previews/{BRANCH_SLUG} && docker compose -p preview-{BRANCH_SLUG} down && docker compose -p preview-{BRANCH_SLUG} up -d"
 ```
 
-### Traefik Restart
+### Traefik restart
 
 ```bash
 ssh deploy@<VM> "cd /opt/postgres-ai-previews/traefik && docker compose restart traefik"
 ```
 
-### Force Cleanup All Previews (Emergency)
+### Force cleanup all previews (emergency)
 
 ```bash
 ssh deploy@<VM> "docker stop \$(docker ps -q --filter 'label=pgai.preview=true') && docker rm \$(docker ps -aq --filter 'label=pgai.preview=true') && docker volume prune -f && rm -rf /opt/postgres-ai-previews/previews/*"
@@ -173,15 +173,15 @@ ssh deploy@<VM> "docker stop \$(docker ps -q --filter 'label=pgai.preview=true')
 
 ## Monitoring
 
-### VM Health Check
+### VM health check
 
 The cleanup cron runs every 30 minutes and logs to `/opt/postgres-ai-previews/manager/cleanup.log`.
 
-### Disk Usage Alert
+### Disk usage alert
 
 The cleanup script triggers Docker image prune when disk usage exceeds 80%.
 
-## GitLab CI Variables
+## GitLab CI variables
 
 Required CI variables for preview deployments:
 
@@ -190,7 +190,7 @@ Required CI variables for preview deployments:
 | `PREVIEW_SSH_PRIVATE_KEY` | File | SSH private key for deploy user |
 | `PREVIEW_VM_HOST` | Variable | IP address of preview VM |
 
-## Cloudflare Configuration
+## Cloudflare configuration
 
 Required environment variables on the VM (in `/opt/postgres-ai-previews/.env`):
 

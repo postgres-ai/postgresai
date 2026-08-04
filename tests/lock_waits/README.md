@@ -1,10 +1,10 @@
-# Lock Waits Metric Testing
+# Lock waits metric testing
 
 This directory contains tests and scripts to verify that the `lock_waits` metric is working correctly.
 
 ## Overview
 
-The `lock_waits` metric collects detailed information about lock waits in PostgreSQL, including:
+The `lock_waits` metric collects detailed information about lock waits in Postgres, including:
 - Waiting and blocking process IDs
 - User names and application names
 - Lock modes and types
@@ -12,9 +12,9 @@ The `lock_waits` metric collects detailed information about lock waits in Postgr
 - Query IDs (PostgreSQL 14+)
 - Wait durations and blocker transaction durations
 
-## Test Components
+## Test components
 
-### 1. Python Test Script (`test_lock_waits_metric.py`)
+### 1. Python test script (`test_lock_waits_metric.py`)
 
 Automated test that:
 - Creates lock contention scenarios in the target database
@@ -22,7 +22,7 @@ Automated test that:
 - Verifies the metric is collected in Prometheus/VictoriaMetrics
 - Validates the metric structure and labels
 
-### 2. SQL Script (`create_lock_contention.sql`)
+### 2. SQL script (`create_lock_contention.sql`)
 
 Manual SQL script to create lock contention for testing. Can be run in multiple psql sessions.
 
@@ -42,16 +42,16 @@ Manual SQL script to create lock contention for testing. Can be run in multiple 
    - Check `config/pgwatch-prometheus/metrics.yml` includes `lock_waits`
    - Verify pgwatch is collecting metrics from the target database
 
-## Running the Automated Test
+## Running the automated test
 
-### Basic Usage
+### Basic usage
 
 ```bash
 # From the project root
 python tests/lock_waits/test_lock_waits_metric.py
 ```
 
-### With Custom Configuration
+### With custom configuration
 
 ```bash
 python tests/lock_waits/test_lock_waits_metric.py \
@@ -61,7 +61,7 @@ python tests/lock_waits/test_lock_waits_metric.py \
   --collection-wait 90
 ```
 
-### Environment Variables
+### Environment variables
 
 You can also set these via environment variables:
 
@@ -74,9 +74,9 @@ export COLLECTION_WAIT_SECONDS=90
 python tests/lock_waits/test_lock_waits_metric.py
 ```
 
-## Manual Testing
+## Manual testing
 
-### Step 1: Create Lock Contention
+### Step 1: create lock contention
 
 Open two psql sessions to the target database:
 
@@ -94,7 +94,7 @@ SELECT * FROM lock_test_table WHERE id = 1 FOR UPDATE;
 -- This will wait for Session 1 to release the lock
 ```
 
-### Step 2: Verify Metric Collection
+### Step 2: verify metric collection
 
 Wait for pgwatch to collect metrics (check collection interval in pgwatch config, typically 15-30 seconds), then query Prometheus:
 
@@ -107,16 +107,16 @@ pgwatch_lock_waits_waiting_ms{datname="target_database"}
 pgwatch_lock_waits_blocker_tx_ms{datname="target_database"}
 ```
 
-### Step 3: Check Grafana Dashboard
+### Step 3: check Grafana dashboard
 
 1. Open Grafana: http://localhost:3000
 2. Navigate to "Lock waits details" dashboard
 3. Select the database from the dropdown
 4. Verify that lock wait events appear in the panels
 
-## Expected Results
+## Expected results
 
-### Successful Test Output
+### Successful test output
 
 ```
 Setting up test environment...
@@ -144,7 +144,7 @@ Validating metric structure...
 
 ## Troubleshooting
 
-### No Records Found
+### No records found
 
 - **Check pgwatch is running**: `docker ps | grep pgwatch-prometheus`
 - **Check pgwatch logs**: `docker logs pgwatch-prometheus`
@@ -154,14 +154,14 @@ Validating metric structure...
 - **Check database name**: Ensure `--test-dbname` matches the monitored database
 - **Verify metrics exist**: `curl "http://localhost:59090/api/v1/label/__name__/values" | grep lock_waits`
 
-### Invalid Data Structure
+### Invalid data structure
 
 - **Check PostgreSQL version**: Metric requires PostgreSQL 14+ for query_id support
 - **Verify metric SQL**: Check the SQL query in `metrics.yml` is correct
 - **Check pgwatch version**: Ensure pgwatch version supports the metric format
 - **Check Prometheus labels**: Verify metrics have expected labels (datname, waiting_pid, blocker_pid, etc.)
 
-### Connection Errors
+### Connection errors
 
 - **Verify Docker containers**: `docker-compose ps`
 - **Check connection strings**: Verify URLs match your docker-compose configuration
@@ -189,9 +189,9 @@ test_lock_waits:
     - main
 ```
 
-## Additional Test Scenarios
+## Additional test scenarios
 
-### Test Different Lock Types
+### Test different lock types
 
 Modify the test to create different types of locks:
 
@@ -203,7 +203,7 @@ LOCK TABLE lock_test_table IN EXCLUSIVE MODE;
 SELECT pg_advisory_lock(12345);
 ```
 
-### Test Multiple Concurrent Waits
+### Test multiple concurrent waits
 
 Create multiple waiting transactions to test the LIMIT clause:
 
@@ -218,7 +218,7 @@ BEGIN;
 SELECT * FROM lock_test_table WHERE id = 1 FOR UPDATE;
 ```
 
-## Related Files
+## Related files
 
 - `config/pgwatch-prometheus/metrics.yml` - Metric definition
 - `config/grafana/dashboards/Dashboard_13_Lock_waits.json` - Grafana dashboard

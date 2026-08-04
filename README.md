@@ -14,7 +14,7 @@
 
 [Live Demo](https://demo.postgres.ai) ·
 [Documentation](https://postgres.ai/docs) ·
-[Get Started](#get-started)
+[Get started](#get-started)
 
 </div>
 
@@ -37,7 +37,7 @@ Traditional monitoring tools give you dashboards. **`postgresai` gives AI agents
 
 Part of [Self-Driving Postgres](https://postgres.ai/blog/20250725-self-driving-postgres) — PostgresAI's open-source initiative to make Postgres autonomous.
 
-## Get Started
+## Get started
 
 ### 1. Sign up
 
@@ -126,7 +126,7 @@ The `prepare-db` step creates a read-only `postgres_ai_mon` user with minimal pe
 | **Express checkup** | Instant health checks — no setup needed |
 | **Grafana dashboards** | 13+ expert views: Node Overview, Query Analysis, Wait Events, Indexes, Tables, Replication, and more |
 | **Scheduled reports** | 45+ metrics collected continuously via pgwatch |
-| **Metrics collection** | pgwatch v3 + Victoria Metrics |
+| **Metrics collection** | pgwatch v3 + VictoriaMetrics |
 | **AI-ready output** | Structured JSON for Claude, GPT, and other agents |
 | **Claude Code plugin** | Slash commands for health checks in your IDE |
 | **MCP server** | Work with Issues from [console.postgres.ai](https://console.postgres.ai) in AI coding tools |
@@ -157,7 +157,7 @@ Work with Issues from [console.postgres.ai](https://console.postgres.ai):
 </div>
 </details>
 
-### MCP Server (Claude Code, Cursor, Windsurf)
+### MCP server (Claude Code, Cursor, Windsurf)
 
 ```bash
 # Install MCP server for your AI coding tool
@@ -384,7 +384,7 @@ helm install postgres-ai-monitoring ./postgres_ai_helm -f custom-values.yaml
 ### Helm chart features
 
 - Complete monitoring stack for Kubernetes
-- PGWatch, VictoriaMetrics, and Grafana
+- pgwatch, VictoriaMetrics, and Grafana
 - Automated report generation via CronJobs
 - Node exporter and cAdvisor for system metrics
 - Configurable resource limits and persistence
@@ -490,8 +490,8 @@ After running local-install:
 
 Technical URLs (for advanced users):
 - **Demo DB**: postgresql://postgres:postgres@localhost:55432/target_database
-- **Monitoring**: http://localhost:58080 (PGWatch)
-- **Metrics**: http://localhost:59090 (Victoria Metrics)
+- **Monitoring**: http://localhost:58080 (pgwatch)
+- **Metrics**: http://localhost:59090 (VictoriaMetrics)
 
 ## 📖 Help
 
@@ -522,9 +522,9 @@ Install dev dependencies (includes `pytest`, `pytest-postgresql`, `psycopg`, etc
 python3 -m pip install -r reporter/requirements-dev.txt
 ```
 
-### Running Tests
+### Running tests
 
-#### Unit Tests Only (Fast, No External Services Required)
+#### Unit tests only (fast, no external services required)
 
 Run only unit tests with mocked Prometheus interactions:
 ```bash
@@ -537,7 +537,7 @@ pytest tests/reporter/test_generators_unit.py -v
 pytest tests/reporter/test_formatters.py -v
 ```
 
-#### All Tests: Unit + Integration (Requires PostgreSQL)
+#### All tests: unit + integration (requires PostgreSQL)
 
 Run the complete test suite (both unit and integration tests):
 ```bash
@@ -550,7 +550,7 @@ Integration tests create a temporary PostgreSQL instance automatically and requi
 - `pytest tests/reporter` → **Unit tests only** (integration tests skipped)
 - `pytest tests/reporter --run-integration` → **Both unit and integration tests**
 
-### Test Coverage
+### Test coverage
 
 Generate coverage report:
 ```bash

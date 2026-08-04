@@ -13,11 +13,11 @@ Terraform creates:
 - Security Group (SSH + Grafana ports)
 - Elastic IP (optional)
 
-On first boot, EC2 instance clones the specified version of this repository and runs `docker-compose up` to start all monitoring services.
+On first boot, the EC2 instance clones the specified version of this repository and runs `docker-compose up` to start all monitoring services.
 
 ## Quick start
 
-See [QUICKSTART.md](QUICKSTART.md) for step-by-step guide.
+See [QUICKSTART.md](QUICKSTART.md) for a step-by-step guide.
 
 ### Validation
 

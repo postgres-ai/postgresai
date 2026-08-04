@@ -1,8 +1,8 @@
-# Grafana Dashboards Naming Conventions
+# Grafana dashboards naming conventions
 
 This document outlines the naming principles used in PostgresAI Grafana dashboards.
 
-## Tag Vocabulary
+## Tag vocabulary
 
 Every shipped dashboard JSON MUST include a top-level `"tags"` array whose
 first entry is the project label `postgres-ai`, followed by 1-3 thematic tags
@@ -50,9 +50,9 @@ When adding a new dashboard:
    top-level `uid` (see `config/init-configs.sh` for the upgrade-time
    cleanup of stale dashboards).
 
-## Terminology Rules
+## Terminology rules
 
-### Bloat Metrics
+### Bloat metrics
 Always use **"Estimated bloat"** when referring to bloat metrics. The bloat
 values shown in these dashboards are based on estimation queries that use
 pg_stat_user_tables statistics - they are not precise measurements like
@@ -67,11 +67,11 @@ pgstattuple would provide.
 - "Bloat %"
 - "Bloat size"
 
-### Shared Block I/O
+### Shared block I/O
 Use **"Shared block reads"** and **"Shared block hits"** - these are the correct
-PostgreSQL terminology.
+Postgres terms.
 
-- **Shared block hits**: Data was found in PostgreSQL's shared buffer pool
+- **Shared block hits**: Data was found in Postgres's shared buffer pool
 - **Shared block reads**: Data was read into the shared buffer pool from the OS
   page cache. Note: This does NOT necessarily mean a disk read occurred - the data
   may have been served from the OS file system cache.
@@ -85,7 +85,7 @@ PostgreSQL terminology.
 - "Block disk reads" (we don't know if actual disk I/O occurred)
 - "Block cache hits" (ambiguous - could mean OS cache or PG buffer pool)
 
-### Rate Metrics
+### Rate metrics
 For rate-based panels (showing per-second values), append `/s` to the title:
 
 **Examples:**
@@ -93,7 +93,7 @@ For rate-based panels (showing per-second values), append `/s` to the title:
 - "Size growth /s"
 - "Shared block hits /s"
 
-### Section (Row) Naming
+### Section (row) naming
 - **"Activity stats"**: For table dashboards showing tuple operations
 - **"Index usage stats"**: For index dashboards showing scan/fetch metrics
 - **"Estimated bloat stats"**: For bloat-related metrics (always include "Estimated")
@@ -102,8 +102,8 @@ For rate-based panels (showing per-second values), append `/s` to the title:
 
 ## Units
 
-- **binBps**: Use binary bytes per second (KiB/s, MiB/s, GiB/s) for PostgreSQL
-  block I/O rates, as PostgreSQL uses binary block sizes (typically 8 KiB)
+- **binBps**: Use binary bytes per second (KiB/s, MiB/s, GiB/s) for Postgres
+  block I/O rates, as Postgres uses binary block sizes (typically 8 KiB)
 - **bytes**: Use for absolute size measurements
 - **percent**: Use for percentage values (0-100 scale)
 - **ops**: Use for operations per second

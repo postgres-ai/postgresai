@@ -32,7 +32,7 @@ PGPASSWORD='your_password' \
 Notes:
 - Use `PGPASSWORD` to avoid echoing secrets; the script won’t print passwords.
 - `--fdw-host` should be reachable from the database server itself (in Docker/CI it might be `postgres`, `127.0.0.1`, or the container IP).
-- For self-hosted replace host with `127.0.0.1`. For managed services ensure the admin user can `create database` and `create extension`.
+- For self-hosted deployments, replace the host with `127.0.0.1`. For managed services, ensure the admin user can `create database` and `create extension`.
 
 Security notes:
 - Prefer `PGPASSWORD` over putting passwords on the command line to avoid shell history leaks.
@@ -53,7 +53,7 @@ For the full reference of installer subcommands, options, defaults, and examples
 
 ### Manual installation
 
-#### Control database setup (Required)
+#### Control database setup (required)
 
 ```bash
 # Clone the repository

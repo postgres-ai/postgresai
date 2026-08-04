@@ -1,8 +1,8 @@
 # pg_index_pilot – autonomous index lifecycle management for Postgres
 
-The purpose of `pg_index_pilot` is to provide all tools needed to manage indexes in Postgres in most automated fashion.
+The purpose of `pg_index_pilot` is to provide all the tools needed to manage indexes in Postgres in the most automated way possible.
 
-This project is in its very early stage. We start with most boring yet extremely important task: automatic reindexing ("AR") to mitigate index bloat, supporting any types of indexes, and then expand to other areas of index health. And then expand to two other big areas – automated index removal ("AIR") and, finally, automated index creation and optimization ("AIC&O"). It is a part of the Self‑driving Postgres, but can be used independently as a standalone tool.
+This project is in its very early stages. We start with the most boring yet extremely important task: automatic reindexing ("AR") to mitigate index bloat, supporting all index types, and then expand to other areas of index health. From there, we expand to two other big areas – automated index removal ("AIR") and, finally, automated index creation and optimization ("AIC&O"). It is a part of the Self‑driving Postgres, but can be used independently as a standalone tool.
 
 Docs: [Installation](docs/installation.md) | [Runbook](docs/runbook.md) | [FAQ](docs/faq.md) | [Function reference](docs/function_reference.md) | [Architecture](docs/architecture.md)
 
@@ -33,7 +33,7 @@ See [Architecture](docs/architecture.md) for detailed design decisions and requi
 - [Initial launch](#initial-launch)
 - [Scheduling automated maintenance](#scheduling-automated-maintenance)
   - [Choosing the right schedule](#choosing-the-right-schedule)
-  - [Using pg_cron (Recommended)](#using-pg_cron-recommended)
+  - [Using pg_cron (recommended)](#using-pg_cron-recommended)
   - [Using external cron](#using-external-cron)
 - [Uninstalling pg_index_pilot](#uninstalling-pg_index_pilot)
 - [Updating pg_index_pilot](#updating-pg_index_pilot)
@@ -158,7 +158,7 @@ Notes:
 - `target_<db>`: FDW server that points to the target database. This name goes to `index_pilot.target_databases.fdw_server_name`.
 - A user mapping must exist for `current_user` (in the control DB) to each `target_<db>` server you intend to use.
 
-### Security Note
+### Security note
 
 **CRITICAL**: Never use hardcoded passwords in production. The `setup_01_user.psql` script requires a secure password to be provided via psql variable:
 
@@ -176,7 +176,7 @@ echo "Generated password: $RANDOM_PWD"
 
 ### Manual installation
 
-#### Control database setup (Required)
+#### Control database setup (required)
 
 ```bash
 # Clone the repository
@@ -218,7 +218,7 @@ psql -h your-instance.region.rds.amazonaws.com -U postgres -d index_pilot_contro
 psql -h your-instance.region.rds.amazonaws.com -U postgres -d index_pilot_control -c "select * from index_pilot.check_environment();"
 ```
 
-#### Self-hosted PostgreSQL Example
+#### Self-hosted PostgreSQL example
 
 ```bash
 # Clone the repository
@@ -293,7 +293,7 @@ The optimal maintenance schedule depends on your database characteristics:
 - Production systems where daily maintenance might be disruptive
 - Databases with limited maintenance windows
 
-### Using pg_cron (Recommended)
+### Using pg_cron (recommended)
 
 **Step 1: Check where pg_cron is installed**
 ```sql
@@ -410,9 +410,9 @@ psql -1 -d your_database -f index_pilot_functions.sql
 psql -1 -d your_database -f index_pilot_fdw.sql
 ```
 
-## Monitoring and Analysis
+## Monitoring and analysis
 
-### View Reindexing History
+### View reindexing history
 ```sql
 -- Show recent reindexing operations with status
 select
@@ -448,7 +448,7 @@ select * from index_pilot.history limit 20;
 select * from index_pilot.history where status = 'failed';
 ```
 
-### Check Current Bloat Status
+### Check current bloat status
 ```sql
 -- Check bloat estimates for current database
 select

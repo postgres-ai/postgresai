@@ -1,6 +1,6 @@
-# Health Check
+# Health check
 
-Run health checks on a PostgreSQL database.
+Run health checks on a Postgres database.
 
 $ARGUMENTS should be a connection string like `postgresql://user@host:5432/db`
 

@@ -1,16 +1,16 @@
-# Critical Failure Modes Registry
+# Critical failure modes registry
 
 > These are the top failure modes that would lose customer trust. Each one MUST
 > have dedicated automated coverage. This registry is the source of truth for
 > what we cannot allow to ship broken.
 
-## FM-1: Data Loss or Corruption During Clone/Snapshot
+## FM-1: data loss or corruption during clone/snapshot
 
 **Severity**: P0 — Catastrophic
 **Component**: DBLab Engine (thin cloning)
 **Customer impact**: Permanent data loss, broken clones, stale snapshots
 
-### What Could Go Wrong
+### What could go wrong
 
 - Clone created from corrupted snapshot
 - Snapshot taken during active checkpoint, producing inconsistent state
@@ -18,7 +18,7 @@
 - OOM kill during snapshot, leaving dangling references
 - Network partition during distributed clone operation
 
-### Required Test Coverage
+### Required test coverage
 
 - [ ] Clone from healthy snapshot produces valid, queryable database
 - [ ] Clone operation handles disk-full gracefully (cleanup, actionable error)
@@ -26,7 +26,7 @@
 - [ ] Concurrent clone requests don't interfere with each other
 - [ ] Clone from snapshot taken during heavy write load is consistent
 
-### Automated Checks
+### Automated checks
 
 - Integration test: create snapshot → clone → run pgbench validation queries
 - Destructive test: fill disk to 95% → attempt clone → verify graceful failure
@@ -34,13 +34,13 @@
 
 ---
 
-## FM-2: Incorrect Diagnostic Recommendation
+## FM-2: incorrect diagnostic recommendation
 
 **Severity**: P0 — Critical
 **Component**: Health checks (reporter + CLI checkup), SAMO Analyst
 **Customer impact**: Customer acts on wrong advice, makes database worse
 
-### What Could Go Wrong
+### What could go wrong
 
 - Index reported as "unused" when it's actually used by a critical query
   (e.g., index used only during monthly batch job, outside observation window)
@@ -49,7 +49,7 @@
 - Redundant index detection flags a covering index that serves different queries
 - Version-specific catalog differences cause wrong data interpretation
 
-### Required Test Coverage
+### Required test coverage
 
 - [ ] H002 (unused indexes): index used in last 24h is NOT flagged
 - [ ] H002: index only used by pg_stat_statements reset is handled correctly
@@ -62,7 +62,7 @@
 - [ ] All checks: empty database returns valid (empty) results, not errors
 - [ ] All checks: database with no pg_stat_statements returns graceful degradation
 
-### Automated Checks
+### Automated checks
 
 - Schema validation: every check output conforms to `reporter/schemas/*.schema.json`
 - Snapshot tests: check outputs against known-good baselines (syrupy)
@@ -71,14 +71,14 @@
 
 ---
 
-## FM-3: Silent Monitoring Failure
+## FM-3: silent monitoring failure
 
 **Severity**: P0 — Critical
 **Component**: Monitoring stack (pgwatch, Prometheus, Grafana)
 **Customer impact**: Thinks monitoring is working, but metrics stopped flowing;
 misses critical issues
 
-### What Could Go Wrong
+### What could go wrong
 
 - pgwatch collector crashes silently, no metrics collected
 - Prometheus scrape target becomes unreachable, no alert generated
@@ -87,7 +87,7 @@ misses critical issues
 - TLS certificate expires, metric push fails silently
 - Database password rotation breaks collector, no notification
 
-### Required Test Coverage
+### Required test coverage
 
 - [ ] `mon health` detects when pgwatch has stopped collecting metrics
 - [ ] `mon health` detects when Prometheus has no recent scrape results
@@ -96,7 +96,7 @@ misses critical issues
 - [ ] Adding/removing targets properly updates pgwatch configuration
 - [ ] Target test (`mon targets test`) catches connection failures
 
-### Automated Checks
+### Automated checks
 
 - E2E test: `local-install --demo` → wait → verify metrics flowing in Prometheus
 - E2E test: stop target-db → verify `mon health` reports unhealthy
@@ -104,13 +104,13 @@ misses critical issues
 
 ---
 
-## FM-4: Security Exposure
+## FM-4: security exposure
 
 **Severity**: P0 — Critical
 **Component**: All (CLI auth, monitoring stack, database connections)
 **Customer impact**: Unauthorized access to database credentials or data
 
-### What Could Go Wrong
+### What could go wrong
 
 - API key logged in plaintext during auth flow
 - Database credentials stored in config file with world-readable permissions
@@ -119,7 +119,7 @@ misses critical issues
 - Monitoring stack endpoints exposed without authentication
 - SQL injection in dynamically constructed queries
 
-### Required Test Coverage
+### Required test coverage
 
 - [ ] Auth flow: API key is masked in all log output (`show-key` shows `****`)
 - [ ] Config file: `config.json` created with 0600 permissions
@@ -129,7 +129,7 @@ misses critical issues
 - [ ] Grafana: default credentials are randomized on `local-install`
 - [ ] Pre-commit: gitleaks catches secrets before they reach the repository
 
-### Automated Checks
+### Automated checks
 
 - SAST: GitLab SAST pipeline scans every PR
 - gitleaks: pre-commit hook + CI check
@@ -138,14 +138,14 @@ misses critical issues
 
 ---
 
-## FM-5: Performance Regression in Tooling
+## FM-5: performance regression in tooling
 
 **Severity**: P1 — High
 **Component**: CLI checkup, reporter
 **Customer impact**: Checkup times out on large databases, monitoring becomes
 the bottleneck
 
-### What Could Go Wrong
+### What could go wrong
 
 - New check adds sequential scan on pg_class without filter, O(n) on table count
 - Memory usage grows linearly with number of indexes/tables (no pagination)
@@ -153,7 +153,7 @@ the bottleneck
 - JSON report generation creates massive string for databases with many objects
 - N+1 query pattern: one query per table/index instead of batch query
 
-### Required Test Coverage
+### Required test coverage
 
 - [ ] Checkup completes within 60s on database with 1000+ tables
 - [ ] Memory usage stays under 256MB during checkup of large database
@@ -161,7 +161,7 @@ the bottleneck
 - [ ] Report JSON stays under 10MB for databases with 10k objects
 - [ ] No N+1 queries: each check category uses at most 3 queries
 
-### Automated Checks
+### Automated checks
 
 - Performance benchmark: nightly run against reference database, compare to baseline
 - Query count assertion: integration tests verify expected number of SQL roundtrips
@@ -169,7 +169,7 @@ the bottleneck
 
 ---
 
-## Failure Mode Ownership
+## Failure mode ownership
 
 | FM | Primary Owner | Backup | Last Reviewed |
 |----|--------------|--------|---------------|

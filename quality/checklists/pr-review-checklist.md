@@ -1,4 +1,4 @@
-# PR Review Checklist
+# PR review checklist
 
 Use this checklist when reviewing pull requests. Not every item applies to every
 PR — use judgment. Items marked **(required)** must be verified for all PRs.
@@ -10,7 +10,7 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 - [ ] Tests cover the happy path AND at least 2 error/edge cases
 - [ ] No unrelated changes bundled into the PR
 
-## SQL & Database
+## SQL and database
 
 - [ ] **(required)** All SQL uses parameterized queries (no string interpolation)
 - [ ] **(required)** Database connections are closed/returned in finally blocks
@@ -20,7 +20,7 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 - [ ] No N+1 query patterns (queries inside loops)
 - [ ] Results are bounded (LIMIT or WHERE clause prevents unbounded returns)
 
-## Health Checks
+## Health checks
 
 - [ ] New check has JSON schema in `reporter/schemas/<ID>.schema.json`
 - [ ] Check output conforms to schema (validated in tests)
@@ -37,7 +37,7 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 - [ ] SSL/TLS options handled correctly
 - [ ] File permissions appropriate for sensitive config files (0600)
 
-## Error Handling
+## Error handling
 
 - [ ] **(required)** Error messages are actionable (what failed, why, what to do)
 - [ ] No bare catch blocks that swallow errors silently
@@ -51,7 +51,7 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 - [ ] Schema changes are backward-compatible (additive only)
 - [ ] No new dependencies without justification in PR description
 
-## Monitoring Stack
+## Monitoring stack
 
 - [ ] Docker Compose changes tested with `mon local-install --demo`
 - [ ] Resource limits (CPU/memory) are appropriate

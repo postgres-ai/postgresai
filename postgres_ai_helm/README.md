@@ -1,6 +1,6 @@
-# PostgresAI monitoring helm chart
+# PostgresAI monitoring Helm chart
 
-Kubernetes helm chart for deploying the PostgresAI monitoring stack, including PGWatch, VictoriaMetrics, Grafana, and automated reporting.
+Kubernetes Helm chart for deploying the PostgresAI monitoring stack, including PGWatch, VictoriaMetrics, Grafana, and automated reporting.
 
 ## Quick start
 
@@ -23,11 +23,11 @@ helm upgrade postgres-ai-monitoring ./postgres_ai_helm
 
 ## Components
 
-This helm chart deploys the following components:
+This Helm chart deploys the following components:
 
 - **PGWatch**: Monitors Postgres databases and collects metrics
 - **VictoriaMetrics**: Time-series database for storing metrics
-- **Grafana**: Visualization and dashboards, including Dashboard 14 I/O statistics powered by `pg_stat_io` for PostgreSQL 16+
+- **Grafana**: Visualization and dashboards, including Dashboard 14 I/O statistics powered by `pg_stat_io` for Postgres 16+
 - **Node exporter**: System-level metrics
 - **cAdvisor**: Container metrics
 - **Reporter**: Automated health check reports
@@ -105,7 +105,7 @@ helm install test-release . --dry-run --debug
 
 ### Creating a release
 
-To create a new release of the helm chart, see [RELEASE.md](./RELEASE.md).
+To create a new release of the Helm chart, see [RELEASE.md](./RELEASE.md).
 
 Quick release:
 
