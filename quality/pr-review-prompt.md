@@ -1,4 +1,4 @@
-# AI PR Review System Prompt
+# AI PR review system prompt
 
 > This prompt is used by AI agents (Claude Code, CI bots) when reviewing pull
 > requests for PostgresAI repositories. It encodes PostgreSQL-specific domain
@@ -147,12 +147,12 @@ Developers can reference this prompt when asking for PR review:
 Review this diff using the PostgresAI PR review guidelines in quality/pr-review-prompt.md
 ```
 
-### In CI Pipeline
+### In CI pipeline
 
 The `quality:ai-review` CI job (when configured) uses this prompt to
 automatically review merge requests. See `.gitlab-ci.yml` for configuration.
 
-### Updating This Prompt
+### Updating this prompt
 
 When adding new quality standards:
 

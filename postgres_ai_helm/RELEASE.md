@@ -1,10 +1,10 @@
 # Helm chart release process
 
-This document describes how to create and publish releases of the PostgresAI monitoring helm chart.
+This document describes how to create and publish releases of the PostgresAI monitoring Helm chart.
 
 ## Automated release workflow
 
-The helm chart uses an automated release process triggered by git tags. When you push a tag matching the pattern `helm-v*.*.*`, a GitLab CI/CD pipeline automatically:
+The Helm chart uses an automated release process triggered by git tags. When you push a tag matching the pattern `helm-v*.*.*`, a GitLab CI/CD pipeline automatically:
 
 1. Extracts the version from the tag
 2. Updates `Chart.yaml` with the new version
@@ -53,7 +53,7 @@ git push origin helm-v0.14.0
 
 ## Version numbering
 
-Follow semantic versioning for helm chart releases:
+Follow semantic versioning for Helm chart releases:
 
 - **Major version** (X.0.0): Breaking changes, incompatible API changes
 - **Minor version** (0.X.0): New features, backward compatible
@@ -66,12 +66,12 @@ Examples:
 
 ## Tag naming conventions
 
-The helm chart release pipeline uses the `helm-v*.*.*` tag pattern (e.g. `helm-v0.14.0`).
+The Helm chart release pipeline uses the `helm-v*.*.*` tag pattern (e.g. `helm-v0.14.0`).
 
 **Why `helm-v` instead of `v`?**
 
 The org standard is `vX.Y.Z`, but the `helm-v` prefix is an explicit exception: it prevents the
-`cli:npm:publish` and `docker:publish:images` CI jobs from firing on helm chart tags. Those jobs
+`cli:npm:publish` and `docker:publish:images` CI jobs from firing on Helm chart tags. Those jobs
 trigger on any `$CI_COMMIT_TAG`, so a bare `v0.14.0` tag would also attempt an npm/Docker publish
 with the chart version, which is incorrect.
 
@@ -119,12 +119,12 @@ The release automation is defined in `.gitlab-ci.yml` at the repository root.
 
 The release pipeline uses GitLab's native `release:` keyword with `CI_JOB_TOKEN`, so no additional tokens or variables are required.
 
-## Setting up a helm repository (optional)
+## Setting up a Helm repository (optional)
 
-For easier distribution, you can set up a helm repository using GitLab Pages:
+For easier distribution, you can set up a Helm repository using GitLab Pages:
 
 1. Create a `.gitlab-ci.yml` job to publish to pages
-2. Users can then add your helm repository:
+2. Users can then add your Helm repository:
    ```bash
    helm repo add postgres-ai https://postgres-ai.gitlab.io/postgresai
    helm repo update

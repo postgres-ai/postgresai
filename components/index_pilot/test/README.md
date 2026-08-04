@@ -1,31 +1,31 @@
-# pg_index_pilot Test Suite
+# pg_index_pilot test suite
 
 ## Overview
 
 This directory contains the automated test suite for pg_index_pilot. The tests are designed to run in CI/CD pipelines (GitLab CI) and can also be executed locally for development.
 
-## Test Structure
+## Test structure
 
-### Core Tests
+### Core tests
 - `01_basic_installation.sql` - Verifies schema, tables, and functions are properly installed
 - `02_functionality.sql` - Tests core functionality including index detection, bloat estimation, and reindexing
 - `03_security.sql` - Security and permission tests, SQL injection protection
 
-### Test Runner
+### Test runner
 - `run_tests.sh` - Shell script that orchestrates test execution
   - Handles PostgreSQL connection
   - Runs tests in sequence
   - Generates JUnit XML output for CI
   - Supports multiple PostgreSQL versions (13+)
 
-## Running Tests Locally
+## Running tests locally
 
 ### Prerequisites
 - PostgreSQL 13 or higher
 - psql client
 - Bash shell
 
-### Quick Start
+### Quick start
 ```bash
 # Run all tests with default settings (localhost)
 ./run_tests.sh
@@ -49,7 +49,7 @@ This directory contains the automated test suite for pg_index_pilot. The tests a
 - `-i` - Install only, don't run tests
 - `-s` - Skip installation, run tests only
 
-### Environment Variables
+### Environment variables
 You can also use environment variables:
 ```bash
 export DB_HOST=myhost
@@ -60,7 +60,7 @@ export DB_PASS=mypass
 ./run_tests.sh
 ```
 
-## CI/CD Integration
+## CI/CD integration
 
 ### GitLab CI
 The project includes `.gitlab-ci.yml` which:
@@ -81,16 +81,16 @@ docker exec pg16 bash -c "cd /path/to/tests && ./run_tests.sh"
 docker stop pg16
 ```
 
-## Test Development
+## Test development
 
-### Adding New Tests
+### Adding new tests
 1. Create a new SQL file with numeric prefix (e.g., `04_performance.sql`)
 2. Use `\set ON_ERROR_STOP on` to fail fast
 3. Use `DO $$ ... END $$;` blocks for test logic
 4. Use `RAISE NOTICE 'PASS: ...'` for success
 5. Use `RAISE EXCEPTION 'FAIL: ...'` for failures
 
-### Test Template
+### Test template
 ```sql
 -- Test XX: Description
 \set ON_ERROR_STOP on
@@ -114,7 +114,7 @@ END $$;
 \echo ''
 ```
 
-## Test Coverage
+## Test coverage
 
 Current test coverage includes:
 - ✅ Schema installation verification
@@ -130,7 +130,7 @@ Current test coverage includes:
 
 ## Troubleshooting
 
-### Common Issues
+### Common issues
 
 1. **Connection refused**
    - Check PostgreSQL is running
@@ -146,7 +146,7 @@ Current test coverage includes:
    - Review `/tmp/test_output.log` for full output
    - Ensure PostgreSQL version is 13+
 
-### Debug Mode
+### Debug mode
 ```bash
 # Run with verbose output
 PGPASSWORD=mypass psql -h localhost -U postgres -d test_index_pilot -f 01_basic_installation.sql

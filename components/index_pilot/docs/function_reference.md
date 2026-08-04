@@ -2,14 +2,14 @@
 
 ### Table of contents
 
-- [Core Functions](#core-functions)
-- [Bloat Analysis](#bloat-analysis)
-- [Non-Superuser Mode Functions](#non-superuser-mode-functions)
+- [Core functions](#core-functions)
+- [Bloat analysis](#bloat-analysis)
+- [Non-superuser mode functions](#non-superuser-mode-functions)
 - [Configuration](#configuration)
 - [FDW and connection setup](#fdw-and-connection-setup)
 - [Maintenance helpers and meta](#maintenance-helpers-and-meta)
 
-### Core Functions
+### Core functions
 
 #### `index_pilot.do_reindex()`
 Manually triggers reindexing for specific objects.
@@ -32,7 +32,7 @@ procedure index_pilot.periodic(
 )
 ```
 
-### Bloat Analysis
+### Bloat analysis
 
 #### `index_pilot.get_index_bloat_estimates()`
 Returns current bloat estimates for all indexes in a database.
@@ -52,7 +52,7 @@ Notes:
 - `estimated_bloat` is computed as `indexsize / (best_ratio * estimated_tuples)` using cached state in `index_pilot.index_current_state`.
 - Immediately after baseline initialization (see `do_force_populate_index_stats`) `estimated_bloat` will be ~1.0 by definition; it grows as indexes bloat further.
 
-### Non-Superuser Mode Functions
+### Non-superuser mode functions
 
 #### `index_pilot.check_permissions()`
 Verifies permissions for non-superuser mode operation.

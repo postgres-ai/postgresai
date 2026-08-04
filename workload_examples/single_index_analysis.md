@@ -1,16 +1,16 @@
-## workload example for single index analysis dashboard
+## Workload example for the single index analysis dashboard
 
 This example prepares and runs a repeatable workload designed for the postgres_ai monitoring “Single index analysis” dashboard. It also shows how to deploy `pg_index_pilot`, generate controlled index bloat, and let `pg_index_pilot` automatically rebuild indexes when bloat exceeds the configured threshold during periodic runs.
 
-### prerequisites
+### Prerequisites
 
 - Postgres instance
 - `pg_cron` extension available for scheduling periodic execution
 - `pgbench` installed for workload generation
 
-## prepare the dataset in the target database
+## Prepare the dataset in the target database
 
-Create a table with several indexes and populate 10 million rows in the target database (e.g., `workloaddb`). This schema uses `test_pilot` schema and `items` table.
+Create a table with several indexes and populate 10 million rows in the target database (e.g., `workloaddb`). This uses the `test_pilot` schema and the `items` table.
 
 ```bash
 psql -U postgres -d workloaddb <<'SQL'
@@ -54,7 +54,7 @@ select setval('test_pilot.items_id_seq', (select coalesce(max(id),0) from test_p
 SQL
 ```
 
-### deploy pg_index_pilot
+### Deploy pg_index_pilot
 
 ```bash
 # Clone the repository
@@ -74,7 +74,7 @@ psql -U postgres -d index_pilot_control -f index_pilot_functions.sql
 psql -U postgres -d index_pilot_control -f index_pilot_fdw.sql
 ```
 
-### register the target database via FDW
+### Register the target database via FDW
 
 Replace placeholders with actual connection details for your target database (the database where workload and indexes live; in examples below it is `workloaddb`).
 
@@ -103,7 +103,7 @@ psql -U postgres -d index_pilot_control -c "select * from index_pilot.check_fdw_
 psql -U postgres -d index_pilot_control -c "select * from index_pilot.check_environment();"
 ```
 
-### schedule periodic runs with pg_cron (run from the primary database)
+### Schedule periodic runs with pg_cron (run from the primary database)
 
 Install `pg_cron` in the primary database (e.g., `postgres`) and schedule execution of `index_pilot.periodic` in the control database using `cron.schedule_in_database`:
 
@@ -118,7 +118,7 @@ select cron.schedule_in_database(
 
 Behavior: when `index_pilot.periodic(true)` runs, it evaluates index bloat in the registered target database(s). If bloat for an index exceeds the configured `index_rebuild_scale_factor` at the time of a run, an index rebuild is initiated.
 
-### run the workload with pgbench
+### Run the workload with pgbench
 
 Use two concurrent pgbench jobs: one generates updates that touch ranges of `id` and another performs point-lookups by `id`. This mix creates index bloat over time; when bloat exceeds the configured threshold during a periodic run, `pg_index_pilot` triggers a rebuild.
 
@@ -161,7 +161,7 @@ tmux new -d -s pgbench_selects 'env PGPASSWORD=<password> pgbench -n -h 127.0.0.
 
 Let these processes run continuously. The updates will steadily create index bloat; on the configured schedule (daily in the example above), `index_pilot.periodic(true)` evaluates bloat and, if thresholds are exceeded, initiates index rebuilds.
 
-### monitor results
+### Monitor results
 
 - In the postgres_ai monitoring included with this repository, use:
   - `Single index analysis` for targeted inspection

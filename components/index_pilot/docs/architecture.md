@@ -18,7 +18,7 @@ We support two deployment scenarios:
 - If pg_cron is already installed in another database: keep it as is and schedule jobs from that database using `cron.schedule_in_database(...)` to run commands in `index_pilot_control`. Note that pg_cron may only be installed in one database per cluster; `cron.schedule_in_database` is the supported way to run jobs targeting other databases.
 
 ### `dblink` for separate connections
-`REINDEX INDEX CONCURRENTLY` cannot run in transaction blocks. `dblink` creates separate connection to execute reindex operations without blocking the control session.
+`REINDEX INDEX CONCURRENTLY` cannot run in transaction blocks. `dblink` creates a separate connection to execute reindex operations without blocking the control session.
 
 ### `postgres_fdw` for authentication
 Provides secure credential storage via user mappings. Eliminates plaintext passwords in connection strings and removes superuser requirements.

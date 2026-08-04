@@ -63,7 +63,7 @@ chmod +x /usr/local/bin/index_pilot_maintenance.sh
 (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/index_pilot_maintenance.sh >>/var/log/index_pilot_maintenance.log 2>&1") | crontab -
 ```
 
-## Managing State
+## Managing state
 
 ### Inventory of objects (control DB)
 - **Schema**: `index_pilot`

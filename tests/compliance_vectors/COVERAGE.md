@@ -1,4 +1,4 @@
-# Compliance Vector Coverage
+# Compliance vector coverage
 
 Tracks which functions have compliance vectors and their verification status.
 
@@ -10,13 +10,13 @@ Tracks which functions have compliance vectors and their verification status.
 | `get_all_nodes()` | - | ✅ | ⬜ | Contract test (shape, not computation) |
 | `_densify()` | - | ✅ | ⬜ | Property tests only |
 
-## Review Process
+## Review process
 - Vector changes require review from Python maintainer AND TS migration lead
 - New vectors must include `python_verified` date after tests pass
 - `typescript_verified` set when TS harness passes all cases
 - Production mismatches → new vector case + snapshot update
 
-## Test Summary
+## Test summary
 
 | Category | Count | Files |
 |----------|-------|-------|

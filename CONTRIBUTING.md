@@ -1,6 +1,6 @@
-# Contributing (Local Development)
+# Contributing (local development)
 
-This document describes how to run Postgres AI Monitoring locally for development.
+This document describes how to run postgres_ai monitoring locally for development.
 
 ## Prerequisites
 
@@ -364,9 +364,9 @@ postgresai mon stop
 postgresai mon start
 ```
 
-## Preview Environments
+## Preview environments
 
-Preview environments allow you to test monitoring changes in isolated, publicly-accessible deployments before merging.
+Preview environments let you test monitoring changes in isolated, publicly accessible deployments before merging.
 
 ### Overview
 
@@ -375,7 +375,7 @@ Preview environments allow you to test monitoring changes in isolated, publicly-
 - Auto-expires after 3 days of inactivity
 - Maximum 2 concurrent previews
 
-### Creating a Preview
+### Creating a preview
 
 1. Push your branch to GitLab
 2. Open the merge request pipeline
@@ -396,7 +396,7 @@ ssh deploy@<PREVIEW_VM_HOST> "cat /opt/postgres-ai-previews/previews/{branch-slu
 
 Username: `monitor`
 
-### Updating a Preview
+### Updating a preview
 
 When you push new commits to a branch with an active preview:
 
@@ -404,7 +404,7 @@ When you push new commits to a branch with an active preview:
 - Grafana dashboards and configs are refreshed
 - No need to destroy and recreate
 
-### Destroying a Preview
+### Destroying a preview
 
 Previews are automatically cleaned up when:
 
@@ -416,7 +416,7 @@ To manually destroy:
 1. Open the merge request pipeline
 2. Click `preview:destroy`
 
-### Branch Name Sanitization
+### Branch name sanitization
 
 Branch names are sanitized for DNS compatibility:
 
@@ -426,7 +426,7 @@ Branch names are sanitized for DNS compatibility:
 | `feature_test` | `feature-test` |
 | `UPPERCASE-Branch` | `uppercase-branch` |
 
-### Troubleshooting Previews
+### Troubleshooting previews
 
 **Preview won't deploy:**
 - Check if the maximum concurrent previews limit (2) is reached
