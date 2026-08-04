@@ -2223,22 +2223,33 @@ program
       const connResult = await connectWithSslFallback(Client, adminConn);
       client = connResult.client as Client;
 
-      // Preflight: verify the connected user has sufficient permissions
+      // Preflight: verify the connected user has sufficient permissions.
+      // Defense in depth: an unexpected pre-flight failure (e.g. a raising
+      // catalog function on an exotic setup) must not kill the whole checkup —
+      // warn on stderr and continue. Missing *required* permissions still halt.
       spinner.update("Checking database permissions");
-      const permCheck = await checkCurrentUserPermissions(client);
-      const permMessages = formatPermissionCheckMessages(permCheck);
+      try {
+        const permCheck = await checkCurrentUserPermissions(client);
+        const permMessages = formatPermissionCheckMessages(permCheck);
 
-      for (const w of permMessages.warnings) {
-        console.error(w);
-      }
-
-      if (permMessages.failed) {
-        spinner.stop();
-        for (const e of permMessages.errors) {
-          console.error(e);
+        for (const w of permMessages.warnings) {
+          console.error(w);
         }
-        process.exitCode = 1;
-        return;
+
+        if (permMessages.failed) {
+          spinner.stop();
+          for (const e of permMessages.errors) {
+            console.error(e);
+          }
+          process.exitCode = 1;
+          return;
+        }
+      } catch (permErr) {
+        const msg = permErr instanceof Error ? permErr.message : String(permErr);
+        console.error(
+          `Warning: could not verify database permissions (${msg}); continuing with checkup. ` +
+            `If checks fail, run 'postgresai prepare-db' or see 'postgresai checkup --help'.`
+        );
       }
 
       // Generate reports
