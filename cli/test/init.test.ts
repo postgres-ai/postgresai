@@ -1318,12 +1318,8 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
   }, 60000);
 });
 
-// ---------------------------------------------------------------------------
-// connectWithSslFallback — connectionTimeoutMillis and statement_timeout
-// Issues 9 & 10
-// ---------------------------------------------------------------------------
 describe("connectWithSslFallback", () => {
-  // Issue 9: Verify that connectionTimeoutMillis is forwarded to the pg Client
+  // Verify that connectionTimeoutMillis is forwarded to the pg Client
   // constructor so slow-responding servers don't hang the CLI indefinitely.
   // Direct integration testing against a real TCP timeout would be flaky in CI,
   // so we use a mock ClientClass and assert the config passed to its constructor.
@@ -1348,7 +1344,7 @@ describe("connectWithSslFallback", () => {
     expect(receivedConfigs[0].connectionTimeoutMillis).toBe(10_000);
   });
 
-  // Issue 10: Verify that SET statement_timeout is issued after every successful
+  // Verify that SET statement_timeout is issued after every successful
   // connection to prevent runaway queries from blocking the CLI.
   test("issues SET statement_timeout = '30s' after connecting", async () => {
     const queriesSent: string[] = [];

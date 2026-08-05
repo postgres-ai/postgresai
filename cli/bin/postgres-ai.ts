@@ -287,10 +287,6 @@ function createTtySpinner(
   };
 }
 
-// ============================================================================
-// Checkup command helpers
-// ============================================================================
-
 interface CheckupOptions {
   checkId: string;
   nodeName: string;
@@ -513,13 +509,6 @@ function printUploadSummary(
   }
 }
 
-// ============================================================================
-// CLI configuration
-// ============================================================================
-
-/**
- * CLI configuration options
- */
 interface CliOptions {
   apiKey?: string;
   apiBaseUrl?: string;

@@ -9,10 +9,8 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Mock unavailable Flask-stack dependencies so the pure escape helpers can be
 # imported without a running Flask application or installed packages.
-# ---------------------------------------------------------------------------
 for _mod in [
     "flask",
     "prometheus_api_client",
@@ -102,10 +100,6 @@ def generator():
     )
 
 
-# ---------------------------------------------------------------------------
-# reporter.postgres_reports._escape_promql_label
-# ---------------------------------------------------------------------------
-
 class TestEscapePromqlLabel:
     """Tests for PostgresReportGenerator._escape_promql_label static method."""
 
@@ -168,10 +162,6 @@ class TestEscapePromqlLabel:
         assert PostgresReportGenerator._escape_promql_label(payload) == expected
 
 
-# ---------------------------------------------------------------------------
-# monitoring_flask_backend.app.escape_promql_label
-# ---------------------------------------------------------------------------
-
 class TestFlaskEscapePromqlLabel:
     """Tests for the Flask app's module-level escape_promql_label function."""
 
@@ -229,10 +219,6 @@ class TestFlaskEscapePromqlLabel:
     def test_parameterized_injection(self, payload, expected):
         assert flask_escape_promql_label(payload) == expected
 
-
-# ---------------------------------------------------------------------------
-# monitoring_flask_backend.app.escape_promql_regex_literal
-# ---------------------------------------------------------------------------
 
 class TestFlaskEscapePromqlRegexLiteral:
     """Tests for the Flask app's escape_promql_regex_literal function.
@@ -319,10 +305,6 @@ class TestFlaskEscapePromqlRegexLiteral:
     def test_parameterized_injection(self, payload, expected):
         assert flask_escape_promql_regex_literal(payload) == expected
 
-
-# ---------------------------------------------------------------------------
-# reporter.postgres_reports.PostgresReportGenerator — table bloat queries
-# ---------------------------------------------------------------------------
 
 class TestGetTableBloatEscaping:
     """Tests that generate_f004_heap_bloat_report properly escapes user-supplied
