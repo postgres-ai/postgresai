@@ -176,6 +176,23 @@ build:test:images:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
 
+flask-backend:tests:
+  stage: test
+  image: python:3.11-bullseye
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+  before_script:
+    - python --version
+    - pip install --upgrade pip
+    - pip install -r monitoring_flask_backend/requirements.txt
+  script:
+    - PYTHONPATH=monitoring_flask_backend:. python -m pytest monitoring_flask_backend/test_app.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 reporter:tests:
   stage: test
   image: python:3.11-bullseye

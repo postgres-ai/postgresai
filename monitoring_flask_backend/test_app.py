@@ -6,11 +6,13 @@ import threading
 import pytest
 import json
 import psycopg2
+from contextlib import contextmanager
 from unittest.mock import patch, mock_open, Mock, MagicMock, call
 
 import app as app_module
 from app import (
     app,
+    _RETENTION_CLEANUP_THREAD_NAME,
     read_version_file,
     smart_truncate_query,
     _escape_prometheus_label,
@@ -19,9 +21,22 @@ from app import (
 )
 
 
-@pytest.fixture
-def client():
-    """Create test client."""
+# One budget for every thread wait in this file: generous enough for a
+# 1-2 vCPU shared runner under contention.
+_THREAD_JOIN_TIMEOUT_SECONDS = 10
+
+
+def _reap_cleanup_threads():
+    """Join any retention-cleanup thread and fail loudly if one survives."""
+    for thread in threading.enumerate():
+        if thread.name == _RETENTION_CLEANUP_THREAD_NAME:
+            thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
+            assert not thread.is_alive(), f"{thread.name} outlived its test"
+
+
+@contextmanager
+def _app_state_guard():
+    """Save/restore the module globals the endpoints mutate."""
     original_trigger_migration_applied = app_module._trigger_migration_applied
     original_active_minutes = app_module.QUERYID_ACTIVE_MINUTES
     original_retention_hours = app_module.QUERYID_RETENTION_HOURS
@@ -32,11 +47,15 @@ def client():
     # Reset the lazy migration flag so tests are independent
     app_module._trigger_migration_applied = True  # Skip migration in tests
     app_module._cleanup_running.clear()
+    # Both ends: a cleanup thread outliving its test would clear the shared
+    # _cleanup_running flag and execute() against another test's mock cursor.
+    # Tests that use no fixture can leak one in, so sweep on the way in too.
+    _reap_cleanup_threads()
 
     try:
-        with app.test_client() as client:
-            yield client
+        yield
     finally:
+        _reap_cleanup_threads()
         app_module._trigger_migration_applied = original_trigger_migration_applied
         app_module.QUERYID_ACTIVE_MINUTES = original_active_minutes
         app_module.QUERYID_RETENTION_HOURS = original_retention_hours
@@ -44,6 +63,27 @@ def client():
         app_module._cleanup_running.clear()
         if cleanup_was_running:
             app_module._cleanup_running.set()
+
+
+@pytest.fixture
+def client():
+    """Test client with the background retention-cleanup thread stubbed out.
+
+    /query_info_metrics spawns a daemon cleanup thread that shares the test's
+    patched psycopg2 mock, so leaving it live makes assertions on
+    execute.call_args race. Use cleanup_client to exercise the thread itself.
+    """
+    with _app_state_guard(), patch('app._start_retention_cleanup_thread'):
+        with app.test_client() as client:
+            yield client
+
+
+@pytest.fixture
+def cleanup_client():
+    """Test client that keeps the real retention-cleanup thread wiring."""
+    with _app_state_guard():
+        with app.test_client() as client:
+            yield client
 
 
 @pytest.fixture
@@ -715,7 +755,7 @@ class TestQueryInfoMetricsEndpoint:
 
     @patch('app._run_retention_cleanup')
     @patch('app.psycopg2.connect')
-    def test_retention_cleanup_runs_in_background(self, mock_connect, mock_cleanup, client):
+    def test_retention_cleanup_runs_in_background(self, mock_connect, mock_cleanup, cleanup_client):
         """Test that retention cleanup is triggered and the running flag is cleared."""
         mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
         mock_cursor.__iter__ = lambda self: iter([])
@@ -737,14 +777,14 @@ class TestQueryInfoMetricsEndpoint:
         mock_cleanup.side_effect = cleanup_side_effect
 
         with patch('app.threading.Thread', side_effect=make_thread):
-            response = client.get('/query_info_metrics')
+            response = cleanup_client.get('/query_info_metrics')
             assert response.status_code == 200
-            assert started.wait(timeout=2)
+            assert started.wait(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
             assert app_module._cleanup_running.is_set() is True
             release.set()
 
         for thread in threads:
-            thread.join(timeout=2)
+            thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
             assert thread.is_alive() is False
 
         mock_cleanup.assert_called_once()
@@ -791,7 +831,7 @@ class TestQueryInfoMetricsEndpoint:
         assert app_module._cleanup_running.is_set() is False
 
     @patch('app.psycopg2.connect')
-    def test_retention_cleanup_thread_start_failure_clears_flag(self, mock_connect, client):
+    def test_retention_cleanup_thread_start_failure_clears_flag(self, mock_connect, cleanup_client):
         """Thread.start failure must not leave cleanup disabled forever."""
         mock_cursor = mock_connect.return_value.cursor.return_value.__enter__.return_value
         mock_cursor.__iter__ = lambda self: iter([])
@@ -800,7 +840,7 @@ class TestQueryInfoMetricsEndpoint:
 
         with patch('app.threading.Thread', return_value=broken_thread), \
              patch('app.logger.warning') as mock_warning:
-            response = client.get('/query_info_metrics')
+            response = cleanup_client.get('/query_info_metrics')
 
         assert response.status_code == 200
         assert app_module._cleanup_running.is_set() is False
@@ -859,6 +899,11 @@ end;
 """
 
 
+# Captured at import, before any fixture mutates the dict, so
+# test_first_warning_fires_on_a_freshly_booted_host locks in the app.py seed.
+_INITIAL_TRIGGER_WARNING_LAST_AT = app_module._trigger_migration_warning_state['last_at']
+
+
 class TestTriggerMigration:
     """Tests for the verify-only _apply_trigger_migration function.
 
@@ -867,9 +912,22 @@ class TestTriggerMigration:
     body contains the advisory-lock dedup path and the trigger exists.
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_warning_throttle(self):
+        """Re-arm the warning throttle around each test and restore it after.
+
+        Tests in this class run milliseconds apart, well inside the 300s
+        throttle window, so without this only the first would see a warning.
+        """
+        original = app_module._trigger_migration_warning_state['last_at']
+        app_module._trigger_migration_warning_state['last_at'] = float('-inf')
+        try:
+            yield
+        finally:
+            app_module._trigger_migration_warning_state['last_at'] = original
+
     def _make_mock_conn(self, fetchone_sequence):
         """Build a mock connection whose cursor().fetchone() returns successive tuples."""
-        app_module._trigger_migration_warning_state['last_at'] = 0.0
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_cursor.fetchone.side_effect = list(fetchone_sequence)
@@ -1016,6 +1074,28 @@ class TestTriggerMigration:
             # Second invocation should early-return without opening a new connection.
             app_module._apply_trigger_migration()
             assert mock_connect.call_count == first_call_count
+
+    def test_warning_is_throttled_within_the_interval(self):
+        """A second failure inside the interval must not re-log."""
+        app_module._trigger_migration_warning_state['last_at'] = float('-inf')
+        with patch('app.logger.warning') as mock_warning:
+            app_module._warn_trigger_migration_failure("first %s", "boom")
+            app_module._warn_trigger_migration_failure("second %s", "boom")
+
+        assert mock_warning.call_count == 1
+
+    def test_first_warning_fires_on_a_freshly_booted_host(self):
+        """monotonic() is host uptime, so the app.py seed must not suppress it."""
+        app_module._trigger_migration_warning_state['last_at'] = (
+            _INITIAL_TRIGGER_WARNING_LAST_AT
+        )
+        # 0.0, not an arbitrary small number: this stays a real guard even if
+        # _TRIGGER_MIGRATION_WARNING_INTERVAL_SECONDS is retuned later.
+        with patch('app.time.monotonic', return_value=0.0), \
+             patch('app.logger.warning') as mock_warning:
+            app_module._warn_trigger_migration_failure("boot %s", "boom")
+
+        assert mock_warning.call_count == 1
 
 
 class TestRetentionCleanup:

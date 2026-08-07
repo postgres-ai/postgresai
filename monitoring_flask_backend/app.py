@@ -271,7 +271,10 @@ QUERYID_RETENTION_BATCH_SIZE = max(1, int(os.environ.get('QUERYID_RETENTION_BATC
 # with a cross-process cache.
 _trigger_migration_applied = False
 _trigger_migration_lock = threading.Lock()
-_trigger_migration_warning_state = {'last_at': 0.0}
+# -inf, not 0.0: time.monotonic() is host uptime and is not namespaced by
+# containers, so a 0.0 seed silently swallows the first warning for the first
+# _TRIGGER_MIGRATION_WARNING_INTERVAL_SECONDS of a freshly booted node.
+_trigger_migration_warning_state = {'last_at': float('-inf')}
 _TRIGGER_MIGRATION_WARNING_INTERVAL_SECONDS = 300
 
 # Arbitrary constant keys for pg_advisory_lock — serialize across workers
@@ -402,6 +405,7 @@ def _ensure_trigger_migration() -> None:
 # The lock makes the Event check/set an atomic in-process compare-and-set.
 _cleanup_running = threading.Event()
 _cleanup_start_lock = threading.Lock()
+_RETENTION_CLEANUP_THREAD_NAME = "retention-cleanup"
 
 
 # Cap iterations per run so a huge backlog can't monopolize a connection.
@@ -500,7 +504,7 @@ def _start_retention_cleanup_thread() -> None:
         try:
             threading.Thread(
                 target=_run_retention_cleanup_guarded,
-                name="retention-cleanup",
+                name=_RETENTION_CLEANUP_THREAD_NAME,
                 daemon=True,
             ).start()
         except Exception:
