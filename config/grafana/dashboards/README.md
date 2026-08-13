@@ -100,6 +100,39 @@ For rate-based panels (showing per-second values), append `/s` to the title:
 - **"IO stats"**: For shared buffer pool I/O metrics
 - **"Size stats"**: For size-related metrics
 
+## Legend sorting
+
+Every table-mode legend MUST declare a default sort (`sortBy` + `sortDesc: true`).
+Without one the legend renders in datasource order, so a top-N panel does not put
+the top offender first. Pick the key from what the panel measures:
+
+| Panel measures | Examples | `sortBy` |
+|----------------|----------|----------|
+| A rate (per second) | calls/s, rows/s, bytes/s, ops/s, ASH, sessions, locks | `Mean` |
+| Per call, latency, or saturation | per-call metrics, query latency, utilization % | `Max` |
+| A level / state | sizes, estimated bloat, XID age, archive lag, retained WAL | `Last` (or `Last *`) |
+
+Always descending.
+
+Rate panels use `Mean`, not `Max`, because the top-N panels are built on
+`topk(N, irate(...))`: a single scrape gap or counter reset yields a one-point
+spike, and `Max` ranks that artifact above sustained load. Level panels use the
+latest value because a table that was badly bloated *before* it was repacked
+should not keep the top row.
+
+`tests/grafana_dashboards/test_legend_sort_declared.py` enforces this on every
+MR: it fails if a table legend has no `sortBy`, sorts ascending, or names a
+column `calcs` does not display. The choice of key stays a judgement call.
+
+**`sortBy` must name a column that `calcs` actually displays, or Grafana silently
+ignores the sort.** Use the reducer display names:
+
+| `calcs` entry | Column name |
+|---------------|-------------|
+| `min` / `max` / `mean` | `Min` / `Max` / `Mean` |
+| `last` | `Last` |
+| `lastNotNull` | `Last *` (note the asterisk) |
+
 ## Units
 
 - **binBps**: Use binary bytes per second (KiB/s, MiB/s, GiB/s) for Postgres

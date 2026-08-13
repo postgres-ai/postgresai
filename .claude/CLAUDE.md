@@ -21,6 +21,9 @@ git submodule update --remote .cursor
 - **quality/pr-review-prompt.md** — AI PR review system prompt (PostgreSQL-specific)
 - **quality/failure-modes.md** — Critical failure modes with required test coverage
 - **quality/checklists/** — PR review and release checklists
+- **config/grafana/dashboards/README.md** — dashboard conventions: tags, titles,
+  terminology, units, and legend sorting. Read it before editing any dashboard
+  JSON; `tests/grafana_dashboards/` enforces the mechanical parts on every MR.
 
 ### Commands
 

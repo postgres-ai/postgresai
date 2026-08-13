@@ -205,6 +205,23 @@ docker compose restart pgwatch-postgres pgwatch-prometheus
 docker compose restart grafana
 ```
 
+#### Dashboard conventions (read before editing a dashboard)
+
+`config/grafana/dashboards/README.md` is the source of truth for tags, panel
+titles, terminology, units, and **legend sorting** (rate panels sort by `Mean`,
+per-call/latency by `Max`, levels by `Last`/`Last *` — always descending).
+
+`tests/grafana_dashboards/` enforces the mechanical parts on every MR via the
+`quality:grafana-dashboards-lint` job. Run it locally before pushing:
+
+```bash
+python -m pytest tests/grafana_dashboards -q
+```
+
+Note `postgres_ai_helm/config/grafana/dashboards/*.json` are symlinks to
+`config/grafana/dashboards/` — edit the canonical file, never write through the
+link.
+
 ### Run reporter on your host (recommended)
 
 #### Install deps (host)
@@ -439,4 +456,3 @@ Branch names are sanitized for DNS compatibility:
 **Can't access the preview URL:**
 - DNS propagation may take a few minutes
 - Verify the SSL certificate is valid (Let's Encrypt DNS-01 challenge)
-
