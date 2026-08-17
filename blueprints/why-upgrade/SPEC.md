@@ -1,6 +1,6 @@
 # SPEC — `pgai why-upgrade`
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Status:** Draft for review
 **Slug:** `why-upgrade`
 **Scope:** PostgreSQL **minor** releases, lines **17.x** and **18.x**
@@ -52,6 +52,31 @@ The items that matter are not cosmetic. Verified examples:
 Every one of those is **deterministically detectable from the catalog** — proven
 in §4.6. The release notes tell you a fix exists. They never tell you whether it
 is *your* problem, and never in priority order.
+
+### 1.1a The finding that justifies the product on its own
+
+Upstream's migration sections chain back-pointers — 17.11 says *"if you are
+upgrading from a version earlier than 17.6, see 17.6"*, 17.6 says *"earlier than
+17.5"*, 17.5 says *"earlier than 17.1"*. Each release points to **one** prior
+release.
+
+**That chain is lossy, and provably so.** A user upgrading **17.4 → 17.11** who
+follows upstream's own pointers lands on 17.6 and 17.11 — and **silently misses
+17.5 entirely**, including its self-referential-FK corruption item and its BRIN
+bloom data-loss item. The chain jumps 17.11 → 17.6 and never mentions 17.5,
+because 17.6's pointer targets 17.5 but 17.11's targets 17.6.
+
+Following the official documentation correctly still loses data-corruption
+remediation steps. Nothing else in this brief is a stronger argument for
+building the thing.
+
+### 1.1b Out-of-cycle releases are routine, and they carry the urgent items
+
+17.2 shipped 7 days after 17.1; 17.4 seven days after 17.3; 17.9 and 18.3
+thirteen days after 17.8/18.2. These exist **because the previous minor broke
+something** — 17.9 and 18.3 carry zero new CVEs and are pure regression repair.
+Being on the *broken* intermediate version is the highest-urgency state a user
+can be in, and it is invisible to any tool that only counts fixes.
 
 ### 1.2 What we build
 
@@ -195,12 +220,52 @@ Interval logic falls out with no special cases:
   the user already has. This cross-major case is what a naive
   concatenate-the-notes implementation gets wrong.
 
-Two real edge cases the model must survive:
-- **Minor versions are not contiguous.** 18.5 was stamped and never released (a
-  regression found post-wrap); the notes say so in prose. Never assume `n+1`.
-- **Upstream chains its own migration advice** ("if upgrading from a version
-  earlier than 17.6, see …") — upstream confirming that accumulation over an
-  interval, not per-release display, is the correct model.
+### 3.2a Four interval semantics — the part that is easy to get wrong
+
+A single "fixed_in" interval is **not sufficient**. Each fix is an interval over
+a *state variable*, and the corpus contains four distinct kinds:
+
+| Semantics | Condition | Example | Consequence |
+|---|---|---|---|
+| **transient** | ran in `[introduced, fixed)` | GiST `range_ops` index-only scan mis-decode | Upgrade past `fixed_in` and it's gone. Nothing to do. |
+| **residual** | *ever* ran in `[introduced, fixed)` | ltree / btree_gist / BRIN reindex items | Upgrading stops new damage but **does not repair old damage**. Depends on **history**, not on `from`. |
+| **creation-time** | `initdb`/object created under a bad version | `json_strip_nulls` volatility (18.3) | A cluster created on 18.1 and upgraded to 18.6 is **still broken, forever**, until manual catalog surgery. |
+| **peer-version** | two nodes at different versions | multixact truncation replay (17.9/18.3) | Requires topology, not one connection. The standard standbys-first rollout **is** the trigger window. |
+
+Three consequences that must be designed in from day one:
+
+1. **"Currently running" ≠ "ever ran."** A tool holding one connection string
+   and no history under-reports every residual item. **Mitigation: always run
+   the catalog and data probes regardless of the version delta** — they are
+   cheap, history-free, and answer the question the version arithmetic cannot.
+2. **Creation-time items are invisible to interval logic entirely.** Only a
+   catalog probe answers them. `json_strip_nulls` is the worked example, and it
+   must be checked in **every** database including `template0`/`template1`.
+3. **Never invent `introduced_in`.** `Backpatch-through: 14` says the fix went
+   back to 14; it does **not** say the bug started there. Guessing produces
+   confidently-wrong *suppression*, which is the same failure class as a false
+   `NOT_EXPOSED`. **Policy: assert `introduced_in` only when a commit message
+   names the culprit commit or the note says so outright; otherwise emit "all
+   versions before `fixed_in`" and accept the over-reporting.** Upstream's own
+   security database has exactly this gap and over-states as a result.
+
+Supersession is real and discoverable: the CVE-2025-1094 fix (17.3) was
+over-corrected and repaired in 17.4; the multixact regression entered in 17.8
+and was fixed in 17.9. So 17.7 → 17.9 should **suppress both**, while sitting on
+17.8 today makes 17.9 *urgent*. The strongest signal is commit back-references
+(`"This fixes an oversight in <hash>"`), which exist in commit messages and
+**not** in the release notes.
+
+### 3.2b Edge cases the model must survive
+
+- **Minor versions are not contiguous.** 18.5 was stamped and never released.
+- **The phantom 18.5 has already propagated.** postgresql.org's security pages
+  still report *"Fixed: 18.5, 17.11, …"* for CVEs that actually shipped in 18.6,
+  because the security DB records the **wrap** number, not the **shipped**
+  number. Patroni's bundled GUC metadata encodes `180005` for the same reason.
+  **Any product joining CVE data to shipped versions on the string "18.5" hands
+  users a version they cannot install.** Model wrap-number and shipped-number as
+  distinct fields, normalized against `versions.json` and the tag list.
 
 ### 3.3 The core mechanic: **exposure**, not "matching score"
 
@@ -274,6 +339,42 @@ highest-value content in the corpus, since it is upstream explicitly saying
 Ingest is **deterministic and re-runnable**; it never calls an LLM. Output is
 `fix` + `fix_release` rows with verbatim upstream text preserved separately from
 enrichment (see §9 on licensing).
+
+**Ingest from git, never from the website.** `src/tools/add_commit_links.pl`
+only converts *same-branch* hashes into the visible `§` links, so the rendered
+HTML at postgresql.org shows only the 18-branch commits. **The SGML is strictly
+richer than the HTML** — scraping the site throws away the cross-branch
+back-patch fan-out, which is the single most valuable structured field. Note the
+notes live only on the stable branches; `master` carries only the in-development
+release file.
+
+**Two parsing traps, both real and both silent:**
+
+1. **The first `CVE-` in an item is usually not that item's CVE.** Items
+   reference prior CVEs in prose (e.g. an 18.6 item mentions CVE-2025-8714 twice
+   before its own `(CVE-2026-18408)`). **Rule: the assigned CVE is the one in
+   parentheses in the closing "The PostgreSQL Project thanks…" paragraph.**
+   Naive first-match parsing mislabels 4+ items in 18.6 alone.
+2. **One item can carry multiple commits per branch**, and one 17.9 item lists
+   18 hashes across 6 branches (three separate fix rounds). Cardinality is
+   many-to-many in both directions.
+
+**Commits are a first-class entity, not a link.** Measured over
+`REL_18_4..REL_18_6` (245 commits → 140 items): 87% carry `Discussion:` (the
+pgsql-hackers thread — this is the "why"), 223 carry `Backpatch-through:`, and
+**38 carry a `Security: CVE-…` trailer — an exact commit→CVE join key that
+exists nowhere in the release notes.** Commit bodies routinely contain material
+strictly better than the note: the operational scenario, the verbatim
+`ERROR:`/`FATAL:` string, and the maintainer's own honest assessment of what can
+and cannot be detected. Mining commit messages and threads for literal log
+strings is the highest-leverage automated extraction available.
+
+**Also ingest the packaging layer.** PGDG `debian/changelog` (and yum
+`other.xml`) carry the full notes as plain text *plus* packaging-only entries
+that appear in no PostgreSQL release note — ICU soname bumps (a collation change
+requiring REINDEX of ICU-collated indexes) and `cassert` being enabled in some
+builds (which turns assertion-failure items into production PANICs). These are
+genuine why-upgrade items invisible upstream.
 
 ### 4.2 Enrichment (AI-assisted, human-gated)
 
@@ -414,21 +515,120 @@ The precision property matters as much as the recall property: telling someone t
 ### 4.7 Managed services
 
 `version()` on RDS/Aurora/Cloud SQL/AlloyDB does not map 1:1 to community minors,
-and superuser is unavailable. Requirements: parse vendor version strings into a
-community-minor floor; mark vendor-patched uncertainty explicitly; ensure every
-probe degrades to `UNKNOWN` rather than throwing when privileges are missing.
-This is the largest install base and the most on-message segment (the provider
-decides your window and tells you nothing) — but also the hardest to be *correct*
-about. See open question OQ-3.
+and superuser is unavailable. The vendor's own patches live in the suffix
+(`17.4-R2`, `POSTGRES_17_4.R<date>.##`) which is invisible to `version()`
+everywhere except RDS with `rds_tools`.
+
+Two failure modes, in opposite directions: vendors **backport** fixes onto a
+frozen community minor (so `17.4-R2` may already contain a 17.5 fix), and
+vendors **lag** community by weeks or months (so "upgrade to 17.11" may be
+un-actionable). Announcing *"you are on 17.4, therefore vulnerable to everything
+in 17.5–17.11"* is wrong in both directions and would destroy trust.
+
+**The answer is feature probing, not version-string arithmetic.** Stop trusting
+the version string and ask the server what it can actually do:
+
+```sql
+SELECT current_setting('server_version_num')::int AS version_num,
+       EXISTS (SELECT 1 FROM pg_settings WHERE name='output_plugin_libraries') AS has_17_11_18_6_fix,
+       EXISTS (SELECT 1 FROM pg_settings WHERE name='file_extend_method')      AS has_17_8_18_2_guc,
+       (SELECT provolatile FROM pg_proc WHERE oid=3261) AS json_strip_nulls_volatility,
+       (SELECT count(*) FROM pg_extension WHERE extname='rds_tools')     AS is_rds,
+       (SELECT count(*) FROM pg_proc     WHERE proname='aurora_version') AS is_aurora,
+       (SELECT count(*) FROM pg_settings WHERE name LIKE 'cloudsql.%')   AS is_cloudsql;
+```
+
+Probes exist for new GUCs, catalog state, and changed function signatures — and
+catalog-state probes are *better* than version because they capture history.
+**But most fixes leave no probe** (a buffer-overrun fix in `to_char` is
+invisible), and the honest output there is *"community fixed this in 17.11; your
+platform reports 17.4-R2; backport status is not determinable from inside the
+database"* — never a verdict.
+
+Policy: detect the platform first and switch reporting mode; report against the
+vendor's version axis and link the vendor's notes; never claim exposure on
+version arithmetic alone on a managed platform. Note also that the 18.3
+`UPDATE pg_catalog.pg_proc` remediation is **impossible** without superuser —
+detect that and say so rather than emitting an instruction that will fail.
+
+The durable core is that **the catalog and data probes work identically
+everywhere** — RDS, Aurora, Cloud SQL, and self-managed alike.
+
+### 4.7a Two engineering constraints that will otherwise bite
+
+**Per-database blindness.** `pg_proc`, `pg_constraint`, `pg_class`, and
+`pg_extension` are **per-database**. A tool that connects to one database and
+reports "not affected" is wrong on any multi-database cluster, and
+`template0` requires flipping `datallowconn` to inspect. This must be designed
+in from day one, not retrofitted.
+
+**Never generate detection SQL at runtime.** During research, a hand-rolled
+partition-FK check produced **four false positives** against a healthy cluster —
+because self-referential FKs create two second-level child constraints — while
+upstream's own shipped query returned correctly. Ship a **curated,
+regression-tested query library**, each query validated against at least one
+known-affected and one known-clean fixture. This is the same conclusion the
+two-person sign-off gate reaches from the other direction.
+
+**Assertion builds are an open problem.** ~20% of items concern assertions;
+many are assert-only and worthless to a standard-build user but live for someone
+on a `cassert` build. There is no reliable in-database probe for
+`--enable-cassert`; best available is the build string plus package inspection.
+Flag rather than guess.
+
+### 4.7b Observability changes deserve first-class treatment
+
+For an observability company this category is not a footnote. Minor releases
+have changed monitoring surfaces repeatedly: **query IDs change at 18.2** for
+every query containing `GROUP BY` (so `pg_stat_statements` history keyed on
+`queryid` discontinues, trend charts break, and regression detection emits false
+"new query" alerts); LWLock wait-event names changed in 17.3 and again in 17.6,
+breaking joins to `pg_wait_events`; `contrib/bloom` index scan counters started
+working in 17.2, changing unused-index reports.
+
+None of these corrupt anything, so they carry no severity in upstream's framing
+— but they silently invalidate dashboards and baselines. **"This upgrade will
+change your metrics" belongs in its own output bucket**, and it is a category
+postgres.ai is uniquely positioned to own.
 
 ### 4.8 Third-party extensions
 
 Not a full compatibility matrix in v1 — that is an unbounded standing
 commitment. Instead: a **curated known-incidents list** for the top ~10
 (pg_cron, pgvector, PostGIS, TimescaleDB, pg_partman, pg_repack, Citus,
-pg_stat_statements, pgBouncer, Patroni), plus the cheap and genuinely useful
-part — read installed extension versions from `pg_extension` and flag any that
-require an `ALTER EXTENSION UPDATE` after the target minor.
+pg_stat_monitor, pgBouncer, Patroni), plus the cheapest genuinely useful check
+that exists — run after **every** binary upgrade:
+
+```sql
+SELECT e.extname, e.extversion AS installed, ae.default_version AS available,
+       format('ALTER EXTENSION %I UPDATE;', e.extname) AS fix
+FROM pg_extension e
+JOIN pg_available_extensions ae ON ae.name = e.extname
+WHERE e.extversion IS DISTINCT FROM ae.default_version;
+```
+
+This catches the one real case in the 17 series — **`earthdistance` 1.1 → 1.2 in
+17.3**, where the release note explains the motivation but **never says the
+words `ALTER EXTENSION earthdistance UPDATE`**, so installing the new binaries
+accomplishes nothing — plus PostGIS, pg_partman, and pg_repack.
+
+**ABI breakage is real and not detectable from SQL.** 17.1 broke binary
+compatibility with TimescaleDB and Apache AGE by changing a struct size;
+PostgreSQL shipped an out-of-cycle 17.2 seven days later to undo it.
+`pg_extension.extversion` is the *SQL* version and is entirely decoupled from
+the compiled `.so`. Standing rule for any cluster with third-party C extensions:
+rebuild extensions in lockstep, and consider lagging a fresh minor by a week.
+
+**A live third-party defect found during research, as a worked example of this
+category's value:** Patroni validates `postgresql.parameters` against a bundled
+per-version GUC database and **silently drops parameters it does not recognise**.
+Its metadata records `file_extend_method` as PostgreSQL 19+, but that GUC was
+back-patched to 16.12 / 17.8 / 18.2 (confirmed present on a live 16.13
+instance). So a Patroni-managed 17.8+ cluster that needs
+`file_extend_method = write_zeros` — the BTRFS/XFS workaround — will have the
+setting silently dropped. Relatedly, Patroni < 4.1.5 does not know
+`output_plugin_libraries`, so allowlisting `wal2json` there fails silently and
+logical decoding stays broken. **Neither appears in anyone's release notes.**
 
 ### 4.9 Public web
 
@@ -462,6 +662,24 @@ that shell out to `initdb`/`postgres` and skip when absent or running as root).
 4. RED: a fix back-patched to both lines appears **once**, not twice. GREEN.
 5. RED: 18.4→18.6 does not fabricate 18.5. GREEN. ← non-contiguous versions
 6. RED: target < current is rejected with a clear error. GREEN.
+
+**Interval semantics beyond the simple case.**
+6a. RED: a **residual** item (reindex-class) is surfaced for a cluster that
+    *ever ran* the bad range, even when `from` is already past `fixed_in`. GREEN.
+6b. RED: a **creation-time** item is surfaced purely from a catalog probe, with
+    no dependence on `from`/`to` at all. GREEN.
+6c. RED: a fix whose `introduced_in` is unknown is **never** suppressed — it
+    reports "all versions before fixed_in". GREEN. ← the confident-wrong-suppression guard
+6d. RED: 17.7→17.9 **suppresses** the 17.8-introduced regression *and* its 17.9
+    fix; 17.8→17.9 marks the same fix urgent. GREEN.
+6e. RED: a CVE whose upstream metadata says "Fixed: 18.5" resolves to the
+    shipped 18.6, never to an uninstallable 18.5. GREEN.
+
+**Ingest correctness.**
+6f. RED: the assigned CVE for an item that references prior CVEs in prose is
+    taken from the closing attribution paragraph, not first-match. GREEN.
+6g. RED: an item citing 18 hashes across 6 branches parses to one fix with all
+    branch releases. GREEN.
 
 **Exposure semantics — the safety-critical invariants.**
 7. RED: a probe returning `insufficient-permission` yields `UNKNOWN`, and
@@ -538,6 +756,17 @@ release, and credits the prior art loudly (§10).
 
 ## 8. Changelog
 
+- **0.2.0** (2026-08-17) — Domain-research pass folded in. Added: upstream's
+  migration chain shown to be **lossy** (17.4→17.11 drops 17.5); **four**
+  interval semantics (transient / residual / creation-time / peer-version)
+  replacing the single-interval model; the never-invent-`introduced_in` policy;
+  the phantom-18.5 metadata trap; SGML parsing traps (assigned-CVE position,
+  multi-commit items) and the git-not-HTML ingest rule; commits as a first-class
+  entity with the `Security:` trailer as a CVE join key; managed-service
+  **feature probing** replacing version arithmetic; per-database blindness;
+  never-generate-detection-SQL; observability/metric-discontinuity as its own
+  output bucket; extension `ALTER EXTENSION UPDATE` check and the Patroni
+  `file_extend_method` defect; full licensing and trademark posture.
 - **0.1.0** (2026-08-17) — Initial draft. Three-expert panel synthesis; corpus
   and migration sections measured from the source tree; canonical fix identity
   verified via cross-branch master commit hashes; five detectors validated on a
@@ -547,10 +776,40 @@ release, and credits the prior art loudly (§10).
 
 ## 9. Licensing & correctness risk
 
-Upstream release-note text is under the PostgreSQL License. Keep verbatim
-upstream text in a **separate field** from our enrichment so attribution is
-mechanical and unambiguous, and carry the required notice. Legal review before
-the public page ships.
+Upstream release-note text is under the **PostgreSQL License** (BSD-style).
+Verbatim reuse — including commercially, including derivative works — is
+permitted, but the condition is real and frequently violated: **the copyright
+notice and *both* disclaimer paragraphs must appear in all copies.** A footer
+link is normal practice; burying it in a repo `LICENSE` the user never sees is
+thin. Keep verbatim upstream text in a **separate field** from our enrichment so
+attribution is mechanical, and mark clearly which prose is ours — our severity
+ratings, detection SQL, and remediation protocols are *our* editorial content,
+and neither should users attribute them to the PostgreSQL project nor should the
+project be blamed for them. Carry an explicit "not affiliated with / not
+endorsed by the PostgreSQL Global Development Group" line.
+
+Source-by-source posture:
+
+| Source | Posture |
+|---|---|
+| PG source, docs, release notes, commit messages | Reuse freely **with** the required notice |
+| postgresql.org CVE pages | Facts (CVE id, fixed minor, CVSS vector, `component`) aren't copyrightable; prefer NVD (public domain) for description + CVSS, use postgresql.org for the fixed-minor mapping and `component`, which NVD lacks |
+| pgsql-hackers archives | Link and summarize; **do not republish thread bodies** — authors retain copyright |
+| pgpedia.info | **Do not scrape.** It returns 403 to automated fetchers — an explicit signal |
+| why-upgrade.depesz.com | Independent derivation from the SGML is clean; **borrowing its taxonomy or structure is not** |
+| Extension changelogs | Link + summarize; avoid large verbatim excerpts (several are AGPL) |
+| Cloud vendor release notes | Link out, don't mirror; version-mapping tables are facts |
+
+**Trademark:** "PostgreSQL" and the elephant are marks of the PostgreSQL
+Community Association of Canada. Describing the tool as *"for PostgreSQL"* is
+nominative fair use and standard. **Do not** use the elephant logo, do not name
+it anything resembling an official advisory, and do not imply endorsement.
+
+**Our own liability posture matters more here than the upstream license does.**
+We tell people to `REINDEX` production indexes and `UPDATE pg_catalog.pg_proc`.
+Every destructive or lock-taking remediation needs an explicit warning about
+locks, duration, and disk space, plus a dry-run mode. Legal review before the
+public page ships.
 
 The dominant correctness risk is a **false `NOT_EXPOSED`**. Mitigations, in
 order of strength: positive-proof-only for that verdict; two-person sign-off on

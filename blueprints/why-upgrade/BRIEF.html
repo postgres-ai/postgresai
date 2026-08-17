@@ -233,7 +233,7 @@
 
   <header class="masthead">
     <div class="kicker">
-      <span>Product brief</span><span>v0.1.0</span><span>2026-08-17</span><span>PG 17.x &middot; 18.x minors</span>
+      <span>Product brief</span><span>v0.2.0</span><span>2026-08-17</span><span>PG 17.x &middot; 18.x minors</span>
     </div>
     <h1>pgai <span class="dim">why-upgrade</span></h1>
     <p class="standfirst">Release notes tell you a fix exists. They never tell you whether it is
@@ -263,6 +263,19 @@
         <code>postgresql.conf</code> is edited. <code>pg_upgrade --check</code> fails too.</p>
       <p>It is also detectable in one query against <code>pg_replication_slots</code>. That gap — between a
         production break and a query nobody thought to run — is the whole thesis.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>The finding that justifies it on its own</h2>
+    <div class="callout hot">
+      <span class="ct">Upstream's own migration chain is lossy</span>
+      <p>Each release's migration section points back to <em>one</em> earlier release: 17.11 &rarr; &ldquo;see
+        17.6&rdquo;, 17.6 &rarr; &ldquo;see 17.5&rdquo;. So a user upgrading <strong>17.4 &rarr; 17.11</strong> who
+        follows the official documentation correctly lands on 17.6 and 17.11 — and <strong>silently misses 17.5
+        entirely</strong>, including its self-referential-FK corruption item and its BRIN bloom data-loss item.</p>
+      <p>Following the docs properly still loses data-corruption remediation steps. Nothing else here is a stronger
+        argument for building this.</p>
     </div>
   </section>
 
@@ -355,9 +368,56 @@
       <code>fix_release</code> (one row per back-patched branch). The interval logic then falls out with no special
       cases — including the case a naive implementation gets wrong: upgrading <strong>17.11 &rarr; 18.6 must
       <em>exclude</em></strong> CVE-2026-6471, because its 17-line fix is already held.</p>
-    <p>Two real edge cases the model must survive: <strong>18.5 was stamped and never released</strong> (never
-      assume <code>n+1</code>), and upstream chains its own migration advice across releases — confirming that
-      accumulation over an interval, not per-release display, is the correct model.</p>
+    <p>But a single interval is <strong>not enough</strong>. The corpus contains four distinct semantics, and
+      getting this wrong is how you confidently suppress a real finding:</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Semantics</th><th>Condition</th><th>Why it bites</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">transient</td><td>ran in [introduced, fixed)</td><td>Upgrade and it's gone. Nothing to do.</td></tr>
+          <tr><td class="mono">residual</td><td><em>ever</em> ran in that range</td><td>Upgrading stops new damage, doesn't repair old. Depends on <strong>history</strong>, not on <code>from</code>.</td></tr>
+          <tr><td class="mono">creation-time</td><td>cluster created under a bad version</td><td>Created on 18.1, now on 18.6 &rarr; <strong>still broken forever</strong> without catalog surgery.</td></tr>
+          <tr><td class="mono">peer-version</td><td>two nodes at different versions</td><td>The standard standbys-first rollout <em>is</em> the trigger window.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Never invent <code>introduced_in</code>.</strong> <code>Backpatch-through: 14</code> says where the
+      fix went, not where the bug started. Guessing produces confidently-wrong <em>suppression</em> — the same
+      failure class as a false <code>NOT_EXPOSED</code>. Assert it only when a commit names the culprit; otherwise
+      over-report and say so.</p>
+    <p>Two traps already in the wild: <strong>18.5 was stamped and never released</strong>, yet postgresql.org's
+      security pages still say &ldquo;Fixed: 18.5&rdquo; (they record the <em>wrap</em> number, not the shipped one)
+      — and Patroni's metadata has copied it. Join on that string and you hand users a version they cannot install.</p>
+  </section>
+
+  <section>
+    <h2>Three constraints that would otherwise bite</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="tier"><span>Managed services</span></div>
+        <h3>Probe, don't infer</h3>
+        <p>RDS backports onto frozen minors <em>and</em> lags community. &ldquo;You're on 17.4 so you're vulnerable
+          to 17.5&ndash;17.11&rdquo; is wrong both ways. Ask the server what it can do — probe for
+          <code>output_plugin_libraries</code> — never do version arithmetic.</p>
+      </div>
+      <div class="card">
+        <div class="tier"><span>Multi-database</span></div>
+        <h3>Per-database blindness</h3>
+        <p><code>pg_proc</code>, <code>pg_constraint</code>, <code>pg_extension</code> are per-database. One
+          connection reporting &ldquo;not affected&rdquo; is wrong on any multi-DB cluster —
+          <code>template0</code> included. Design in from day one.</p>
+      </div>
+      <div class="card">
+        <div class="tier"><span>Detection SQL</span></div>
+        <h3>Curate, don't generate</h3>
+        <p>A hand-rolled partition-FK check produced <strong>four false positives</strong> during research;
+          upstream's shipped query was correct. Ship a regression-tested query library, never runtime-generated SQL.</p>
+      </div>
+    </div>
+    <p>And one category we're uniquely placed to own: <strong>&ldquo;this upgrade will change your metrics.&rdquo;</strong>
+      Query IDs change at 18.2 for every <code>GROUP BY</code> query, breaking <code>pg_stat_statements</code>
+      history; wait-event names changed in 17.3 and again in 17.6. Nothing is corrupted, so upstream assigns no
+      severity — but dashboards and baselines silently break.</p>
   </section>
 
   <section>
@@ -417,7 +477,7 @@
   </section>
 
   <footer>
-    <span>Derived from SPEC.md v0.1.0 &middot; this brief is a summary, not the specification.</span>
+    <span>Derived from SPEC.md v0.2.0 &middot; this brief is a summary, not the specification.</span>
     <span>Corpus figures measured from doc/src/sgml/release-1[78].sgml on REL_17_STABLE / REL_18_STABLE, 2026-08-17.</span>
     <span>Detectors validated against a live PostgreSQL cluster during authoring.</span>
   </footer>
