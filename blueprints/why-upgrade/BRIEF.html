@@ -1,0 +1,425 @@
+<title>pgai why-upgrade</title>
+<style>
+  /* ---- tokens: light is the base set ---- */
+  :root {
+    --bg:        #EDF0F3;
+    --surface:   #FFFFFF;
+    --surface-2: #F4F6F8;
+    --ink:       #10161F;
+    --ink-2:     #4A5764;
+    --ink-3:     #6F7E8C;
+    --rule:      #D2D9E0;
+    --rule-2:    #E4E9ED;
+    --accent:    #0E5C70;
+    --accent-sf: #E0EFF3;
+    --critical:  #A9261D;
+    --critical-sf:#F8E4E2;
+    --warn:      #8A5D04;
+    --warn-sf:   #F9EEDA;
+    --ok:        #23604B;
+    --ok-sf:     #DFEFE8;
+    --shadow:    0 1px 2px rgba(16,22,31,.06), 0 8px 24px rgba(16,22,31,.05);
+
+    --serif: ui-serif, "Iowan Old Style", "Source Serif 4", "Charter", Palatino, Georgia, serif;
+    --sans:  ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono:  ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #0C1116;
+      --surface:   #151D25;
+      --surface-2: #1A242D;
+      --ink:       #E4EAF0;
+      --ink-2:     #9DACB9;
+      --ink-3:     #7A8895;
+      --rule:      #26323C;
+      --rule-2:    #1E2831;
+      --accent:    #5CC6DE;
+      --accent-sf: #10303A;
+      --critical:  #FF7A6D;
+      --critical-sf:#3A1917;
+      --warn:      #E3AE4A;
+      --warn-sf:   #33260D;
+      --ok:        #63CFA8;
+      --ok-sf:     #123128;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:        #0C1116;
+    --surface:   #151D25;
+    --surface-2: #1A242D;
+    --ink:       #E4EAF0;
+    --ink-2:     #9DACB9;
+    --ink-3:     #7A8895;
+    --rule:      #26323C;
+    --rule-2:    #1E2831;
+    --accent:    #5CC6DE;
+    --accent-sf: #10303A;
+    --critical:  #FF7A6D;
+    --critical-sf:#3A1917;
+    --warn:      #E3AE4A;
+    --warn-sf:   #33260D;
+    --ok:        #63CFA8;
+    --ok-sf:     #123128;
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 32px) 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 34px; }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 14px; }
+  .kicker {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3);
+    display: flex; flex-wrap: wrap; gap: 8px 16px;
+  }
+  h1 {
+    font-family: var(--mono); font-weight: 600;
+    font-size: clamp(30px, 5.4vw, 46px); line-height: 1.08;
+    letter-spacing: -.02em; margin: 0; text-wrap: balance; color: var(--ink);
+  }
+  h1 .dim { color: var(--ink-3); }
+  .standfirst {
+    font-family: var(--serif); font-size: clamp(18px, 2.4vw, 21.5px);
+    line-height: 1.5; color: var(--ink-2); margin: 0; max-width: 62ch; text-wrap: balance;
+  }
+
+  /* ---- hero statistic ---- */
+  .stat {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+    box-shadow: var(--shadow); padding: clamp(24px, 4vw, 40px);
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .stat-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: clamp(14px, 3vw, 30px); }
+  .figure { display: flex; flex-direction: column; gap: 2px; }
+  .figure .n {
+    font-family: var(--serif); font-weight: 600; font-variant-numeric: tabular-nums;
+    font-size: clamp(46px, 10vw, 84px); line-height: .92; letter-spacing: -.03em;
+  }
+  .figure .n.muted { color: var(--ink-3); }
+  .figure .n.hot   { color: var(--critical); }
+  .figure .lab {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .arrow { font-family: var(--serif); font-size: clamp(28px, 5vw, 46px); color: var(--rule); line-height: 1; }
+  .stat p { margin: 0; color: var(--ink-2); max-width: 66ch; }
+  .stat p strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 14px; }
+  h2 {
+    font-family: var(--sans); font-size: 12px; font-weight: 700;
+    letter-spacing: .15em; text-transform: uppercase; color: var(--accent);
+    margin: 0; padding-bottom: 9px; border-bottom: 1.5px solid var(--rule);
+  }
+  h3 {
+    font-family: var(--serif); font-size: 20px; font-weight: 600;
+    margin: 0; color: var(--ink); letter-spacing: -.01em;
+  }
+  p { margin: 0; max-width: 68ch; }
+  section > p { color: var(--ink-2); }
+  strong { color: var(--ink); font-weight: 600; }
+  code {
+    font-family: var(--mono); font-size: .875em; background: var(--surface-2);
+    border: 1px solid var(--rule-2); border-radius: 2px; padding: .08em .34em;
+    color: var(--ink); white-space: nowrap;
+  }
+
+  /* ---- surface cards ---- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 9px;
+  }
+  .card .tier {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--ink-3);
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .card .tier .price { color: var(--accent); }
+  .card h3 { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .card p { font-size: 14.5px; color: var(--ink-2); line-height: 1.55; }
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; background: var(--surface-2);
+    border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, .mono-cell { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+  td em { color: var(--ink-3); font-style: italic; }
+
+  /* ---- chips ---- */
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .07em; padding: 2.5px 7px; border-radius: 2px; white-space: nowrap;
+  }
+  .chip.c-hi   { background: var(--critical-sf); color: var(--critical); }
+  .chip.c-mid  { background: var(--warn-sf);     color: var(--warn); }
+  .chip.c-ok   { background: var(--ok-sf);       color: var(--ok); }
+  .chip.c-un   { background: var(--accent-sf);   color: var(--accent); }
+  .chip.c-off  { background: var(--surface-2);   color: var(--ink-3); border: 1px solid var(--rule); }
+
+  /* ---- callout ---- */
+  .callout {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent); border-radius: 3px;
+    padding: 17px 20px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .callout.hot { border-left-color: var(--critical); }
+  .callout .ct {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .callout p { font-size: 15px; color: var(--ink-2); }
+
+  /* ---- ordered list of decisions ---- */
+  ol.decisions, ul.qs { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 11px; }
+  ol.decisions li, ul.qs li {
+    display: grid; grid-template-columns: 30px 1fr; gap: 12px;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 14px 16px;
+  }
+  ol.decisions li .num, ul.qs li .num {
+    font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent);
+    padding-top: 2px; font-variant-numeric: tabular-nums;
+  }
+  ol.decisions li p, ul.qs li p { font-size: 14.5px; color: var(--ink-2); max-width: none; }
+  ol.decisions li p:first-of-type { color: var(--ink); font-weight: 600; margin-bottom: 3px; }
+
+  /* ---- sprint rail ---- */
+  .rail { display: flex; flex-direction: column; }
+  .rail .step {
+    display: grid; grid-template-columns: 62px 1fr; gap: 14px;
+    padding: 13px 0; border-bottom: 1px solid var(--rule-2);
+  }
+  .rail .step:last-child { border-bottom: none; }
+  .rail .s {
+    font-family: var(--mono); font-size: 11.5px; font-weight: 600; letter-spacing: .08em;
+    color: var(--accent); padding-top: 3px;
+  }
+  .rail .step p { font-size: 14.5px; color: var(--ink-2); }
+  .rail .step p strong { display: block; color: var(--ink); }
+
+  footer {
+    border-top: 1px solid var(--rule); padding-top: 18px; color: var(--ink-3);
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">
+      <span>Product brief</span><span>v0.1.0</span><span>2026-08-17</span><span>PG 17.x &middot; 18.x minors</span>
+    </div>
+    <h1>pgai <span class="dim">why-upgrade</span></h1>
+    <p class="standfirst">Release notes tell you a fix exists. They never tell you whether it is
+      <em>your</em> problem. This connects to the database and answers that — with evidence.</p>
+  </header>
+
+  <div class="stat">
+    <div class="stat-row">
+      <div class="figure"><span class="n muted">496</span><span class="lab">entries crossed &nbsp;17.2&rarr;17.11</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="figure"><span class="n hot">7</span><span class="lab">that affect this database</span></div>
+      <div class="figure"><span class="n">3</span><span class="lab">requiring action</span></div>
+    </div>
+    <p>Measured from the source tree: the 17.x line carries <strong>545</strong> release-note items across
+      11 minors, 18.x carries <strong>351</strong> across 5, and 55 distinct CVEs appear in 17.x alone.
+      Nobody reads 496 entries — so nobody reads any of them, and the handful that matter get missed.
+      <strong>The reduction is the product.</strong></p>
+  </div>
+
+  <section>
+    <h2>The break-glass example</h2>
+    <div class="callout hot">
+      <span class="ct">CVE-2026-6471 &middot; shipped in 17.11 and 18.6</span>
+      <p>A new <code>output_plugin_libraries</code> GUC whitelists logical-decoding plugins, defaulting to
+        <code>pgoutput, test_decoding</code>. Anyone running <code>wal2json</code> or <code>decoderbufs</code>
+        finds <strong>logical replication broken after a patch-level upgrade</strong> until
+        <code>postgresql.conf</code> is edited. <code>pg_upgrade --check</code> fails too.</p>
+      <p>It is also detectable in one query against <code>pg_replication_slots</code>. That gap — between a
+        production break and a query nobody thought to run — is the whole thesis.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Three surfaces, one engine</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="tier"><span>01 &middot; CLI</span><span class="price">Free</span></div>
+        <h3>npx pgai why-upgrade</h3>
+        <p>Connects to a live database. Ranked exposure with named evidence, offline-first, no signup.
+          The acquisition wedge — and the only place the magic happens.</p>
+      </div>
+      <div class="card">
+        <div class="tier"><span>02 &middot; Console</span><span class="price">Paid</span></div>
+        <h3>DB health</h3>
+        <p>What the CLI structurally cannot do: fleet rollup, continuous re-evaluation as new minors ship,
+          exposure history, and audit-ready artifacts.</p>
+      </div>
+      <div class="card">
+        <div class="tier"><span>03 &middot; Web</span><span class="price">Free</span></div>
+        <h3>postgres.ai/why-upgrade</h3>
+        <p>No database, no login. Full enriched content, everything conditional marked
+          <span class="chip c-un">UNKNOWN</span>. The gap is the pitch.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The core mechanic — exposure, not &ldquo;matching score&rdquo;</h2>
+    <p><strong>Stage 1, capability gate:</strong> profile the database once — logical replication? BRIN? which
+      extensions? A fix declares what it requires; no logical replication means every logical-decoding fix
+      collapses instantly. <strong>Stage 2, trigger check:</strong> you use the subsystem, but do your
+      circumstances actually fire this bug? Sometimes trivial, sometimes impossible. Saying which is the
+      product's integrity.</p>
+    <p><em>On the name:</em> &ldquo;matching&rdquo; reads as search relevance, and &ldquo;score&rdquo; implies a
+      number — a bare <code>0.73</code> is false precision in a safety-adjacent judgment. Operators already have
+      the term of art from the CVE world: <strong>are we exposed?</strong> So: an ordinal ladder with evidence,
+      never a naked float.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Level</th><th>Meaning</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip c-hi">CONFIRMED</span></td><td>Proven from the catalog, evidence attached</td><td class="mono">3 slots on wal2json</td></tr>
+          <tr><td><span class="chip c-hi">LIKELY</span></td><td>Subsystem in use, one precondition unprovable</td><td><em>&mdash;</em></td></tr>
+          <tr><td><span class="chip c-mid">POSSIBLE</span></td><td>Subsystem in use, trigger not checkable</td><td class="mono">race under concurrent DDL</td></tr>
+          <tr><td><span class="chip c-mid">UNLIKELY</span></td><td>In use, preconditions clearly absent</td><td><em>&mdash;</em></td></tr>
+          <tr><td><span class="chip c-ok">NOT_EXPOSED</span></td><td>Gate proves the feature is unused</td><td class="mono">no logical replication</td></tr>
+          <tr><td><span class="chip c-un">UNKNOWN</span></td><td>Could not check — permission or access</td><td class="mono">not pg_monitor</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout">
+      <span class="ct">Two invariants, or the product is worse than useless</span>
+      <p><strong>1.</strong> <code>UNKNOWN</code> is never folded into <code>NOT_EXPOSED</code>. They are opposite
+        claims; conflating them is how someone gets paged at 3am.</p>
+      <p><strong>2.</strong> The ladder is deliberately asymmetric. A false <code>NOT_EXPOSED</code> is far worse
+        than a false <code>POSSIBLE</code> — so claim it only on positive proof of absence, never on absence of
+        evidence. Severity stays orthogonal: exposure is likelihood, severity is impact, priority is the product
+        of the two.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verified during authoring, not asserted</h2>
+    <p>Five detectors for the highest-value action items were executed against a live cluster with a
+      purpose-built fixture. Results observed, not predicted.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Fix</th><th>Detection</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>BRIN bloom / minmax_multi <span class="mono-cell">17.5, 17.6</span></td><td class="mono">pg_index &rarr; unnest(indclass) &rarr; pg_opclass</td><td>found both; <strong>excluded</strong> the plain-minmax index</td></tr>
+          <tr><td>btree_gist / ltree indexes <span class="mono-cell">18.2, 18.6</span></td><td class="mono">+ pg_depend &rarr; pg_extension</td><td>found all three, gist and btree</td></tr>
+          <tr><td>Self-referential FK on partitioned table <span class="mono-cell">17.5</span></td><td class="mono">pg_constraint, conrelid = confrelid</td><td>found</td></tr>
+          <tr><td>LC_CTYPE=C with non-C collate <span class="mono-cell">17.1</span></td><td class="mono">pg_database</td><td>correct <strong>true negative</strong></td></tr>
+          <tr><td>output_plugin_libraries <span class="mono-cell">17.11, 18.6</span></td><td class="mono">pg_replication_slots</td><td>classification verified</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Precision matters as much as recall: telling someone to <code>REINDEX</code> an index that is not affected
+      burns trust as fast as missing one.</p>
+  </section>
+
+  <section>
+    <h2>The data model insight</h2>
+    <p>For CVE-2026-6471, the 17.11 and 18.6 release-note entries cite the <strong>identical master commit
+      hashes</strong> (<code>226e49cbe</code>, <code>20e9dcefd</code>). So the set of master commits is a stable
+      canonical identity for a logical fix across every branch that received it — <strong>dedup is deterministic,
+      not fuzzy text matching.</strong></p>
+    <p>That gives two tables: <code>fix</code> (keyed by master commit, holding all enrichment) and
+      <code>fix_release</code> (one row per back-patched branch). The interval logic then falls out with no special
+      cases — including the case a naive implementation gets wrong: upgrading <strong>17.11 &rarr; 18.6 must
+      <em>exclude</em></strong> CVE-2026-6471, because its 17-line fix is already held.</p>
+    <p>Two real edge cases the model must survive: <strong>18.5 was stamped and never released</strong> (never
+      assume <code>n+1</code>), and upstream chains its own migration advice across releases — confirming that
+      accumulation over an interval, not per-release display, is the correct model.</p>
+  </section>
+
+  <section>
+    <h2>Strategic fit</h2>
+    <p>This is the manifesto made executable. A managed provider schedules your window, hands you a version
+      number, and tells you nothing about what is inside it — while your own <code>pg_replication_slots</code>
+      already holds the answer. That asymmetry is not technical, it is enclosure. <strong>Access, full control,
+      ownership</strong> — applied to upgrade decisions.</p>
+    <p>It is also proof of the &ldquo;AI breaks the moat&rdquo; thesis rather than merely an application of it:
+      enriching ~900 fixes was historically a team of Postgres hackers. A pipeline with an expert review gate makes
+      it possible at solo-founder scale. <strong>The product is the demonstration of the argument.</strong></p>
+    <div class="callout">
+      <span class="ct">The honest tension</span>
+      <p>This deepens the &ldquo;Postgres guy&rdquo; frame that the wider strategy wants headroom beyond. The
+        mitigation is architectural and cheap <em>if decided now</em>: the engine — upstream fix corpus &times;
+        capability profile &rarr; ranked exposure — is not Postgres-specific. Build it generic; let Postgres be
+        vertical #1.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Plan</h2>
+    <div class="rail">
+      <div class="step"><span class="s">S1</span><p><strong>Ingest &amp; data model</strong>SGML parser, fix/fix_release keyed by master commit, interval + dedup logic.</p></div>
+      <div class="step"><span class="s">S2</span><p><strong>Engine &amp; detectors</strong>Probe/Detector abstraction with dedup; the ~15 highest-value detectors.</p></div>
+      <div class="step"><span class="s">S3</span><p><strong>CLI &amp; distribution</strong>Renderers, <code>--protocol</code>, <code>--verify</code>, build-time KB embed, staleness UX.</p></div>
+      <div class="step"><span class="s">S4</span><p><strong>Public page</strong>~600 curated pages built for machine legibility — not a 240k pair matrix.</p></div>
+      <div class="step"><span class="s">S5</span><p><strong>Console DB health</strong>Fleet rollup, continuous re-evaluation, Issues integration, audit artifact.</p></div>
+      <div class="step"><span class="s">S6</span><p><strong>Curation to depth</strong>Broaden enrichment beyond the action items toward the full corpus.</p></div>
+    </div>
+    <p>Two coordinated MRs: the CLI and engine in <code>postgresai</code>; the KB endpoint, Console module and
+      public page in <code>platform-all</code> — the console and website are not in this repo.</p>
+  </section>
+
+  <section>
+    <h2>Decisions taken</h2>
+    <ol class="decisions">
+      <li><span class="num">01</span><div><p>Exposure ladder + evidence, severity orthogonal.</p><p>Not a &ldquo;matching score&rdquo;. No naked floats.</p></div></li>
+      <li><span class="num">02</span><div><p>The unit of analysis is a fix, not a feature.</p><p>Features belong with major upgrades, in v2, only if this earns it.</p></div></li>
+      <li><span class="num">03</span><div><p>KB authored platform-side, mirrored into the npm bundle at build time.</p><p>Offline-first by default; follows the existing <code>embed-checkup-dictionary</code> precedent. ~15&ndash;90&nbsp;KB on a 312&nbsp;KB tarball.</p></div></li>
+      <li><span class="num">04</span><div><p>Two-person sign-off on every detector before publication.</p><p>A false <code>NOT_EXPOSED</code> is the one failure this product cannot have.</p></div></li>
+      <li><span class="num">05</span><div><p>One-shot personalization stays free forever; fleet and audit artifacts are paid.</p><p>Gate the magic and the growth loop dies.</p></div></li>
+      <li><span class="num">06</span><div><p>Credit the prior art loudly and contact its author before launch.</p><p>In a community this small, doing it quietly is a self-inflicted wound.</p></div></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <ul class="qs">
+      <li><span class="num">Q1</span><div><p>Curation depth vs. breadth for v1.</p><p>~900 items. Deep enrichment on the ~150 action-required and security items with the rest as passthrough — or shallow across the whole corpus? Recommendation: the former.</p></div></li>
+      <li><span class="num">Q2</span><div><p>Do we open-source the curated knowledge base?</p><p>Maximum citation, community goodwill, and on-message for the freedom frame — but it is the expensive asset. Recommendation: open the data, keep the personalization engine and fleet commercial.</p></div></li>
+      <li><span class="num">Q3</span><div><p>Managed services in v1 or v2?</p><p>Largest install base and the most on-message segment, but vendor version strings do not map 1:1 and superuser is unavailable — the hardest place to be correct.</p></div></li>
+      <li><span class="num">Q4</span><div><p>Who owns release-day freshness, permanently?</p><p>Quarterly waves plus out-of-cycle emergencies. A standing commitment, not a launch task.</p></div></li>
+      <li><span class="num">Q5</span><div><p>How much third-party extension coverage?</p><p>Recommendation: a curated known-incidents list for the top ~10 plus <code>ALTER EXTENSION UPDATE</code> detection — not a full matrix.</p></div></li>
+      <li><span class="num">Q6</span><div><p>Do all three surfaces ship together, or CLI + public page first?</p><p>They share the engine; the Console is the natural second wave.</p></div></li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Derived from SPEC.md v0.1.0 &middot; this brief is a summary, not the specification.</span>
+    <span>Corpus figures measured from doc/src/sgml/release-1[78].sgml on REL_17_STABLE / REL_18_STABLE, 2026-08-17.</span>
+    <span>Detectors validated against a live PostgreSQL cluster during authoring.</span>
+  </footer>
+
+</div>

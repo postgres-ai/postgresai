@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "adapters": {
+    "lead": {
+      "adapter": "claude",
+      "model_id": "claude-opus-5",
+      "effort": "high",
+      "fallback_chain": [
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "terminal"
+      ]
+    },
+    "reviewer_a": {
+      "adapter": "codex",
+      "model_id": "gpt-5.5",
+      "effort": "high",
+      "fallback_chain": [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "terminal"
+      ]
+    },
+    "reviewer_b": {
+      "adapter": "claude",
+      "model_id": "claude-opus-5",
+      "effort": "high",
+      "fallback_chain": [
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "terminal"
+      ]
+    }
+  },
+  "budget": {
+    "max_iterations": 10,
+    "max_reviewers": 2,
+    "max_tokens_per_round": 250000,
+    "max_total_tokens_per_session": 2000000,
+    "max_wall_clock_minutes": 600,
+    "preflight_confirm_usd": 20
+  },
+  "git": {
+    "remote_probe": false,
+    "protected_branches": [],
+    "fetch_timeout_seconds": 5
+  },
+  "context": {
+    "injection_threshold": 5
+  },
+  "convergence": {
+    "min_delta_lines": 20
+  },
+  "publish_lint": {
+    "allowed_commands": []
+  },
+  "autonomy_policy": {
+    "merge_authority": "cannot_merge",
+    "work_scope": "issue_only",
+    "follow_up_issue_authority": "cannot_create",
+    "review_authority": "request_review_only"
+  }
+}
