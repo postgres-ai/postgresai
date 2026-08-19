@@ -19,6 +19,7 @@
 
 import { loadInstances } from "./instances";
 import { resolveBaseUrls } from "./util";
+import { orgScopeHeaders, type OrgScope } from "./org-scope";
 
 const SA_NAME = "pgai-aas-collect";
 
@@ -186,6 +187,7 @@ export async function registerAasCollection(
     // been started by `compose up`). Defaults: 20 attempts × 3s.
     datasourceMaxAttempts?: number;
     datasourceRetryDelayMs?: number;
+    orgScope?: OrgScope;
   }
 ): Promise<AasRegisterResult> {
   const debug = !!opts.debug;
@@ -237,7 +239,7 @@ export async function registerAasCollection(
 
     const res = await doFetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...orgScopeHeaders(opts.orgScope) },
       body: JSON.stringify({
         api_token: apiKey,
         instance_id: instanceId,

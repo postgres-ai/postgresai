@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
+import { getActiveOrgScope, orgScopeHeaders, type OrgScope } from "./org-scope";
 
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
 const MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
@@ -50,6 +51,8 @@ export interface UploadResult {
 
 export interface UploadFileParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   storageBaseUrl: string;
   filePath: string;
   debug?: boolean;
@@ -65,7 +68,7 @@ export interface UploadFileParams {
  * @returns Upload result with URL and metadata
  */
 export async function uploadFile(params: UploadFileParams): Promise<UploadResult> {
-  const { apiKey, storageBaseUrl, filePath, debug } = params;
+  const { apiKey, orgScope, storageBaseUrl, filePath, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -108,8 +111,13 @@ export async function uploadFile(params: UploadFileParams): Promise<UploadResult
   const formData = new FormData();
   formData.append("file", new Blob([fileBuffer], { type: mimeType }), fileName);
 
+  // FormData sets its own multipart Content-Type (with boundary), so this path
+  // cannot use buildAuthHeaders; merge the org selector directly. The MCP
+  // surface passes orgScope explicitly; the CLI resolves it once in preAction
+  // and it arrives via getActiveOrgScope().
   const headers: Record<string, string> = {
     "access-token": apiKey,
+    ...orgScopeHeaders(orgScope ?? getActiveOrgScope()),
   };
 
   if (debug) {
@@ -146,6 +154,8 @@ export async function uploadFile(params: UploadFileParams): Promise<UploadResult
 
 export interface DownloadFileParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   storageBaseUrl: string;
   fileUrl: string;
   outputPath?: string;
@@ -169,7 +179,7 @@ export interface DownloadResult {
  * @returns Download result with saved path and size
  */
 export async function downloadFile(params: DownloadFileParams): Promise<DownloadResult> {
-  const { apiKey, storageBaseUrl, fileUrl, outputPath, debug } = params;
+  const { apiKey, orgScope, storageBaseUrl, fileUrl, outputPath, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -221,6 +231,7 @@ export async function downloadFile(params: DownloadFileParams): Promise<Download
 
   const headers: Record<string, string> = {
     "access-token": apiKey,
+    ...orgScopeHeaders(orgScope ?? getActiveOrgScope()),
   };
 
   if (debug) {
@@ -302,6 +313,8 @@ export interface UploadedAttachment {
 
 export interface UploadAttachmentsParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   storageBaseUrl: string;
   attachmentPaths: string[];
   debug?: boolean;
@@ -322,7 +335,7 @@ export interface UploadAttachmentsParams {
  * guard).
  */
 export async function uploadAttachments(params: UploadAttachmentsParams): Promise<UploadedAttachment[]> {
-  const { apiKey, storageBaseUrl, attachmentPaths, debug } = params;
+  const { apiKey, orgScope, storageBaseUrl, attachmentPaths, debug } = params;
   if (!attachmentPaths || attachmentPaths.length === 0) {
     return [];
   }
@@ -330,6 +343,7 @@ export async function uploadAttachments(params: UploadAttachmentsParams): Promis
   for (const attachmentPath of attachmentPaths) {
     const result = await uploadFile({
       apiKey,
+      orgScope,
       storageBaseUrl,
       filePath: attachmentPath,
       debug,

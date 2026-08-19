@@ -18,6 +18,33 @@ export interface Config {
 }
 
 /**
+ * Wire prefix of a global (user-scoped) token — see platform-all #629.
+ *
+ * A global token reaches every org its owner belongs to, so it carries no
+ * org_id of its own and every org-scoped command must name one explicitly.
+ */
+export const GLOBAL_TOKEN_PREFIX = "pai_global_";
+
+/**
+ * Whether an API key is a global token.
+ *
+ * Derived from the token itself rather than stored as a separate `tokenKind`
+ * field, deliberately. The key can arrive from `--api-key`, from
+ * `PGAI_API_KEY`, or from the config file, and only the last of those could
+ * carry a stored kind — a stored flag would therefore be wrong exactly when the
+ * key is overridden, which is the case automation uses most. The prefix travels
+ * with the credential, so it is always right.
+ */
+export function isGlobalTokenValue(apiKey: string | null | undefined): boolean {
+  return typeof apiKey === "string" && apiKey.trim().startsWith(GLOBAL_TOKEN_PREFIX);
+}
+
+/** Whether the resolved config's API key is a global token. */
+export function isGlobalToken(cfg: Pick<Config, "apiKey">): boolean {
+  return isGlobalTokenValue(cfg.apiKey);
+}
+
+/**
  * Get the user-level config directory path
  * @returns Path to ~/.config/postgresai
  */
@@ -114,6 +141,14 @@ export function writeConfig(config: Partial<Config>): void {
   // Ensure config directory exists
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    // Create-only, same as the file mode below: a pre-existing 0755 config dir
+    // keeps it. The file itself is 0600 so the token is not disclosed, but a
+    // group-writable dir would let another user substitute it.
+    try {
+      fs.chmodSync(configDir, 0o700);
+    } catch {
+      /* best-effort; the directory is usable either way */
+    }
   }
 
   // Read existing config and merge
@@ -136,6 +171,24 @@ export function writeConfig(config: Partial<Config>): void {
   fs.writeFileSync(configPath, JSON.stringify(mergedConfig, null, 2) + "\n", {
     mode: 0o600,
   });
+  // `mode` above only applies when the file is CREATED. A config that already
+  // exists with looser permissions keeps them while receiving an API key --
+  // which under #327 can be a global token, the widest credential we issue.
+  //
+  // Best-effort: chmod raises EPERM on a file owned by another UID (a shared CI
+  // image, a container running as a different user), where the write itself can
+  // still succeed. Warn rather than throw -- refusing to save the credential
+  // would be a worse outcome than saving it with the permissions it already had,
+  // and the user needs to be told either way.
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Warning: could not restrict permissions on ${configPath}: ${message}`,
+    );
+    console.error("         It may be readable by other users on this machine.");
+  }
 }
 
 /**
@@ -159,6 +212,7 @@ export function deleteConfigKeys(keys: string[]): void {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", {
       mode: 0o600,
     });
+    fs.chmodSync(configPath, 0o600);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Warning: Failed to update config: ${message}`);
@@ -172,4 +226,3 @@ export function deleteConfigKeys(keys: string[]): void {
 export function configExists(): boolean {
   return fs.existsSync(getConfigPath()) || fs.existsSync(getLegacyConfigPath());
 }
-

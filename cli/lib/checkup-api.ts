@@ -2,6 +2,7 @@ import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
 import { normalizeBaseUrl } from "./util";
+import { getActiveOrgScope, orgScopeHeaders } from "./org-scope";
 
 /**
  * Retry configuration for network operations
@@ -205,6 +206,10 @@ async function postRpc<T>(params: {
     "Prefer": "return=representation",
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body).toString(),
+    // Org selector for a global token. This path sets its own Content-Length over
+    // node:http, so it merges orgScopeHeaders directly rather than going through
+    // buildAuthHeaders. The CLI resolves the scope once in its preAction hook.
+    ...orgScopeHeaders(getActiveOrgScope()),
   };
 
   // Use AbortController for clean timeout handling
@@ -389,7 +394,10 @@ export async function verifyApiKey(params: {
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
-      headers: { "access-token": apiKey },
+      // GET /checkup_reports is org-scoped exactly like `reports list`, so the
+      // pre-flight must carry the org selector too (activeOrgScope, resolved in
+      // the CLI preAction hook) — otherwise a global token 403s here.
+      headers: { "access-token": apiKey, ...orgScopeHeaders(getActiveOrgScope()) },
       signal: controller.signal,
     });
     // Drain the body so the connection is released cleanly.

@@ -519,4 +519,37 @@ describe("OAuth login flow hardening", () => {
     expect(result.configAfter?.apiKey).toBe("array-token-456");
     expect(result.configAfter?.orgId).toBe(9);
   }, TEST_TIMEOUT_MS);
+  test("a global token logs in without an org_id and clears stale org state", async () => {
+    // The inverse of "a token but no org_id fails": a global token legitimately
+    // carries no org, so the guard must NOT reject it -- and writeConfig merges,
+    // so a leftover orgId/defaultProject would silently re-scope every later
+    // command to an org the user never named.
+    const globalToken = `pai_global_${"a".repeat(43)}`;
+    const result = await runLoginFlow({
+      exchangeResponse: { status: 200, body: JSON.stringify({ api_token: globalToken }) },
+      existingConfig: { apiKey: "old-per-org-key", orgId: 42, defaultProject: "prod-project" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toMatch(/Authentication successful/);
+    expect(result.stdout).toMatch(/global token/i);
+    expect(result.stdout).toMatch(/have been cleared/i);
+    expect(result.configAfter?.apiKey).toBe(globalToken);
+    expect(result.configAfter).not.toHaveProperty("orgId");
+    expect(result.configAfter).not.toHaveProperty("defaultProject");
+  }, TEST_TIMEOUT_MS);
+
+  test("a per-org token with no org_id still fails (the global path is not a bypass)", async () => {
+    // Guards the shape of the check: it must key off the token PREFIX, not
+    // merely off org_id being absent, or every malformed response would be
+    // accepted as global.
+    const result = await runLoginFlow({
+      exchangeResponse: { status: 200, body: JSON.stringify({ api_token: "pai_not_global_xyz" }) },
+      existingConfig: { apiKey: "existing-key", orgId: 42 },
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/organization ID/i);
+    expect(result.configAfter).toEqual({ apiKey: "existing-key", orgId: 42 });
+  }, TEST_TIMEOUT_MS);
 });

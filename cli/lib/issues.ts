@@ -1,4 +1,5 @@
 import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
+import { buildAuthHeaders, type OrgScope } from "./org-scope";
 
 /**
  * Issue status constants.
@@ -92,6 +93,8 @@ export type IssueDetail = Pick<Issue, "id" | "title" | "description" | "status" 
 };
 export interface FetchIssuesParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   orgId?: number;
   status?: "open" | "closed";
@@ -101,7 +104,7 @@ export interface FetchIssuesParams {
 }
 
 export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListItem[]> {
-  const { apiKey, apiBaseUrl, orgId, status, limit = 20, offset = 0, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = 20, offset = 0, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -121,12 +124,9 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
     url.searchParams.set("status", "eq.1");
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -162,13 +162,15 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
 
 export interface FetchIssueCommentsParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   debug?: boolean;
 }
 
 export async function fetchIssueComments(params: FetchIssueCommentsParams): Promise<IssueComment[]> {
-  const { apiKey, apiBaseUrl, issueId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -179,12 +181,9 @@ export async function fetchIssueComments(params: FetchIssueCommentsParams): Prom
   const base = normalizeBaseUrl(apiBaseUrl);
   const url = new URL(`${base}/issue_comments?issue_id=eq.${encodeURIComponent(issueId)}`);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -219,13 +218,15 @@ export async function fetchIssueComments(params: FetchIssueCommentsParams): Prom
 
 export interface FetchIssueParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   debug?: boolean;
 }
 
 export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail | null> {
-  const { apiKey, apiBaseUrl, issueId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -239,12 +240,9 @@ export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail 
   url.searchParams.set("id", `eq.${issueId}`);
   url.searchParams.set("limit", "1");
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -296,6 +294,8 @@ export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail 
 
 export interface CreateIssueParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   title: string;
   orgId: number;
@@ -331,7 +331,7 @@ export interface CreatedIssue {
  * @throws Error if API key, title, or orgId is missing, or if the API call fails
  */
 export async function createIssue(params: CreateIssueParams): Promise<CreatedIssue> {
-  const { apiKey, apiBaseUrl, title, orgId, description, projectId, labels, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, title, orgId, description, projectId, labels, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -360,12 +360,9 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -402,6 +399,8 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
 
 export interface CreateIssueCommentParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   content: string;
@@ -410,7 +409,7 @@ export interface CreateIssueCommentParams {
 }
 
 export async function createIssueComment(params: CreateIssueCommentParams): Promise<IssueComment> {
-  const { apiKey, apiBaseUrl, issueId, content, parentCommentId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, content, parentCommentId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -433,12 +432,9 @@ export async function createIssueComment(params: CreateIssueCommentParams): Prom
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -475,6 +471,8 @@ export async function createIssueComment(params: CreateIssueCommentParams): Prom
 
 export interface UpdateIssueParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   title?: string;
@@ -509,7 +507,7 @@ export interface UpdatedIssue {
  * @throws Error if API key or issueId is missing, if no fields to update are provided, or if the API call fails
  */
 export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue> {
-  const { apiKey, apiBaseUrl, issueId, title, description, status, labels, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -541,12 +539,9 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -583,6 +578,8 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
 
 export interface UpdateIssueCommentParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   commentId: string;
   content: string;
@@ -609,7 +606,7 @@ export interface UpdatedIssueComment {
  * @throws Error if API key, commentId, or content is missing, or if the API call fails
  */
 export async function updateIssueComment(params: UpdateIssueCommentParams): Promise<UpdatedIssueComment> {
-  const { apiKey, apiBaseUrl, commentId, content, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, commentId, content, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -630,12 +627,9 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
   };
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -676,6 +670,8 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
 
 export interface FetchActionItemParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   actionItemIds: string | string[];
   debug?: boolean;
@@ -702,7 +698,7 @@ export interface FetchActionItemParams {
  * const items = await fetchActionItem({ apiKey, apiBaseUrl, actionItemIds: ["uuid-1", "uuid-2"] });
  */
 export async function fetchActionItem(params: FetchActionItemParams): Promise<IssueActionItem[]> {
-  const { apiKey, apiBaseUrl, actionItemIds, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, actionItemIds, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -727,12 +723,9 @@ export async function fetchActionItem(params: FetchActionItemParams): Promise<Is
     url.searchParams.set("id", `in.(${validIds.join(",")})`)
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -771,6 +764,8 @@ export async function fetchActionItem(params: FetchActionItemParams): Promise<Is
 
 export interface FetchActionItemsParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   debug?: boolean;
@@ -788,7 +783,7 @@ export interface FetchActionItemsParams {
  * @throws Error if API key or issue ID is missing
  */
 export async function fetchActionItems(params: FetchActionItemsParams): Promise<IssueActionItem[]> {
-  const { apiKey, apiBaseUrl, issueId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -805,12 +800,9 @@ export async function fetchActionItems(params: FetchActionItemsParams): Promise<
   const url = new URL(`${base}/issue_action_items`);
   url.searchParams.set("issue_id", `eq.${issueId.trim()}`);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -845,6 +837,8 @@ export async function fetchActionItems(params: FetchActionItemsParams): Promise<
 
 export interface CreateActionItemParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   issueId: string;
   title: string;
@@ -870,7 +864,7 @@ export interface CreateActionItemParams {
  * @throws Error if required fields are missing or API call fails
  */
 export async function createActionItem(params: CreateActionItemParams): Promise<string> {
-  const { apiKey, apiBaseUrl, issueId, title, description, sqlAction, configs, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, sqlAction, configs, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -904,12 +898,9 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -946,6 +937,8 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
 
 export interface UpdateActionItemParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   actionItemId: string;
   title?: string;
@@ -976,7 +969,7 @@ export interface UpdateActionItemParams {
  * @throws Error if required fields missing or no update fields provided
  */
 export async function updateActionItem(params: UpdateActionItemParams): Promise<void> {
-  const { apiKey, apiBaseUrl, actionItemId, title, description, isDone, status, statusReason, sqlAction, configs, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, actionItemId, title, description, isDone, status, statusReason, sqlAction, configs, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -1026,12 +1019,9 @@ export async function updateActionItem(params: UpdateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
