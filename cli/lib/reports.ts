@@ -1,4 +1,5 @@
 import { formatHttpError, maskSecret, normalizeBaseUrl } from "./util";
+import { buildAuthHeaders, type OrgScope } from "./org-scope";
 
 // ============================================================================
 // Types
@@ -79,6 +80,8 @@ export function parseFlexibleDate(input: string): string {
 
 export interface FetchReportsParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   projectId?: number;
   status?: string;
@@ -91,6 +94,8 @@ export interface FetchReportsParams {
 
 export interface FetchReportFilesParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   reportId?: number;
   type?: "json" | "md";
@@ -100,6 +105,8 @@ export interface FetchReportFilesParams {
 
 export interface FetchReportFileDataParams {
   apiKey: string;
+  /** Selected organization, required under a global token (postgresai #327). */
+  orgScope?: OrgScope;
   apiBaseUrl: string;
   reportId?: number;
   type?: "json" | "md";
@@ -112,7 +119,7 @@ export interface FetchReportFileDataParams {
 // ============================================================================
 
 export async function fetchReports(params: FetchReportsParams): Promise<CheckupReport[]> {
-  const { apiKey, apiBaseUrl, projectId, status, limit = 20, beforeDate, beforeId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, projectId, status, limit = 20, beforeDate, beforeId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -134,12 +141,9 @@ export async function fetchReports(params: FetchReportsParams): Promise<CheckupR
     url.searchParams.set("id", `lt.${beforeId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -190,7 +194,7 @@ export async function fetchAllReports(params: Omit<FetchReportsParams, "beforeId
 }
 
 export async function fetchReportFiles(params: FetchReportFilesParams): Promise<CheckupReportFile[]> {
-  const { apiKey, apiBaseUrl, reportId, type, checkId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, reportId, type, checkId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -211,12 +215,9 @@ export async function fetchReportFiles(params: FetchReportFilesParams): Promise<
     url.searchParams.set("check_id", `eq.${checkId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -245,7 +246,7 @@ export async function fetchReportFiles(params: FetchReportFilesParams): Promise<
 }
 
 export async function fetchReportFileData(params: FetchReportFileDataParams): Promise<CheckupReportFileData[]> {
-  const { apiKey, apiBaseUrl, reportId, type, checkId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, reportId, type, checkId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -266,12 +267,9 @@ export async function fetchReportFileData(params: FetchReportFileDataParams): Pr
     url.searchParams.set("check_id", `eq.${checkId}`);
   }
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Prefer": "return=representation",
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+  });
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };

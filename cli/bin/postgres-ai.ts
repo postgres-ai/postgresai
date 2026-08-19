@@ -45,6 +45,7 @@ import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCu
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
+import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
@@ -378,17 +379,24 @@ function prepareUploadConfig(
 
   const cfg = config.readConfig();
   const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
-  let project = ((opts.project || cfg.defaultProject) || "").trim();
+  // A global token reaches many orgs, so a stored defaultProject is ambiguous:
+  // reusing it under --org B would reuse a name minted under --org A. The login
+  // path already deletes it for that reason; don't read it back or write a new
+  // one here, or checkup silently re-acquires exactly what login cleared.
+  const isGlobal = config.isGlobalTokenValue(apiKey);
+  let project = ((opts.project || (isGlobal ? undefined : cfg.defaultProject)) || "").trim();
   let projectWasGenerated = false;
 
   if (!project) {
     project = `project_${crypto.randomBytes(6).toString("hex")}`;
     projectWasGenerated = true;
-    try {
-      config.writeConfig({ defaultProject: project });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error(`Warning: Failed to save generated default project: ${message}`);
+    if (!isGlobal) {
+      try {
+        config.writeConfig({ defaultProject: project });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`Warning: Failed to save generated default project: ${message}`);
+      }
     }
   }
 
@@ -929,6 +937,49 @@ program.hook("postAction", (_thisCommand, actionCommand) => {
     json: !!opts.json,
     suppress: process.env[FEEDBACK_SUPPRESS_ENV],
   });
+});
+
+/**
+ * Add the org selector to an org-scoped command (postgresai #327). Applied per
+ * registration, not as a root option: `auth`, `mcp`, `prepare-db` and the local
+ * `mon` commands are not org-scoped, and offering them a --org they would
+ * ignore invites the wrong assumption. Rationale for two flags: lib/org-scope.ts.
+ */
+// Both exported for the drift guard in test/org-scope-wire.test.ts: it checks
+// every registered command carries the selector, and walks the real tree to
+// catch a command nobody registered — how `issues files download` was missed.
+export const ORG_SCOPED_COMMANDS = new Set<Command>();
+export { program };
+
+function withOrgOptions(command: Command): Command {
+  ORG_SCOPED_COMMANDS.add(command);
+  return command
+    .option("--org <alias>", `organization alias (or ${ORG_ENV}); required with a global token`)
+    .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`);
+}
+
+// Resolve the org once per invocation and stash it for the HTTP layer, so the
+// guard holds for every org-scoped command rather than only the ones somebody
+// remembered to wire. Emitting the header is the lib layer's job (see
+// lib/org-scope.ts); both halves must hold for the org to reach the wire.
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  if (!ORG_SCOPED_COMMANDS.has(actionCommand)) {
+    setActiveOrgScope(undefined);
+    return;
+  }
+
+  const opts = actionCommand.opts<OrgOptions>();
+  const { apiKey } = getConfig(program.opts<CliOptions>());
+
+  try {
+    setActiveOrgScope(requireOrgScope(opts, apiKey));
+  } catch (err) {
+    if (err instanceof OrgScopeError) {
+      console.error(err.message);
+      process.exit(1);
+    }
+    throw err;
+  }
 });
 
 program
@@ -2078,8 +2129,7 @@ program
     }
   });
 
-program
-  .command("checkup [checkIdOrConn] [conn]")
+withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
   .description("generate health check reports directly from PostgreSQL (express mode)")
   .option("--check-id <id>", `specific check to run (see list below), or ALL`)
   .option("--node-name <name>", "node name for reports", "node-01")
@@ -2622,7 +2672,14 @@ function planMonitoringRegistration(args: {
 async function registerMonitoringInstance(
   apiKey: string,
   projectName: string | undefined,
-  opts?: { apiBaseUrl?: string; debug?: boolean; instanceId?: string; retries?: number; retryDelayMs?: number }
+  opts?: {
+    apiBaseUrl?: string;
+    debug?: boolean;
+    instanceId?: string;
+    retries?: number;
+    retryDelayMs?: number;
+    orgScope?: OrgScope;
+  }
 ): Promise<MonitoringRegistration | null> {
   const { apiBaseUrl } = resolveBaseUrls(opts);
   const url = `${apiBaseUrl}/rpc/monitoring_instance_register`;
@@ -2665,6 +2722,10 @@ async function registerMonitoringInstance(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          // monitoring_instance_register calls api_token_check, which under a
+          // global token resolves the org from these headers -- the token in
+          // the body carries none.
+          ...orgScopeHeaders(opts?.orgScope),
         },
         body: JSON.stringify(requestBody),
       });
@@ -2745,7 +2806,7 @@ function resolveAdoptedProject(reg: MonitoringRegistration | null): string | nul
  * Update .pgwatch-config file with key=value pairs.
  * Preserves existing values not being updated.
  */
-function updatePgwatchConfig(configPath: string, updates: Record<string, string>): void {
+export function updatePgwatchConfig(configPath: string, updates: Record<string, string>): void {
   let lines: string[] = [];
 
   // Read existing config if it exists
@@ -2768,6 +2829,15 @@ function updatePgwatchConfig(configPath: string, updates: Record<string, string>
   }
 
   fs.writeFileSync(configPath, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+  // `mode` only applies on creation, and this file holds api_key -- readConfig()
+  // parses it back out. Best-effort, like writeConfig: never fail a write that
+  // already succeeded.
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Warning: could not restrict permissions on ${configPath}: ${message}`);
+  }
 }
 
 /**
@@ -2903,6 +2973,11 @@ mon
   )
   .option("--demo", "demo mode with sample database", false)
   .option("--api-key <key>", "Postgres AI API key for automated report uploads")
+  // Plain options, deliberately NOT withOrgOptions: that would demand an org for
+  // `--demo` and for the no-API-key install, neither of which registers
+  // anything. The requirement is enforced where registration actually happens.
+  .option("--org <alias>", `organization alias (or ${ORG_ENV}); required to register with a global token`)
+  .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`)
   .option("--db-url <url>", "PostgreSQL connection URL to monitor")
   .option("--tag <tag>", "Docker image tag to use (e.g., 0.14.0, 0.14.0-dev.33)")
   .option("--project <name>", "Docker Compose project name (default: postgres_ai)")
@@ -2915,7 +2990,7 @@ mon
     "source DB vCPU count used for AAS zone thresholds (set automatically by the provisioning flow; PGAI_VCPUS env also works). Omit or 0 = unknown — AAS collection stays off until a real value is set."
   )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; yes: boolean }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -3262,7 +3337,17 @@ mon
 
         const lines = configContent.split(/\r?\n/).filter((l) => !/^grafana_password=/.test(l));
         lines.push(`grafana_password=${grafanaPassword}`);
-        fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", "utf8");
+        // Same file as the api_key writer above: once `mon local-install` has run
+        // it carries the credential, so it must not be left at umask default.
+        fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        try {
+          fs.chmodSync(cfgPath, 0o600);
+        } catch {
+          /* best-effort hardening; the file is already written */
+        }
       }
 
       console.log("✓ Grafana password configured\n");
@@ -3334,6 +3419,31 @@ mon
     // and persisted; the legacy self-registration stays fire-and-forget
     // (issue platform-all#311).
     if (apiKey && !opts.demo) {
+      // Registration calls monitoring_instance_register -> api_token_check, so a
+      // global token needs an org. The token travels in the BODY here, carrying
+      // none, and this used to fail with a hint naming flags the command did not
+      // have -- fire-and-forget, so silently.
+      let regOrgScope: OrgScope | undefined;
+      if (config.isGlobalTokenValue(apiKey)) {
+        try {
+          const scope = resolveOrgScope({ org: opts.org, orgId: opts.orgId });
+          if (scope.source === "none") {
+            console.error(
+              "✗ Registering this monitoring instance needs an organization: the API key is a global token."
+            );
+            console.error("  Pass --org <alias> or --org-id <id> (or set PGAI_ORG / PGAI_ORG_ID).");
+            console.error("  Run 'pgai orgs' to list the organizations this token can reach.");
+            process.exitCode = 1;
+            return;
+          }
+          regOrgScope = scope;
+        } catch (err) {
+          console.error(err instanceof OrgScopeError ? err.message : String(err));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       const instanceId = opts.instanceId || process.env.PGAI_INSTANCE_ID;
       const plan = planMonitoringRegistration({ project: opts.project, instanceId });
       const projectName = plan.projectName;
@@ -3341,6 +3451,7 @@ mon
       // TypeScript narrows instanceId to a defined string in the adopt path.
       if (instanceId) {
         const reg = await registerMonitoringInstance(apiKey, projectName, {
+          orgScope: regOrgScope,
           apiBaseUrl: globalOpts.apiBaseUrl,
           debug: !!process.env.DEBUG,
           instanceId,
@@ -3391,6 +3502,7 @@ mon
           );
         } else {
           const aas = await registerAasCollection(apiKey, instanceId, {
+            orgScope: regOrgScope,
             grafanaPassword,
             instancesPath,
             vcpus: parseVcpus(opts.vcpus ?? process.env.PGAI_VCPUS),
@@ -3420,6 +3532,7 @@ mon
         void registerMonitoringInstance(apiKey, projectName, {
           apiBaseUrl: globalOpts.apiBaseUrl,
           debug: !!process.env.DEBUG,
+          orgScope: regOrgScope,
         });
       }
     }
@@ -4093,6 +4206,7 @@ targets
   });
 
 // Authentication and API key management
+
 const auth = program.command("auth").description("authentication and API key management");
 
 type AuthLoginOptions = { setKey?: string; port?: number; debug?: boolean };
@@ -4112,6 +4226,19 @@ async function runAuthLogin(opts: AuthLoginOptions) {
       const existingProject = existingConfig.defaultProject;
 
       config.writeConfig({ apiKey: trimmedKey });
+
+      if (config.isGlobalTokenValue(trimmedKey)) {
+        // A global token selects its org per command, so no stored org or
+        // project can apply to it. writeConfig merges, so both must go
+        // explicitly or a leftover would silently re-scope later commands.
+        config.deleteConfigKeys(["orgId", "defaultProject"]);
+        console.log(`API key saved to ${config.getConfigPath()}`);
+        console.log("Scope: all organizations you belong to (global token)");
+        console.log("\nOrg-specific commands need --org <alias> or --org-id <id> (or PGAI_ORG).");
+        console.log("Run 'pgai orgs' to list the organizations this token can reach.");
+        return;
+      }
+
       // When API key is set directly, only clear orgId (org selection may differ).
       // Preserve defaultProject to avoid orphaning historical reports.
       // If the new key lacks access to the project, upload will fail with a clear error.
@@ -4311,7 +4438,13 @@ async function runAuthLogin(opts: AuthLoginOptions) {
           // clearing defaultProject. Fail loudly and leave the existing config
           // untouched when either field is missing.
           const tokenValid = typeof apiToken === "string" && apiToken.length > 0;
-          const orgIdValid = orgId !== undefined && orgId !== null && orgId !== "";
+          // A GLOBAL token legitimately has no org: it reaches every org the
+          // user belongs to, and each request names one. So org_id is only
+          // required for the per-org kind. Detect from the token itself rather
+          // than the response's `kind` field, so this keeps working against a
+          // backend that predates that field.
+          const isGlobal = config.isGlobalTokenValue(apiToken);
+          const orgIdValid = isGlobal || (orgId !== undefined && orgId !== null && orgId !== "");
           if (!tokenValid || !orgIdValid) {
             const missingField = !tokenValid ? "an API token" : "an organization ID";
             console.error(`Authentication failed: server response did not include ${missingField}.`);
@@ -4328,6 +4461,35 @@ async function runAuthLogin(opts: AuthLoginOptions) {
           const existingConfig = config.readConfig();
           const existingOrgId = existingConfig.orgId;
           const existingProject = existingConfig.defaultProject;
+
+          if (isGlobal) {
+            config.writeConfig({
+              apiKey: apiToken,
+              baseUrl: apiBaseUrl,
+            });
+
+            // writeConfig MERGES over the existing file, so a leftover orgId
+            // from a previous per-org login would survive and silently re-scope
+            // every command to an organization the user did not name. Nothing
+            // sticky belongs to a global token; delete both.
+            config.deleteConfigKeys(["orgId", "defaultProject"]);
+
+            console.log("\nAuthentication successful!");
+            console.log(`API key saved to: ${config.getConfigPath()}`);
+            console.log("Scope: all organizations you belong to (global token)");
+            if (existingOrgId != null || existingProject) {
+              console.log(
+                "\nNote: the previously stored organization and default project have been cleared —"
+              );
+              console.log("      a global token selects its organization per command.");
+            }
+            console.log("\nOrg-specific commands now need an organization:");
+            console.log("  pgai issues list --org <alias>       # or --org-id <id>");
+            console.log("  PGAI_ORG=<alias> pgai issues list    # for scripts and agents");
+            console.log("\nRun 'pgai orgs' to list the organizations this token can reach.");
+            process.exit(0);
+          }
+
           const orgChanged = existingOrgId != null && existingOrgId !== orgId;
 
           config.writeConfig({
@@ -4407,7 +4569,10 @@ auth
       return;
     }
     console.log(`Current API key: ${maskSecret(cfg.apiKey)}`);
-    if (cfg.orgId) {
+    if (config.isGlobalToken(cfg)) {
+      console.log("Scope: all organizations you belong to (global token)");
+      console.log("       org-specific commands need --org / --org-id (or PGAI_ORG)");
+    } else if (cfg.orgId) {
       console.log(`Organization ID: ${cfg.orgId}`);
     }
     console.log(`Config location: ${config.getConfigPath()}`);
@@ -4494,7 +4659,17 @@ mon
       lines.push(`grafana_password=${newPassword}`);
 
       // Write back
-      fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", "utf8");
+      // Same file as the api_key writer above: once `mon local-install` has run
+      // it carries the credential, so it must not be left at umask default.
+      fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      try {
+        fs.chmodSync(cfgPath, 0o600);
+      } catch {
+        /* best-effort hardening; the file is already written */
+      }
 
       console.log("✓ New Grafana password generated and saved");
       console.log("\nNew credentials:");
@@ -4583,17 +4758,49 @@ function interpretEscapes(str: string): string {
 }
 
 // Issues management
+program
+  .command("orgs")
+  .description("list organizations this credential can reach")
+  .option("--debug", "enable debug output")
+  .option("--json", "output raw JSON")
+  .action(async (opts: { debug?: boolean; json?: boolean }) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const cfg = config.readConfig();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) {
+        console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+        process.exitCode = 1;
+        return;
+      }
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+      // Deliberately takes NO --org: this is the discovery call you make in
+      // order to choose one, so it must answer before an org is selected. The
+      // backend authenticates it via api_token_principal for the same reason.
+      const orgs = await listOrgs({ apiKey, apiBaseUrl, debug: !!opts.debug });
+      if (!Array.isArray(orgs) || orgs.length === 0) {
+        console.error("This credential cannot reach any organization.");
+        process.exitCode = 1;
+        return;
+      }
+      printResult(orgs, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
 const issues = program.command("issues").description("issues management");
 
-issues
-  .command("list")
+withOrgOptions(issues.command("list"))
   .description("list issues")
   .option("--status <status>", "filter by status: open, closed, or all (default: all)")
   .option("--limit <n>", "max number of issues to return (default: 20)", parseInt)
   .option("--offset <n>", "number of issues to skip (default: 0)", parseInt)
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (opts: { status?: string; limit?: number; offset?: number; debug?: boolean; json?: boolean }) => {
+  .action(async (opts: OrgOptions & { status?: string; limit?: number; offset?: number; debug?: boolean; json?: boolean }) => {
     const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Fetching issues...");
     try {
       const rootOpts = program.opts<CliOptions>();
@@ -4605,7 +4812,15 @@ issues
         process.exitCode = 1;
         return;
       }
-      const orgId = cfg.orgId ?? undefined;
+      // The preAction hook already resolved the org selection and exited on
+      // failure, so consume the stashed scope rather than re-resolving it here
+      // (a second resolveOrgScope pass is redundant work and a second code path
+      // that would have to stay behavior-identical). Mirrors `issues create`.
+      const orgScope = getActiveOrgScope() ?? { source: "token" };
+      // Under a global token the org lives in the request headers, not in a
+      // client-side filter; the stored orgId (if any) belongs to a per-org
+      // token and must not leak into a global-token request.
+      const orgId = configOrgIdForBody(apiKey, cfg.orgId);
 
       const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
@@ -4620,6 +4835,7 @@ issues
         apiKey,
         apiBaseUrl,
         orgId,
+        orgScope,
         status: statusFilter,
         limit: opts.limit,
         offset: opts.offset,
@@ -4643,8 +4859,7 @@ issues
     }
   });
 
-issues
-  .command("view <issueId>")
+withOrgOptions(issues.command("view <issueId>"))
   .description("view issue details and comments")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -4684,8 +4899,7 @@ issues
     }
   });
 
-issues
-  .command("post-comment <issueId> <content>")
+withOrgOptions(issues.command("post-comment <issueId> <content>"))
   .description("post a new comment to an issue")
   .option("--parent <uuid>", "parent comment id")
   .option(
@@ -4726,7 +4940,6 @@ issues
         process.exitCode = 1;
         return;
       }
-
       const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
       let augmentedContent = content;
@@ -4759,10 +4972,8 @@ issues
     }
   });
 
-issues
-  .command("create <title>")
+withOrgOptions(issues.command("create <title>"))
   .description("create a new issue")
-  .option("--org-id <id>", "organization id (defaults to config orgId)", (v) => parseInt(v, 10))
   .option("--project-id <id>", "project id", (v) => parseInt(v, 10))
   .option("--description <text>", "issue description (use \\n for newlines)")
   .option(
@@ -4802,9 +5013,29 @@ issues
       return;
     }
 
-    const orgId = typeof opts.orgId === "number" && !Number.isNaN(opts.orgId) ? opts.orgId : cfg.orgId;
+    const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+    // v1.issue_create takes org_id as a parameter (and checks it against the
+    // resolved token org), so this is one of the few commands that needs a
+    // NUMERIC id rather than just the header. --org <alias> is resolved through
+    // orgs_list; the preAction hook has already guaranteed a selection exists
+    // when the credential is a global token.
+    let orgId: number | undefined;
+    try {
+      orgId = await resolveOrgIdForBody({
+        scope: getActiveOrgScope() ?? { source: "token" },
+        apiKey,
+        apiBaseUrl,
+        fallbackOrgId: cfg.orgId,
+        debug: !!opts.debug,
+      });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+      return;
+    }
     if (typeof orgId !== "number") {
-      console.error("org_id is required. Either pass --org-id or run 'pgai auth' to store it in config.");
+      console.error("org_id is required. Either pass --org/--org-id or run 'pgai auth' to store it in config.");
       process.exitCode = 1;
       return;
     }
@@ -4853,8 +5084,7 @@ issues
     }
   });
 
-issues
-  .command("update <issueId>")
+withOrgOptions(issues.command("update <issueId>"))
   .description("update an existing issue (title/description/status/labels)")
   .option("--title <text>", "new title (use \\n for newlines)")
   .option("--description <text>", "new description (use \\n for newlines)")
@@ -4975,8 +5205,7 @@ issues
     }
   });
 
-issues
-  .command("update-comment <commentId> <content>")
+withOrgOptions(issues.command("update-comment <commentId> <content>"))
   .description("update an existing issue comment")
   .option(
     "--attach <path>",
@@ -5049,8 +5278,7 @@ issues
 // File upload/download (subcommands of issues)
 const issueFiles = issues.command("files").description("upload and download files for issues");
 
-issueFiles
-  .command("upload <path>")
+withOrgOptions(issueFiles.command("upload <path>"))
   .description("upload a file to storage and get a markdown link")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -5096,8 +5324,12 @@ issueFiles
     }
   });
 
-issueFiles
-  .command("download <url>")
+// Org-scoped for the same reason `upload` is: downloadFile authenticates with
+// the access token, which under a global token carries no org, so the storage
+// request needs the selector too. The MCP download_file tool already requires
+// org_id -- without this the same operation was org-scoped on one surface and
+// unscoped on the other.
+withOrgOptions(issueFiles.command("download <url>"))
   .description("download a file from storage")
   .option("-o, --output <path>", "output file path (default: derive from URL)")
   .option("--debug", "enable debug output")
@@ -5134,8 +5366,7 @@ issueFiles
   });
 
 // Action Items management (subcommands of issues)
-issues
-  .command("action-items <issueId>")
+withOrgOptions(issues.command("action-items <issueId>"))
   .description("list action items for an issue")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -5165,8 +5396,7 @@ issues
     }
   });
 
-issues
-  .command("view-action-item <actionItemIds...>")
+withOrgOptions(issues.command("view-action-item <actionItemIds...>"))
   .description("view action item(s) with all details (supports multiple IDs)")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -5202,8 +5432,7 @@ issues
     }
   });
 
-issues
-  .command("create-action-item <issueId> <title>")
+withOrgOptions(issues.command("create-action-item <issueId> <title>"))
   .description("create a new action item for an issue")
   .option("--description <text>", "detailed description (use \\n for newlines)")
   .option("--sql-action <sql>", "SQL command to execute")
@@ -5262,8 +5491,7 @@ issues
     }
   });
 
-issues
-  .command("update-action-item <actionItemId>")
+withOrgOptions(issues.command("update-action-item <actionItemId>"))
   .description("update an action item (title, description, status, sql_action, configs)")
   .option("--title <text>", "new title (use \\n for newlines)")
   .option("--description <text>", "new description (use \\n for newlines)")
@@ -5360,8 +5588,7 @@ issues
 // Reports management
 const reports = program.command("reports").description("checkup reports management");
 
-reports
-  .command("list")
+withOrgOptions(reports.command("list"))
   .description("list checkup reports")
   .option("--project-id <id>", "filter by project id", (v: string) => parseInt(v, 10))
   .addOption(new Option("--status <status>", "filter by status (e.g., completed)").hideHelp())
@@ -5421,8 +5648,7 @@ reports
     }
   });
 
-reports
-  .command("files [reportId]")
+withOrgOptions(reports.command("files [reportId]"))
   .description("list files of a checkup report (metadata only, no content)")
   .option("--type <type>", "filter by file type: json, md")
   .option("--check-id <id>", "filter by check ID (e.g., H002)")
@@ -5476,8 +5702,7 @@ reports
     }
   });
 
-reports
-  .command("data [reportId]")
+withOrgOptions(reports.command("data [reportId]"))
   .description("get checkup report file data (includes content)")
   .option("--type <type>", "filter by file type: json, md")
   .option("--check-id <id>", "filter by check ID (e.g., H002)")
@@ -5685,7 +5910,7 @@ async function runJoeCli(
       project: projectRef || undefined,
       instanceId: instanceRef || undefined,
       input: { arg, variant: opts.variant ?? null },
-      orgId: cfg.orgId ?? undefined,
+      orgId: configOrgIdForBody(apiKey, cfg.orgId),
       budgetMs,
       debug: !!opts.debug,
     });
@@ -5719,48 +5944,42 @@ const joe = program
   );
 
 withJoeOptions(
-  joe
-    .command("plan <sql>")
+withOrgOptions(joe.command("plan <sql>"))
     .description("plan a query (EXPLAIN, plan-only — no execution; the fast/safe default)")
 ).action(async (sql: string, opts: JoeCliOpts) => {
   await runJoeCli("plan", sql, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("explain <sql>")
+withOrgOptions(joe.command("explain <sql>"))
     .description("EXPLAIN + EXPLAIN ANALYZE a query (EXECUTES on the ephemeral clone)")
 ).action(async (sql: string, opts: JoeCliOpts) => {
   await runJoeCli("explain", sql, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("exec <sql>")
+withOrgOptions(joe.command("exec <sql>"))
     .description("run arbitrary DDL/DML on the clone (e.g. create index, analyze)")
 ).action(async (sql: string, opts: JoeCliOpts) => {
   await runJoeCli("exec", sql, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("hypo <args>")
+withOrgOptions(joe.command("hypo <args>"))
     .description("HypoPG hypothetical indexes (e.g. `hypo create index on users (email)`, `hypo desc`, `hypo reset`)")
 ).action(async (args: string, opts: JoeCliOpts) => {
   await runJoeCli("hypo", args, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("activity")
+withOrgOptions(joe.command("activity"))
     .description("running-activity snapshot (pg_stat_activity) on the clone")
 ).action(async (opts: JoeCliOpts) => {
   await runJoeCli("activity", null, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("terminate <pid>")
+withOrgOptions(joe.command("terminate <pid>"))
     .description("pg_terminate_backend(pid) on the clone")
 ).action(async (pid: string, opts: JoeCliOpts) => {
   // The bare-positive-integer pid guard lives in buildJoeCommandText, which
@@ -5769,16 +5988,14 @@ withJoeOptions(
 });
 
 withJoeOptions(
-  joe
-    .command("reset")
+withOrgOptions(joe.command("reset"))
     .description("reset/recreate the session's thin clone")
 ).action(async (opts: JoeCliOpts) => {
   await runJoeCli("reset", null, opts);
 });
 
 withJoeOptions(
-  joe
-    .command("describe <object>")
+withOrgOptions(joe.command("describe <object>"))
     .description("\\d-family schema/relation/index metadata")
     .option("--variant <variant>", "\\d-family variant (e.g. \\d+, \\di, \\dt)")
 ).action(async (object: string, opts: JoeCliOpts) => {
@@ -5787,8 +6004,7 @@ withJoeOptions(
 
 // Resume / inspect a previously started command by id (the budget-expiry
 // resume handle printed by the one-shot verbs).
-joe
-  .command("result <commandId>")
+withOrgOptions(joe.command("result <commandId>"))
   .description("fetch a Joe command's output by id (resume a budget-expired one-shot)")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -5833,8 +6049,7 @@ joe
   });
 
 // Org-level discovery — a general postgresai command, NOT a Joe endpoint.
-program
-  .command("projects")
+withOrgOptions(program.command("projects"))
   .description("list the org's projects (shows which have Joe ready) — org-level, not a Joe endpoint")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
@@ -5852,7 +6067,7 @@ program
       const projects = await listProjects({
         apiKey,
         apiBaseUrl,
-        orgId: cfg.orgId ?? undefined,
+        orgId: configOrgIdForBody(apiKey, cfg.orgId),
         debug: !!opts.debug,
       });
       if (opts.json) {
@@ -5908,7 +6123,7 @@ async function resolveDblabTarget(
     throw new Error("--project <id|alias> is required");
   }
   const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
-  const orgId = cfg.orgId ?? undefined;
+  const orgId = configOrgIdForBody(apiKey, cfg.orgId);
   const instanceId = await resolveDblabInstanceId({ apiKey, apiBaseUrl, project: ref, orgId, debug });
   return { apiKey, apiBaseUrl, orgId, instanceId };
 }
@@ -5921,8 +6136,7 @@ const dblab = program
 
 const clone = dblab.command("clone").description("DBLab thin-clone management (proxies the Platform DBLab API)");
 
-clone
-  .command("create")
+withOrgOptions(clone.command("create"))
   .description("create a thin clone of the project's database")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--branch <branch>", "branch to clone from")
@@ -5956,8 +6170,7 @@ clone
     }
   });
 
-clone
-  .command("list")
+withOrgOptions(clone.command("list"))
   .description("list the project's thin clones")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -5973,8 +6186,7 @@ clone
     }
   });
 
-clone
-  .command("status <cloneId>")
+withOrgOptions(clone.command("status <cloneId>"))
   .description("show a clone's status")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -5990,8 +6202,7 @@ clone
     }
   });
 
-clone
-  .command("reset <cloneId>")
+withOrgOptions(clone.command("reset <cloneId>"))
   .description("reset a clone to a pristine snapshot")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--snapshot <id>", "snapshot id to reset to (default: latest)")
@@ -6014,8 +6225,7 @@ clone
     }
   });
 
-clone
-  .command("destroy <cloneId>")
+withOrgOptions(clone.command("destroy <cloneId>"))
   .description("destroy a clone (requires the Admin or AllFeaturesUser role)")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -6035,8 +6245,7 @@ clone
 
 const branch = dblab.command("branch").description("DBLab branch management (proxies the Platform DBLab API)");
 
-branch
-  .command("list")
+withOrgOptions(branch.command("list"))
   .description("list the project's branches")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -6052,8 +6261,7 @@ branch
     }
   });
 
-branch
-  .command("create <name>")
+withOrgOptions(branch.command("create <name>"))
   .description("create a branch")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--snapshot <id>", "snapshot id to base the branch on")
@@ -6077,8 +6285,7 @@ branch
     }
   });
 
-branch
-  .command("delete <name>")
+withOrgOptions(branch.command("delete <name>"))
   .description("delete a branch (requires the Admin or AllFeaturesUser role)")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -6094,8 +6301,7 @@ branch
     }
   });
 
-branch
-  .command("log <name>")
+withOrgOptions(branch.command("log <name>"))
   .description("show a branch's snapshot log")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--debug", "enable debug output")
@@ -6115,8 +6321,7 @@ branch
 
 const snapshot = dblab.command("snapshot").description("DBLab snapshot management (proxies the Platform DBLab API)");
 
-snapshot
-  .command("list")
+withOrgOptions(snapshot.command("list"))
   .description("list the project's snapshots")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--branch <branch>", "filter by branch")
@@ -6139,8 +6344,7 @@ snapshot
     }
   });
 
-snapshot
-  .command("create")
+withOrgOptions(snapshot.command("create"))
   .description("create a snapshot from a clone")
   .requiredOption("--project <id|alias>", "project id or alias")
   .requiredOption("--clone <id>", "clone id to snapshot")
@@ -6163,8 +6367,7 @@ snapshot
     }
   });
 
-snapshot
-  .command("destroy <snapshotId>")
+withOrgOptions(snapshot.command("destroy <snapshotId>"))
   .description("destroy a snapshot (requires the Admin or AllFeaturesUser role)")
   .requiredOption("--project <id|alias>", "project id or alias")
   .option("--force", "force-delete even when dependent clones exist")

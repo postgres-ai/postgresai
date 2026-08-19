@@ -11,6 +11,7 @@ import {
   redactSecretsForLog,
   requestTimeoutSignal,
 } from "./util";
+import { buildAuthHeaders } from "./org-scope";
 
 /**
  * Joe API v2 client (`postgres-ai` CLI surface) — synchronous contract.
@@ -110,11 +111,10 @@ async function callRpc<T>(params: RpcCallParams): Promise<T> {
   const url = new URL(`${base}/rpc/${fn}`);
   const payload = JSON.stringify(body);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  // The org selector rides along via buildAuthHeaders' activeOrgScope fallback:
+  // the CLI resolves it once in its preAction hook, so every joe rpc (run,
+  // output, projects_list) carries x-pgai-org under a global token.
+  const headers: Record<string, string> = buildAuthHeaders(apiKey);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };

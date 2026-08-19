@@ -38,6 +38,7 @@ import {
   requestTimeoutSignal,
 } from "./util";
 import { listProjects, isNumericProjectRef, type ProjectListItem } from "./joe";
+import { buildAuthHeaders } from "./org-scope";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -167,11 +168,10 @@ async function callDblabApi<T>(params: DblabApiCallParams): Promise<T> {
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = {
-    "access-token": apiKey,
-    "Content-Type": "application/json",
-    "Connection": "close",
-  };
+  // Org selector rides via buildAuthHeaders' activeOrgScope fallback (resolved
+  // once in the CLI preAction hook), so every dblab_api_call — including the
+  // role-gated DELETEs — carries x-pgai-org under a global token.
+  const headers: Record<string, string> = buildAuthHeaders(apiKey);
 
   if (debug) {
     const debugHeaders = { ...headers, "access-token": maskSecret(apiKey) };

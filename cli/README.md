@@ -150,8 +150,50 @@ postgresai auth
 
 This will:
 - Open your browser for authentication
-- Prompt you to select an organization
+- Prompt you to select an organization — or **All my organizations**, which mints a *global token*
 - Automatically save your API key to `~/.config/postgresai/config.json`
+
+#### Token kinds
+
+|  | Per-organization token | Global token (`pai_global_…`) |
+|---|---|---|
+| Reaches | one organization | every organization you belong to |
+| Org selection | implied by the token | **named on every org-specific command** |
+| Lifetime | 1 year by default¹ | **at most** 1 year² |
+
+¹ The Console pre-fills one year from today and accepts a later date; the
+platform enforces no maximum on per-organization tokens.
+
+² A hard cap: the platform refuses a global token expiring more than a year
+out ("A global token may not be valid for more than 1 year"). Both limits are
+the platform's, not the CLI's — see
+[platform-all#629](https://gitlab.com/postgres-ai/platform-all/-/issues/629) /
+[!709](https://gitlab.com/postgres-ai/platform-all/-/merge_requests/709).
+
+A global token is bound to *you*, not to an organization, so working across
+several companies no longer means re-running the browser login each time you
+switch. The trade-off is that it cannot guess which organization a command
+means, so it makes you say:
+
+```bash
+pgai issues list --org acme          # by alias
+pgai reports list --org-id 5225      # by numeric id — same on every org-scoped command
+PGAI_ORG=acme pgai checkup ...       # for scripts and agents
+
+pgai orgs                            # which organizations can this token reach?
+```
+
+`--org` always means an alias and `--org-id` always means a numeric id.
+Organization aliases have no format restriction, so an all-digit alias is
+legal — one flag accepting both forms would have to guess, and guessing wrong
+writes into the wrong organization.
+
+Nothing is stored: there is no "current organization" to get out of sync, and
+no shared state for parallel agents to race. Per-organization tokens are
+unaffected and need no flag.
+
+The MCP server follows the same rule — under a global token, `org_id` becomes a
+required tool argument instead of falling back to a stored default.
 
 ### Start monitoring
 
@@ -251,15 +293,20 @@ Cursor configuration example (Settings → MCP):
 }
 ```
 
+Every org-scoped tool takes an `org_id` argument. Under a per-organization
+token it is optional (the token supplies the org); under a **global token it is
+required** — the server will not assume an organization. Call `orgs_list` (or
+run `pgai orgs`) to discover the available ids.
+
 Tools exposed:
-- `list_issues`: returns the same JSON as `postgresai issues list`.
-- `view_issue`: view a single issue with its comments (args: `{ issue_id, debug? }`).
+- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, limit?, offset?, debug? }`).
+- `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, attachments?, debug? }`).
-- `update_issue`: update title/description/status/labels (args: `{ issue_id, title?, description?, status?, labels?, attachments?, debug? }`).
-- `post_issue_comment`: post a comment (args: `{ issue_id, content?, parent_comment_id?, attachments?, debug? }`).
-- `update_issue_comment`: update an existing comment (args: `{ comment_id, content?, attachments?, debug? }`).
-- `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, debug? }`).
-- `download_file`: download a file from storage (args: `{ url, output_path?, debug? }`).
+- `update_issue`: update title/description/status/labels (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, debug? }`).
+- `post_issue_comment`: post a comment (args: `{ issue_id, org_id, content?, parent_comment_id?, attachments?, debug? }`).
+- `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
+- `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
+- `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
 
 #### `attachments` parameter (issue/comment tools)
 
@@ -401,8 +448,23 @@ Normalization:
 ### Environment variables
 
 - `PGAI_API_KEY` - API key for PostgresAI services
+- `PGAI_ORG` - organization alias for org-specific commands (equivalent to `--org`; required with a global token)
+- `PGAI_ORG_ID` - organization id for org-specific commands (equivalent to `--org-id`)
 - `PGAI_API_BASE_URL` - API endpoint for backend RPC (default: `https://postgres.ai/api/general/`)
 - `PGAI_UI_BASE_URL` - UI endpoint for browser routes (default: `https://console.postgres.ai`)
+
+A flag beats the matching environment variable. Setting both `PGAI_ORG` and
+`PGAI_ORG_ID` (or passing both flags) is an error rather than a silent
+precedence win.
+
+### Per-command options
+
+Placed **after** the subcommand (`pgai projects --org acme`), not before it —
+they are registered on each org-scoped command, so `pgai --org acme projects`
+is an error.
+
+- `--org <alias>` - organization alias; overrides `PGAI_ORG`
+- `--org-id <id>` - organization id; overrides `PGAI_ORG_ID`
 
 ### CLI options
 
