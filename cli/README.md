@@ -299,7 +299,7 @@ required** — the server will not assume an organization. Call `orgs_list` (or
 run `pgai orgs`) to discover the available ids.
 
 Tools exposed:
-- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, limit?, offset?, debug? }`).
+- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`).
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, attachments?, debug? }`).
 - `update_issue`: update title/description/status/labels (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, debug? }`).
@@ -350,7 +350,8 @@ sensitive.
 ### Issues management (`issues` group)
 
 ```bash
-postgresai issues list                                       # List issues (shows: id, title, status, created_at)
+postgresai issues list                                       # List issues (shows: id, title, status, created_at; is_hidden only when set)
+postgresai issues list --hidden-only                         # Only hidden issues (PostgresAI staff)
 postgresai issues view <issueId>                             # View issue details and comments
 postgresai issues create --org-id <id> --title <t>           # Create a new issue
 postgresai issues update <issueId> [--title ... --status ...]# Update an existing issue
@@ -363,6 +364,21 @@ postgresai issues files download <url> [-o <path>]           # Download a file
 #   --debug          Enable debug output
 #   --json           Output raw JSON (overrides default YAML)
 ```
+
+#### Hidden issues (PostgresAI staff)
+
+Hidden issues are staff-internal. `issues list` and `issues view` mark them
+with `is_hidden: true`; the key is omitted entirely otherwise, so ordinary
+issues look exactly as they always have. `--hidden-only` lists just the hidden
+ones, filtered server-side.
+
+Staff access is granted per credential, not per person, and a credential that
+does not qualify simply sees nothing — `--hidden-only` returns an empty list
+and `is_hidden` never appears, with no error, which is indistinguishable from
+"there are no hidden issues". The token must be personal, not revoked, not
+expired, and — if it is a per-organization token rather than a global one —
+issued on or after 2026-08-14. Re-issue the token if `--hidden-only` comes
+back unexpectedly empty.
 
 #### Attaching files to issues and comments (`--attach`)
 

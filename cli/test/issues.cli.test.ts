@@ -42,10 +42,16 @@ function isolatedEnv(extra: Record<string, string> = {}) {
   };
 }
 
+// Two fixed ids the fake API treats differently: one ordinary issue and one
+// staff-only hidden issue (platform-all #562).
+const ORDINARY_ISSUE_ID = "11111111-1111-1111-1111-111111111111";
+const HIDDEN_ISSUE_ID = "22222222-2222-2222-2222-222222222222";
+
 async function startFakeApi() {
   const requests: Array<{
     method: string;
     pathname: string;
+    search: string;
     headers: Record<string, string>;
     bodyText: string;
     bodyJson: any | null;
@@ -76,7 +82,7 @@ async function startFakeApi() {
         const idx = uploads.length;
         const fileUrl = `/files/test/${idx}_${file.name}`;
         uploads.push({ filename: file.name, size: buf.length, mimeType: file.type, url: fileUrl });
-        requests.push({ method: req.method, pathname: url.pathname, headers, bodyText: "", bodyJson: null, contentType });
+        requests.push({ method: req.method, pathname: url.pathname, search: url.search, headers, bodyText: "", bodyJson: null, contentType });
         return new Response(
           JSON.stringify({
             success: true,
@@ -118,6 +124,7 @@ async function startFakeApi() {
       requests.push({
         method: req.method,
         pathname: url.pathname,
+        search: url.search,
         headers,
         bodyText,
         bodyJson,
@@ -182,9 +189,23 @@ async function startFakeApi() {
         );
       }
 
-      // GET /issues — used by `issues update --attach` to fetch existing description.
+      // GET /issues — `issues list`, `issues view`, and `issues update --attach`
+      // (which fetches the existing description).
       if (req.method === "GET" && url.pathname.endsWith("/issues")) {
         const idParam = url.searchParams.get("id") || "";
+        // No id filter means `issues list`. Return one ordinary row and one
+        // hidden row so the caller can assert on both flag states at once.
+        if (!idParam) {
+          const rows = [
+            { id: ORDINARY_ISSUE_ID, title: "Ordinary", status: 0, created_at: "2025-01-01T00:00:00Z", is_hidden: false },
+            { id: HIDDEN_ISSUE_ID, title: "Staff-only", status: 0, created_at: "2025-01-02T00:00:00Z", is_hidden: true },
+          ];
+          const hiddenOnly = url.searchParams.get("is_hidden") === "eq.true";
+          return new Response(
+            JSON.stringify(hiddenOnly ? rows.filter((r) => r.is_hidden) : rows),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
         const issueId = idParam.replace("eq.", "");
         return new Response(
           JSON.stringify([
@@ -196,7 +217,20 @@ async function startFakeApi() {
               created_at: "2025-01-01T00:00:00Z",
               author_display_name: "tester",
               action_items: [],
+              // Mirrors the server: the column is present on every row, and
+              // carries false for anything that is not actually hidden.
+              is_hidden: issueId === HIDDEN_ISSUE_ID,
             },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      // GET /issue_comments — `issues view` fetches these right after the issue.
+      if (req.method === "GET" && url.pathname.endsWith("/issue_comments")) {
+        return new Response(
+          JSON.stringify([
+            { id: "comment-1", issue_id: ORDINARY_ISSUE_ID, content: "a comment", created_at: "2025-01-01T00:00:00Z" },
           ]),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -629,6 +663,7 @@ async function startFakeStorageServer() {
       requests.push({
         method: req.method,
         pathname: url.pathname,
+        search: url.search,
         headers,
       });
 
@@ -1155,6 +1190,123 @@ describe("CLI issues --attach flag", () => {
       const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
       expect(req).toBeTruthy();
       expect(req!.bodyJson.content).toBe("plain comment");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+describe("hidden-issue flag reaches CLI output only when true (platform-all #562)", () => {
+  // These guard `cli/bin/postgres-ai.ts`, which builds its own output objects
+  // rather than passing the fetcher rows straight through — so its
+  // withVisibleHiddenFlag() calls are separate, independently-deletable call
+  // sites from the MCP ones covered in test/mcp-server.test.ts. Removing either
+  // one is exactly the leak this feature exists to prevent: printing
+  // `is_hidden: false` tells a customer the hidden-issue mechanism exists.
+  //
+  // stdout is a pipe here, so printResult() emits JSON regardless of --json.
+
+  test("issues list keeps is_hidden on a hidden row and drops it from an ordinary one", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["issues", "list"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+
+      const out = JSON.parse(r.stdout.trim());
+      expect(out).toHaveLength(2);
+
+      // Ordinary row: the key is gone entirely, not rendered as false.
+      expect(out[0].id).toBe(ORDINARY_ISSUE_ID);
+      expect("is_hidden" in out[0]).toBe(false);
+
+      // Hidden row: the marker survives so staff can see it.
+      expect(out[1].id).toBe(HIDDEN_ISSUE_ID);
+      expect(out[1].is_hidden).toBe(true);
+
+      // Belt and braces on the raw bytes a user actually sees.
+      expect(r.stdout).not.toContain('"is_hidden": false');
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues view drops is_hidden from an ordinary issue", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["issues", "view", ORDINARY_ISSUE_ID],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+
+      const out = JSON.parse(r.stdout.trim());
+      expect(out.issue.id).toBe(ORDINARY_ISSUE_ID);
+      expect("is_hidden" in out.issue).toBe(false);
+      expect(r.stdout).not.toContain("is_hidden");
+      // The rest of the payload is untouched.
+      expect(out.comments).toHaveLength(1);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues view keeps is_hidden on a hidden issue", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["issues", "view", HIDDEN_ISSUE_ID],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+
+      const out = JSON.parse(r.stdout.trim());
+      expect(out.issue.id).toBe(HIDDEN_ISSUE_ID);
+      expect(out.issue.is_hidden).toBe(true);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues list --hidden-only asks the server to filter, and still marks the rows", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["issues", "list", "--hidden-only"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+
+      // The filter must be server-side: assert the CLI actually sent it,
+      // rather than inferring it from what the fake chose to return.
+      const req = api.requests.find((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+      expect(req).toBeTruthy();
+      expect(new URLSearchParams(req!.search).get("is_hidden")).toBe("eq.true");
+
+      const out = JSON.parse(r.stdout.trim());
+      expect(out).toHaveLength(1);
+      expect(out[0].is_hidden).toBe(true);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("every issue request declares the hidden-issue capability header", async () => {
+    // Without it the server treats the token caller as non-staff and a hidden
+    // issue becomes indistinguishable from a nonexistent one (PT404).
+    const api = await startFakeApi();
+    try {
+      await runCliAsync(
+        ["issues", "view", HIDDEN_ISSUE_ID],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      const issueReqs = api.requests.filter((x) => x.method === "GET");
+      expect(issueReqs.length).toBeGreaterThan(0);
+      for (const req of issueReqs) {
+        expect(req.headers["x-pgai-include-hidden"]).toBe("true");
+      }
     } finally {
       api.stop();
     }

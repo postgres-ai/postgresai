@@ -23,6 +23,46 @@ export interface ConfigChange {
   value: string;
 }
 
+/**
+ * Headers for every issue-scoped request.
+ *
+ * `x-pgai-include-hidden` is the server's opt-in for staff-only hidden issues
+ * (platform-all #562). It is a client capability declaration, not a user
+ * preference: it says "this client knows hidden issues exist and will mark
+ * them". The platform default-excludes hidden rows from any token caller that
+ * does not send it, precisely because old CLI versions, curl, scripts and MCP
+ * clients cannot be upgraded on demand and would otherwise render
+ * staff-internal commentary as an ordinary issue.
+ *
+ * Every issue-scoped request carries it, reads and writes alike. The same
+ * staff predicate gates the v1.issue_comments and v1.issue_action_items views
+ * and the issue_hidden_access_check() guard on issue_update /
+ * issue_comment_create / issue_comment_update / issue_action_item_*, so a
+ * request without it cannot reach a hidden issue's comments or action items,
+ * or update it — and it fails silently, because that guard raises PT404 with
+ * the same shape as "no such issue". Do not strip it from a path just because
+ * that path does not print the flag.
+ *
+ * The display obligation is the narrower one: wherever the issue ITSELF is
+ * rendered — `issues list`, `issues view`, and their MCP counterparts — route
+ * it through withVisibleHiddenFlag(). Sub-resources inherit their marking from
+ * the issue view.
+ *
+ * Non-staff callers are unaffected: the server never has hidden rows to return
+ * to them, with or without the header.
+ */
+export function issueRequestHeaders(
+  apiKey: string,
+  orgScope?: OrgScope
+): Record<string, string> {
+  // Delegates to buildAuthHeaders so org scoping (global tokens, #327) keeps
+  // working: this only layers the hidden-issue capability on top.
+  return buildAuthHeaders(apiKey, orgScope, {
+    Prefer: "return=representation",
+    "x-pgai-include-hidden": "true",
+  });
+}
+
 export interface IssueActionItem {
   id: string;
   issue_id: string;
@@ -73,6 +113,11 @@ export interface Issue {
   author_display_name: string;
   comment_count: number;
   action_items: IssueActionItem[];
+  // Staff-only hidden issues (platform-all #562). Never true for a non-staff
+  // caller: the API filters hidden rows out server-side, so a non-staff
+  // response can only ever carry false. Display it ONLY when true — printing
+  // "is_hidden: false" would tell a customer the mechanism exists.
+  is_hidden?: boolean;
 }
 
 export interface IssueComment {
@@ -86,11 +131,38 @@ export interface IssueComment {
   data: unknown | null;
 }
 
-export type IssueListItem = Pick<Issue, "id" | "title" | "status" | "created_at">;
+export type IssueListItem = Pick<Issue, "id" | "title" | "status" | "created_at" | "is_hidden">;
 
-export type IssueDetail = Pick<Issue, "id" | "title" | "description" | "status" | "created_at" | "author_display_name"> & {
+export type IssueDetail = Pick<Issue, "id" | "title" | "description" | "status" | "created_at" | "author_display_name" | "is_hidden"> & {
   action_items: IssueActionItemSummary[];
 };
+
+/**
+ * Drop `is_hidden` from an issue unless it is actually true.
+ *
+ * Hidden issues are staff-only (platform-all #562) and the API filters them out
+ * server-side for everyone else, so a non-staff caller's rows can only ever
+ * carry `is_hidden: false`. Rendering that would disclose to a customer that a
+ * hidden-issue mechanism exists — the opposite of the point — so the flag is
+ * shown only when set. Mirrors the console, which renders its HiddenIssueChip
+ * on `issue.is_hidden &&` rather than on the caller's staff status.
+ */
+export function withVisibleHiddenFlag<T extends { is_hidden?: boolean }>(
+  issue: T
+): Omit<T, "is_hidden"> & { is_hidden?: true } {
+  // The return type is deliberately narrower than T: after this call the key is
+  // either absent or true, never false.
+  type Visible = Omit<T, "is_hidden"> & { is_hidden?: true };
+  if (!issue || issue.is_hidden === true) {
+    return issue as Visible;
+  }
+  if (!("is_hidden" in issue)) {
+    return issue as Visible;
+  }
+  const { is_hidden: _dropped, ...rest } = issue;
+  return rest as Visible;
+}
+
 export interface FetchIssuesParams {
   apiKey: string;
   /** Selected organization, required under a global token (postgresai #327). */
@@ -100,23 +172,33 @@ export interface FetchIssuesParams {
   status?: "open" | "closed";
   limit?: number;
   offset?: number;
+  hiddenOnly?: boolean;
   debug?: boolean;
 }
 
 export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListItem[]> {
-  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = 20, offset = 0, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = 20, offset = 0, hiddenOnly, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
 
   const base = normalizeBaseUrl(apiBaseUrl);
   const url = new URL(`${base}/issues`);
-  url.searchParams.set("select", "id,title,status,created_at");
+  // is_hidden is assumed present on v1.issues (platform migration
+  // 20260803_issue_hidden_flag, on main since 2026-08-06). There is no
+  // capability probe: against an endpoint older than that, PostgREST answers
+  // 42703 and `issues list` fails outright rather than just losing the flag.
+  url.searchParams.set("select", "id,title,status,created_at,is_hidden");
   url.searchParams.set("order", "id.desc");
   url.searchParams.set("limit", String(limit));
   url.searchParams.set("offset", String(offset));
   if (typeof orgId === "number") {
     url.searchParams.set("org_id", `eq.${orgId}`);
+  }
+  if (hiddenOnly) {
+    // Staff-only in effect: a non-staff caller never has hidden rows to match,
+    // so this returns an empty list rather than leaking anything.
+    url.searchParams.set("is_hidden", "eq.true");
   }
   if (status === "open") {
     url.searchParams.set("status", "eq.0");
@@ -124,9 +206,7 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
     url.searchParams.set("status", "eq.1");
   }
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -181,9 +261,7 @@ export async function fetchIssueComments(params: FetchIssueCommentsParams): Prom
   const base = normalizeBaseUrl(apiBaseUrl);
   const url = new URL(`${base}/issue_comments?issue_id=eq.${encodeURIComponent(issueId)}`);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -236,13 +314,11 @@ export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail 
 
   const base = normalizeBaseUrl(apiBaseUrl);
   const url = new URL(`${base}/issues`);
-  url.searchParams.set("select", "id,title,description,status,created_at,author_display_name,action_items");
+  url.searchParams.set("select", "id,title,description,status,created_at,author_display_name,action_items,is_hidden");
   url.searchParams.set("id", `eq.${issueId}`);
   url.searchParams.set("limit", "1");
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -283,6 +359,9 @@ export async function fetchIssue(params: FetchIssueParams): Promise<IssueDetail 
         created_at: rawIssue.created_at,
         author_display_name: rawIssue.author_display_name,
         action_items: actionItemsSummary,
+        // Carry the raw flag through; withVisibleHiddenFlag() normalizes it so
+        // false/undefined disappear and only a genuine `true` is rendered.
+        is_hidden: rawIssue.is_hidden,
       } as IssueDetail;
     } catch {
       throw new Error(`Failed to parse issue response: ${data}`);
@@ -360,9 +439,7 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -432,9 +509,7 @@ export async function createIssueComment(params: CreateIssueCommentParams): Prom
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -539,9 +614,7 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -627,9 +700,7 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
   };
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -723,9 +794,7 @@ export async function fetchActionItem(params: FetchActionItemParams): Promise<Is
     url.searchParams.set("id", `in.(${validIds.join(",")})`)
   }
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -800,9 +869,7 @@ export async function fetchActionItems(params: FetchActionItemsParams): Promise<
   const url = new URL(`${base}/issue_action_items`);
   url.searchParams.set("issue_id", `eq.${issueId.trim()}`);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -898,9 +965,7 @@ export async function createActionItem(params: CreateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -1019,9 +1084,7 @@ export async function updateActionItem(params: UpdateActionItemParams): Promise<
   }
   const body = JSON.stringify(bodyObj);
 
-  const headers: Record<string, string> = buildAuthHeaders(apiKey, orgScope, {
-    Prefer: "return=representation",
-  });
+  const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };

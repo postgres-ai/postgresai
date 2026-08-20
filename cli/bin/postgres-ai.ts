@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, type ConfigChange } from "../lib/issues";
+import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, withVisibleHiddenFlag, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import {
   executeJoeCommand,
@@ -4798,9 +4798,10 @@ withOrgOptions(issues.command("list"))
   .option("--status <status>", "filter by status: open, closed, or all (default: all)")
   .option("--limit <n>", "max number of issues to return (default: 20)", parseInt)
   .option("--offset <n>", "number of issues to skip (default: 0)", parseInt)
+  .option("--hidden-only", "list only hidden issues (PostgresAI staff)")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (opts: OrgOptions & { status?: string; limit?: number; offset?: number; debug?: boolean; json?: boolean }) => {
+  .action(async (opts: OrgOptions & { status?: string; limit?: number; offset?: number; hiddenOnly?: boolean; debug?: boolean; json?: boolean }) => {
     const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Fetching issues...");
     try {
       const rootOpts = program.opts<CliOptions>();
@@ -4839,16 +4840,22 @@ withOrgOptions(issues.command("list"))
         status: statusFilter,
         limit: opts.limit,
         offset: opts.offset,
+        hiddenOnly: !!opts.hiddenOnly,
         debug: !!opts.debug,
       });
       spinner.stop();
       const trimmed = Array.isArray(result)
-        ? (result as any[]).map((r) => ({
-            id: (r as any).id,
-            title: (r as any).title,
-            status: (r as any).status,
-            created_at: (r as any).created_at,
-          }))
+        ? (result as any[]).map((r) =>
+            // Route through the same helper as `issues view` so the
+            // "render is_hidden only when true" rule lives in one place.
+            withVisibleHiddenFlag({
+              id: (r as any).id,
+              title: (r as any).title,
+              status: (r as any).status,
+              created_at: (r as any).created_at,
+              is_hidden: (r as any).is_hidden,
+            })
+          )
         : result;
       printResult(trimmed, opts.json);
     } catch (err) {
@@ -4889,7 +4896,7 @@ withOrgOptions(issues.command("view <issueId>"))
       spinner.update("Fetching comments...");
       const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
       spinner.stop();
-      const combined = { issue, comments };
+      const combined = { issue: withVisibleHiddenFlag(issue), comments };
       printResult(combined, opts.json);
     } catch (err) {
       spinner.stop();

@@ -13,6 +13,7 @@ import {
   fetchActionItems,
   createActionItem,
   updateActionItem,
+  withVisibleHiddenFlag,
   type ConfigChange,
 } from "./issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
@@ -107,8 +108,16 @@ export async function handleToolCall(
       else if (statusArg === "closed") status = "closed";
       const limit = args.limit !== undefined ? Number(args.limit) : undefined;
       const offset = args.offset !== undefined ? Number(args.offset) : undefined;
-      const issues = await fetchIssues({ apiKey, apiBaseUrl, orgId, orgScope: scope.orgScope, status, limit, offset, debug });
-      return { content: [{ type: "text", text: JSON.stringify(issues, null, 2) }] };
+      const hiddenOnly = Boolean(args.hidden_only);
+      // Staff-only in effect, mirroring `issues list --hidden-only`: fetchIssues
+      // adds the server-side is_hidden=eq.true filter, which returns nothing for
+      // a non-staff key (hidden rows are filtered out for them upstream anyway).
+      const issues = await fetchIssues({ apiKey, apiBaseUrl, orgId, orgScope: scope.orgScope, status, limit, offset, hiddenOnly, debug });
+      // Same "render is_hidden only when true" rule as `issues list`: a non-staff
+      // MCP client can only ever get is_hidden=false, and emitting that false would
+      // itself disclose the hidden-issue mechanism. Drop it unless it is true.
+      const trimmed = issues.map((issue) => withVisibleHiddenFlag(issue));
+      return { content: [{ type: "text", text: JSON.stringify(trimmed, null, 2) }] };
     }
 
     if (toolName === "view_issue") {
@@ -126,7 +135,9 @@ export async function handleToolCall(
         return { content: [{ type: "text", text: "Issue not found" }], isError: true };
       }
       const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, debug });
-      const combined = { issue, comments };
+      // Mirror `issues view`: normalize the flag so is_hidden=false/undefined is
+      // dropped and only a genuine true survives into the MCP response.
+      const combined = { issue: withVisibleHiddenFlag(issue), comments };
       return { content: [{ type: "text", text: JSON.stringify(combined, null, 2) }] };
     }
 
@@ -453,6 +464,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
               status: { type: "string", description: "Filter by status: 'open', 'closed', or omit for all" },
               limit: { type: "number", description: "Max number of issues to return (default: 20)" },
               offset: { type: "number", description: "Number of issues to skip (default: 0)" },
+              hidden_only: { type: "boolean", description: "List only hidden issues (PostgresAI staff; same as CLI --hidden-only)" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             additionalProperties: false,

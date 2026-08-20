@@ -354,6 +354,130 @@ describe("MCP Server", () => {
     });
   });
 
+  describe("hidden-issue flag (MCP path)", () => {
+    // The CLI half of MR !394 filters is_hidden out of `issues list` / `issues
+    // view` output; these guard the MCP half, which reuses the same fetchers.
+    // A non-staff caller can only ever receive is_hidden=false, and emitting
+    // that false would itself disclose the hidden-issue mechanism — so the flag
+    // must survive to the client only when it is genuinely true.
+    const cfgReturn = {
+      apiKey: "test-key",
+      baseUrl: null,
+      storageBaseUrl: null,
+      orgId: null,
+      defaultProject: null,
+      projectName: null,
+    };
+
+    test("list_issues drops is_hidden=false but keeps is_hidden=true", async () => {
+      const mockIssues = [
+        { id: "issue-1", title: "Ordinary", status: 0, created_at: "2026-01-01", is_hidden: false },
+        { id: "issue-2", title: "Staff-only", status: 0, created_at: "2026-01-02", is_hidden: true },
+      ];
+
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      globalThis.fetch = mock(() =>
+        Promise.resolve(
+          new Response(JSON.stringify(mockIssues), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        )
+      ) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues"));
+
+      expect(response.isError).toBeUndefined();
+      const parsed = JSON.parse(getResponseText(response));
+      expect(parsed).toHaveLength(2);
+      // Ordinary row: the false flag is gone entirely (not rendered as false).
+      expect("is_hidden" in parsed[0]).toBe(false);
+      // Hidden row: the true flag survives so staff see the marker.
+      expect(parsed[1].is_hidden).toBe(true);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("view_issue drops is_hidden=false from the returned issue", async () => {
+      const mockIssue = { id: "issue-1", title: "Ordinary", is_hidden: false };
+      const mockComments = [{ id: "comment-1", content: "Test comment" }];
+
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      let callCount = 0;
+      globalThis.fetch = mock(() => {
+        callCount++;
+        const payload = callCount === 1 ? mockIssue : mockComments;
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("view_issue", { issue_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }));
+
+      expect(response.isError).toBeUndefined();
+      const parsed = JSON.parse(getResponseText(response));
+      expect("is_hidden" in parsed.issue).toBe(false);
+      expect(parsed.comments).toHaveLength(1);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("list_issues hidden_only applies the server-side is_hidden=eq.true filter", async () => {
+      // Feature parity with `issues list --hidden-only`: the MCP tool threads
+      // hidden_only into fetchIssues, which adds the PostgREST filter. Absent the
+      // flag, no is_hidden filter is sent.
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      const seenUrls: string[] = [];
+      globalThis.fetch = mock((url: string | URL) => {
+        seenUrls.push(url.toString());
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      await handleToolCall(createRequest("list_issues", { hidden_only: true }));
+      await handleToolCall(createRequest("list_issues"));
+
+      expect(seenUrls).toHaveLength(2);
+      expect(new URL(seenUrls[0]!).searchParams.get("is_hidden")).toBe("eq.true");
+      expect(new URL(seenUrls[1]!).searchParams.has("is_hidden")).toBe(false);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("view_issue keeps is_hidden=true on the returned issue", async () => {
+      const mockIssue = { id: "issue-1", title: "Staff-only", is_hidden: true };
+      const mockComments: unknown[] = [];
+
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      let callCount = 0;
+      globalThis.fetch = mock(() => {
+        callCount++;
+        const payload = callCount === 1 ? mockIssue : mockComments;
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("view_issue", { issue_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }));
+
+      expect(response.isError).toBeUndefined();
+      const parsed = JSON.parse(getResponseText(response));
+      expect(parsed.issue.is_hidden).toBe(true);
+
+      readConfigSpy.mockRestore();
+    });
+  });
+
   describe("post_issue_comment tool", () => {
     test("returns error when issue_id is empty", async () => {
       const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
