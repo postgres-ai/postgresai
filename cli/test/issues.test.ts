@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { createIssue, updateIssue, updateIssueComment } from "../lib/issues";
+import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, withVisibleHiddenFlag, issueRequestHeaders } from "../lib/issues";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -452,5 +452,230 @@ describe("updateIssueComment", () => {
         content: "Updated content",
       })
     ).rejects.toThrow(/Failed to update issue comment/);
+  });
+});
+
+describe("hidden issues (platform-all #562)", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("fetchIssues requests the is_hidden column", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock((url: string) => {
+      capturedUrl = url;
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchIssues({ apiKey: "test-key", apiBaseUrl: "https://api.example.com" });
+
+    const select = new URL(capturedUrl).searchParams.get("select");
+    expect(select?.split(",")).toContain("is_hidden");
+  });
+
+  test("fetchIssue requests the is_hidden column", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock((url: string) => {
+      capturedUrl = url;
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchIssue({
+      apiKey: "test-key",
+      apiBaseUrl: "https://api.example.com",
+      issueId: "00000000-0000-0000-0000-000000000000",
+    });
+
+    const select = new URL(capturedUrl).searchParams.get("select");
+    expect(select?.split(",")).toContain("is_hidden");
+  });
+
+  test("fetchIssue propagates is_hidden through the response mapping", async () => {
+    // Regression guard: fetchIssue re-builds the issue field-by-field, so a
+    // requested column is silently dropped unless it is explicitly copied over.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              id: "00000000-0000-0000-0000-000000000000",
+              title: "t",
+              description: "d",
+              status: 0,
+              created_at: "2026-01-01",
+              author_display_name: "staff",
+              action_items: [],
+              is_hidden: true,
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    ) as unknown as typeof fetch;
+
+    const issue = await fetchIssue({
+      apiKey: "test-key",
+      apiBaseUrl: "https://api.example.com",
+      issueId: "00000000-0000-0000-0000-000000000000",
+    });
+
+    expect(issue?.is_hidden).toBe(true);
+  });
+
+  test("--hidden-only filters server-side, and is absent otherwise", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = mock((url: string) => {
+      urls.push(url);
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchIssues({ apiKey: "k", apiBaseUrl: "https://api.example.com", hiddenOnly: true });
+    await fetchIssues({ apiKey: "k", apiBaseUrl: "https://api.example.com" });
+
+    expect(new URL(urls[0]!).searchParams.get("is_hidden")).toBe("eq.true");
+    expect(new URL(urls[1]!).searchParams.has("is_hidden")).toBe(false);
+  });
+
+  test("withVisibleHiddenFlag keeps the flag only when true", () => {
+    // A non-staff caller can only ever receive false (hidden rows are filtered
+    // out server-side); printing "is_hidden: false" would disclose that the
+    // mechanism exists, so the key must disappear entirely.
+    const hidden = { id: "a", is_hidden: true };
+    const visible = { id: "a", is_hidden: false };
+    // An older backend that does not return the column at all.
+    const absent: { id: string; is_hidden?: boolean } = { id: "a" };
+
+    expect(withVisibleHiddenFlag(hidden)).toEqual({ id: "a", is_hidden: true });
+    expect(withVisibleHiddenFlag(visible)).toEqual({ id: "a" });
+    expect(withVisibleHiddenFlag(absent)).toEqual({ id: "a" });
+  });
+
+  test("withVisibleHiddenFlag leaves other fields untouched", () => {
+    const issue = { id: "a", title: "t", status: 0, is_hidden: false };
+    expect(withVisibleHiddenFlag(issue)).toEqual({ id: "a", title: "t", status: 0 });
+  });
+
+  test("withVisibleHiddenFlag does not mutate its input", () => {
+    const issue = { id: "a", is_hidden: false };
+    withVisibleHiddenFlag(issue);
+    expect(issue.is_hidden).toBe(false);
+  });
+});
+
+describe("hidden-issue opt-in header (default-exclude)", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("issueRequestHeaders declares the capability alongside the token", () => {
+    const h = issueRequestHeaders("k");
+    expect(h["access-token"]).toBe("k");
+    expect(h["x-pgai-include-hidden"]).toBe("true");
+  });
+
+  test("fetchIssues sends the opt-in header", async () => {
+    let captured: Record<string, string> = {};
+    globalThis.fetch = mock((_url: string, options: RequestInit) => {
+      captured = options.headers as Record<string, string>;
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchIssues({ apiKey: "k", apiBaseUrl: "https://api.example.com" });
+    expect(captured["x-pgai-include-hidden"]).toBe("true");
+  });
+
+  test("fetchIssue sends the opt-in header", async () => {
+    let captured: Record<string, string> = {};
+    globalThis.fetch = mock((_url: string, options: RequestInit) => {
+      captured = options.headers as Record<string, string>;
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchIssue({
+      apiKey: "k",
+      apiBaseUrl: "https://api.example.com",
+      issueId: "00000000-0000-0000-0000-000000000000",
+    });
+    expect(captured["x-pgai-include-hidden"]).toBe("true");
+  });
+
+  test("createIssue sends the opt-in header too", async () => {
+    // Write paths need it as well. Not for flipping is_hidden — the CLI never
+    // sends that key and has no flag for it — but for reaching an existing
+    // hidden issue at all: issue_hidden_access_check() raises PT404 for a
+    // non-staff caller, and without this header a token caller IS non-staff.
+    let captured: Record<string, string> = {};
+    globalThis.fetch = mock((_url: string, options: RequestInit) => {
+      captured = options.headers as Record<string, string>;
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "x" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    await createIssue({
+      apiKey: "k",
+      apiBaseUrl: "https://api.example.com",
+      title: "t",
+      orgId: 1,
+    });
+    expect(captured["x-pgai-include-hidden"]).toBe("true");
+  });
+});
+
+describe("global tokens reach hidden issues (postgresai #327 + platform-all #562)", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("the org selector and the hidden opt-in travel together", () => {
+    // A global token names no org of its own, so the platform rejects it with
+    // PT400 unless the request selects one. user_is_staff() resolves global
+    // tokens too, so BOTH headers must be present on the same request or staff
+    // silently see no hidden issues (hidden => PT404 looks like "none exist").
+    const h = issueRequestHeaders("pai_global_secret", { alias: "acme" });
+    expect(h["x-pgai-org"]).toBe("acme");
+    expect(h["x-pgai-include-hidden"]).toBe("true");
+    expect(h["access-token"]).toBe("pai_global_secret");
+  });
+
+  test("numeric org selection works the same way", () => {
+    const h = issueRequestHeaders("pai_global_secret", { id: 5225 });
+    expect(h["x-pgai-org-id"]).toBe("5225");
+    expect(h["x-pgai-include-hidden"]).toBe("true");
+  });
+
+  test("a per-org token still needs no selector, and keeps the opt-in", () => {
+    const h = issueRequestHeaders("k");
+    expect(h["x-pgai-org"]).toBeUndefined();
+    expect(h["x-pgai-org-id"]).toBeUndefined();
+    expect(h["x-pgai-include-hidden"]).toBe("true");
   });
 });
