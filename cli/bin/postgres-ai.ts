@@ -167,6 +167,72 @@ function ensureRequiredEnvVars(projectDir: string): string[] {
   return added;
 }
 
+/**
+ * Env keys that `mon local-install` owns: it rewrites them on every run.
+ * Everything else found in an existing `.env` is operator-owned (set by
+ * ansible or by hand) and must survive the rewrite — silently dropping keys
+ * such as VM_RETENTION_PERIOD / QUERYID_RETENTION_HOURS reverted customers to
+ * the short compose defaults, which deleted their metrics weeks later.
+ */
+const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
+  "PGAI_TAG",
+  "PGAI_REGISTRY",
+  "GF_SECURITY_ADMIN_PASSWORD",
+  "REPLICATOR_PASSWORD",
+  "VM_AUTH_USERNAME",
+  "VM_AUTH_PASSWORD",
+];
+
+/**
+ * Build the `.env` content written by `mon local-install`.
+ *
+ * Managed keys keep their existing behavior: PGAI_TAG is always set to the CLI
+ * version, the rest are carried over when present and generated when not.
+ * Every other non-empty line of the existing file (unknown keys, comments) is
+ * appended verbatim, in its original order.
+ *
+ * Returns the content plus the list of preserved key names for logging.
+ */
+function buildLocalInstallEnv(
+  existingEnv: string,
+  imageTag: string,
+): { content: string; preservedKeys: string[] } {
+  const readRaw = (key: string): string | null => {
+    const m = existingEnv.match(new RegExp(`^${key}=(.+)$`, "m"));
+    return m ? m[1].trim() : null;
+  };
+
+  const envLines: string[] = [`PGAI_TAG=${imageTag}`];
+  const registry = readRaw("PGAI_REGISTRY");
+  if (registry) envLines.push(`PGAI_REGISTRY=${registry}`);
+  const grafanaPassword = readRaw("GF_SECURITY_ADMIN_PASSWORD");
+  if (grafanaPassword) envLines.push(`GF_SECURITY_ADMIN_PASSWORD=${grafanaPassword}`);
+  const replicatorPassword = readRaw("REPLICATOR_PASSWORD");
+  envLines.push(
+    `REPLICATOR_PASSWORD=${replicatorPassword || crypto.randomBytes(32).toString("hex")}`,
+  );
+  const vmAuthUsername = readRaw("VM_AUTH_USERNAME");
+  envLines.push(`VM_AUTH_USERNAME=${vmAuthUsername ? stripMatchingQuotes(vmAuthUsername) : "vmauth"}`);
+  const vmAuthPassword = readRaw("VM_AUTH_PASSWORD");
+  envLines.push(
+    `VM_AUTH_PASSWORD=${vmAuthPassword ? stripMatchingQuotes(vmAuthPassword) : crypto.randomBytes(18).toString("base64")}`,
+  );
+
+  // Preserve everything this command does not own, verbatim and in order.
+  const preservedKeys: string[] = [];
+  for (const line of existingEnv.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (m) {
+      if (LOCAL_INSTALL_MANAGED_ENV_KEYS.includes(m[1])) continue;
+      preservedKeys.push(m[1]);
+    }
+    envLines.push(line);
+  }
+
+  return { content: envLines.join("\n") + "\n", preservedKeys };
+}
+
 // Helper functions for spawning processes - use Node.js child_process for compatibility
 async function execFilePromise(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -3015,33 +3081,15 @@ mon
     // Update .env with custom tag if provided
     const envFile = path.resolve(projectDir, ".env");
 
-    // Build .env content, preserving important existing values.
+    // Build .env content. Managed keys are rewritten; every other key/comment
+    // the operator (or ansible) put there is preserved - see buildLocalInstallEnv.
     // Note: PGAI_TAG is intentionally NOT preserved - the CLI version should always match Docker images.
-    let existingRegistry: string | null = null;
-    let existingPassword: string | null = null;
-    let existingReplicatorPassword: string | null = null;
-    let existingVmAuthUsername: string | null = null;
-    let existingVmAuthPassword: string | null = null;
+    const existingEnv = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+
     // Capture the OLD (deployed) tag BEFORE we rewrite PGAI_TAG below, so the
     // compose-refresh backup is labeled with the version being upgraded FROM.
-    let previousTag: string | null = null;
-
-    if (fs.existsSync(envFile)) {
-      const existingEnv = fs.readFileSync(envFile, "utf8");
-      // Extract existing values (except tag - always use CLI version)
-      const previousTagMatch = existingEnv.match(/^PGAI_TAG=(.+)$/m);
-      if (previousTagMatch) previousTag = previousTagMatch[1].trim();
-      const registryMatch = existingEnv.match(/^PGAI_REGISTRY=(.+)$/m);
-      if (registryMatch) existingRegistry = registryMatch[1].trim();
-      const pwdMatch = existingEnv.match(/^GF_SECURITY_ADMIN_PASSWORD=(.+)$/m);
-      if (pwdMatch) existingPassword = pwdMatch[1].trim();
-      const replicatorPwdMatch = existingEnv.match(/^REPLICATOR_PASSWORD=(.+)$/m);
-      if (replicatorPwdMatch) existingReplicatorPassword = replicatorPwdMatch[1].trim();
-      const vmAuthUserMatch = existingEnv.match(/^VM_AUTH_USERNAME=(.+)$/m);
-      if (vmAuthUserMatch) existingVmAuthUsername = stripMatchingQuotes(vmAuthUserMatch[1]);
-      const vmAuthPasswordMatch = existingEnv.match(/^VM_AUTH_PASSWORD=(.+)$/m);
-      if (vmAuthPasswordMatch) existingVmAuthPassword = stripMatchingQuotes(vmAuthPasswordMatch[1]);
-    }
+    const previousTagMatch = existingEnv.match(/^PGAI_TAG=(.+)$/m);
+    const previousTag: string | null = previousTagMatch ? previousTagMatch[1].trim() : null;
 
     // Priority: CLI --tag flag > package version
     // Note: We intentionally do NOT use process.env.PGAI_TAG here because Bun auto-loads .env files,
@@ -3049,19 +3097,11 @@ mon
     // match the Docker images. Users can override with --tag if needed.
     const imageTag = opts.tag || pkg.version;
 
-    const envLines: string[] = [`PGAI_TAG=${imageTag}`];
-    if (existingRegistry) {
-      envLines.push(`PGAI_REGISTRY=${existingRegistry}`);
+    const { content: envContent, preservedKeys } = buildLocalInstallEnv(existingEnv, imageTag);
+    fs.writeFileSync(envFile, envContent, { encoding: "utf8", mode: 0o600 });
+    if (preservedKeys.length > 0) {
+      console.log(`Preserved existing .env settings: ${preservedKeys.join(", ")}\n`);
     }
-    if (existingPassword) {
-      envLines.push(`GF_SECURITY_ADMIN_PASSWORD=${existingPassword}`);
-    }
-    envLines.push(
-      `REPLICATOR_PASSWORD=${existingReplicatorPassword || crypto.randomBytes(32).toString("hex")}`,
-    );
-    envLines.push(`VM_AUTH_USERNAME=${existingVmAuthUsername || "vmauth"}`);
-    envLines.push(`VM_AUTH_PASSWORD=${existingVmAuthPassword || crypto.randomBytes(18).toString("base64")}`);
-    fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 
     // Non-git upgrade safety: bring the CLI-owned compose up to the target version
     // so newly-required service wiring (e.g. VM_AUTH_* on sink-prometheus) is present.
@@ -6580,5 +6620,6 @@ if (import.meta.main) {
 // Exported for unit tests (the CLI surface above is unaffected; these are the
 // same functions used by the `mon` commands).
 export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };
+export { buildLocalInstallEnv, LOCAL_INSTALL_MANAGED_ENV_KEYS };
 export { registerMonitoringInstance, resolveAdoptedProject, type MonitoringRegistration };
 export { planMonitoringRegistration, type MonRegistrationPlan };
