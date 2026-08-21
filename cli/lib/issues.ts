@@ -735,10 +735,6 @@ export async function updateIssueComment(params: UpdateIssueCommentParams): Prom
   }
 }
 
-// ============================================================================
-// Action Items API Functions
-// ============================================================================
-
 export interface FetchActionItemParams {
   apiKey: string;
   /** Selected organization, required under a global token (postgresai #327). */
