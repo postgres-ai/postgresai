@@ -12,6 +12,8 @@ import {
   buildClientConfig,
   sslOptionFromConnString,
   warnIfLaxSslmode,
+  warnIfTransactionPoolerPort,
+  isTransactionPoolerUrl,
   isLaxSslmode,
   extractSslmode,
   InstancesParseError,
@@ -702,6 +704,81 @@ describe("warnIfLaxSslmode — UX warning for lax sslmode", () => {
     warnIfLaxSslmode("postgresql://u:p@h/db?sslmode=verify-full");
     warnIfLaxSslmode("postgresql://u:p@h/db?sslmode=verify-ca");
     warnIfLaxSslmode("postgresql://u:p@h/db?sslmode=disable");
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("isTransactionPoolerUrl — detects Supabase transaction-mode pooler", () => {
+  test("true for a pooler host on the transaction port", () => {
+    expect(
+      isTransactionPoolerUrl(
+        "postgresql://u.ref:p@aws-1-eu-west-1.pooler.supabase.com:6543/postgres",
+      ),
+    ).toBe(true);
+  });
+
+  test("false for the same pooler host on the session port", () => {
+    expect(
+      isTransactionPoolerUrl(
+        "postgresql://u.ref:p@aws-1-eu-west-1.pooler.supabase.com:5432/postgres",
+      ),
+    ).toBe(false);
+  });
+
+  test("false for a direct host, even on 6543", () => {
+    // A direct host runs no pooler; 6543 there is just an unusual port and
+    // rewriting or warning about it would be wrong.
+    expect(
+      isTransactionPoolerUrl(
+        "postgresql://postgres:p@db.abcdefghij.supabase.co:6543/postgres",
+      ),
+    ).toBe(false);
+  });
+
+  test("false for an unrelated host on 6543", () => {
+    expect(
+      isTransactionPoolerUrl("postgresql://u:p@db.example.com:6543/postgres"),
+    ).toBe(false);
+  });
+
+  test("false for an unparseable connection string", () => {
+    expect(isTransactionPoolerUrl("not-a-url")).toBe(false);
+  });
+});
+
+describe("warnIfTransactionPoolerPort — UX warning for transaction pooling", () => {
+  let stderrSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    stderrSpy = spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  test("warns, naming both ports and the failure it causes", () => {
+    warnIfTransactionPoolerPort(
+      "postgresql://u.ref:p@aws-1-eu-west-1.pooler.supabase.com:6543/postgres",
+    );
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const msg = String(stderrSpy.mock.calls[0][0]);
+    expect(msg).toContain("6543");
+    expect(msg).toContain("5432");
+    expect(msg).toContain("42P05");
+  });
+
+  test("does NOT warn on the session-mode port", () => {
+    warnIfTransactionPoolerPort(
+      "postgresql://u.ref:p@aws-1-eu-west-1.pooler.supabase.com:5432/postgres",
+    );
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  test("does NOT warn on a direct host", () => {
+    warnIfTransactionPoolerPort(
+      "postgresql://postgres:p@db.abcdefghij.supabase.co:5432/postgres",
+    );
     expect(stderrSpy).not.toHaveBeenCalled();
   });
 });

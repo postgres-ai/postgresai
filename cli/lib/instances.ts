@@ -189,6 +189,49 @@ export function warnIfLaxSslmode(connStr: string): void {
 }
 
 /**
+ * Supabase's pooler (Supavisor) serves transaction mode on 6543 and session
+ * mode on 5432. Under transaction mode, client sessions share a pool of server
+ * backends, so pgx's cached server-side prepared statements collide with
+ * `prepared statement "stmtcache_<hash>" already exists` (42P05) and metric
+ * collection stops without surfacing a hard failure.
+ *
+ * Only a pooler HOST on that exact port qualifies. A direct
+ * `db.<ref>.supabase.co` host runs no pooler, so 6543 there is merely an
+ * unusual port — warning about it would be wrong.
+ */
+const SUPABASE_POOLER_HOST_SUFFIX = "pooler.supabase.com";
+const SUPABASE_POOLER_TRANSACTION_PORT = "6543";
+const SUPABASE_POOLER_SESSION_PORT = "5432";
+
+export function isTransactionPoolerUrl(connStr: string): boolean {
+  try {
+    const u = new URL(connStr);
+    return (
+      u.hostname.toLowerCase().endsWith(SUPABASE_POOLER_HOST_SUFFIX) &&
+      u.port === SUPABASE_POOLER_TRANSACTION_PORT
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Print a stderr warning when the connection string points at the pooler's
+ * transaction-mode port. Sits alongside `warnIfLaxSslmode` at the same
+ * Client-construction sites so hand-written connection strings get the same
+ * treatment the Supabase provisioning path applies automatically.
+ */
+export function warnIfTransactionPoolerPort(connStr: string): void {
+  if (!isTransactionPoolerUrl(connStr)) return;
+  console.error(
+    `⚠ port ${SUPABASE_POOLER_TRANSACTION_PORT} is the pooler's TRANSACTION mode: ` +
+      `pooled backends share prepared statements, so collection fails with ` +
+      `42P05 (prepared statement already exists) and metrics stop silently. ` +
+      `Use port ${SUPABASE_POOLER_SESSION_PORT} on the same host for session mode.`,
+  );
+}
+
+/**
  * Build a `pg.Client` config from a connection string that ACTUALLY honors
  * libpq sslmode semantics.
  *

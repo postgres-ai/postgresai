@@ -64,6 +64,7 @@ import {
   buildClientConfig,
   sslOptionFromConnString,
   warnIfLaxSslmode,
+  warnIfTransactionPoolerPort,
 } from "../lib/instances";
 
 // Node.js version check - require Node 18+
@@ -3231,6 +3232,7 @@ mon
           let testClient: InstanceType<typeof Client> | null = null;
           try {
             warnIfLaxSslmode(connStr);
+            warnIfTransactionPoolerPort(connStr);
             testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
             await testClient.connect();
             const result = await testClient.query("select version();");
@@ -3279,6 +3281,7 @@ mon
                 let testClient: InstanceType<typeof Client> | null = null;
                 try {
                   warnIfLaxSslmode(connStr);
+                  warnIfTransactionPoolerPort(connStr);
             testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
                   await testClient.connect();
                   const result = await testClient.query("select version();");
@@ -4227,6 +4230,7 @@ targets
     console.log(`Testing connection to monitoring target '${name}'...`);
 
     warnIfLaxSslmode(instance.conn_str);
+    warnIfTransactionPoolerPort(instance.conn_str);
     const client = new Client(buildClientConfig(instance.conn_str, { connectionTimeoutMillis: 10000 }));
 
     try {
