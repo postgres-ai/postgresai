@@ -19,6 +19,19 @@ from typing import Iterable
 
 import pytest
 
+# Re-exported so dashboard tests can import everything from one place; the
+# definitions live in a plain module to avoid a second conftest import.
+from tests.grafana_dashboards.query_info_join import (  # noqa: F401
+    LABEL_VALUES_CALL,
+    strip_label_values_calls,
+    MIN_QUERY_INFO_LOOKBACK_SECONDS,
+    QUERY_INFO_ANY_REFERENCE,
+    QUERY_INFO_JOIN_OPERAND,
+    group_left_label_problems,
+    join_operand_problems,
+    promql_duration_seconds,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Matches a reference to the db_name template variable in any Grafana syntax,
@@ -45,6 +58,18 @@ def _dashboard_paths() -> list[Path]:
 
 def dashboard_paths() -> list[Path]:
     return _dashboard_paths()
+
+
+def unique_dashboard_paths() -> list[Path]:
+    """One path per underlying file — the helm tree symlinks into config/."""
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in _dashboard_paths():
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(path)
+    return unique
 
 
 def iter_panels(dashboard: dict) -> Iterable[dict]:

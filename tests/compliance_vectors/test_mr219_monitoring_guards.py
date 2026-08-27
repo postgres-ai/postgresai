@@ -5,6 +5,10 @@ from pathlib import Path
 
 import yaml
 
+from tests.grafana_dashboards.query_info_join import (
+    QUERY_INFO_JOIN_OPERAND,
+    join_operand_problems,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -295,14 +299,27 @@ def test_queryid_dedup_trigger_is_partition_safe():
 
 
 def test_dashboard_2_pgss_query_info_expressions_have_or_fallbacks():
+    # pgwatch_query_info arrives in sparse bursts, so an instant-vector join
+    # misses its ~5 min lookback and the legend degrades to raw labels (#344).
+    # Both branches need the same carry-forward operand: widening one alone
+    # makes `or` emit two series per queryid. This test owns the branch shape;
+    # the operand itself is shared with tests/grafana_dashboards/.
     dashboard_paths = [
         PROJECT_ROOT / "config/grafana/dashboards/Dashboard_2_Aggregated_query_analysis.json",
         PROJECT_ROOT / "postgres_ai_helm/config/grafana/dashboards/Dashboard_2_Aggregated_query_analysis.json",
     ]
     missing = []
     checked = 0
+    operand = QUERY_INFO_JOIN_OPERAND.pattern
+    group_left_pattern = re.compile(
+        r"\*\s*on\(queryid\)\s*group_left\([^)]*\)\s*" + operand
+    )
+    # Deliberately not anchored to end-of-string: this guard owns the branch
+    # shape and the operand, not whatever a panel wraps the pair in. An
+    # end anchor blocked legitimate reshapes (an outer sum by(), a trailing
+    # comparison) for no gain here.
     fallback_pattern = re.compile(
-        r"\)\s+or\s+\(.*\s+unless\s+on\(queryid\)\s+pgwatch_query_info\)\s*$",
+        r"\)\s+or\s+\(.*\s+unless\s+on\(queryid\)\s*" + operand,
         flags=re.DOTALL,
     )
 
@@ -313,10 +330,41 @@ def test_dashboard_2_pgss_query_info_expressions_have_or_fallbacks():
             for dashboard_panel in nested_panels or [panel]:
                 for target in dashboard_panel.get("targets", []) or []:
                     expr = target.get("expr") or ""
-                    if "pgwatch_pg_stat_statements_" in expr and "pgwatch_query_info" in expr:
-                        checked += 1
-                        if not fallback_pattern.search(expr):
-                            missing.append((dashboard_path, dashboard_panel.get("id"), dashboard_panel.get("title")))
+                    if "pgwatch_pg_stat_statements_" not in expr:
+                        continue
+                    if "pgwatch_query_info" not in expr:
+                        continue
+                    checked += 1
+                    group_left_match = group_left_pattern.search(expr)
+                    fallback_match = fallback_pattern.search(expr)
+                    problems = join_operand_problems(expr)
+                    if not group_left_match:
+                        problems.append(
+                            "group_left branch does not use the carry-forward operand"
+                        )
+                    if not fallback_match:
+                        problems.append(
+                            "`or ... unless on(queryid)` fallback does not use "
+                            "the carry-forward operand"
+                        )
+                    if (
+                        group_left_match
+                        and fallback_match
+                        and group_left_match.group(1) != fallback_match.group(1)
+                    ):
+                        problems.append(
+                            f"branch lookbacks differ: {group_left_match.group(1)} "
+                            f"vs {fallback_match.group(1)}"
+                        )
+                    if problems:
+                        missing.append(
+                            (
+                                dashboard_path,
+                                dashboard_panel.get("id"),
+                                dashboard_panel.get("title"),
+                                problems,
+                            )
+                        )
 
     assert checked >= 40
     assert missing == []
