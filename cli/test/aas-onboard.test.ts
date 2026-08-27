@@ -170,11 +170,10 @@ describe("registerAasCollection", () => {
     expect(calls.length).toBe(0); // bailed before any HTTP
   });
 
-  test("vcpus 0/omitted → ok:false with a vcpus reason and NO outbound calls (AAS stays off until a real value is set)", async () => {
-    // Work item 260, finding 3: the --vcpus help promises "Omit or 0 = unknown
-    // — AAS collection stays off until a real value is set". Before the fix,
-    // arming proceeded client-side with vcpus 0 (minting a Grafana token and
-    // POSTing the RPC), relying only on a server-side gate.
+  test("vcpus 0/omitted → still registers, sending vcpus 0 (#683: the platform owns the value)", async () => {
+    // No provisioning path passes --vcpus/PGAI_VCPUS, so a client-side
+    // vcpus > 0 gate disabled hands-off onboarding everywhere. The RPC accepts
+    // 0 as "unknown" and never clobbers a platform-stamped value (#346).
     installFetch();
     const r = await registerAasCollection("apikey-1", "inst-123", {
       grafanaPassword: "pw",
@@ -182,9 +181,18 @@ describe("registerAasCollection", () => {
       vcpus: 0,
       apiBaseUrl: "https://api.test",
     });
-    expect(r.ok).toBe(false);
-    expect(r.reason).toMatch(/vcpus/i);
-    expect(calls.length).toBe(0); // bailed before any HTTP (no SA token minted, no RPC)
+    expect(r.ok).toBe(true);
+
+    const rpc = calls.find((c) => c.url.includes("/rpc/monitoring_instance_aas_register"));
+    expect(rpc).toBeDefined();
+    expect(JSON.parse(rpc!.body!)).toMatchObject({
+      instance_id: "inst-123",
+      sa_token: "glsa_mock_token_xyz",
+      cluster_name: "default",
+      node_name: "appdb",
+      vcpus: 0,
+      datasource_id: 8,
+    });
   });
 
   test("missing api key / instance id → ok:false, no calls", async () => {
@@ -192,7 +200,7 @@ describe("registerAasCollection", () => {
     const r = await registerAasCollection("", "inst-123", {
       grafanaPassword: "pw",
       instancesPath,
-      vcpus: 0,
+      vcpus: 8,
       apiBaseUrl: "https://api.test",
     });
     expect(r.ok).toBe(false);
