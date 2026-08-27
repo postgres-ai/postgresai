@@ -133,6 +133,50 @@ ignores the sort.** Use the reducer display names:
 | `last` | `Last` |
 | `lastNotNull` | `Last *` (note the asterisk) |
 
+## Joining a sparsely-emitted metric
+
+Some metrics are not emitted on every scrape. `pgwatch_query_info` — the
+queryid-to-query-text mapping the pg_stat_statements legends join against — is
+exported only for queryids active in the last `QUERYID_ACTIVE_MINUTES`, so a
+queryid that goes quiet develops gaps of hours. Joined as a bare instant vector
+it silently misses its ~5 min lookback, and the legend degrades to the raw label
+set (`{cluster="…", datname="…", queryid="…"}`) instead of the query text.
+
+Join such a metric through this operand, on **both** branches of the
+`or … unless` pair:
+
+```promql
+(topk by (queryid) (1, tlast_over_time(pgwatch_query_info[7d])) > bool 0)
+```
+
+Each part earns its place:
+
+| Part | Why |
+|------|-----|
+| `tlast_over_time(…[7d])` | Carries the last known mapping forward, so a stale queryid still resolves. Use the same window on both branches: widening one only would let a queryid match both, and `or` would emit it twice. |
+| `topk by (queryid) (1, …)` | One queryid can hold several `displayname*` series inside a window that wide — the exporter's text pick is not stable across redeploys or sources. Without it the joined series is duplicated and the stacked total inflated. `tlast_over_time` returns the sample *time*, so the newest mapping wins; on an exact timestamp tie the pick is arbitrary but there is still exactly one. |
+| `> bool 0` | Restores the value to `1`. The operand is multiplied into the metric being ranked, and without this the plotted rate would be scaled by a unix timestamp. |
+
+`group_left(...)` must copy every label the panel's `legendFormat` renders. An
+operand that is otherwise perfect still produces the raw-label failure if the
+labels never cross the join, and when the legend is driven by a template
+variable (`{{$legend_label}}`) that means *every* value the variable can take.
+
+`tlast_over_time` is a MetricsQL extension, not PromQL — these dashboards ship
+against VictoriaMetrics in both compose and Helm, alongside other MetricsQL
+already in use here (`default 0`). Against a strict Prometheus there is no
+equivalent: `last_over_time` carries the mapping forward but cannot de-duplicate
+it, and the join then fails outright with "duplicate series for the match group".
+
+The window is a judgement call — it must comfortably exceed the observed
+per-series staleness, and it bounds how long a superseded query text can linger.
+The mechanical parts are enforced on every MR by two tests sharing one
+definition in `tests/grafana_dashboards/query_info_join.py`:
+`tests/grafana_dashboards/test_query_info_carry_forward.py` (the operand, the
+lookback floor, and the `group_left` label transfer, across every dashboard) and
+`tests/compliance_vectors/test_mr219_monitoring_guards.py` (the `or … unless`
+branch shape on Dashboard 02). They run in different CI jobs.
+
 ## Units
 
 - **binBps**: Use binary bytes per second (KiB/s, MiB/s, GiB/s) for Postgres
