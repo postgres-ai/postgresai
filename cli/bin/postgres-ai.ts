@@ -3054,7 +3054,7 @@ mon
   )
   .option(
     "--vcpus <n>",
-    "source DB vCPU count used for AAS zone thresholds (set automatically by the provisioning flow; PGAI_VCPUS env also works). Omit or 0 = unknown — AAS collection stays off until a real value is set."
+    "source DB vCPU count used for AAS zone thresholds (PGAI_VCPUS env also works). Omit or 0 = unknown: the platform keeps the value it stamped at provision time. An explicit non-zero value overwrites the stored one; changing it re-arms the AAS backfill."
   )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
   .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; yes: boolean; org?: string; orgId?: string }) => {
@@ -3536,9 +3536,8 @@ mon
         // it can be enabled later by re-running local-install.
         // Skipped when adoption itself failed (reg === null): arming an
         // instance the platform did not acknowledge would hand out a Grafana
-        // token for a registration that never happened. (A 0/omitted --vcpus
-        // is additionally gated inside registerAasCollection, per its help
-        // text: "AAS collection stays off until a real value is set".)
+        // token for a registration that never happened. An unknown vcpus does
+        // NOT skip arming (#683) — the RPC accepts 0 and keeps its own value.
         if (reg === null) {
           console.error(
             "⚠ Skipping AAS auto-collection arming because instance adoption failed; it can be enabled later by re-running 'postgresai mon local-install'\n"

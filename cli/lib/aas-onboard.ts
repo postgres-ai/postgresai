@@ -194,18 +194,11 @@ export async function registerAasCollection(
   try {
     if (!apiKey || !instanceId) return { ok: false, reason: "missing api key or instance id" };
 
-    // Client-side arming gate (work item 260, finding 3): the --vcpus help
-    // promises "Omit or 0 = unknown — AAS collection stays off until a real
-    // value is set". Honor that promise HERE, before minting any Grafana
-    // service-account token or calling the platform, instead of relying solely
-    // on a server-side gate. Re-running local-install with --vcpus <n> arms it.
-    if (!(opts.vcpus > 0)) {
-      return {
-        ok: false,
-        reason: "vcpus is unknown (0 or omitted); AAS collection stays off until a real value is set — re-run with --vcpus <n>",
-      };
-    }
-
+    // No client-side vcpus gate (#683; reverses the work-item-260 finding-3
+    // gate, whose "confirm the RPC gates on vcpus > 0" premise did not hold).
+    // No provisioning path passes --vcpus, so gating here disabled hands-off
+    // onboarding everywhere. The RPC takes 0 as "unknown" and never clobbers
+    // the platform's own value, so always register.
     const labels = resolveAasLabels(opts.instancesPath);
     if (!labels) return { ok: false, reason: "could not determine a single (cluster, node_name) target" };
 
