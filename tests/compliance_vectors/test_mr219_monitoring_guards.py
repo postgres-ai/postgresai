@@ -18,6 +18,19 @@ def _duration_seconds(value):
 
 
 def test_pgwatch_sample_limit_allows_capped_full_preset():
+    """`sample_limit` is all-or-nothing: one sample over the cap and the WHOLE
+    scrape is discarded and the target goes `up=0`. It does not truncate.
+
+    So the limit must sit well above the largest cardinality normal operation
+    can legitimately produce — a `full` metric preset on a large database runs
+    to ~12.7k samples in steady state, which the previous 10000 cap silently
+    rejected in full, taking every pgwatch series with it.
+
+    The real cardinality control is the per-metric top-100 cap in
+    config/pgwatch-prometheus/metrics.yml. `sample_limit` is only the backstop
+    against a runaway explosion, so it keeps an upper bound too — it must not
+    be removed outright.
+    """
     prometheus = yaml.safe_load(
         (PROJECT_ROOT / "config/prometheus/prometheus.yml").read_text()
     )
@@ -26,8 +39,12 @@ def test_pgwatch_sample_limit_allows_capped_full_preset():
         if job["job_name"] == "pgwatch-prometheus"
     )
 
-    assert pgwatch_job["sample_limit"] >= 10000
-    assert pgwatch_job["sample_limit"] < 50000
+    # Headroom over the observed full-preset steady state, not a snug fit:
+    # cardinality grows with the monitored schema, and the failure mode is
+    # total silent loss rather than partial degradation.
+    assert pgwatch_job["sample_limit"] >= 50000
+    # Still a backstop, not an open door.
+    assert pgwatch_job["sample_limit"] <= 200000
 
     query_info_job = next(
         job for job in prometheus["scrape_configs"]
