@@ -10,6 +10,44 @@
 
 const SUPABASE_API_BASE = "https://api.supabase.com";
 
+/**
+ * Supabase's connection pooler (Supavisor) listens on two ports:
+ *   6543 — transaction mode: client sessions are multiplexed onto a shared
+ *          pool of server backends, so anything with per-session server state
+ *          is unsafe.
+ *   5432 — session mode: one client gets one backend for the life of the
+ *          connection, so server-side state behaves as on a direct connection.
+ *
+ * pgwatch connects with pgx, which caches server-side PREPARED STATEMENTS by
+ * default. In transaction mode those names collide across the shared backends:
+ *
+ *   ERROR: prepared statement "stmtcache_<hash>" already exists (SQLSTATE 42P05)
+ *
+ * Collection then fails and the series just stop, with no hard failure
+ * anywhere the operator would look. Monitoring must therefore use session
+ * mode. The pooler host is still the right target: the direct
+ * `db.<ref>.supabase.co` host is IPv6-only, while the pooler is reachable over
+ * IPv4 and serves session mode on 5432.
+ */
+const SUPABASE_POOLER_TRANSACTION_PORT = 6543;
+const SUPABASE_POOLER_SESSION_PORT = 5432;
+const SUPABASE_POOLER_HOST_SUFFIX = "pooler.supabase.com";
+
+/**
+ * Map a pooler endpoint onto its session-mode port.
+ *
+ * Only the exact transaction-mode port on a pooler host is rewritten. A direct
+ * host runs no pooler, so its port is authoritative and passes through
+ * verbatim; so does any other port, which we have no basis to second-guess.
+ */
+function sessionModePort(host: string, port: number | string): number | string {
+  const isPoolerHost = host.toLowerCase().endsWith(SUPABASE_POOLER_HOST_SUFFIX);
+  if (isPoolerHost && Number(port) === SUPABASE_POOLER_TRANSACTION_PORT) {
+    return SUPABASE_POOLER_SESSION_PORT;
+  }
+  return port;
+}
+
 export type SupabaseConfig = {
   /** Supabase project reference (e.g., "abc123xyz") */
   projectRef: string;
@@ -340,6 +378,10 @@ export class SupabaseClient {
  * Note: The username will be automatically suffixed with `.<projectRef>` if not
  * already present, as required by Supabase pooler connections.
  *
+ * The API reports the pooler's transaction-mode port; this returns the
+ * session-mode port instead, because pgwatch's pgx prepared statements are
+ * unsafe under transaction pooling. See `sessionModePort` above.
+ *
  * @param config Supabase configuration with projectRef and accessToken
  * @param username Username to include in the URL (e.g., monitoring user).
  *                 Will be transformed to `<username>.<projectRef>` format.
@@ -384,14 +426,17 @@ export async function fetchPoolerDatabaseUrl(
       const pooler = data[0];
       // Build URL from components if available
       if (pooler.db_host && pooler.db_port && pooler.db_name) {
-        return `postgresql://${encodedUsername}@${pooler.db_host}:${pooler.db_port}/${pooler.db_name}`;
+        const port = sessionModePort(pooler.db_host, pooler.db_port);
+        return `postgresql://${encodedUsername}@${pooler.db_host}:${port}/${pooler.db_name}`;
       }
       // Fallback: try to extract from connection_string if present
       if (typeof pooler.connection_string === "string") {
         try {
           const connUrl = new URL(pooler.connection_string);
           // Use provided username; handle empty port for default ports (e.g., 5432)
-          const portPart = connUrl.port ? `:${connUrl.port}` : "";
+          const portPart = connUrl.port
+            ? `:${sessionModePort(connUrl.hostname, connUrl.port)}`
+            : "";
           return `postgresql://${encodedUsername}@${connUrl.hostname}${portPart}${connUrl.pathname}`;
         } catch {
           return null;

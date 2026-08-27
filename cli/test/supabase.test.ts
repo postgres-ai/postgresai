@@ -166,7 +166,7 @@ describe("Supabase module", () => {
         "postgres_ai_mon"
       );
       expect(url).toBe(
-        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
+        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
       );
     });
 
@@ -191,7 +191,7 @@ describe("Supabase module", () => {
         "postgres_ai_mon.xhaqmsvczjkkvkgdyast"
       );
       expect(url).toBe(
-        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
+        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
       );
     });
 
@@ -216,7 +216,7 @@ describe("Supabase module", () => {
         "postgres_ai_mon"
       );
       expect(url).toBe(
-        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
+        "postgresql://postgres_ai_mon.xhaqmsvczjkkvkgdyast@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
       );
     });
 
@@ -263,6 +263,86 @@ describe("Supabase module", () => {
         "postgres_ai_mon"
       );
       expect(url).toBeNull();
+    });
+
+    test("rewrites the transaction-mode pooler port to session mode", async () => {
+      // The Supabase Management API reports the TRANSACTION-mode pooler port
+      // (6543). pgwatch connects with pgx, which uses server-side prepared
+      // statements; under transaction pooling those collide across the shared
+      // backends with `prepared statement "stmtcache_<hash>" already exists`
+      // (42P05) and metric collection silently stops.
+      globalThis.fetch = mock(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                db_host: "aws-1-eu-west-1.pooler.supabase.com",
+                db_port: 6543,
+                db_name: "postgres",
+              },
+            ]),
+            { status: 200 }
+          )
+        )
+      ) as unknown as typeof fetch;
+
+      const url = await fetchPoolerDatabaseUrl(
+        { projectRef: "xhaqmsvczjkkvkgdyast", accessToken: "token" },
+        "postgres_ai_mon"
+      );
+      expect(new URL(url!).port).toBe("5432");
+      // Same host — the pooler serves session mode on 5432. Switching to the
+      // direct `db.<ref>.supabase.co` host would require IPv6.
+      expect(new URL(url!).hostname).toBe("aws-1-eu-west-1.pooler.supabase.com");
+    });
+
+    test("leaves a session-mode pooler port untouched", async () => {
+      globalThis.fetch = mock(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                db_host: "aws-1-eu-west-1.pooler.supabase.com",
+                db_port: 5432,
+                db_name: "postgres",
+              },
+            ]),
+            { status: 200 }
+          )
+        )
+      ) as unknown as typeof fetch;
+
+      const url = await fetchPoolerDatabaseUrl(
+        { projectRef: "xhaqmsvczjkkvkgdyast", accessToken: "token" },
+        "postgres_ai_mon"
+      );
+      expect(new URL(url!).port).toBe("5432");
+    });
+
+    test("leaves a direct (non-pooler) host untouched", async () => {
+      // A direct host never runs a transaction pooler, so its port is
+      // authoritative and must be passed through verbatim.
+      globalThis.fetch = mock(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                db_host: "db.xhaqmsvczjkkvkgdyast.supabase.co",
+                db_port: 6543,
+                db_name: "postgres",
+              },
+            ]),
+            { status: 200 }
+          )
+        )
+      ) as unknown as typeof fetch;
+
+      const url = await fetchPoolerDatabaseUrl(
+        { projectRef: "xhaqmsvczjkkvkgdyast", accessToken: "token" },
+        "postgres_ai_mon"
+      );
+      expect(new URL(url!).hostname).toBe("db.xhaqmsvczjkkvkgdyast.supabase.co");
+      expect(new URL(url!).port).toBe("6543");
     });
 
     test("returns null when fetch throws network error", async () => {
