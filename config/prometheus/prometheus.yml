@@ -15,7 +15,14 @@ scrape_configs:
     scrape_interval: 30s      # How often to scrape PGWatch
     scrape_timeout: 25s       # Timeout for each scrape (must be < scrape_interval)
     metrics_path: /pgwatch
-    sample_limit: 10000       # Safety net: allows full preset + top-100 pgss while rejecting cardinality explosions
+    # Backstop against a runaway cardinality explosion — NOT a working ceiling.
+    # sample_limit is all-or-nothing: one sample over the cap and the entire
+    # scrape is discarded and this target goes up=0. It never truncates, so a
+    # snug limit costs every pgwatch series at once, silently. A `full` preset
+    # on a large database reaches ~12.7k samples in steady state, which the
+    # previous 10000 rejected outright. The real cardinality control is the
+    # per-metric top-100 cap in config/pgwatch-prometheus/metrics.yml.
+    sample_limit: 50000
 
   # Self-monitoring: Victoria Metrics internal metrics
   # Note: VictoriaMetrics expands percent-brace env vars in this file (not standard Prometheus)
@@ -57,6 +64,6 @@ scrape_configs:
     # Safety net only — the per-metric LIMIT 100 in pgwatch metrics.yml
     # is the primary cardinality control. Each active queryid emits ~8-9
     # labeled samples, so 500 would cap at ~55-60 queryids and silently
-    # drop the whole scrape on any busy cluster. 5000 is half of the
-    # /pgwatch limit and gives ~550 queryids of headroom.
+    # drop the whole scrape on any busy cluster. 5000 gives ~550 queryids
+    # of headroom, well clear of what the top-100 caps can produce.
     sample_limit: 5000
