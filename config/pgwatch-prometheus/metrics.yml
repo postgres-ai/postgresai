@@ -3296,6 +3296,9 @@ metrics:
       `'$other$'` sentinel. The `'$other$'` row is omitted entirely (via
       `HAVING count(*) > 0`) when all invalid indexes fit within the top-100
       cap, so its absence on healthy clusters is normal.
+      System schemas (`pg_catalog`, `information_schema`, `pg_toast`,
+      `pg_temp_*`, `pg_toast_temp_*`) are excluded: their indexes cannot be
+      dropped and must never be recommended for removal.
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
@@ -3359,10 +3362,15 @@ metrics:
           from pg_index pidx
           join pg_class pci on pci.oid = pidx.indexrelid
           join pg_class pct on pct.oid = pidx.indrelid
-          left join pg_namespace pn on pn.oid = pct.relnamespace
+          -- inner: pg_class.relnamespace always resolves, and the #345 predicate
+          -- below is on pn anyway. Matches unused_indexes / rarely_used_indexes.
+          join pg_namespace pn on pn.oid = pct.relnamespace
           left join pg_constraint con on con.conindid = pidx.indexrelid
           left join valid_duplicates vd on vd.invalid_indexrelid = pidx.indexrelid
           where pidx.indisvalid = false
+            -- #345: never recommend dropping system-catalog indexes
+            and pn.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and pn.nspname !~ '^pg_(toast_)?temp_'
         ),
         ranked as (
           select
@@ -3436,6 +3444,9 @@ metrics:
       is preserved on the `'$other$'` row for consistency. The `'$other$'`
       row is omitted entirely (via `HAVING count(*) > 0`) when there are
       ≤100 redundant pairs, so its absence on healthy clusters is normal.
+      System schemas (`pg_catalog`, `information_schema`, `pg_toast`,
+      `pg_temp_*`, `pg_toast_temp_*`) are excluded: their indexes cannot be
+      dropped and must never be recommended for removal.
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
@@ -3514,6 +3525,9 @@ metrics:
             and pg_get_expr(i1.indexprs, i1.indrelid) is not distinct from pg_get_expr(i2.indexprs, i2.indrelid)
             -- index predicates is same
             and pg_get_expr(i1.indpred, i1.indrelid) is not distinct from pg_get_expr(i2.indpred, i2.indrelid)
+            -- #345: never recommend dropping system-catalog indexes
+            and tnsp.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and tnsp.nspname !~ '^pg_(toast_)?temp_'
         ), redundant_indexes_fk as (
           select
             ri.*,
@@ -3645,6 +3659,9 @@ metrics:
       no meaningful aggregate. Tag columns carry the literal `'$other$'`
       sentinel. The `'$other$'` row is omitted entirely (via
       `HAVING count(*) > 0`) when ≤100 indexes match the unused filter.
+      System schemas (`pg_catalog`, `information_schema`, `pg_toast`,
+      `pg_temp_*`, `pg_toast_temp_*`) are excluded: their indexes cannot be
+      dropped and must never be recommended for removal.
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
@@ -3696,6 +3713,9 @@ metrics:
             i.indisunique = false
             and i.indisvalid = true
             and ci.relpages > 5
+            -- #345: never recommend dropping system-catalog indexes
+            and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and n.nspname !~ '^pg_(toast_)?temp_'
         ), index_ratios as (
           select
             i.indexrelid as index_id,
@@ -3801,6 +3821,9 @@ metrics:
       `scans_per_write`) and the `supports_fk` boolean are deliberately
       zeroed/false on the aggregate row. The `'$other$'` row is omitted
       entirely (via `HAVING count(*) > 0`) when ≤100 indexes match.
+      System schemas (`pg_catalog`, `information_schema`, `pg_toast`,
+      `pg_temp_*`, `pg_toast_temp_*`) are excluded: their indexes cannot be
+      dropped and must never be recommended for removal.
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
@@ -3855,6 +3878,9 @@ metrics:
             i.indisunique = false
             and i.indisvalid = true
             and ci.relpages > 5
+            -- #345: never recommend dropping system-catalog indexes
+            and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and n.nspname !~ '^pg_(toast_)?temp_'
         ), index_ratios as (
           select
             i.indexrelid as index_id,

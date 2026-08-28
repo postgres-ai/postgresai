@@ -55,6 +55,10 @@
 - [ ] H002: index only used by pg_stat_statements reset is handled correctly
 - [ ] H004 (redundant indexes): covering index with additional columns is NOT flagged
 - [ ] H004: partial indexes with different WHERE clauses are NOT flagged as redundant
+- [ ] H001/H002/H004: system-catalog and temp-schema indexes (`pg_catalog`,
+      `information_schema`, `pg_toast`, `pg_temp_*`, `pg_toast_temp_*`) are NEVER
+      flagged — they cannot be dropped (#345; `cli/test/system-schema-filter.test.ts`,
+      `tests/reporter/test_h00x_system_schema_filter.py`)
 - [ ] F004 (bloat): TOAST-heavy tables report accurate bloat estimates
 - [ ] F004: tables with >50% dead tuples are correctly identified
 - [ ] K003 (top queries): monitoring/system queries can be excluded

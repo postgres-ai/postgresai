@@ -15,10 +15,14 @@ metrics:
         order by total_exec_time desc
         limit 100
     gauges:
-      - '*' 
-  
+      - '*'
+
   index_definitions:
-    description: "Index definitions for unused and redundant indexes only"
+    description: >
+      Index definitions for unused and redundant indexes only.
+      System schemas (`pg_catalog`, `information_schema`, `pg_toast`,
+      `pg_temp_*`, `pg_toast_temp_*`) are excluded: their indexes cannot be
+      dropped and must never be recommended for removal.
     sqls:
       11: |-
         with fk_indexes as (
@@ -73,6 +77,9 @@ metrics:
             not i.indisunique
             and i.indisvalid
             and ci.relpages > 5
+            -- #345: never recommend dropping system-catalog indexes
+            and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and n.nspname !~ '^pg_(toast_)?temp_'
         ),
         unused_index_ids as (
           select
@@ -132,6 +139,9 @@ metrics:
             and i1.opclasses like (i2.opclasses || '%')
             and pg_get_expr(i1.indexprs, i1.indrelid) is not distinct from pg_get_expr(i2.indexprs, i2.indrelid)
             and pg_get_expr(i1.indpred, i1.indrelid) is not distinct from pg_get_expr(i2.indpred, i2.indrelid)
+            -- #345: never recommend dropping system-catalog indexes
+            and tnsp.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and tnsp.nspname !~ '^pg_(toast_)?temp_'
         ),
         redundant_indexes_tmp_num as (
           select row_number() over () num, rip.*
@@ -194,7 +204,7 @@ metrics:
         order by schemaname, relname, indexrelname;
     gauges:
       - '*'
-  
+
 presets:
   full:
     description: "Full metrics for PostgreSQL storage"

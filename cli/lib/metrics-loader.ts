@@ -22,21 +22,33 @@ export function getMetricSql(metricName: string, pgMajorVersion: number = 16): s
     throw new Error(`Metric "${metricName}" not found. Available metrics: ${Object.keys(METRICS).join(", ")}`);
   }
 
-  // Find the best matching version: highest version <= pgMajorVersion
+  // Find the best matching version: highest version <= pgMajorVersion.
+  // Keep each original key next to its parsed number — parseInt("9.6") is 9,
+  // and looking 9 back up would miss the "9.6" entry and yield undefined
+  // instead of raising. Non-numeric keys are dropped rather than sorted as NaN.
   const availableVersions = Object.keys(metric.sqls)
-    .map(v => parseInt(v, 10))
-    .sort((a, b) => b - a); // Sort descending
+    .map(key => ({ key, version: parseInt(key, 10) }))
+    .filter(entry => Number.isFinite(entry.version))
+    .sort((a, b) => b.version - a.version); // Sort descending
 
-  const matchingVersion = availableVersions.find(v => v <= pgMajorVersion);
+  const match = availableVersions.find(entry => entry.version <= pgMajorVersion);
 
-  if (matchingVersion === undefined) {
+  if (match === undefined) {
     throw new Error(
       `No compatible SQL version for metric "${metricName}" with PostgreSQL ${pgMajorVersion}. ` +
-      `Available versions: ${availableVersions.join(", ")}`
+      `Available versions: ${availableVersions.map(entry => entry.key).join(", ")}`
     );
   }
 
-  return metric.sqls[matchingVersion];
+  const sql = (metric.sqls as unknown as Record<string, string>)[match.key];
+
+  if (!sql) {
+    throw new Error(
+      `Metric "${metricName}" has no SQL under version key "${match.key}"`
+    );
+  }
+
+  return sql;
 }
 
 /**
@@ -94,6 +106,25 @@ export const METRIC_NAMES = {
   // I/O statistics (I001) - PostgreSQL 16+
   I001: "pg_stat_io",
 } as const;
+
+/** Schemas whose objects belong to PostgreSQL itself, not to the user. */
+const SYSTEM_SCHEMAS = new Set(["pg_catalog", "information_schema", "pg_toast"]);
+
+/**
+ * True for a PostgreSQL-owned schema (#345).
+ * Catalog and temp indexes cannot be dropped, so index-health checks must
+ * never report them. The metric SQL is the primary filter; applying this in
+ * the getters keeps the report JSON clean if a future SQL edit re-admits a
+ * system schema.
+ */
+export function isSystemSchema(name: unknown): boolean {
+  const schema = String(name ?? "");
+  return (
+    SYSTEM_SCHEMAS.has(schema) ||
+    schema.startsWith("pg_temp_") ||
+    schema.startsWith("pg_toast_temp_")
+  );
+}
 
 /**
  * Transform a row from metrics query output to JSON report format.
