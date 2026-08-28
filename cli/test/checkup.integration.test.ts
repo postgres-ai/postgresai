@@ -14,10 +14,49 @@ import { readFileSync } from "fs";
 import Ajv2020 from "ajv/dist/2020";
 
 import * as checkup from "../lib/checkup";
+import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loader";
 import { checkCurrentUserPermissions, formatPermissionCheckMessages } from "../lib/init";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
+
+// #345: rarely_used_indexes and index_definitions are not in the CLI's embedded
+// metrics (embed-metrics.ts ships only what express reports need), so their SQL
+// is read straight from the config YAML the pgwatch fleet uses.
+const configDir = resolve(import.meta.dir, "../../config");
+type MetricsYml = { metrics: Record<string, { sqls: Record<string, string> }> };
+const loadMetricsYml = (relPath: string) =>
+  Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;
+const promMetricsYml = loadMetricsYml("pgwatch-prometheus/metrics.yml");
+const pgIndexDefinitions = loadMetricsYml("pgwatch-postgres/metrics.yml");
+
+/**
+ * Highest SQL version key not newer than the live server, as pgwatch selects.
+ * Keeps each original key next to its parsed number: parseInt("9.6") is 9, and
+ * String(9) would not find the "9.6" entry back, silently returning undefined.
+ */
+function sqlFromYaml(doc: MetricsYml, metric: string, pgMajor: number): string {
+  const metricDef = doc.metrics[metric];
+  if (!metricDef) throw new Error(`metric ${metric} missing from metrics.yml`);
+  const match = Object.keys(metricDef.sqls)
+    .map((key) => ({ key, version: parseInt(key, 10) }))
+    .filter((entry) => Number.isFinite(entry.version))
+    .sort((a, b) => b.version - a.version)
+    .find((entry) => entry.version <= pgMajor);
+  if (!match) throw new Error(`no SQL for ${metric} on PG${pgMajor}`);
+  const sql = metricDef.sqls[match.key];
+  if (!sql) throw new Error(`${metric} has no SQL under version key "${match.key}"`);
+  return sql;
+}
+
+/** All five per-index metrics whose SQL must exclude system schemas (#345). */
+const metricSqlsUnderTest = (pgMajor: number): Array<[string, string]> => [
+  ["H001", getMetricSql(METRIC_NAMES.H001, pgMajor)],
+  ["H002", getMetricSql(METRIC_NAMES.H002, pgMajor)],
+  ["H004", getMetricSql(METRIC_NAMES.H004, pgMajor)],
+  ["rarely_used_indexes", sqlFromYaml(promMetricsYml, "rarely_used_indexes", pgMajor)],
+  ["index_definitions", sqlFromYaml(pgIndexDefinitions, "index_definitions", pgMajor)],
+];
 
 function findOnPath(cmd: string): string | null {
   const result = Bun.spawnSync(["sh", "-c", `command -v ${cmd}`]);
@@ -407,6 +446,421 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       `);
     }
   });
+
+  // #345: catalog and temp-schema indexes cannot be dropped, so H001/H002/H004
+  // must never report them. A customer report listed
+  // pg_catalog.pg_class_tblspc_relfilenode_index as an unused index to drop.
+  test("H001 does not report an invalid index that lives in pg_catalog (#345)", async () => {
+    // Mark a catalog index invalid inside a transaction and roll back, so the
+    // catalog is untouched afterwards but the report sees the invalid index.
+    await client.query("BEGIN");
+    try {
+      await client.query(`
+        UPDATE pg_index SET indisvalid = false
+        WHERE indexrelid = 'pg_catalog.pg_class_tblspc_relfilenode_index'::regclass;
+      `);
+
+      const report = await checkup.generateH001(client, "test-node");
+      const nodeResult = report.results["test-node"];
+      const dbName = Object.keys(nodeResult.data)[0];
+      const dbData = nodeResult.data[dbName] as any;
+
+      const schemas = (dbData.invalid_indexes ?? []).map((idx: any) => idx.schema_name);
+      expect(schemas).not.toContain("pg_catalog");
+      expect(JSON.stringify(report)).not.toContain("pg_class_tblspc_relfilenode_index");
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  test("H001 does not report an invalid index in a temp schema (#345)", async () => {
+    await client.query(`
+      CREATE TEMP TABLE test_temp_idx_table (id serial PRIMARY KEY, value text);
+      CREATE INDEX test_temp_idx ON test_temp_idx_table(value);
+    `);
+    await client.query(`
+      UPDATE pg_index SET indisvalid = false
+      WHERE indexrelid = 'test_temp_idx'::regclass;
+    `);
+
+    try {
+      // Sanity: the index really is in a pg_temp_N schema.
+      const { rows } = await client.query(`
+        SELECT n.nspname FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.oid = 'test_temp_idx'::regclass;
+      `);
+      expect(String(rows[0].nspname)).toMatch(/^pg_temp_/);
+
+      const report = await checkup.generateH001(client, "test-node");
+      expect(JSON.stringify(report)).not.toContain("test_temp_idx");
+    } finally {
+      await client.query(`
+        UPDATE pg_index SET indisvalid = true
+        WHERE indexrelid = 'test_temp_idx'::regclass;
+      `);
+      await client.query("DROP TABLE IF EXISTS test_temp_idx_table");
+    }
+  });
+
+  test("H001/H002/H004 never report a system-schema index (#345)", async () => {
+    const cases: Array<[string, any, string]> = [
+      ["H001", await checkup.generateH001(client, "test-node"), "invalid_indexes"],
+      ["H002", await checkup.generateH002(client, "test-node"), "unused_indexes"],
+      ["H004", await checkup.generateH004(client, "test-node"), "redundant_indexes"],
+    ];
+
+    for (const [checkId, report, key] of cases) {
+      const nodeResult = report.results["test-node"];
+      for (const dbData of Object.values(nodeResult.data) as any[]) {
+        const offenders = (dbData?.[key] ?? [])
+          .map((idx: any) => String(idx.schema_name))
+          .filter(isSystemSchema);
+        expect(`${checkId}: ${offenders.join(", ")}`).toBe(`${checkId}: `);
+      }
+    }
+  });
+
+  // The getters filter defensively, so a getter-level assertion cannot tell a
+  // working SQL exclusion from a broken one. These run the metric SQL directly.
+  test("H001 metric SQL returns no pg_catalog row for an invalid catalog index (#345)", async () => {
+    const pgMajor = Number((await checkup.getPostgresVersion(client)).server_major_ver);
+    const sql = getMetricSql(METRIC_NAMES.H001, pgMajor);
+
+    await client.query("BEGIN");
+    try {
+      await client.query(`
+        UPDATE pg_index SET indisvalid = false
+        WHERE indexrelid = 'pg_catalog.pg_class_tblspc_relfilenode_index'::regclass;
+      `);
+
+      // Guard: without the exclusion this row is exactly what the SQL emits,
+      // so prove the catalog index really is invalid inside this transaction.
+      const { rows: invalidRows } = await client.query(`
+        SELECT count(*)::int AS n FROM pg_index
+        WHERE indexrelid = 'pg_catalog.pg_class_tblspc_relfilenode_index'::regclass
+          AND indisvalid = false;
+      `);
+      expect(invalidRows[0].n).toBe(1);
+
+      const result = await client.query(sql);
+      const schemas = result.rows.map((r: any) => String(r.tag_schema_name ?? ""));
+      expect(schemas.filter(isSystemSchema)).toEqual([]);
+      expect(schemas).not.toContain("pg_catalog");
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  // On this harness's bare initdb cluster unused_indexes and index_definitions
+  // were vacuous: both gate on `ci.relpages > 5`, which their catalog indexes
+  // did not reach, so they returned 0 rows with or without the exclusion.
+  // Seeding catalog churn fixes those two. It does NOT rescue the other three
+  // — H001 needs an invalid index, while H004 and rarely_used_indexes need
+  // index shapes the catalog may not have (a redundant non-unique pair; a
+  // scanned index on a heavily written table) — and a single shared
+  // precondition hid that.
+  //
+  // How much of the catalog clears those gates varies by PG version and by
+  // what ran before, so every metric is checked twice below against a table
+  // that says which outcomes are actually pinnable. See the REV findings on
+  // !407 and the PG13 CI failure on d025429.
+  const CHURN_SCHEMA = "pgai_churn_345";
+  const CHURN_TABLES = 4000;
+  const CHURN_BATCH = 200;
+
+  /**
+   * Where each metric's non-vacuity is proven — deliberately NOT here.
+   *
+   * Whether a real catalog happens to reach a given metric depends on catalog
+   * layout and accumulated stats, and varies by PG version and by what ran
+   * before: CI's PG13 reached rarely_used_indexes where PG17 does not, and a
+   * stock PG13 container reaches neither that nor unused_indexes. Every
+   * attempt to pin that down here has been a false assertion about the
+   * environment, so this test asserts none of it.
+   *
+   * What this test is for: the real-catalog sweep. All five metrics, run
+   * against an actually churned catalog, must emit zero system-schema rows.
+   * What proves those runs are not vacuous lives elsewhere, per metric:
+   *   - the substitution control test below, for H002, H004,
+   *     rarely_used_indexes and index_definitions — it seeds public-schema
+   *     rows those metrics really do report, swaps 'public' into the exclusion
+   *     list, and asserts they vanish, so the predicate is proven live in the
+   *     executing plan rather than the result merely being empty;
+   *   - the dedicated H001 test above, which forces a catalog index invalid in
+   *     a rolled-back transaction.
+   */
+  const PROVEN_BY: Record<string, string> = {
+    H001: "the dedicated H001 test above (catalog index forced invalid in a rolled-back txn)",
+    H002: "the substitution control test below",
+    H004: "the substitution control test below",
+    rarely_used_indexes: "the substitution control test below",
+    index_definitions: "the substitution control test below",
+  };
+
+  /**
+   * The same SQL with the #345 predicates deleted — the shape the metric had
+   * before the fix. Both predicates are trailing `and` clauses, so dropping
+   * their lines leaves valid SQL.
+   */
+  const withoutExclusion = (sql: string): string => {
+    const stripped = sql
+      .split("\n")
+      .filter(
+        (line) =>
+          !/not in \('pg_catalog', 'information_schema', 'pg_toast'\)/.test(line) &&
+          !/!~ '\^pg_\(toast_\)\?temp_'/.test(line)
+      )
+      .join("\n");
+    // Fail by name, not by dumping the whole SQL into the diff.
+    expect(stripped === sql ? "no #345 predicate to strip" : "stripped").toBe("stripped");
+    return stripped;
+  };
+
+  /**
+   * Catalog indexes that would qualify for the unused_indexes filter. Logged,
+   * never asserted — the number is environment-dependent (a stock postgres:17
+   * image already has two before any churn).
+   */
+  const countQualifyingCatalogIndexes = async (): Promise<number> => {
+    const { rows } = await client.query(`
+      SELECT count(*)::int AS n
+      FROM pg_index i
+      JOIN pg_class ci ON ci.oid = i.indexrelid AND ci.relkind = 'i'
+      JOIN pg_namespace n ON n.oid = ci.relnamespace
+      LEFT JOIN pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
+      WHERE n.nspname = 'pg_catalog'
+        AND i.indisunique = false
+        AND i.indisvalid = true
+        AND ci.relpages > 5
+        AND coalesce(si.idx_scan, 0) = 0;
+    `);
+    return rows[0].n;
+  };
+
+  /**
+   * Every schema-name column in a row. redundant_indexes deliberately emits
+   * `tag_schema_name` twice (raw + quote_ident'd), and a row object keeps only
+   * the last, so read positionally via rowMode "array" and check both.
+   */
+  const systemSchemaOffenders = async (sql: string): Promise<string[]> => {
+    const result: any = await client.query({ text: sql, rowMode: "array" });
+    const schemaCols = (result.fields as Array<{ name: string }>)
+      .map((f, i) => ({ name: f.name, i }))
+      .filter((f) => f.name === "tag_schema_name" || f.name === "schemaname")
+      .map((f) => f.i);
+    expect(schemaCols.length).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    for (const row of result.rows as unknown[][]) {
+      for (const i of schemaCols) {
+        const schema = String(row[i] ?? "");
+        if (isSystemSchema(schema)) offenders.push(schema);
+      }
+    }
+    return offenders;
+  };
+
+  test(
+    "every per-index metric SQL excludes system schemas on a churned catalog (#345)",
+    async () => {
+      const pgMajor = Number((await checkup.getPostgresVersion(client)).server_major_ver);
+
+      await client.query(`CREATE SCHEMA IF NOT EXISTS ${CHURN_SCHEMA}`);
+      try {
+        // Bloats pg_depend/pg_class/pg_attribute so their non-unique, never
+        // scanned indexes clear relpages > 5. Batched because every CREATE
+        // TABLE holds a lock until commit, and one 4000-table transaction
+        // exhausts max_locks_per_transaction ("out of shared memory").
+        for (let start = 1; start <= CHURN_TABLES; start += CHURN_BATCH) {
+          const end = Math.min(start + CHURN_BATCH - 1, CHURN_TABLES);
+          await client.query(`
+            DO $$ BEGIN
+              FOR i IN ${start}..${end} LOOP
+                EXECUTE format('CREATE TABLE ${CHURN_SCHEMA}.t%s (a int, b text, c date)', i);
+              END LOOP;
+            END $$;
+          `);
+        }
+        await client.query("VACUUM ANALYZE");
+
+        // Deterministic fixture check: the churn ran. Not a claim about what
+        // any metric will report — that is what varies by environment.
+        const { rows: churned } = await client.query(
+          `SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = '${CHURN_SCHEMA}'`
+        );
+        expect(churned[0].n).toBe(CHURN_TABLES);
+        console.log(
+          `[#345] PG${pgMajor} churn: ${CHURN_TABLES} tables, ` +
+            `${await countQualifyingCatalogIndexes()} catalog indexes now qualify for unused_indexes.`
+        );
+
+        for (const [label, sql] of metricSqlsUnderTest(pgMajor)) {
+          const provenBy = PROVEN_BY[label];
+          expect(provenBy).toBeDefined();
+
+          // The only assertion: against a real catalog, never a system-schema row.
+          const offenders = await systemSchemaOffenders(sql);
+          expect(`${label}: ${offenders.join(", ")}`).toBe(`${label}: `);
+
+          // Whether this fixture reaches the metric at all is environment-
+          // dependent, so it is recorded rather than asserted — a change in
+          // behaviour stays visible in the log instead of going silent.
+          // withoutExclusion() still checks the predicate is textually present.
+          const unfiltered = await systemSchemaOffenders(withoutExclusion(sql));
+          console.log(
+            `[#345] PG${pgMajor} ${label}: unfiltered ` +
+              `${unfiltered.length > 0 ? `reaches the metric (${unfiltered.length} system rows)` : "does not reach the metric"}; ` +
+              `filtered is clean either way. Non-vacuity proven by ${provenBy}.`
+          );
+        }
+      } finally {
+        for (let start = 1; start <= CHURN_TABLES; start += CHURN_BATCH) {
+          const end = Math.min(start + CHURN_BATCH - 1, CHURN_TABLES);
+          await client.query(`
+            DO $$ BEGIN
+              FOR i IN ${start}..${end} LOOP
+                EXECUTE format('DROP TABLE IF EXISTS ${CHURN_SCHEMA}.t%s', i);
+              END LOOP;
+            END $$;
+          `);
+        }
+        await client.query(`DROP SCHEMA IF EXISTS ${CHURN_SCHEMA} CASCADE`);
+        await client.query("VACUUM ANALYZE");
+      }
+    },
+    { timeout: 300000 }
+  );
+
+  test(
+    "substituting a user schema into the exclusion list makes its rows vanish (#345)",
+    async () => {
+      // Positive control: proves the predicate is live in the executing plan
+      // rather than the result simply being empty. Seeds public-schema indexes
+      // that unused_indexes / redundant_indexes / index_definitions do report,
+      // then re-runs each SQL with 'public' swapped into the exclusion list.
+      const pgMajor = Number((await checkup.getPostgresVersion(client)).server_major_ver);
+
+      // Everything below is inside the try: a failure midway through the
+      // fixture would otherwise leak h345_ctl into every later test in the file.
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS h345_ctl (id serial PRIMARY KEY, a int, b int, payload text);
+        `);
+        await client.query(`
+          INSERT INTO h345_ctl (a, b, payload)
+          SELECT g, g % 7, repeat('x', 200) FROM generate_series(1, 20000) g;
+        `);
+        // h345_ctl_a_idx is redundant against h345_ctl_a_b_idx.
+        await client.query("CREATE INDEX h345_ctl_a_idx ON h345_ctl (a)");
+        await client.query("CREATE INDEX h345_ctl_a_b_idx ON h345_ctl (a, b)");
+        await client.query("VACUUM ANALYZE h345_ctl");
+
+        // rarely_used_indexes' "Low Scans, High Writes" bucket needs
+        // idx_scan > 0, writes > 100, index_scan_pct < 10 and
+        // scans_per_write <= 1. The 20 000 inserts supply the writes. For the
+        // ratio: at least 12 deliberate seq scans, plus whatever incidental
+        // scans the index builds and ANALYZE contributed, against exactly one
+        // index scan. The 12 alone already give 1/13 = 7.7%, and every
+        // incidental scan only lowers it further, so the bound holds without
+        // depending on the exact total — asserted directly below rather than
+        // assumed. Which of the two indexes the planner picks does not matter;
+        // either way a public row reaches the metric.
+        await client.query("SET enable_indexscan = off");
+        await client.query("SET enable_indexonlyscan = off");
+        for (let i = 0; i < 12; i++) {
+          await client.query("SELECT count(*) FROM h345_ctl");
+        }
+        await client.query("SET enable_indexscan = on");
+        await client.query("SET enable_indexonlyscan = on");
+        await client.query("SET enable_seqscan = off");
+        await client.query("SELECT * FROM h345_ctl WHERE a = 5");
+        await client.query("SET enable_seqscan = on");
+
+        // Backends buffer their stat counters. pg_stat_force_next_flush() only
+        // exists on PG15+, and CI runs Debian 11's PG13, so poll rather than
+        // sleep a fixed interval: each iteration is a separate statement, and
+        // the backend re-attempts the pending stats send at the end of each one.
+        if (pgMajor >= 15) {
+          await client.query("SELECT pg_stat_force_next_flush()");
+        }
+        await waitFor(
+          async () => {
+            const { rows } = await client.query(`
+              -- indexrelname, not relname: in pg_stat_all_indexes relname is
+              -- the TABLE and indexrelname is the index.
+              SELECT coalesce(sum(idx_scan), 0)::int AS scans
+              FROM pg_stat_all_indexes
+              WHERE indexrelname IN ('h345_ctl_a_idx', 'h345_ctl_a_b_idx');
+            `);
+            if (rows[0].scans < 1) {
+              throw new Error(`fixture index scan not visible yet (idx_scan=${rows[0].scans})`);
+            }
+          },
+          { timeoutMs: 30000, intervalMs: 200 }
+        );
+
+        // The bucket's ratio gate, asserted on the fixture rather than assumed
+        // from the scan arithmetic above.
+        const { rows: ratio } = await client.query(`
+          SELECT i.relname AS index_name,
+                 round(si.idx_scan::numeric / nullif(t.idx_scan + t.seq_scan, 0) * 100, 2) AS index_scan_pct
+          FROM pg_stat_all_indexes si
+          JOIN pg_class i ON i.oid = si.indexrelid
+          JOIN pg_stat_all_tables t ON t.relid = si.relid
+          WHERE i.relname IN ('h345_ctl_a_idx', 'h345_ctl_a_b_idx')
+            AND si.idx_scan > 0;
+        `);
+        expect(ratio.length).toBeGreaterThan(0);
+        for (const row of ratio) {
+          expect(`${row.index_name}: ${Number(row.index_scan_pct) < 10}`).toBe(
+            `${row.index_name}: true`
+          );
+        }
+
+        const withPublicExcluded = (sql: string) => {
+          const swapped = sql.replaceAll(
+            "not in ('pg_catalog', 'information_schema', 'pg_toast')",
+            "not in ('public', 'information_schema', 'pg_toast')"
+          );
+          // Fail by name, not by dumping the whole SQL into the diff.
+          expect(swapped === sql ? "no #345 predicate to substitute" : "swapped").toBe("swapped");
+          return swapped;
+        };
+
+        const publicRows = async (sql: string): Promise<number> => {
+          const result: any = await client.query({ text: sql, rowMode: "array" });
+          const cols = (result.fields as Array<{ name: string }>)
+            .map((f, i) => ({ name: f.name, i }))
+            .filter((f) => f.name === "tag_schema_name" || f.name === "schemaname")
+            .map((f) => f.i);
+          return (result.rows as unknown[][]).filter((row) =>
+            cols.some((i) => String(row[i] ?? "") === "public")
+          ).length;
+        };
+
+        const controls: Array<[string, string]> = [
+          ["H002", getMetricSql(METRIC_NAMES.H002, pgMajor)],
+          ["H004", getMetricSql(METRIC_NAMES.H004, pgMajor)],
+          ["rarely_used_indexes", sqlFromYaml(promMetricsYml, "rarely_used_indexes", pgMajor)],
+          ["index_definitions", sqlFromYaml(pgIndexDefinitions, "index_definitions", pgMajor)],
+        ];
+
+        for (const [label, sql] of controls) {
+          expect(`${label}: ${await publicRows(sql)}`).not.toBe(`${label}: 0`);
+          expect(`${label}: ${await publicRows(withPublicExcluded(sql))}`).toBe(`${label}: 0`);
+        }
+      } finally {
+        // These are session GUCs on the shared client — leaving any of them
+        // flipped would silently reshape every later test's query plans.
+        await client.query("RESET enable_seqscan");
+        await client.query("RESET enable_indexscan");
+        await client.query("RESET enable_indexonlyscan");
+        await client.query("DROP TABLE IF EXISTS h345_ctl CASCADE");
+      }
+    },
+    { timeout: 120000 }
+  );
 
   test("H002 (unused indexes) has correct data structure", async () => {
     const report = await checkup.generateH002(client, "test-node");

@@ -54,7 +54,7 @@ import { Client } from "pg";
 import * as fs from "fs";
 import * as path from "path";
 import * as pkg from "../package.json";
-import { getMetricSql, transformMetricRow, METRIC_NAMES } from "./metrics-loader";
+import { getMetricSql, transformMetricRow, isSystemSchema, METRIC_NAMES } from "./metrics-loader";
 import { buildCheckInfoMap } from "./checkup-dictionary";
 import { generateCheckSummary, CheckSummary } from "./checkup-summary";
 
@@ -1058,7 +1058,9 @@ export async function getInvalidIndexes(client: Client, pgMajorVersion: number =
       valid_duplicate_name: transformed.valid_index_name ? String(transformed.valid_index_name) : null,
       valid_duplicate_definition: transformed.valid_index_definition ? String(transformed.valid_index_definition) : null,
     };
-  });
+  // #345: the metric SQL is the primary filter; this second pass keeps
+  // catalog rows out of the report JSON if a future SQL edit re-admits them.
+  }).filter((index) => !isSystemSchema(index.schema_name));
 }
 
 /**
@@ -1087,7 +1089,8 @@ export async function getUnusedIndexes(client: Client, pgMajorVersion: number = 
       supports_fk: toBool(transformed.supports_fk),
       index_size_pretty: formatBytes(indexSizeBytes),
     };
-  });
+  // #345: never report catalog indexes (see isSystemSchema).
+  }).filter((index) => !isSystemSchema(index.schema_name));
 }
 
 /**
@@ -1242,7 +1245,8 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
     }
 
     return result;
-  });
+  // #345: never report catalog indexes (see isSystemSchema).
+  }).filter((index) => !isSystemSchema(index.schema_name));
 }
 
 /**
