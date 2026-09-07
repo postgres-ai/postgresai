@@ -148,6 +148,16 @@ services:
       - VM_RETENTION_PERIOD=${VM_RETENTION_PERIOD:-336h}
       - VM_QUERY_DURATION=${VM_QUERY_DURATION:-30s}
       - VM_MAX_CONCURRENT_REQUESTS=${VM_MAX_CONCURRENT_REQUESTS:-16}
+      # Query guardrails: a runaway dashboard query must fail with an error,
+      # not OOM-kill the whole store (infra#98, verified live on a customer host:
+      # maxUniqueTimeseries=50000 did not engage, 20000 did). Coherence rule:
+      # VM_MAX_MEMORY_PER_QUERY <= SINK_PROMETHEUS_MEM / 3; raise both together.
+      - VM_MAX_MEMORY_PER_QUERY=${VM_MAX_MEMORY_PER_QUERY:-512MiB}
+      - VM_MAX_UNIQUE_TIMESERIES=${VM_MAX_UNIQUE_TIMESERIES:-20000}
+      - VM_MEMORY_ALLOWED_PERCENT=${VM_MEMORY_ALLOWED_PERCENT:-60}
+      # Free-form extra flags, so a host-level tuning survives `mon update`
+      # re-downloading this file. Example: VM_EXTRA_ARGS=-search.maxSeries=40000
+      - VM_EXTRA_ARGS=${VM_EXTRA_ARGS:-}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -155,7 +165,7 @@ services:
         if [ -n "$$VM_AUTH_USERNAME" ] && [ -n "$$VM_AUTH_PASSWORD" ]; then
           AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=$$VM_AUTH_PASSWORD"
         fi
-        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod="$$VM_RETENTION_PERIOD" -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration="$${VM_QUERY_DURATION}" -search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}" $$AUTH_ARGS
+        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod="$$VM_RETENTION_PERIOD" -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration="$${VM_QUERY_DURATION}" -search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}" -search.maxMemoryPerQuery="$${VM_MAX_MEMORY_PER_QUERY}" -search.maxUniqueTimeseries="$${VM_MAX_UNIQUE_TIMESERIES}" -memory.allowedPercent="$${VM_MEMORY_ALLOWED_PERCENT}" $$AUTH_ARGS $$VM_EXTRA_ARGS
     depends_on:
       config-init:
         condition: service_completed_successfully

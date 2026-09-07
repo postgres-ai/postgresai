@@ -59,6 +59,10 @@ victoriaMetrics:
     - -search.maxQueryDuration=30s
     # Maximum concurrent search requests; lower reduces memory pressure, higher improves dashboard fan-out.
     - -search.maxConcurrentRequests=16
+    # Query guardrails: a runaway query fails with an error instead of OOM-killing the store (infra#98).
+    - -search.maxMemoryPerQuery=512MiB
+    - -search.maxUniqueTimeseries=20000
+    - -memory.allowedPercent=60
   auth:
     enabled: false
     username: "vmauth"
