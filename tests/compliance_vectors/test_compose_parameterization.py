@@ -134,6 +134,20 @@ VM_FLAG_DEFAULTS: dict[str, dict[str, str]] = {
         "flag": "-search.maxQueryDuration=",
         "default": "30s",
     },
+    # Query guardrails (infra#98): a single runaway query must error out
+    # instead of OOM-killing sink-prometheus.
+    "VM_MAX_MEMORY_PER_QUERY": {
+        "flag": "-search.maxMemoryPerQuery=",
+        "default": "512MiB",
+    },
+    "VM_MAX_UNIQUE_TIMESERIES": {
+        "flag": "-search.maxUniqueTimeseries=",
+        "default": "20000",
+    },
+    "VM_MEMORY_ALLOWED_PERCENT": {
+        "flag": "-memory.allowedPercent=",
+        "default": "60",
+    },
 }
 
 

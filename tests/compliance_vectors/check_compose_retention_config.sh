@@ -46,6 +46,10 @@ assert_vm_safety_flags() {
   assert_vm_flag_present "$label" "-promscrape.maxScrapeSize=128000000" "$config_json"
   assert_vm_flag_present "$label" '-search.maxQueryDuration="$${VM_QUERY_DURATION}"' "$config_json"
   assert_vm_flag_present "$label" '-search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}"' "$config_json"
+  assert_vm_flag_present "$label" '-search.maxMemoryPerQuery="$${VM_MAX_MEMORY_PER_QUERY}"' "$config_json"
+  assert_vm_flag_present "$label" '-search.maxUniqueTimeseries="$${VM_MAX_UNIQUE_TIMESERIES}"' "$config_json"
+  assert_vm_flag_present "$label" '-memory.allowedPercent="$${VM_MEMORY_ALLOWED_PERCENT}"' "$config_json"
+  assert_vm_flag_present "$label" '$$AUTH_ARGS $$VM_EXTRA_ARGS' "$config_json"
 }
 
 assert_retention_config() {
@@ -96,6 +100,15 @@ main() {
   # ${VAR:-default} must fall back for explicitly empty values, not just unset values.
   empty_config="$(render_compose_config VM_RETENTION_PERIOD= QUERYID_RETENTION_HOURS=)"
   assert_retention_config "empty-fallback" "336h" "720" "$empty_config"
+
+  # VM_EXTRA_ARGS passthrough: host-level tuning must survive a compose refresh.
+  local extra_config
+  extra_config="$(render_compose_config VM_EXTRA_ARGS=-search.maxSeries=40000)"
+  if [[ "$(jq -er '.services["sink-prometheus"].environment.VM_EXTRA_ARGS' <<< "$extra_config")" != "-search.maxSeries=40000" ]]; then
+    printf '%s\n' "FAIL: VM_EXTRA_ARGS not passed through to sink-prometheus" >&2
+    exit 1
+  fi
+  printf '%s\n' "PASS: VM_EXTRA_ARGS passthrough renders"
 }
 
 main "$@"
