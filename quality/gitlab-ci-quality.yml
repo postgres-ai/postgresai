@@ -19,7 +19,7 @@
 # The tests live under tests/grafana_dashboards/ and run on every MR.
 quality:grafana-dashboards-lint:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -36,7 +36,7 @@ quality:grafana-dashboards-lint:
 # Ensures all health check JSON schemas are valid and consistent
 quality:schema-validation:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -93,7 +93,7 @@ quality:schema-validation:
 # Scans for common SQL safety issues in the codebase
 quality:sql-safety:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
   script:
@@ -240,7 +240,7 @@ quality:connection-safety:
 # Scheduled pipeline only (not on every MR)
 quality:pg-version-matrix:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -283,7 +283,7 @@ quality:pg-version-matrix:
 # Nightly only
 quality:performance-benchmark:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
