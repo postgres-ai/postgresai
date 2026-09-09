@@ -178,7 +178,7 @@ build:test:images:
 
 flask-backend:tests:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -195,7 +195,7 @@ flask-backend:tests:
 
 reporter:tests:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -230,7 +230,7 @@ reporter:tests:
 
 vm-auth:config:tests:
   stage: test
-  image: python:3.11-bullseye
+  image: python:3.11-bookworm
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -339,7 +339,7 @@ cli:node:smoke:
 
 cli:node:tests:
   stage: test
-  image: node:20-bullseye
+  image: node:20-bookworm
   variables:
     GIT_STRATEGY: fetch
     NPM_CONFIG_AUDIT: "false"
@@ -426,7 +426,7 @@ validate-helm-chart:
 cli:npm:publish:
   stage: publish
   interruptible: false  # Never cancel publish jobs
-  image: node:20-bullseye
+  image: node:20-bookworm
   variables:
     GIT_STRATEGY: fetch
     NPM_CONFIG_AUDIT: "false"
