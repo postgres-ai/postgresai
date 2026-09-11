@@ -146,17 +146,24 @@ export function requireOrgScope(opts: OrgOptions = {}, apiKey?: string | null): 
  * The org selected for the command currently running, set once by the CLI's
  * preAction hook. Threading a scope argument through the ~40 exported lib
  * functions instead would give 40 chances to forget one, and forgetting is
- * silent. Module state is safe because the CLI runs one command per process;
- * the MCP server serves many, so it passes its scope explicitly instead.
+ * silent. One command per process, so a single slot is enough; the MCP server
+ * serves many, so it passes its scope explicitly instead.
+ *
+ * Held on globalThis, not in a module binding: `bun build` emits this module
+ * more than once, and a module-level `let` is then per-copy — the hook wrote
+ * one copy while the request path read another, so the header was dropped
+ * (#357). A registry symbol is shared by every copy.
  */
-let activeOrgScope: OrgScope | undefined;
+const ACTIVE_ORG_SCOPE_KEY = Symbol.for("postgres-ai.cli.activeOrgScope");
+
+type ScopeHost = { [ACTIVE_ORG_SCOPE_KEY]?: OrgScope };
 
 export function setActiveOrgScope(scope: OrgScope | undefined): void {
-  activeOrgScope = scope;
+  (globalThis as ScopeHost)[ACTIVE_ORG_SCOPE_KEY] = scope;
 }
 
 export function getActiveOrgScope(): OrgScope | undefined {
-  return activeOrgScope;
+  return (globalThis as ScopeHost)[ACTIVE_ORG_SCOPE_KEY];
 }
 
 /**
@@ -204,7 +211,7 @@ export function buildAuthHeaders(
     Connection: "close",
     // Falls back to the invocation's selection, so a lib function that never
     // received an explicit scope still sends the right org.
-    ...orgScopeHeaders(scope ?? activeOrgScope),
+    ...orgScopeHeaders(scope ?? getActiveOrgScope()),
     ...extra,
   };
 }
