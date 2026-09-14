@@ -3,6 +3,7 @@
 import { Command, Option } from "commander";
 import pkg from "../package.json";
 import * as config from "../lib/config";
+import { isEpipe, writeStdout } from "../lib/stdout";
 import * as yaml from "js-yaml";
 import * as fs from "fs";
 import * as path from "path";
@@ -2514,7 +2515,14 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
 
       // Output JSON to stdout (unless --output is specified, in which case files are written instead)
       if (shouldPrintJson && !outputPath) {
-        console.log(JSON.stringify(reports, null, 2));
+        // Await the flush: a natural exit can drop a queued stdout tail (#355).
+        try {
+          await writeStdout(JSON.stringify(reports, null, 2) + "\n");
+        } catch (err) {
+          // The reader closed early (`| head`): not an error for a CLI.
+          if (isEpipe(err)) return;
+          throw err;
+        }
       }
 
       // If no output was produced, show summary
