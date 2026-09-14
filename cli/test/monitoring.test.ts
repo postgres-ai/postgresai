@@ -598,6 +598,120 @@ describe("addInstanceToFile / removeInstanceFromFile round-trip", () => {
   });
 });
 
+// instances.yml carries password-bearing conn_strs, so every write must leave
+// it owner-only (#353). Mode bits are meaningless on Windows, skip there.
+describe.skipIf(process.platform === "win32")("instances.yml permissions (#353)", () => {
+  let tempDir: string;
+  let instancesFile: string;
+  const modeOf = (p: string) => (fs.statSync(p).mode & 0o777).toString(8);
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "instances-mode-test-"));
+    instancesFile = path.join(tempDir, "instances.yml");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("add creates a missing file as 0600 regardless of umask", () => {
+    const savedUmask = process.umask(0o000);
+    try {
+      addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    } finally {
+      process.umask(savedUmask);
+    }
+    expect(modeOf(instancesFile)).toBe("600");
+  });
+
+  test("add tightens an existing world-readable file to 0600", () => {
+    // writeFileSync's `mode` only applies on creation; a pre-existing loose
+    // file must be chmod'ed explicitly.
+    fs.writeFileSync(instancesFile, "[]\n", { mode: 0o644 });
+    fs.chmodSync(instancesFile, 0o644);
+    expect(modeOf(instancesFile)).toBe("644");
+
+    addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    expect(modeOf(instancesFile)).toBe("600");
+    expect(loadInstances(instancesFile).map((i) => i.name)).toEqual(["t1"]);
+  });
+
+  test("remove of an unknown name leaves content and mode untouched", () => {
+    addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    fs.chmodSync(instancesFile, 0o644);
+    const before = fs.readFileSync(instancesFile, "utf8");
+
+    expect(removeInstanceFromFile(instancesFile, "does-not-exist")).toBe(false);
+    expect(fs.readFileSync(instancesFile, "utf8")).toBe(before);
+    expect(modeOf(instancesFile)).toBe("644");
+  });
+
+  test("remove tightens an existing world-readable file to 0600", () => {
+    addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    addInstanceToFile(instancesFile, buildInstance("t2", "postgresql://u:p@h:5432/db2"));
+    fs.chmodSync(instancesFile, 0o644);
+    expect(modeOf(instancesFile)).toBe("644");
+
+    expect(removeInstanceFromFile(instancesFile, "t1")).toBe(true);
+    expect(modeOf(instancesFile)).toBe("600");
+    expect(loadInstances(instancesFile).map((i) => i.name)).toEqual(["t2"]);
+  });
+
+  test("add after replacing a directory at the target path is 0600", () => {
+    fs.mkdirSync(instancesFile);
+    const savedUmask = process.umask(0o000);
+    try {
+      addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    } finally {
+      process.umask(savedUmask);
+    }
+    expect(modeOf(instancesFile)).toBe("600");
+  });
+
+  // A file owned by another UID but writable (root-created by a sudo install,
+  // a bind mount, a CI image): the write succeeds and the chmod raises EPERM.
+  // Tightening is best-effort hardening; it must not fail an add/remove that
+  // already landed, or pgwatch's sources are never regenerated (#353).
+  const eperm = () => {
+    const err = new Error("EPERM: operation not permitted, chmod") as NodeJS.ErrnoException;
+    err.code = "EPERM";
+    throw err;
+  };
+  const failChmod = () => [
+    spyOn(fs, "chmodSync").mockImplementation(eperm),
+    spyOn(fs, "fchmodSync").mockImplementation(eperm),
+  ];
+
+  test("add survives a chmod it is not allowed to perform", () => {
+    fs.writeFileSync(instancesFile, "[]\n", "utf8");
+    const spies = failChmod();
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() =>
+        addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db")),
+      ).not.toThrow();
+      expect(loadInstances(instancesFile).map((i) => i.name)).toEqual(["t1"]);
+      expect(errSpy.mock.calls.flat().join("\n")).toMatch(/could not restrict permissions/);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      errSpy.mockRestore();
+    }
+  });
+
+  test("remove survives it too", () => {
+    addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
+    const spies = failChmod();
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(removeInstanceFromFile(instancesFile, "t1")).toBe(true);
+      expect(loadInstances(instancesFile)).toEqual([]);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      errSpy.mockRestore();
+    }
+  });
+});
+
 describe("sslOptionFromConnString — libpq semantics", () => {
   test("sslmode=require → SSL without chain verification", () => {
     expect(sslOptionFromConnString("postgresql://u:p@h/db?sslmode=require"))

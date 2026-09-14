@@ -28,6 +28,12 @@
 
 ### Fixed
 
+- `mon targets add` / `mon targets remove` now leave `instances.yml` owner-only
+  (`0600`) on every write, tightening a pre-existing looser file before the new
+  content lands. The file holds password-bearing `conn_str` values and was
+  previously created at the ambient umask. A chmod the CLI is not permitted to
+  perform (foreign-owned file) is warned about, not fatal.
+
 - `checkup --markdown` previously performed server-side conversion and sent the
   full report JSON to the PostgresAI API even when `--no-upload` was set. The
   flags are now mutually exclusive, and `--no-upload` prevents report data from
