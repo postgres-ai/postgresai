@@ -8,8 +8,8 @@
   `issues update --hidden` / `--no-hidden` hides or unhides an existing one
   (MCP: optional `is_hidden` on `create_issue` / `update_issue`). The CLI does
   no staff detection: the platform's `user_is_staff()` guard on
-  `issue_create` / `issue_update` (platform-all #562) refuses the write for a
-  non-staff credential and the CLI surfaces that error as-is. An update that
+  `issue_create` / `issue_update` (platform-all #562) refuses a visibility
+  change for a non-staff credential and the CLI surfaces that error as-is. An update that
   does not mention the flag never touches it (postgresai #365).
 
 - `issues list` and `issues view` (and their MCP counterparts `list_issues` /

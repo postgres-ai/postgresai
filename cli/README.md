@@ -375,8 +375,8 @@ issues look exactly as they always have. `--hidden-only` lists just the hidden
 ones, filtered server-side. `issues create --hidden` creates one, and
 `issues update --hidden` / `--no-hidden` hides or unhides an existing issue
 (MCP: `is_hidden` on `create_issue` / `update_issue`). The CLI does no staff
-check of its own: the platform refuses these writes for a non-staff credential
-with a plain error, and the CLI prints it and exits non-zero.
+check of its own: the platform refuses a visibility change for a non-staff
+credential with a plain error, and the CLI prints it and exits non-zero.
 
 Staff access is granted per credential, not per person, and a credential that
 does not qualify simply sees nothing — `--hidden-only` returns an empty list

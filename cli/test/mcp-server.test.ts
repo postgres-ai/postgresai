@@ -804,16 +804,36 @@ describe("MCP Server", () => {
       readConfigSpy.mockRestore();
     });
 
-    test("update_issue rejects a non-boolean is_hidden instead of coercing it", async () => {
-      // "false" as a string would coerce to true; refuse rather than hide by accident.
+    test("both tools reject a non-boolean is_hidden instead of coercing or dropping it", async () => {
+      // "false" as a string would coerce to true, and silently dropping "true"
+      // would publish staff-internal content; refuse either way.
       const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
       const bodies = captureBodies();
 
-      const response = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: "false" }));
+      const upd = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: "false" }));
+      expect(upd.isError).toBe(true);
+      expect(getResponseText(upd)).toBe("is_hidden must be a boolean");
 
-      expect(response.isError).toBe(true);
-      expect(getResponseText(response)).toBe("is_hidden must be a boolean");
+      const crt = await handleToolCall(createRequest("create_issue", { title: "Internal", is_hidden: "true" }));
+      expect(crt.isError).toBe(true);
+      expect(getResponseText(crt)).toBe("is_hidden must be a boolean");
+
       expect(bodies).toHaveLength(0);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("is_hidden: null means unchanged / not hidden", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      const upd = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", title: "T", is_hidden: null }));
+      expect(upd.isError).toBeUndefined();
+      const crt = await handleToolCall(createRequest("create_issue", { title: "Plain", is_hidden: null }));
+      expect(crt.isError).toBeUndefined();
+
+      expect("p_is_hidden" in bodies[0]).toBe(false);
+      expect("is_hidden" in bodies[1]).toBe(false);
 
       readConfigSpy.mockRestore();
     });
