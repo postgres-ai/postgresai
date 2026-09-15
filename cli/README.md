@@ -301,8 +301,8 @@ run `pgai orgs`) to discover the available ids.
 Tools exposed:
 - `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`).
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
-- `create_issue`: create a new issue (args: `{ title, description?, org_id, attachments?, debug? }`).
-- `update_issue`: update title/description/status/labels (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, debug? }`).
+- `create_issue`: create a new issue (args: `{ title, description?, org_id, project_id?, labels?, attachments?, is_hidden?, debug? }`).
+- `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, debug? }`).
 - `post_issue_comment`: post a comment (args: `{ issue_id, org_id, content?, parent_comment_id?, attachments?, debug? }`).
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
@@ -353,8 +353,10 @@ sensitive.
 postgresai issues list                                       # List issues (shows: id, title, status, created_at; is_hidden only when set)
 postgresai issues list --hidden-only                         # Only hidden issues (PostgresAI staff)
 postgresai issues view <issueId>                             # View issue details and comments
-postgresai issues create --org-id <id> --title <t>           # Create a new issue
+postgresai issues create --org-id <id> <title>               # Create a new issue
+postgresai issues create --org-id <id> <title> --hidden      # Create a hidden issue (PostgresAI staff)
 postgresai issues update <issueId> [--title ... --status ...]# Update an existing issue
+postgresai issues update <issueId> --hidden|--no-hidden      # Hide / unhide an issue (PostgresAI staff)
 postgresai issues post-comment <issueId> <content>           # Post a comment to an issue
 postgresai issues update-comment <commentId> <content>       # Update an existing comment
 postgresai issues files upload <path>                        # Upload a file, print URL + markdown
@@ -370,7 +372,11 @@ postgresai issues files download <url> [-o <path>]           # Download a file
 Hidden issues are staff-internal. `issues list` and `issues view` mark them
 with `is_hidden: true`; the key is omitted entirely otherwise, so ordinary
 issues look exactly as they always have. `--hidden-only` lists just the hidden
-ones, filtered server-side.
+ones, filtered server-side. `issues create --hidden` creates one, and
+`issues update --hidden` / `--no-hidden` hides or unhides an existing issue
+(MCP: `is_hidden` on `create_issue` / `update_issue`). The CLI does no staff
+check of its own: the platform refuses these writes for a non-staff credential
+with a plain error, and the CLI prints it and exits non-zero.
 
 Staff access is granted per credential, not per person, and a credential that
 does not qualify simply sees nothing — `--hidden-only` returns an empty list

@@ -174,6 +174,7 @@ export async function handleToolCall(
       let description = rawDescription ? interpretEscapes(rawDescription) : undefined;
       const projectId = args.project_id !== undefined ? Number(args.project_id) : undefined;
       const labels = Array.isArray(args.labels) ? args.labels.map(String) : undefined;
+      const hidden = args.is_hidden === true;
       const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       // org_id from args, falling back to config ONLY for a per-org token.
       // Under a global token the fallback is removed entirely (issue #250) --
@@ -190,7 +191,7 @@ export async function handleToolCall(
         const uploaded = await uploadAttachments({ apiKey, orgScope: scope.orgScope, storageBaseUrl, attachmentPaths: attachments, debug });
         description = appendAttachmentsToContent(description ?? "", uploaded);
       }
-      const result = await createIssue({ apiKey, apiBaseUrl, title, orgId, orgScope: scope.orgScope, description, projectId, labels, debug });
+      const result = await createIssue({ apiKey, apiBaseUrl, title, orgId, orgScope: scope.orgScope, description, projectId, labels, hidden, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
@@ -205,10 +206,14 @@ export async function handleToolCall(
       let description = rawDescription !== undefined ? interpretEscapes(rawDescription) : undefined;
       const status = args.status !== undefined ? Number(args.status) : undefined;
       const labels = Array.isArray(args.labels) ? args.labels.map(String) : undefined;
+      if (args.is_hidden !== undefined && typeof args.is_hidden !== "boolean") {
+        return { content: [{ type: "text", text: "is_hidden must be a boolean" }], isError: true };
+      }
+      const hidden = args.is_hidden as boolean | undefined;
       const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       // Validate that at least one update field is provided (attachments alone counts)
-      if (title === undefined && description === undefined && status === undefined && labels === undefined && attachments.length === 0) {
-        return { content: [{ type: "text", text: "At least one field to update is required (title, description, status, labels, or attachments)" }], isError: true };
+      if (title === undefined && description === undefined && status === undefined && labels === undefined && hidden === undefined && attachments.length === 0) {
+        return { content: [{ type: "text", text: "At least one field to update is required (title, description, status, labels, is_hidden, or attachments)" }], isError: true };
       }
       // Validate status value if provided (check for NaN and valid values)
       if (status !== undefined && (Number.isNaN(status) || (status !== 0 && status !== 1))) {
@@ -231,7 +236,7 @@ export async function handleToolCall(
         const uploaded = await uploadAttachments({ apiKey, orgScope: scope.orgScope, storageBaseUrl, attachmentPaths: attachments, debug });
         description = appendAttachmentsToContent(description, uploaded);
       }
-      const result = await updateIssue({ apiKey, apiBaseUrl, issueId, title, description, status, labels, orgScope: scope.orgScope, debug });
+      const result = await updateIssue({ apiKey, apiBaseUrl, issueId, title, description, status, labels, hidden, orgScope: scope.orgScope, debug });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
@@ -525,6 +530,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
                 items: { type: "string" },
                 description: "Local file paths to upload and append as markdown links to the description (images render inline)",
               },
+              is_hidden: { type: "boolean", description: "Create as a hidden, staff-internal issue (PostgresAI staff only; same as CLI --hidden)" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["title"],
@@ -533,7 +539,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "update_issue",
-          description: "Update an existing issue (title, description, status, labels). Use status=1 to close, status=0 to reopen. Local files passed via 'attachments' are uploaded and appended to 'description'; if 'description' is omitted, the existing description is fetched first and appended to.",
+          description: "Update an existing issue (title, description, status, labels, is_hidden). Use status=1 to close, status=0 to reopen. Local files passed via 'attachments' are uploaded and appended to 'description'; if 'description' is omitted, the existing description is fetched first and appended to.",
           inputSchema: {
             type: "object",
             properties: {
@@ -552,6 +558,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
                 items: { type: "string" },
                 description: "Local file paths to upload and append as markdown links (images render inline). When provided without 'description', the existing description is fetched and appended to.",
               },
+              is_hidden: { type: "boolean", description: "true hides the issue, false unhides it (PostgresAI staff only; same as CLI --hidden / --no-hidden). Omit to leave unchanged." },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["issue_id"],
