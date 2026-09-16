@@ -28,13 +28,13 @@ usermod -aG docker postgres_ai
 # Mount and prepare data volume
 if [ ! -d /data ]; then
     mkdir -p /data
-    
+
     # Wait for volume to be attached with proper polling
     echo "Waiting for EBS volume to attach..."
     MAX_RETRIES=60  # 5 minutes total (60 * 5 seconds)
     RETRY=0
     DEVICE=""
-    
+
     while [ $RETRY -lt $MAX_RETRIES ]; do
         if [ -e /dev/nvme1n1 ]; then
             DEVICE=/dev/nvme1n1
@@ -45,7 +45,7 @@ if [ ! -d /data ]; then
             echo "Volume found at $DEVICE"
             break
         fi
-        
+
         RETRY=$((RETRY + 1))
         # Log progress every 10 attempts (50 seconds)
         if [ $((RETRY % 10)) -eq 0 ]; then
@@ -53,20 +53,20 @@ if [ ! -d /data ]; then
         fi
         sleep 5
     done
-    
+
     if [ -z "$DEVICE" ]; then
         echo "WARNING: EBS volume not attached after 5 minutes, using root volume"
     fi
-    
+
     if [ -n "$DEVICE" ]; then
         # Check if filesystem exists
         if ! blkid $DEVICE; then
             mkfs.ext4 $DEVICE
         fi
-        
+
         # Mount volume
         mount $DEVICE /data
-        
+
         # Add to fstab for persistence
         UUID=$(blkid -s UUID -o value $DEVICE)
         echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
@@ -104,6 +104,22 @@ VM_AUTH_USERNAME=${vm_auth_username}
 VM_AUTH_PASSWORD=${vm_auth_password}
 ENV_EOF
 %{ endif ~}
+
+# VictoriaMetrics admin-endpoint keys (#359). sink-prometheus mints a throwaway
+# key when these are absent, which shuts the endpoints but leaves the operator
+# no usable key; generate them here so they survive a restart. Held by nothing
+# that reads metrics.
+# Assign first and check: a command substitution that fails inside a heredoc
+# does not trip `set -e`, so this would otherwise write blank keys silently.
+for vm_key_name in VM_DELETE_AUTH_KEY VM_SNAPSHOT_AUTH_KEY VM_FORCE_MERGE_AUTH_KEY VM_PPROF_AUTH_KEY; do
+  vm_key_value=$(openssl rand -hex 32 || true)
+  if [ -z "$vm_key_value" ]; then
+    echo "FATAL: cannot generate $vm_key_name" >&2
+    exit 1
+  fi
+  echo "$vm_key_name=$vm_key_value" >> .env
+done
+unset vm_key_name vm_key_value
 
 # Ensure secure permissions
 chmod 600 .pgwatch-config .env
@@ -160,4 +176,3 @@ if [ -n "${vm_auth_username}" ] && [ -n "${vm_auth_password}" ]; then
   echo ""
   echo "VictoriaMetrics Auth: enabled (username: ${vm_auth_username})"
 fi
-

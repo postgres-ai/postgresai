@@ -158,14 +158,66 @@ services:
       # Free-form extra flags, so a host-level tuning survives `mon update`
       # re-downloading this file. Example: VM_EXTRA_ARGS=-search.maxSeries=40000
       - VM_EXTRA_ARGS=${VM_EXTRA_ARGS:-}
+      # Admin-endpoint keys (#359). Grafana's datasource proxy filters POST but
+      # passes every GET through, and VictoriaMetrics demands no key when these
+      # are empty, so a Viewer token could wipe the store through the proxy.
+      # VM_PPROF_AUTH_KEY closes /debug/pprof/*, which the proxy could otherwise
+      # reach: heap and goroutine dumps are both a disclosure and a DoS lever.
+      # It is also what made the first cut of this fix bypassable, back when the
+      # keys were flag values and /debug/pprof/cmdline served them verbatim.
+      # Minted per install by `postgresai mon local-install` / `mon update`;
+      # deliberately given to nothing that reads metrics.
+      - VM_DELETE_AUTH_KEY=${VM_DELETE_AUTH_KEY:-}
+      - VM_SNAPSHOT_AUTH_KEY=${VM_SNAPSHOT_AUTH_KEY:-}
+      - VM_FORCE_MERGE_AUTH_KEY=${VM_FORCE_MERGE_AUTH_KEY:-}
+      - VM_PPROF_AUTH_KEY=${VM_PPROF_AUTH_KEY:-}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        # Secrets go to files, never onto the command line: argv is served
+        # verbatim by /debug/pprof/cmdline, which the Grafana datasource proxy
+        # can reach with the credentials it already holds, and shows up in the
+        # host process table (#359). They remain container env vars, so
+        # `docker inspect` still shows them - that needs the Docker socket.
+        set -e
+        KEYS=/tmp/vm-keys
+        umask 077
+        mkdir -p "$$KEYS"
+        rand_key() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+        # An EMPTY key file is the one fail-OPEN case: VictoriaMetrics then
+        # requires no key at all, while a missing file is refused. So check the
+        # file after writing it, not just the value we meant to write - a full
+        # disk on a box whose job is storing metrics is not hypothetical.
+        put_key() {
+          val=$$2
+          [ -n "$$val" ] || val=$$(rand_key)
+          printf '%s' "$$val" > "$$KEYS/$$1" || true
+          if [ ! -s "$$KEYS/$$1" ]; then
+            echo "sink-prometheus: admin key '$$1' is empty, refusing to start (#359)" >&2
+            exit 1
+          fi
+          # Explicit, not umask-dependent: every caller must get 0600 whatever
+          # the surrounding umask happens to be.
+          chmod 600 "$$KEYS/$$1"
+        }
+        put_key delete "$$VM_DELETE_AUTH_KEY"
+        put_key snapshot "$$VM_SNAPSHOT_AUTH_KEY"
+        put_key force_merge "$$VM_FORCE_MERGE_AUTH_KEY"
+        put_key pprof "$$VM_PPROF_AUTH_KEY"
+        ADMIN_ARGS="-deleteAuthKey=file://$$KEYS/delete -snapshotAuthKey=file://$$KEYS/snapshot -forceMergeAuthKey=file://$$KEYS/force_merge -pprofAuthKey=file://$$KEYS/pprof"
         AUTH_ARGS=""
         if [ -n "$$VM_AUTH_USERNAME" ] && [ -n "$$VM_AUTH_PASSWORD" ]; then
-          AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=$$VM_AUTH_PASSWORD"
+          put_key http_password "$$VM_AUTH_PASSWORD"
+          AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=file://$$KEYS/http_password"
         fi
-        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod="$$VM_RETENTION_PERIOD" -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration="$${VM_QUERY_DURATION}" -search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}" -search.maxMemoryPerQuery="$${VM_MAX_MEMORY_PER_QUERY}" -search.maxUniqueTimeseries="$${VM_MAX_UNIQUE_TIMESERIES}" -memory.allowedPercent="$${VM_MEMORY_ALLOWED_PERCENT}" $$AUTH_ARGS $$VM_EXTRA_ARGS
+        # Restore the default umask before exec: VictoriaMetrics inherits it,
+        # and 077 would silently tighten the metrics volume, which outlives the
+        # container. The key files are chmod'ed explicitly, so this is safe.
+        umask 022
+        # ADMIN_ARGS is last on purpose: Go's flag package lets a flag repeat
+        # and the last occurrence wins, so VM_EXTRA_ARGS must not be able to
+        # disarm the admin keys the way it can override a tuning flag.
+        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod="$$VM_RETENTION_PERIOD" -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration="$${VM_QUERY_DURATION}" -search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}" -search.maxMemoryPerQuery="$${VM_MAX_MEMORY_PER_QUERY}" -search.maxUniqueTimeseries="$${VM_MAX_UNIQUE_TIMESERIES}" -memory.allowedPercent="$${VM_MEMORY_ALLOWED_PERCENT}" $$AUTH_ARGS $$VM_EXTRA_ARGS $$ADMIN_ARGS
     depends_on:
       config-init:
         condition: service_completed_successfully

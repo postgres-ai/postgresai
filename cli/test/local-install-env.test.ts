@@ -76,6 +76,10 @@ describe("buildLocalInstallEnv", () => {
       "REPLICATOR_PASSWORD=replicator-pw",
       "VM_AUTH_USERNAME=vmauth",
       'VM_AUTH_PASSWORD="quoted-pw"',
+      "VM_DELETE_AUTH_KEY=delete-key",
+      "VM_SNAPSHOT_AUTH_KEY=snapshot-key",
+      'VM_FORCE_MERGE_AUTH_KEY="force-merge-key"',
+      "VM_PPROF_AUTH_KEY=pprof-key",
       "",
     ].join("\n");
 
@@ -87,6 +91,12 @@ describe("buildLocalInstallEnv", () => {
     expect(env.REPLICATOR_PASSWORD).toBe("replicator-pw");
     expect(env.VM_AUTH_USERNAME).toBe("vmauth");
     expect(env.VM_AUTH_PASSWORD).toBe("quoted-pw");
+    // Re-installing must not rotate the admin keys out from under an operator
+    // who noted one down (#359).
+    expect(env.VM_DELETE_AUTH_KEY).toBe("delete-key");
+    expect(env.VM_SNAPSHOT_AUTH_KEY).toBe("snapshot-key");
+    expect(env.VM_FORCE_MERGE_AUTH_KEY).toBe("force-merge-key");
+    expect(env.VM_PPROF_AUTH_KEY).toBe("pprof-key");
     expect(preservedKeys).toEqual([]);
     for (const key of Object.keys(env)) {
       expect(content.split("\n").filter((l) => l.startsWith(`${key}=`)).length).toBe(1);
@@ -100,6 +110,76 @@ describe("buildLocalInstallEnv", () => {
     expect(env.VM_AUTH_USERNAME).toBe("vmauth");
     expect(env.VM_AUTH_PASSWORD.length).toBeGreaterThan(0);
     expect(env.PGAI_REGISTRY).toBeUndefined();
+  });
+
+  /**
+   * postgresai#359: with no admin keys on the sink-prometheus command line,
+   * VictoriaMetrics demanded none, and Grafana's datasource proxy forwards
+   * every GET, so a Viewer token could delete the whole store. A green-field
+   * install must mint the keys, and must not reuse a credential that anything
+   * querying the store already holds.
+   */
+  test("mints distinct VictoriaMetrics admin keys, never shared with the query credentials (#359)", () => {
+    // Seed the Grafana password: buildLocalInstallEnv only emits it when it is
+    // already present, and comparing against an undefined value would pass no
+    // matter what the code did.
+    const env = parse(
+      buildLocalInstallEnv("GF_SECURITY_ADMIN_PASSWORD=grafana-pw\n", "0.17.0").content,
+    );
+    const adminKeys = [
+      env.VM_DELETE_AUTH_KEY,
+      env.VM_SNAPSHOT_AUTH_KEY,
+      env.VM_FORCE_MERGE_AUTH_KEY,
+      env.VM_PPROF_AUTH_KEY,
+    ];
+
+    for (const key of adminKeys) {
+      expect(key).toMatch(/^[a-f0-9]{64}$/);
+    }
+    expect(new Set(adminKeys).size).toBe(4);
+    for (const shared of [env.VM_AUTH_PASSWORD, env.REPLICATOR_PASSWORD, env.GF_SECURITY_ADMIN_PASSWORD]) {
+      expect(shared).toBeDefined();
+      expect(adminKeys).not.toContain(shared);
+    }
+  });
+
+  test("re-mints admin keys that exist but are blank or quoted-empty (#359)", () => {
+    // The `cp .env.example .env` shape, plus the quoted form people copy from
+    // docs, plus `export `. A blank key is the vulnerability, not a setting.
+    const existing = [
+      "PGAI_TAG=0.16.0",
+      "VM_DELETE_AUTH_KEY=",
+      'VM_SNAPSHOT_AUTH_KEY=""',
+      "VM_FORCE_MERGE_AUTH_KEY=''",
+      "export VM_PPROF_AUTH_KEY=",
+      "",
+    ].join("\n");
+
+    const { content } = buildLocalInstallEnv(existing, "0.17.0");
+    const env = parse(content);
+
+    for (const key of [
+      "VM_DELETE_AUTH_KEY",
+      "VM_SNAPSHOT_AUTH_KEY",
+      "VM_FORCE_MERGE_AUTH_KEY",
+      "VM_PPROF_AUTH_KEY",
+    ]) {
+      expect(env[key]).toMatch(/^[a-f0-9]{64}$/);
+      // The stale blank line must not be carried through: compose reads the
+      // LAST assignment, so a preserved `export KEY=` would win.
+      expect(
+        content.split("\n").filter((l) => new RegExp(`^\\s*(?:export\\s+)?${key}=`).test(l)).length,
+      ).toBe(1);
+    }
+  });
+
+  test("an operator-set key written as `export KEY=value` is preserved, not re-minted", () => {
+    const { content } = buildLocalInstallEnv(
+      "PGAI_TAG=0.16.0\nexport VM_DELETE_AUTH_KEY=operator-key\n",
+      "0.17.0",
+    );
+    expect(parse(content).VM_DELETE_AUTH_KEY).toBe("operator-key");
+    expect(content.split("\n").filter((l) => l.includes("VM_DELETE_AUTH_KEY=")).length).toBe(1);
   });
 
   test("keeps comments and the order of unmanaged lines", () => {

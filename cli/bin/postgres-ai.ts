@@ -125,15 +125,42 @@ type EnvKeyDefault = {
   introducedIn: string;
 };
 
+/**
+ * VictoriaMetrics admin-endpoint keys (#359). Listed once: they are a required
+ * env key, a `mon local-install`-managed key, and the set that must be treated
+ * as missing when present-but-empty.
+ */
+const VM_ADMIN_AUTH_KEYS = [
+  "VM_DELETE_AUTH_KEY",
+  "VM_SNAPSHOT_AUTH_KEY",
+  "VM_FORCE_MERGE_AUTH_KEY",
+  "VM_PPROF_AUTH_KEY",
+];
+
 const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
   { key: "REPLICATOR_PASSWORD", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.13" },
   { key: "VM_AUTH_USERNAME", defaultValue: () => "vmauth", introducedIn: "0.15" },
   { key: "VM_AUTH_PASSWORD", defaultValue: () => crypto.randomBytes(18).toString("base64"), introducedIn: "0.15" },
+  // VictoriaMetrics admin-endpoint keys (#359). Hex, because they are spliced
+  // into the sink-prometheus shell command line. Held by nobody: no collector,
+  // datasource or reporter reads them, so an operator who wants to call
+  // /api/v1/admin/tsdb/* reads the key out of .env on the box.
+  { key: "VM_DELETE_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
+  { key: "VM_SNAPSHOT_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
+  { key: "VM_FORCE_MERGE_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
+  // Part of the fix, not extra hardening: /debug/pprof/* is reachable with the
+  // credentials the Grafana proxy already holds, and heap/goroutine dumps are
+  // both an introspection leak and a DoS lever. (It also used to expose the
+  // other keys via /debug/pprof/cmdline back when they were flag values; the
+  // file:// sourcing in docker-compose.yml closed that half.)
+  { key: "VM_PPROF_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
 ];
 
 /**
  * Read `.env` (if present), append any required keys that are missing, write
- * back atomically with 0600 perms, and return the list of keys that were added.
+ * back at 0600, and return the list of keys that were added. The write goes to
+ * a temp file and is renamed, so an interrupted run cannot truncate a file that
+ * holds every secret the stack has.
  *
  * Idempotent: a second call is a no-op once all keys are present.
  *
@@ -147,26 +174,106 @@ function ensureRequiredEnvVars(projectDir: string): string[] {
 
   const added: string[] = [];
   const appendLines: string[] = [];
+  let content = existing;
 
   for (const spec of REQUIRED_ENV_KEYS) {
-    const re = new RegExp(`^${spec.key}=`, "m");
-    if (!re.test(existing)) {
+    // Tolerate a leading `export ` and indentation: those lines are still read
+    // by compose, and missing them appends a duplicate for the same key.
+    const present = new RegExp(`^[ \t]*(?:export[ \t]+)?${spec.key}=`, "m");
+    if (!present.test(content)) {
       appendLines.push(`${spec.key}=${spec.defaultValue()}`);
       added.push(spec.key);
+      continue;
+    }
+
+    // A present-but-empty admin key is the vulnerability itself, not a
+    // configured value: `cp .env.example .env` ships them all blank (#359).
+    // Fill it in place rather than appending a second line for the same key.
+    // Only these keys: a blank VM_AUTH_PASSWORD already fails the stack, since
+    // grafana declares it `${VM_AUTH_PASSWORD:?...}` and compose rejects an
+    // empty value, so it cannot silently leave basic auth off.
+    //
+    // `KEY=""` and `KEY=''` count as blank - compose interpolates both to the
+    // empty string. The `g` flag matters because compose reads the LAST
+    // assignment of a duplicated key, so filling only the first would leave the
+    // effective value empty while we reported the key as fixed. The replacement
+    // is a function so a `$&` in a future default cannot be re-substituted.
+    if (VM_ADMIN_AUTH_KEYS.includes(spec.key)) {
+      const blank = new RegExp(
+        `^([ \t]*(?:export[ \t]+)?${spec.key}=)[ \t]*(?:""|'')?[ \t]*\r?$`,
+        "gm",
+      );
+      if (blank.test(content)) {
+        // One value for every occurrence of the key: two different secrets on
+        // two lines for the same name is unreadable for whoever has to copy one
+        // out. Keep the captured `export `/indent prefix - these .env files are
+        // shell-sourced elsewhere in the repo, so dropping `export` changes
+        // meaning.
+        const value = spec.defaultValue();
+        content = content.replace(blank, (_match, prefix: string) => `${prefix}${value}`);
+        added.push(spec.key);
+      }
     }
   }
 
-  if (appendLines.length === 0) {
+  if (appendLines.length === 0 && content === existing) {
     return added;
   }
 
   // Append (don't overwrite) so we preserve order and any comments the user
   // may have added to their .env. Make sure we have a trailing newline first.
-  const needsTrailingNewline = existing.length > 0 && !existing.endsWith("\n");
-  const newContent = existing + (needsTrailingNewline ? "\n" : "") + appendLines.join("\n") + "\n";
-  fs.writeFileSync(envFile, newContent, { encoding: "utf8", mode: 0o600 });
+  const needsTrailingNewline = content.length > 0 && !content.endsWith("\n");
+  const newContent =
+    content +
+    (needsTrailingNewline ? "\n" : "") +
+    (appendLines.length > 0 ? appendLines.join("\n") + "\n" : "");
+  writeEnvFile(envFile, newContent);
 
   return added;
+}
+
+/**
+ * Write `.env` at 0600, atomically, preserving owner and any symlink.
+ *
+ * `writeFileSync`'s `mode` applies only when it creates the file, so writing
+ * secrets over an ansible- or hand-made 0644 `.env` left them world-readable.
+ * Every writer of this file goes through here (#359).
+ */
+function writeEnvFile(envFile: string, content: string): void {
+  // Resolve a symlink so the rename replaces the target, not the link.
+  let targetFile = envFile;
+  try {
+    if (fs.existsSync(envFile)) targetFile = fs.realpathSync(envFile);
+  } catch {
+    /* fall back to the literal path */
+  }
+
+  const tmpFile = `${targetFile}.tmp`;
+  fs.writeFileSync(tmpFile, content, { encoding: "utf8", mode: 0o600 });
+  try {
+    fs.chmodSync(tmpFile, 0o600);
+    // Renaming replaces the inode, so carry the owner over: a Terraform box
+    // owns the tree as postgres_ai while its documented commands use sudo, and
+    // a root-owned .env breaks every later compose run.
+    if (fs.existsSync(targetFile)) {
+      const st = fs.statSync(targetFile);
+      fs.chownSync(tmpFile, st.uid, st.gid);
+    }
+  } catch {
+    /* best-effort hardening; the file is already written */
+  }
+
+  try {
+    fs.renameSync(tmpFile, targetFile);
+  } catch (error) {
+    // Never leave a temp file holding every secret the stack has.
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {
+      /* nothing more we can do */
+    }
+    throw error;
+  }
 }
 
 /**
@@ -183,6 +290,10 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   "REPLICATOR_PASSWORD",
   "VM_AUTH_USERNAME",
   "VM_AUTH_PASSWORD",
+  "VM_DELETE_AUTH_KEY",
+  "VM_SNAPSHOT_AUTH_KEY",
+  "VM_FORCE_MERGE_AUTH_KEY",
+  "VM_PPROF_AUTH_KEY",
 ];
 
 /**
@@ -200,8 +311,17 @@ function buildLocalInstallEnv(
   imageTag: string,
 ): { content: string; preservedKeys: string[] } {
   const readRaw = (key: string): string | null => {
-    const m = existingEnv.match(new RegExp(`^${key}=(.+)$`, "m"));
-    return m ? m[1].trim() : null;
+    // Read the way compose does: tolerate `export `/indentation and take the
+    // LAST assignment. A value that reduces to "" (including `KEY=""`) counts
+    // as absent, so a blank admin key is minted rather than carried forward
+    // (#359) - `ensureRequiredEnvVars` treats it the same way.
+    const re = new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`, "gm");
+    let value: string | null = null;
+    for (const m of existingEnv.matchAll(re)) {
+      value = m[1].trim();
+    }
+    if (value === null) return null;
+    return stripMatchingQuotes(value) === "" ? null : value;
   };
 
   const envLines: string[] = [`PGAI_TAG=${imageTag}`];
@@ -219,12 +339,23 @@ function buildLocalInstallEnv(
   envLines.push(
     `VM_AUTH_PASSWORD=${vmAuthPassword ? stripMatchingQuotes(vmAuthPassword) : crypto.randomBytes(18).toString("base64")}`,
   );
+  // VictoriaMetrics admin-endpoint keys (#359): carried over when present,
+  // minted when not. Rotating them on every re-install would be harmless but
+  // pointless, and would invalidate a key an operator noted down.
+  for (const key of VM_ADMIN_AUTH_KEYS) {
+    const existing = readRaw(key);
+    envLines.push(
+      `${key}=${existing ? stripMatchingQuotes(existing) : crypto.randomBytes(32).toString("hex")}`,
+    );
+  }
 
   // Preserve everything this command does not own, verbatim and in order.
   const preservedKeys: string[] = [];
   for (const line of existingEnv.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=/);
+    // Recognise `export KEY=` too, or a managed key written that way is
+    // re-appended after the minted one - and compose reads the last assignment.
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/);
     if (m) {
       if (LOCAL_INSTALL_MANAGED_ENV_KEYS.includes(m[1])) continue;
       preservedKeys.push(m[1]);
@@ -236,9 +367,13 @@ function buildLocalInstallEnv(
 }
 
 // Helper functions for spawning processes - use Node.js child_process for compatibility
-async function execFilePromise(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function execFilePromise(
+  file: string,
+  args: string[],
+  options: { cwd?: string } = {},
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    childProcess.execFile(file, args, (error, stdout, stderr) => {
+    childProcess.execFile(file, args, options, (error, stdout, stderr) => {
       if (error) {
         const err = error as Error & { code: number };
         err.code = typeof error.code === "number" ? error.code : 1;
@@ -2656,6 +2791,22 @@ function isDockerRunning(): boolean {
  * because docker-compose V1 (<=1.29) is incompatible with modern Docker engines
  * (KeyError: 'ContainerConfig' on container recreation).
  */
+/**
+ * Should `runCompose` append the macOS `--scale self-node-exporter=0` workaround?
+ *
+ * Only for a whole-stack `up`. self-node-exporter cannot mount the host root
+ * filesystem on macOS, but `--scale` alongside an explicit service list makes
+ * compose fail with "no such service: self-node-exporter", so a service-scoped
+ * `up` must not get it - that broke `mon update` on macOS (#359).
+ */
+export function shouldScaleOutNodeExporter(args: string[]): boolean {
+  const upIndex = args.indexOf("up");
+  if (upIndex === -1) return false;
+  // Any bare word after `up` is a service name. Every call site uses
+  // `--flag=value` form, so a lone `-` prefix is reliably a flag here.
+  return !args.slice(upIndex + 1).some((a) => !a.startsWith("-"));
+}
+
 function getComposeCmd(): string[] | null {
   const tryCmd = (cmd: string, args: string[]): boolean =>
     spawnSync(cmd, args, { stdio: "ignore", timeout: 5000 } as Parameters<typeof spawnSync>[2]).status === 0;
@@ -3001,9 +3152,8 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
     }
   }
 
-  // On macOS, self-node-exporter can't mount host root filesystem - skip it
   const finalArgs = [...args];
-  if (process.platform === "darwin" && args.includes("up")) {
+  if (process.platform === "darwin" && shouldScaleOutNodeExporter(args)) {
     finalArgs.push("--scale", "self-node-exporter=0");
   }
 
@@ -3015,6 +3165,69 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
     });
     child.on("close", (code) => resolve(code || 0));
   });
+}
+
+/**
+ * Bring a running `sink-prometheus` in line with the compose file and `.env`.
+ *
+ * The admin keys live on the container command line, and `mon restart` is
+ * `docker compose restart`, which re-runs the container as recorded - so an
+ * upgrade that only restarts leaves the box exposed while reporting success
+ * (#359). Driven by observed state, not by "did this run add a key", so a
+ * failed attempt is retried next run. `--no-deps` is safe here precisely
+ * because we only act on a running container: that proves `config-init`
+ * already ran, and re-running it would re-seed a live-patched prometheus.yml.
+ */
+async function applySinkPrometheusConfig(projectDir: string): Promise<boolean> {
+  const composeCmd = getComposeCmd();
+  if (!composeCmd) {
+    console.error("\n✗ docker compose not found, so the sink-prometheus config was not applied.");
+    return false;
+  }
+
+  let running: boolean;
+  try {
+    const { stdout } = await execFilePromise(
+      composeCmd[0],
+      [
+        ...composeCmd.slice(1),
+        "-f",
+        path.resolve(projectDir, "docker-compose.yml"),
+        "ps",
+        "-q",
+        "sink-prometheus",
+      ],
+      // Match runCompose: older compose versions resolved .env from the CWD.
+      { cwd: projectDir },
+    );
+    running = stdout.trim().length > 0;
+  } catch (error) {
+    // Distinguish "could not tell" from "not running": reporting a probe
+    // failure as a stopped stack would hide an unapplied security fix.
+    console.error("\n✗ Could not determine whether sink-prometheus is running.");
+    console.error("  The admin-endpoint keys may NOT be in effect. To apply them:");
+    console.error("  docker compose up -d --no-deps sink-prometheus");
+    if (process.env.DEBUG) {
+      console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return false;
+  }
+
+  if (!running) {
+    console.log("\n(sink-prometheus is not running - the new config applies when you start the stack)");
+    return true;
+  }
+
+  console.log("\nApplying sink-prometheus config (VictoriaMetrics admin keys, #359)...");
+  const code = await runCompose(["up", "-d", "--no-deps", "sink-prometheus"]);
+  if (code !== 0) {
+    console.error("✗ Could not apply the sink-prometheus config.");
+    console.error("  The admin-endpoint keys are NOT in effect until you run:");
+    console.error("  docker compose up -d --no-deps sink-prometheus");
+    return false;
+  }
+  console.log("✓ sink-prometheus is running the current config");
+  return true;
 }
 
 // `help` is intentionally NOT the default command: making it default causes
@@ -3107,7 +3320,7 @@ mon
     const imageTag = opts.tag || pkg.version;
 
     const { content: envContent, preservedKeys } = buildLocalInstallEnv(existingEnv, imageTag);
-    fs.writeFileSync(envFile, envContent, { encoding: "utf8", mode: 0o600 });
+    writeEnvFile(envFile, envContent);
     if (preservedKeys.length > 0) {
       console.log(`Preserved existing .env settings: ${preservedKeys.join(", ")}\n`);
     }
@@ -3439,7 +3652,7 @@ mon
           .filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
         envLines.push(`VM_AUTH_USERNAME=${vmAuthUsername}`);
         envLines.push(`VM_AUTH_PASSWORD=${vmAuthPassword}`);
-        fs.writeFileSync(envFile, envLines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+        writeEnvFile(envFile, envLines.join("\n") + "\n");
       }
 
       console.log("✓ VictoriaMetrics auth configured\n");
@@ -3860,7 +4073,16 @@ mon
     await refreshBundledComposeIfStale(projectDir);
 
     const code = await runCompose(["run", "--rm", "sources-generator"]);
-    if (code !== 0) process.exitCode = code;
+    if (code !== 0) {
+      process.exitCode = code;
+      return;
+    }
+    // This command is what the README recommends for filling in newly-required
+    // keys, so it has to apply them too: writing the admin keys to .env while
+    // leaving the old container running is the exposure, not the fix (#359).
+    if (!(await applySinkPrometheusConfig(projectDir))) {
+      process.exitCode = 1;
+    }
   });
 mon
   .command("update")
@@ -3892,6 +4114,7 @@ mon
         console.log("✓ .env is up to date");
       }
       console.log();
+
 
       // Step 2: refresh repo if this is a git-based deployment. Some users
       // upgrade purely via `npm install -g postgresai@latest` and don't have a
@@ -3925,6 +4148,10 @@ mon
       const code = await runCompose(["pull"]);
 
       if (code === 0) {
+        if (!(await applySinkPrometheusConfig(projectDir))) {
+          process.exitCode = 1;
+          return;
+        }
         console.log("\n✓ Update completed successfully");
         console.log("\nTo apply updates, restart monitoring services:");
         console.log("  postgres-ai mon restart");

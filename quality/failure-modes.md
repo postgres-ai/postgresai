@@ -130,6 +130,8 @@ misses critical issues
 - [ ] Docker: no credentials visible in `docker inspect` environment section
 - [ ] All SQL: parameterized queries (no string interpolation for user input)
 - [ ] VictoriaMetrics: basic auth enabled, unauthenticated requests return 401
+- [ ] VictoriaMetrics: the destructive admin endpoints (`delete_series`, `snapshot`, `force_merge`) and `/debug/pprof/*` require a per-install key; a Grafana Viewer cannot reach them through the datasource proxy. Not yet covered (proxy-GET, degradation not destruction), tracked in #362: `/internal/force_flush`, `/internal/resetRollupResultCache`, `/internal/log_new_series`, `/api/v1/admin/status/metric_names_stats/reset`, `/-/reload`
+- [ ] VictoriaMetrics: no secret appears in the container command line, i.e. in `/debug/pprof/cmdline` or the host process table (they are still container env vars, so `docker inspect` shows them)
 - [ ] Grafana: default credentials are randomized on `local-install`
 - [ ] Pre-commit: gitleaks catches secrets before they reach the repository
 
@@ -139,6 +141,7 @@ misses critical issues
 - gitleaks: pre-commit hook + CI check
 - CLI tests: auth flow tests verify masking behavior
 - E2E tests: VM basic auth verification (already in `cli:node:full:dind`)
+- Compliance vectors: `tests/compliance_vectors/test_vm_auth.py` — `TestVictoriaMetricsAdminAuthKeys`, `TestVictoriaMetricsEntrypointBehaviour` (runs the entrypoint), `TestTerraformVMAdminAuthKeys`
 
 ---
 
