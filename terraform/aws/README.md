@@ -221,6 +221,12 @@ vm_auth_password = "CHANGE_ME"        # Set to enable auth, leave empty to disab
 
 When enabled, all VictoriaMetrics API endpoints require authentication. The health endpoint (`/health`) remains accessible without auth for container health checks.
 
+### VictoriaMetrics admin endpoints
+
+Independently of basic auth, `user_data.sh` always generates `VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY` and `VM_PPROF_AUTH_KEY` into `.env` on the instance (see #359). They gate `/api/v1/admin/tsdb/*`, `/snapshot/*`, `/internal/force_merge` and `/debug/pprof/*`, which would otherwise be reachable by any Grafana Viewer through the datasource proxy.
+
+A key is passed as the generic `authKey=<value>` query argument and **overrides** basic auth for those endpoints, so treat it as separately sensitive. To rotate one, edit `.env` on the instance and run `sudo docker-compose up -d --no-deps sink-prometheus` while the stack is running.
+
 Grafana, the Flask backend, and the Reporter are automatically configured to use the credentials.
 
 

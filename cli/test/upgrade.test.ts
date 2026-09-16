@@ -506,6 +506,10 @@ describe("in-place upgrade env migration (mon update / update-config)", () => {
       resolve(testDir, ".env"),
       "PGAI_TAG=0.15.0\nVM_AUTH_USERNAME=custom-user\nVM_AUTH_PASSWORD=custom-pw-do-not-rotate\nREPLICATOR_PASSWORD=" +
         "a".repeat(64) +
+        "\nVM_DELETE_AUTH_KEY=" + "b".repeat(64) +
+        "\nVM_SNAPSHOT_AUTH_KEY=" + "c".repeat(64) +
+        "\nVM_FORCE_MERGE_AUTH_KEY=" + "d".repeat(64) +
+        "\nVM_PPROF_AUTH_KEY=" + "e".repeat(64) +
         "\n",
     );
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
@@ -518,9 +522,137 @@ describe("in-place upgrade env migration (mon update / update-config)", () => {
     expect(envContent).toMatch(/^VM_AUTH_USERNAME=custom-user$/m);
     expect(envContent).toMatch(/^VM_AUTH_PASSWORD=custom-pw-do-not-rotate$/m);
     expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
+    expect(envContent).toMatch(/^VM_DELETE_AUTH_KEY=b{64}$/m);
+    expect(envContent).toMatch(/^VM_SNAPSHOT_AUTH_KEY=c{64}$/m);
+    expect(envContent).toMatch(/^VM_FORCE_MERGE_AUTH_KEY=d{64}$/m);
+    expect(envContent).toMatch(/^VM_PPROF_AUTH_KEY=e{64}$/m);
 
     // When nothing is missing, the migration step should say so.
     expect(result.stdout).toMatch(/\.env is up to date/);
+  }, { timeout: TEST_TIMEOUT });
+
+  /**
+   * postgresai#359: sink-prometheus ran with no VictoriaMetrics admin keys, so
+   * a Grafana Viewer token could GET /api/v1/admin/tsdb/delete_series straight
+   * through the datasource proxy and wipe the store. An existing install must
+   * pick the keys up on `mon update`, not only on a fresh install.
+   */
+  test("mon update appends the VictoriaMetrics admin keys to a pre-0.17 .env (#359)", () => {
+    const testDir = resolve(tempDir, "update-vm-admin-keys");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // 0.15/0.16-shaped .env: VM basic auth present, admin keys absent.
+    fs.writeFileSync(
+      resolve(testDir, ".env"),
+      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=existing-pw\nREPLICATOR_PASSWORD=" +
+        "a".repeat(64) +
+        "\n",
+    );
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    expect(envContent).toMatch(/^VM_DELETE_AUTH_KEY=[a-f0-9]{64}$/m);
+    expect(envContent).toMatch(/^VM_SNAPSHOT_AUTH_KEY=[a-f0-9]{64}$/m);
+    expect(envContent).toMatch(/^VM_FORCE_MERGE_AUTH_KEY=[a-f0-9]{64}$/m);
+    expect(envContent).toMatch(/^VM_PPROF_AUTH_KEY=[a-f0-9]{64}$/m);
+
+    // Each key must be distinct - one shared value would let a leak of any one
+    // of them open every endpoint.
+    const keys = [
+      "VM_DELETE_AUTH_KEY",
+      "VM_SNAPSHOT_AUTH_KEY",
+      "VM_FORCE_MERGE_AUTH_KEY",
+      "VM_PPROF_AUTH_KEY",
+    ].map((k) => envContent.match(new RegExp(`^${k}=(.+)$`, "m"))![1]);
+    expect(new Set(keys).size).toBe(4);
+
+    // The keys must never be reused as the credential anything holds.
+    expect(keys).not.toContain("existing-pw");
+
+    // Untouched values stay put.
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=existing-pw$/m);
+    expect(result.stdout).toMatch(/VM_DELETE_AUTH_KEY/);
+  }, { timeout: TEST_TIMEOUT });
+
+  /**
+   * `cp .env.example .env` ships the admin keys blank, and a blank key is the
+   * vulnerability, not a configured value. The migration must fill it IN PLACE:
+   * appending a second line for the same key would leave the file ambiguous.
+   */
+  test("mon update fills quoted-empty and duplicated admin keys the way compose reads them (#359)", () => {
+    const testDir = resolve(tempDir, "update-quoted-blank-vm-admin-keys");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // Compose interpolates KEY="" to the empty string, and reads the LAST
+    // assignment of a duplicated key. Both shapes must end up with a real value.
+    fs.writeFileSync(
+      resolve(testDir, ".env"),
+      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=pw\nREPLICATOR_PASSWORD=" +
+        "a".repeat(64) +
+        '\nVM_DELETE_AUTH_KEY=""\nVM_SNAPSHOT_AUTH_KEY=\'\'\n' +
+        "VM_FORCE_MERGE_AUTH_KEY=\nVM_FORCE_MERGE_AUTH_KEY=\n" +
+        "  export VM_PPROF_AUTH_KEY=\n",
+    );
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    // Read the file the way compose does: last assignment wins.
+    const effective = (key: string): string | undefined => {
+      let value: string | undefined;
+      for (const line of envContent.split("\n")) {
+        const m = line.match(new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`));
+        if (m) value = m[1].trim();
+      }
+      return value;
+    };
+
+    for (const key of [
+      "VM_DELETE_AUTH_KEY",
+      "VM_SNAPSHOT_AUTH_KEY",
+      "VM_FORCE_MERGE_AUTH_KEY",
+      "VM_PPROF_AUTH_KEY",
+    ]) {
+      expect(effective(key)).toMatch(/^[a-f0-9]{64}$/);
+    }
+    // The pre-existing secrets must survive the rewrite.
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=pw$/m);
+    expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
+    // No .env.tmp left behind by the write-then-rename.
+    expect(fs.existsSync(resolve(testDir, ".env.tmp"))).toBe(false);
+  }, { timeout: TEST_TIMEOUT });
+
+  test("mon update fills blank VictoriaMetrics admin keys in place (#359)", () => {
+    const testDir = resolve(tempDir, "update-blank-vm-admin-keys");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(
+      resolve(testDir, ".env"),
+      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=pw\nREPLICATOR_PASSWORD=" +
+        "a".repeat(64) +
+        "\nVM_DELETE_AUTH_KEY=\nVM_SNAPSHOT_AUTH_KEY=\nVM_FORCE_MERGE_AUTH_KEY=\nVM_PPROF_AUTH_KEY=\n",
+    );
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
+    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+
+    for (const key of [
+      "VM_DELETE_AUTH_KEY",
+      "VM_SNAPSHOT_AUTH_KEY",
+      "VM_FORCE_MERGE_AUTH_KEY",
+      "VM_PPROF_AUTH_KEY",
+    ]) {
+      expect(envContent).toMatch(new RegExp(`^${key}=[a-f0-9]{64}$`, "m"));
+      // Exactly one line per key - no appended duplicate.
+      expect(envContent.split("\n").filter((l) => l.startsWith(`${key}=`)).length).toBe(1);
+    }
   }, { timeout: TEST_TIMEOUT });
 
   test("mon update-config handles a .env that doesn't end with a newline", () => {
