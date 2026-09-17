@@ -65,3 +65,9 @@ postgresai mon local-install --demo
 ```
 
 See `quality/QUALITY_ENGINEERING_GUIDE.md` for the full quality framework.
+
+### Wait-event color standard
+
+Use [docs/COLOR_SCHEME.md](../docs/COLOR_SCHEME.md) and its canonical JSON palette
+for ASH/wait-event charts and all supporting materials. Do not choose ad-hoc
+colors. Dashboard changes must pass the palette checks in `tests/grafana_dashboards/`.

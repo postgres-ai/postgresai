@@ -57,3 +57,10 @@ PR — use judgment. Items marked **(required)** must be verified for all PRs.
 - [ ] Resource limits (CPU/memory) are appropriate
 - [ ] Health check endpoints remain accessible
 - [ ] Configuration changes are backward-compatible with existing installations
+
+## Wait-event visualizations and materials
+
+- [ ] Charts, diagrams, docs, demos, and slides follow [the color standard](../../docs/COLOR_SCHEME.md)
+- [ ] Category labels remain readable without color; unknown categories use gray
+- [ ] Visual changes include focused before/after screenshots
+- [ ] Dashboard palette checks pass; other repositories/materials are checked manually

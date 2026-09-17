@@ -1,0 +1,14 @@
+{
+  "CPU*": "#50FA7B",
+  "IdleTx": "#F1FA8C",
+  "IO": "#1E64FF",
+  "Lock": "#FF5555",
+  "LWLock": "#FF79C6",
+  "IPC": "#00C8FF",
+  "Client": "#FFDC64",
+  "Timeout": "#FFA500",
+  "BufferPin": "#00D2B4",
+  "Activity": "#9664FF",
+  "Extension": "#BE96FF",
+  "Unknown/Other": "#B4B4B4"
+}

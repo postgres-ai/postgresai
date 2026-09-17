@@ -184,3 +184,10 @@ branch shape on Dashboard 02). They run in different CI jobs.
 - **bytes**: Use for absolute size measurements
 - **percent**: Use for percentage values (0-100 scale)
 - **ops**: Use for operations per second
+
+## Wait-event colors
+
+Follow the [PostgresAI color scheme](../../../docs/COLOR_SCHEME.md). ASH charts
+use exact RGB values from `docs/wait-event-colors.json`, never positional or
+theme-dependent named colors. Run `python3 scripts/sync-wait-event-colors.py`
+from the repository root after changing the palette. CI rejects drift.

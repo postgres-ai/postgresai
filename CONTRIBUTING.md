@@ -456,3 +456,10 @@ Branch names are sanitized for DNS compatibility:
 **Can't access the preview URL:**
 - DNS propagation may take a few minutes
 - Verify the SSL certificate is valid (Let's Encrypt DNS-01 challenge)
+
+## Wait-event colors
+
+Follow [docs/COLOR_SCHEME.md](docs/COLOR_SCHEME.md) for monitoring charts and
+all supporting materials. Use the canonical palette, regenerate dashboard
+overrides with `python3 scripts/sync-wait-event-colors.py`, and run the dashboard
+lint tests. Include focused before/after screenshots for visual changes.
