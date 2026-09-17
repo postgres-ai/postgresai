@@ -581,3 +581,8 @@ postgres_ai monitoring is developed by [PostgresAI](https://postgres.ai), bringi
 - 🎙️ [Postgres FM Podcast](https://postgres.fm)
 - 🐛 [Report issues](https://gitlab.com/postgres-ai/postgresai/-/issues)
 - 📧 [Enterprise support](https://postgres.ai/consulting)
+
+## Visualization standard
+
+Wait-event charts in monitoring and supporting materials follow the
+[PostgresAI color scheme](docs/COLOR_SCHEME.md).

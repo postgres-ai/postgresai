@@ -43,7 +43,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#B4B4B4",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -100,13 +101,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Timeout"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?CPU\\*?(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "#6f450c",
+                  "fixedColor": "#50FA7B",
                   "mode": "fixed"
                 }
               }
@@ -115,13 +116,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "CPU.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IdleTx(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "green",
+                  "fixedColor": "#F1FA8C",
                   "mode": "fixed"
                 }
               }
@@ -130,13 +131,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Lock"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IO(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "red",
+                  "fixedColor": "#1E64FF",
                   "mode": "fixed"
                 }
               }
@@ -145,13 +146,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "LWLock"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Lock(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "dark-red",
+                  "fixedColor": "#FF5555",
                   "mode": "fixed"
                 }
               }
@@ -160,13 +161,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "IO"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?LWLock(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "blue",
+                  "fixedColor": "#FF79C6",
                   "mode": "fixed"
                 }
               }
@@ -175,13 +176,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Client"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IPC(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "super-light-yellow",
+                  "fixedColor": "#00C8FF",
                   "mode": "fixed"
                 }
               }
@@ -190,13 +191,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Activity"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Client(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "purple",
+                  "fixedColor": "#FFDC64",
                   "mode": "fixed"
                 }
               }
@@ -205,13 +206,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "BufferPin"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Timeout(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "orange",
+                  "fixedColor": "#FFA500",
                   "mode": "fixed"
                 }
               }
@@ -220,13 +221,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "IPC"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?BufferPin(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "yellow",
+                  "fixedColor": "#00D2B4",
                   "mode": "fixed"
                 }
               }
@@ -235,13 +236,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "InjectionPoint"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Activity(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "pink",
+                  "fixedColor": "#9664FF",
                   "mode": "fixed"
                 }
               }
@@ -250,13 +251,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Extension"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Extension(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "light-purple",
+                  "fixedColor": "#BE96FF",
                   "mode": "fixed"
                 }
               }
@@ -339,7 +340,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#B4B4B4",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -396,13 +398,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Timeout.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?CPU\\*?(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "#6f450c",
+                  "fixedColor": "#50FA7B",
                   "mode": "fixed"
                 }
               }
@@ -411,13 +413,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "CPU.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IdleTx(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "green",
+                  "fixedColor": "#F1FA8C",
                   "mode": "fixed"
                 }
               }
@@ -426,13 +428,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Lock.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IO(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "red",
+                  "fixedColor": "#1E64FF",
                   "mode": "fixed"
                 }
               }
@@ -441,13 +443,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "LWLock.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Lock(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "dark-red",
+                  "fixedColor": "#FF5555",
                   "mode": "fixed"
                 }
               }
@@ -456,13 +458,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "IO.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?LWLock(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "blue",
+                  "fixedColor": "#FF79C6",
                   "mode": "fixed"
                 }
               }
@@ -471,13 +473,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Client.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IPC(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "super-light-yellow",
+                  "fixedColor": "#00C8FF",
                   "mode": "fixed"
                 }
               }
@@ -486,13 +488,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Activity.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Client(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "purple",
+                  "fixedColor": "#FFDC64",
                   "mode": "fixed"
                 }
               }
@@ -501,13 +503,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "BufferPin.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Timeout(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "orange",
+                  "fixedColor": "#FFA500",
                   "mode": "fixed"
                 }
               }
@@ -516,13 +518,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "IPC.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?BufferPin(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "yellow",
+                  "fixedColor": "#00D2B4",
                   "mode": "fixed"
                 }
               }
@@ -531,13 +533,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "InjectionPoint.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Activity(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "pink",
+                  "fixedColor": "#9664FF",
                   "mode": "fixed"
                 }
               }
@@ -546,13 +548,13 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "Extension.*"
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Extension(?:$|[: ].*)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
-                  "fixedColor": "light-purple",
+                  "fixedColor": "#BE96FF",
                   "mode": "fixed"
                 }
               }
@@ -609,7 +611,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#B4B4B4",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -665,171 +668,6 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byRegexp",
-              "options": "Timeout.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#6f450c",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "CPU.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "Lock.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "LWLock.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "dark-red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "IO.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "Client.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "super-light-yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "Activity.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "BufferPin.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "IPC.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "InjectionPoint.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "pink",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "Extension.*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "light-purple",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
               "id": "byFrameRefID",
               "options": "A"
             },
@@ -843,6 +681,171 @@
                     "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/tmp?orgId=1&var-query_id=${__field.labels.query_id}﻿﻿&var-cluster_name=﻿$cluster_name﻿&var-node_name=$node_name&${db_name:queryparam}&from=${__from:date}&to=${__to:date}"
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?CPU\\*?(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#50FA7B",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IdleTx(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F1FA8C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IO(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1E64FF",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Lock(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF5555",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?LWLock(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF79C6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?IPC(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#00C8FF",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Client(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFDC64",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Timeout(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFA500",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?BufferPin(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#00D2B4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Activity(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#9664FF",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(?:(?:Postgres|Idle Internal) - )?Extension(?:$|[: ].*)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#BE96FF",
+                  "mode": "fixed"
+                }
               }
             ]
           }
