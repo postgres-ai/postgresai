@@ -758,6 +758,87 @@ describe("MCP Server", () => {
     });
   });
 
+  describe("hidden issues via MCP (platform-all #562)", () => {
+    const cfg = { apiKey: "test-key", baseUrl: null, storageBaseUrl: null, orgId: 1, defaultProject: null, projectName: null };
+
+    function captureBodies() {
+      const bodies: Array<Record<string, unknown>> = [];
+      globalThis.fetch = mock((_url: string, options?: RequestInit) => {
+        bodies.push(JSON.parse(options?.body as string));
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "issue-1" }), { status: 200, headers: { "Content-Type": "application/json" } })
+        );
+      }) as unknown as typeof fetch;
+      return bodies;
+    }
+
+    test("create_issue forwards is_hidden only when true", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      await handleToolCall(createRequest("create_issue", { title: "Internal", is_hidden: true }));
+      await handleToolCall(createRequest("create_issue", { title: "Plain", is_hidden: false }));
+      await handleToolCall(createRequest("create_issue", { title: "Plain" }));
+
+      expect(bodies[0].is_hidden).toBe(true);
+      expect("is_hidden" in bodies[1]).toBe(false);
+      expect("is_hidden" in bodies[2]).toBe(false);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("update_issue accepts is_hidden alone and forwards both true and false", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      const hide = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: true }));
+      expect(hide.isError).toBeUndefined();
+      const unhide = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: false }));
+      expect(unhide.isError).toBeUndefined();
+      await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", title: "Renamed" }));
+
+      expect(bodies[0]).toEqual({ p_id: "issue-1", p_is_hidden: true });
+      expect(bodies[1]).toEqual({ p_id: "issue-1", p_is_hidden: false });
+      expect("p_is_hidden" in bodies[2]).toBe(false);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("both tools reject a non-boolean is_hidden instead of coercing or dropping it", async () => {
+      // "false" as a string would coerce to true, and silently dropping "true"
+      // would publish staff-internal content; refuse either way.
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      const upd = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: "false" }));
+      expect(upd.isError).toBe(true);
+      expect(getResponseText(upd)).toBe("is_hidden must be a boolean");
+
+      const crt = await handleToolCall(createRequest("create_issue", { title: "Internal", is_hidden: "true" }));
+      expect(crt.isError).toBe(true);
+      expect(getResponseText(crt)).toBe("is_hidden must be a boolean");
+
+      expect(bodies).toHaveLength(0);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("is_hidden: null means unchanged / not hidden", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      const upd = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", title: "T", is_hidden: null }));
+      expect(upd.isError).toBeUndefined();
+      const crt = await handleToolCall(createRequest("create_issue", { title: "Plain", is_hidden: null }));
+      expect(crt.isError).toBeUndefined();
+
+      expect("p_is_hidden" in bodies[0]).toBe(false);
+      expect("is_hidden" in bodies[1]).toBe(false);
+
+      readConfigSpy.mockRestore();
+    });
+  });
+
   describe("update_issue tool", () => {
     test("returns error when issue_id is empty", async () => {
       const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({

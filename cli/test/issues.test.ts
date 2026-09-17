@@ -119,6 +119,30 @@ describe("createIssue", () => {
     expect(result).toEqual(mockResponse);
   });
 
+  test("sends is_hidden only when hidden is true", async () => {
+    // Hidden issues are staff-only (platform-all #562). The server default is
+    // false, so a non-hidden create must not mention the field at all.
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = mock((_url: string, options: RequestInit) => {
+      bodies.push(JSON.parse(options.body as string));
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "test-id" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    const base = { apiKey: "test-key", apiBaseUrl: "https://api.example.com", title: "T", orgId: 1 };
+    await createIssue({ ...base, hidden: true });
+    await createIssue({ ...base, hidden: false });
+    await createIssue({ ...base });
+
+    expect(bodies[0].is_hidden).toBe(true);
+    expect("is_hidden" in bodies[1]).toBe(false);
+    expect("is_hidden" in bodies[2]).toBe(false);
+  });
+
   test("handles API error response", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(
@@ -175,6 +199,30 @@ describe("updateIssue", () => {
         issueId: "test-id",
       })
     ).rejects.toThrow("At least one field to update is required");
+  });
+
+  test("hidden alone is a valid update and maps to p_is_hidden in both directions", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = mock((_url: string, options: RequestInit) => {
+      bodies.push(JSON.parse(options.body as string));
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "test-id" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    const base = { apiKey: "test-key", apiBaseUrl: "https://api.example.com", issueId: "test-id" };
+    await updateIssue({ ...base, hidden: true });
+    await updateIssue({ ...base, hidden: false });
+    await updateIssue({ ...base, title: "T" });
+
+    expect(bodies[0]).toEqual({ p_id: "test-id", p_is_hidden: true });
+    // false must be sent, not dropped: it is the "unhide" request.
+    expect(bodies[1]).toEqual({ p_id: "test-id", p_is_hidden: false });
+    // An update that does not mention it must not touch the flag.
+    expect("p_is_hidden" in bodies[2]).toBe(false);
   });
 
   test("accepts update with only title", async () => {
