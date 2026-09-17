@@ -47,7 +47,7 @@ function isolatedEnv(extra: Record<string, string> = {}) {
 const ORDINARY_ISSUE_ID = "11111111-1111-1111-1111-111111111111";
 const HIDDEN_ISSUE_ID = "22222222-2222-2222-2222-222222222222";
 
-async function startFakeApi() {
+async function startFakeApi(opts: { rejectHiddenWrites?: boolean } = {}) {
   const requests: Array<{
     method: string;
     pathname: string;
@@ -133,6 +133,13 @@ async function startFakeApi() {
 
       // Minimal fake PostgREST RPC endpoints used by our CLI.
       if (req.method === "POST" && url.pathname.endsWith("/rpc/issue_create")) {
+        if (opts.rejectHiddenWrites && bodyJson?.is_hidden === true) {
+          // Shape of the platform's user_is_staff() refusal (platform-all #562).
+          return new Response(
+            JSON.stringify({ code: "PT403", message: "Forbidden", details: "Only postgres.ai staff can create hidden issues.", hint: "Omit is_hidden or sign in with a staff account." }),
+            { status: 403, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response(
           JSON.stringify({
             id: "issue-1",
@@ -1288,6 +1295,63 @@ describe("hidden-issue flag reaches CLI output only when true (platform-all #562
       const out = JSON.parse(r.stdout.trim());
       expect(out).toHaveLength(1);
       expect(out[0].is_hidden).toBe(true);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues create --hidden sends is_hidden=true, and plain create sends nothing", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const hidden = await runCliAsync(["issues", "create", "Internal note", "--org-id", "1", "--hidden"], env);
+      expect(hidden.status).toBe(0);
+      const plain = await runCliAsync(["issues", "create", "Customer-visible", "--org-id", "1"], env);
+      expect(plain.status).toBe(0);
+
+      const creates = api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_create"));
+      expect(creates).toHaveLength(2);
+      expect(creates[0].bodyJson.is_hidden).toBe(true);
+      expect(creates[0].headers["x-pgai-include-hidden"]).toBe("true");
+      expect("is_hidden" in creates[1].bodyJson).toBe(false);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --hidden / --no-hidden map to p_is_hidden; omitted leaves it alone", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      // --hidden with no other field must be accepted as a complete update.
+      const hide = await runCliAsync(["issues", "update", ORDINARY_ISSUE_ID, "--hidden"], env);
+      expect(hide.status).toBe(0);
+      const unhide = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden"], env);
+      expect(unhide.status).toBe(0);
+      const titleOnly = await runCliAsync(["issues", "update", ORDINARY_ISSUE_ID, "--title", "Renamed"], env);
+      expect(titleOnly.status).toBe(0);
+
+      const updates = api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"));
+      expect(updates).toHaveLength(3);
+      expect(updates[0].bodyJson).toEqual({ p_id: ORDINARY_ISSUE_ID, p_is_hidden: true });
+      expect(updates[1].bodyJson).toEqual({ p_id: HIDDEN_ISSUE_ID, p_is_hidden: false });
+      expect("p_is_hidden" in updates[2].bodyJson).toBe(false);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("a non-staff --hidden create surfaces the server's refusal and exits non-zero", async () => {
+    // The CLI does no staff detection of its own: the platform guard
+    // (user_is_staff() in v1.issue_create) is the only authority.
+    const api = await startFakeApi({ rejectHiddenWrites: true });
+    try {
+      const r = await runCliAsync(
+        ["issues", "create", "Internal note", "--org-id", "1", "--hidden"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("Only postgres.ai staff can create hidden issues");
     } finally {
       api.stop();
     }

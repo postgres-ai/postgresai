@@ -381,6 +381,11 @@ export interface CreateIssueParams {
   description?: string;
   projectId?: number;
   labels?: string[];
+  /**
+   * Create the issue as staff-only hidden (platform-all #562). Sent only when
+   * true; the server rejects it for a non-staff credential (PT403).
+   */
+  hidden?: boolean;
   debug?: boolean;
 }
 
@@ -410,7 +415,7 @@ export interface CreatedIssue {
  * @throws Error if API key, title, or orgId is missing, or if the API call fails
  */
 export async function createIssue(params: CreateIssueParams): Promise<CreatedIssue> {
-  const { apiKey, apiBaseUrl, orgScope, title, orgId, description, projectId, labels, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, title, orgId, description, projectId, labels, hidden, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -436,6 +441,9 @@ export async function createIssue(params: CreateIssueParams): Promise<CreatedIss
   }
   if (labels && labels.length > 0) {
     bodyObj.labels = labels;
+  }
+  if (hidden === true) {
+    bodyObj.is_hidden = true;
   }
   const body = JSON.stringify(bodyObj);
 
@@ -554,6 +562,8 @@ export interface UpdateIssueParams {
   description?: string;
   status?: number;
   labels?: string[];
+  /** Hide (true) or unhide (false) the issue; staff-only server-side (platform-all #562). */
+  hidden?: boolean;
   debug?: boolean;
 }
 
@@ -582,15 +592,15 @@ export interface UpdatedIssue {
  * @throws Error if API key or issueId is missing, if no fields to update are provided, or if the API call fails
  */
 export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue> {
-  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, hidden, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
   if (!issueId) {
     throw new Error("issueId is required");
   }
-  if (title === undefined && description === undefined && status === undefined && labels === undefined) {
-    throw new Error("At least one field to update is required (title, description, status, or labels)");
+  if (title === undefined && description === undefined && status === undefined && labels === undefined && hidden === undefined) {
+    throw new Error("At least one field to update is required (title, description, status, labels, or hidden)");
   }
 
   const base = normalizeBaseUrl(apiBaseUrl);
@@ -611,6 +621,9 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   if (labels !== undefined) {
     bodyObj.p_labels = labels;
+  }
+  if (hidden !== undefined) {
+    bodyObj.p_is_hidden = hidden;
   }
   const body = JSON.stringify(bodyObj);
 

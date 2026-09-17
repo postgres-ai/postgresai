@@ -5052,9 +5052,10 @@ withOrgOptions(issues.command("create <title>"))
     },
     [] as string[]
   )
+  .option("--hidden", "create as a hidden issue (PostgresAI staff)")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (rawTitle: string, opts: { orgId?: number; projectId?: number; description?: string; label?: string[]; attach?: string[]; debug?: boolean; json?: boolean }) => {
+  .action(async (rawTitle: string, opts: { orgId?: number; projectId?: number; description?: string; label?: string[]; attach?: string[]; hidden?: boolean; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -5130,6 +5131,7 @@ withOrgOptions(issues.command("create <title>"))
         description: augmentedDescription,
         projectId,
         labels,
+        hidden: opts.hidden === true,
         debug: !!opts.debug,
       });
       spinner.stop();
@@ -5166,9 +5168,11 @@ withOrgOptions(issues.command("update <issueId>"))
     },
     [] as string[]
   )
+  .option("--hidden", "hide the issue (PostgresAI staff)")
+  .option("--no-hidden", "unhide the issue (PostgresAI staff)")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; debug?: boolean; json?: boolean }) => {
+  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; hidden?: boolean; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -5251,6 +5255,9 @@ withOrgOptions(issues.command("update <issueId>"))
         description,
         status,
         labels,
+        // Commander leaves this undefined unless --hidden/--no-hidden was given,
+        // so an update that does not mention it never touches p_is_hidden.
+        hidden: typeof opts.hidden === "boolean" ? opts.hidden : undefined,
         debug: !!opts.debug,
       });
       spinner.stop();
