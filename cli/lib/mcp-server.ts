@@ -13,7 +13,7 @@ import {
   fetchActionItems,
   createActionItem,
   updateActionItem,
-  withVisibleHiddenFlag,
+  presentIssue,
   type ConfigChange,
 } from "./issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
@@ -116,7 +116,7 @@ export async function handleToolCall(
       // Same "render is_hidden only when true" rule as `issues list`: a non-staff
       // MCP client can only ever get is_hidden=false, and emitting that false would
       // itself disclose the hidden-issue mechanism. Drop it unless it is true.
-      const trimmed = issues.map((issue) => withVisibleHiddenFlag(issue));
+      const trimmed = issues.map((issue) => presentIssue(issue));
       return { content: [{ type: "text", text: JSON.stringify(trimmed, null, 2) }] };
     }
 
@@ -137,7 +137,7 @@ export async function handleToolCall(
       const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, debug });
       // Mirror `issues view`: normalize the flag so is_hidden=false/undefined is
       // dropped and only a genuine true survives into the MCP response.
-      const combined = { issue: withVisibleHiddenFlag(issue), comments };
+      const combined = { issue: presentIssue(issue), comments };
       return { content: [{ type: "text", text: JSON.stringify(combined, null, 2) }] };
     }
 
@@ -461,7 +461,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
             type: "object",
             properties: {
               org_id: { type: "number", description: "Organization ID. Optional with a per-organization token (falls back to config); REQUIRED with a global token, which can reach every organization the user belongs to and will not assume one. Use orgs_list / `pgai orgs` to discover valid values." },
-              status: { type: "string", description: "Filter by status: 'open', 'closed', or omit for all" },
+              status: { type: "string", description: "Filter by status: 'open', 'closed', or omit for all (note: the CLI defaults to open). Rows carry status as 'open'/'closed'." },
               limit: { type: "number", description: "Max number of issues to return (default: 20)" },
               offset: { type: "number", description: "Number of issues to skip (default: 0)" },
               hidden_only: { type: "boolean", description: "List only hidden issues (PostgresAI staff; same as CLI --hidden-only)" },

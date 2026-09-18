@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- `issues list` now shows **open issues only** by default. Closed issues need
+  an explicit `--status closed` (or `--status all` for both); an unknown
+  `--status` value is rejected instead of silently listing everything.
+  The MCP `list_issues` tool keeps its "omit status = all" behaviour.
+- `issues list` / `issues view` and the MCP `list_issues` / `view_issue` tools
+  render `status` as `open` / `closed` instead of the raw `0` / `1`. Scripts
+  that compared `.status == 0` in the JSON output need updating. (#367)
+
 ### Added
 
 - `issues list` and `issues view` (and their MCP counterparts `list_issues` /

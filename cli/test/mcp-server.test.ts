@@ -2651,4 +2651,48 @@ describe("MCP Server", () => {
       cfgSpy.mockRestore();
     });
   });
+  describe("status label (postgresai #367)", () => {
+    const cfgReturn = {
+      apiKey: "test-key",
+      baseUrl: null,
+      storageBaseUrl: null,
+      orgId: 1,
+      defaultProject: null,
+      projectName: null,
+    };
+
+    test("list_issues renders status as open/closed", async () => {
+      const mockIssues = [
+        { id: "issue-1", title: "Open one", status: 0, created_at: "2026-01-01", is_hidden: false },
+        { id: "issue-2", title: "Closed one", status: 1, created_at: "2026-01-02", is_hidden: false },
+      ];
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response(JSON.stringify(mockIssues), { status: 200, headers: { "Content-Type": "application/json" } }))
+      ) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues"));
+      expect(response.isError).toBeUndefined();
+      const parsed = JSON.parse(getResponseText(response));
+      expect(parsed.map((r: { status: unknown }) => r.status)).toEqual(["open", "closed"]);
+      readConfigSpy.mockRestore();
+    });
+
+    test("view_issue renders status as open/closed", async () => {
+      const mockIssue = { id: "issue-1", title: "Closed one", status: 1, is_hidden: false };
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      let callCount = 0;
+      globalThis.fetch = mock(() => {
+        callCount++;
+        const payload = callCount === 1 ? mockIssue : [];
+        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("view_issue", { issue_id: "issue-1" }));
+      expect(response.isError).toBeUndefined();
+      expect(JSON.parse(getResponseText(response)).issue.status).toBe("closed");
+      readConfigSpy.mockRestore();
+    });
+  });
+
 });

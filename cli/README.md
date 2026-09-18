@@ -299,7 +299,7 @@ required** — the server will not assume an organization. Call `orgs_list` (or
 run `pgai orgs`) to discover the available ids.
 
 Tools exposed:
-- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`).
+- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, attachments?, debug? }`).
 - `update_issue`: update title/description/status/labels (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, debug? }`).
@@ -350,7 +350,8 @@ sensitive.
 ### Issues management (`issues` group)
 
 ```bash
-postgresai issues list                                       # List issues (shows: id, title, status, created_at; is_hidden only when set)
+postgresai issues list                                       # List OPEN issues (shows: id, title, status, created_at; is_hidden only when set)
+postgresai issues list --status closed                       # Only closed issues (--status all for both)
 postgresai issues list --hidden-only                         # Only hidden issues (PostgresAI staff)
 postgresai issues view <issueId>                             # View issue details and comments
 postgresai issues create --org-id <id> --title <t>           # Create a new issue

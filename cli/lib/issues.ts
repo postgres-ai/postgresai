@@ -163,6 +163,28 @@ export function withVisibleHiddenFlag<T extends { is_hidden?: boolean }>(
   return rest as Visible;
 }
 
+/**
+ * Render `status` as the word the console shows (0 → open, 1 → closed) and
+ * apply the hidden-flag rule, so every read surface (list, view, MCP) prints
+ * the same shape (postgresai #367). An unexpected number is passed through
+ * untouched rather than mislabelled.
+ */
+export function presentIssue<T extends { status: number; is_hidden?: boolean }>(
+  issue: T
+): Omit<T, "status" | "is_hidden"> & { status: IssueStatusLabel | number; is_hidden?: true } {
+  type Presented = Omit<T, "status" | "is_hidden"> & { status: IssueStatusLabel | number; is_hidden?: true };
+  const visible = withVisibleHiddenFlag(issue);
+  return { ...visible, status: issueStatusLabel(issue.status) } as Presented;
+}
+
+export type IssueStatusLabel = "open" | "closed";
+
+export function issueStatusLabel(status: number): IssueStatusLabel | number {
+  if (status === IssueStatus.OPEN) return "open";
+  if (status === IssueStatus.CLOSED) return "closed";
+  return status;
+}
+
 export interface FetchIssuesParams {
   apiKey: string;
   /** Selected organization, required under a global token (postgresai #327). */

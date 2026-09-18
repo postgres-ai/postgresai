@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, withVisibleHiddenFlag, issueRequestHeaders } from "../lib/issues";
+import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel } from "../lib/issues";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -677,5 +677,24 @@ describe("global tokens reach hidden issues (postgresai #327 + platform-all #562
     expect(h["x-pgai-org"]).toBeUndefined();
     expect(h["x-pgai-org-id"]).toBeUndefined();
     expect(h["x-pgai-include-hidden"]).toBe("true");
+  });
+});
+
+describe("status label (postgresai #367)", () => {
+  test("issueStatusLabel maps the int2 column to the console's words", () => {
+    expect(issueStatusLabel(0)).toBe("open");
+    expect(issueStatusLabel(1)).toBe("closed");
+    // Anything outside the check constraint is passed through, never mislabelled.
+    expect(issueStatusLabel(7)).toBe(7);
+  });
+
+  test("presentIssue relabels status and applies the hidden-flag rule", () => {
+    const open = presentIssue({ id: "a", title: "t", status: 0, is_hidden: false });
+    expect(open.status).toBe("open");
+    expect("is_hidden" in open).toBe(false);
+
+    const closed = presentIssue({ id: "b", title: "t", status: 1, is_hidden: true });
+    expect(closed.status).toBe("closed");
+    expect(closed.is_hidden).toBe(true);
   });
 });
