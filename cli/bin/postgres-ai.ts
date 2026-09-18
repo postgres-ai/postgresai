@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, withVisibleHiddenFlag, type ConfigChange } from "../lib/issues";
+import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import {
   executeJoeCommand,
@@ -5073,7 +5073,7 @@ const issues = program.command("issues").description("issues management");
 
 withOrgOptions(issues.command("list"))
   .description("list issues")
-  .option("--status <status>", "filter by status: open, closed, or all (default: all)")
+  .option("--status <status>", "filter by status: open (default), closed, or all")
   .option("--limit <n>", "max number of issues to return (default: 20)", parseInt)
   .option("--offset <n>", "number of issues to skip (default: 0)", parseInt)
   .option("--hidden-only", "list only hidden issues (PostgresAI staff)")
@@ -5103,11 +5103,17 @@ withOrgOptions(issues.command("list"))
 
       const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
+      // Open issues are the ones a user acts on, so they are the default;
+      // closed ones show only on an explicit --status closed|all (#367).
+      const statusArg = (opts.status ?? "open").trim().toLowerCase();
       let statusFilter: "open" | "closed" | undefined;
-      if (opts.status === "open") {
-        statusFilter = "open";
-      } else if (opts.status === "closed") {
-        statusFilter = "closed";
+      if (statusArg === "open" || statusArg === "closed") {
+        statusFilter = statusArg;
+      } else if (statusArg !== "all") {
+        spinner.stop();
+        console.error("--status must be open, closed, or all");
+        process.exitCode = 1;
+        return;
       }
 
       const result = await fetchIssues({
@@ -5124,9 +5130,9 @@ withOrgOptions(issues.command("list"))
       spinner.stop();
       const trimmed = Array.isArray(result)
         ? (result as any[]).map((r) =>
-            // Route through the same helper as `issues view` so the
-            // "render is_hidden only when true" rule lives in one place.
-            withVisibleHiddenFlag({
+            // Route through the same helper as `issues view` so the status
+            // label and the "render is_hidden only when true" rule live in one place.
+            presentIssue({
               id: (r as any).id,
               title: (r as any).title,
               status: (r as any).status,
@@ -5174,7 +5180,7 @@ withOrgOptions(issues.command("view <issueId>"))
       spinner.update("Fetching comments...");
       const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
       spinner.stop();
-      const combined = { issue: withVisibleHiddenFlag(issue), comments };
+      const combined = { issue: presentIssue(issue), comments };
       printResult(combined, opts.json);
     } catch (err) {
       spinner.stop();

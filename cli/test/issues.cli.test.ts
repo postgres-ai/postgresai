@@ -1376,3 +1376,70 @@ describe("hidden-issue flag reaches CLI output only when true (platform-all #562
     }
   });
 });
+
+describe("issue status: label + open-by-default (postgresai #367)", () => {
+  const env = (baseUrl: string) => isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: baseUrl });
+  const issuesReq = (api: Awaited<ReturnType<typeof startFakeApi>>) =>
+    api.requests.find((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+
+  test("issues list defaults to open issues and prints status as a word", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "list"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(new URLSearchParams(issuesReq(api)!.search).get("status")).toBe("eq.0");
+
+      const out = JSON.parse(r.stdout.trim());
+      expect(out[0].status).toBe("open");
+      expect(r.stdout).not.toMatch(/"status": \d/);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues list --status closed asks the server for closed rows", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "list", "--status", "closed"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(new URLSearchParams(issuesReq(api)!.search).get("status")).toBe("eq.1");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues list --status all sends no status filter", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "list", "--status", "all"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(new URLSearchParams(issuesReq(api)!.search).has("status")).toBe(false);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues list rejects an unknown --status instead of silently listing everything", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "list", "--status", "done"], env(api.baseUrl));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("--status must be open, closed, or all");
+      expect(issuesReq(api)).toBeUndefined();
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues view prints status as a word", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "view", ORDINARY_ISSUE_ID], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout.trim());
+      expect(out.issue.status).toBe("open");
+    } finally {
+      api.stop();
+    }
+  });
+});
