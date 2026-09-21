@@ -235,7 +235,14 @@ func Run(ctx context.Context, c *Client, kind string, args []byte, now time.Time
 	// `invalid_args`, and an out-of-retention window would report a successful
 	// skip. During a rolling upgrade that adds a kind, the older boxes have to
 	// say what is actually wrong.
-	if kind != KindAAS && kind != KindTempfile {
+	switch kind {
+	case KindAAS, KindTempfile:
+		// collection, below
+	case KindPromQLInstant, KindPromQLRange:
+		// A query, not a collection: its args are their own shape and its
+		// result is read back by a human rather than applied to anything.
+		return runPromQL(ctx, c, kind, args, now)
+	default:
 		return Outcome{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}
 	req, err := parseRequest(args)

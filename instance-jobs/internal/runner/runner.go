@@ -51,12 +51,22 @@ const (
 	// budget on attempt one and the retries above never run.
 	storeRequestTimeout = 90 * time.Second
 
-	// submitAttempts is how often an answer is re-posted. A job is 'running'
-	// platform-side until it is answered or the hourly sweep closes it, so a
-	// single reset on the way back would otherwise throw away the whole
-	// collection and wedge that period for an hour.
-	submitAttempts = 3
-	submitBackoff  = 3 * time.Second
+	// submitAttempts is how often an answer is re-posted, submitBackoff paces
+	// them. A job is 'running' platform-side until it is answered or the hourly
+	// sweep closes it, so a single reset on the way back would otherwise throw
+	// away the whole collection and wedge that period for an hour.
+	//
+	// The budget is sized against what it actually contends with rather than
+	// against a generic blip: instance_job_submit waits out its own 5s
+	// lock_timeout for the monitoring_instances row, and the pull path's
+	// consumer can hold that row for a whole PgQ batch -- one transaction, one
+	// outbound call per event. Three attempts 3s apart gave up after ~24s,
+	// inside the first event of such a batch, so the retry existed but could
+	// not outlast the thing it exists for. Eight paced 10s, 20s ... 70s keep
+	// trying for 5m20s: long enough for a realistic batch of a few events,
+	// not a pretence of outlasting a pathological one.
+	submitAttempts = 8
+	submitBackoff  = 10 * time.Second
 
 	// A rejected credential or a missing RPC is not fixed by polling harder.
 	longBackoff = 10 * time.Minute
@@ -69,6 +79,38 @@ const (
 
 	// platformTimeout bounds one poll or submit.
 	platformTimeout = 30 * time.Second
+
+	// submitBudget is the worst case wall clock for ONE answer: every attempt
+	// burning its whole platformTimeout, plus every backoff between them.
+	// Anything asking "how long may a job take" wants this rather than the
+	// attempt count, which counts the requests and not the waiting.
+	//
+	// It is also the other half of the platform's claim arithmetic,
+	// claim_limit x per_job_ceiling < public.instance_jobs_expire_sweep's
+	// stuck_after: with claim_limit 1 the ceiling is jobBudget + 2*submitBudget
+	// -- the answer AND the terminal close after a refusal, which retries on the
+	// same ladder -- so 32m20s against an hour.
+	submitBudget = submitAttempts*platformTimeout +
+		submitBackoff*(submitAttempts*(submitAttempts-1)/2)
+
+	// shutdownSubmitBudget bounds EVERY submit sent after the context has been
+	// cancelled -- the answer and the terminal close that can follow it --
+	// together, as one deadline rather than one each. It sits between two
+	// numbers that belong to other systems, and both earlier versions of it got
+	// one of them wrong:
+	//
+	// ABOVE the platform's 5s lock_timeout: v1.instance_job_submit sets that and
+	// waits it out for the monitoring_instances row, which the pull path's
+	// consumer can hold for a whole PgQ batch. A 4s deadline aborted before the
+	// server could reach either outcome, making delivery strictly worse in the
+	// one contention case submitAttempts was sized against.
+	//
+	// BELOW docker's 10s stop grace (no stop_grace_period is set for this
+	// service), after which the process is SIGKILLed. 8s PER SUBMIT satisfied
+	// that for one submit and not for two: runJob can send a second, and an
+	// argument that it "returns fast" is not a bound. Sharing the budget makes
+	// it mechanical again.
+	shutdownSubmitBudget = 9 * time.Second
 
 	// errorMaxBytes is the platform's cap on the submitted error text.
 	errorMaxBytes = 512
@@ -88,6 +130,9 @@ type Runner struct {
 	elapsed func(time.Time) time.Duration
 	// sleep is overridden in tests; it returns false when the context ended.
 	sleep func(ctx context.Context, d time.Duration) bool
+	// shutdownDeadline is the single wall-clock deadline shared by every submit
+	// sent after cancellation. Zero until the first one. See submit.
+	shutdownDeadline time.Time
 	// budget is the per-job ceiling. A field rather than the constant directly
 	// so a test can shorten it and see what a job that overruns is answered as.
 	budget time.Duration
@@ -315,6 +360,21 @@ func (r *Runner) runJob(ctx context.Context, client *platform.Client, creds plat
 	// a refused payload on the job row rather than raising, so a box that does
 	// not read the reply reports a collection as landed when it was rejected.
 	if err := r.submit(ctx, client, creds, submission); err != nil {
+		// A refused result leaves the job RUNNING: the refusal is correctly not
+		// retried, but sending nothing else means the platform never hears an
+		// answer and the job waits out the hourly sweep -- during which the
+		// in-flight cap locks the user out and the CLI has long since timed
+		// out. Close it as failed instead, which is true and terminal.
+		if refusedByPlatform(err) && submission.Outcome != platform.OutcomeError {
+			terminal := platform.Submission{JobID: job.ID, DurationMS: duration, Outcome: platform.OutcomeError}
+			terminal.Error, terminal.FailureClass = describeFailure(errResultRefused)
+			if ferr := r.submit(ctx, client, creds, terminal); ferr != nil {
+				log.Printf("job %s: the result was refused and the failure could not be recorded: %v",
+					job.ID, sanitize(ferr))
+			} else {
+				log.Printf("job %s: result refused, job closed as failed", job.ID)
+			}
+		}
 		r.consecutiveJobFailures++
 		log.Printf("job %s was not accepted: %v (consecutive job failures: %d)",
 			job.ID, sanitize(err), r.consecutiveJobFailures)
@@ -332,6 +392,38 @@ func (r *Runner) runJob(ctx context.Context, client *platform.Client, creds plat
 // already done and the job stays 'running' platform-side until the hourly sweep
 // closes it, so giving up on the first reset would lose the whole collection.
 func (r *Runner) submit(ctx context.Context, client *platform.Client, creds platform.Credentials, s platform.Submission) error {
+	// SIGTERM mid-job. The work is already DONE, so a cancelled context here is
+	// pure loss: every attempt below fails instantly on the dead context,
+	// Classify calls it transient, sleep returns false on attempt 1, and the job
+	// sits `running` until the platform's hourly sweep. On the query channel
+	// that is worse than loss -- instance_query_enqueue's in-flight cap is 1 and
+	// its PT409 says "Nothing returns its id, so wait for it", so an ordinary
+	// `docker compose up -d` during a query locks the user out for up to an hour.
+	//
+	// So the answer goes out on a context that survives the cancellation. ONE
+	// attempt, and sized to the window it actually has: docker-compose sets no
+	// stop_grace_period for this service, so Docker's default 10s applies and
+	// the process is SIGKILLed after it. platformTimeout (30s) is three times
+	// that, and runJob can queue a SECOND detached submit for the terminal
+	// close -- so the pair has to fit inside the grace, not inside the ladder
+	// it is replacing (#378).
+	if ctx.Err() != nil {
+		// One deadline for the whole shutdown, set on the first detached submit
+		// and reused by any that follow. The loop is single-goroutine, so this
+		// needs no synchronisation.
+		if r.shutdownDeadline.IsZero() {
+			r.shutdownDeadline = r.now().Add(shutdownSubmitBudget)
+		}
+		detached, cancel := context.WithDeadline(context.WithoutCancel(ctx), r.shutdownDeadline)
+		defer cancel()
+		err := client.Submit(detached, creds, s)
+		if err != nil && platform.Classify(err) != platform.ClassJobGone {
+			log.Printf("job %s: shutting down, the answer could not be delivered: %v", s.JobID, sanitize(err))
+			return err
+		}
+		return nil
+	}
+
 	for attempt := 1; ; attempt++ {
 		submitCtx, cancel := context.WithTimeout(ctx, platformTimeout)
 		err := client.Submit(submitCtx, creds, s)
@@ -360,6 +452,31 @@ func (r *Runner) submit(ctx context.Context, client *platform.Client, creds plat
 			return err
 		}
 	}
+}
+
+// errResultRefused marks a result the platform accepted as a request and then
+// refused -- oversized, or otherwise not something it will store. It is its own
+// class because the remedy differs from every other failure: the answer cannot
+// be made acceptable by retrying it, so the job must be closed as failed rather
+// than left for the sweep.
+var errResultRefused = errors.New("platform refused the result")
+
+// refusedByPlatform reports whether the platform has decided these bytes are
+// unacceptable, so re-sending them cannot help and the job needs closing by
+// hand. It has two shapes and only one of them is a 200: an apply rejection
+// comes back in the reply body, while a result the rpc will not take at all --
+// oversize, the case the close exists for -- raises PT400, which rolls the
+// whole call back and leaves the job 'running'. Keying the close on the
+// in-body sentinel alone missed the second, which is the louder half.
+func refusedByPlatform(err error) bool {
+	// Never sent, so the platform has decided nothing about it: the job is
+	// still whatever it was and this is a bug in our own submission, not a
+	// verdict to relay.
+	if errors.Is(err, platform.ErrUnknownOutcome) {
+		return false
+	}
+	return errors.Is(err, platform.ErrResultRejected) ||
+		platform.Classify(err) == platform.ClassRequest
 }
 
 // errCollectionPanicked marks a collection that panicked. It is deliberately a
@@ -455,6 +572,20 @@ func describeFailure(err error) (string, string) {
 func classifyFailure(err error) (string, string) {
 	switch {
 	case errors.Is(err, collect.ErrInvalidArgs):
+		// Forward the STORE's words when there are any. For a collection the
+		// args are machine-generated and "bad args" is the whole story; for a
+		// promql job the caller typed the expression, and the store's message
+		// naming the parse error is the entire diagnostic. Without this the
+		// user is told the platform's args are bad, which points them at the
+		// one place the fault is not (#378).
+		//
+		// stripControls FIRST: the store echoes the submitted expression back
+		// inside the message and PromQL literals take Go-style escapes, so the
+		// text is attacker-influenced and is rendered on a terminal by
+		// `pgai promql`. truncate() then caps it and guarantees valid UTF-8.
+		if msg := collect.StripControls(collect.StoreMessage(err)); msg != "" {
+			return "job args could not be used: " + msg, "invalid_args"
+		}
 		return "job args could not be used", "invalid_args"
 	case errors.Is(err, collect.ErrUnknownKind):
 		return "this instance does not know this job kind", "unknown_kind"
@@ -468,6 +599,8 @@ func classifyFailure(err error) (string, string) {
 		return "the collected result could not be encoded", "unencodable_result"
 	case errors.Is(err, errCollectionPanicked):
 		return "collection failed unexpectedly", "panic"
+	case errors.Is(err, errResultRefused):
+		return "the platform refused the result", "result_rejected"
 	default:
 		var upstream *collect.UpstreamError
 		if errors.As(err, &upstream) {
@@ -493,13 +626,12 @@ func truncate(s string, max int) string {
 	// just a split rune, so validity rather than length is the requirement, and
 	// an early return on length alone handed a short invalid string back.
 	//
-	// Nothing reaching here today is invalid or over the cap: classifyFailure
-	// returns constant ASCII (41 bytes at most), and for an UpstreamError it
-	// forwards only the status code, never the message -- describeFailure's own
-	// docstring above says the raw error is deliberately not forwarded. This is
-	// a guard for the day someone widens classifyFailure, not for today's
-	// inputs. An earlier comment here claimed it was surviving upstream bodies,
-	// which no caller sends.
+	// This WAS a guard "for the day someone widens classifyFailure". That day
+	// arrived: the invalid_args arm now forwards the metric store's own message,
+	// which is attacker-influenced, multibyte, and bounded only by
+	// maxErrorBodyBytes (64 KiB). So the cap here is live rather than
+	// theoretical, and so is the UTF-8 cleaning -- Postgres rejects ANY invalid
+	// UTF-8 with 22021, and a naive slice at 512 lands mid-rune.
 	//
 	// Both calls are needed: the second because slicing a cleaned string can
 	// still land mid-rune. An earlier version instead walked the cut point back
@@ -523,12 +655,19 @@ func (r *Runner) setHealth(healthy bool, reason string, next time.Duration) {
 }
 
 // healthDeadline is how long the next stamp may take: the sleep, one whole job,
-// the submit that follows it with every retry, and slack. Budgeting only for
+// the TWO submits that can follow it with every retry, and slack. Budgeting only for
 // the job would call a working loop wedged whenever a submit had to retry. It
 // reads r.budget rather than the constant so the deadline and the job ceiling
 // cannot drift apart.
+//
+// The slack also covers the terminal close after a refused answer. That is a
+// SECOND submit on the same retry ladder, not a bounded one: the refused ANSWER
+// returns on its first attempt because a refusal is not transient, but the close
+// is a different submission and a 55P03 on it burns the whole budget. So the
+// true worst case is r.budget + 2*submitBudget = 32m20s, still inside the
+// platform's 1h stuck_after (#378).
 func (r *Runner) healthDeadline(next time.Duration) time.Duration {
-	return next + r.budget + submitAttempts*platformTimeout + 2*time.Minute
+	return next + r.budget + 2*submitBudget + 2*time.Minute
 }
 
 // clampInterval bounds what the platform asked for to [1s, 1h].

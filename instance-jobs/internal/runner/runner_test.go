@@ -24,6 +24,25 @@ import (
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/platform"
 )
 
+// The worst case wall clock for one job and one answer, spelled out here rather
+// than read from submitBudget. healthDeadline is DEFINED as
+// `next + budget + submitBudget + slack`, so an assertion phrased in terms of
+// submitBudget cancels it off both sides and holds for any value including
+// zero -- it checks an identity rather than the composition. These are the
+// arithmetic, done once, by hand:
+//
+//	collection  15m0s   the job budget
+//	8 attempts   4m0s   8 x the 30s per-request timeout
+//	7 backoffs   4m40s  10s + 20s + ... + 70s
+//
+// They are a FLOOR, and TestTheSubmitBudgetOutlastsAContendedBatch fails when
+// the constants move away from them: re-derive these by hand when it does,
+// rather than widening them until it passes.
+const (
+	worstCaseJob    = 15 * time.Minute
+	worstCaseSubmit = 8*time.Minute + 40*time.Second
+)
+
 // outcomeOf reads back the outcome a submit named, so a fake platform can echo
 // it the way the real one does.
 func outcomeOf(r *http.Request) string {
@@ -468,17 +487,39 @@ func TestSubmittedErrorTextFitsThePlatformCap(t *testing.T) {
 		fmt.Errorf("%w: %s", errUnencodableResult, strings.Repeat("x", 4000)),
 		fmt.Errorf("boom: %s", strings.Repeat("y", 4000)),
 		&collect.UpstreamError{StatusCode: 500, Message: strings.Repeat("z", 4000)},
+		// The input that makes this assertion BITE. Every case above lands on a
+		// constant classifyFailure arm of at most 41 bytes, so the cap could
+		// never trip and `describeFailure` was free to drop truncate entirely
+		// with the suite green. The invalid_args arm now forwards up to
+		// maxErrorBodyBytes of store text, so it is the live one -- and it is
+		// multibyte, because slicing mid-rune at 512 is where a naive cap
+		// produces invalid UTF-8 and the platform answers 22021. A THREE-byte
+		// rune, deliberately: the prefix is 28 bytes, 512-28 = 484, and 484 is
+		// even -- so with a 2-byte rune the naive cut lands on a boundary and
+		// the UTF-8 assertion below would be vacuous. 484 is not divisible by 3.
+		fmt.Errorf("%w: %s (%w)", collect.ErrInvalidArgs, "parse error",
+			&collect.UpstreamError{
+				StatusCode:   422,
+				Message:      "metric store returned status 422",
+				StoreMessage: strings.Repeat("\u65e5", 2000),
+			}),
 	} {
 		// The literal, not errorMaxBytes: the platform's cap is 512 bytes and a
 		// submit over it comes back PT400, losing the answer.
-		if text, _ := describeFailure(err); len(text) > 512 {
+		text, _ := describeFailure(err)
+		if len(text) > 512 {
 			t.Fatalf("error text is %d bytes, over the platform's 512 (errorMaxBytes is %d)",
 				len(text), errorMaxBytes)
 		}
+		if !utf8.ValidString(text) {
+			t.Fatalf("error text is not valid UTF-8, which the platform rejects with 22021: %q", text)
+		}
 	}
-	// The literal, the way longBackoff and maxResponseBytes are pinned: every
-	// classifyFailure arm is a short canned string, so an assertion phrased in
-	// terms of errorMaxBytes can never trip and the constant could drift.
+	// The literal, the way longBackoff and maxResponseBytes are pinned. This
+	// used to read "every classifyFailure arm is a short canned string, so an
+	// assertion phrased in terms of errorMaxBytes can never trip" -- no longer
+	// true: the invalid_args arm forwards the store's message, which is why the
+	// multibyte case above was added.
 	if errorMaxBytes != 512 {
 		t.Fatalf("errorMaxBytes = %d, want the platform's 512-byte cap", errorMaxBytes)
 	}
@@ -511,6 +552,19 @@ const emptyMatrix = `{"status":"success","data":{"resultType":"matrix","result":
 
 // storeHarness serves one collection job and lets the test decide what the
 // store answers on each request.
+// platform builds the client and credentials the runner would build for this
+// harness, so a test can drive an unexported method directly instead of going
+// the long way round through tick().
+func (h *harness) platform(t *testing.T) (*platform.Client, platform.Credentials) {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("loading the harness config: %v", err)
+	}
+	return platform.NewClient(cfg.APIBaseURL, "test", platformTimeout),
+		platform.Credentials{APIToken: cfg.APIToken, InstanceID: cfg.InstanceID}
+}
+
 func storeHarness(t *testing.T, store func(n int, w http.ResponseWriter, r *http.Request)) (*harness, *int) {
 	t.Helper()
 	storeRequests := 0
@@ -927,8 +981,13 @@ func TestTheHealthDeadlineCoversAJobAndItsSubmit(t *testing.T) {
 		t.Fatalf("healthDeadline moved by %v when the budget moved by 100s; it is not "+
 			"reading the budget", long-short)
 	}
-	r.budget = jobBudget
-	work := jobBudget + submitAttempts*platformTimeout + submitBackoff*3
+	r.budget = worstCaseJob
+	// TWO submits, not one: a refused answer is followed by the terminal close,
+	// which is a separate submission on the same retry ladder, so a transient
+	// failure on it burns a second whole budget. Budgeting for one leaves the
+	// deadline 6m40s short of what a single job can legitimately take, and a
+	// working box then reports dead through the container HEALTHCHECK (#378).
+	work := worstCaseJob + 2*worstCaseSubmit
 	// A minute of margin over the worst case, not merely "more than". Budgeting
 	// for the job alone leaves 21 seconds, which is the kind of number that
 	// turns into a false alarm the first time anything gets slower.
@@ -1231,8 +1290,11 @@ func TestARefusedResultCountsAsAJobFailure(t *testing.T) {
 		h.polls = 0
 		h.runner.tick(context.Background())
 	}
-	if submits != 3 {
-		t.Fatalf("submitted %d times, want 3", submits)
+	// Two submits per job: the refused answer, then the terminal error that
+	// closes it. Without the second the job would sit `running` until the
+	// hourly sweep.
+	if submits != 6 {
+		t.Fatalf("submitted %d times, want 6 (three jobs, each answered then closed)", submits)
 	}
 	if !strings.Contains(h.logs.String(), "was not accepted") {
 		t.Fatalf("a refused result was not recorded as one: %s", h.logs.String())
@@ -1248,6 +1310,7 @@ func TestARefusedResultIsNotRetried(t *testing.T) {
 	args := `{"cluster_name":"c","node_name":"n","period_start":"2020-01-01T00:00:00Z",
 		"period_end":"2020-01-02T00:00:00Z","window_start":"2026-01-01T00:00:00Z"}`
 	submits := 0
+	var outcomes []string
 	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "instance_job_poll") {
 			if h.polls > 1 {
@@ -1258,12 +1321,277 @@ func TestARefusedResultIsNotRetried(t *testing.T) {
 			return
 		}
 		submits++
+		outcomes = append(outcomes, outcomeOf(r))
 		fmt.Fprintf(w, `{"job_id":"j1","status":"failed","outcome":%q,"error":"refused"}`, outcomeOf(r))
 	})
 
 	h.runner.tick(context.Background())
+	// The refused ANSWER is sent once and never repeated. The second submit is
+	// a different submission -- outcome=error -- which is what closes the job
+	// instead of leaving it `running` for the hourly sweep.
+	want := []string{"skipped", "error"}
+	if len(outcomes) != len(want) || outcomes[0] != want[0] || outcomes[1] != want[1] {
+		t.Fatalf("submitted outcomes %v, want %v", outcomes, want)
+	}
+	if submits != 2 {
+		t.Fatalf("submitted %d times, want 2 (the answer, then the close)", submits)
+	}
+}
+
+// Oversize is the case the terminal close exists for, and it is NOT the shape
+// the close was keyed on: instance_job_submit raises PT400 for a result it will
+// not take, which rolls the whole call back, so there is no reply body to carry
+// a rejection and the job is left 'running' for the hourly sweep. Keying on the
+// in-body sentinel alone made the close unreachable for the louder half.
+func TestAnAnswerRefusedWithPT400IsClosedAsFailed(t *testing.T) {
+	var outcomes []string
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		// A real payload, so the refused answer is an `ok` carrying a result --
+		// the only kind of answer an oversize refusal can be about.
+		if strings.HasPrefix(r.URL.Query().Get("query"), "sum(pgwatch_wait_events_total") {
+			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+				{"metric":{"wait_event_type":"IO"},"values":[[1,"3"]]}]}}`))
+			return
+		}
+		w.Write([]byte(emptyMatrix))
+	})
+	h.submitHandler = func(w http.ResponseWriter, r *http.Request) {
+		outcome := outcomeOf(r)
+		outcomes = append(outcomes, outcome)
+		if outcome == "ok" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"PT400","message":"result exceeds the maximum size"}`))
+			return
+		}
+		w.Write(echoOutcome(r))
+	}
+
+	h.runner.tick(context.Background())
+
+	// The refused answer is sent ONCE -- a PT400 is a verdict, not a blip --
+	// and is followed by the close, which is a different submission.
+	want := []string{"ok", "error"}
+	if len(outcomes) != len(want) || outcomes[0] != want[0] || outcomes[1] != want[1] {
+		t.Fatalf("submitted outcomes %v, want %v (the answer, then the close)", outcomes, want)
+	}
+	// The assertion that the fixture is discriminating: an `ok` that carried no
+	// result would be refused for a different reason and prove nothing here.
+	if _, ok := h.submits[0]["result"].(map[string]any); !ok {
+		t.Fatalf("the refused answer carried no result: %v", h.submits[0])
+	}
+	// Legible, not a bare transport failure: this string is what the customer
+	// sees on the job row.
+	if got := h.submits[1]["failure_class"]; got != "result_rejected" {
+		t.Fatalf("the close named failure_class %v, want result_rejected", got)
+	}
+}
+
+// The close is one extra submit, not a loop: an answer that already says
+// `error` cannot be improved by saying it again, and a PT400 on the close
+// itself must end the job rather than start another round.
+func TestARefusedErrorAnswerIsNotClosedAgain(t *testing.T) {
+	submits := 0
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		// Nothing the box can answer with: the collection fails, so the answer
+		// itself is an `error`.
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+	h.submitHandler = func(w http.ResponseWriter, r *http.Request) {
+		submits++
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"code":"PT400","message":"result exceeds the maximum size"}`))
+	}
+
+	h.runner.tick(context.Background())
+
 	if submits != 1 {
-		t.Fatalf("a refused result was re-sent %d times", submits)
+		t.Fatalf("submitted %d times, want 1 (a refused error answer is not re-closed)", submits)
+	}
+	if got := h.submits[0]["outcome"]; got != "error" {
+		t.Fatalf("outcome = %v, want error; the fixture did not produce a failed collection", got)
+	}
+}
+
+// The store's message has to reach the SUBMITTED error, not merely the error
+// value inside package collect.
+//
+// This is the assertion the collect-level tests structurally cannot make: they
+// stop at `err.Error()`, one layer below `classifyFailure`, which is where a
+// constant string replaced the message and threw the whole fix away. `pgai
+// promql` prints the submitted `error` verbatim, so this is the text the user
+// actually sees when they fat-finger an expression (#378).
+func TestTheStoresMessageReachesTheSubmittedError(t *testing.T) {
+	const storeMsg = `cannot parse "totl(up)": unsupported function "totl"`
+	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprintf(w, `{"status":"error","errorType":"422","error":%q}`, storeMsg)
+		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
+			if h.polls > 1 {
+				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+				return
+			}
+			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"promql_instant","args":{"query":"totl(up)"}}],"next_poll_ms":5000}`))
+		default:
+			w.Write(echoOutcome(r))
+		}
+	})
+
+	h.runner.tick(context.Background())
+
+	if len(h.submits) != 1 {
+		t.Fatalf("submitted %d answers, want 1", len(h.submits))
+	}
+	if got := h.submits[0]["failure_class"]; got != "invalid_args" {
+		t.Fatalf("failure_class = %v, want invalid_args", got)
+	}
+	got, _ := h.submits[0]["error"].(string)
+	if !strings.Contains(got, "unsupported function") {
+		t.Fatalf("the store's message never reached the wire: error = %q -- the user is told the platform's args are bad when the store told us exactly what was wrong", got)
+	}
+}
+
+// ...and it must arrive with the control characters removed. The store echoes
+// the submitted expression back inside its message, PromQL string literals take
+// Go-style escapes, and the CLI prints the field with no escaping of its own --
+// so an ESC in an expression would execute in whoever's terminal reads the job
+// back. Same hole round 9 found in cli/lib/promql.ts, on a second path.
+func TestTheStoresMessageIsStrippedOfControlCharacters(t *testing.T) {
+	const storeMsg = "cannot parse \"\x1b[2J\x1b[31mRED\r\n\": bad"
+	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			b, _ := json.Marshal(map[string]string{"status": "error", "error": storeMsg})
+			w.Write(b)
+		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
+			if h.polls > 1 {
+				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+				return
+			}
+			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"promql_instant","args":{"query":"up"}}],"next_poll_ms":5000}`))
+		default:
+			w.Write(echoOutcome(r))
+		}
+	})
+
+	h.runner.tick(context.Background())
+
+	got, _ := h.submits[0]["error"].(string)
+	if strings.ContainsAny(got, "\x00\x1b\r\n") {
+		t.Fatalf("a control character reached the submitted error: %q", got)
+	}
+	if !strings.Contains(got, "RED") {
+		t.Fatalf("stripping removed the message itself: %q", got)
+	}
+}
+
+// refusedByPlatform's ErrUnknownOutcome exclusion, which was a mutation
+// survivor: disabling it left the whole runner suite green.
+//
+// The guard is load-bearing. Classify(ErrUnknownOutcome) is ClassRequest
+// (pinned by platform/client_test.go), so without the early return an UNSENT
+// submission -- our own bug forming an outcome the wire does not accept, which
+// never left the process -- would read as "the platform refused it" and trigger
+// the terminal error-close. That closes a job as failed on a verdict the
+// platform never gave (#378).
+func TestAnUnsentSubmissionIsNotAPlatformVerdict(t *testing.T) {
+	if refusedByPlatform(fmt.Errorf("forming the submission: %w", platform.ErrUnknownOutcome)) {
+		t.Fatal("an unsent submission read as a platform refusal, so runJob would close the job as failed on a verdict that was never given")
+	}
+	// CONTROL: the two errors that ARE verdicts must still be recognised, or the
+	// assertion above would also pass with the whole function returning false.
+	if !refusedByPlatform(fmt.Errorf("x: %w", platform.ErrResultRejected)) {
+		t.Fatal("a rejected result is no longer a platform refusal")
+	}
+}
+
+// shutdownSubmitBudget has to sit between two numbers that belong to other
+// systems, and each earlier version got one of them wrong.
+//
+// Above the PLATFORM's lock_timeout: v1.instance_job_submit does
+// `set_config('lock_timeout','5s')` and waits that out for the monitoring_instances
+// row, which the pull path's consumer can hold for a whole PgQ batch. A deadline
+// under 5s cannot reach either outcome, so it makes delivery strictly WORSE in
+// the one contention case the retry ladder was sized against. (4s did this.)
+//
+// Below DOCKER's stop grace: docker-compose sets no stop_grace_period for this
+// service, so the default 10s applies. This is the WHOLE shutdown budget, not
+// one submit's — runJob can send the answer and then a terminal close, and 8s
+// EACH was 16s against a 10s grace.
+//
+// Both foreign literals on purpose, not the constants they mirror: the point is
+// to fail here when someone changes ours (#378).
+func TestTheShutdownBudgetFitsBetweenTheLockTimeoutAndTheStopGrace(t *testing.T) {
+	const platformSubmitLockTimeout = 5 * time.Second
+	const dockerStopGrace = 10 * time.Second
+
+	if shutdownSubmitBudget <= platformSubmitLockTimeout {
+		t.Fatalf("shutdownSubmitBudget %v is at or under the platform's %v lock_timeout, so a contended submit is aborted client-side before the server can answer at all",
+			shutdownSubmitBudget, platformSubmitLockTimeout)
+	}
+	if shutdownSubmitBudget >= dockerStopGrace {
+		t.Fatalf("shutdownSubmitBudget %v is at or over docker's %v stop grace, so the process is SIGKILLed mid-submit",
+			shutdownSubmitBudget, dockerStopGrace)
+	}
+}
+
+// ...and it is ONE budget for the pair, not one each. Two detached submits must
+// not be able to outlast the grace between them.
+func TestTwoDetachedSubmitsShareOneBudget(t *testing.T) {
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	})
+	client, creds := h.platform(t)
+	base := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	// The clock ADVANCES between the two submits. With a frozen clock
+	// `now().Add(budget)` is the same instant every time, so re-deriving the
+	// deadline per submit would be indistinguishable from sharing it and this
+	// test would pass against the very mutation it exists to catch.
+	elapsed := time.Duration(0)
+	h.runner.now = func() time.Time { return base.Add(elapsed) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 2; i++ {
+		_ = h.runner.submit(ctx, client, creds,
+			platform.Submission{JobID: "j1", Outcome: platform.OutcomeOK, Result: map[string]any{}})
+		elapsed += 3 * time.Second
+	}
+	if got := h.runner.shutdownDeadline.Sub(base); got != shutdownSubmitBudget {
+		t.Fatalf("after two detached submits the deadline is %v past the first, want %v -- each took its own budget, so the pair can outlast the stop grace",
+			got, shutdownSubmitBudget)
+	}
+}
+
+// The submit retries exist for one specific thing, and the budget has to
+// outlast it: instance_job_submit waits out its own lock_timeout for the
+// monitoring_instances row, which the pull path's consumer can hold for a whole
+// PgQ batch. A budget shorter than a batch is a retry loop that cannot win the
+// race it was written for.
+func TestTheSubmitBudgetOutlastsAContendedBatch(t *testing.T) {
+	// The platform's bound, not ours: instance_job_submit sets lock_timeout to
+	// 5s, so a contended attempt costs that before it comes back 55P03.
+	const platformLockTimeout = 5 * time.Second
+	// What the loop actually covers when every attempt is contended: the waits
+	// between attempts plus the lock wait each attempt burns.
+	covered := submitBackoff*(submitAttempts*(submitAttempts-1)/2) +
+		submitAttempts*platformLockTimeout
+	// Sized against a realistic batch -- a handful of events, each one outbound
+	// call -- not against a pathological one, which nothing local can outlast.
+	const realisticBatch = 5 * time.Minute
+	if covered < realisticBatch {
+		t.Fatalf("the submit retries give up after %v; the row can be held for %v",
+			covered, realisticBatch)
+	}
+	// Drift alarm for the hand-derived worstCaseSubmit the healthDeadline tests
+	// assert against. They cannot read submitBudget without going vacuous, so
+	// this is where the two are tied together.
+	if submitBudget != worstCaseSubmit {
+		t.Fatalf("submitBudget is %v, worstCaseSubmit says %v; re-derive the latter by hand",
+			submitBudget, worstCaseSubmit)
 	}
 }
 
@@ -1356,9 +1684,14 @@ func TestTheJobBudgetStaysUnderThePlatformSweep(t *testing.T) {
 	}
 	// One claim, one job: the platform's constraint is
 	// claim_limit x per_job_ceiling < stuck_after.
-	if jobBudget+submitAttempts*platformTimeout >= platformStuckAfter {
-		t.Fatalf("a job plus its submit can take %v, at or over the %v sweep",
-			jobBudget+submitAttempts*platformTimeout, platformStuckAfter)
+	//
+	// TWO submit budgets. The answer is one submission and the terminal close
+	// after a refusal is another, on the same ladder -- so the real ceiling is
+	// jobBudget + 2*submitBudget = 32m20s. Pinning one submit passes at
+	// submitAttempts=14 (51m) while the true ceiling is 1h27m, past the sweep.
+	if jobBudget+2*submitBudget >= platformStuckAfter {
+		t.Fatalf("a job, its answer and the terminal close can take %v, at or over the %v sweep",
+			jobBudget+2*submitBudget, platformStuckAfter)
 	}
 }
 
@@ -1381,7 +1714,7 @@ func TestTheWrittenDeadlineIsTheComputedOne(t *testing.T) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		t.Fatal(err)
 	}
-	if slack := state.NextCheckBy.Sub(state.UpdatedAt); slack < jobBudget+submitAttempts*platformTimeout {
+	if slack := state.NextCheckBy.Sub(state.UpdatedAt); slack < worstCaseJob+worstCaseSubmit {
 		t.Fatalf("the file allows %v before the next stamp, which does not cover a job "+
 			"and its submit", slack)
 	}
@@ -1450,9 +1783,13 @@ func TestAnUnknownKindIsAnsweredWithoutTouchingTheStore(t *testing.T) {
 				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
 				return
 			}
-			// A real phase-2 kind with its OWN args, not collection-shaped.
+			// A real future kind with its OWN args, not collection-shaped.
+			// promql_labels is a discovery endpoint, explicitly out of scope in
+			// the PromQL contract -- it needs a `match[]` parameter -- so it is
+			// still a kind this build cannot run even though the two promql_*
+			// query kinds now dispatch.
 			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1",
-				"kind":"promql_instant","args":{"query":"up","at":"2026-09-16T00:00:00Z"}}],
+				"kind":"promql_labels","args":{"match":"up"}}],
 				"next_poll_ms":5000}`))
 		default:
 			w.Write(echoOutcome(r))
@@ -1488,7 +1825,7 @@ func TestTheSubmitRetryIsBounded(t *testing.T) {
 			return
 		}
 		attempts++
-		if attempts > 10 {
+		if attempts > submitAttempts+4 {
 			// An unbounded retry loop must FAIL this test, not hang it: with the
 			// sleep stubbed out it would spin forever and take the whole package
 			// down on the go test timeout instead of saying what is wrong.
@@ -1500,8 +1837,8 @@ func TestTheSubmitRetryIsBounded(t *testing.T) {
 
 	h.runner.tick(context.Background())
 	// The literal, not submitAttempts.
-	if attempts != 3 {
-		t.Fatalf("submit attempts = %d, want 3 (submitAttempts is %d)", attempts, submitAttempts)
+	if attempts != 8 {
+		t.Fatalf("submit attempts = %d, want 8 (submitAttempts is %d)", attempts, submitAttempts)
 	}
 }
 
@@ -1613,11 +1950,17 @@ func TestTheSubmitBackoffEscalates(t *testing.T) {
 	}
 
 	h.runner.tick(context.Background())
-	if attempts != 3 {
-		t.Fatalf("submit attempts = %d, want 3", attempts)
+	if attempts != 8 {
+		t.Fatalf("submit attempts = %d, want 8 (submitAttempts is %d)", attempts, submitAttempts)
 	}
 	if len(waited) < 2 || waited[0] != submitBackoff || waited[1] != 2*submitBackoff {
 		t.Fatalf("submit backoffs = %v, want %v then %v", waited, submitBackoff, 2*submitBackoff)
+	}
+	// The TAIL too, not just the first two: a cap quietly added to the backoff
+	// would leave the head identical and cut the coverage the budget is sized
+	// for, which is what TestTheSubmitBudgetOutlastsAContendedBatch computes.
+	if last, want := waited[len(waited)-1], time.Duration(submitAttempts-1)*submitBackoff; last != want {
+		t.Fatalf("the last submit backoff was %v, want %v (backoffs: %v)", last, want, waited)
 	}
 }
 
@@ -1646,6 +1989,109 @@ func TestACancelledTickStopsBetweenJobs(t *testing.T) {
 	if strings.Contains(h.logs.String(), "job j2") {
 		t.Fatalf("the second job was started after the context was cancelled: %s",
 			h.logs.String())
+	}
+}
+
+// SIGTERM DURING a job must still deliver the answer the box already has.
+//
+// TestACancelledTickStopsBetweenJobs covers cancel BETWEEN jobs; this is the
+// other half. The work is finished, so dropping it is pure loss -- and worse
+// than loss on the query channel: instance_query_enqueue's in-flight cap is 1
+// and its PT409 says "Nothing returns its id, so wait for it", so an ordinary
+// `docker compose up -d` during a query locks the user out of that instance
+// until the platform's hourly sweep (#378).
+//
+// The answer goes out on a context that survives the cancellation. One attempt,
+// not the retry ladder: the container's stop grace is 10s.
+func TestAnAnswerSurvivesCancellationMidJob(t *testing.T) {
+	// Driven through r.submit directly, with an ALREADY-CANCELLED context. Two
+	// earlier shapes of this test went through tick() and both passed for the
+	// wrong reason: cancelling from the store handler also cancels the per-job
+	// context, so the collection aborted and what "survived" was an error
+	// report; cancelling from the submit handler lands after the first attempt
+	// is already in flight, so the detached branch is never entered at all.
+	// A mutation destroying the answer on the detached path survived both.
+	//
+	// The claim is narrow and worth stating exactly: given work that is already
+	// finished and a dead context, submit still delivers THAT submission,
+	// unaltered. Everything about how the context died is someone else's test.
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	})
+	client, creds := h.platform(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	want := platform.Submission{
+		JobID:      "j1",
+		DurationMS: 7,
+		Outcome:    platform.OutcomeOK,
+		Result:     map[string]any{"checkId": "AAS", "results": map[string]any{}},
+	}
+	if err := h.runner.submit(ctx, client, creds, want); err != nil {
+		t.Fatalf("submit on a dead context returned %v; the finished answer was dropped and the job stays running until the platform's hourly sweep", err)
+	}
+
+	if len(h.submits) != 1 {
+		t.Fatalf("submitted %d answers, want 1", len(h.submits))
+	}
+	// The CONTENT, not the count: an error report also arrives as one submit.
+	if got := h.submits[0]["outcome"]; got != platform.OutcomeOK {
+		t.Fatalf("outcome = %v, want ok -- the answer was replaced on the way out: %v", got, h.submits[0])
+	}
+	if h.submits[0]["result"] == nil {
+		t.Fatalf("the answer arrived with no result: %v", h.submits[0])
+	}
+}
+
+// ...and the same claim end to end, because the unit test above pins r.submit
+// and nothing else: runJob is free to stop calling submit on a dead context and
+// that test stays green. Which is the regression the whole fix exists to
+// prevent, so it needs an assertion on the live path.
+//
+// The reachable production shape: SIGTERM lands mid-collection, the per-job
+// context dies with it, execute returns context.Canceled, runJob builds an
+// ERROR submission -- and that submission still has to go out, or the job sits
+// `running` until the platform's hourly sweep with the in-flight cap held.
+func TestACancelledJobIsStillClosedOutThroughTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		cancel()
+		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	})
+
+	h.runner.tick(ctx)
+
+	if len(h.submits) != 1 {
+		t.Fatalf("submitted %d after cancellation mid-collection, want 1 -- the job is left running for the hourly sweep and holds the in-flight cap: %s",
+			len(h.submits), h.logs.String())
+	}
+	if got := h.submits[0]["failure_class"]; got != "cancelled" {
+		t.Fatalf("failure_class = %v, want cancelled: %v", got, h.submits[0])
+	}
+}
+
+// A detached submit that FAILS must still report the failure, or runJob cannot
+// count it and refusedByPlatform never sees it. Swallowing the error here was a
+// mutation survivor.
+func TestAFailedDetachedSubmitIsReported(t *testing.T) {
+	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	})
+	h.submitHandler = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"code":"PT500","message":"nope"}`))
+	}
+	client, creds := h.platform(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := h.runner.submit(ctx, client, creds,
+		platform.Submission{JobID: "j1", Outcome: platform.OutcomeOK, Result: map[string]any{}})
+	if err == nil {
+		t.Fatal("a failed detached submit reported success, so the job counts as answered when nothing was recorded")
 	}
 }
 

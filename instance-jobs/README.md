@@ -23,7 +23,10 @@ a zero, absent or negative value taking the 10-minute default rather than the
 that fails, or a platform that has no channel at this `api_base_url`, backs off
 ten minutes instead.
 
-Two job kinds, both of them real work the pull path does today:
+Four job kinds, in two groups.
+
+**Collection** — real work the pull path does today, applied by the platform to
+`checkup_reports`:
 
 | kind | payload | how it averages |
 |---|---|---|
@@ -31,6 +34,22 @@ Two job kinds, both of them real work the pull path does today:
 | `tempfile_collect` | `TEMPFILE.json` (temp-file write rate) | over the samples actually observed |
 
 Those two rows are not a typo. See **The contract** below.
+
+**Query** — a PromQL expression somebody typed, run against the same store and
+read back by a human through `pgai promql`. The result is stored on the job row
+and is **never applied to anything**: `kind` is not in the platform's
+`c_collection_kinds`, so `instance_job_apply_collection` is never reached.
+
+| kind | endpoint | shape |
+|---|---|---|
+| `promql_instant` | `api/v1/query` | a vector at one instant |
+| `promql_range` | `api/v1/query_range` | a matrix over a window at a fixed step |
+
+The box picks the endpoint from the **kind**; the caller supplies only the
+expression and the time parameters (`at`, or `start`/`end`/`step_s`), never a
+path or a host. A result is trimmed to an
+850000-byte budget (not a point cap) and flagged `truncated` rather than
+refused — see **Caps on a query result** below.
 
 ## Two gates, both closed by default
 
@@ -190,6 +209,24 @@ why they are pinned by name in `internal/collect/contract_test.go` and by data i
   submit (swept, foreign, answered or expired) and a `PGRST202` from an
   un-migrated platform both arrive as 404 and mean opposite things.
 
+## Caps on a query result
+
+**Bytes are the only real bound.** `maxPromQLResultBytes` is **850000**, and it
+is not the platform's 1 MiB limit rounded down for comfort: the platform
+measures `octet_length(result::text)` on the **jsonb** it stored, and Postgres's
+jsonb text output inflates our JSON by up to 19.6% on realistic label sets. 900000
+bytes of ours would be refused at 1048576 of theirs. The trim drops whole series
+from the end until the encoded result fits, and the answer comes back flagged
+`truncated: true` rather than as an error — a partial answer is more use than
+none to someone reading a chart.
+
+There is deliberately **no point cap**. One was tried and removed: the platform
+validates 11000 points *per series* and does not bound the series count, so a
+total cap truncated a wide result at three series where the byte budget keeps
+the whole answer. `maxPromQLSeries` (1000) still bounds the series count as
+well — what changed is that the budget deciding how much comes back is the byte
+one.
+
 ## Known ceiling
 
 The store response is capped at 8 MiB per request, and `maxPointsPerRange` bounds
@@ -205,6 +242,30 @@ The pull path has the identical cap and the identical limit
 ([platform-all#681](https://gitlab.com/postgres-ai/platform-all/-/issues/681)),
 so raising it here alone would make the two paths disagree about which windows
 they can collect. Slicing by series count belongs in its own issue.
+
+## Timing, and what a restart does
+
+One job is claimed at a time, and the platform fails a job still `running` after
+an hour (`public.instance_jobs_expire_sweep`, `stuck_after`). The local ceiling
+under that is the collection budget (15 min) plus the worst case for answering
+it — every submit attempt timing out, plus every backoff between them, 8m40s.
+A refused answer costs that budget TWICE, because the terminal close that
+follows is a second submit on the same ladder — so 32m20s against the hour.
+
+Answering retries for 4m40s of backoff — 8m40s including every attempt's own timeout — rather than ~20 seconds on purpose.
+`v1.instance_job_submit` waits out its own 5s `lock_timeout` for the
+`monitoring_instances` row, and the pull path's consumer can hold that row for a
+whole PgQ batch: one transaction, one outbound call per event. A budget shorter
+than a batch is a retry loop that loses the only race it was written for. It is
+still a local budget, not a guarantee: a pathological batch outlasts it and the
+job is then closed by the platform's sweep.
+
+A crash is covered: the container is `restart: unless-stopped`, comes back in
+~3s and is healthy in ~7s, and the platform re-queues whatever it had claimed
+once the sweep retires it. `docker kill` is **not** a crash for this purpose —
+the API kill is recorded as an operator stop, so the restart policy does not
+fire and the container stays down until someone starts it. Test recovery by
+killing the process inside the container, not the container.
 
 ## Not wired yet
 
