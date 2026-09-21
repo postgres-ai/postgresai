@@ -1,0 +1,19 @@
+{
+  "description": "The whole period sits before the retention floor: window_start is after period_end, so the clamped window is empty and expected_slots <= 0. The job is skipped for retention and NOTHING is queried -- any request at all fails this fixture.",
+  "now": "2026-09-16T01:00:00Z",
+  "kind": "aas_collect",
+  "args": {
+    "cluster_name": "c1",
+    "node_name": "n1",
+    "vcpus": 4,
+    "granularity": "day",
+    "period_start": "2026-09-01T00:00:00Z",
+    "period_end": "2026-09-02T00:00:00Z",
+    "window_start": "2026-09-10T00:00:00Z"
+  },
+  "responses": {},
+  "expected": {
+    "outcome": "skipped",
+    "skip_reason": "retention"
+  }
+}

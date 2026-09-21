@@ -158,6 +158,15 @@ build:test:images:
         monitoring_flask_backend
       docker push "$CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
 
+      # Build and push instance-jobs (the outbound job runner; postgresai#366)
+      docker build \
+        --build-arg "VERSION=$PGAI_TAG" \
+        --build-arg "BUILD_TS=$BUILD_TS" \
+        -f instance-jobs/Dockerfile \
+        -t "$CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG" \
+        instance-jobs
+      docker push "$CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
+
       # Build and push pgwatch (forked from cybertec-postgresql/pgwatch v3.7.0
       # with extension-version-0.0 patch — see pgwatch/Dockerfile)
       docker build \
@@ -171,6 +180,7 @@ build:test:images:
       echo "  $CI_REGISTRY_IMAGE/postgres-ai-configs:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
+      echo "  $CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -392,6 +402,47 @@ telemetry:tests:
       changes:
         - telemetry/**/*
 
+instance-jobs:tests:
+  stage: test
+  image: golang:1.24
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - cd "$CI_PROJECT_DIR/instance-jobs"
+    # gofmt first: a formatting difference would otherwise show up as an
+    # unreviewable diff on the next person's commit.
+    - test -z "$(gofmt -l .)" || (echo "gofmt -l reports:"; gofmt -l .; exit 1)
+    - go vet ./...
+    # -race needs cgo, which this image has. The suite is seconds long, so it
+    # runs both ways rather than choosing.
+    # -timeout as a backstop: a regression that turns a bounded retry into an
+    # unbounded one would otherwise burn the Go default of ten minutes twice
+    # and report as a goroutine dump rather than a named assertion.
+    - go test ./... -count=1 -timeout=120s
+    - go test ./... -race -count=1 -timeout=300s
+  rules:
+    # docker-compose.yml is in the list because one of these tests guards the
+    # contract between the Go defaults and the service definition: the mount
+    # path and the store URL. A change to the compose file alone has to run it.
+    #
+    # cli/bin/postgres-ai.ts is in the list for the same reason and a sharper
+    # one: it is the other half of the .pgwatch-config contract. It writes the
+    # file this service reads, and the two disagreeing is how the container
+    # ended up idling on every self-registered box. A change to the writer
+    # alone must run the reader's tests.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - instance-jobs/**/*
+        - cli/bin/postgres-ai.ts
+        - docker-compose.yml
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - instance-jobs/**/*
+        - cli/bin/postgres-ai.ts
+        - docker-compose.yml
+        - .gitlab-ci.yml
+
 # Validate helm chart on merge requests and main branch
 validate-helm-chart:
   stage: validate
@@ -604,6 +655,15 @@ cli:npm:publish:
 
   docker buildx build \
     --platform "$PLATFORMS" \
+    --build-arg "VERSION=$VERSION" \
+    --build-arg "BUILD_TS=$BUILD_TS" \
+    -f instance-jobs/Dockerfile \
+    -t "postgresai/instance-jobs:$VERSION" \
+    --push \
+    instance-jobs
+
+  docker buildx build \
+    --platform "$PLATFORMS" \
     -f pgwatch/Dockerfile \
     -t "postgresai/pgwatch:$VERSION" \
     --push \
@@ -614,6 +674,7 @@ cli:npm:publish:
   echo "  postgresai/reporter:$VERSION"
   echo "  postgresai/monitoring-flask-backend:$VERSION"
   echo "  postgresai/postgres-ai-configs:$VERSION"
+  echo "  postgresai/instance-jobs:$VERSION"
   echo "  postgresai/pgwatch:$VERSION"
 
 docker:publish:images:

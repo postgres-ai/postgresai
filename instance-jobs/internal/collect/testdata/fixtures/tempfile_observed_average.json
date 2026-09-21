@@ -1,0 +1,63 @@
+{
+  "description": "TEMPFILE over a one-hour period (expected_slots=60) with three samples. It divides by the OBSERVED sample count, the opposite of AAS: avg = (1+2+30)/3 = 11.0, not 33/60 = 0.6. The rate series is dense, so a gap means 'not observed', not 'no disk writes'. p99 over the three sorted samples = 2 + 0.98*(30-2) = 29.44 -> 29.4.",
+  "now": "2026-09-16T02:00:00Z",
+  "kind": "tempfile_collect",
+  "args": {
+    "project_id": 1,
+    "cluster_name": "c1",
+    "node_name": "n1",
+    "granularity": "day",
+    "period_start": "2026-09-16T00:00:00Z",
+    "period_end": "2026-09-16T01:00:00Z",
+    "window_start": "2026-09-16T00:00:00Z",
+    "pin": "2026-09-16T00:59:59Z"
+  },
+  "expect_window": {
+    "start": 1789516800,
+    "end": 1789520400,
+    "step": 60
+  },
+  "responses": {
+    "sum(rate(pgwatch_db_stats_temp_bytes{cluster=\"c1\", node_name=\"n1\"}[5m])) / 1024 / 1024": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {},
+            "values": [
+              [
+                1789516860,
+                "1"
+              ],
+              [
+                1789516920,
+                "2"
+              ],
+              [
+                1789516980,
+                "30"
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "outcome": "ok",
+    "result": {
+      "checkId": "TEMPFILE",
+      "results": {
+        "n1": {
+          "data": {
+            "cluster_name": "c1",
+            "temp_write_avg_mbps": 11.0,
+            "temp_write_worst_mbps": 30.0,
+            "temp_write_p99_mbps": 29.4
+          }
+        }
+      }
+    }
+  }
+}

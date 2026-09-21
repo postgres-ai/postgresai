@@ -43,6 +43,25 @@ This workflow lets you:
 
 - **Docker**: pgwatch collectors + sinks + Grafana (+ optional Flask dev container)
 - **Host**: `reporter/postgres_reports.py` (recommended for iteration & debugging)
+- **Not started by default**: `instance-jobs`, behind a compose profile of the
+  same name (see `instance-jobs/README.md`). Its tests need no stack at all:
+
+  ```bash
+  cd instance-jobs && go vet ./... && go test ./... -race
+  ```
+
+  To run the container from your working tree, build the image under the exact
+  name compose resolves — registry and tag both come from `.env`, which compose
+  reads by itself but your shell does not:
+
+  ```bash
+  [ -f .env ] || cp .env.example .env   # the one-time setup below, if you have not done it
+  set -a; . ./.env; set +a
+  docker build --build-arg VERSION="$PGAI_TAG" \
+    --build-arg BUILD_TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
+    -t "${PGAI_REGISTRY:-postgresai}/instance-jobs:$PGAI_TAG" instance-jobs
+  docker compose --profile instance-jobs up -d instance-jobs
+  ```
 
 ### One-time local setup (no commits)
 

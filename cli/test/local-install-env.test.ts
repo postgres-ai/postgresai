@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { buildLocalInstallEnv } from "../bin/postgres-ai";
 
 /**
@@ -198,5 +201,110 @@ describe("buildLocalInstallEnv", () => {
     expect(content).toContain("CUSTOM_KEY=custom value");
     expect(content.indexOf("VM_RETENTION_PERIOD")).toBeLessThan(content.indexOf("CUSTOM_KEY"));
     expect(content.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("the monitoring instance id in .env", () => {
+  // It reaches the CLI as --instance-id / PGAI_INSTANCE_ID and was written
+  // nowhere on the box, so a compose service could not see it. postgresai#366.
+  test("an id supplied by this run is written", () => {
+    const { content } = buildLocalInstallEnv("", "0.17.0", "11111111-1111-1111-1111-111111111111");
+    expect(content).toContain("PGAI_INSTANCE_ID=11111111-1111-1111-1111-111111111111");
+  });
+
+  test("an id already in .env survives a re-install that supplies none", () => {
+    const { content } = buildLocalInstallEnv("PGAI_INSTANCE_ID=kept\n", "0.17.0");
+    expect(content).toContain("PGAI_INSTANCE_ID=kept");
+    // Written once, by the managed block, not also preserved verbatim.
+    expect(content.match(/PGAI_INSTANCE_ID=/g)).toHaveLength(1);
+  });
+
+  test("a supplied id replaces the stored one", () => {
+    const { content } = buildLocalInstallEnv("PGAI_INSTANCE_ID=old\n", "0.17.0", "new");
+    expect(content).toContain("PGAI_INSTANCE_ID=new");
+    expect(content).not.toContain("PGAI_INSTANCE_ID=old");
+  });
+
+  test("nothing is written when there is no id at all", () => {
+    const { content } = buildLocalInstallEnv("", "0.17.0");
+    expect(content).not.toContain("PGAI_INSTANCE_ID");
+  });
+});
+
+describe("who the instance-jobs container runs as", () => {
+  // The point of the fix: the uid comes from the FILE, not from whoever ran the
+  // command. Those differ under sudo, which the Terraform box's own documented
+  // commands use.
+  test("the owner of the credential file wins over the calling process", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pgai-owner-"));
+    const file = path.join(dir, ".pgwatch-config");
+    fs.writeFileSync(file, "api_key=k\n", { mode: 0o600 });
+
+    // Re-own the file to a supplementary group so its gid differs from the
+    // process's. Skip where the runner has none (a CI container as root).
+    const groups = (process.getgroups?.() ?? []).filter(g => g !== process.getgid!());
+    if (groups.length === 0) {
+      return; // nothing to discriminate against on this host
+    }
+    fs.chownSync(file, process.getuid!(), groups[0]);
+    const owner = fs.statSync(file);
+
+    const { content } = buildLocalInstallEnv("", "0.17.0", null, file);
+    expect(content).toContain(`INSTANCE_JOBS_USER=${owner.uid}:${owner.gid}`);
+    expect(content).not.toContain(`INSTANCE_JOBS_USER=${process.getuid!()}:${process.getgid!()}`);
+  });
+
+  test("the fallback writes uid before gid, not the other way round", () => {
+    // Compose consumes this as `user: "uid:gid"`. A reversed pair runs the
+    // container as the wrong user and it cannot read the 0600 credential --
+    // and it is invisible on the usual box where uid equals gid, so stub them
+    // to distinct values.
+    const realUid = process.getuid;
+    const realGid = process.getgid;
+    (process as unknown as { getuid: () => number }).getuid = () => 4242;
+    (process as unknown as { getgid: () => number }).getgid = () => 7;
+    try {
+      const { content } = buildLocalInstallEnv("", "0.17.0", null, "/nonexistent/.pgwatch-config");
+      expect(content).toContain("INSTANCE_JOBS_USER=4242:7");
+    } finally {
+      (process as unknown as { getuid?: () => number }).getuid = realUid;
+      (process as unknown as { getgid?: () => number }).getgid = realGid;
+    }
+  });
+
+  test("a missing credential file falls back to the calling process", () => {
+    const { content } = buildLocalInstallEnv("", "0.17.0", null, "/nonexistent/.pgwatch-config");
+    expect(content).toContain(`INSTANCE_JOBS_USER=${process.getuid!()}:${process.getgid!()}`);
+  });
+
+  test("a stray DIRECTORY at the credential path writes no key at all", () => {
+    // Docker creates a bind-mount target as a root-owned directory when the
+    // file is missing. Copying its owner wrote INSTANCE_JOBS_USER=0:0, and
+    // falling back to the process is no better -- under sudo, the documented
+    // install path, that is 0:0 too. Emitting NO key is what makes compose use
+    // the image's unprivileged user and fail loudly on the 0600 credential,
+    // which is what docker-compose.yml and the README promise.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "strayd-"));
+    try {
+      const asDirectory = path.join(dir, ".pgwatch-config");
+      fs.mkdirSync(asDirectory);
+      const { content } = buildLocalInstallEnv("", "0.17.0", null, asDirectory);
+      expect(content).not.toContain("INSTANCE_JOBS_USER=");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // It bind-mounts .pgwatch-config, which this command keeps at 0600, so the
+  // container has to be that file's owner or it cannot read the credential.
+  test("the install writes the current uid:gid", () => {
+    const { content } = buildLocalInstallEnv("", "0.17.0");
+    expect(content).toContain(`INSTANCE_JOBS_USER=${process.getuid!()}:${process.getgid!()}`);
+  });
+
+  test("a re-install refreshes it rather than keeping a stale copy", () => {
+    const { content } = buildLocalInstallEnv("INSTANCE_JOBS_USER=999:999\n", "0.17.0");
+    expect(content).not.toContain("INSTANCE_JOBS_USER=999:999");
+    expect(content.match(/INSTANCE_JOBS_USER=/g)).toHaveLength(1);
   });
 });

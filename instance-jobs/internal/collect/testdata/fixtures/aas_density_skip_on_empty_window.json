@@ -1,0 +1,39 @@
+{
+  "description": "The store has no samples at all for the window. present = 0, so the collection is SKIPPED for density rather than stored as a confident AAS of 0. An implementation that zero-filled the gaps would have present == expected here, could never fire this gate, and would publish a monitoring outage as an idle database. The per-event and per-class queries must not be issued at all: the gate runs before them.",
+  "now": "2026-09-16T01:00:00Z",
+  "kind": "aas_collect",
+  "args": {
+    "cluster_name": "c1",
+    "node_name": "n1",
+    "vcpus": 4,
+    "granularity": "day",
+    "period_start": "2026-09-16T00:00:00Z",
+    "period_end": "2026-09-16T00:10:00Z",
+    "window_start": "2026-09-16T00:00:00Z"
+  },
+  "expect_window": {
+    "start": 1789516800,
+    "end": 1789517400,
+    "step": 60
+  },
+  "responses": {
+    "sum by (wait_event_type)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    },
+    "sum(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    }
+  },
+  "expected": {
+    "outcome": "skipped",
+    "skip_reason": "density"
+  }
+}

@@ -22,36 +22,54 @@ import {
   registerMonitoringInstance,
   resolveAdoptedProject,
   planMonitoringRegistration,
+  instanceIdToPersist,
+  persistInstanceId,
+  selfRegisterAndPersist,
+  adoptAndPersist,
+  statOwner,
+  applyProjectName,
+  applyApiKey,
+  updatePgwatchConfig,
 } from "../bin/postgres-ai";
 
 /**
- * Test updatePgwatchConfig function behavior.
- * Since the function is internal to postgres-ai.ts, we test it via file system operations.
+ * Test updatePgwatchConfig behaviour.
+ *
+ * The real function is imported rather than reimplemented here: a local copy
+ * silently drifted from it once already (it never gained the chmod that keeps
+ * the api_key-bearing file owner-only), so these tests passed while shipped
+ * behaviour was untested.
  */
-function updatePgwatchConfig(configPath: string, updates: Record<string, string>): void {
-  let lines: string[] = [];
 
-  // Read existing config if it exists
-  if (fs.existsSync(configPath)) {
-    const stats = fs.statSync(configPath);
-    if (!stats.isDirectory()) {
-      const content = fs.readFileSync(configPath, "utf8");
-      lines = content.split(/\r?\n/).filter(l => l.trim() !== "");
-    }
-  }
-
-  // Update or add each key
-  for (const [key, value] of Object.entries(updates)) {
-    const existingIndex = lines.findIndex(l => l.startsWith(key + "="));
-    if (existingIndex >= 0) {
-      lines[existingIndex] = `${key}=${value}`;
-    } else {
-      lines.push(`${key}=${value}`);
-    }
-  }
-
-  fs.writeFileSync(configPath, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
-}
+/**
+ * No test may leave process.exitCode set.
+ *
+ * `bun test` exits with whatever process.exitCode was left behind, so a leak
+ * here fails the job while every test passes -- which is exactly what happened:
+ * 1661 pass, 0 fail, exit 1, and nothing red in the output to point at.
+ * selfRegisterAndPersist sets it deliberately, so several tests below reach it.
+ *
+ * A root-level afterEach runs after each describe's own afterEach, so this
+ * catches a leak from ANY test in the file, names the offender, and does not
+ * depend on declaration order. Two earlier attempts at this did: a positional
+ * check at the end of the file (blind to a later describe re-zeroing it) and a
+ * count of `= 0` against `= exitBefore` in this file's own source (blind to
+ * formatting, to the two being in different describes, and to anything
+ * registered after it). Both stayed green against a deliberately leaking test.
+ *
+ * Note the restore must be `0`: in Bun, assigning `undefined` does NOT clear a
+ * set exitCode, which is how the first fix leaked anyway.
+ */
+afterEach(() => {
+  // Read, RESET, then assert. Without the reset one leak reddens every test
+  // after it: removing the restores below gave 11 failures of which only 6
+  // were genuine, the other 5 being innocent tests in later describes blamed
+  // for someone else's leak. `bun test` shares one process, so across files it
+  // would be worse still.
+  const leaked = process.exitCode ?? 0;
+  process.exitCode = 0;
+  expect(leaked).toBe(0);
+});
 
 describe("updatePgwatchConfig", () => {
   let tempDir: string;
@@ -944,5 +962,779 @@ describe("extractSslmode / isLaxSslmode", () => {
     expect(isLaxSslmode("verify-ca")).toBe(false);
     expect(isLaxSslmode("verify-full")).toBe(false);
     expect(isLaxSslmode("disable")).toBe(false);
+  });
+});
+
+
+describe("instanceIdToPersist — what reaches .pgwatch-config", () => {
+  const ID = "11111111-1111-1111-1111-111111111111";
+  const OTHER = "22222222-2222-2222-2222-222222222222";
+
+  // The container bind-mounts .pgwatch-config and idles until instance_id is
+  // there. Before this, a SELF-REGISTRATION discarded the id the platform
+  // returned and only an --instance-id run ever persisted one, so the ordinary
+  // path for a non-console-provisioned instance left the container with no
+  // identity, permanently.
+  test("a self-registration persists the id the platform just created", () => {
+    expect(instanceIdToPersist({ instanceId: ID, projectId: 7, created: true })).toBe(ID);
+  });
+
+  test("the platform's id wins over the one this run asked to adopt", () => {
+    // Authoritative: it is the row the platform actually adopted.
+    expect(instanceIdToPersist({ instanceId: ID }, OTHER)).toBe(ID);
+  });
+
+  test("falls back to the requested id when the platform does not echo one", () => {
+    expect(instanceIdToPersist({ projectId: 7 }, ID)).toBe(ID);
+    expect(instanceIdToPersist(null, ID)).toBe(ID);
+  });
+
+  test("nothing usable means nothing is written", () => {
+    expect(instanceIdToPersist(null, undefined)).toBeNull();
+    expect(instanceIdToPersist({}, undefined)).toBeNull();
+    expect(instanceIdToPersist({ instanceId: "" }, "")).toBeNull();
+    expect(instanceIdToPersist({ instanceId: "   " }, undefined)).toBeNull();
+  });
+
+  test("a value that is not a uuid is refused, not written verbatim", () => {
+    // It goes into a key=value file, so \r, \n or = could inject further
+    // config keys — the same reason PROJECT_NAME_RE exists.
+    for (const bad of [
+      "not-a-uuid",
+      `${ID}\napi_key=stolen`,
+      `${ID}=x`,
+      `${ID}\r\nproject_name=other`,
+      "11111111-1111-1111-1111-11111111111",
+    ]) {
+      expect(instanceIdToPersist({ instanceId: bad }, undefined)).toBeNull();
+    }
+    // ...and a bad platform value does not shadow a good requested one.
+    expect(instanceIdToPersist({ instanceId: "not-a-uuid" }, ID)).toBe(ID);
+  });
+
+  test("surrounding whitespace is trimmed rather than rejected", () => {
+    expect(instanceIdToPersist({ instanceId: `  ${ID}  ` }, undefined)).toBe(ID);
+  });
+});
+
+/**
+ * The install writes the instance id where the container reads it.
+ *
+ * These drive `persistInstanceId` itself rather than its id-picking helper,
+ * because the bug that shipped was not a wrong id -- it was no write at all.
+ * A test of the helper alone stays green while the file is never touched.
+ */
+describe("persistInstanceId — what the install leaves on disk", () => {
+  let dir: string;
+  const configPath = () => path.join(dir, ".pgwatch-config");
+  const read = () => fs.readFileSync(configPath(), "utf8");
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "persist-id-"));
+    updatePgwatchConfig(configPath(), { api_key: "pai-token", project_name: "rig" });
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test("self-registration persists the id the platform returned", () => {
+    persistInstanceId(dir, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any, undefined);
+    expect(read()).toContain("instance_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    // the keys the install already wrote survive the merge
+    expect(read()).toContain("api_key=pai-token");
+    expect(read()).toContain("project_name=rig");
+  });
+
+  test("an explicit --instance-id install still lands the id", () => {
+    persistInstanceId(dir, null, "11111111-2222-3333-4444-555555555555");
+    expect(read()).toContain("instance_id=11111111-2222-3333-4444-555555555555");
+  });
+
+  test("a re-run that registers nothing does not clobber a working id", () => {
+    persistInstanceId(dir, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any, undefined);
+    const before = read();
+
+    // registration failed this time -- returns null, no id requested
+    persistInstanceId(dir, null, undefined);
+    expect(read()).toBe(before);
+    expect(read()).toContain("instance_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+    // and a reply carrying a blank id is just as inert
+    persistInstanceId(dir, { instanceId: "" } as any, undefined);
+    expect(read()).toBe(before);
+  });
+
+  test("the file stays owner-only", () => {
+    persistInstanceId(dir, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any, undefined);
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+  });
+
+  test("a pre-existing world-readable config is narrowed, not left open", () => {
+    // writeFileSync's `mode` applies only on creation, so on an install re-run
+    // -- where the file already exists -- the chmod is the only thing keeping
+    // the api_key out of other users' reach.
+    fs.chmodSync(configPath(), 0o644);
+    persistInstanceId(dir, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any, undefined);
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+  });
+});
+
+/**
+ * The self-registration step, driven directly.
+ *
+ * This is the step that carried the bug, and it used to be unreachable from a
+ * test: it lived inline in a 600-line command action, so the only coverage
+ * possible was grepping the source for the call. Grep coverage does not work
+ * here -- an earlier version of these tests passed while BOTH call sites were
+ * commented out, because `toContain` matches the text of a commented-out call.
+ * `selfRegisterAndPersist` takes its registrar as a parameter so the real
+ * sequence (register, persist, report) runs against a stub.
+ */
+describe("selfRegisterAndPersist", () => {
+  let dir: string;
+  // Stable arrays cleared in place, never reassigned: spyOn memoises the spy
+  // per method, so a mockImplementation created in the first beforeEach keeps
+  // closing over the array it captured then. Reassigning orphaned the captures
+  // and every later assertion on `errored` saw an empty list.
+  const logged: string[] = [];
+  const errored: string[] = [];
+  // Initialised at declaration, not in beforeEach: if beforeEach throws before
+  // the save, afterEach would otherwise assign `undefined` over console.log and
+  // poison every later test in the file.
+  let logSpy: any = console.log;
+  let errSpy: any = console.error;
+  let exitBefore = 0;
+  const configPath = () => path.join(dir, ".pgwatch-config");
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "self-reg-"));
+    updatePgwatchConfig(configPath(), { api_key: "pai-token", project_name: "rig" });
+    // Save the originals FIRST: if anything below throws, afterEach still has
+    // real functions to put back rather than assigning undefined over console.
+    logSpy = console.log;
+    errSpy = console.error;
+    logged.length = 0;
+    errored.length = 0;
+    // Plain assignment, not spyOn: spyOn memoises one spy per method, and this
+    // file installs console.error spies in several describes. Sharing that spy
+    // meant a later mockImplementation did not take effect and every assertion
+    // on the captured output silently saw an empty list.
+    console.log = (...a: any[]) => { logged.push(a.join(" ")); };
+    console.error = (...a: any[]) => { errored.push(a.join(" ")); };
+    // These helpers set process.exitCode on failure, which is process-wide and
+    // would make `bun test` exit non-zero with every test passing. Note the
+    // restore must be 0, not `undefined`: assigning undefined does NOT clear a
+    // set exitCode, which is why the first attempt at this leaked anyway.
+    exitBefore = process.exitCode ?? 0;
+    process.exitCode = 0;
+  });
+  afterEach(() => {
+    console.log = logSpy;
+    console.error = errSpy;
+    process.exitCode = exitBefore;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const stub = (reg: any) => (async () => reg) as any;
+
+  test("persists the id the platform minted and says so", async () => {
+    const reg = await selfRegisterAndPersist(dir, "pai-token", "rig", {},
+      stub({ instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }));
+
+    expect(fs.readFileSync(configPath(), "utf8"))
+      .toContain("instance_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    expect(reg).not.toBeNull();
+    expect(logged.join("\n")).toContain("Registered monitoring instance");
+    expect(errored.join("\n")).toBe("");
+  });
+
+  test("passes the caller's options through to the registrar", async () => {
+    let seen: any;
+    await selfRegisterAndPersist(dir, "pai-token", "rig",
+      { apiBaseUrl: "https://example.invalid", debug: true, orgScope: { kind: "alias", alias: "acme" } as any },
+      (async (key: string, project: string, opts: any) => {
+        seen = { key, project, opts };
+        return { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
+      }) as any);
+
+    expect(seen.key).toBe("pai-token");
+    expect(seen.project).toBe("rig");
+    expect(seen.opts.apiBaseUrl).toBe("https://example.invalid");
+    expect(seen.opts.debug).toBe(true);
+    expect(seen.opts.orgScope).toEqual({ kind: "alias", alias: "acme" });
+  });
+
+  test("a failed registration is visible to the caller, not just the console", async () => {
+    // The provisioning flow reads the exit status, not stdout. Exiting 0 here
+    // reported a working box that has no identity.
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {}, stub(null));
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("a minted id is not thrown away when only the write failed", async () => {
+    // Re-running with --project would register a SECOND instance and split the
+    // health matrix, so the id and the safe flag must both be printed.
+    fs.rmSync(configPath());
+    fs.mkdirSync(configPath());
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {},
+      stub({ instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }));
+
+    const warning = errored.join("\n");
+    expect(warning).toContain("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    expect(warning).toContain("--instance-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    // The advice that would create a duplicate must NOT be given here.
+    expect(warning).not.toContain("--project rig");
+  });
+
+  test("a failed registration warns instead of passing silently", async () => {
+    // The bug this replaces: registration returns null, nothing is written,
+    // nothing is printed, and the install still reports success while the
+    // container idles forever.
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {}, stub(null));
+
+    expect(fs.readFileSync(configPath(), "utf8")).not.toContain("instance_id=");
+    const warning = errored.join("\n");
+    expect(warning).toContain("instance jobs will idle");
+    // Nothing was minted, so re-registering by name is the right advice here.
+    expect(warning).toContain("mon local-install --project rig");
+    expect(logged.join("\n")).not.toContain("Registered monitoring instance");
+  });
+
+  test("a reply carrying no usable id warns too", async () => {
+    // A 200 is not success for our purposes: what matters is whether an id
+    // reached the file the container reads.
+    for (const reply of [{}, { instanceId: "" }, { instanceId: "not-a-uuid" }]) {
+      errored.length = 0;
+      logged.length = 0;
+      await selfRegisterAndPersist(dir, "pai-token", "rig", {}, stub(reply));
+      expect(errored.join("\n")).toContain("instance jobs will idle");
+      expect(logged.join("\n")).not.toContain("Registered monitoring instance");
+    }
+    expect(fs.readFileSync(configPath(), "utf8")).not.toContain("instance_id=");
+  });
+
+  test("nothing usable to write means no write at all", () => {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "nowrite-"));
+    try {
+      const cfg = path.join(dir2, ".pgwatch-config");
+      expect(persistInstanceId(dir2, null, undefined)).toBe(false);
+      // An empty rewrite would create the file (and cost a chmod) for nothing.
+      expect(fs.existsSync(cfg)).toBe(false);
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  test("the adopt path writes both keys in one guarded call", () => {
+    // Two calls meant two read-modify-write cycles and, worse, the second was
+    // unguarded: an unwritable config threw past the first call's catch and
+    // killed the install with an unhandled rejection after the services were up.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "adopt-"));
+    try {
+      const cfg = path.join(dir2, ".pgwatch-config");
+      fs.mkdirSync(cfg); // the EISDIR case the guard exists for
+      let threw = false;
+      let ok: boolean | undefined;
+      try {
+        ok = persistInstanceId(dir2, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any,
+          "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", { project_name: "adopted" });
+      } catch { threw = true; }
+      expect(threw).toBe(false);
+      expect(ok).toBe(false);
+
+      // And on a writable config, one call lands both keys.
+      fs.rmdirSync(cfg);
+      expect(persistInstanceId(dir2, { instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } as any,
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", { project_name: "adopted" })).toBe(true);
+      const written = fs.readFileSync(cfg, "utf8");
+      expect(written).toContain("instance_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+      expect(written).toContain("project_name=adopted");
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  test("a duplicate key is not left behind for the other readers to find", () => {
+    // The reporter greps `| head -n 1` and the Go loader now also takes the
+    // first, but a stale line left below a rewritten one used to make them
+    // disagree about which line was the credential.
+    fs.writeFileSync(configPath(), "api_key=stale\napi_key=alsostale\n", { mode: 0o600 });
+    updatePgwatchConfig(configPath(), { api_key: "fresh" });
+    const lines = fs.readFileSync(configPath(), "utf8").split("\n").filter(Boolean);
+    expect(lines.filter(l => l.startsWith("api_key="))).toEqual(["api_key=fresh"]);
+  });
+
+  test("a DOUBLED BOM does not turn a rewrite into a duplicate either", () => {
+    // Not for the same reason as the single BOM, and the shipped comment said
+    // otherwise until this was checked against both readers: at two or more
+    // BOMs both the Go loader and the reporter's grep skip the BOM'd line and
+    // AGREE, so there is no reader split -- the stale duplicate is merely
+    // invisible to both. Stripping all of them is what lets the rewrite match,
+    // so the dedupe filter drops the stale line and the file is normalised.
+    fs.writeFileSync(configPath(), "\uFEFF\uFEFFapi_key=OLD\nproject_name=p\n", { mode: 0o600 });
+    updatePgwatchConfig(configPath(), { api_key: "NEW" });
+
+    const written = fs.readFileSync(configPath(), "utf8");
+    expect(written.split("\n").filter(l => l.startsWith("api_key="))).toEqual(["api_key=NEW"]);
+    expect(written).not.toContain("OLD");
+    expect(written.charCodeAt(0)).not.toBe(0xfeff);
+  });
+
+  test("a path that exists but is not a regular file is refused, not written through", () => {
+    // A FIFO blocks readFileSync forever, and narrowing the guard to skip the
+    // READ only moves the hang to the write, which blocks on a FIFO just the
+    // same. The install must not hang; persistInstanceId turns this into a
+    // warning.
+    const asDirectory = path.join(dir, "cfgdir");
+    fs.mkdirSync(asDirectory);
+    expect(() => updatePgwatchConfig(asDirectory, { api_key: "NEW" }))
+      .toThrow(/not a regular file/);
+  });
+
+  test("a BOM does not turn a rewrite into a duplicate", () => {
+    // The seam: the Go loader strips a leading BOM and takes the FIRST match;
+    // the reporter's grep skips the BOM'd line and takes the next one. So if a
+    // rewrite appends instead of replacing, the two readers pick different
+    // lines as the credential and the box polls with a revoked token, PT401,
+    // ten-minute backoff, forever. Reachable because appending a key by hand
+    // is a documented step and a hand-edit can introduce a BOM.
+    fs.writeFileSync(configPath(), "\uFEFFapi_key=OLD\nproject_name=p\n", { mode: 0o600 });
+    updatePgwatchConfig(configPath(), { api_key: "NEW" });
+
+    const written = fs.readFileSync(configPath(), "utf8");
+    expect(written.split("\n").filter(l => l.startsWith("api_key="))).toEqual(["api_key=NEW"]);
+    expect(written).not.toContain("OLD");
+    // And the BOM is normalised away rather than left for the next writer.
+    expect(written.charCodeAt(0)).not.toBe(0xfeff);
+  });
+
+  test("a re-run whose registration fails leaves a working id alone", async () => {
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {},
+      stub({ instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }));
+    const before = fs.readFileSync(configPath(), "utf8");
+
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {}, stub(null));
+    expect(fs.readFileSync(configPath(), "utf8")).toBe(before);
+  });
+
+  test("an unwritable config warns and does not take the install down", async () => {
+    // The services are already up by the time this runs, so a throw here would
+    // become an unhandled rejection and skip the rest of the install.
+    fs.rmSync(configPath());
+    fs.mkdirSync(configPath()); // Docker creates a bind-mount target as a dir
+
+    await selfRegisterAndPersist(dir, "pai-token", "rig", {},
+      stub({ instanceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }));
+
+    const warning = errored.join("\n");
+    expect(warning).toContain("could not record the monitoring instance id");
+    expect(warning).toContain("instance jobs will idle");
+  });
+});
+
+/**
+ * `mon update` must never self-register.
+ *
+ * A hand-run update on a box whose config has no instance_id must not create a
+ * second monitoring instance -- that splits the health matrix between two rows
+ * for one box. This is a structural assertion because the update action is not
+ * callable from a test; comments are stripped first, so a commented-out call
+ * cannot satisfy it (the failure mode that made the first version of these
+ * guards useless).
+ */
+describe("mon update does not register", () => {
+  const stripComments = (src: string) =>
+    src
+      .replace(/^\s*\/\/.*$/gm, "")
+      .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, "");
+
+  test("stripComments removes commented-out calls but not live code", () => {
+    // Without this the helper could be replaced by the identity function and
+    // every assertion that depends on it would still pass -- which was true
+    // until this test existed. It also pins the bug the helper had: running
+    // the block regex first, unanchored, let a `/*` inside a `//` comment open
+    // a false comment that swallowed real code (measured: five live lines of
+    // bin/postgres-ai.ts, because one comment mentions an `/api/v1/…/*` path).
+    const fixture = [
+      "  // await selfRegisterAndPersist(projectDir, apiKey);",
+      "  /* persistInstanceId(projectDir, reg, instanceId); */",
+      "  // see /api/v1/admin/tsdb/* for details",
+      "  const LIVE_CODE = registerMonitoringInstance;",
+      '  const url = "https://example.com/a";',
+    ].join("\n");
+
+    const out = stripComments(fixture);
+    expect(out).not.toContain("await selfRegisterAndPersist");
+    expect(out).not.toContain("persistInstanceId(projectDir");
+    // ...while the live lines below the `/*`-bearing line survive.
+    expect(out).toContain("const LIVE_CODE = registerMonitoringInstance;");
+    expect(out).toContain('const url = "https://example.com/a";');
+  });
+
+  test("the update action body calls neither register nor persist", () => {
+    const source = fs.readFileSync(
+      path.resolve(import.meta.dir, "../bin/postgres-ai.ts"),
+      "utf8",
+    );
+    const start = source.indexOf('.command("update")');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\n  .command(", start + 1);
+    expect(end).toBeGreaterThan(start);
+
+    const updateAction = stripComments(source.slice(start, end));
+    expect(updateAction.length).toBeGreaterThan(500); // not an empty slice
+    for (const forbidden of [
+      "registerMonitoringInstance",
+      "selfRegisterAndPersist",
+      "persistInstanceId",
+      "monitoring_instance_register",
+    ]) {
+      expect(updateAction).not.toContain(forbidden);
+    }
+  });
+
+  test("registration reaches the command only through the two persisting helpers", () => {
+    const source = stripComments(
+      fs.readFileSync(path.resolve(import.meta.dir, "../bin/postgres-ai.ts"), "utf8"),
+    );
+    const localInstall = source.indexOf('.command("local-install")');
+    const localInstallEnd = source.indexOf("\n  .command(", localInstall + 1);
+    expect(localInstall).toBeGreaterThan(-1);
+    expect(localInstallEnd).toBeGreaterThan(localInstall);
+
+    const region = source.slice(localInstall, localInstallEnd);
+
+    // Exactly one call site each, and each REACHED by the branch it belongs
+    // to. Pinning the condition alongside the call is what makes this more
+    // than a text search: a mutation that left `await adoptAndPersist(` in
+    // place but made the branch unreachable went green without it.
+    expect(region).toMatch(/if \(instanceId\) \{\s*const reg = await adoptAndPersist\(/);
+    expect(region).toMatch(/\} else \{\s*await selfRegisterAndPersist\(/);
+    const adopts = [...source.matchAll(/await adoptAndPersist\(/g)].map(m => m.index!);
+    const persists = [...source.matchAll(/await selfRegisterAndPersist\(/g)].map(m => m.index!);
+    expect(adopts.length).toBe(1);
+    expect(persists.length).toBe(1);
+
+    // The command action must not call registerMonitoringInstance at all: the
+    // helpers reach it through their injectable `register` parameter, and
+    // going direct would skip the persist-then-report the helpers exist for.
+    expect(region).not.toMatch(/registerMonitoringInstance\s*\(/);
+    // Each helper still defaults to the real registrar. Scoped to its OWN
+    // signature: an unbounded [\s\S]*? ran past adoptAndPersist and matched
+    // selfRegisterAndPersist's parameter instead, so removing the first one's
+    // default left the suite green.
+    const signatureOf = (name: string) => {
+      const at = source.indexOf(`async function ${name}(`);
+      expect(at).toBeGreaterThan(-1);
+      // Bounded by the NEXT function, not by "): Promise<": if only this
+      // function's return annotation ever changed, that terminator would walk
+      // forward into its sibling and the slice would span both -- the same
+      // vacuity this assertion exists to fix, one step narrower.
+      const nextFn = source.indexOf("\nasync function ", at + 1);
+      const end = nextFn === -1 ? source.length : nextFn;
+      const close = source.indexOf("): Promise<", at);
+      expect(close).toBeGreaterThan(at);
+      expect(close).toBeLessThan(end);
+      return source.slice(at, close);
+    };
+    for (const name of ["adoptAndPersist", "selfRegisterAndPersist"]) {
+      expect(signatureOf(name)).toContain(
+        "register: typeof registerMonitoringInstance = registerMonitoringInstance",
+      );
+    }
+
+    // Neither may be fire-and-forget. The regexes above require `await`, so a
+    // `void`-ed call is invisible to them -- which is exactly the shape of the
+    // original bug, and it went green here until this line was restored.
+    expect(source).not.toMatch(/void\s+(registerMonitoringInstance|selfRegisterAndPersist)\(/);
+    for (const at of [...adopts, ...persists]) {
+      expect(at).toBeGreaterThan(localInstall);
+      expect(at).toBeLessThan(localInstallEnd);
+    }
+  });
+
+
+});
+
+/**
+ * The registration request is bounded.
+ *
+ * local-install now awaits this call, so an unanswered socket would block the
+ * install indefinitely -- after the services are already up. Previously the
+ * promise was `void`-ed, which hid the hang rather than preventing it.
+ */
+describe("registerMonitoringInstance is bounded", () => {
+  let realFetch: typeof fetch;
+  beforeEach(() => { realFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  test("the request carries an abort signal", async () => {
+    let seen: RequestInit | undefined;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      seen = init;
+      return new Response(JSON.stringify({ instance_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }) as any;
+
+    await registerMonitoringInstance("pai-token", "rig", { apiBaseUrl: "https://example.invalid" });
+    expect(seen?.signal).toBeInstanceOf(AbortSignal);
+    expect(seen?.signal?.aborted).toBe(false);
+  });
+
+  test("a server that never answers does not hang the caller", async () => {
+    globalThis.fetch = ((_url: any, init: any) =>
+      new Promise((_resolve, reject) => {
+        // Behave like a real unanswered request: settle only when aborted.
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("timed out", "TimeoutError")));
+      })) as any;
+
+    // A small bound rather than the production default, so the suite does not
+    // sleep for it. The mechanism under test is the same either way; that the
+    // default is sane is asserted by the helper's own tests.
+    const started = Date.now();
+    const reg = await Promise.race([
+      registerMonitoringInstance("pai-token", "rig", {
+        apiBaseUrl: "https://example.invalid",
+        timeoutMs: 100,
+      }),
+      new Promise((resolve) => setTimeout(() => resolve("HUNG"), 10_000)),
+    ]);
+
+    // Best-effort: a timeout is a failure like any other, so it returns null
+    // rather than throwing -- the install continues and warns.
+    expect(reg).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 20_000);
+});
+
+/**
+ * The adopt step, driven directly.
+ *
+ * Extracted for the same reason as its self-registration sibling. A structural
+ * assertion on the source could not tell a live call from a dead one: a
+ * mutation that wrapped the call in `if (0)` left the suite green.
+ */
+describe("adoptAndPersist", () => {
+  let dir: string;
+  // Stable arrays cleared in place, never reassigned: spyOn memoises the spy
+  // per method, so a mockImplementation created in the first beforeEach keeps
+  // closing over the array it captured then. Reassigning orphaned the captures
+  // and every later assertion on `errored` saw an empty list.
+  const logged: string[] = [];
+  const errored: string[] = [];
+  // Initialised at declaration, not in beforeEach: if beforeEach throws before
+  // the save, afterEach would otherwise assign `undefined` over console.log and
+  // poison every later test in the file.
+  let logSpy: any = console.log;
+  let errSpy: any = console.error;
+  let exitBefore = 0;
+  const ID = "11111111-2222-3333-4444-555555555555";
+  const configPath = () => path.join(dir, ".pgwatch-config");
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "adopt-p-"));
+    updatePgwatchConfig(configPath(), { api_key: "pai-token" });
+    // Save the originals FIRST: if anything below throws, afterEach still has
+    // real functions to put back rather than assigning undefined over console.
+    logSpy = console.log;
+    errSpy = console.error;
+    logged.length = 0;
+    errored.length = 0;
+    // Plain assignment, not spyOn: spyOn memoises one spy per method, and this
+    // file installs console.error spies in several describes. Sharing that spy
+    // meant a later mockImplementation did not take effect and every assertion
+    // on the captured output silently saw an empty list.
+    console.log = (...a: any[]) => { logged.push(a.join(" ")); };
+    console.error = (...a: any[]) => { errored.push(a.join(" ")); };
+    // These helpers set process.exitCode on failure, which is process-wide and
+    // would make `bun test` exit non-zero with every test passing. Note the
+    // restore must be 0, not `undefined`: assigning undefined does NOT clear a
+    // set exitCode, which is why the first attempt at this leaked anyway.
+    exitBefore = process.exitCode ?? 0;
+    process.exitCode = 0;
+  });
+  afterEach(() => {
+    console.log = logSpy;
+    console.error = errSpy;
+    process.exitCode = exitBefore;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const stub = (reg: any) => (async () => reg) as any;
+
+  test("persists the id and the adopted project in one write", () => {
+    return adoptAndPersist(dir, "pai-token", "fallback", ID, {},
+      stub({ instanceId: ID, projectId: 7 })).then(() => {
+      const written = fs.readFileSync(configPath(), "utf8");
+      expect(written).toContain(`instance_id=${ID}`);
+      expect(written).toContain("project_name=7");
+      expect(logged.join("\n")).toContain("Adopted monitoring instance (project: 7)");
+    });
+  });
+
+  test("passes the instance id to the registrar so the platform adopts", async () => {
+    let seen: any;
+    await adoptAndPersist(dir, "pai-token", "fallback", ID, { debug: true },
+      (async (_k: string, _p: string, o: any) => { seen = o; return { instanceId: ID, projectId: 7 }; }) as any);
+    expect(seen.instanceId).toBe(ID);
+    expect(seen.debug).toBe(true);
+  });
+
+  test("a failed adoption warns, but still records the id the operator gave", async () => {
+    await adoptAndPersist(dir, "pai-token", "fallback", ID, {}, stub(null));
+
+    // The id came from --instance-id, so it names a row the console already
+    // provisioned: it is worth recording even when this adoption call failed,
+    // because the container can then poll as soon as the cause is cleared.
+    expect(fs.readFileSync(configPath(), "utf8")).toContain(`instance_id=${ID}`);
+    // But the operator must not be left thinking adoption succeeded.
+    expect(errored.join("\n")).toContain(`Could not adopt provisioned instance ${ID}`);
+    expect(logged.join("\n")).not.toContain("Adopted monitoring instance");
+  });
+
+  test("a reply with no project still persists the id", async () => {
+    // Adoption succeeded; only the project is missing. The id is what the
+    // container needs, so it must still land.
+    await adoptAndPersist(dir, "pai-token", "fallback", ID, {}, stub({ instanceId: ID }));
+    expect(fs.readFileSync(configPath(), "utf8")).toContain(`instance_id=${ID}`);
+    expect(errored.join("\n")).toContain("returned no project");
+  });
+
+  test("an unwritable config warns instead of throwing past the guard", async () => {
+    fs.rmSync(configPath());
+    fs.mkdirSync(configPath());
+    let threw = false;
+    try {
+      await adoptAndPersist(dir, "pai-token", "fallback", ID, {},
+        stub({ instanceId: ID, projectId: 7 }));
+    } catch { threw = true; }
+    expect(threw).toBe(false);
+    expect(errored.join("\n")).toContain("instance jobs will idle");
+  });
+});
+
+/**
+ * `.env` keys the installer derives from the box, rather than defaults.
+ */
+describe("statOwner", () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "owner-")); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test("reads the owner of a regular file", () => {
+    const f = path.join(dir, ".pgwatch-config");
+    fs.writeFileSync(f, "api_key=k\n", { mode: 0o600 });
+    const st = fs.statSync(f);
+    expect(statOwner(f)).toBe(`${st.uid}:${st.gid}`);
+  });
+
+  test("refuses a directory, so the container is never told to run as its owner", () => {
+    // Docker creates a bind-mount target as a root-owned DIRECTORY when the
+    // file is missing. Copying its owner produced INSTANCE_JOBS_USER=0:0 -- a
+    // container asked to run as root to read a config that does not exist.
+    const d = path.join(dir, ".pgwatch-config");
+    fs.mkdirSync(d);
+    expect(statOwner(d)).toBeNull();
+  });
+
+  test("distinguishes a missing file from one that is the wrong type", () => {
+    // undefined = "no such file", where falling back to this process's owner is
+    // right. null = "exists but is not a regular file", where there is no owner
+    // worth copying AND no fallback: `?? processOwner()` is also 0:0 under
+    // sudo, so collapsing the two would write INSTANCE_JOBS_USER=0:0 anyway.
+    expect(statOwner(path.join(dir, "nope"))).toBeUndefined();
+    expect(statOwner(null)).toBeUndefined();
+    expect(statOwner(undefined)).toBeUndefined();
+
+    const d = path.join(dir, "adir");
+    fs.mkdirSync(d);
+    expect(statOwner(d)).toBeNull();
+  });
+
+  test("follows a symlink to the target's owner, which is the owner that can read it", () => {
+    const f = path.join(dir, "real");
+    fs.writeFileSync(f, "api_key=k\n", { mode: 0o600 });
+    const link = path.join(dir, "link");
+    fs.symlinkSync(f, link);
+    expect(statOwner(link)).toBe(statOwner(f));
+  });
+});
+
+/**
+ * The two step-1 writers of `.pgwatch-config`.
+ *
+ * Extracted from the local-install action for the same reason
+ * persistInstanceId was: inline in a 600-line command action, the only
+ * available coverage was grepping the source, which a dead-code mutation walks
+ * straight through. Both run before anything is started, so both report and
+ * stop rather than surfacing a stack trace.
+ */
+describe("applyProjectName / applyApiKey", () => {
+  let dir: string;
+  const logged: string[] = [];
+  const errored: string[] = [];
+  let logSpy!: typeof console.log;
+  let errSpy!: typeof console.error;
+
+  beforeEach(() => {
+    logSpy = console.log;
+    errSpy = console.error;
+    logged.length = 0;
+    errored.length = 0;
+    console.log = (...a: any[]) => { logged.push(a.join(" ")); };
+    console.error = (...a: any[]) => { errored.push(a.join(" ")); };
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "apply-"));
+  });
+  afterEach(() => {
+    console.log = logSpy;
+    console.error = errSpy;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const config = () => path.join(dir, ".pgwatch-config");
+
+  test("the project name reaches the file the reporter reads", () => {
+    expect(applyProjectName(dir, "acme")).toBe(true);
+    expect(fs.readFileSync(config(), "utf8")).toContain("project_name=acme");
+    expect(logged.join("\n")).toContain("Using project name: acme");
+  });
+
+  test("the api key reaches it too, at 0600, and is never echoed", () => {
+    expect(applyApiKey(dir, "pai-token")).toBe(true);
+    expect(fs.readFileSync(config(), "utf8")).toContain("api_key=pai-token");
+    expect(fs.statSync(config()).mode & 0o777).toBe(0o600);
+    expect(logged.join("\n")).toContain("API key saved");
+    // The SUCCESS path prints too, and the leak test below only drives the
+    // failure path -- appending the key to this log line stayed green.
+    expect(logged.join("\n")).not.toContain("pai-token");
+    expect(errored.join("\n")).not.toContain("pai-token");
+  });
+
+  // Separate cases rather than a loop, so a failure names which writer broke.
+  test.each([
+    ["applyProjectName", (d: string) => applyProjectName(d, "acme")],
+    ["applyApiKey", (d: string) => applyApiKey(d, "pai-token")],
+  ])("%s reports a stray directory in a sentence, not a stack trace", (_name, call) => {
+    fs.mkdirSync(config());
+
+    let threw = false;
+    let ok: boolean | undefined;
+    try { ok = call(dir); } catch { threw = true; }
+
+    expect(threw).toBe(false);
+    expect(ok).toBe(false);
+    const said = errored.join("\n");
+    expect(said).toContain("not a regular file");
+    // The message names the path, so the operator knows what to remove.
+    expect(said).toContain(config());
+    expect(said).not.toContain("at <anonymous>"); // i.e. not a stack trace
+  });
+
+  test("the api key is never printed", () => {
+    // It is the credential: a failure path must not echo it back.
+    fs.mkdirSync(config());
+    applyApiKey(dir, "pai-super-secret");
+    expect(errored.join("\n")).not.toContain("pai-super-secret");
+    expect(logged.join("\n")).not.toContain("pai-super-secret");
   });
 });

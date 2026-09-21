@@ -109,8 +109,9 @@ ENV_EOF
 # key when these are absent, which shuts the endpoints but leaves the operator
 # no usable key; generate them here so they survive a restart. Held by nothing
 # that reads metrics.
-# Assign first and check: a command substitution that fails inside a heredoc
-# does not trip `set -e`, so this would otherwise write blank keys silently.
+# Assign first and check. The `|| true` is what keeps `set -e` from exiting on
+# the spot (an assignment from a failed substitution does trip it), so the loop
+# can report which key it could not mint rather than write a blank one silently.
 for vm_key_name in VM_DELETE_AUTH_KEY VM_SNAPSHOT_AUTH_KEY VM_FORCE_MERGE_AUTH_KEY VM_PPROF_AUTH_KEY; do
   vm_key_value=$(openssl rand -hex 32 || true)
   if [ -z "$vm_key_value" ]; then
@@ -120,6 +121,22 @@ for vm_key_name in VM_DELETE_AUTH_KEY VM_SNAPSHOT_AUTH_KEY VM_FORCE_MERGE_AUTH_K
   echo "$vm_key_name=$vm_key_value" >> .env
 done
 unset vm_key_name vm_key_value
+
+# The instance-jobs container bind-mounts .pgwatch-config, which is 0600, so it
+# has to run as that file's owner -- everything here is chowned to postgres_ai
+# below. Compose reads this from .env. See postgresai#366.
+# Assign first and check, like the VM keys above. The `|| true` is what keeps
+# `set -e` from exiting on the spot, so the script can say what went wrong
+# rather than dying silently -- and `INSTANCE_JOBS_USER=:` would make the
+# container refuse to start.
+ij_uid=$(id -u postgres_ai || true)
+ij_gid=$(id -g postgres_ai || true)
+if [ -z "$ij_uid" ] || [ -z "$ij_gid" ]; then
+  echo "FATAL: cannot resolve the postgres_ai uid/gid" >&2
+  exit 1
+fi
+echo "INSTANCE_JOBS_USER=$ij_uid:$ij_gid" >> .env
+unset ij_uid ij_gid
 
 # Ensure secure permissions
 chmod 600 .pgwatch-config .env

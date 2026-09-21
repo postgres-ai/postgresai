@@ -85,3 +85,8 @@ instances.yml
 
 # Build artifact: copied from repo root into cli/ during build
 cli/instances.demo.yml
+
+# Go build and coverage artifacts (instance-jobs/)
+instance-jobs/instance-jobs
+instance-jobs/**/*.test
+instance-jobs/**/coverage.out
