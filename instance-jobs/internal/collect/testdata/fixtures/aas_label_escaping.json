@@ -1,0 +1,39 @@
+{
+  "description": "Cluster label carrying a double quote and a backslash. The selector must escape the backslash FIRST and then the quote, and the wait_event_type regex keeps its two backslashes so PromQL's string parser leaves a literal-asterisk regex. A single backslash there is rejected by the store with 'unknown escape sequence U+002A'. The recorded response keys are the exact query text, so any change to the escaping fails this fixture.",
+  "now": "2026-09-16T01:00:00Z",
+  "kind": "aas_collect",
+  "args": {
+    "cluster_name": "a\"b\\c",
+    "node_name": "n1",
+    "vcpus": 2,
+    "granularity": "day",
+    "period_start": "2026-09-16T00:00:00Z",
+    "period_end": "2026-09-16T00:10:00Z",
+    "window_start": "2026-09-16T00:00:00Z"
+  },
+  "expect_window": {
+    "start": 1789516800,
+    "end": 1789517400,
+    "step": 60
+  },
+  "responses": {
+    "sum by (wait_event_type)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"a\\\"b\\\\c\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    },
+    "sum(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"a\\\"b\\\\c\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    }
+  },
+  "expected": {
+    "outcome": "skipped",
+    "skip_reason": "density"
+  }
+}

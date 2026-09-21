@@ -376,6 +376,54 @@ services:
     command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]
     restart: unless-stopped
 
+  # Instance jobs - collection runs HERE and the results are posted out.
+  # Profile-gated, so an upgrade brings the definition and starts nothing;
+  # outbound only, and the one mount is the credential file the reporter
+  # already uses. See instance-jobs/README.md and postgresai#366.
+  instance-jobs:
+    image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: instance-jobs
+    profiles: ["instance-jobs"]
+    # .pgwatch-config is 0600 owned by the install user, deliberately (the CLI
+    # chmods it back on every write), so the container has to BE that owner:
+    # the install writes its uid:gid here. Unset falls back to the image's own
+    # unprivileged user, which then cannot read the file and says so - a loud
+    # failure, where a root default would have run every un-provisioned box
+    # privileged and silent. See instance-jobs/README.md.
+    user: "${INSTANCE_JOBS_USER:-}"
+    cpus: ${INSTANCE_JOBS_CPUS:-0.25}
+    mem_limit: ${INSTANCE_JOBS_MEM:-268435456}
+    read_only: true
+    # noexec/nosuid: the tmpfs is the only writable path left, so it must not be
+    # somewhere a compromised process can drop and run a binary.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./.pgwatch-config:/app/.pgwatch-config:ro
+    environment:
+      - PROMETHEUS_URL=http://sink-prometheus:9090
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+      # Post results to the SAME platform that provisioned this instance, the
+      # way the reporter does. Empty falls back to the production default, and
+      # a HAND-WRITTEN api_base_url in .pgwatch-config wins over both (nothing
+      # in this repo writes that key; it is there for an operator override).
+      - PGAI_API_BASE_URL=${PGAI_API_BASE_URL:-}
+      # The install now writes instance_id into .pgwatch-config on both
+      # registration paths, and that is the value this service prefers. This
+      # stays as a fallback for a box installed before that, where the id only
+      # ever existed in the environment the provisioning flow set.
+      - PGAI_INSTANCE_ID=${PGAI_INSTANCE_ID:-}
+      - PGAI_MONITORING_INSTANCE_ID=${PGAI_MONITORING_INSTANCE_ID:-}
+    depends_on:
+      sink-prometheus:
+        condition: service_started
+    restart: unless-stopped
+
   # Self-monitoring components (may have reduced functionality on macOS)
 
   # cAdvisor - Container metrics (self-monitoring)

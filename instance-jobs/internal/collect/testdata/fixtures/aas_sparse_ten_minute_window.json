@@ -1,0 +1,480 @@
+{
+  "description": "Ten-minute AAS period (expected_slots=10) with all five wait-event types present at distinguishable values, so no metric column can be dropped or hard-zeroed without this fixture noticing, and the total cannot be confused with a sum of any two. Every average divides by 10: io avg = (2+4)/10 = 0.6, ipc = 6/10 = 0.6... total = 26/10 = 2.6. An implementation dividing by the returned sample count reports io 3.0 and total 4.3. Percentiles zero-pad to 10 before interpolating. Two per-class topk responses carry DIFFERENT query ids, so the class key is asserted against its data and not only against the query text -- swapping two keys would otherwise file one class's ids under another's. 555 has no query text, which is how an unresolved id renders.",
+  "now": "2026-09-16T01:00:00Z",
+  "kind": "aas_collect",
+  "args": {
+    "project_id": 1,
+    "cluster_name": "c1",
+    "node_name": "n1",
+    "vcpus": 4,
+    "granularity": "day",
+    "period_start": "2026-09-16T00:00:00Z",
+    "period_end": "2026-09-16T00:10:00Z",
+    "window_start": "2026-09-16T00:00:00Z",
+    "pin": "2026-09-16T00:09:59Z"
+  },
+  "expect_window": {
+    "start": 1789516800,
+    "end": 1789517400,
+    "step": 60
+  },
+  "responses": {
+    "sum by (wait_event_type)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {
+              "wait_event_type": "IO"
+            },
+            "values": [
+              [
+                1789516860,
+                "2"
+              ],
+              [
+                1789516920,
+                "4"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "Lock"
+            },
+            "values": [
+              [
+                1789516980,
+                "1"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "IPC"
+            },
+            "values": [
+              [
+                1789517040,
+                "6"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "LWLock"
+            },
+            "values": [
+              [
+                1789517100,
+                "8"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "CPU*"
+            },
+            "values": [
+              [
+                1789517160,
+                "5"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "sum(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {},
+            "values": [
+              [
+                1789516860,
+                "2"
+              ],
+              [
+                1789516920,
+                "4"
+              ],
+              [
+                1789516980,
+                "1"
+              ],
+              [
+                1789517040,
+                "6"
+              ],
+              [
+                1789517100,
+                "8"
+              ],
+              [
+                1789517160,
+                "5"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "sum by (wait_event_type, wait_event)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {
+              "wait_event_type": "IO",
+              "wait_event": "DataFileRead"
+            },
+            "values": [
+              [
+                1789516860,
+                "2"
+              ],
+              [
+                1789516920,
+                "4"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "Lock",
+              "wait_event": "transactionid"
+            },
+            "values": [
+              [
+                1789516980,
+                "1"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "IPC",
+              "wait_event": "MessageQueueSend"
+            },
+            "values": [
+              [
+                1789517040,
+                "6"
+              ]
+            ]
+          },
+          {
+            "metric": {
+              "wait_event_type": "LWLock",
+              "wait_event": "BufferMapping"
+            },
+            "values": [
+              [
+                1789517100,
+                "8"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {
+              "query_id": "123",
+              "datname": "db1"
+            },
+            "values": [
+              [
+                1789516860,
+                "2"
+              ],
+              [
+                1789516920,
+                "4"
+              ],
+              [
+                1789516980,
+                "1"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"IO\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {
+              "query_id": "777",
+              "datname": "db1"
+            },
+            "values": [
+              [
+                1789516860,
+                "2"
+              ],
+              [
+                1789516920,
+                "4"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"IPC\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"Lock\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"LWLock\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
+    },
+    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"CPU*\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": [
+          {
+            "metric": {
+              "query_id": "555",
+              "datname": "db2"
+            },
+            "values": [
+              [
+                1789517160,
+                "5"
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "last_over_time(pgwatch_query_info{queryid=~\"123|777|555\"}[600s])": {
+      "status": "success",
+      "data": {
+        "resultType": "vector",
+        "result": [
+          {
+            "metric": {
+              "queryid": "123",
+              "displayname_full": "123 | select 1"
+            },
+            "value": [
+              1789517400,
+              "1"
+            ]
+          },
+          {
+            "metric": {
+              "queryid": "777",
+              "displayname_full": "777 | select io"
+            },
+            "value": [
+              1789517400,
+              "1"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "outcome": "ok",
+    "result": {
+      "checkId": "AAS",
+      "results": {
+        "n1": {
+          "data": {
+            "cluster_name": "c1",
+            "vcpus": 4,
+            "aas_avg": {
+              "total": 2.6,
+              "io": 0.6,
+              "ipc": 0.6,
+              "lock": 0.1,
+              "lwlock": 0.8,
+              "cpu": 0.5
+            },
+            "aas_worst1m": {
+              "total": 8.0,
+              "io": 4.0,
+              "ipc": 6.0,
+              "lock": 1.0,
+              "lwlock": 8.0,
+              "cpu": 5.0
+            },
+            "aas_p99": {
+              "total": 7.8,
+              "io": 3.8,
+              "ipc": 5.5,
+              "lock": 0.9,
+              "lwlock": 7.3,
+              "cpu": 4.6
+            },
+            "aas_p999": {
+              "total": 8.0,
+              "io": 4.0,
+              "ipc": 5.9,
+              "lock": 1.0,
+              "lwlock": 7.9,
+              "cpu": 5.0
+            },
+            "top_events_worst1m": {
+              "io": [
+                "DataFileRead(4.0)"
+              ],
+              "ipc": [
+                "MessageQueueSend(6.0)"
+              ],
+              "lock": [
+                "transactionid(1.0)"
+              ],
+              "lwlock": [
+                "BufferMapping(8.0)"
+              ]
+            },
+            "top_events_p99": {
+              "io": [
+                "DataFileRead(3.8)"
+              ],
+              "ipc": [
+                "MessageQueueSend(5.5)"
+              ],
+              "lock": [
+                "transactionid(0.9)"
+              ],
+              "lwlock": [
+                "BufferMapping(7.3)"
+              ]
+            },
+            "top_events_p999": {
+              "io": [
+                "DataFileRead(4.0)"
+              ],
+              "ipc": [
+                "MessageQueueSend(5.9)"
+              ],
+              "lock": [
+                "transactionid(1.0)"
+              ],
+              "lwlock": [
+                "BufferMapping(7.9)"
+              ]
+            },
+            "top_queryids_worst1m": {
+              "total": [
+                {
+                  "queryid": "123",
+                  "aas": 4.0,
+                  "datname": "db1",
+                  "query": "select 1"
+                }
+              ],
+              "io": [
+                {
+                  "queryid": "777",
+                  "aas": 4.0,
+                  "datname": "db1",
+                  "query": "select io"
+                }
+              ],
+              "ipc": [],
+              "lock": [],
+              "lwlock": [],
+              "cpu": [
+                {
+                  "queryid": "555",
+                  "aas": 5.0,
+                  "datname": "db2"
+                }
+              ]
+            },
+            "top_queryids_p99": {
+              "total": [
+                {
+                  "queryid": "123",
+                  "aas": 3.8,
+                  "datname": "db1",
+                  "query": "select 1"
+                }
+              ],
+              "io": [
+                {
+                  "queryid": "777",
+                  "aas": 3.8,
+                  "datname": "db1",
+                  "query": "select io"
+                }
+              ],
+              "ipc": [],
+              "lock": [],
+              "lwlock": [],
+              "cpu": [
+                {
+                  "queryid": "555",
+                  "aas": 4.6,
+                  "datname": "db2"
+                }
+              ]
+            },
+            "top_queryids_p999": {
+              "total": [
+                {
+                  "queryid": "123",
+                  "aas": 4.0,
+                  "datname": "db1",
+                  "query": "select 1"
+                }
+              ],
+              "io": [
+                {
+                  "queryid": "777",
+                  "aas": 4.0,
+                  "datname": "db1",
+                  "query": "select io"
+                }
+              ],
+              "ipc": [],
+              "lock": [],
+              "lwlock": [],
+              "cpu": [
+                {
+                  "queryid": "555",
+                  "aas": 5.0,
+                  "datname": "db2"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

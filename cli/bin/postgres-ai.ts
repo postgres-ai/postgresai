@@ -39,7 +39,7 @@ import {
   createSnapshot,
   destroySnapshot,
 } from "../lib/dblab";
-import { resolveBaseUrls } from "../lib/util";
+import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
@@ -294,7 +294,46 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   "VM_SNAPSHOT_AUTH_KEY",
   "VM_FORCE_MERGE_AUTH_KEY",
   "VM_PPROF_AUTH_KEY",
+  // Owned here so the managed block writes it once, rather than preserving a
+  // stale copy alongside the new one. postgresai#366.
+  "PGAI_INSTANCE_ID",
+  "INSTANCE_JOBS_USER",
 ];
+
+/**
+ * "uid:gid" of a regular file.
+ *
+ * Three outcomes, because the caller needs different fallbacks for two of them:
+ * the owner; `undefined` for "no such file", where falling back to this
+ * process's owner is right (on a fresh install `.env` is built before
+ * registration creates `.pgwatch-config`, by this same owner moments later);
+ * and `null` for "exists but is not a regular file", where there is no owner
+ * worth copying and no fallback either.
+ *
+ * That last case is why this is not a boolean. Docker creates a bind-mount
+ * target as a ROOT-OWNED DIRECTORY when the file is missing; copying its owner
+ * wrote INSTANCE_JOBS_USER=0:0. Returning undefined there is no better, because
+ * the caller's `?? processOwner()` is also 0:0 under sudo -- the documented
+ * install path. Emitting no key at all is what makes compose fall back to the
+ * image's unprivileged user and fail loudly, as the compose comment promises.
+ */
+function statOwner(file?: string | null): string | null | undefined {
+  if (!file) return undefined;
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    return undefined;
+  }
+  if (!st.isFile()) return null;
+  return `${st.uid}:${st.gid}`;
+}
+
+/** "uid:gid" of this process, where the platform has them. */
+function processOwner(): string | null {
+  if (typeof process.getuid !== "function" || typeof process.getgid !== "function") return null;
+  return `${process.getuid()}:${process.getgid()}`;
+}
 
 /**
  * Build the `.env` content written by `mon local-install`.
@@ -309,6 +348,8 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
 function buildLocalInstallEnv(
   existingEnv: string,
   imageTag: string,
+  instanceId?: string | null,
+  credentialFile?: string | null,
 ): { content: string; preservedKeys: string[] } {
   const readRaw = (key: string): string | null => {
     // Read the way compose does: tolerate `export `/indentation and take the
@@ -339,6 +380,32 @@ function buildLocalInstallEnv(
   envLines.push(
     `VM_AUTH_PASSWORD=${vmAuthPassword ? stripMatchingQuotes(vmAuthPassword) : crypto.randomBytes(18).toString("base64")}`,
   );
+  // The monitoring instance id. It reaches this process as --instance-id or
+  // PGAI_INSTANCE_ID and was written nowhere on the box, so a service started
+  // by compose could not see it: the systemd unit the AWS install writes is a
+  // bare `up -d` with no Environment=. Compose reads .env by itself, which is
+  // why it belongs here. Carried over when this run does not supply one.
+  // See postgresai#366.
+  const instanceIdValue = instanceId?.trim() || readRaw("PGAI_INSTANCE_ID");
+  if (instanceIdValue) {
+    envLines.push(`PGAI_INSTANCE_ID=${stripMatchingQuotes(instanceIdValue)}`);
+  }
+
+  // Who the instance-jobs container runs as. It bind-mounts .pgwatch-config,
+  // which this command keeps at 0600, so it has to be that file's OWNER -- not
+  // whoever ran this command. Those differ under sudo, which the Terraform
+  // box's own documented commands use; writeEnvFile stats the file for the same
+  // reason. postgresai#366.
+  // `??` would collapse the two non-owner cases, and they differ: a MISSING
+  // file falls back to this process (it will create the file as this owner
+  // moments later), while a file that exists but is not a regular file gets NO
+  // key -- compose then falls back to the image's unprivileged user and fails
+  // loudly, instead of being told to run as the root that owns the stray
+  // directory Docker created.
+  const owner = statOwner(credentialFile);
+  const credentialOwner = owner === undefined ? processOwner() : owner;
+  if (credentialOwner) envLines.push(`INSTANCE_JOBS_USER=${credentialOwner}`);
+
   // VictoriaMetrics admin-endpoint keys (#359): carried over when present,
   // minted when not. Rotating them on every re-install would be harmless but
   // pointless, and would invalidate a key an operator noted down.
@@ -2860,41 +2927,6 @@ interface MonitoringRegistration {
  *
  * Never throws — registration is best-effort; returns null on failure.
  */
-
-/**
- * Classify how `mon local-install` should register the monitoring instance,
- * given the raw `--project` value and the resolved instance id.
- *
- * - With an instance id: ADOPT the provisioned instance. No project name is
- *   required (the platform returns the real project); a provided name is
- *   normalized and carried through for messaging/fallback.
- * - No instance id and no project name: ERROR. The hardcoded
- *   "postgres-ai-monitoring" default was removed, and a nameless legacy
- *   self-registration is rejected by v1.monitoring_instance_register (PT400).
- * - No instance id but a project name: legacy SELF-REGISTER.
- *
- * Pure (no I/O) so the decision is unit-testable independently of the large
- * install command. `projectName` is the trimmed value, or undefined when empty.
- */
-type MonRegistrationPlan =
-  | { kind: "adopt"; projectName: string | undefined }
-  | { kind: "self-register"; projectName: string }
-  | { kind: "error-missing-project"; projectName: undefined };
-
-function planMonitoringRegistration(args: {
-  project?: string;
-  instanceId?: string;
-}): MonRegistrationPlan {
-  const projectName = args.project?.trim() || undefined;
-  if (args.instanceId) {
-    return { kind: "adopt", projectName };
-  }
-  if (!projectName) {
-    return { kind: "error-missing-project", projectName: undefined };
-  }
-  return { kind: "self-register", projectName };
-}
-
 async function registerMonitoringInstance(
   apiKey: string,
   projectName: string | undefined,
@@ -2904,6 +2936,8 @@ async function registerMonitoringInstance(
     instanceId?: string;
     retries?: number;
     retryDelayMs?: number;
+    /** Bound on each attempt. Tests pass a small value, as with retryDelayMs. */
+    timeoutMs?: number;
     orgScope?: OrgScope;
   }
 ): Promise<MonitoringRegistration | null> {
@@ -2954,6 +2988,13 @@ async function registerMonitoringInstance(
           ...orgScopeHeaders(opts?.orgScope),
         },
         body: JSON.stringify(requestBody),
+        // Bounded, because this is now awaited: a platform that accepts the
+        // connection and never answers would otherwise block local-install
+        // forever, after the services are already up. An AbortError lands in
+        // the catch below and is treated like any other failure -- best-effort.
+        // The shared helper rather than a second mechanism: it already floors
+        // and caps the value, and lib/joe.ts and lib/dblab.ts use it.
+        signal: requestTimeoutSignal(opts?.timeoutMs).signal,
       });
       const body = await res.text().catch(() => "");
       if (!res.ok) {
@@ -3000,6 +3041,74 @@ async function registerMonitoringInstance(
   return null;
 }
 
+const INSTANCE_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Decide what to persist as `.pgwatch-config`'s `instance_id`, or `null` when
+ * there is nothing usable.
+ *
+ * This is the only place the id is written where the instance-jobs container
+ * can read it: that container bind-mounts `.pgwatch-config` and idles until the
+ * id is there. Before this, a SELF-REGISTRATION discarded the id the platform
+ * returned, and only an install given `--instance-id` ever persisted one — so
+ * the ordinary path for an instance that was not provisioned through the
+ * console left the container with no identity, permanently.
+ *
+ * - The platform's returned id wins. It is authoritative: on adoption it is
+ *   the row we adopted, and on self-registration it is the row just created,
+ *   which the caller could not have known.
+ * - Falls back to the id this run asked to adopt, for a platform that accepts
+ *   the adoption without echoing it back.
+ * - Must look like a uuid. The value is written verbatim into a `key=value`
+ *   file, so anything carrying `\r`, `\n` or `=` could inject further config
+ *   keys (CWE-93/74) — the same reason PROJECT_NAME_RE exists below. Over a
+ *   trusted first-party endpoint this should never fire.
+ */
+function instanceIdToPersist(
+  reg: MonitoringRegistration | null,
+  requestedId?: string,
+): string | null {
+  for (const candidate of [reg?.instanceId, requestedId]) {
+    const value = candidate?.trim();
+    if (value && INSTANCE_ID_RE.test(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * Classify how `mon local-install` should register the monitoring instance,
+ * given the raw `--project` value and the resolved instance id.
+ *
+ * - With an instance id: ADOPT the provisioned instance. No project name is
+ *   required (the platform returns the real project); a provided name is
+ *   normalized and carried through for messaging/fallback.
+ * - No instance id and no project name: ERROR. The hardcoded
+ *   "postgres-ai-monitoring" default was removed, and a nameless legacy
+ *   self-registration is rejected by v1.monitoring_instance_register (PT400).
+ * - No instance id but a project name: legacy SELF-REGISTER.
+ *
+ * Pure (no I/O) so the decision is unit-testable independently of the large
+ * install command. `projectName` is the trimmed value, or undefined when empty.
+ */
+type MonRegistrationPlan =
+  | { kind: "adopt"; projectName: string | undefined }
+  | { kind: "self-register"; projectName: string }
+  | { kind: "error-missing-project"; projectName: undefined };
+
+function planMonitoringRegistration(args: {
+  project?: string;
+  instanceId?: string;
+}): MonRegistrationPlan {
+  const projectName = args.project?.trim() || undefined;
+  if (args.instanceId) {
+    return { kind: "adopt", projectName };
+  }
+  if (!projectName) {
+    return { kind: "error-missing-project", projectName: undefined };
+  }
+  return { kind: "self-register", projectName };
+}
+
 /**
  * Decide what to persist as `.pgwatch-config`'s `project_name` from an
  * adoption response, or `null` if the response carries no usable project.
@@ -3038,8 +3147,35 @@ export function updatePgwatchConfig(configPath: string, updates: Record<string, 
   // Read existing config if it exists
   if (fs.existsSync(configPath)) {
     const stats = fs.statSync(configPath);
-    if (!stats.isDirectory()) {
-      const content = fs.readFileSync(configPath, "utf8");
+    // Refuse anything that is not a regular file, rather than only skipping the
+    // READ of one. The old `!isDirectory()` guard let a FIFO through and
+    // readFileSync blocked forever; narrowing it to isFile() alone would only
+    // have moved the hang to the write, which blocks on a FIFO just the same
+    // (verified).
+    //
+    // Every caller IN THIS FILE catches: persistInstanceId (warns, so the
+    // install finishes) and applyProjectName / applyApiKey (report and stop,
+    // both before `docker compose up`). The old code threw EISDIR here for a
+    // directory anyway, and hung forever for a FIFO. See #366.
+    if (!stats.isFile()) {
+      throw new Error(
+        `${configPath} exists but is not a regular file; refusing to write through it`
+      );
+    }
+    {
+      // Strip every leading BOM before matching. A BOM'd first line fails
+      // `startsWith(key + "=")`, so a rewrite APPENDS a duplicate instead of
+      // replacing it.
+      //
+      // At exactly ONE BOM that duplicate splits the readers -- the Go loader
+      // strips one BOM and takes the first (stale) line, while the reporter's
+      // anchored grep skips the BOM'd line and takes the new one: a silent,
+      // permanent PT401 backoff on a rotated token. At two or more, both
+      // readers skip the BOM'd line and agree, so there is no split; the stale
+      // duplicate is merely invisible. Stripping all of them is what lets the
+      // rewrite match, so the dedupe filter below can drop the stale line and
+      // the file comes back normalised.
+      const content = fs.readFileSync(configPath, "utf8").replace(/^\uFEFF+/, "");
       lines = content.split(/\r?\n/).filter(l => l.trim() !== "");
     }
   }
@@ -3049,6 +3185,13 @@ export function updatePgwatchConfig(configPath: string, updates: Record<string, 
     const existingIndex = lines.findIndex(l => l.startsWith(key + "="));
     if (existingIndex >= 0) {
       lines[existingIndex] = `${key}=${value}`;
+      // Drop any later duplicate of the same key. Leaving it made the readers
+      // disagree: the reporter greps `| head -n 1` and would use the line we
+      // just rewrote, while a shell-convention last-wins reader would use the
+      // stale one below it -- so the reporter uploaded fine while instance-jobs
+      // polled with an old token. Appending a key is a documented step, so the
+      // duplicate can be there in a file this function did not create.
+      lines = lines.filter((l, i) => i === existingIndex || !l.startsWith(key + "="));
     } else {
       lines.push(`${key}=${value}`);
     }
@@ -3064,6 +3207,208 @@ export function updatePgwatchConfig(configPath: string, updates: Record<string, 
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Warning: could not restrict permissions on ${configPath}: ${message}`);
   }
+}
+
+/**
+ * Record the API key in `.pgwatch-config`, where the reporter reads it.
+ * False when it could not be written, having already said why. See #366.
+ */
+function applyApiKey(projectDir: string, apiKey: string): boolean {
+  const configPath = path.resolve(projectDir, ".pgwatch-config");
+  try {
+    // Keep reporter compatibility (docker-compose mounts .pgwatch-config)
+    updatePgwatchConfig(configPath, { api_key: apiKey });
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  console.log("✓ API key saved\n");
+  return true;
+}
+
+/**
+ * Record `--project` in `.pgwatch-config`, where the reporter reads it.
+ *
+ * False when it could not be written, having already said why; the caller
+ * stops, since this runs before anything is started. Extracted so a test can
+ * drive it -- inline in the action it was only reachable by grepping the
+ * source. See #366.
+ */
+function applyProjectName(projectDir: string, project: string): boolean {
+  const configPath = path.resolve(projectDir, ".pgwatch-config");
+  try {
+    updatePgwatchConfig(configPath, { project_name: project });
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  console.log(`Using project name: ${project}\n`);
+  return true;
+}
+
+/**
+ * Write the monitoring instance id where the instance-jobs container reads it.
+ *
+ * `.pgwatch-config` rather than `.env`, for three reasons: it is the file that
+ * container already bind-mounts read-only, its loader re-reads it on every tick
+ * so an id written after `docker compose up` is picked up without a restart,
+ * and `.env` is rebuilt from an allowlist on every re-install while this file
+ * is merged key by key.
+ *
+ * Silent when there is nothing usable to write -- reporting that is the
+ * caller's job, because only the caller knows whether a missing id is fatal.
+ *
+ * Best-effort, like the rest of the post-`up` steps: the services are already
+ * running by the time this is reached, so a config the process cannot write
+ * (EACCES, or a `.pgwatch-config` Docker created as a directory) must not take
+ * the install down with an unhandled rejection. Returns whether the id landed.
+ */
+function persistInstanceId(
+  projectDir: string,
+  reg: MonitoringRegistration | null,
+  requestedId: string | undefined,
+  alsoWrite: Record<string, string> = {},
+): boolean {
+  const instanceId = instanceIdToPersist(reg, requestedId);
+  const updates = { ...alsoWrite, ...(instanceId ? { instance_id: instanceId } : {}) };
+  if (Object.keys(updates).length === 0) return false;
+  const configPath = path.resolve(projectDir, ".pgwatch-config");
+  try {
+    updatePgwatchConfig(configPath, updates);
+    return instanceId != null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Warning: could not record the monitoring instance id in ${configPath}: ${message}`);
+    return false;
+  }
+}
+
+/**
+ * Adopt a console-provisioned monitoring instance, persist what came back, and
+ * report which of those happened.
+ *
+ * Extracted for the same reason as its self-registration sibling: while this
+ * lived inline, the only possible coverage was grepping the source for the
+ * calls, and a mutation that left the calls in place but unreachable (`if (0)`)
+ * went green. A structural assertion cannot see dead code; this can.
+ *
+ * The id and the adopted project go out in ONE write. Two calls meant two
+ * read-modify-write+chmod cycles and, worse, the second was unguarded: an
+ * unwritable config threw straight past the first call's catch and took the
+ * install down with an unhandled rejection after the services were already up.
+ */
+async function adoptAndPersist(
+  projectDir: string,
+  apiKey: string,
+  projectName: string | undefined,
+  instanceId: string,
+  opts: { apiBaseUrl?: string; debug?: boolean; orgScope?: OrgScope },
+  register: typeof registerMonitoringInstance = registerMonitoringInstance,
+): Promise<MonitoringRegistration | null> {
+  const reg = await register(apiKey, projectName, {
+    orgScope: opts.orgScope,
+    apiBaseUrl: opts.apiBaseUrl,
+    debug: opts.debug,
+    instanceId,
+  });
+  const adoptedProject = resolveAdoptedProject(reg);
+  const persisted = persistInstanceId(projectDir, reg, instanceId, {
+    // Point the reporter at the adopted instance's project so checkup uploads
+    // land next to the rest of this instance's health data.
+    ...(adoptedProject != null ? { project_name: adoptedProject } : {}),
+  });
+  if (!persisted) {
+    console.error(
+      `⚠ Adopted instance ${instanceId} but could not record it in .pgwatch-config — ` +
+        `instance jobs will idle until that file is writable and local-install is re-run\n`
+    );
+  }
+
+  if (adoptedProject != null) {
+    // `created` distinguishes a fresh self-registration from adopting an
+    // existing provisioned row; with an instance_id we expect adoption.
+    const verb = reg?.created ? "Registered" : "Adopted";
+    console.log(`✓ ${verb} monitoring instance (project: ${adoptedProject})\n`);
+  } else if (reg) {
+    // Request succeeded but carried no usable project field — don't claim
+    // adoption, but don't report a hard failure either (no re-run needed).
+    console.error(
+      `⚠ Adopted provisioned instance ${instanceId} but the platform returned no project` +
+        (projectName
+          ? ` — reports will use project '${projectName}'`
+          : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
+    );
+  } else {
+    console.error(
+      `⚠ Could not adopt provisioned instance ${instanceId}` +
+        (projectName
+          ? ` — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
+          : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
+    );
+  }
+  return reg;
+}
+
+/**
+ * Self-register this monitoring instance, persist the id the platform mints,
+ * and say which of those happened.
+ *
+ * Extracted from the local-install action so the step that carried the bug can
+ * be driven directly by a test: the defect was never in the helpers, it was
+ * that this sequence did not run, and a 600-line command action gave the tests
+ * nothing to hold onto. `register` is injectable for that reason.
+ *
+ * The reporting is not decoration. Registration is best-effort and returns
+ * `null` on failure, so without it a self-registering box printed a clean
+ * "Local install completed!" over a container that would idle forever.
+ */
+async function selfRegisterAndPersist(
+  projectDir: string,
+  apiKey: string,
+  // `string | undefined` to match registerMonitoringInstance: a nameless
+  // self-registration is rejected on the branch above, but the type does not
+  // know that, and inventing a non-null assertion here would hide it if that
+  // guard were ever removed.
+  projectName: string | undefined,
+  opts: { apiBaseUrl?: string; debug?: boolean; orgScope?: OrgScope },
+  register: typeof registerMonitoringInstance = registerMonitoringInstance,
+): Promise<MonitoringRegistration | null> {
+  const reg = await register(apiKey, projectName, {
+    apiBaseUrl: opts.apiBaseUrl,
+    debug: opts.debug,
+    orgScope: opts.orgScope,
+  });
+  const persisted = persistInstanceId(projectDir, reg, undefined);
+  if (persisted) {
+    console.log(`✓ Registered monitoring instance (project: ${projectName})\n`);
+    return reg;
+  }
+
+  // The remediation differs by case, so do not collapse them. When the id was
+  // minted and only the write failed, re-running with --project would register
+  // a SECOND instance and split the health matrix across two rows for one box;
+  // --instance-id takes the adopt branch instead, which is safe to repeat.
+  const minted = reg?.instanceId?.trim();
+  if (minted) {
+    console.error(
+      `⚠ Registered monitoring instance ${minted} but could not record it in .pgwatch-config — ` +
+        `instance jobs will idle. Add 'instance_id=${minted}' to that file, or re-run with ` +
+        `--instance-id ${minted} (which adopts it rather than registering a second one)\n`
+    );
+  } else {
+    const reRun = projectName
+      ? `'postgresai mon local-install --project ${projectName}'`
+      : "'postgresai mon local-install --project <name>'";
+    console.error(
+      `⚠ Could not register this monitoring instance — instance jobs will idle until ` +
+        `${reRun} is re-run\n`
+    );
+  }
+  // The provisioning flow drives local-install and reads the exit status, not
+  // the console: exiting 0 here reported a working box that has no identity.
+  // The nameless-self-registration branch already exits 1 for the same reason.
+  process.exitCode = 1;
+  return reg;
 }
 
 /**
@@ -3294,10 +3639,9 @@ mon
     console.log(`Project directory: ${projectDir}\n`);
 
     // Save project name to .pgwatch-config if provided (used by reporter container)
-    if (opts.project) {
-      const cfgPath = path.resolve(projectDir, ".pgwatch-config");
-      updatePgwatchConfig(cfgPath, { project_name: opts.project });
-      console.log(`Using project name: ${opts.project}\n`);
+    if (opts.project && !applyProjectName(projectDir, opts.project)) {
+      process.exitCode = 1;
+      return;
     }
 
     // Update .env with custom tag if provided
@@ -3319,7 +3663,12 @@ mon
     // match the Docker images. Users can override with --tag if needed.
     const imageTag = opts.tag || pkg.version;
 
-    const { content: envContent, preservedKeys } = buildLocalInstallEnv(existingEnv, imageTag);
+    const { content: envContent, preservedKeys } = buildLocalInstallEnv(
+      existingEnv,
+      imageTag,
+      opts.instanceId || process.env.PGAI_INSTANCE_ID || null,
+      path.resolve(projectDir, ".pgwatch-config"),
+    );
     writeEnvFile(envFile, envContent);
     if (preservedKeys.length > 0) {
       console.log(`Preserved existing .env settings: ${preservedKeys.join(", ")}\n`);
@@ -3369,9 +3718,10 @@ mon
       if (apiKey) {
         console.log("Using API key provided via --api-key parameter");
         config.writeConfig({ apiKey });
-        // Keep reporter compatibility (docker-compose mounts .pgwatch-config)
-        updatePgwatchConfig(path.resolve(projectDir, ".pgwatch-config"), { api_key: apiKey });
-        console.log("✓ API key saved\n");
+        if (!applyApiKey(projectDir, apiKey)) {
+          process.exitCode = 1;
+          return;
+        }
       } else if (opts.yes) {
         // Auto-yes mode without API key - skip API key setup
         console.log("Auto-yes mode: no API key provided, skipping API key setup");
@@ -3388,10 +3738,11 @@ mon
 
             if (trimmedKey) {
               config.writeConfig({ apiKey: trimmedKey });
-              // Keep reporter compatibility (docker-compose mounts .pgwatch-config)
-              updatePgwatchConfig(path.resolve(projectDir, ".pgwatch-config"), { api_key: trimmedKey });
+              if (!applyApiKey(projectDir, trimmedKey)) {
+                process.exitCode = 1;
+                return;
+              }
               apiKey = trimmedKey;  // Update for later use in registerMonitoringInstance
-              console.log("✓ API key saved\n");
               break;
             }
 
@@ -3679,9 +4030,9 @@ mon
     // Register monitoring instance with API (only if API key is configured).
     // Console-provisioned installs pass --instance-id (or PGAI_INSTANCE_ID):
     // the platform then ADOPTS the provisioned instance and tells us its real
-    // project, which the reporter must upload to — so that path is awaited
-    // and persisted; the legacy self-registration stays fire-and-forget
-    // (issue platform-all#311).
+    // project, which the reporter must upload to. Self-registration takes the
+    // other branch. BOTH are awaited and persist the instance id -- the
+    // container has no identity without it (issue platform-all#311).
     if (apiKey && !opts.demo) {
       // Registration calls monitoring_instance_register -> api_token_check, so a
       // global token needs an org. The token travels in the BODY here, carrying
@@ -3714,40 +4065,17 @@ mon
       // `instanceId` truthy ⟺ plan.kind === "adopt"; branch on it directly so
       // TypeScript narrows instanceId to a defined string in the adopt path.
       if (instanceId) {
-        const reg = await registerMonitoringInstance(apiKey, projectName, {
-          orgScope: regOrgScope,
-          apiBaseUrl: globalOpts.apiBaseUrl,
-          debug: !!process.env.DEBUG,
+        const reg = await adoptAndPersist(
+          projectDir,
+          apiKey,
+          projectName,
           instanceId,
-        });
-        const adoptedProject = resolveAdoptedProject(reg);
-        if (adoptedProject != null) {
-          // Point the reporter at the adopted instance's project so checkup
-          // uploads land next to the rest of this instance's health data.
-          updatePgwatchConfig(path.resolve(projectDir, ".pgwatch-config"), {
-            project_name: adoptedProject,
-          });
-          // `created` distinguishes a fresh self-registration from adopting an
-          // existing provisioned row; with an instance_id we expect adoption.
-          const verb = reg?.created ? "Registered" : "Adopted";
-          console.log(`✓ ${verb} monitoring instance (project: ${adoptedProject})\n`);
-        } else if (reg) {
-          // Request succeeded but carried no usable project field — don't claim
-          // adoption, but don't report a hard failure either (no re-run needed).
-          console.error(
-            `⚠ Adopted provisioned instance ${instanceId} but the platform returned no project` +
-              (projectName
-                ? ` — reports will use project '${projectName}'`
-                : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
-          );
-        } else {
-          console.error(
-            `⚠ Could not adopt provisioned instance ${instanceId}` +
-              (projectName
-                ? ` — reports will use project '${projectName}' until 'postgresai mon local-install' is re-run`
-                : ` — reports will have no project until 'postgresai mon local-install' is re-run with --project <name>`)
-          );
-        }
+          {
+            orgScope: regOrgScope,
+            apiBaseUrl: globalOpts.apiBaseUrl,
+            debug: !!process.env.DEBUG,
+          },
+        );
 
         // Best-effort: arm hands-off AAS auto-collection for this adopted
         // instance. Mints a Grafana Viewer SA on the LOCAL Grafana, resolves
@@ -3792,11 +4120,21 @@ mon
         );
         process.exitCode = 1;
       } else {
-        void registerMonitoringInstance(apiKey, projectName, {
-          apiBaseUrl: globalOpts.apiBaseUrl,
-          debug: !!process.env.DEBUG,
-          orgScope: regOrgScope,
-        });
+        // AWAITED, not fire-and-forget: the platform returns the id of the row
+        // it just created, and that id exists nowhere else. Discarding it left
+        // the instance-jobs container with no identity on every self-registered
+        // box. registerMonitoringInstance never throws -- it returns null on
+        // failure -- so awaiting cannot fail the install.
+        await selfRegisterAndPersist(
+          projectDir,
+          apiKey,
+          projectName,
+          {
+            apiBaseUrl: globalOpts.apiBaseUrl,
+            debug: !!process.env.DEBUG,
+            orgScope: regOrgScope,
+          },
+        );
       }
     }
 
@@ -3869,6 +4207,10 @@ const MONITORING_CONTAINERS = [
   "flask-pgss-api",
   "sources-generator",
   "postgres-reports",
+  // Profile-gated (postgresai#366): absent on a box that never enabled it,
+  // which this list already tolerates - `docker rm -f` on a missing container
+  // is caught and ignored below.
+  "instance-jobs",
 ];
 
 /**
@@ -3957,19 +4299,73 @@ mon
     const code = await runCompose(args);
     if (code !== 0) process.exitCode = code;
   });
+export type MonitoringService = {
+  name: string;
+  container: string;
+  /** Skipped when its container is absent, for a service behind a compose profile. */
+  optional?: boolean;
+  /** Read .State.Health.Status too, for a container that reports a real verdict. */
+  readHealth?: boolean;
+};
+
+/**
+ * Decide one service's line in `mon health`, given what `docker inspect` said.
+ *
+ * Split out of the command so it can be tested: the six long-standing services
+ * keep the status-only check they have always had, and the two new behaviours
+ * (a profile-gated service that is simply absent, and a container whose own
+ * healthcheck has a verdict) are pinned rather than assumed.
+ *
+ * `starting` is NOT a failure: Docker reports it until the first probe fires,
+ * so treating it as unhealthy would make `mon health` red for the container's
+ * whole start period after every `mon up`.
+ */
+export function judgeServiceHealth(
+  service: MonitoringService,
+  present: boolean,
+  status: string,
+  health: string,
+): { ok: boolean; mark: string; label: string } {
+  if (!present) {
+    return service.optional
+      ? { ok: true, mark: "-", label: "not enabled" }
+      : { ok: false, mark: "✗", label: "unreachable" };
+  }
+  if (status !== "running") {
+    return { ok: false, mark: "✗", label: `unhealthy (status: ${status})` };
+  }
+  if (service.readHealth && health && health !== "healthy" && health !== "starting") {
+    return { ok: false, mark: "✗", label: `unhealthy (${health})` };
+  }
+  return { ok: true, mark: "✓", label: "healthy" };
+}
+
+/**
+ * The services `mon health` reports on. A factory rather than a literal inside
+ * the command, so the list itself -- not just the per-service decision -- can be
+ * asserted: which entry is profile-gated, and which reads its own healthcheck.
+ */
+export function monitoringHealthServices(): MonitoringService[] {
+  return [
+    { name: "Grafana", container: "grafana-with-datasources" },
+    { name: "Prometheus", container: "sink-prometheus" },
+    { name: "PGWatch (Postgres)", container: "pgwatch-postgres" },
+    { name: "PGWatch (Prometheus)", container: "pgwatch-prometheus" },
+    { name: "Target DB", container: "target-db" },
+    { name: "Sink Postgres", container: "sink-postgres" },
+    // Profile-gated and self-reporting; see judgeServiceHealth. The six above
+    // stay on the status-only check - reading their health status is a
+    // fleet-wide behaviour change and belongs in its own MR. postgresai#366.
+    { name: "Instance jobs", container: "instance-jobs", optional: true, readHealth: true },
+  ];
+}
+
 mon
   .command("health")
   .description("health check for monitoring services")
   .option("--wait <seconds>", "wait time in seconds for services to become healthy", parseInt, 0)
   .action(async (opts: { wait: number }) => {
-    const services = [
-      { name: "Grafana", container: "grafana-with-datasources" },
-      { name: "Prometheus", container: "sink-prometheus" },
-      { name: "PGWatch (Postgres)", container: "pgwatch-postgres" },
-      { name: "PGWatch (Prometheus)", container: "pgwatch-prometheus" },
-      { name: "Target DB", container: "target-db" },
-      { name: "Sink Postgres", container: "sink-postgres" },
-    ];
+    const services = monitoringHealthServices();
 
     const waitTime = opts.wait || 0;
     const maxAttempts = waitTime > 0 ? Math.ceil(waitTime / 5) : 1;
@@ -3987,17 +4383,13 @@ mon
       for (const service of services) {
         try {
           const result = spawnSync("docker", ["inspect", "-f", "{{.State.Status}}", service.container], { stdio: "pipe" });
-          const status = result.stdout.trim();
-
-          if (result.status === 0 && status === 'running') {
-            console.log(`✓ ${service.name}: healthy`);
-          } else if (result.status === 0) {
-            console.log(`✗ ${service.name}: unhealthy (status: ${status})`);
-            allHealthy = false;
-          } else {
-            console.log(`✗ ${service.name}: unreachable`);
-            allHealthy = false;
-          }
+          const present = result.status === 0;
+          const health = present && service.readHealth
+            ? (spawnSync("docker", ["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{end}}", service.container], { stdio: "pipe" }).stdout || "").trim()
+            : "";
+          const verdict = judgeServiceHealth(service, present, (result.stdout || "").trim(), health);
+          console.log(`${verdict.mark} ${service.name}: ${verdict.label}`);
+          if (!verdict.ok) allHealthy = false;
         } catch (error) {
           console.log(`✗ ${service.name}: unreachable`);
           allHealthy = false;
@@ -6874,3 +7266,4 @@ export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };
 export { buildLocalInstallEnv, LOCAL_INSTALL_MANAGED_ENV_KEYS };
 export { registerMonitoringInstance, resolveAdoptedProject, type MonitoringRegistration };
 export { planMonitoringRegistration, type MonRegistrationPlan };
+export { instanceIdToPersist, persistInstanceId, selfRegisterAndPersist, adoptAndPersist, statOwner, applyProjectName, applyApiKey };
