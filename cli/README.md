@@ -271,6 +271,35 @@ postgresai mon check                          # System readiness check
 postgresai mon shell <service>                # Open shell to monitoring service
 ```
 
+### PromQL queries (`promql`)
+
+Ask a monitoring instance a PromQL question through the platform. The platform
+never connects to the instance: it queues the query as a job, the instance picks
+it up on its next poll, runs it against its own metric store, and posts the
+answer back.
+
+```bash
+# instant query
+pgai promql 'up' --instance <instance-uuid>
+
+# range query
+pgai promql 'sum(rate(pgwatch_db_stats_xact_commit[5m]))' \
+  --instance <instance-uuid> \
+  --range --start 2026-09-21T00:00:00Z --end 2026-09-21T01:00:00Z --step 60
+
+# on the box itself, --instance is read from .pgwatch-config
+pgai promql 'up'
+```
+
+`--at <time>` evaluates an instant query at a given moment (ignored with
+`--range`). `--json` prints every point instead of the first and last per series.
+The wait is sized from the instance's poll pacing; `--timeout` overrides it. A
+result too large for the byte budget is trimmed and flagged `truncated`.
+
+Requires platform-all !809
+(https://gitlab.com/postgres-ai/platform-all/-/merge_requests/809); until it is
+deployed the command returns a PGRST202 404.
+
 ### MCP server (`mcp` group)
 
 ```bash

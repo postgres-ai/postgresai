@@ -754,7 +754,10 @@ func TestAnUnknownKindIsRefusedBeforeTheWindowIsEvenLookedAt(t *testing.T) {
 		"no args at all":      `{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Run(context.Background(), nil, "promql_instant", []byte(args),
+			// promql_labels, not promql_instant: the two promql_* QUERY kinds
+			// now dispatch, but discovery needs a `match[]` parameter and is
+			// out of scope, so it is still a kind this build cannot run.
+			_, err := Run(context.Background(), nil, "promql_labels", []byte(args),
 				time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
 			if !errors.Is(err, ErrUnknownKind) {
 				t.Fatalf("err = %v, want ErrUnknownKind", err)

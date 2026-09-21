@@ -32,6 +32,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	log.SetPrefix("instance-jobs: ")
 
+	// Before anything allocates: the GC cannot see the container's cgroup limit
+	// on its own, and decoding a large store response into label maps is many
+	// times the wire size in heap.
+	if applied := runner.ApplyMemoryLimit(); applied > 0 {
+		log.Printf("memory limit set to %d bytes from the cgroup", applied)
+	}
+
 	healthPath := runner.DefaultHealthPath
 	if v := strings.TrimSpace(os.Getenv("INSTANCE_JOBS_HEALTH_FILE")); v != "" {
 		healthPath = v

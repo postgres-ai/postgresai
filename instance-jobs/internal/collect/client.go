@@ -36,6 +36,13 @@ const maxSlicesPerRange = 8
 // body size, which scales with series cardinality.
 const maxResponseBytes = 8 << 20
 
+// maxErrorBodyBytes bounds the NON-2xx read, which is a different question from
+// the success path: no store error message is anywhere near 64 KiB, and
+// decoding the full 8 MiB cap on every non-2xx would cost ~40 MiB of garbage --
+// on the collection path too, once per slice per attempt, in a 256 MiB
+// container.
+const maxErrorBodyBytes = 64 << 10
+
 // ErrWindowTooLong marks a window needing more than maxSlicesPerRange requests.
 // It is a local input error: nothing is queried and the job fails permanently.
 var ErrWindowTooLong = errors.New("collection window is too long")
@@ -44,6 +51,12 @@ var ErrWindowTooLong = errors.New("collection window is too long")
 type UpstreamError struct {
 	StatusCode int
 	Message    string
+	// StoreMessage is the `error` field of the store's own JSON body, when it
+	// sent one. Empty for every non-JSON or bodyless failure. On a 4xx it names
+	// the syntax error, which is the whole diagnostic to someone who has just
+	// typed an expression -- so runPromQL forwards it rather than replacing it
+	// with a constant (#378).
+	StoreMessage string
 }
 
 func (e *UpstreamError) Error() string {
@@ -303,10 +316,28 @@ func (c *countingReader) Read(p []byte) (int, error) {
 
 // doQuery issues one GET against the store and returns the parsed response.
 func (c *Client) doQuery(ctx context.Context, subpath string, params url.Values) (*promResponse, error) {
+	var pr promResponse
+	if err := c.getJSON(ctx, subpath, params, &pr); err != nil {
+		return nil, err
+	}
+	if pr.Status != "success" {
+		return nil, &UpstreamError{StatusCode: http.StatusBadGateway, Message: "query returned a non-success status"}
+	}
+	return &pr, nil
+}
+
+// getJSON performs one store request and decodes the body into dst.
+//
+// Shared by every caller rather than copied, so the guards cannot drift apart:
+// the auth header, the Accept header, the status check, the size cap and the
+// truncated-versus-malformed distinction are all decided in exactly one place.
+// The subpath is always chosen by the CALLER from a fixed set -- it is never
+// built from anything a user supplied.
+func (c *Client) getJSON(ctx context.Context, subpath string, params url.Values, dst any) error {
 	endpoint := c.baseURL + "/" + subpath + "?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// Either half alone still authenticates: a half-configured box sending no
 	// header at all would 401 every query with nothing to point at.
@@ -317,7 +348,7 @@ func (c *Client) doQuery(ctx context.Context, subpath string, params url.Values)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -325,30 +356,45 @@ func (c *Client) doQuery(ctx context.Context, subpath string, params url.Values)
 	limited := &countingReader{r: io.LimitReader(resp.Body, c.maxRespBytes+1)}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &UpstreamError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("metric store returned status %d", resp.StatusCode),
+		// Read the body BEFORE giving up on it. This used to return on the
+		// status alone, which discarded the one thing a 4xx carries that the
+		// status does not: a store answers a bad expression with 422 (or 400
+		// upstream) and names the parse error in `error`. `limited` already caps
+		// the read, so this costs nothing. A body that is missing, not JSON, or
+		// not this shape leaves StoreMessage empty and changes nothing (#378).
+		var body struct {
+			Status    string `json:"status"`
+			ErrorType string `json:"errorType"`
+			Error     string `json:"error"`
+		}
+		// Bounded far tighter than the success path. No store error message is
+		// anywhere near 64 KiB, and decoding the full 8 MiB cap here would cost
+		// ~40 MiB of garbage on every non-2xx -- on the collection path too,
+		// once per slice per attempt, inside a 256 MiB container. Over the
+		// bound the JSON is truncated, the decode fails, StoreMessage stays
+		// empty and ue.Message is used: the degradation is silent by design.
+		_ = json.NewDecoder(io.LimitReader(limited, maxErrorBodyBytes)).Decode(&body)
+		return &UpstreamError{
+			StatusCode:   resp.StatusCode,
+			Message:      fmt.Sprintf("metric store returned status %d", resp.StatusCode),
+			StoreMessage: body.Error,
 		}
 	}
 
-	var pr promResponse
-	if err := json.NewDecoder(limited).Decode(&pr); err != nil {
+	if err := json.NewDecoder(limited).Decode(dst); err != nil {
 		if limited.n > c.maxRespBytes {
 			// 413, deliberately: the body scales with series cardinality, so a
 			// window that overflows the cap overflows it every time. A 502
 			// would be retried three times for the same answer, and would look
 			// like a store fault instead of a window we cannot fetch.
-			return nil, &UpstreamError{
+			return &UpstreamError{
 				StatusCode: http.StatusRequestEntityTooLarge,
 				Message:    "response exceeded the size limit",
 			}
 		}
-		return nil, &UpstreamError{StatusCode: http.StatusBadGateway, Message: "failed to parse the response"}
+		return &UpstreamError{StatusCode: http.StatusBadGateway, Message: "failed to parse the response"}
 	}
-	if pr.Status != "success" {
-		return nil, &UpstreamError{StatusCode: http.StatusBadGateway, Message: "query returned a non-success status"}
-	}
-	return &pr, nil
+	return nil
 }
 
 // timeRange is one closed [start, end] slice of a query window.

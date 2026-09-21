@@ -40,6 +40,7 @@ import {
   destroySnapshot,
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
+import { enqueueQuery, awaitQueryResult, isTerminal, renderPromQL, type EnqueueArgs } from "../lib/promql";
 import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
@@ -3226,6 +3227,73 @@ function applyApiKey(projectDir: string, apiKey: string): boolean {
   return true;
 }
 
+interface PromQLOptions extends OrgOptions {
+  instance?: string;
+  at?: string;
+  range?: boolean;
+  start?: string;
+  end?: string;
+  step?: string;
+  timeout?: string;
+  json?: boolean;
+}
+
+/**
+ * How long to wait when the platform does not tell us the instance's pacing.
+ *
+ * `instance_job_poll_idle_ms` defaults to 600000, so the first answer can be
+ * ten minutes away; a shorter default timed out on a perfectly healthy box.
+ * Used only as the fallback now -- when the platform sends an estimate, the
+ * wait is sized from that instead.
+ */
+const DEFAULT_PROMQL_TIMEOUT_S = 11 * 60;
+
+/** "90s", "4m", "1h10m" — for telling a human how long they are waiting. */
+function formatSeconds(total: number): string {
+  const s = Math.max(0, Math.round(total));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h${rem}m` : `${h}h`;
+}
+
+/**
+ * Seconds from a duration like `60s`, `5m`, `1h`, or a bare number of seconds.
+ * Null when it is not one, so the caller can say which flag was wrong.
+ */
+function parseDurationSeconds(v: string): number | null {
+  const m = /^(\d+)(s|m|h)?$/.exec(v.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (!Number.isFinite(n)) return null;
+  return n * (m[2] === "h" ? 3600 : m[2] === "m" ? 60 : 1);
+}
+
+/**
+ * The instance id this box was registered as, from `.pgwatch-config`.
+ *
+ * Makes `pgai promql` work with no flags when run on a monitoring box, which is
+ * where it is most useful. Returns null off-box rather than guessing.
+ */
+function readInstanceIdFromProject(): string | null {
+  try {
+    const { projectDir } = resolvePaths();
+    const configPath = path.resolve(projectDir, ".pgwatch-config");
+    if (!fs.existsSync(configPath)) return null;
+    const line = fs
+      .readFileSync(configPath, "utf8")
+      .replace(/^\uFEFF+/, "")
+      .split(/\r?\n/)
+      .find((l) => l.startsWith("instance_id="));
+    const value = line?.slice("instance_id=".length).trim();
+    return value && INSTANCE_ID_RE.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Record `--project` in `.pgwatch-config`, where the reporter reads it.
  *
@@ -5455,6 +5523,134 @@ program
         return;
       }
       printResult(orgs, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+withOrgOptions(program.command("promql"))
+  .description("run a PromQL query on a monitoring instance's own metric store")
+  .argument("<expr>", "PromQL expression")
+  .option("--instance <uuid>", "monitoring instance id (default: this box's .pgwatch-config)")
+  .option("--at <rfc3339>", "evaluate an instant query at this time (default: now; ignored with --range)")
+  .option("--range", "run a range query (requires --start, --end, --step)")
+  .option("--start <rfc3339>", "range start")
+  .option("--end <rfc3339>", "range end")
+  .option("--step <duration>", "range step, e.g. 60s or 5m")
+  .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
+  .option("--json", "output the raw result payload")
+  .action(async (expr: string, opts: PromQLOptions) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const cfg = config.readConfig();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) {
+        console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+        process.exitCode = 1;
+        return;
+      }
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+      const instanceId = opts.instance || readInstanceIdFromProject();
+      if (!instanceId) {
+        console.error("No monitoring instance. Pass --instance <uuid>, or run this on a box whose");
+        console.error(".pgwatch-config has an instance_id (written by 'pgai mon local-install').");
+        process.exitCode = 1;
+        return;
+      }
+
+      const kind = opts.range ? "promql_range" : "promql_instant";
+      const enqueue: EnqueueArgs = { instanceId, kind, query: expr };
+      if (opts.range) {
+        if (!opts.start || !opts.end || !opts.step) {
+          console.error("--range needs --start, --end and --step.");
+          process.exitCode = 1;
+          return;
+        }
+        const stepS = parseDurationSeconds(opts.step);
+        if (stepS === null || stepS < 1) {
+          console.error(`Invalid --step ${opts.step}: expected a duration like 60s, 5m or 1h.`);
+          process.exitCode = 1;
+          return;
+        }
+        enqueue.start = opts.start;
+        enqueue.end = opts.end;
+        enqueue.stepS = stepS;
+      } else if (opts.at) {
+        enqueue.at = opts.at;
+      }
+
+      // 11m, not 60s. The first answer cannot arrive before the instance's
+      // next poll, and `app.settings.instance_job_poll_idle_ms` defaults to
+      // 600000 -- ten minutes. A 60s default therefore timed out on a
+      // perfectly healthy box every time outside a rig tuned down for testing.
+      const explicitTimeoutS = opts.timeout ? parseDurationSeconds(opts.timeout) : null;
+      if (opts.timeout && (explicitTimeoutS === null || explicitTimeoutS < 1)) {
+        console.error(`Invalid --timeout ${opts.timeout}: expected a duration like 60s or 2m.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      const { jobId, firstAnswerEstimateS } = await enqueueQuery(apiKey, enqueue, { apiBaseUrl });
+
+      // Size the wait from what the server SAID rather than from a constant
+      // that is only right for one configuration. The estimate is the
+      // instance's poll pacing; jitter is +/-20%, and the job still has to run,
+      // so wait comfortably past it. Absent -- an older platform, or one that
+      // does not send it -- falls back to the default, never to zero.
+      const timeoutS =
+        explicitTimeoutS ??
+        (firstAnswerEstimateS === null
+          ? DEFAULT_PROMQL_TIMEOUT_S
+          : Math.min(Math.max(Math.ceil(firstAnswerEstimateS * 1.5) + 30, 60), 1800));
+
+      // One line, not three: the id makes the answer recoverable if the user
+      // interrupts, and the pacing is why the wait is long. Both on stderr so
+      // --json stdout stays machine-readable.
+      console.error(
+        firstAnswerEstimateS === null
+          ? `Queued as job ${jobId}; waiting up to ${formatSeconds(timeoutS)} for the instance's next poll.`
+          : `Queued as job ${jobId}; this instance polls roughly every ${formatSeconds(firstAnswerEstimateS)} ` +
+              `(jittered, so sometimes longer). Waiting up to ${formatSeconds(timeoutS)}.`,
+      );
+
+      const res = await awaitQueryResult(apiKey, jobId, {
+        apiBaseUrl,
+        timeoutMs: timeoutS * 1000,
+      });
+
+      if (!isTerminal(res.status)) {
+        // Not lost, just not arrived — and WHICH of the two situations it is
+        // decides what to do. The poll already knows.
+        console.error(`Timed out after ${timeoutS}s. Job ${jobId} is still ${res.status}.`);
+        console.error(
+          res.status === "queued"
+            ? "Nothing has claimed it: check the instance-jobs container is running (it is behind " +
+                "a compose profile), or wait — a first collection can queue ~20 periods ahead of it."
+            : "The instance is working on it — wait, or re-run with a longer --timeout.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      if (res.status !== "done" || res.outcome !== "ok") {
+        // Verbatim: the box's own words about what went wrong are the useful
+        // part, and paraphrasing them loses the store's error text.
+        console.error(`Query ${res.status}${res.failure_class ? ` (${res.failure_class})` : ""}.`);
+        if (res.error) console.error(res.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (!res.result) {
+        console.error("The job finished but carried no result.");
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.json) {
+        console.log(JSON.stringify(res.result, null, 2));
+        return;
+      }
+      console.log(renderPromQL(res.result));
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

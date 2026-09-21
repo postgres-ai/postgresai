@@ -14,6 +14,19 @@
 
 ### Added
 
+- `pgai promql <expr>` runs a PromQL query on a monitoring instance through the
+  platform and prints the result — `--range --start --end --step` for a matrix,
+  `--at` for an instant query at a given time, `--json` for every point. The
+  instance is taken from `--instance`, or from `.pgwatch-config` when the
+  command runs on the box itself. The wait is sized from the pacing estimate the
+  platform returns, so a 5s-polling instance answers in about a minute while the
+  600s fleet default waits longer; `--timeout` overrides it. A result larger than
+  the box's byte budget comes back trimmed and flagged `truncated`, not refused.
+  **Requires platform-all !809**
+  (https://gitlab.com/postgres-ai/platform-all/-/merge_requests/809), which adds
+  `v1.instance_query_enqueue` / `v1.instance_query_result`. Until that is
+  deployed the command fails with a PGRST202 404 rather than degrading. (#378)
+
 - `issues create --hidden` creates a staff-only hidden issue, and
   `issues update --hidden` / `--no-hidden` hides or unhides an existing one
   (MCP: optional `is_hidden` on `create_issue` / `update_issue`). The CLI does
