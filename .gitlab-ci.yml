@@ -533,6 +533,47 @@ cli:npm:publish:
 
       # Configure npm auth without committing credentials
       printf "//registry.npmjs.org/:_authToken=%s\n" "$NPM_TOKEN" > ~/.npmrc
+      export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
+
+      # True when the registry already serves exactly <pkg>@<version>.
+      npm_has_version() {
+        [ "$(npm view "$1@$2" version 2>/dev/null || true)" = "$2" ]
+      }
+
+      # The registry can take minutes to serve a freshly published version
+      # (~150 s observed on 0.17.0-rc.2, #368); a 75 s wait used to kill the
+      # job here, after postgresai was out but before pgai was published.
+      wait_for_version() {
+        for i in $(seq 1 60); do
+          if npm_has_version "$1" "$2"; then
+            return 0
+          fi
+          echo "Waiting for npm to serve $1@$2 (attempt $i/60)..."
+          sleep 10
+        done
+        echo "npm did not serve $1@$2 within 10 minutes"
+        return 1
+      }
+
+      # Publish the package in the current directory unless that exact version
+      # is already on the registry, so a job retry after a partial run finishes
+      # the release instead of failing on "cannot publish over existing version"
+      # (#368). The dist-tag is (re)asserted either way: npm sets it only on a
+      # real publish, and a skipped publish must still end with the tag in place.
+      publish_pkg() {
+        local pkg="$1"
+        if npm_has_version "$pkg" "$NPM_VERSION"; then
+          echo "$pkg@$NPM_VERSION is already on the registry; skipping publish"
+        else
+          npm publish --dry-run --tag "$DIST_TAG" --access public
+          npm publish --tag "$DIST_TAG" --access public
+        fi
+        wait_for_version "$pkg" "$NPM_VERSION"
+        npm dist-tag add "$pkg@$NPM_VERSION" "$DIST_TAG"
+        if [ -n "$EXTRA_TAG" ]; then
+          npm dist-tag add "$pkg@$NPM_VERSION" "$EXTRA_TAG"
+        fi
+      }
 
       if [ -n "$EXTRA_TAG" ]; then
         echo "Publishing postgresai@${NPM_VERSION} to dist-tags: ${DIST_TAG}, ${EXTRA_TAG}"
@@ -541,28 +582,11 @@ cli:npm:publish:
       fi
       cd cli
       # Use bun for faster install and build
-      export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
       bun install
       # Make the git tag the source of truth without committing version bumps.
       npm version --no-git-tag-version "$NPM_VERSION"
       bun run build
-      npm publish --dry-run --tag "$DIST_TAG" --access public
-      npm publish --tag "$DIST_TAG" --access public
-      # Add extra dist-tag if specified (e.g., @beta or @rc in addition to @latest)
-      if [ -n "$EXTRA_TAG" ]; then
-        npm dist-tag add "postgresai@${NPM_VERSION}" "$EXTRA_TAG"
-      fi
-
-      # Wait until the registry sees the new postgresai version. This prevents the pgai step from
-      # failing due to eventual consistency when verifying/pinning dependencies.
-      for i in $(seq 1 30); do
-        if npm view "postgresai@${NPM_VERSION}" version >/dev/null 2>&1; then
-          break
-        fi
-        echo "Waiting for npm to recognize postgresai@${NPM_VERSION} (attempt $i/30)..."
-        sleep 2
-      done
-      npm view "postgresai@${NPM_VERSION}" version >/dev/null
+      publish_pkg postgresai
 
       if [ -n "$EXTRA_TAG" ]; then
         echo "Publishing pgai@${NPM_VERSION} (wrapper) to dist-tags: ${DIST_TAG}, ${EXTRA_TAG}"
@@ -573,20 +597,7 @@ cli:npm:publish:
       # Update version + dependency so `npx pgai@<tag>` pulls the matching postgresai version.
       npm pkg set "dependencies.postgresai=$NPM_VERSION"
       npm version --no-git-tag-version "$NPM_VERSION"
-      npm publish --dry-run --tag "$DIST_TAG" --access public
-      npm publish --tag "$DIST_TAG" --access public
-      # Add extra dist-tag if specified
-      if [ -n "$EXTRA_TAG" ]; then
-        npm dist-tag add "pgai@${NPM_VERSION}" "$EXTRA_TAG"
-      fi
-
-      for i in $(seq 1 30); do
-        if npm view "pgai@${NPM_VERSION}" version >/dev/null 2>&1; then
-          break
-        fi
-        echo "Waiting for npm to recognize pgai@${NPM_VERSION} (attempt $i/30)..."
-        sleep 2
-      done
+      publish_pkg pgai
 
       # Verify both packages are visible as published versions.
       npm view "postgresai@${NPM_VERSION}" version >/dev/null
