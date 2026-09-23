@@ -72,8 +72,11 @@ describe("mon health: which services are reported on", () => {
   test("the instance-jobs container is in the list, gated and self-reporting", () => {
     const entry = services.find(s => s.container === "instance-jobs");
     expect(entry).toBeDefined();
-    // optional: it ships behind a compose profile, so an absent container is
-    // "not enabled" rather than a fault. readHealth: it reports a real verdict.
+    // optional: it ships behind a compose profile, so on a stack that never
+    // enabled it an absent container is "not enabled" rather than a fault --
+    // that is the DEFAULT argument here. With the profile on it becomes a
+    // fault; see instance-jobs-profile.test.ts (postgresai#381).
+    // readHealth: it reports a real verdict.
     expect(entry!.optional).toBe(true);
     expect(entry!.readHealth).toBe(true);
   });

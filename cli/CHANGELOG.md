@@ -27,6 +27,34 @@
   `v1.instance_query_enqueue` / `v1.instance_query_result`. Until that is
   deployed the command fails with a PGRST202 404 rather than degrading. (#378)
 
+- `mon local-install --instance-jobs` / `--no-instance-jobs` (or
+  `PGAI_INSTANCE_JOBS`) turns the outbound collection channel on or off for a
+  machine. It writes `COMPOSE_PROFILES` into the stack `.env` rather than
+  passing `--profile` on every command: compose reads that key itself, so a
+  plain `up -d` / `pull` / `down` then covers the `instance-jobs` container —
+  `mon stop` removes it and `mon start` brings it back, and `mon update` pulls
+  its image and starts it with a scoped `up -d --no-deps` (`pull` cannot create
+  a service that was not there before, and `mon restart` never creates a
+  missing container). Disabling also removes the container by name: taking the
+  profile out of `.env` does not stop one that is already running, and a later
+  `up -d --force-recreate` leaves it up. Do not rely on `down` to reach a
+  profile-gated container — it was observed both reaching and not reaching one
+  on the same engine and compose versions.
+
+  Passing neither the flag nor the env var expresses no opinion: the existing
+  value is carried over and any other profile listed there survives, so an
+  upgrade or a routine re-install never turns the channel on or off. Enabling
+  on a fleet machine still goes through the ansible playbook
+  (`instance_jobs_enabled`), because a hand-run install without the instance id
+  self-registers a duplicate instance. The platform's
+  `app.settings.instance_jobs_enabled` remains a separate gate. (#381)
+
+- `mon health` reports the `instance-jobs` container as a fault — `enabled but
+  not running` — when the compose profile is on and the container is absent,
+  instead of `- not enabled`. `mon stop` deleting that container is the most
+  likely way the channel stops, and the health line used to be blind to it.
+  With the profile off it is still skipped. (#381)
+
 - `issues create --hidden` creates a staff-only hidden issue, and
   `issues update --hidden` / `--no-hidden` hides or unhides an existing one
   (MCP: optional `is_hidden` on `create_issue` / `update_issue`). The CLI does

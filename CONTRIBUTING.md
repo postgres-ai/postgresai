@@ -63,6 +63,11 @@ This workflow lets you:
   docker compose --profile instance-jobs up -d instance-jobs
   ```
 
+  `--profile` here is a one-off for your shell. On a real box the profile is a
+  value in `.env` (`COMPOSE_PROFILES=instance-jobs`, written by
+  `postgresai mon local-install --instance-jobs`), so every later compose
+  command covers the service without the flag.
+
 ### One-time local setup (no commits)
 
 #### Create `.env` (required)
