@@ -299,7 +299,90 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   // stale copy alongside the new one. postgresai#366.
   "PGAI_INSTANCE_ID",
   "INSTANCE_JOBS_USER",
+  // Rewritten, but MERGED rather than replaced: this run only adds or removes
+  // its own profile token and carries every other one over. See
+  // composeProfilesValue. A run that expresses no opinion re-emits the
+  // existing value unchanged, so listing it here is what stops the preserve
+  // loop appending a second copy. postgresai#381.
+  "COMPOSE_PROFILES",
 ];
+
+/**
+ * The compose profile that gates the instance-jobs container.
+ *
+ * Enabling is a value in `.env`, not a `--profile` argument, because every
+ * `mon` command would otherwise have to pass it: compose reads COMPOSE_PROFILES
+ * from `.env` by itself, so a plain `up -d` / `pull` / `down` covers the
+ * service once the key is there. postgresai#381.
+ */
+const INSTANCE_JOBS_PROFILE = "instance-jobs";
+
+/**
+ * The COMPOSE_PROFILES value to write, given what `.env` already has and what
+ * this run asks for.
+ *
+ * `want === undefined` means "no opinion": the existing value is carried over
+ * verbatim (deduplicated), so a plain `mon local-install` never turns the
+ * channel on or off by accident. `true` adds the profile, `false` removes it.
+ *
+ * Other profiles are preserved: this stack defines only `instance-jobs` today,
+ * but COMPOSE_PROFILES is compose's own variable and an operator may have put
+ * something else there. Returns null when nothing is left to write.
+ */
+export function composeProfilesValue(
+  existing: string | null | undefined,
+  want?: boolean,
+): string | null {
+  const profiles: string[] = [];
+  for (const raw of (existing ?? "").split(",")) {
+    const token = raw.trim();
+    if (token && !profiles.includes(token)) profiles.push(token);
+  }
+
+  const at = profiles.indexOf(INSTANCE_JOBS_PROFILE);
+  if (want === true && at === -1) profiles.push(INSTANCE_JOBS_PROFILE);
+  if (want === false && at !== -1) profiles.splice(at, 1);
+
+  return profiles.length > 0 ? profiles.join(",") : null;
+}
+
+/** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
+export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined): boolean {
+  return (composeProfiles ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .includes(INSTANCE_JOBS_PROFILE);
+}
+
+/**
+ * What this `mon local-install` run asks for: the flag if given, else
+ * PGAI_INSTANCE_JOBS, else nothing.
+ *
+ * The env var exists because ansible sets it: a `--instance-jobs` flag would
+ * make every CLI older than this one fail the whole install with
+ * `error: unknown option`, while an unknown env var is ignored — the same
+ * reason PGAI_INSTANCE_ID is passed that way (see the ansible role).
+ *
+ * An unrecognised value is an ERROR, not a shrug: silently reading
+ * `PGAI_INSTANCE_JOBS=ture` as "off" leaves the channel dead on a machine
+ * somebody enabled on purpose, which is exactly the failure this whole
+ * mechanism exists to make visible.
+ */
+export function resolveInstanceJobsRequest(
+  flag: boolean | undefined,
+  envValue: string | undefined,
+): { enabled?: boolean; error?: string } {
+  if (flag !== undefined) return { enabled: flag };
+  const value = (envValue ?? "").trim().toLowerCase();
+  if (value === "") return {};
+  if (["1", "true", "yes", "on"].includes(value)) return { enabled: true };
+  if (["0", "false", "no", "off"].includes(value)) return { enabled: false };
+  return {
+    error:
+      `PGAI_INSTANCE_JOBS=${envValue} is not a boolean ` +
+      "(use true/false, 1/0, yes/no, on/off, or leave it empty to keep the current setting)",
+  };
+}
 
 /**
  * "uid:gid" of a regular file.
@@ -351,6 +434,7 @@ function buildLocalInstallEnv(
   imageTag: string,
   instanceId?: string | null,
   credentialFile?: string | null,
+  instanceJobs?: boolean,
 ): { content: string; preservedKeys: string[] } {
   const readRaw = (key: string): string | null => {
     // Read the way compose does: tolerate `export `/indentation and take the
@@ -406,6 +490,18 @@ function buildLocalInstallEnv(
   const owner = statOwner(credentialFile);
   const credentialOwner = owner === undefined ? processOwner() : owner;
   if (credentialOwner) envLines.push(`INSTANCE_JOBS_USER=${credentialOwner}`);
+
+  // Whether the instance-jobs container exists at all. Compose reads this key
+  // from .env itself, so writing it here is what makes every later `up -d`,
+  // `pull` and `down` cover the service -- no `--profile` argument anywhere.
+  // Merged, never replaced: a run that asks for nothing re-emits what was
+  // there. postgresai#381.
+  const existingProfiles = readRaw("COMPOSE_PROFILES");
+  const composeProfiles = composeProfilesValue(
+    existingProfiles === null ? null : stripMatchingQuotes(existingProfiles),
+    instanceJobs,
+  );
+  if (composeProfiles) envLines.push(`COMPOSE_PROFILES=${composeProfiles}`);
 
   // VictoriaMetrics admin-endpoint keys (#359): carried over when present,
   // minted when not. Rotating them on every re-install would be harmless but
@@ -3494,7 +3590,11 @@ async function applyMonitoringTargetsConfig(): Promise<number> {
 /**
  * Run docker compose command
  */
-async function runCompose(args: string[], grafanaPassword?: string): Promise<number> {
+async function runCompose(
+  args: string[],
+  grafanaPassword?: string,
+  extraEnv?: Record<string, string>,
+): Promise<number> {
   let composeFile: string;
   let projectDir: string;
   try {
@@ -3564,6 +3664,12 @@ async function runCompose(args: string[], grafanaPassword?: string): Promise<num
       }
     }
   }
+
+  // Compose reads its own variables (COMPOSE_PROFILES, ...) from the
+  // environment in preference to `.env`, which is how a caller addresses a
+  // service whose profile is no longer listed in the file. Applied last so it
+  // wins over anything loaded above.
+  if (extraEnv) Object.assign(env, extraEnv);
 
   const finalArgs = [...args];
   if (process.platform === "darwin" && shouldScaleOutNodeExporter(args)) {
@@ -3643,6 +3749,280 @@ async function applySinkPrometheusConfig(projectDir: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * The COMPOSE_PROFILES in effect for the stack, read the way compose reads it:
+ * the process environment wins over `.env`.
+ *
+ * Worth knowing when a box behaves unexpectedly: `runCompose` spawns compose
+ * with `{...process.env}`, so an operator who has COMPOSE_PROFILES exported
+ * changes what EVERY `mon` command sees, not just this read. That is compose's
+ * own precedence rule and this function follows it.
+ *
+ * Deliberately does NOT bootstrap a project directory the way
+ * `resolveOrInitPaths` does — this answers a question (`mon health`), and
+ * downloading a compose file to answer it would be a side effect nobody asked
+ * for. A missing directory or file simply means "no profiles".
+ */
+export function readComposeProfiles(knownProjectDir?: string): string | null {
+  const fromProcess = process.env.COMPOSE_PROFILES;
+  if (fromProcess !== undefined && fromProcess.trim() !== "") return fromProcess;
+
+  let projectDir: string;
+  if (knownProjectDir) {
+    projectDir = knownProjectDir;
+  } else {
+    try {
+      ({ projectDir } = resolvePaths());
+    } catch {
+      projectDir = getDefaultMonitoringProjectDir();
+    }
+  }
+
+  const envFile = path.resolve(projectDir, ".env");
+  let content: string;
+  try {
+    content = fs.readFileSync(envFile, "utf8");
+  } catch (err) {
+    // "No such file" is a real answer: no .env, no profiles. Anything else
+    // means we could not tell, and answering "no profiles" would make
+    // `mon health` print a green `- not enabled` for a container it never
+    // looked for -- silently green is the one direction a health check must
+    // not fail in. Say so instead.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      console.error(
+        `⚠ Could not read ${envFile}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      console.error("  Treating the instance-jobs profile as disabled; if it is in fact enabled,");
+      console.error("  an absent container will be reported as '- not enabled' rather than a fault.");
+    }
+    return null;
+  }
+
+  // Last assignment wins, as compose does; tolerate `export `/indentation.
+  let value: string | null = null;
+  for (const m of content.matchAll(/^[ \t]*(?:export[ \t]+)?COMPOSE_PROFILES=(.*)$/gm)) {
+    value = stripMatchingQuotes(m[1].trim());
+  }
+  return value;
+}
+
+/**
+ * What `docker inspect` says about the instance-jobs container.
+ *
+ * `unknown` is not `absent`. `docker inspect` exits 1 for a missing container
+ * AND for a dead daemon or a permission error, and reading the second as the
+ * first is how "nothing to remove" gets printed over a container that is still
+ * polling.
+ */
+export type InstanceJobsContainerState = "running" | "stopped" | "absent" | "unknown";
+
+/**
+ * The verdict for a disable, from the state before the removal and after it.
+ *
+ * Pure so the wording can be asserted, because the wording is the point. The
+ * removal is the one destructive thing this command does, and its two outcomes
+ * -- "ended a live collection channel" and "there was nothing there" -- used to
+ * print the identical `✓`. `docker rm --force` exits 0 either way, so the exit
+ * code cannot tell them apart; the state observed BEFORE the removal can.
+ *
+ * A container still present afterwards is a failure even at exit code 0: the
+ * profile is off in `.env` and something is still running against it.
+ */
+export function instanceJobsRemovalOutcome(
+  before: InstanceJobsContainerState,
+  after: InstanceJobsContainerState,
+  removeExitCode: number,
+): { ok: boolean; message: string } {
+  if (before === "unknown" || after === "unknown") {
+    return {
+      ok: false,
+      message:
+        "✗ Could not determine whether the instance-jobs container is present.\n" +
+        "  The profile is off in .env, but a container left behind keeps polling.",
+    };
+  }
+  if (before === "absent") {
+    return { ok: true, message: "✓ instance-jobs is disabled (no container was present)" };
+  }
+  if (removeExitCode !== 0 || after !== "absent") {
+    return {
+      ok: false,
+      message:
+        "✗ Could not remove the instance-jobs container.\n" +
+        "  The profile is off in .env, but the container is still there and still polling. To retry:\n" +
+        `  COMPOSE_PROFILES=${INSTANCE_JOBS_PROFILE} docker compose rm -sf ${INSTANCE_JOBS_PROFILE}`,
+    };
+  }
+  // Not a `✓`: a tick reads as "as intended", and this just ended collection on
+  // a machine that was doing it.
+  return before === "running"
+    ? {
+        ok: true,
+        message:
+          "⚠ instance-jobs was RUNNING and has been removed — outbound collection on this machine is now OFF",
+      }
+    : { ok: true, message: "✓ instance-jobs container removed (it was not running)" };
+}
+
+/**
+ * Why the scoped `up` for instance-jobs must be skipped, or null to go ahead.
+ *
+ * The whole point is the direction of the `null` case. A scoped `up` against a
+ * STOPPED project does not fail -- compose creates the network and volumes and
+ * starts the container alone -- so `mon stop && mon update` would leave a box
+ * the operator believes is stopped with one process polling. "Could not tell"
+ * therefore declines too: an unstarted container is a visible fault in
+ * `mon health`, a wrongly-started one is invisible. postgresai#381.
+ */
+export function instanceJobsStartSkipReason(storeRunning: boolean | null): string | null {
+  if (storeRunning === true) return null;
+  return storeRunning === false
+    ? "the stack is not running, so instance-jobs was not started - it comes up with the rest on `mon start`"
+    : "could not tell whether the stack is running, so instance-jobs was not started - run `mon start`, then `mon health`";
+}
+
+/**
+ * Is a compose service's container running, as far as compose can tell?
+ *
+ * `null` means "could not tell" and is deliberately distinct from `false`:
+ * the caller acts on the two differently. Mirrors the probe
+ * `applySinkPrometheusConfig` uses.
+ */
+async function composeServiceRunning(
+  projectDir: string,
+  service: string,
+): Promise<boolean | null> {
+  const composeCmd = getComposeCmd();
+  if (!composeCmd) return null;
+  try {
+    const { stdout } = await execFilePromise(
+      composeCmd[0],
+      [...composeCmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "-q", service],
+      // Match runCompose: older compose versions resolved .env from the CWD.
+      { cwd: projectDir },
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Make the running stack match what `.env` now says about the instance-jobs
+ * profile.
+ *
+ * `undefined` = this run expressed no opinion, so nothing happens.
+ *
+ * Enabling is a SCOPED `up -d --no-deps instance-jobs`, never a full `up -d`:
+ * a whole-stack up recreates grafana (its admin password is re-randomised on
+ * every install, so the container env differs and datasource ids renumber) and
+ * strips the RDS CA-bundle override mount from running pgwatch. `--no-deps`
+ * stops compose bringing this service's dependencies up alongside it, which at
+ * postgresai@main is `sink-prometheus` -- recreating the metric store on every
+ * run is the same hazard one service along.
+ *
+ * It is guarded on the stack ACTUALLY RUNNING. A scoped `up` against a stopped
+ * project does not fail: compose creates the network and the volumes and
+ * starts this container on its own, so `mon stop && mon update` would leave a
+ * box the operator believes is stopped with one container polling -- exactly
+ * the state this whole mechanism exists to make visible. "Could not tell" is
+ * treated as "do not start": an unstarted container is a visible fault in
+ * `mon health`, a wrongly-started one is invisible.
+ *
+ * Disabling removes the container, because nothing in the normal flow does it
+ * once the profile is gone. Measured on compose v5.1.3 / engine 29.4.3:
+ * `up -d --force-recreate` with the profile off leaves the container running.
+ * Naming the service explicitly is what reliably reaches it, and
+ * COMPOSE_PROFILES goes in the child environment so that call does not depend
+ * on what `.env` says by then -- this command has just taken the profile out
+ * of it.
+ *
+ * DO NOT rely on `down` / `down --remove-orphans` to reach a profile-gated
+ * container. Two reviewers observed it BOTH reaching and not reaching one, on
+ * the same engine and compose versions, with the profile absent from `.env`
+ * and from the environment alike; across a dozen-plus runs each the variable
+ * was never isolated. The force-remove does not depend on which way it goes,
+ * which is the point of doing it explicitly.
+ *
+ * Going through compose rather than `docker rm -f <name>` keeps the removal
+ * scoped to THIS project: `container_name: instance-jobs` is global, so a bare
+ * `docker rm` could take out another project's container on the same host.
+ */
+async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): Promise<boolean> {
+  if (enabled === undefined) return true;
+
+  if (enabled) {
+    const skip = instanceJobsStartSkipReason(
+      await composeServiceRunning(projectDir, "sink-prometheus"),
+    );
+    if (skip) {
+      console.log(`\n(${skip})`);
+      return true;
+    }
+
+    console.log("\nStarting the instance-jobs container (compose profile enabled)...");
+    const code = await runCompose(["up", "-d", "--no-deps", INSTANCE_JOBS_PROFILE]);
+    if (code !== 0) {
+      console.error("✗ Could not start the instance-jobs container.");
+      console.error("  The channel is enabled in .env but nothing is polling. To retry:");
+      console.error(`  docker compose up -d --no-deps ${INSTANCE_JOBS_PROFILE}`);
+      return false;
+    }
+    console.log("✓ instance-jobs is running");
+    return true;
+  }
+
+  // PROBE FIRST. This is the only moment at which "we are about to end a live
+  // collection channel" is distinguishable from "there was nothing here", and
+  // the removal itself cannot tell us: `docker rm --force` exits 0 whether it
+  // removed a container or found none. Observed at the wire:
+  //   docker rm --force <existing> -> stdout=[<name>] stderr=[]                   rc=0
+  //   docker rm --force <missing>  -> stdout=[]       stderr=[No such container]  rc=0
+  const before = await inspectInstanceJobsState();
+  if (before === "absent" || before === "unknown") {
+    const verdict = instanceJobsRemovalOutcome(before, before, 0);
+    (verdict.ok ? console.log : console.error)(`\n${verdict.message}`);
+    return verdict.ok;
+  }
+
+  // `rm -sf` stops first, so a running container is covered. Through compose
+  // rather than `docker rm` so the removal is scoped to THIS project;
+  // COMPOSE_PROFILES is in the child environment because compose resolves the
+  // service name only while its profile is active, and `.env` no longer lists
+  // it by the time we get here.
+  const code = await runCompose(
+    ["rm", "-sf", INSTANCE_JOBS_PROFILE],
+    undefined,
+    { COMPOSE_PROFILES: INSTANCE_JOBS_PROFILE },
+  );
+  const verdict = instanceJobsRemovalOutcome(before, await inspectInstanceJobsState(), code);
+  (verdict.ok ? console.log : console.error)(`\n${verdict.message}`);
+  return verdict.ok;
+}
+
+/**
+ * `docker inspect` the instance-jobs container.
+ *
+ * A missing container and a dead daemon both exit 1, so the two are separated
+ * on the error text -- and `execFile`'s error does NOT carry a `.stderr`
+ * property, it folds the child's stderr into `.message` ("Command failed: ...
+ * error: no such object: ..."), which is why this matches there.
+ */
+async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
+  try {
+    const { stdout } = await execFilePromise("docker", [
+      "inspect",
+      "-f",
+      "{{.State.Running}}",
+      INSTANCE_JOBS_PROFILE,
+    ]);
+    return stdout.trim() === "true" ? "running" : "stopped";
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    return /no such (object|container)/i.test(text) ? "absent" : "unknown";
+  }
+}
+
 // `help` is intentionally NOT the default command: making it default causes
 // Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
 // as an excess positional argument, producing a misleading "too many arguments
@@ -3690,8 +4070,17 @@ mon
     "--vcpus <n>",
     "source DB vCPU count used for AAS zone thresholds (PGAI_VCPUS env also works). Omit or 0 = unknown: the platform keeps the value it stamped at provision time. An explicit non-zero value overwrites the stored one; changing it re-arms the AAS backfill."
   )
+  // Declared before --no-instance-jobs on purpose: commander only forces the
+  // default to `true` when the negated form is declared ALONE. Declaring the
+  // positive one first keeps the default `undefined`, which is what "this run
+  // expresses no opinion, leave .env alone" needs.
+  .option(
+    "--instance-jobs",
+    "enable the instance-jobs compose profile (outbound collection channel; PGAI_INSTANCE_JOBS env also works). Writes COMPOSE_PROFILES into the stack .env, so every later mon command covers the container"
+  )
+  .option("--no-instance-jobs", "disable the instance-jobs compose profile and remove its container")
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; yes: boolean; org?: string; orgId?: string }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -3731,11 +4120,24 @@ mon
     // match the Docker images. Users can override with --tag if needed.
     const imageTag = opts.tag || pkg.version;
 
+    // Does this run want the outbound collection channel? postgresai#381.
+    const instanceJobsRequest = resolveInstanceJobsRequest(
+      opts.instanceJobs,
+      process.env.PGAI_INSTANCE_JOBS,
+    );
+    if (instanceJobsRequest.error) {
+      console.error(`✗ ${instanceJobsRequest.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const instanceJobs = instanceJobsRequest.enabled;
+
     const { content: envContent, preservedKeys } = buildLocalInstallEnv(
       existingEnv,
       imageTag,
       opts.instanceId || process.env.PGAI_INSTANCE_ID || null,
       path.resolve(projectDir, ".pgwatch-config"),
+      instanceJobs,
     );
     writeEnvFile(envFile, envContent);
     if (preservedKeys.length > 0) {
@@ -3775,6 +4177,10 @@ mon
     if (running) {
       console.error(`⚠ Monitoring services are already running: ${containers.join(", ")}`);
       console.log("Use 'postgres-ai mon restart' to restart them\n");
+      // This path returns without any `up`, so a profile change written to
+      // .env moments ago would never reach the stack -- which is how a
+      // re-deploy over a running box silently leaves the channel off.
+      if (!(await applyInstanceJobsProfile(projectDir, instanceJobs))) process.exitCode = 1;
       return;
     }
 
@@ -4095,6 +4501,15 @@ mon
     }
     console.log("✓ Services started\n");
 
+    // The whole-stack `up` above already covers the profile via .env, so this
+    // is a no-op when the container came up. It is here for the two cases it
+    // is not: a DISABLE, where the `up` above leaves the container running and
+    // nothing else removes it; and a stack whose compose predates the service,
+    // where the scoped up fails loudly instead of leaving the operator
+    // believing the channel is on. postgresai#381.
+    const instanceJobsApplied = await applyInstanceJobsProfile(projectDir, instanceJobs);
+    if (!instanceJobsApplied) process.exitCode = 1;
+
     // Register monitoring instance with API (only if API key is configured).
     // Console-provisioned installs pass --instance-id (or PGAI_INSTANCE_ID):
     // the platform then ADOPTS the provisioned instance and tells us its real
@@ -4206,10 +4621,26 @@ mon
       }
     }
 
-    // Final summary
+    // Final summary. The instance-jobs step can have failed above without
+    // aborting the install -- registration matters more than the channel and
+    // must still run -- so the banner must not then claim an unqualified
+    // success. The exit code is already 1; say why in the text too.
     console.log("=================================");
-    console.log("  Local install completed!");
+    console.log(
+      instanceJobsApplied
+        ? "  Local install completed!"
+        : "  Local install completed WITH ONE FAILURE",
+    );
     console.log("=================================\n");
+    if (!instanceJobsApplied) {
+      console.log(
+        instanceJobs
+          ? "✗ The instance-jobs container did not start. Everything below is running; the outbound\n" +
+              "  collection channel is not. See the error above, then `postgres-ai mon health`.\n"
+          : "✗ The instance-jobs container could not be removed. Everything below is running, and so\n" +
+              "  is a container that keeps polling. See the error above.\n",
+      );
+    }
 
     console.log("What's running:");
     if (opts.demo) {
@@ -4374,6 +4805,8 @@ export type MonitoringService = {
   optional?: boolean;
   /** Read .State.Health.Status too, for a container that reports a real verdict. */
   readHealth?: boolean;
+  /** What an absent container is called when it is NOT optional. */
+  absentLabel?: string;
 };
 
 /**
@@ -4397,7 +4830,7 @@ export function judgeServiceHealth(
   if (!present) {
     return service.optional
       ? { ok: true, mark: "-", label: "not enabled" }
-      : { ok: false, mark: "✗", label: "unreachable" };
+      : { ok: false, mark: "✗", label: service.absentLabel ?? "unreachable" };
   }
   if (status !== "running") {
     return { ok: false, mark: "✗", label: `unhealthy (status: ${status})` };
@@ -4412,8 +4845,14 @@ export function judgeServiceHealth(
  * The services `mon health` reports on. A factory rather than a literal inside
  * the command, so the list itself -- not just the per-service decision -- can be
  * asserted: which entry is profile-gated, and which reads its own healthcheck.
+ *
+ * `instanceJobsEnabled` is whether the compose profile is on for this stack.
+ * With it on, an absent container is a FAULT rather than `- not enabled`:
+ * `mon stop` deletes that container and `mon start` used to leave it deleted,
+ * which is the most likely way the channel stops, and a health line that calls
+ * it "not enabled" is blind to exactly that. postgresai#381.
  */
-export function monitoringHealthServices(): MonitoringService[] {
+export function monitoringHealthServices(instanceJobsEnabled = false): MonitoringService[] {
   return [
     { name: "Grafana", container: "grafana-with-datasources" },
     { name: "Prometheus", container: "sink-prometheus" },
@@ -4424,7 +4863,13 @@ export function monitoringHealthServices(): MonitoringService[] {
     // Profile-gated and self-reporting; see judgeServiceHealth. The six above
     // stay on the status-only check - reading their health status is a
     // fleet-wide behaviour change and belongs in its own MR. postgresai#366.
-    { name: "Instance jobs", container: "instance-jobs", optional: true, readHealth: true },
+    {
+      name: "Instance jobs",
+      container: "instance-jobs",
+      optional: !instanceJobsEnabled,
+      readHealth: true,
+      absentLabel: "enabled but not running",
+    },
   ];
 }
 
@@ -4433,7 +4878,7 @@ mon
   .description("health check for monitoring services")
   .option("--wait <seconds>", "wait time in seconds for services to become healthy", parseInt, 0)
   .action(async (opts: { wait: number }) => {
-    const services = monitoringHealthServices();
+    const services = monitoringHealthServices(instanceJobsProfileEnabled(readComposeProfiles()));
 
     const waitTime = opts.wait || 0;
     const maxAttempts = waitTime > 0 ? Math.ceil(waitTime / 5) : 1;
@@ -4611,6 +5056,19 @@ mon
         if (!(await applySinkPrometheusConfig(projectDir))) {
           process.exitCode = 1;
           return;
+        }
+        // `pull` cannot create a service that was not there before, and the
+        // `mon restart` suggested below is `docker compose restart`, which
+        // re-runs containers as recorded: neither would give the instance-jobs
+        // container the image just pulled, and on a box upgrading to the first
+        // version that has the service, neither would create it at all. So the
+        // scoped up runs here, but only when the profile is already on -- an
+        // upgrade never enables the channel by itself. postgresai#381.
+        if (instanceJobsProfileEnabled(readComposeProfiles(projectDir))) {
+          if (!(await applyInstanceJobsProfile(projectDir, true))) {
+            process.exitCode = 1;
+            return;
+          }
         }
         console.log("\n✓ Update completed successfully");
         console.log("\nTo apply updates, restart monitoring services:");
@@ -5626,8 +6084,10 @@ withOrgOptions(program.command("promql"))
         console.error(`Timed out after ${timeoutS}s. Job ${jobId} is still ${res.status}.`);
         console.error(
           res.status === "queued"
-            ? "Nothing has claimed it: check the instance-jobs container is running (it is behind " +
-                "a compose profile), or wait — a first collection can queue ~20 periods ahead of it."
+            ? "Nothing has claimed it: check the instance-jobs container is running on that instance " +
+                "(`postgresai mon health`; it is behind a compose profile, enabled with " +
+                "`mon local-install --instance-jobs`), or wait — a first collection can queue " +
+                "~20 periods ahead of it."
             : "The instance is working on it — wait, or re-run with a longer --timeout.",
         );
         process.exitCode = 1;

@@ -114,8 +114,9 @@ been re-provisioned.
 on the box, not a default that can be generated, so it is written by
 `mon local-install` only. A box upgraded with `mon update` alone therefore has
 no `INSTANCE_JOBS_USER`, and enabling the profile there fails loudly until
-`mon local-install` is re-run. That is the intended order — nothing enables the
-profile automatically yet (see the follow-ups below).
+`mon local-install` is re-run. That is the intended order — and it is the same
+command that enables the profile (see **Enabling the profile on a machine**
+below), so the two cannot come apart.
 
 The token is never passed on argv, never put in a URL, and never logged.
 
@@ -267,21 +268,89 @@ the API kill is recorded as an operator stop, so the restart policy does not
 fire and the container stays down until someone starts it. Test recovery by
 killing the process inside the container, not the container.
 
-## Not wired yet
+## Enabling the profile on a machine
 
-No CLI command passes `--profile`, and nothing writes `COMPOSE_PROFILES`, so on
-a machine where an operator enabled the profile by hand:
+**Through the ansible playbook, per machine** — set `instance_jobs_enabled: true`
+(an SI extraVar). Not by hand: a hand-run `mon local-install` without the
+instance id self-registers a *new* monitoring instance and splits the health
+matrix across two projects (the
+[platform-all#311](https://gitlab.com/postgres-ai/platform-all/-/issues/311)
+failure). The role exports `PGAI_INSTANCE_JOBS` to the install and persists
+`COMPOSE_PROFILES` in the stack `.env` afterwards, so it also works against a
+CLI older than that variable.
 
-- `mon stop` (`down --remove-orphans`, plus this container's own entry in the
-  force-remove list) **deletes** it, and `mon start` does not bring it back;
-- `mon update` pulls without it, so it keeps its old image across a version bump;
-- and because the service is registered as *optional* in `mon health`, an absent
-  container is reported as `- not enabled` rather than as a fault — so the health
-  line is blind to the most likely way the channel stops.
+Directly, on a machine you are already installing by hand:
 
-Enabling is meant to go through the ansible playbook per machine (plan §9).
-Until that lands, re-run the profile-scoped `up -d` after any `mon` command that
-touches the stack.
+```bash
+postgresai mon local-install --instance-jobs   # or PGAI_INSTANCE_JOBS=true
+postgresai mon local-install --no-instance-jobs   # off, and remove the container
+```
+
+These two are **not peers of the ansible variable on a machine ansible manages.**
+A deploy that sets `instance_jobs_enabled: false` writes the profile out of
+`.env` and removes the container, discarding a hand-set value — and because it
+runs before anyone looks, the first sign is collection having stopped. It does
+that only on an **explicit** `false`: the role's default is unset, which touches
+neither the key nor the container, so a hand-enabled box is left alone by an
+ordinary deploy. If the channel is meant to stay on, set
+`instance_jobs_enabled: true` for that machine rather than relying on the flag
+you typed on the box.
+
+`--no-instance-jobs` says which of the two things it did, because they are not
+the same event: `⚠ instance-jobs was RUNNING and has been removed — outbound
+collection on this machine is now OFF` versus
+`✓ instance-jobs is disabled (no container was present)`. `docker rm --force`
+exits 0 either way, so the container's state is read before the removal, not
+inferred from it.
+
+**What it writes is `COMPOSE_PROFILES=instance-jobs` in the stack `.env`, not a
+`--profile` argument.** Compose reads that key by itself, so a plain `up -d`,
+`pull` or `down` covers the service and no `mon` command has to learn about the
+profile:
+
+- `mon stop` removes the container and `mon start` brings it back;
+- `mon update` pulls its image, and then runs a scoped
+  `up -d --no-deps instance-jobs` — `pull` cannot create a service that was not
+  there before, and the `mon restart` it suggests is `docker compose restart`,
+  which re-runs containers as recorded and would leave the old image running.
+  That scoped `up` runs only when the stack is actually up: against a stopped
+  project it would create the network and volumes and start this container by
+  itself, leaving a box the operator believes is stopped with one process
+  polling;
+- `mon health` reports the container as a **fault** when the profile is on and
+  it is absent, and as `- not enabled` when it is off. `mon stop` deleting the
+  container is the most likely way this channel stops, so that line must not be
+  green for it.
+
+`mon local-install` preserves every `.env` key it does not own, and merges
+rather than replaces this one: a run that passes neither flag nor env var leaves
+the profile exactly as it was, in either direction. An upgrade therefore never
+turns the channel on, and never turns it off.
+
+Turning it **off** removes the container, not just the key. Taking the profile
+out of `.env` does not stop one that is already running — a later
+`up -d --force-recreate` leaves it up — so the container is removed by name,
+with `COMPOSE_PROFILES` supplied to that one call so it does not depend on what
+`.env` says by then.
+
+Do not rely on `down` or `down --remove-orphans` to reach a profile-gated
+container either way: two reviewers saw it both reach and not reach one, on the
+same engine and compose versions, with the profile absent from `.env` and the
+environment alike. The explicit removal is what makes the outcome the same
+regardless.
+
+One more thing worth knowing when a box behaves unexpectedly: the CLI spawns
+compose with the process environment, so an operator who has `COMPOSE_PROFILES`
+exported in their shell changes what **every** `mon` command sees, not just the
+install. That is compose's own precedence rule — the environment wins over
+`.env` — and the CLI follows it.
+
+Two things do not follow from the profile alone. `INSTANCE_JOBS_USER` is
+written by `mon local-install` only (it is derived from the credential file's
+owner, not a default), so a box upgraded with `mon update` alone has none and
+enabling the profile there fails loudly until the install is re-run. And the
+platform gate — `app.settings.instance_jobs_enabled` — is separate: with it off
+the poll authenticates and is handed no work.
 
 ## Tests
 
