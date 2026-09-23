@@ -41,7 +41,7 @@ import {
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { enqueueQuery, awaitQueryResult, isTerminal, renderPromQL, type EnqueueArgs } from "../lib/promql";
-import { registerAasCollection, parseVcpus } from "../lib/aas-onboard";
+import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
@@ -4169,7 +4169,10 @@ mon
             debug: !!process.env.DEBUG,
           });
           if (aas.ok) {
-            console.log("✓ AAS auto-collection registered\n");
+            // Not a bare "registered": the platform's reply says whether anything
+            // can actually collect yet (#348). Most often it cannot, because
+            // nothing on the generic path knows the source DB's vCPU count.
+            console.log(`✓ ${aasSuccessMessage(aas)}\n`);
           } else {
             console.error(
               `⚠ AAS auto-collection not registered (${aas.reason}); it can be enabled later by re-running 'postgresai mon local-install'\n`
