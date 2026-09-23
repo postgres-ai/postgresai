@@ -507,6 +507,32 @@ describe("formatPlatformError never leaks, whatever the platform echoes (#382)",
   const leaks = (out: string, secret: string) =>
     out.includes(secret) || out.replace(/\s+/g, "").includes(secret.replace(/\s+/g, ""));
 
+  /**
+   * Longest run of the secret that survives anywhere in the output.
+   *
+   * `leaks` above only catches a WHOLE secret, and that blind spot is how a real
+   * leak shipped: when a redactor replaces the HEAD of a wrapped credential, the
+   * tail prints on its own and `leaks` reports clean. @akartasov found exactly
+   * that on !423. Measure the longest shared run instead, so head-, tail- and
+   * middle-survival are all caught by one assertion.
+   */
+  const longestRun = (out: string, secret: string) => {
+    const o = out.replace(/\s+/g, "");
+    const t = secret.replace(/\s+/g, "");
+    let best = 0;
+    for (let i = 0; i < t.length; i++) {
+      for (let j = i + 1; j <= t.length; j++) {
+        const sub = t.slice(i, j);
+        if (sub.length > best && o.includes(sub)) best = sub.length;
+      }
+    }
+    return best;
+  };
+
+  // 12 is above any incidental overlap between these fixtures and the prose
+  // around them ("token", "grafana"), and far below a usable credential.
+  const MAX_SURVIVING_RUN = 12;
+
   const fmt = (details: string) =>
     formatPlatformError({ code: "PT400", message: "Bad Request", details }, [API, SA]);
 
@@ -538,6 +564,43 @@ describe("formatPlatformError never leaks, whatever the platform echoes (#382)",
       const out = fmt(`tok ${splitAt(API, 18, gap)}`);
       expect(leaks(out, API)).toBe(false);
     }
+  });
+
+  // (keyed x unkeyed) x (intact x wrapped), for BOTH secrets. The suite used to
+  // cover only the unkeyed column, which is why a credential-named key in front
+  // of a wrapped secret went unnoticed by two reviewers and by me: redactTextSecrets'
+  // key=value pattern consumes only to the first whitespace, so it replaced the
+  // HEAD, destroyed the prefix the by-value matcher anchors on, and left the tail
+  // printing. The by-value scrub has to see the text BEFORE the pattern scrub
+  // mutates it.
+  for (const [label, secret] of [["the org API token", "API"], ["the SA token", "SA"]] as const) {
+    for (const keyed of [false, true]) {
+      for (const wrapped of [false, true]) {
+        const name = `${label}, ${keyed ? "behind a credential-named key" : "unkeyed"}, ${wrapped ? "wrapped mid-token" : "intact"}`;
+        test(`no usable run survives: ${name}`, () => {
+          const value = secret === "API" ? API : SA;
+          const body = wrapped ? splitAt(value, 12, "\n") : value;
+          const details = keyed ? `sa_token: ${body} rejected` : `saw ${body} here`;
+          const out = fmt(details);
+          expect(leaks(out, value)).toBe(false);
+          expect(longestRun(out, value)).toBeLessThan(MAX_SURVIVING_RUN);
+        });
+      }
+    }
+  }
+
+  test("the swap does not lose what the pattern scrub used to catch (mirror case)", () => {
+    // Moving the by-value scrub first must not cost us the case it was ordered
+    // second for: a credential-named key holding a value we NEVER sent, which
+    // by-value cannot match and only redactTextSecrets can. Pinned so the fix
+    // for the keyed+wrapped leak cannot be "reorder and lose this".
+    const foreign = ["zztok", "v9", "neversentbyus", "eeeeffffgggghhhh"].join("_");
+    const out = formatPlatformError(
+      { code: "PT400", details: `api_token: ${foreign} rejected` },
+      [API, SA], // note: `foreign` is deliberately NOT in the by-value list
+    );
+    expect(longestRun(out, foreign)).toBeLessThan(MAX_SURVIVING_RUN);
+    expect(out).toContain("[REDACTED]");
   });
 
   test("a split glsa_ service-account token is redacted, tail included", () => {

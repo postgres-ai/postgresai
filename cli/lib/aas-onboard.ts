@@ -242,17 +242,28 @@ const PLATFORM_ERROR_MAX = 300;
  *      platform echoed with a line break inside it matches no literal, and the
  *      flatten then REASSEMBLES it on one line, one space-deletion from usable.
  *      Normalising first means every later matcher sees one canonical form.
- *   2. PATTERN scrub via the shared redactTextSecrets (cli/lib/util.ts), the
+ *   2. BY-VALUE scrub of exactly what this request sent, with a
+ *      whitespace-TOLERANT pattern so step 1 cannot be worked around by a body
+ *      that was wrapped before we ever saw it. It runs BEFORE the pattern scrub,
+ *      not after: redactTextSecrets' key=value match stops at the first
+ *      whitespace, so on `sa_token: aaa bbb` it replaces the HEAD, destroys the
+ *      prefix this matcher anchors on, and the tail then prints (#382,
+ *      @akartasov). By-value must see the text exactly as the platform sent it.
+ *   3. PATTERN scrub via the shared redactTextSecrets (cli/lib/util.ts), the
  *      same one formatHttpError uses — credential-named pairs and URL userinfo,
  *      i.e. secrets we did NOT send and cannot match by value. Reused rather
  *      than reimplemented; two redactors drifting apart is its own bug.
- *   3. BY-VALUE scrub of exactly what this request sent, with a
- *      whitespace-TOLERANT pattern so step 1 cannot be worked around by a body
- *      that was wrapped before we ever saw it.
  *   4. SHAPE scrub for a glsa_ token we did not send. Best-effort only: once an
  *      unknown token has whitespace in it, nothing distinguishes "the token
  *      continues" from "the next word", so this covers the contiguous case and
- *      step 3 covers every token we actually hold.
+ *      step 2 covers every token we actually hold.
+ *
+ *      KNOWN RESIDUAL, pre-existing and tracked as #383: a credential-named key
+ *      whose value was WRAPPED, for a value we never sent, keeps its tail —
+ *      redactTextSecrets matches only up to the first whitespace and there is no
+ *      value to match by. It measures the same on either ordering, and the fix
+ *      belongs in that shared helper (formatHttpError and redactSecretsForLog
+ *      inherit it too), not here.
  *   5. CAP, with a marker, so a reader can tell the reason was cut short.
  *
  * `details` is preferred over `message`: a plpgsql `raise ... using detail = ...`
@@ -271,10 +282,13 @@ export function formatPlatformError(body: unknown, secrets: string[] = []): stri
     .replace(/\s+/g, " ")
     .trim();
 
-  // 2. pattern scrub (shared with formatHttpError)
-  out = redactTextSecrets(out);
-
-  // 3. by-value scrub, whitespace-tolerant
+  // 2. BY-VALUE scrub, whitespace-tolerant — and it must run BEFORE the pattern
+  //    scrub, not after. redactTextSecrets' key=value pattern consumes only up
+  //    to the first whitespace, so on `sa_token: glsa_aaaa bbbb` it replaces the
+  //    HEAD and leaves the tail. That mutation destroys the very prefix the
+  //    by-value matcher was going to anchor on, and the shape scrub in step 4
+  //    then has no `glsa_` left to find either — so the tail printed. Running
+  //    by-value first means it sees the text exactly as the platform sent it.
   for (const secret of secrets) {
     // A short "secret" would match everywhere and redact the whole message; the
     // real ones are far longer than this floor.
@@ -282,6 +296,11 @@ export function formatPlatformError(body: unknown, secrets: string[] = []): stri
     if (compact.length < 8) continue;
     out = out.replace(whitespaceTolerantSecretPattern(compact), "[redacted]");
   }
+
+  // 3. pattern scrub (shared with formatHttpError), over whatever is left —
+  //    credential-named pairs and URL userinfo, i.e. secrets we never sent and
+  //    cannot match by value.
+  out = redactTextSecrets(out);
 
   // 4. shape scrub
   out = out.replace(/glsa_[A-Za-z0-9_-]+/g, "[redacted]");

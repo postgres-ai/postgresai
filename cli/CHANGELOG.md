@@ -104,8 +104,10 @@
   is scrubbed, and credentials are matched whitespace-tolerantly. An error body
   that echoed a credential with a line break inside it previously defeated the
   scrub and was then rejoined into one line, leaving the token one space-deletion
-  from usable. Control characters (ESC, BEL, NUL, DEL, C1) are also neutralised,
-  so platform-supplied text can no longer repaint the operator's terminal. (#382)
+  from usable, and a credential sitting behind a credential-named key
+  (`sa_token: <wrapped value>`) no longer kept its tail. Control characters (ESC,
+  BEL, NUL, DEL, C1) are also neutralised, so platform-supplied text can no
+  longer repaint the operator's terminal. (#382)
 
 - `mon targets add` / `mon targets remove` now leave `instances.yml` owner-only
   (`0600`) on every write, tightening a pre-existing looser file before the new
