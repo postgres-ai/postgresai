@@ -87,6 +87,26 @@
 
 ### Fixed
 
+- `mon local-install` no longer throws away what the platform says about AAS
+  auto-collection. A refused registration now reports the platform's own reason
+  (`platform returned HTTP 400 — PT400: <detail>`) instead of a bare status —
+  the error text is scrubbed of the API key and any `glsa_` service-account
+  token, flattened to one line and capped, so a platform that echoes the request
+  cannot leak either. A successful one reports what was actually armed: when the
+  platform has no vCPU count for the source database it now says
+  `collection stays OFF until a source-DB vCPU count is known` instead of a bare
+  "registered", because the producer skips those instances with `no_vcpus`
+  indefinitely, and it names which channel was armed (`pull` vs the instance job
+  channel). An older platform that reports neither field behaves as before.
+  (#348, #382, postgres-ai/platform-all#778)
+
+- The platform error text printed by `mon local-install` is normalised before it
+  is scrubbed, and credentials are matched whitespace-tolerantly. An error body
+  that echoed a credential with a line break inside it previously defeated the
+  scrub and was then rejoined into one line, leaving the token one space-deletion
+  from usable. Control characters (ESC, BEL, NUL, DEL, C1) are also neutralised,
+  so platform-supplied text can no longer repaint the operator's terminal. (#382)
+
 - `mon targets add` / `mon targets remove` now leave `instances.yml` owner-only
   (`0600`) on every write, tightening a pre-existing looser file before the new
   content lands. The file holds password-bearing `conn_str` values and was

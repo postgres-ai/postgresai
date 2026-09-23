@@ -297,6 +297,55 @@ export function redactTextSecrets(text: string): string {
     .replace(TEXT_SENSITIVE_PAIR, "$1[REDACTED]");
 }
 
+/**
+ * True for C0, DEL, C1, and the two Unicode line separators.
+ *
+ * ONE definition, deliberately identical to `isControl` in
+ * instance-jobs/internal/collect/promql.go, which faces the same problem from
+ * the other side (a metric store echoing a submitted expression). U+009B is the
+ * single-character CSI — `ESC [` in 8-bit form — so dropping ESC alone is not
+ * enough, and U+2028/2029 terminate a line in some renderers.
+ */
+function isControlCodePoint(cp: number): boolean {
+  return cp < 0x20 || cp === 0x7f || (cp >= 0x80 && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029;
+}
+
+/**
+ * Replace every control character with a space, for text a human will read.
+ *
+ * A space rather than nothing, matching `StripControlsToSpace` on the Go side
+ * and for its reason: deleting them fuses tokens across a line break
+ * ("select 1\nfrom t" -> "select 1from t"), which changes what the text says
+ * instead of sanitising it.
+ *
+ * Use this on ANY text an external system supplied that will reach a terminal:
+ * ESC can clear the screen and repaint it, BEL rings, and CR can overwrite the
+ * line the operator just read.
+ */
+export function stripControlsToSpace(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    out += cp !== undefined && isControlCodePoint(cp) ? " " : ch;
+  }
+  return out;
+}
+
+/**
+ * A regex matching `secret` even if whitespace was injected anywhere inside it.
+ *
+ * This is what makes a by-value scrub survive an error body that wrapped the
+ * credential across lines. Matching the literal cannot: the scrub misses, and a
+ * later whitespace-flatten reassembles the secret on one line, one deletion from
+ * usable (#382 F1). Every character is regex-escaped and joined with `\s*`;
+ * there is no nesting or alternation, so it cannot backtrack pathologically.
+ */
+export function whitespaceTolerantSecretPattern(secret: string): RegExp {
+  const chars = Array.from(secret.replace(/\s+/g, ""));
+  const body = chars.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*");
+  return new RegExp(body, "g");
+}
+
 
 export interface RootOptsLike {
   apiBaseUrl?: string;

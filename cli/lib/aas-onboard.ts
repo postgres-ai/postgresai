@@ -18,7 +18,12 @@
  */
 
 import { loadInstances } from "./instances";
-import { resolveBaseUrls } from "./util";
+import {
+  resolveBaseUrls,
+  redactTextSecrets,
+  stripControlsToSpace,
+  whitespaceTolerantSecretPattern,
+} from "./util";
 import { orgScopeHeaders, type OrgScope } from "./org-scope";
 
 const SA_NAME = "pgai-aas-collect";
@@ -166,6 +171,125 @@ export async function resolveDatasourceId(adminPassword: string, debug = false):
 export interface AasRegisterResult {
   ok: boolean;
   reason?: string;
+  /**
+   * The EFFECTIVE vCPU count the platform stored, from the RPC reply -- not what
+   * we sent. The platform owns this number and keeps its own whenever the agent
+   * sends 0, so only the reply says what the producer will actually read. 0 means
+   * neither side knows, and the producer skips with no_vcpus until one does.
+   * undefined = the platform did not report it (older deployment).
+   */
+  vcpus?: number;
+  /** Armed for pull, but the platform has no Grafana url for the instance yet. */
+  urlPending?: boolean;
+  /** Which path the platform says it armed: "pull" or "jobs". */
+  armedFor?: string;
+}
+
+/**
+ * The success line to print, given what the platform reported back.
+ *
+ * "Registered" on its own is not true enough: an instance armed with an unknown
+ * vCPU count is skipped by the producer with no_vcpus indefinitely, and the
+ * operator has no way to tell that from a working one (#348).
+ *
+ * Order matters. A pending Grafana url clears itself minutes later, when the
+ * deploy notify reports it; a missing vCPU count never does, so when both are
+ * true the vCPU count is the one worth a human's attention.
+ */
+export function aasSuccessMessage(r: AasRegisterResult): string {
+  // Which channel the platform says it armed, when it says so. The two are not
+  // interchangeable from an operator's seat: "pull" means the platform will dial
+  // into this box's Grafana, so its url and the SA token have to keep working;
+  // "jobs" means the box answers on the instance job channel and the platform
+  // opens nothing. It was parsed and then dropped on the floor (#382 F4).
+  const armed =
+    r.armedFor === "pull"
+      ? " (armed for pull: the platform will query this instance's Grafana)"
+      : r.armedFor === "jobs"
+        ? " (armed for the job channel: this instance answers its own queries)"
+        : "";
+  const base = `AAS auto-collection registered${armed}`;
+  // Order matters: a pending url clears itself minutes later when the deploy
+  // notify lands, a missing vCPU count never does. Report the one needing a human.
+  if (r.vcpus === 0) {
+    return `${base} — collection stays OFF until a source-DB vCPU count is known (the platform stamps it at provision time; --vcpus <n> sets it for a manual install)`;
+  }
+  if (r.urlPending) {
+    return `${base} — collection starts once this deploy reports the Grafana url to the platform`;
+  }
+  return base;
+}
+
+/** Cap on platform-supplied error text admitted into a reason / log line. */
+const PLATFORM_ERROR_MAX = 300;
+
+/**
+ * Turn a PostgREST error body into one short, safe line.
+ *
+ * Logging the bare status is what hid platform-all#778 for three months: every
+ * console-provisioned box printed "platform returned HTTP 400" while the
+ * platform was saying "this monitoring instance has no Grafana url yet". A
+ * status with no reason is not actionable, and nobody goes looking for a
+ * warning that says nothing.
+ *
+ * The body is NOT trusted. It is the platform's, this request carries the org
+ * API token and a freshly minted glsa_ Grafana token, and the text is printed
+ * to a terminal. So the ORDER below is load-bearing, and it is the order a
+ * first version got wrong (#382 F1):
+ *
+ *   1. NORMALISE FIRST — strip control characters and flatten whitespace.
+ *      Scrubbing first and flattening afterwards is exploitable: a secret the
+ *      platform echoed with a line break inside it matches no literal, and the
+ *      flatten then REASSEMBLES it on one line, one space-deletion from usable.
+ *      Normalising first means every later matcher sees one canonical form.
+ *   2. PATTERN scrub via the shared redactTextSecrets (cli/lib/util.ts), the
+ *      same one formatHttpError uses — credential-named pairs and URL userinfo,
+ *      i.e. secrets we did NOT send and cannot match by value. Reused rather
+ *      than reimplemented; two redactors drifting apart is its own bug.
+ *   3. BY-VALUE scrub of exactly what this request sent, with a
+ *      whitespace-TOLERANT pattern so step 1 cannot be worked around by a body
+ *      that was wrapped before we ever saw it.
+ *   4. SHAPE scrub for a glsa_ token we did not send. Best-effort only: once an
+ *      unknown token has whitespace in it, nothing distinguishes "the token
+ *      continues" from "the next word", so this covers the contiguous case and
+ *      step 3 covers every token we actually hold.
+ *   5. CAP, with a marker, so a reader can tell the reason was cut short.
+ *
+ * `details` is preferred over `message`: a plpgsql `raise ... using detail = ...`
+ * lands there, while `message` is usually just the status prose ("Bad Request").
+ */
+export function formatPlatformError(body: unknown, secrets: string[] = []): string {
+  if (!body || typeof body !== "object") return "";
+  const b = body as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : "");
+  const text = str(b.details) || str(b.message);
+  if (!text) return "";
+  const code = str(b.code);
+
+  // 1. normalise
+  let out = stripControlsToSpace(code ? `${code}: ${text}` : text)
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 2. pattern scrub (shared with formatHttpError)
+  out = redactTextSecrets(out);
+
+  // 3. by-value scrub, whitespace-tolerant
+  for (const secret of secrets) {
+    // A short "secret" would match everywhere and redact the whole message; the
+    // real ones are far longer than this floor.
+    const compact = secret.replace(/\s+/g, "");
+    if (compact.length < 8) continue;
+    out = out.replace(whitespaceTolerantSecretPattern(compact), "[redacted]");
+  }
+
+  // 4. shape scrub
+  out = out.replace(/glsa_[A-Za-z0-9_-]+/g, "[redacted]");
+
+  // 5. cap, and say so
+  return out.length > PLATFORM_ERROR_MAX
+    ? `${out.slice(0, PLATFORM_ERROR_MAX - 1).trimEnd()}\u2026`
+    : out;
 }
 
 /**
@@ -244,13 +368,30 @@ export async function registerAasCollection(
       }),
     });
     if (!res.ok) {
-      // Log status only — never the response body: a platform could echo the
-      // request payload (incl. sa_token) in an error body, which must not reach
-      // the user's debug log.
-      if (debug) console.error(`Debug: AAS register failed: HTTP ${res.status}`);
-      return { ok: false, reason: `platform returned HTTP ${res.status}` };
+      // Read the platform's own reason, scrubbed and capped by
+      // formatPlatformError. Reporting the status alone is what made #778
+      // invisible: "HTTP 400" gives an operator nothing to act on, while the
+      // platform was naming the exact precondition that failed.
+      const detail = formatPlatformError(
+        await res.json().catch(() => null),
+        [apiKey, saToken],
+      );
+      const suffix = detail ? ` — ${detail}` : "";
+      if (debug) console.error(`Debug: AAS register failed: HTTP ${res.status}${suffix}`);
+      return { ok: false, reason: `platform returned HTTP ${res.status}${suffix}` };
     }
-    return { ok: true };
+    // Read the reply instead of discarding it (#348). The effective vcpus is the
+    // platform's own value, which is the only one the producer will read, and
+    // url_pending says whether anything can collect yet. A body we cannot parse
+    // is not a failure -- the registration landed -- so every field stays
+    // undefined and the caller falls back to the plain success line.
+    const reply = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return {
+      ok: true,
+      vcpus: typeof reply?.vcpus === "number" ? reply.vcpus : undefined,
+      urlPending: typeof reply?.url_pending === "boolean" ? reply.url_pending : undefined,
+      armedFor: typeof reply?.armed_for === "string" ? reply.armed_for : undefined,
+    };
   } catch (err) {
     if (debug) console.error(`Debug: AAS register error: ${(err as Error).message}`);
     return { ok: false, reason: (err as Error).message };
