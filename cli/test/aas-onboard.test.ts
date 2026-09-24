@@ -10,6 +10,7 @@ import {
   aasSuccessMessage,
   formatPlatformError,
 } from "../lib/aas-onboard";
+import { MAX_SURVIVING_RUN, leaks, longestRun, splitAt } from "./redaction-helpers";
 
 /** Minimal Response-like stub for mocking fetch. */
 function res(ok: boolean, status: number, jsonBody: unknown, textBody = ""): Response {
@@ -497,41 +498,10 @@ describe("formatPlatformError never leaks, whatever the platform echoes (#382)",
   const API = ["pgai", "v1", "notarealtoken", "aaaabbbbccccdddd"].join("_");
   const SA = ["glsa", "notareal", "grafana", "serviceaccount", "token"].join("_");
 
-  /** Insert `gap` into `secret` at `at`, i.e. what a wrapped error body does. */
-  const splitAt = (secret: string, at: number, gap: string) =>
-    secret.slice(0, at) + gap + secret.slice(at);
-
-  /** The operator-facing criterion: not "is the secret present verbatim" but
-   *  "is it one whitespace-deletion away from usable". A scrub that runs BEFORE
-   *  the flatten passes the first check and fails this one. */
-  const leaks = (out: string, secret: string) =>
-    out.includes(secret) || out.replace(/\s+/g, "").includes(secret.replace(/\s+/g, ""));
-
-  /**
-   * Longest run of the secret that survives anywhere in the output.
-   *
-   * `leaks` above only catches a WHOLE secret, and that blind spot is how a real
-   * leak shipped: when a redactor replaces the HEAD of a wrapped credential, the
-   * tail prints on its own and `leaks` reports clean. @akartasov found exactly
-   * that on !423. Measure the longest shared run instead, so head-, tail- and
-   * middle-survival are all caught by one assertion.
-   */
-  const longestRun = (out: string, secret: string) => {
-    const o = out.replace(/\s+/g, "");
-    const t = secret.replace(/\s+/g, "");
-    let best = 0;
-    for (let i = 0; i < t.length; i++) {
-      for (let j = i + 1; j <= t.length; j++) {
-        const sub = t.slice(i, j);
-        if (sub.length > best && o.includes(sub)) best = sub.length;
-      }
-    }
-    return best;
-  };
-
-  // 12 is above any incidental overlap between these fixtures and the prose
-  // around them ("token", "grafana"), and far below a usable credential.
-  const MAX_SURVIVING_RUN = 12;
+  // splitAt / leaks / longestRun / MAX_SURVIVING_RUN now live in
+  // ./redaction-helpers so this suite and util.test.ts measure a leak the same
+  // way. Two leak detectors drifting apart is the same failure mode as two
+  // redactors drifting apart, and the weaker copy is the one that reports clean.
 
   const fmt = (details: string) =>
     formatPlatformError({ code: "PT400", message: "Bad Request", details }, [API, SA]);
@@ -601,6 +571,45 @@ describe("formatPlatformError never leaks, whatever the platform echoes (#382)",
     );
     expect(longestRun(out, foreign)).toBeLessThan(MAX_SURVIVING_RUN);
     expect(out).toContain("[REDACTED]");
+  });
+
+  // The UNSENT column: a credential-named key holding a value this caller never
+  // sent, so step 2 (by-value) has nothing to match and only step 3's shared
+  // redactTextSecrets can act. Intact was already pinned by the mirror case
+  // above; WRAPPED was the hole (#383) -- the pattern consumed only up to the
+  // first whitespace, so the head was replaced and the tail printed. Generated
+  // over every split offset because the surviving run shrinks as the split
+  // moves right: one hand-picked offset can pass while its neighbour leaks 27
+  // characters.
+  test("no usable run survives: a credential we NEVER sent, keyed, wrapped at every offset (#383)", () => {
+    const foreign = ["zztok", "v9", "neversentbyus", "eeeeffffgggghhhh"].join("_");
+    const survivors: Array<{ gap: string; at: number; run: number }> = [];
+    for (const gap of ["\n", "\r\n", "\t", " "]) {
+      for (let at = 1; at < foreign.length; at++) {
+        const out = formatPlatformError(
+          { code: "PT400", details: `api_token: ${splitAt(foreign, at, gap)} rejected` },
+          [API, SA], // note: `foreign` is deliberately NOT in the by-value list
+        );
+        const run = longestRun(out, foreign);
+        if (run >= MAX_SURVIVING_RUN) survivors.push({ gap: JSON.stringify(gap), at, run });
+        // ...and the diagnostic after it is still readable.
+        if (!out.endsWith(" rejected")) survivors.push({ gap: JSON.stringify(gap), at, run: -1 });
+      }
+    }
+    expect(survivors).toEqual([]);
+  });
+
+  test("a SENT secret, keyed and wrapped, still leaves the diagnostic readable", () => {
+    // The #382 matrix already pins that nothing survives here. What #383 adds
+    // is the other half of the bargain: step 3 now absorbs a wrapped tail, so
+    // it must not go on to eat the prose after it. (Note the marker is the
+    // upper-case one: whichever step scrubs the value, step 3 then matches
+    // `sa_token: <marker>` as a pair and rewrites the marker. Pre-existing, and
+    // why the marker's case is not a usable signal for which step acted.)
+    const out = fmt(`sa_token: ${splitAt(API, 12, "\n")} rejected`);
+    expect(leaks(out, API)).toBe(false);
+    expect(longestRun(out, API)).toBeLessThan(MAX_SURVIVING_RUN);
+    expect(out.endsWith(" rejected")).toBe(true);
   });
 
   test("a split glsa_ service-account token is redacted, tail included", () => {
