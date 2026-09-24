@@ -245,10 +245,13 @@ const PLATFORM_ERROR_MAX = 300;
  *   2. BY-VALUE scrub of exactly what this request sent, with a
  *      whitespace-TOLERANT pattern so step 1 cannot be worked around by a body
  *      that was wrapped before we ever saw it. It runs BEFORE the pattern scrub,
- *      not after: redactTextSecrets' key=value match stops at the first
- *      whitespace, so on `sa_token: aaa bbb` it replaces the HEAD, destroys the
- *      prefix this matcher anchors on, and the tail then prints (#382,
- *      @akartasov). By-value must see the text exactly as the platform sent it.
+ *      not after: on `sa_token: aaa bbb` the pattern scrub replaces the HEAD and
+ *      destroys the prefix this matcher anchors on (#382, @akartasov). Since
+ *      #383 the pattern scrub would go on to absorb that tail itself, so this
+ *      example no longer leaks either way — but the ordering still stands.
+ *      By-value is EXACT; the absorption is a heuristic that deliberately keeps
+ *      a tail it cannot distinguish from prose, and only by-value knows that
+ *      tail is a credential. By-value must see the text as the platform sent it.
  *   3. PATTERN scrub via the shared redactTextSecrets (cli/lib/util.ts), the
  *      same one formatHttpError uses — credential-named pairs and URL userinfo,
  *      i.e. secrets we did NOT send and cannot match by value. Reused rather
@@ -258,12 +261,13 @@ const PLATFORM_ERROR_MAX = 300;
  *      continues" from "the next word", so this covers the contiguous case and
  *      step 2 covers every token we actually hold.
  *
- *      KNOWN RESIDUAL, pre-existing and tracked as #383: a credential-named key
- *      whose value was WRAPPED, for a value we never sent, keeps its tail —
- *      redactTextSecrets matches only up to the first whitespace and there is no
- *      value to match by. It measures the same on either ordering, and the fix
- *      belongs in that shared helper (formatHttpError and redactSecretsForLog
- *      inherit it too), not here.
+ *      The residual this used to carry — a credential-named key whose WRAPPED
+ *      value we never sent keeping its tail — is closed in that shared helper
+ *      for a SINGLE wrap (#383): it now absorbs a wrapped tail that still looks
+ *      like credential material, measured over every split offset. Still open
+ *      there, and not closable by any rule: an UNKEYED credential we never
+ *      sent, and a value wrapped more than once where a fragment reads as a
+ *      word. redactTextSecrets states both with their measurements.
  *   5. CAP, with a marker, so a reader can tell the reason was cut short.
  *
  * `details` is preferred over `message`: a plpgsql `raise ... using detail = ...`

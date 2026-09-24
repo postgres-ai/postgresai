@@ -282,19 +282,274 @@ export function redactSecretsForLog(text: string): string {
 /** URL userinfo credentials: `scheme://user:password@host` → password redacted. */
 const TEXT_URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+):[^\s/@]+@/gi;
 
-/** `key=value` / `key: value` / `"key": "value"` pairs for credential-named keys. */
-const TEXT_SENSITIVE_PAIR =
-  /((?:password|passwd|db[-_]?pass|connstr|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|cred(?:ential)?s?|dsn)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi;
+/** Credential-named key names, shared by the pair matcher and by the guard
+ *  that stops a wrapped-tail absorption from swallowing the NEXT pair. */
+const SENSITIVE_KEY_SRC =
+  "(?:password|passwd|db[-_]?pass|connstr|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|cred(?:ential)?s?|dsn)";
+
+/** That key followed by its `:`/`=` separator, with optional quote and spacing. */
+const SENSITIVE_PAIR_SEPARATOR_SRC = `["']?\\s*[:=]`;
+
+/** Characters a credential — or a fragment of one — is made of. */
+const CREDENTIAL_CHAR_SRC = "[A-Za-z0-9_+/=~.-]";
+
+/**
+ * Shortest run we are willing to treat as credential material.
+ *
+ * It is both the absorption floor below and the "no usable run survives"
+ * threshold the tests assert, deliberately the same number: a run long enough
+ * to matter is a run long enough to absorb. Twelve characters is far below any
+ * real credential and above the length at which a leftover fragment is worth
+ * anything to an attacker.
+ */
+const MIN_CREDENTIAL_RUN = 12;
+
+/**
+ * `key=value` / `key: value` / `"key": "value"` pairs for credential-named keys.
+ *
+ * Group 1 is the key and separator, 2 a quoted value, 3 a BARE value, and 4 the
+ * whitespace-separated runs that FOLLOW a bare value. A bare value can only run
+ * to the first whitespace — that is what `[^\s,;&]+` means, and it is right for
+ * the unwrapped case — so a value wrapped before we ever saw it (#383) leaves
+ * its tail in group 4, where `replaceSensitivePair` decides run by run what is
+ * still credential material and what is the next English word.
+ *
+ * The one thing group 4 will NOT consume is a run that itself opens a
+ * credential pair. That guard is what keeps `password=a access_token=b`
+ * working: the second pair is left for the next match instead of vanishing into
+ * the first one's tail. Everything group 4 does consume is therefore
+ * pair-free, so handing an unabsorbed run straight back costs nothing.
+ */
+const TEXT_SENSITIVE_PAIR = new RegExp(
+  `(${SENSITIVE_KEY_SRC}${SENSITIVE_PAIR_SEPARATOR_SRC}\\s*)` +
+    `(?:("[^"]*"|'[^']*')` +
+    `|([^\\s,;&]+)` +
+    `((?:\\s+(?![^\\s,;&]*${SENSITIVE_KEY_SRC}${SENSITIVE_PAIR_SEPARATOR_SRC})[^\\s,;&]+)*)` +
+    `)`,
+  "gi"
+);
+
+/** The whole run is credential characters — no prose punctuation anywhere. */
+const CREDENTIAL_RUN_ONLY = new RegExp(`^${CREDENTIAL_CHAR_SRC}+$`);
+
+/** Punctuation that can wrap a run without being part of it. A wrapped tail
+ *  quoted or parenthesised by the surrounding text ends in one of these, and
+ *  failing to strip them left 27 characters printing (#383 review F3). */
+const RUN_LEADING_PUNCTUATION = /^[("'\[{<]+/;
+const RUN_TRAILING_PUNCTUATION = /[)"'\]}>!?.,;:]+$/;
+
+/** A consonant run English does not reach: it disqualifies a run as a word and
+ *  qualifies it as a token, so the threshold has to be ONE number. */
+const LONG_CONSONANT_RUN = /[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ]{5,}/;
+
+/** 8-4-4-4-12 hex. A correlation id a PT4xx names, never a token fragment. */
+const UUID_SHAPE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * English-word shape: letters only, a vowel, and no consonant run English does
+ * not reach. Used to tell "the next word" from "more of the token".
+ *
+ * Exported because it is the ONE documented reason this scrub can still leave a
+ * wrapped credential readable: a fragment that reads as a word breaks the
+ * chain. The suite asserts that characterisation against this definition rather
+ * than against a copy, so the two cannot drift.
+ */
+export function isWordShaped(s: string): boolean {
+  if (!/^[A-Za-z]+$/.test(s)) return false;
+  if (s.length <= 2) return true;
+  if (hasInternalCapital(s)) return false; // camelCase is a token, not a word
+  if (!/[aeiouyAEIOUY]/.test(s)) return false;
+  return !LONG_CONSONANT_RUN.test(s);
+}
+
+/** An upper-case letter past the FIRST position, with lower-case present: the
+ *  shape of camelCase, never of a capitalised word. One definition, because it
+ *  both disqualifies a run as a word and qualifies it as a token. */
+function hasInternalCapital(s: string): boolean {
+  return /[a-z]/.test(s) && /.[A-Z]/.test(s);
+}
+
+/**
+ * Does this run carry the shape of a DIAGNOSTIC rather than of a credential?
+ *
+ * This is the correction the first version of #383 needed. That version asked
+ * only "is this English?", and it holds up against English — but almost
+ * nothing in these messages is English. They are libpq connection strings,
+ * `key=value` fields, paths and correlation ids, and `password=` / `connstr=` /
+ * `dsn=` occur in the wild almost exclusively INSIDE a connection string, i.e.
+ * surrounded by exactly this. Absorbing it deleted `sslmode=require`,
+ * `host=db.example.com` and `request_id=…` on every call, which is a worse
+ * outcome than the leak: #383 leaks a tail whose head is already redacted, and
+ * needs the value to have been pre-wrapped, while this destroyed the diagnostic
+ * every time.
+ */
+function hasHardStructure(core: string): boolean {
+  // `key=value`. A trailing `=` is base64 padding, not an assignment.
+  if (/=/.test(core.replace(/={1,2}$/, ""))) return true;
+  // No url check is needed: a url carries a `:`, which is not a credential
+  // character, so such a run is never a chain member to begin with.
+  return UUID_SHAPE.test(core);
+}
+
+/**
+ * A name made of words and small numbers joined by `/`, `_`, `-` or `.`.
+ *
+ * The separator cannot decide it on its own -- standard base64 is full of `/`,
+ * base64url of `-` and `_`, and a JWT is dotted -- so every segment must read
+ * as a word or a small number, and at least one must be a word. That is what
+ * separates `platform-fix-383-redact-postgrest-1` from `R7qZmN4v-K1sT0xW8`.
+ *
+ * Exported for the same reason as `isWordShaped`: together they are the two
+ * documented reasons a wrapped credential can still print, and the suite
+ * asserts that characterisation against these definitions, not against a copy.
+ */
+export function isSeparatedName(core: string): boolean {
+  const segments = core.split(/[/_.-]/).filter((part) => part.length > 0);
+  if (segments.length < 2) return false;
+  if (!segments.some(isNameSegment)) return false;
+  return segments.every((part) => isNameSegment(part) || /^[0-9]{1,4}$/.test(part));
+}
+
+/** A word, or a short all-caps acronym of the kind a diagnostic is built from
+ *  (`HTTP/1.1-429`, `PG/16`). The acronym allowance lives HERE rather than in
+ *  `isWordShaped` so it only ever decides whether something is a name, and
+ *  never whether a chain of credential fragments should break. */
+function isNameSegment(part: string): boolean {
+  return isWordShaped(part) || (/^[A-Z]+$/.test(part) && part.length <= 6);
+}
+
+/**
+ * Does this run carry a signal a plain word does not?
+ *
+ * `-` and `.` are credential characters but NOT signals, so "rate-limited" and
+ * a sentence-final "unauthorized." stay. Nor is `/` a signal: it appears in
+ * relative paths, and standard base64 long enough to matter carries a digit or
+ * mixed case anyway.
+ */
+function hasTokenSignal(core: string): boolean {
+  if (/[0-9_+]/.test(core)) return true;
+  if (/=$/.test(core)) return true; // base64 padding
+  if (hasInternalCapital(core)) return true;
+  return LONG_CONSONANT_RUN.test(core);
+}
+
+/** The run, without any punctuation the surrounding text wrapped it in. */
+function runCore(run: string): string {
+  return run.replace(RUN_LEADING_PUNCTUATION, "").replace(RUN_TRAILING_PUNCTUATION, "");
+}
+
+/** Long enough to matter, made of credential characters, not a diagnostic, and
+ *  carrying a signal. All four, or it is not credential material. */
+function looksLikeCredentialRun(core: string): boolean {
+  // Charset is not re-checked: this only ever runs on a chain, and every chain
+  // member already had to be credential characters only.
+  return core.length >= MIN_CREDENTIAL_RUN && !hasHardStructure(core) && hasTokenSignal(core);
+}
+
+/**
+ * Can this run be part of a chain of fragments of ONE wrapped credential?
+ *
+ * Deliberately weaker than `looksLikeCredentialRun`: it has no length floor,
+ * because a value wrapped twice leaves a middle fragment that can be a single
+ * character. The first version stopped absorbing at the first such fragment and
+ * everything after it printed — 300 of 703 double-wrap offset pairs kept >= 12
+ * characters, the worst 38 of 39 (#383 review F2). A chain breaks on a word, on
+ * a diagnostic, or on prose punctuation, never on a short fragment.
+ */
+function isChainableFragment(core: string): boolean {
+  return (
+    core.length > 0 &&
+    CREDENTIAL_RUN_ONLY.test(core) &&
+    !hasHardStructure(core) &&
+    !isWordShaped(core)
+  );
+}
+
+/**
+ * Replace one credential pair, absorbing a wrapped tail but not the diagnostic.
+ *
+ * The tail is cut into maximal chains of fragments, and a chain is absorbed
+ * WHOLE when its concatenation looks like credential material. Judging the
+ * chain rather than each run is what handles a value wrapped more than once:
+ * the fragments are only a credential when put back together. Anything that
+ * breaks a chain — a word, a `key=value`, a path — is never absorbed, so the
+ * prose between two token-shaped runs survives both of them.
+ */
+function replaceSensitivePair(
+  _match: string,
+  keyPrefix: string,
+  quotedValue: string | undefined,
+  _bareValue: string | undefined,
+  tail: string | undefined
+): string {
+  // A quoted value already spans whitespace, so it has no wrapped tail and
+  // nothing past the closing quote belongs to the credential.
+  if (quotedValue !== undefined) return `${keyPrefix}[REDACTED]`;
+
+  const runs = [...(tail ?? "").matchAll(/(\s+)(\S+)/g)].map((m) => {
+    const run = m[2] ?? "";
+    return { gap: m[1] ?? "", run, core: runCore(run) };
+  });
+
+  const absorbed = runs.map(() => false);
+  for (let i = 0; i < runs.length; ) {
+    if (!isChainableFragment(runs[i]!.core)) {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < runs.length && isChainableFragment(runs[end]!.core)) end++;
+    const members = runs.slice(i, end);
+    const chain = members.map((r) => r.core).join("");
+    // A chain whose every member already reads as a name is a run of adjacent
+    // DIAGNOSTICS, not one wrapped token -- concatenating `instance-7-of-12`
+    // with `HTTP/1.1-429` produces something that passes every token test.
+    const allNames = members.every((r) => isSeparatedName(r.core));
+    if (!allNames && looksLikeCredentialRun(chain)) for (let k = i; k < end; k++) absorbed[k] = true;
+    i = end;
+  }
+
+  let kept = "";
+  for (let k = 0; k < runs.length; k++) {
+    const r = runs[k]!;
+    if (!absorbed[k]) {
+      kept += r.gap + r.run;
+      continue;
+    }
+    // The fragment goes; the punctuation the text wrapped it in stays, so a
+    // quoted or parenthesised message does not lose its closing mark.
+    const lead = r.run.match(RUN_LEADING_PUNCTUATION)?.[0] ?? "";
+    const trail = r.run.match(RUN_TRAILING_PUNCTUATION)?.[0] ?? "";
+    if (lead || trail) kept += r.gap + lead + trail;
+  }
+  return `${keyPrefix}[REDACTED]${kept}`;
+}
 
 /**
  * Best-effort scrub of credential-looking patterns in plain (non-JSON) text.
  * Used for raw response text that ends up in thrown error messages, where the
  * key-based `redactSecrets` cannot apply. Hygiene only — not an egress control.
+ *
+ * KNOWN RESIDUALS, every one of them a case where nothing here can tell a
+ * credential from text (#383). A single wrap has none: measured over 7
+ * credential shapes, 3 key spellings, 4 gap characters and EVERY split offset,
+ * 2268 cases leave no usable run. What is left:
+ *   - an UNKEYED credential the caller never sent, in arbitrary prose, has no
+ *     key name to match and no value to match by. Nothing can reach it;
+ *   - a value wrapped MORE THAN ONCE, when a fragment reads as an English word
+ *     or when the fragments all read as separated names. The chain of fragments
+ *     ends there, because at that point the fragment is indistinguishable from
+ *     the next word of the message or from `instance_identifier`. Measured at
+ *     552 of 35352 double-wrap cases (1.6%), worst surviving run 16 characters.
+ *     Bridging such a fragment was measured and rejected: allowing a
+ *     5-character word through cuts the leak to 156 but takes the share of
+ *     dictionary words eaten from 0.161% to 5.157%, which is the diagnostic
+ *     content these messages exist to carry.
  */
 export function redactTextSecrets(text: string): string {
   return text
     .replace(TEXT_URL_USERINFO, "$1:[REDACTED]@")
-    .replace(TEXT_SENSITIVE_PAIR, "$1[REDACTED]");
+    .replace(TEXT_SENSITIVE_PAIR, replaceSensitivePair);
 }
 
 /**
