@@ -104,7 +104,7 @@ async function createTempPostgres(): Promise<TempPostgres> {
 
   // Configure: local socket trust, TCP scram.
   const hbaPath = path.join(dataDir, "pg_hba.conf");
-  fs.appendFileSync(
+  fs.writeFileSync(
     hbaPath,
     "\n# Added by postgresai init integration tests\nlocal all all trust\nhost all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n",
     "utf8"
@@ -218,6 +218,43 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
       await pg.cleanup();
     }
   }, { timeout: TEST_TIMEOUT });
+
+  test("role SQL authenticates with SCRAM even when password_encryption is md5", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query("set password_encryption = 'md5'");
+      const { buildInitPlan, applyInitPlan, redactPasswordsInSql } = await import("../lib/init");
+      // Exercise both first creation and updating an existing role.
+      for (const password of ["test-only-initial", String.raw`test-only-pa'ss\word$$!`]) {
+        const plan = await buildInitPlan({ database: "testdb", monitoringPassword: password, includeOptionalPermissions: false });
+        plan.steps = plan.steps.filter(step => step.name === "01.role");
+        const sql = plan.steps[0].sql;
+        expect(sql.includes(password)).toBe(false);
+        const verifiers = [...sql.matchAll(/password '(SCRAM-SHA-256\$[^']+)'/g)].map(m => m[1]);
+        expect(verifiers.length).toBe(2);
+        expect(verifiers[0] === verifiers[1]).toBe(true);
+        expect(redactPasswordsInSql(sql).includes(verifiers[0])).toBe(false);
+        await applyInitPlan({ client: admin, plan });
+        const stored = await admin.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+        expect(stored.rows[0].rolpassword === verifiers[0]).toBe(true);
+        const config = { host: "127.0.0.1", port: pg.port, user: "postgres_ai_mon", database: "testdb", password };
+        const mon = new Client(config);
+        try {
+          await mon.connect();
+          expect((await mon.query("select current_user as u")).rows[0].u).toBe("postgres_ai_mon");
+        } finally { await mon.end(); }
+        // A negative control proves HBA does not accidentally allow trust.
+        const wrong = new Client({ ...config, password: "test-only-wrong" });
+        try { await expect(wrong.connect()).rejects.toThrow(/password authentication failed/); }
+        finally { await wrong.end(); }
+      }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
 
   test("requires explicit monitoring password in non-interactive mode", async () => {
     pg = await createTempPostgres();
