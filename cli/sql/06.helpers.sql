@@ -1,5 +1,8 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
 
+-- Remove the retired helper from databases prepared by older CLI versions.
+drop function if exists postgres_ai.explain_generic(text, text, text);
+
 /*
  * table_describe
  *
