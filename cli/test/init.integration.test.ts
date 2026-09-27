@@ -407,6 +407,38 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     }
   }, { timeout: TEST_TIMEOUT });
 
+  test("prepare-db removes legacy explain_generic idempotently", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+
+    try {
+      await c.connect();
+      // A harmless stub models the signature left by older installations.
+      await c.query(`
+        create schema postgres_ai;
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+      `);
+      const signature = "postgres_ai.explain_generic(text,text,text)";
+      const legacy = await c.query("select to_regprocedure($1) as helper", [signature]);
+      expect(legacy.rows[0].helper).not.toBeNull();
+
+      for (let run = 0; run < 2; run++) {
+        const r = runCliInit([pg.adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+        expect(r.status).toBe(0);
+        const result = await c.query("select to_regprocedure($1) as helper", [signature]);
+        expect(result.rows[0].helper).toBeNull();
+      }
+
+      const verified = runCliInit([pg.adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(verified.status).toBe(0);
+      expect(verified.stdout).toMatch(/prepare-db verify: OK/i);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   // Security regression for #387: explain_generic was a SECURITY DEFINER helper that
   // ran caller-supplied SQL through EXPLAIN. The planner folds IMMUTABLE/STABLE functions
   // at plan time in the definer's (superuser) context, making it an RCE/data-exfil vector.
