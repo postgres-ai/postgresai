@@ -94,7 +94,7 @@ describe("init module", () => {
     expect(permStep!.sql).toMatch(/grant connect on database "db name ""with"" quotes ✓" to "user ""with"" quotes ✓"/i);
   });
 
-  test("buildInitPlan keeps backslashes in passwords (no unintended escaping)", async () => {
+  test("buildInitPlan ships a SCRAM verifier, never the cleartext password", async () => {
     const pw = String.raw`pw\with\backslash`;
     const plan = await init.buildInitPlan({
       database: "mydb",
@@ -104,8 +104,40 @@ describe("init module", () => {
     });
     const roleStep = plan.steps.find((s: { name: string }) => s.name === "01.role");
     expect(roleStep).toBeTruthy();
-    expect(roleStep!.sql).toContain(`password '${pw}'`);
+    // The cleartext password must never appear in the emitted SQL.
+    expect(roleStep!.sql.includes(pw)).toBe(false);
+    // A pre-computed SCRAM-SHA-256 verifier is shipped in the password clause.
+    expect(roleStep!.sql).toMatch(/password 'SCRAM-SHA-256\$\d+:[^']*'/);
   });
+
+  test("buildInitPlan rejects non-ASCII passwords until SASLprep is supported", async () => {
+    await expect(init.buildInitPlan({ database: "mydb", monitoringPassword: "test-\u00adpassword", includeOptionalPermissions: false })).rejects.toThrow(/ASCII/);
+  });
+
+  for (const mode of ["direct", "supabase"]) {
+    test(`${mode} plan execution redacts password clauses from server diagnostics`, async () => {
+      const plan = await init.buildInitPlan({ database: "mydb", monitoringPassword: "test-only", includeOptionalPermissions: false });
+      plan.steps = plan.steps.filter(step => step.name === "01.role");
+      const sql = plan.steps[0].sql;
+      const client = { query: async (query: string) => {
+        if (query.includes(sql)) throw Object.assign(new Error(`Failed query: ${sql}`), { detail: sql, hint: sql, internalQuery: sql, where: sql });
+        return {};
+      }};
+      try {
+        const apply = mode === "direct" ? init.applyInitPlan : (await import("../lib/supabase")).applyInitPlanViaSupabase;
+        await apply({ client: client as any, plan });
+        throw new Error("expected failure");
+      } catch (error) {
+        const e = error as any;
+        for (const value of [e.message, e.stack, e.detail, e.hint, e.internalQuery, e.where]) {
+          expect(typeof value).toBe("string");
+          expect(value.includes("SCRAM-SHA-256$")).toBe(false);
+          expect(value.includes("test-only")).toBe(false);
+        }
+      }
+    });
+
+  }
 
   test("buildInitPlan rejects identifiers with null bytes", async () => {
     await expect(
@@ -118,7 +150,7 @@ describe("init module", () => {
     ).rejects.toThrow(/Identifier cannot contain null bytes/);
   });
 
-  test("buildInitPlan rejects literals with null bytes", async () => {
+  test("buildInitPlan rejects passwords with null bytes", async () => {
     await expect(
       init.buildInitPlan({
         database: "mydb",
@@ -126,10 +158,10 @@ describe("init module", () => {
         monitoringPassword: "pw\0bad",
         includeOptionalPermissions: false,
       })
-    ).rejects.toThrow(/Literal cannot contain null bytes/);
+    ).rejects.toThrow(/null bytes/i);
   });
 
-  test("buildInitPlan inlines password safely for CREATE/ALTER ROLE grammar", async () => {
+  test("buildInitPlan keeps CREATE/ALTER ROLE injection-safe with no inlined secret", async () => {
     const plan = await init.buildInitPlan({
       database: "mydb",
       monitoringUser: DEFAULT_MONITORING_USER,
@@ -138,7 +170,11 @@ describe("init module", () => {
     });
     const step = plan.steps.find((s: { name: string }) => s.name === "01.role");
     expect(step).toBeTruthy();
-    expect(step!.sql).toMatch(/password 'pa''ss'/);
+    // Neither the cleartext nor its SQL-escaped form is inlined.
+    expect(step!.sql).not.toContain("pa'ss");
+    expect(step!.sql).not.toMatch(/pa''ss/);
+    // The verifier is a quote-free base64 literal, so the grammar stays safe.
+    expect(step!.sql).toMatch(/password 'SCRAM-SHA-256\$\d+:[^']*'/);
     expect(step!.params).toBeUndefined();
   });
 
@@ -947,6 +983,8 @@ describe("CLI commands", () => {
     const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/SQL plan \(offline; not connected\)/);
+    expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
+    expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
     expect(r.stdout).toMatch(new RegExp(`grant connect on database "mydb" to "${DEFAULT_MONITORING_USER}"`, "i"));
   });
 
@@ -1158,6 +1196,8 @@ describe("CLI commands", () => {
     const r = runCli(["unprepare-db", "--print-sql", "-d", "mydb"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/SQL plan \(offline; not connected\)/);
+    expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
+    expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
     expect(r.stdout).toMatch(/drop schema if exists postgres_ai/i);
   });
 
