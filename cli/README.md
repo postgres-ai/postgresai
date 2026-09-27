@@ -76,6 +76,8 @@ Password input options (in priority order):
 - `PGAI_MON_PASSWORD` environment variable
 - if not provided: a strong password is generated automatically
 
+Monitoring passwords must use printable ASCII characters; non-ASCII passwords are rejected until SASLprep normalization is supported. Role creation and password resets send a SCRAM-SHA-256 verifier instead of the cleartext password, including when the server uses `password_encryption=md5`. Printed SQL redacts the verifier as well. Server statement logging can still record the verifier; treat it as sensitive.
+
 By default, the generated password is printed **only in interactive (TTY) mode**. In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
 - `--print-password` (dangerous in CI logs)
 
