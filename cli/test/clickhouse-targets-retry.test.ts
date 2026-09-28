@@ -94,3 +94,10 @@ test("targets add accepts the postgres:// URL ClickHouse Cloud hands out", async
   expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(url);
   expect(existsSync(`${dir}/host-metrics/clickhouse-retry.yml`)).toBe(true);
 });
+
+test("targets add drops channel_binding, which pgwatch rejects as a server parameter", async () => {
+  const result = await run(credentials, `postgres://monitor:password@${hostname}:5432/postgres?sslmode=require&channel_binding=require`);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+  expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=require`);
+});
