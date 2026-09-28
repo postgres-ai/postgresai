@@ -67,11 +67,15 @@ const osMetrics: [string, (m: OSMetric) => number][] = [
 ]
 const escapeLabel = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
 
+export class PollTimeout extends Error {
+  name = 'PollTimeout'
+}
+
 // requestTimeout stops at the response headers; a stalled body would otherwise hang the loop.
 export async function pollOnce(clients: Clients, target: Target, now: Date, state: Map<string, number>): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('poll timed out after 30 s')), 30_000)
+    timer = setTimeout(() => reject(new PollTimeout('poll timed out after 30 s')), 30_000)
   })
   try {
     return await Promise.race([poll(clients, target, now, state), deadline])

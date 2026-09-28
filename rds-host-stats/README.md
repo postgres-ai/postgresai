@@ -39,7 +39,7 @@ CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `R
 
 We use `docker compose --profile rds up -d rds-host-stats`. Set `PGAI_TAG`, `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`, `PGAI_CLUSTER`, and `PGAI_NODE_NAME`; the last two must match the pgwatch target labels. Set both `RDS_ROLE_ARN` and `RDS_EXTERNAL_ID` to assume a customer role, or neither to use the default AWS credential chain. Base credentials come from the VM instance profile; containers reach IMDSv2 only when the instance's metadata hop limit is at least 2.
 
-`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick; SIGTERM/SIGINT exit cleanly.
+`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick. A poll that exceeds 30 s exits the service with status 1, and the compose restart policy starts it again without the stuck connection. SIGTERM/SIGINT exit cleanly.
 
 ## Customer IAM
 

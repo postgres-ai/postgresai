@@ -1,4 +1,4 @@
-import { createClients, pollOnce, writeSamples } from '../lib/poll'
+import { createClients, PollTimeout, pollOnce, writeSamples } from '../lib/poll'
 
 const env = process.env
 function required(name: string): string {
@@ -21,7 +21,7 @@ const target = {
 }
 const region = required('AWS_REGION')
 const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined
-let clients = createClients(region, role)
+const clients = createClients(region, role)
 const url = env.PROMETHEUS_URL || 'http://sink-prometheus:9090'
 const auth = env.VM_AUTH_USERNAME && env.VM_AUTH_PASSWORD ? { username: env.VM_AUTH_USERNAME, password: env.VM_AUTH_PASSWORD } : undefined
 process.on('SIGTERM', () => process.exit(0))
@@ -37,8 +37,9 @@ while (true) {
     state = pending
     written = text.split('\n').length - 1
   } catch (error) {
-    clients = createClients(region, role)
     console.error(error instanceof Error ? `${error.name}: ${error.message}` : 'poll failed')
+    // A stalled socket survives the SDK client under Bun; a restart drops it.
+    if (error instanceof PollTimeout) process.exit(1)
   }
   console.log(`samples written: ${written}`)
   do { nextTick += 60_000 } while (nextTick <= Date.now())
