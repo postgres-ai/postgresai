@@ -52,7 +52,7 @@ func TestSupabaseLive(t *testing.T) {
 			return
 		}
 		var body map[string]string
-		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 2 || body["api_token"] != "test-org-token" || body["instance_id"] != "test-instance" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 1 || body["instance_id"] != "test-instance" || r.Header.Get("access-token") != "test-org-token" {
 			t.Error("incorrect platform RPC contract")
 			http.Error(w, "incorrect contract", http.StatusBadRequest)
 			return
