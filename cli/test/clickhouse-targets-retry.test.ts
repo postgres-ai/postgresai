@@ -33,7 +33,7 @@ async function run(env: NodeJS.ProcessEnv, connection = conn) {
   const stdout: string[] = [], stderr: string[] = [];
   const log = spyOn(console, "log").mockImplementation((message) => { stdout.push(String(message)); });
   const error = spyOn(console, "error").mockImplementation((message) => { stderr.push(String(message)); });
-  const previous = process.exitCode;
+  const previous = process.exitCode ?? 0;
   process.exitCode = 0;
   try {
     await addTarget(`${dir}/instances.yml`, dir, connection, "retry", env, { apply: false });
