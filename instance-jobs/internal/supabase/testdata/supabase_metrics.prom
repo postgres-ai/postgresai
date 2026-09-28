@@ -1,0 +1,17 @@
+# Schema-shaped, not recorded; https://github.com/supabase/supabase-grafana/blob/main/docs/metrics.md
+# TYPE node_cpu_seconds_total counter
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"} 120
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes{supabase_project_ref="abcdefghijklmnopqrst",service_type="db"} 1073741824
+# TYPE node_filesystem_free_bytes gauge
+node_filesystem_free_bytes{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="/dev/vda",fstype="ext4",mountpoint="/"} 2147483648
+# TYPE node_disk_reads_completed_total counter
+node_disk_reads_completed_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="vda"} 100
+# TYPE node_disk_writes_completed_total counter
+node_disk_writes_completed_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="vda"} 200
+# TYPE node_network_receive_bytes_total counter
+node_network_receive_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="eth0"} 4096
+# TYPE node_network_transmit_bytes_total counter
+node_network_transmit_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="eth0"} 8192
+# TYPE node_load1 gauge
+node_load1{supabase_project_ref="abcdefghijklmnopqrst",service_type="db"} 0.25
