@@ -49,6 +49,7 @@ function mockStack(options: { instance: boolean; importStatuses: number[] }) {
     ? '<DBInstance><DBInstanceIdentifier>db</DBInstanceIdentifier><Engine>postgres</Engine><DbiResourceId>db-X</DbiResourceId><PerformanceInsightsEnabled>false</PerformanceInsightsEnabled><MonitoringInterval>0</MonitoringInterval></DBInstance>'
     : ''
   const server = Bun.serve({
+    hostname: '127.0.0.1',
     port: 0,
     async fetch(req) {
       const url = new URL(req.url)
@@ -128,9 +129,12 @@ test('stays up and reports zero samples when the instance is not found', async (
   }
 }, 30_000)
 
-test('refuses a poll interval that is not a positive integer', () => {
-  const env = { PATH: process.env.PATH, RDS_DB_INSTANCE_IDENTIFIER: 'db', AWS_REGION: 'us-east-1', PGAI_CLUSTER: 'c', PGAI_NODE_NAME: 'n', RDS_POLL_INTERVAL_SECONDS: '0' }
-  const run = Bun.spawnSync(['bun', `${import.meta.dir}/../bin/rds-host-stats.ts`], { env })
-  expect(run.exitCode).toBe(2)
-  expect(run.stderr.toString()).toContain('RDS_POLL_INTERVAL_SECONDS')
+// Above 300 s a poll could miss a 300 s Aurora volume bucket entirely.
+test('refuses a poll interval that is not an integer from 1 to 300', () => {
+  for (const value of ['0', '1.5', '60s', '301']) {
+    const env = { PATH: process.env.PATH, RDS_DB_INSTANCE_IDENTIFIER: 'db', AWS_REGION: 'us-east-1', PGAI_CLUSTER: 'c', PGAI_NODE_NAME: 'n', RDS_POLL_INTERVAL_SECONDS: value }
+    const run = Bun.spawnSync(['bun', `${import.meta.dir}/../bin/rds-host-stats.ts`], { env })
+    expect(run.exitCode, value).toBe(2)
+    expect(run.stderr.toString(), value).toContain('RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300')
+  }
 })

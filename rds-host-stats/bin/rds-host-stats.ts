@@ -20,9 +20,11 @@ const target = {
   nodeName: required('PGAI_NODE_NAME'),
 }
 const region = required('AWS_REGION')
+// A 300 s bucket is written by a poll that ends 10 to 15 minutes after it
+// starts, so a longer interval would skip Aurora volume buckets.
 const interval = Number(env.RDS_POLL_INTERVAL_SECONDS || 60)
-if (!Number.isInteger(interval) || interval < 1) {
-  console.error('RDS_POLL_INTERVAL_SECONDS must be a positive integer')
+if (!Number.isInteger(interval) || interval < 1 || interval > 300) {
+  console.error('RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300')
   process.exit(2)
 }
 const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined

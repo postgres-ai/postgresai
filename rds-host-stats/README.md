@@ -41,7 +41,7 @@ CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `R
 
 We use `docker compose --profile rds up -d rds-host-stats`. Set `PGAI_TAG`, `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`, `PGAI_CLUSTER`, and `PGAI_NODE_NAME`; the last two must match the pgwatch target labels. Set both `RDS_ROLE_ARN` and `RDS_EXTERNAL_ID` to assume a customer role, or neither to use the default AWS credential chain. Base credentials come from the VM instance profile; containers reach IMDSv2 only when the instance's metadata hop limit is at least 2.
 
-`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick; samples of a failed VictoriaMetrics write are sent again with the next poll. A Performance Insights or Enhanced Monitoring failure, or a malformed Enhanced Monitoring event, is logged and skipped for that poll while the CloudWatch samples are still written. A poll that exceeds 30 s exits the service with status 1, and the compose restart policy starts it again without the stuck connection. SIGTERM/SIGINT exit cleanly.
+`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick; samples of a failed VictoriaMetrics write are sent again with the next poll. A Performance Insights or Enhanced Monitoring failure is logged and skipped for that poll while the CloudWatch samples are still written. A malformed Enhanced Monitoring event is logged once and skipped. A poll that exceeds 30 s exits the service with status 1, and the compose restart policy starts it again without the stuck connection. SIGTERM/SIGINT exit cleanly.
 
 ## Customer IAM
 
@@ -49,7 +49,7 @@ The customer creates the role with the PostgresAI RDS provider template (platfor
 
 ## Customer cost and Enhanced Monitoring
 
-GetMetricData costs $0.01 per 1,000 metrics requested: 13 RDS metrics × 1,440 polls/day × 30 days ≈ $5.60/month per instance (Aurora requests 14 metrics). A longer `RDS_POLL_INTERVAL_SECONDS` lowers this in proportion; the 15-minute window still covers every bucket up to 13 minutes. Logs GetLogEvents and PI Standard API reads are free. AWS bills Enhanced Monitoring's own Logs ingestion when the customer enables it.
+GetMetricData costs $0.01 per 1,000 metrics requested: 13 RDS metrics × 1,440 polls/day × 30 days ≈ $5.60/month per instance (Aurora requests 14 metrics). A longer `RDS_POLL_INTERVAL_SECONDS` (at most 300) lowers this in proportion. A bucket is written by a poll that ends between two periods and 15 minutes after the bucket starts: a span of 13 minutes for the 60 s metrics, and of 5 minutes for the 300 s Aurora volume metrics, which is why the interval is capped. Logs GetLogEvents and PI Standard API reads are free. AWS bills Enhanced Monitoring's own Logs ingestion when the customer enables it.
 
 We enable Enhanced Monitoring with `aws rds modify-db-instance --db-instance-identifier <id> --monitoring-interval 15 --monitoring-role-arn <arn> --apply-immediately`. The monitoring role must allow RDS Enhanced Monitoring to publish OS metrics to CloudWatch Logs.
 

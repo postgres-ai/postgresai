@@ -72,8 +72,9 @@ export class PollTimeout extends Error {
 }
 
 // text: the import body of the samples not yet written. errors: sources that
-// failed this poll (Performance Insights, Enhanced Monitoring, a malformed
-// event); their samples are retried on the next poll, the rest are kept.
+// failed this poll (Performance Insights, Enhanced Monitoring); their samples
+// are retried on the next poll, the rest are kept. A malformed Enhanced
+// Monitoring event is reported once and never retried: it stays malformed.
 export type Poll = { text: string; errors: Error[] }
 
 // requestTimeout stops at the response headers; a stalled body would otherwise hang the loop.
@@ -100,10 +101,13 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
   // minute boundary, so no bucket is cut by the wall clock. A bucket is written
   // only once a further period has passed after it closed: a partial Average
   // written early would be frozen by the per-timestamp dedupe, and the complete
-  // one dropped. The OS log window follows the clock; its events are samples.
+  // one dropped. CloudWatch stamps a bucket at its start, PI at its end, so the
+  // gate is 2 periods for CloudWatch and 1 for PI. The OS log window follows
+  // the clock; its events are samples.
   const end = new Date(Math.floor(now.getTime() / 60_000) * 60_000)
   const start = new Date(end.getTime() - 15 * 60_000)
   const closed = (time: number, period: number) => time + 2 * period * 1000 <= end.getTime()
+  const closedPI = (time: number) => time + 60_000 <= end.getTime()
   const metrics = [...common, ...(aurora ? auroraMetrics : rdsMetrics)]
   const queries = (items: Metric[], dimension: string, value: string | undefined, period: number) => items.map(([Id, MetricName]) => ({
     Id, MetricStat: { Metric: { Namespace: 'AWS/RDS', MetricName, Dimensions: [{ Name: dimension, Value: value }] }, Period: period, Stat: 'Average' },
@@ -143,10 +147,11 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
         PeriodInSeconds: 60, MetricQueries: [{ Metric: 'db.load.avg' }],
       }))
       // PI stamps a point at the end of its minute and rounds EndTime up, so a
-      // point after `end` covers a minute that is still open.
+      // point after `end` covers a minute that is still open, and the point at
+      // `end` a minute that closed moments ago and may still be ingesting.
       for (const metric of result.MetricList ?? []) {
         for (const point of metric.DataPoints ?? []) {
-          if (point.Timestamp && point.Timestamp.getTime() <= end.getTime()) emit('host_db_load', point.Value, point.Timestamp.getTime())
+          if (point.Timestamp && closedPI(point.Timestamp.getTime())) emit('host_db_load', point.Value, point.Timestamp.getTime())
         }
       }
     } catch (error) {
@@ -162,10 +167,17 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
       for (const event of result.events ?? []) {
         try {
           const os = JSON.parse(event.message ?? '')
-          if (typeof os?.timestamp !== 'string') throw new Error('no timestamp')
+          if (typeof os?.timestamp !== 'string' || !Number.isFinite(Date.parse(os.timestamp))) throw new Error('no timestamp')
           events.push(os)
         } catch (error) {
-          errors.push(new Error(`Enhanced Monitoring event at ${event.timestamp} skipped: ${toError(error).message}`))
+          // The 15-minute log window returns the same event on every poll;
+          // report it once. Remembered in state like a written sample, so
+          // it is pruned with them and re-reported only if the write failed.
+          const key = `skipped ${event.timestamp} ${event.message}`
+          if (!state.has(key)) {
+            state.set(key, event.timestamp ?? now.getTime())
+            errors.push(new Error(`Enhanced Monitoring event at ${event.timestamp} skipped: ${toError(error).message}`))
+          }
         }
       }
       const at = (os: OSMetric) => new Date(os.timestamp).getTime()
@@ -179,8 +191,9 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
         }
       }
       for (const os of events) {
-        const processes = Array.isArray(os.processList) ? os.processList.filter(p => p?.id !== 0) : []
-        if (processes.length) emit('host_os_process_max_rss_bytes', Math.max(...processes.map(p => p.rss)) * 1024, at(os))
+        // id 0 rows are the "OS processes" and "RDS processes" aggregates.
+        const rss = Array.isArray(os.processList) ? os.processList.filter(p => p && p.id !== 0 && typeof p.rss === 'number').map(p => p.rss) : []
+        if (rss.length) emit('host_os_process_max_rss_bytes', Math.max(...rss) * 1024, at(os))
       }
     } catch (error) {
       errors.push(toError(error))

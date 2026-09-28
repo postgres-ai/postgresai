@@ -164,3 +164,15 @@ def test_host_stats_panels_units_and_legend_sort(path):
     for title, (unit, sort_by) in PANELS.items():
         assert host[title]["fieldConfig"]["defaults"]["unit"] == unit, title
         assert host[title]["options"]["legend"]["sortBy"] == sort_by, title
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
+def test_host_stats_percent_panels_use_soft_axis_limits(path):
+    # Like the rest of the dashboard: a soft 0..100 axis keeps the scale
+    # readable without clipping a value that CloudWatch reports out of range.
+    for title, panel in _host_panels(path).items():
+        defaults = panel["fieldConfig"]["defaults"]
+        if defaults["unit"] != "percent":
+            continue
+        assert "min" not in defaults and "max" not in defaults, title
+        assert defaults["custom"]["axisSoftMin"] == 0, title

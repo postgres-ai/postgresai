@@ -70,14 +70,22 @@ for (const name of readdirSync(root)) {
     expect(pending).toEqual([])
   })
 
-  test(`${name}: a Performance Insights point after the minute boundary is not written`, async () => {
+  // PI stamps a point at the end of its minute. The recorded replies carry a
+  // point at `end` itself, a minute that closed as the poll started; it is
+  // written by the next poll, like a CloudWatch bucket.
+  test(`${name}: Performance Insights points at or after the minute boundary are not written`, async () => {
     const pi = structuredClone(recorded).filter((r) => r.command === 'GetResourceMetricsCommand')
     if (!pi.length) return
     const future = structuredClone(recorded)
     const metric = (future.find((r) => r.command === 'GetResourceMetricsCommand')!.output as { MetricList: { DataPoints: { Timestamp: string; Value: number }[] }[] }).MetricList[0]
+    expect(metric.DataPoints.at(-1)!.Timestamp).toBe(now)
+    metric.DataPoints.at(-1)!.Value = 66
     metric.DataPoints.push({ Timestamp: new Date(Date.parse(now) + 60_000).toISOString(), Value: 77 })
     const { text } = await pollOnce(replay(future).clients, target, new Date(now), new Map())
     expect(text).toBe(await Bun.file(`${dir}/expected.prom`).text())
+    expect(text).not.toContain(' 66 ')
+    expect(text).not.toContain(' 77 ')
+    expect(text).toContain(`host_db_load{cluster="ci",node_name="node-01"} 0 ${Date.parse(now) - 60_000}\n`)
   })
 
   test(`${name}: a Performance Insights failure keeps the CloudWatch samples and reports the error`, async () => {
@@ -91,7 +99,20 @@ for (const name of readdirSync(root)) {
     expect(errors.map((e) => e.name)).toEqual(hasPI ? ['ResourceNotFoundException'] : [])
   })
 
-  test(`${name}: a malformed Enhanced Monitoring event is skipped, not interpolated`, async () => {
+  test(`${name}: an Enhanced Monitoring failure keeps the CloudWatch samples and reports the error`, async () => {
+    const { clients } = replay(recorded)
+    const failing = { ...clients, logs: { send: async () => { throw Object.assign(new Error('rate exceeded'), { name: 'ThrottlingException' }) } } }
+    const { text, errors } = await pollOnce(failing, target, new Date(now), new Map())
+    const golden = await Bun.file(`${dir}/expected.prom`).text()
+    expect(text).toContain(golden.split('\n')[0])
+    expect(text).not.toContain('host_os_')
+    const hasEM = recorded.some((r) => r.command === 'GetLogEventsCommand')
+    expect(errors.map((e) => e.name)).toEqual(hasEM ? ['ThrottlingException'] : [])
+  })
+
+  // The same 15-minute log window comes back on every poll, so a malformed
+  // event is reported once per state, not once per tick.
+  test(`${name}: a malformed Enhanced Monitoring event is skipped, reported once, and not interpolated`, async () => {
     const logs = recorded.find((r) => r.command === 'GetLogEventsCommand')
     if (!logs) return
     const bad = structuredClone(recorded)
@@ -99,13 +120,37 @@ for (const name of readdirSync(root)) {
     const time = Date.parse(now) - 30_000
     events.push(
       { timestamp: time, message: 'not json' },
+      { timestamp: time, message: JSON.stringify({ timestamp: 'yesterday', loadAverageMinute: { one: 9.125 } }) },
       { timestamp: time, message: JSON.stringify({ timestamp: new Date(time).toISOString(), cpuUtilization: { total: `1 ${time}\nevil{cluster="x"} 1`, wait: 'NaN' }, memory: {}, swap: {}, loadAverageMinute: { one: 2.5 }, processList: 'x' }) },
     )
-    const { text, errors } = await pollOnce(replay(bad).clients, target, new Date(now), new Map())
+    const state = new Map<string, number>()
+    const { text, errors } = await pollOnce(replay(bad).clients, target, new Date(now), state)
     expect(text).not.toContain('evil')
     expect(text).not.toContain('NaN')
+    expect(text).not.toContain(' 9.125 ')
     expect(text).toContain(`host_os_load1{cluster="ci",node_name="node-01"} 2.5 ${time}\n`)
-    expect(errors.map((e) => e.message)).toEqual([`Enhanced Monitoring event at ${time} skipped: JSON Parse error: Unexpected identifier "not"`])
+    expect(errors.map((e) => e.message)).toEqual([
+      `Enhanced Monitoring event at ${time} skipped: JSON Parse error: Unexpected identifier "not"`,
+      `Enhanced Monitoring event at ${time} skipped: no timestamp`,
+    ])
+    const again = await pollOnce(replay(bad).clients, target, new Date(now), state)
+    expect(again.text).toBe('')
+    expect(again.errors).toEqual([])
+  })
+
+  // The two id 0 rows are AWS's "OS processes" and "RDS processes" aggregates.
+  // A null or rss-less row is an AWS quirk, not a reason to drop the series.
+  test(`${name}: the largest process RSS skips the id 0 aggregates and malformed rows`, async () => {
+    const logs = recorded.find((r) => r.command === 'GetLogEventsCommand')
+    if (!logs) return
+    const odd = structuredClone(recorded)
+    const events = (odd.find((r) => r.command === 'GetLogEventsCommand')!.output as { events: { timestamp: number; message: string }[] }).events
+    const time = Date.parse(now) - 30_000
+    events.push({ timestamp: time, message: JSON.stringify({ timestamp: new Date(time).toISOString(), processList: [null, { id: 0, rss: 500_000 }, { id: 7 }, { id: 5, rss: 10 }, { id: 6, rss: 20 }] }) })
+    const { text, errors } = await pollOnce(replay(odd).clients, target, new Date(now), new Map())
+    expect(errors).toEqual([])
+    expect(text).toContain(`host_os_process_max_rss_bytes{cluster="ci",node_name="node-01"} ${20 * 1024} ${time}\n`)
+    expect(text).toBe(await Bun.file(`${dir}/expected.prom`).text() + `host_os_process_max_rss_bytes{cluster="ci",node_name="node-01"} ${20 * 1024} ${time}\n`)
   })
 
   test(`${name}: a sample that shows up late behind a newer one is still written`, async () => {
@@ -146,6 +191,13 @@ test('aurora-postgresql: Aurora-only series are scaled to seconds and per-second
     series.Timestamps.push(time.toISOString())
     series.Values.push(value)
   }
+  // A 300 s bucket 3 minutes old is closed for a 60 s metric, not for a volume one.
+  const recent = new Date(Date.parse(now) - 3 * 60_000)
+  for (const id of ['host_volume_used_bytes', 'host_local_storage_free_bytes']) {
+    const series = results.find((r) => r.Id === id)!
+    series.Timestamps.push(recent.toISOString())
+    series.Values.push(1)
+  }
   const { text } = await pollOnce(replay(synthetic).clients, { instanceId, cluster: 'ci', nodeName: 'node-01' }, new Date(now), new Map())
   const labels = '{cluster="ci",node_name="node-01"}'
   expect(text).toContain(`host_replica_lag_seconds${labels} 1.5 ${time.getTime()}\n`)
@@ -153,4 +205,6 @@ test('aurora-postgresql: Aurora-only series are scaled to seconds and per-second
   expect(text).toContain(`host_volume_used_bytes${labels} 5000000000 ${time.getTime()}\n`)
   expect(text).toContain(`host_volume_read_iops${labels} 100 ${time.getTime()}\n`)
   expect(text).toContain(`host_volume_write_iops${labels} 20 ${time.getTime()}\n`)
+  expect(text).toContain(`host_local_storage_free_bytes${labels} 1 ${recent.getTime()}\n`)
+  expect(text).not.toContain(`host_volume_used_bytes${labels} 1 ${recent.getTime()}\n`)
 })

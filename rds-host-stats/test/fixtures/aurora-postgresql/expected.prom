@@ -138,7 +138,6 @@ host_db_load{cluster="ci",node_name="node-01"} 0 1790576040000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790576100000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790576160000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790576220000
-host_db_load{cluster="ci",node_name="node-01"} 0 1790576280000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 64.8 1790575382000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 51.2 1790575397000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 58.4 1790575412000
