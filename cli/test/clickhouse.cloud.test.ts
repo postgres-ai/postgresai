@@ -56,7 +56,7 @@ describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, re
       region: env.CLICKHOUSE_TEST_REGION ?? "us-east-1",
       size: env.CLICKHOUSE_TEST_SIZE ?? "r6gd.medium",
       postgresVersion: env.CLICKHOUSE_TEST_PG_VERSION ?? "17",
-      tags: [{ key: "pgai-ci", value: run }, { key: "ttl", value: new Date(Date.now() + minutes(120)).toISOString() }],
+      tags: [{ key: "pgai-ci", value: run }, { key: "ttl", value: String(Math.floor((Date.now() + minutes(120)) / 1000)) }],
     });
     if (created.status !== 200) throw new Error(`create failed: HTTP ${created.status} ${created.text.slice(0, 300)}`);
     id = created.json.result.id;
