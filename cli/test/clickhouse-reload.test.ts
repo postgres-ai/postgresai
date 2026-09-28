@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/clickhouse";
+import pkg from "../package.json";
 
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");
 const hostname = "reload.pg.clickhouse.cloud";
@@ -89,7 +90,8 @@ test("targets add fails when the sink-prometheus reload fails", () => {
 test("targets add reports an older stack instead of success", () => {
   const result = run(["add", conn, "ch"], { FAKE_EXEC_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
-  expect(result.stderr).toContain("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.");
+  // `mon update` keeps PGAI_TAG, so without this step the stack restarts on the old config image.
+  expect(result.stderr).toContain(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade, set PGAI_TAG=${pkg.version} in ${projectDir}/.env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
   expect(result.stdout).not.toContain("Host metrics: ClickHouse Cloud");
   expect(reloadLog()).toEqual([execLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(true);
