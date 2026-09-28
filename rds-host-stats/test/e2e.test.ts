@@ -30,12 +30,13 @@ const families = [
 ]
 
 test.skipIf(!instanceId || !vm)('live RDS: every host_* family lands in VictoriaMetrics', async () => {
+  const cluster = `e2e-${Date.now()}`
   const clients = createClients(process.env.AWS_REGION ?? 'us-east-1')
-  const text = await pollOnce(clients, { instanceId: instanceId!, cluster: 'e2e', nodeName: 'node-01' }, new Date(), new Map())
+  const text = await pollOnce(clients, { instanceId: instanceId!, cluster, nodeName: 'node-01' }, new Date(), new Map())
   await writeSamples(vm!, text)
   await fetch(`${vm}/internal/force_flush`)
   const start = Math.floor(Date.now() / 1000) - 3600
-  const res = await fetch(`${vm}/api/v1/label/__name__/values?match[]={cluster="e2e"}&start=${start}`)
+  const res = await fetch(`${vm}/api/v1/label/__name__/values?match[]={cluster="${cluster}"}&start=${start}`)
   const { data } = (await res.json()) as { data: string[] }
   console.log(JSON.stringify({ written: text.split('\n').length - 1, families: data }))
   expect(data).toEqual(expect.arrayContaining(families))
