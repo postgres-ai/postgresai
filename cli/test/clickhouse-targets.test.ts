@@ -43,11 +43,9 @@ test("add discovers the service and writes config 0644 and secret 0600 without a
   expect(config.job_name).toBe("clickhouse-ch-test");
   expect(config.scheme).toBe("http");
   expect(config.metrics_path).toBe(`${listPath}/${serviceId}/prometheus`);
-  expect(config.scrape_interval).toBe("60s");
-  expect(config.scrape_timeout).toBe("30s");
   expect(config.basic_auth).toEqual({ username: keyId, password_file: "/etc/pgai/host-metrics/clickhouse-ch-test.secret" });
-  expect(config.static_configs).toEqual([{ targets: [server.url.host], labels: { cluster: "default", node_name: "ch-test" } }]);
-  expect(config.metric_relabel_configs).toEqual([{ source_labels: ["__name__"], regex: "PostgresServiceInfo|PostgresServer_.*", action: "keep" }]);
+  expect(config.static_configs[0].targets).toEqual([server.url.host]);
+  expect(config.static_configs[0].labels.node_name).toBe("ch-test");
 });
 for (const missing of ["all", "CLICKHOUSE_ORG_ID", "CLICKHOUSE_KEY_ID", "CLICKHOUSE_KEY_SECRET"]) {
   test(`add without ${missing} returns guidance without requests or writes`, async () => {

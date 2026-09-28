@@ -960,7 +960,7 @@ function composeRefCandidates(): string[] {
   ].filter((v): v is string => Boolean(v && v.trim()));
 }
 
-export async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
+async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
   const projectDir = getDefaultMonitoringProjectDir();
   const composeFile = path.resolve(projectDir, "docker-compose.yml");
   const instancesFile = path.resolve(projectDir, "instances.yml");
@@ -5355,6 +5355,13 @@ targets
 targets
   .command("add [connStr] [name]")
   .description("add monitoring target database")
+  .addHelpText("after", `
+ClickHouse host metrics (non-interactive):
+  export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<secret>'
+  postgres-ai mon targets add 'postgresql://user:pass@host.pg.clickhouse.cloud:5432/db' my-db
+Writes instances.yml, host-metrics/clickhouse-my-db.yml and host-metrics/clickhouse-my-db.secret.
+Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
+`)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     await addTarget(file, projectDir, connStr, name, process.env);

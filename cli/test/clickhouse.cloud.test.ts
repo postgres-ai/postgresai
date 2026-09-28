@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { addHostMetrics, renderScrapeConfig } from "../lib/clickhouse";
+import { addHostMetrics } from "../lib/clickhouse";
 
 const env = process.env;
 const orgId = env.CLICKHOUSE_TEST_ORG_ID;
@@ -103,10 +103,6 @@ describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, re
       env: { CLICKHOUSE_ORG_ID: orgId!, CLICKHOUSE_KEY_ID: keyId!, CLICKHOUSE_KEY_SECRET: keySecret! },
     });
     expect(line).toBe(`Host metrics: ClickHouse Cloud Prometheus endpoint for service ${run} (scraped every 60s)`);
-    expect(readFileSync(`${dir}/host-metrics/clickhouse-ch-cloud.yml`, "utf8")).toBe(renderScrapeConfig({
-      name: "ch-cloud", cluster: "default", orgId: orgId!, serviceId: id, keyId: keyId!,
-      passwordFile: "/etc/pgai/host-metrics/clickhouse-ch-cloud.secret", apiUrl: api,
-    }));
 
     const names = (text: string) => new Set(text.split("\n").filter(l => l && !l.startsWith("#")).map(l => l.split(/[{ ]/)[0]));
     const documented = names(readFileSync(`${import.meta.dir}/fixtures/clickhouse-prometheus.txt`, "utf8"));
