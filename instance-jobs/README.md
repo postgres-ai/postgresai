@@ -3,7 +3,7 @@
 Collection runs **on the monitoring instance** and the results are posted out.
 The platform opens no connection to the instance to collect anything.
 
-Every connection this process makes is outbound: it asks the platform for work
+Collection connections are outbound: it asks the platform for work
 (`v1.instance_job_poll`), runs it against the metric store on its own compose
 network, and posts the answer back (`v1.instance_job_submit`).
 
@@ -119,6 +119,21 @@ command that enables the profile (see **Enabling the profile on a machine**
 below), so the two cannot come apart.
 
 The token is never passed on argv, never put in a URL, and never logged.
+
+## Supabase host metrics
+
+Enable the `instance-jobs` profile and set `PGAI_SUPABASE_HOST_METRICS=true` in
+`.env`, then recreate the service. The internal relay defaults to `:9188`
+(`PGAI_SUPABASE_METRICS_LISTEN`; pinned in compose, no published port). It fetches
+the Supabase key using the existing org token and instance id, at most once per
+five minutes, keeping it only in memory. No customer key entry is needed.
+`/supabase/targets` derives cluster/node labels from enabled direct or pooler
+URLs and `custom_tags` in `instances.yml`, omitting entries without both tags
+and deduplicating databases on a node. Scrapes verify the project ref. The
+scraper calls `/supabase/metrics` every 60 seconds (20-second timeout); 503 means
+`up=0`, independently of runner health. For `consent_needed`, open the Supabase
+page in the PostgresAI console and click **Allow host metrics**. Dashboard 01
+includes a collapsed **Host (Supabase)** row.
 
 ## What this is not
 

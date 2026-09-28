@@ -26,13 +26,15 @@ const DefaultStoreURL = "http://sink-prometheus:9090"
 
 // Config is the resolved runtime configuration. Nothing here is ever logged.
 type Config struct {
-	Path          string
-	APIToken      string
-	InstanceID    string
-	APIBaseURL    string
-	StoreURL      string
-	StoreUsername string
-	StorePassword string
+	SupabaseHostMetrics   bool
+	SupabaseMetricsListen string
+	Path                  string
+	APIToken              string
+	InstanceID            string
+	APIBaseURL            string
+	StoreURL              string
+	StoreUsername         string
+	StorePassword         string
 }
 
 // Problem returns why this instance cannot poll yet, or "" when it can. The
@@ -89,11 +91,13 @@ func isLoopback(host string) bool {
 // the un-provisioned state, and the process idles through it.
 func Load() (Config, error) {
 	cfg := Config{
-		Path:          envOr("INSTANCE_JOBS_CONFIG_PATH", DefaultPath),
-		APIBaseURL:    envOr("PGAI_API_BASE_URL", DefaultAPIBaseURL),
-		StoreURL:      envOr("PROMETHEUS_URL", DefaultStoreURL),
-		StoreUsername: os.Getenv("VM_AUTH_USERNAME"),
-		StorePassword: os.Getenv("VM_AUTH_PASSWORD"),
+		SupabaseHostMetrics:   strings.EqualFold(strings.TrimSpace(os.Getenv("PGAI_SUPABASE_HOST_METRICS")), "true"),
+		SupabaseMetricsListen: envOr("PGAI_SUPABASE_METRICS_LISTEN", ":9188"),
+		Path:                  envOr("INSTANCE_JOBS_CONFIG_PATH", DefaultPath),
+		APIBaseURL:            envOr("PGAI_API_BASE_URL", DefaultAPIBaseURL),
+		StoreURL:              envOr("PROMETHEUS_URL", DefaultStoreURL),
+		StoreUsername:         os.Getenv("VM_AUTH_USERNAME"),
+		StorePassword:         os.Getenv("VM_AUTH_PASSWORD"),
 	}
 
 	values, err := parseFile(cfg.Path)
