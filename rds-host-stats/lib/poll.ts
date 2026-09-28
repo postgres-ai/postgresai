@@ -13,9 +13,9 @@ export type Auth = { username: string; password: string }
 export function createClients(region: string, role?: Role): Clients {
   const credentials = role ? fromTemporaryCredentials({
     params: { RoleArn: role.arn, ExternalId: role.externalId, RoleSessionName: 'postgresai-rds-host-stats', DurationSeconds: 3600 },
-    clientConfig: { region },
+    clientConfig: { region, requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 } },
   }) : undefined
-  const config = { region, credentials }
+  const config = { region, credentials, requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 } }
   return { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), pi: new PIClient(config), logs: new CloudWatchLogsClient(config) }
 }
 
@@ -129,6 +129,6 @@ export async function writeSamples(url: string, text: string, auth?: Auth): Prom
   if (!text) return
   const headers: Record<string, string> = { 'Content-Type': 'text/plain' }
   if (auth) headers.Authorization = `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`
-  const response = await fetch(`${url}/api/v1/import/prometheus`, { method: 'POST', headers, body: text })
+  const response = await fetch(`${url}/api/v1/import/prometheus`, { method: 'POST', headers, body: text, signal: AbortSignal.timeout(10_000) })
   if (!response.ok) throw new Error(`Prometheus import failed: HTTP ${response.status}`)
 }
