@@ -70,10 +70,15 @@ describe("ClickHouse scrape config", () => {
   test.each(["", "../escape", "a/b", "a b", "name\njob_name: injected", "x: y"])("rejects invalid name: %s", (name) => {
     expect(() => renderScrapeConfig({ ...renderOptions, name })).toThrow();
   });
+  test("changes the reload revision only when the rendered config changes", () => {
+    const revision = (options: typeof renderOptions) => (Bun.YAML.parse(renderScrapeConfig(options)) as any[])[0].static_configs[0].labels.__pgai_rev;
+    expect(revision(renderOptions)).toBe(revision({ ...renderOptions }));
+    expect(revision({ ...renderOptions, keyId: "other-key-id" })).not.toBe(revision(renderOptions));
+  });
   test("quotes YAML-sensitive scalar values without changing their meaning", () => {
     const values = { cluster: "default\nextra: injected", keyId: "key: #id", passwordFile: "/tmp/secret: #file" };
     const [config] = Bun.YAML.parse(renderScrapeConfig({ ...renderOptions, ...values, name: "CH_01-test" })) as any[];
-    expect(config.static_configs).toEqual([{ targets: ["api.clickhouse.cloud"], labels: { cluster: values.cluster, node_name: "CH_01-test" } }]);
+    expect(config.static_configs).toEqual([{ targets: ["api.clickhouse.cloud"], labels: { cluster: values.cluster, node_name: "CH_01-test", __pgai_rev: expect.stringMatching(/^r[0-9a-f]{16}$/) } }]);
     expect(config.basic_auth).toEqual({ username: values.keyId, password_file: values.passwordFile });
   });
 });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/clickhouse";
 
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");
 const hostname = "reload.pg.clickhouse.cloud";
@@ -10,9 +11,7 @@ const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
 const execLine = `exec -T sink-prometheus sh -c grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1" sh /etc/pgai/host-metrics/clickhouse-ch.yml`;
 const killLine = "kill -s SIGHUP sink-prometheus";
-const verifyScript = `auth="Authorization: Basic $(printf '%s:%s' "$VM_AUTH_USERNAME" "$VM_AUTH_PASSWORD" | base64 | tr -d '\\n')"; i=0; while [ $i -lt 20 ]; do if t=$(wget -qO- --header "$auth" http://127.0.0.1:9090/api/v1/targets); then case "$t" in *"\\"scrapePool\\":\\"$1\\""*) [ "$2" = present ] && exit 0 ;; *) [ "$2" = absent ] && exit 0 ;; esac; fi; i=$((i+1)); sleep 0.5; done; exit 1`;
-const verifyAddLine = `exec -T sink-prometheus sh -c ${verifyScript} sh clickhouse-ch present`;
-const verifyRemoveLine = `exec -T sink-prometheus sh -c ${verifyScript} sh clickhouse-ch absent`;
+const verifyRemoveLine = `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "scrapePool":"clickhouse-ch" absent`;
 const reloadError = "Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.";
 let dir: string, projectDir: string, log: string, workerUrl: string, server: Worker;
 let env: Record<string, string>;
@@ -71,6 +70,10 @@ function run(args: string[], codes: { FAKE_KILL_CODE?: string; FAKE_EXEC_CODE?: 
   });
   return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
+function verifyAddLine() {
+  const revision = readFileSync(`${projectDir}/host-metrics/clickhouse-ch.yml`, "utf8").match(/__pgai_rev: (r[0-9a-f]{16})\n/)![1];
+  return `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "__pgai_rev":"${revision}" present`;
+}
 function reloadLog() {
   return readFileSync(log, "utf8").split("\n").filter((line) => /^(kill|exec)(?: |$)/.test(line));
 }
@@ -98,7 +101,7 @@ test("targets add reports host metrics after a verified reload", () => {
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stdout).toContain("Host metrics: ClickHouse Cloud Prometheus endpoint for service");
   expect(result.stderr).not.toContain("sink-prometheus");
-  expect(reloadLog()).toEqual([execLine, killLine, verifyAddLine]);
+  expect(reloadLog()).toEqual([execLine, killLine, verifyAddLine()]);
 });
 
 test("targets remove fails when the sink-prometheus reload fails", () => {
@@ -117,7 +120,7 @@ test("targets add fails when sink-prometheus rejects the new scrape job", () => 
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain("sink-prometheus did not load the scrape job 'clickhouse-ch' after the reload. Check 'docker logs sink-prometheus' for the error. The scrape files are saved.");
   expect(result.stdout).not.toContain("Host metrics: ClickHouse Cloud");
-  expect(reloadLog()).toEqual([execLine, killLine, verifyAddLine]);
+  expect(reloadLog()).toEqual([execLine, killLine, verifyAddLine()]);
 });
 
 test("targets remove fails when sink-prometheus still scrapes the removed job", () => {
