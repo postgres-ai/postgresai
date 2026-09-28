@@ -5271,8 +5271,13 @@ export async function addTarget(
   const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
   try {
-    addInstanceToFile(file, buildInstance(instanceName, connStr));
-    console.log(`Monitoring target '${instanceName}' added`);
+    const existing = loadInstances(file).find((instance) => instance.name === instanceName);
+    if (existing && existing.conn_str === connStr) {
+      console.log(`Monitoring target '${instanceName}' already exists`);
+    } else {
+      addInstanceToFile(file, buildInstance(instanceName, connStr));
+      console.log(`Monitoring target '${instanceName}' added`);
+    }
     if (detectProvider(connStr) === "clickhouse") {
       try {
         const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env });
