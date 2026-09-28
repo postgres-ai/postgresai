@@ -85,3 +85,12 @@ test("targets add rejects a conflicting connection before calling host metrics",
   expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(conn);
   expect(existsSync(`${dir}/host-metrics`)).toBe(false);
 });
+
+test("targets add accepts the postgres:// URL ClickHouse Cloud hands out", async () => {
+  const url = `postgres://monitor:password@${hostname}:5432/postgres?sslmode=require`;
+  const result = await run(credentials, url);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(url);
+  expect(existsSync(`${dir}/host-metrics/clickhouse-retry.yml`)).toBe(true);
+});
