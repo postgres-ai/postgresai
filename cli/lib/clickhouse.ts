@@ -57,7 +57,7 @@ export function renderScrapeConfig({ name, cluster, orgId, serviceId, keyId, pas
     basic_auth: { username: keyId, password_file: passwordFile },
     static_configs: [{ targets: [url.host], labels: { cluster, node_name: name } }],
     metric_relabel_configs: [{ source_labels: ["__name__"], regex: "PostgresServiceInfo|PostgresServer_.*", action: "keep" }],
-  }], { lineWidth: -1 }).replace("source_labels:\n        - __name__", "source_labels: [__name__]");
+  }], { lineWidth: -1 });
 }
 
 export async function addHostMetrics({ projectDir, name, conn, env, cluster = "default" }: {

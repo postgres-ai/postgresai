@@ -5321,7 +5321,7 @@ targets
           const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env: process.env });
           console.log(message);
           if (message.startsWith("Host metrics: ClickHouse Cloud")) {
-            if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) process.exitCode = 1;
+            await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
           }
         } catch (err) {
           console.error(err instanceof Error ? err.message : String(err));
@@ -5368,7 +5368,7 @@ targets
       const hadHostMetrics = ["yml", "secret"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
       if (hadHostMetrics) {
         removeHostMetrics(projectDir, name);
-        if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) process.exitCode = 1;
+        await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
