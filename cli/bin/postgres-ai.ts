@@ -63,7 +63,6 @@ import {
   loadInstances,
   buildInstance,
   collectorConnStr,
-  buildLocalInstallTarget,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -4289,7 +4288,7 @@ mon
         const db = m[5];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        const { instance, probeConfig } = buildLocalInstallTarget(instanceName, connStr);
+        const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
         addInstanceToFile(instancesPath, instance);
         console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
@@ -4300,7 +4299,7 @@ mon
           try {
             warnIfLaxSslmode(connStr);
             warnIfTransactionPoolerPort(connStr);
-            testClient = new Client(probeConfig);
+            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
             await testClient.connect();
             const result = await testClient.query("select version();");
             console.log("✓ Connection successful");
@@ -4339,7 +4338,7 @@ mon
               const db = m[5];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              const { instance, probeConfig } = buildLocalInstallTarget(instanceName, connStr);
+              const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
               addInstanceToFile(instancesPath, instance);
               console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
@@ -4350,7 +4349,7 @@ mon
                 try {
                   warnIfLaxSslmode(connStr);
                   warnIfTransactionPoolerPort(connStr);
-                  testClient = new Client(probeConfig);
+                  testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
                   await testClient.connect();
                   const result = await testClient.query("select version();");
                   console.log("✓ Connection successful");
@@ -5277,7 +5276,7 @@ export async function addTarget(
     return;
   }
   if (collector.droppedChannelBinding) {
-    console.log("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+    console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
   const host = m[3];
   const db = m[5];
@@ -5285,15 +5284,20 @@ export async function addTarget(
 
   try {
     const existing = loadInstances(file).find((instance) => instance.name === instanceName);
+    const instance = existing?.conn_str === connStr ? existing : buildInstance(instanceName, connStr);
     if (existing && existing.conn_str === connStr) {
       console.log(`Monitoring target '${instanceName}' already exists`);
     } else {
-      addInstanceToFile(file, buildInstance(instanceName, connStr));
+      addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
     }
     if (detectProvider(connStr) === "clickhouse") {
       try {
-        const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env });
+        const message = await addHostMetrics({
+          projectDir, name: instanceName, conn: connStr, env,
+          cluster: instance.custom_tags?.cluster ?? "default",
+          nodeName: instance.custom_tags?.node_name ?? instanceName,
+        });
         console.log(message);
         if (apply && message.startsWith("Host metrics: ClickHouse Cloud")) {
           await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);

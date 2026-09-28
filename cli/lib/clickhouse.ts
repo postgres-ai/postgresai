@@ -37,8 +37,8 @@ export async function findService({ apiUrl, orgId, keyId, keySecret, hostname }:
   throw new Error(`No ClickHouse Managed Postgres service in organization ${orgId} has hostname ${hostname}.`);
 }
 
-export function renderScrapeConfig({ name, cluster, orgId, serviceId, keyId, passwordFile, apiUrl }: {
-  name: string; cluster: string; orgId: string; serviceId: string; keyId: string; passwordFile: string; apiUrl: string;
+export function renderScrapeConfig({ name, cluster, nodeName = name, orgId, serviceId, keyId, passwordFile, apiUrl }: {
+  name: string; cluster: string; nodeName?: string; orgId: string; serviceId: string; keyId: string; passwordFile: string; apiUrl: string;
 }): string {
   validateName(name);
   validateId(orgId);
@@ -51,13 +51,13 @@ export function renderScrapeConfig({ name, cluster, orgId, serviceId, keyId, pas
     metrics_path: `/v1/organizations/${orgId}/postgres/${serviceId}/prometheus`,
     scrape_interval: "60s", scrape_timeout: "30s",
     basic_auth: { username: keyId, password_file: passwordFile },
-    static_configs: [{ targets: [url.host], labels: { cluster, node_name: name } }],
+    static_configs: [{ targets: [url.host], labels: { cluster, node_name: nodeName } }],
     metric_relabel_configs: [{ source_labels: ["__name__"], regex: "PostgresServiceInfo|PostgresServer_.*", action: "keep" }],
   }], { lineWidth: -1 });
 }
 
-export async function addHostMetrics({ projectDir, name, conn, env, cluster = "default" }: {
-  projectDir: string; name: string; conn: string; env: Record<string, string | undefined>; cluster?: string;
+export async function addHostMetrics({ projectDir, name, conn, env, cluster = "default", nodeName = name }: {
+  projectDir: string; name: string; conn: string; env: Record<string, string | undefined>; cluster?: string; nodeName?: string;
 }): Promise<string> {
   validateName(name);
   const { CLICKHOUSE_ORG_ID: orgId, CLICKHOUSE_KEY_ID: keyId, CLICKHOUSE_KEY_SECRET: keySecret } = env;
@@ -68,7 +68,7 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
     throw new Error(`ClickHouse Managed Postgres service is ${service.state}, not running. Start it in the ClickHouse Cloud console, then retry.`);
   }
   const prefix = `clickhouse-${name}`;
-  const text = renderScrapeConfig({ name, cluster, orgId, serviceId: service.id, keyId, passwordFile: `/etc/pgai/host-metrics/${prefix}.secret`, apiUrl });
+  const text = renderScrapeConfig({ name, cluster, nodeName, orgId, serviceId: service.id, keyId, passwordFile: `/etc/pgai/host-metrics/${prefix}.secret`, apiUrl });
   const dir = join(projectDir, "host-metrics");
   mkdirSync(dir, { recursive: true });
   const secretFile = join(dir, `${prefix}.secret`);
