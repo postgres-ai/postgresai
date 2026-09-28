@@ -1,0 +1,43 @@
+import { createClients, pollOnce, writeSamples } from '../lib/poll'
+
+const env = process.env
+function required(name: string): string {
+  const value = env[name]
+  if (!value) {
+    console.error(`${name} is required`)
+    process.exit(2)
+  }
+  return value
+}
+
+if (Boolean(env.RDS_ROLE_ARN) !== Boolean(env.RDS_EXTERNAL_ID)) {
+  console.error('RDS_ROLE_ARN and RDS_EXTERNAL_ID must both be set or both be unset')
+  process.exit(2)
+}
+const target = {
+  instanceId: required('RDS_DB_INSTANCE_IDENTIFIER'),
+  cluster: required('PGAI_CLUSTER'),
+  nodeName: required('PGAI_NODE_NAME'),
+}
+const clients = createClients(required('AWS_REGION'), env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined)
+const url = env.PROMETHEUS_URL || 'http://sink-prometheus:9090'
+const auth = env.VM_AUTH_USERNAME && env.VM_AUTH_PASSWORD ? { username: env.VM_AUTH_USERNAME, password: env.VM_AUTH_PASSWORD } : undefined
+process.on('SIGTERM', () => process.exit(0))
+process.on('SIGINT', () => process.exit(0))
+let state = new Map<string, number>()
+let nextTick = Date.now()
+while (true) {
+  let written = 0
+  try {
+    const pending = new Map(state)
+    const text = await pollOnce(clients, target, new Date(), pending)
+    await writeSamples(url, text, auth)
+    state = pending
+    written = text.split('\n').length - 1
+  } catch (error) {
+    console.error(error instanceof Error ? `${error.name}: ${error.message}` : 'poll failed')
+  }
+  console.log(`samples written: ${written}`)
+  do { nextTick += 60_000 } while (nextTick <= Date.now())
+  await Bun.sleep(nextTick - Date.now())
+}
