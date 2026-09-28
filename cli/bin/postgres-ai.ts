@@ -5275,6 +5275,23 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+// Stacks older than host metrics support lack the ./host-metrics mount or
+// scrape_config_files, so check that the running sink-prometheus can see the
+// new scrape file before reporting success.
+async function reloadHostMetrics(name?: string): Promise<boolean> {
+  if (name && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
+    `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
+    "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
+    console.error("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.");
+    return false;
+  }
+  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+    console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
+    return false;
+  }
+  return true;
+}
+
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
   env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
@@ -5319,10 +5336,9 @@ export async function addTarget(
           cluster: instance.custom_tags?.cluster ?? "default",
           nodeName: instance.custom_tags?.node_name ?? instanceName,
         });
-        console.log(message);
-        if (apply && message.startsWith("Host metrics: ClickHouse Cloud")) {
-          await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
-        }
+        if (!apply || !message.startsWith("Host metrics: ClickHouse Cloud")) console.log(message);
+        else if (await reloadHostMetrics(instanceName)) console.log(message);
+        else process.exitCode = 1;
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
         console.error("The Postgres target was added; host metrics were not.");
@@ -5426,7 +5442,7 @@ targets
       const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
       if (hadHostMetrics) {
         removeHostMetrics(projectDir, name);
-        await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
+        if (!(await reloadHostMetrics())) process.exitCode = 1;
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
