@@ -402,6 +402,24 @@ telemetry:tests:
       changes:
         - telemetry/**/*
 
+rds-host-stats:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun install --frozen-lockfile
+  script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun audit --audit-level=high
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun test && bun run typecheck
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - rds-host-stats/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - rds-host-stats/**/*
+
 instance-jobs:tests:
   stage: test
   image: golang:1.24
