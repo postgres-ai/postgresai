@@ -3702,11 +3702,11 @@
       "id": 55,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": ["lastNotNull", "max"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Last *",
           "sortDesc": true
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
@@ -3787,11 +3787,11 @@
       "id": 56,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": ["lastNotNull", "min"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Last *",
           "sortDesc": true
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
@@ -3852,7 +3852,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Mean",
           "sortDesc": true
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
@@ -4007,7 +4007,7 @@
             "spanNulls": true,
             "stacking": {"group": "A", "mode": "none"}
           },
-          "unit": "Bps"
+          "unit": "binBps"
         },
         "overrides": []
       },
@@ -4019,7 +4019,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Mean",
           "sortDesc": true
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
@@ -4072,7 +4072,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Mean",
           "sortDesc": true
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
