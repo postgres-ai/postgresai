@@ -5272,6 +5272,60 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+export async function addTarget(
+  file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
+  env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
+): Promise<void> {
+  if (!connStr) {
+    console.error("Connection string required: postgresql://user:pass@host:port/db");
+    process.exitCode = 1;
+    return;
+  }
+  const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+  if (!m) {
+    console.error("Invalid connection string format");
+    process.exitCode = 1;
+    return;
+  }
+  const host = m[3];
+  const db = m[5];
+  const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+
+  try {
+    addInstanceToFile(file, buildInstance(instanceName, connStr));
+    console.log(`Monitoring target '${instanceName}' added`);
+    if (detectProvider(connStr) === "clickhouse") {
+      try {
+        const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env });
+        console.log(message);
+        if (apply && message.startsWith("Host metrics: ClickHouse Cloud")) {
+          await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error("The Postgres target was added; host metrics were not.");
+        process.exitCode = 1;
+      }
+    }
+
+    if (!apply) return;
+    const applyCode = await applyMonitoringTargetsConfig();
+    if (applyCode !== 0) {
+      console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("✓ Monitoring target configuration applied");
+  } catch (err) {
+    // Surface InstancesParseError as-is so we don't silently overwrite a
+    // corrupted file (which could discard several targets, including the
+    // credentials in their conn_str values).
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    process.exitCode = 1;
+  }
+}
+
 // Monitoring targets (databases to monitor)
 const targets = mon.command("targets").description("manage databases to monitor");
 
@@ -5319,53 +5373,7 @@ targets
   .description("add monitoring target database")
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
-    if (!connStr) {
-      console.error("Connection string required: postgresql://user:pass@host:port/db");
-      process.exitCode = 1;
-      return;
-    }
-    const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-    if (!m) {
-      console.error("Invalid connection string format");
-      process.exitCode = 1;
-      return;
-    }
-    const host = m[3];
-    const db = m[5];
-    const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
-    try {
-      addInstanceToFile(file, buildInstance(instanceName, connStr));
-      console.log(`Monitoring target '${instanceName}' added`);
-      if (detectProvider(connStr) === "clickhouse") {
-        try {
-          const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env: process.env });
-          console.log(message);
-          if (message.startsWith("Host metrics: ClickHouse Cloud")) {
-            await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
-          }
-        } catch (err) {
-          console.error(err instanceof Error ? err.message : String(err));
-          console.error("The Postgres target was added; host metrics were not.");
-          process.exitCode = 1;
-        }
-      }
-
-      const applyCode = await applyMonitoringTargetsConfig();
-      if (applyCode !== 0) {
-        console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
-        process.exitCode = 1;
-        return;
-      }
-      console.log("✓ Monitoring target configuration applied");
-    } catch (err) {
-      // Surface InstancesParseError as-is so we don't silently overwrite a
-      // corrupted file (which could discard several targets, including the
-      // credentials in their conn_str values).
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(message);
-      process.exitCode = 1;
-    }
+    await addTarget(file, projectDir, connStr, name, process.env);
   });
 targets
   .command("remove <name>")
