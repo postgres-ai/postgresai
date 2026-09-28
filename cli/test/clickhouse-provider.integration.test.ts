@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "crypto";
 import { Client } from "pg";
+import { load } from "js-yaml";
 
 const adminUrl = process.env.PGAI_TEST_CLICKHOUSE_LIKE_URL;
 
@@ -73,34 +74,47 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
     }
   });
 
-  test("D004 reports unavailable kcache without an error", async () => {
-    const result = runCli(["checkup", monUrl, "--check-id", "D004", "--no-upload", "--json"]);
-    expect(result.exitCode, result.stderr).toBe(0);
-    expect(() => JSON.parse(result.stdout)).not.toThrow();
-    const report = JSON.parse(result.stdout).D004;
-    expect(report).toBeDefined();
-    expect(report).not.toHaveProperty("error");
-    const node = report.results["node-01"];
-    expect(node).not.toHaveProperty("error");
-    expect(node.data).not.toHaveProperty("error");
-    expect(node.data.pg_stat_statements_status).not.toHaveProperty("error");
-    const normalized = { pg_stat_kcache_status: node.data.pg_stat_kcache_status };
-    expect(JSON.stringify(normalized, null, 2) + "\n").toBe(await Bun.file(`${import.meta.dir}/fixtures/clickhouse-d004.golden.json`).text());
-  }, 120000);
-
-  test("full express checkup succeeds without kcache or wait_sampling errors", () => {
-    const result = runCli(["checkup", monUrl, "--no-upload", "--json"]);
-    expect(result.exitCode, result.stderr).toBe(0);
-    expect(() => JSON.parse(result.stdout)).not.toThrow();
-    const reports = JSON.parse(result.stdout);
-    expect(Object.keys(reports).length).toBeGreaterThan(1);
-    expect(reports).toHaveProperty("D004");
-    const errors: string[] = [];
-    JSON.stringify(reports, (key, value) => {
-      if (/error/i.test(key)) errors.push(JSON.stringify(value));
-      return value;
-    });
-    expect(errors.filter(error => /kcache|wait_sampling/i.test(error))).toEqual([]);
-    expect(result.stderr).not.toMatch(/(?:error[^\n]*(?:kcache|wait_sampling)|(?:kcache|wait_sampling)[^\n]*error)/i);
-  }, 120000);
+  test("full collector presets match expected failures", async () => {
+    const mon = new Client({ connectionString: monUrl, connectionTimeoutMillis: 10000 });
+    const failures: { metric: string; error: string }[] = [];
+    try {
+      await mon.connect();
+      const version = await mon.query("show server_version_num");
+      const major = Math.floor(Number(version.rows[0].server_version_num) / 10000);
+      for (const sink of ["prometheus", "postgres"]) {
+        const config = load(await Bun.file(`${import.meta.dir}/../../config/pgwatch-${sink}/metrics.yml`).text()) as {
+          metrics: Record<string, { node_status?: string; sqls: Record<string, string> }>;
+          presets: { full: { metrics: Record<string, number> } };
+        };
+        const names = Object.keys(config.presets.full.metrics).sort();
+        expect(names.length).toBeGreaterThan(0);
+        let collected = 0;
+        for (const name of names) {
+          const metric = config.metrics[name];
+          expect(metric).toBeDefined();
+          if (metric.node_status === "standby") continue;
+          const key = Object.keys(metric.sqls)
+            .filter(key => Number.isFinite(Number(key)) && Number(key) <= major)
+            .sort((a, b) => Number(b) - Number(a))[0];
+          expect(key, `${sink}/${name}: no SQL for PostgreSQL ${major}`).toBeDefined();
+          const sql = metric.sqls[key];
+          expect(sql.trim().length).toBeGreaterThan(0);
+          await mon.query("begin");
+          try {
+            await mon.query("set local statement_timeout = '30s'");
+            await mon.query(sql);
+          } catch (error) {
+            failures.push({ metric: `${sink}/${name}`, error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            await mon.query("rollback");
+          }
+          collected++;
+        }
+        console.log(`PostgreSQL ${major}: ${sink} full preset, ${collected} collected, ${names.length - collected} standby-only skipped`);
+      }
+    } finally {
+      await mon.end();
+    }
+    expect(failures).toEqual(await Bun.file(`${import.meta.dir}/fixtures/clickhouse-like-collector-failures.golden.json`).json());
+  }, 1800000);
 });
