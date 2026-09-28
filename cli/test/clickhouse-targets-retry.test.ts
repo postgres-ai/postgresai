@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { addTarget } from "../bin/postgres-ai";
-import { loadInstances } from "../lib/instances";
+import { addInstanceToFile, buildInstance, loadInstances } from "../lib/instances";
 
 const hostname = "retry.pg.clickhouse.cloud";
 const conn = `postgresql://monitor:password@${hostname}:5432/postgres`;
@@ -108,6 +108,21 @@ test("targets add accepts the postgres:// URL ClickHouse Cloud hands out", async
 test("targets add drops channel_binding, which pgwatch rejects as a server parameter", async () => {
   const result = await run(credentials, `postgres://monitor:password@${hostname}:5432/postgres?sslmode=require&channel_binding=require`);
   expect(result.code).toBe(0);
-  expect(result.stdout).toContain("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+  expect(result.stderr).toContain("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+  expect(result.stdout).not.toContain("Note: removed channel_binding");
   expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=require`);
+});
+
+test("targets add retries with the saved target labels and preserves instance data", async () => {
+  const instance = { ...buildInstance("retry", conn), custom_tags: { cluster: "production-eu", node_name: "db-primary" } };
+  addInstanceToFile(`${dir}/instances.yml`, instance);
+  const saved = readFileSync(`${dir}/instances.yml`, "utf8");
+  const result = await run(credentials);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  const [scrape] = Bun.YAML.parse(readFileSync(`${dir}/host-metrics/clickhouse-retry.yml`, "utf8")) as any[];
+  expect(scrape.static_configs[0].labels).toEqual({ cluster: "production-eu", node_name: "db-primary" });
+  expect(scrape.job_name).toBe("clickhouse-retry");
+  expect(readFileSync(`${dir}/instances.yml`, "utf8")).toBe(saved);
+  expect(loadInstances(`${dir}/instances.yml`)).toEqual([instance]);
 });
