@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,8 @@ type rig struct {
 	calls, scrapes int
 	status, url    string
 	upstreamStatus int
+	rejectOnce     bool // answer the next scrape with upstreamStatus, then 200
+	truncate       bool // announce a longer body than is written
 	contentType    string
 	fixture        []byte
 }
@@ -56,9 +59,15 @@ func setup(t *testing.T) *rig {
 			w.Header().Set("Location", metricsURL+"?redirect=1")
 			w.WriteHeader(x.upstreamStatus)
 			io.WriteString(w, fakeKey)
+			if x.rejectOnce {
+				x.upstreamStatus = 200
+			}
 			return
 		}
 		w.Header().Set("Content-Type", x.contentType)
+		if x.truncate {
+			w.Header().Set("Content-Length", strconv.Itoa(len(x.fixture)*2))
+		}
 		w.Write(x.fixture)
 	}))
 	t.Cleanup(upstream.Close)
@@ -112,6 +121,110 @@ func TestPassthrough(t *testing.T) {
 	}
 	if x.relay.client.Timeout != 20*time.Second {
 		t.Fatal("wrong upstream timeout")
+	}
+	x.now = x.now.Add(time.Minute)
+	if x.get("/supabase/metrics").Code != 200 || x.scrapes != 2 || x.calls != 1 {
+		t.Fatalf("scrapes=%d RPCs=%d after the cache expired", x.scrapes, x.calls)
+	}
+}
+
+// The listener is unauthenticated on the compose network: requests inside the
+// exposition TTL must be answered from memory, not with an upstream scrape.
+func TestExpositionCache(t *testing.T) {
+	x := setup(t)
+	for range 10 {
+		w := x.get("/supabase/metrics")
+		if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), x.fixture) {
+			t.Fatal("cached exposition differs")
+		}
+	}
+	x.now = x.now.Add(29 * time.Second)
+	x.get("/supabase/metrics")
+	if x.scrapes != 1 {
+		t.Fatalf("scrapes=%d inside the cache TTL, want 1", x.scrapes)
+	}
+	x.now = x.now.Add(time.Second)
+	if x.get("/supabase/metrics").Code != 200 || x.scrapes != 2 {
+		t.Fatalf("scrapes=%d after the cache TTL, want 2", x.scrapes)
+	}
+}
+
+func TestConfigurationUnavailable(t *testing.T) {
+	cases := map[string]func() (config.Config, error){
+		"loader error": func() (config.Config, error) { return config.Config{}, os.ErrNotExist },
+		"no token": func() (config.Config, error) {
+			return config.Config{InstanceID: "test-instance", APIBaseURL: "https://example.com", SupabaseHostMetrics: true}, nil
+		},
+	}
+	for name, load := range cases {
+		t.Run(name, func(t *testing.T) {
+			x := setup(t)
+			x.relay.load = load
+			for range 2 {
+				w := x.get("/supabase/metrics")
+				if w.Code != 503 || strings.TrimSpace(w.Body.String()) != "configuration_unavailable" {
+					t.Fatalf("code=%d body=%q", w.Code, w.Body.String())
+				}
+			}
+			if x.calls != 0 || x.scrapes != 0 {
+				t.Fatal("RPC or scrape attempted without configuration")
+			}
+			if !strings.Contains(x.logs.String(), "status=configuration_unavailable") {
+				t.Fatal("configuration problem not logged")
+			}
+		})
+	}
+}
+
+// A scraper that gives up must not burn the fetch cooldown: the credential RPC
+// runs detached from the request context.
+func TestCancelledScrapeKeepsCredential(t *testing.T) {
+	x := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := httptest.NewRecorder()
+	x.handler.ServeHTTP(w, httptest.NewRequestWithContext(ctx, "GET", "/supabase/metrics", nil))
+	if w.Code != 502 || x.calls != 1 || x.scrapes != 0 {
+		t.Fatalf("code=%d RPCs=%d scrapes=%d", w.Code, x.calls, x.scrapes)
+	}
+	if x.get("/supabase/metrics").Code != 200 || x.calls != 1 || x.scrapes != 1 {
+		t.Fatalf("RPCs=%d scrapes=%d: cancelled scrape consumed the cooldown", x.calls, x.scrapes)
+	}
+}
+
+func TestTruncatedUpstreamIsNotRelayed(t *testing.T) {
+	x := setup(t)
+	x.truncate = true
+	w := x.get("/supabase/metrics")
+	if w.Code != 502 || bytes.Contains(w.Body.Bytes(), []byte("node_")) {
+		t.Fatalf("code=%d: truncated exposition relayed", w.Code)
+	}
+	x.truncate = false
+	if x.get("/supabase/metrics").Code != 200 || x.scrapes != 2 {
+		t.Fatal("truncated exposition was cached")
+	}
+}
+
+func TestUpstreamErrorLogged(t *testing.T) {
+	x := setup(t)
+	x.upstreamStatus = 500
+	for range 3 {
+		x.get("/supabase/metrics")
+	}
+	if strings.Count(x.logs.String(), "upstream_status=500") != 1 || strings.Contains(x.logs.String(), fakeKey) {
+		t.Fatalf("upstream error log: %q", x.logs.String())
+	}
+}
+
+func TestLogOnStatusChange(t *testing.T) {
+	x := setup(t)
+	x.status = "no_key"
+	x.get("/supabase/metrics")
+	x.now = x.now.Add(5 * time.Minute)
+	x.status = "consent_needed"
+	x.get("/supabase/metrics")
+	if strings.Count(x.logs.String(), "level=") != 2 || !strings.Contains(x.logs.String(), "click Allow host metrics") {
+		t.Fatalf("status change not logged: %q", x.logs.String())
 	}
 }
 
@@ -183,6 +296,16 @@ func TestAuthRefetchOnce(t *testing.T) {
 				t.Fatal("rejected credential retained or rate limit bypassed")
 			}
 		})
+		t.Run(http.StatusText(status)+" then ok", func(t *testing.T) {
+			x := setup(t)
+			x.get("/supabase/metrics")
+			x.now = x.now.Add(5 * time.Minute)
+			x.upstreamStatus, x.rejectOnce = status, true
+			w := x.get("/supabase/metrics")
+			if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), x.fixture) || x.calls != 2 || x.scrapes != 3 {
+				t.Fatalf("code=%d RPCs=%d scrapes=%d", w.Code, x.calls, x.scrapes)
+			}
+		})
 	}
 }
 
@@ -236,7 +359,7 @@ func TestNegativeStatusAndLogThrottle(t *testing.T) {
 
 func TestBadMetricsURL(t *testing.T) {
 	for _, u := range []string{"http://abcdefghijklmnopqrst.supabase.co/customer/v1/privileged/metrics", "https://example.com/customer/v1/privileged/metrics", metricsURL + "?key=" + fakeKey, metricsURL + "#fragment", "https://user:pass@abcdefghijklmnopqrst.supabase.co/customer/v1/privileged/metrics", "https://abcdefghijklmnopqrst.supabase.co:443/customer/v1/privileged/metrics", metricsURL + "/other", "https://ABCDEFGHIJKLMNOPQRST.supabase.co/customer/v1/privileged/metrics"} {
-		t.Run("refused", func(t *testing.T) {
+		t.Run(u, func(t *testing.T) {
 			x := setup(t)
 			x.url = u
 			w := x.get("/supabase/metrics")
