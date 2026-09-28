@@ -384,6 +384,32 @@ cli:node:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+cli:clickhouse-like:tests:
+  stage: test
+  image: oven/bun:1
+  parallel:
+    matrix:
+      - PG_VERSION: ["17", "18"]
+  services:
+    - name: postgres:${PG_VERSION}
+      alias: pg
+      command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+  variables:
+    GIT_STRATEGY: fetch
+    POSTGRES_PASSWORD: "chlike"
+    PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
+  script:
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/**/*
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - cli/**/*
+        - .gitlab-ci.yml
+
 telemetry:tests:
   stage: test
   image: oven/bun:1
