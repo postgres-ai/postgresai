@@ -136,6 +136,13 @@ func (r *Relay) unavailable(w http.ResponseWriter) {
 			r.logger.Warn("Supabase host metrics unavailable", "status", r.status)
 		}
 	})
+	switch r.status {
+	case "not_supabase", "consent_needed", "no_key":
+		// Not granted or not applicable, not a fault: an empty exposition
+		// keeps up=1 with no series, so these boxes carry no down target.
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		return
+	}
 	http.Error(w, r.status, http.StatusServiceUnavailable)
 }
 

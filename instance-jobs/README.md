@@ -131,8 +131,10 @@ Each monitoring instance serves exactly one Supabase project, selected by the
 platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
 (20-second timeout); the relay answers 503 (no usable credential) or 502
 (upstream scrape failed) and either one means `up=0`, independently of runner
-health. For `consent_needed`, open the Supabase page in the PostgresAI console
-and click **Allow host metrics**. Dashboard 01 includes a collapsed
+health. `not_supabase`, `consent_needed` and `no_key` are not faults: the relay
+answers an empty 200, so `up=1` with no series and the box carries no failing
+target. For `consent_needed`, the relay logs a warning; open the Supabase page
+in the PostgresAI console and click **Allow host metrics**. Dashboard 01 includes a collapsed
 **Host (Supabase)** row, labeled by `supabase_identifier` (the project ref for
 the primary, a distinct value per read replica).
 
