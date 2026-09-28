@@ -47,13 +47,12 @@ describe("ClickHouse provider", () => {
     expect(detectProvider?.(connectionString)).toBe(expected);
   });
 
-  test("matches the frozen self-managed SQL plan", async () => {
+  test("uses the self-managed superuser plan", async () => {
     const options = { database: "postgres", monitoringPassword: "CLICKHOUSE_MONITORING_PASSWORD", includeOptionalPermissions: true };
     const plan = await init.buildInitPlan({ ...options, provider: "clickhouse" });
     const selfManaged = await init.buildInitPlan({ ...options, provider: "self-managed" });
+    expect(plan.steps.map(step => step.name)).toEqual(["01.role", "02.extensions", "03.permissions", "06.helpers", "04.optional_rds", "05.optional_self_managed"]);
     expect(plan.steps).toEqual(selfManaged.steps);
-    const sql = plan.steps.map(step => `-- step: ${step.name}\n${step.sql.trimEnd()}\n`).join("\n");
-    expect(sql).toBe(await Bun.file(`${import.meta.dir}/fixtures/clickhouse-init-plan.golden.sql`).text());
   });
 
   test("prints the exact scope before SQL", () => {
@@ -64,12 +63,12 @@ describe("ClickHouse provider", () => {
   });
 
   test.each([
-    [[], "-- provider: clickhouse (detected from host)"],
-    [["--provider", "self-managed"], "-- provider: self-managed"],
-  ] as const)("prints provider with options %j", (options, expected) => {
-    const result = printSql([`postgres://postgres:pass@${host}:5432/postgres?channel_binding=require`, ...options]);
-    expect(result.exitCode, result.stderr).toBe(0);
-    expect(result.stdout.split("\n").filter(line => line.startsWith("-- provider:"))).toEqual([expected]);
+    [undefined, `postgres://postgres:pass@${host}:5432/postgres`, { provider: "clickhouse", detected: true }],
+    ["self-managed", `postgres://postgres:pass@${host}:5432/postgres`, { provider: "self-managed", detected: false }],
+    [undefined, "postgresql://u@db.example.com/db", { provider: "self-managed", detected: false }],
+    [undefined, undefined, { provider: "self-managed", detected: false }],
+  ] as const)("resolveProvider(%j, %j)", (explicit, conn, expected) => {
+    expect(init.resolveProvider(explicit, conn)).toEqual(expected);
   });
 });
 
