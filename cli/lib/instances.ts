@@ -77,13 +77,6 @@ export function collectorConnStr(connStr: string): { connStr: string; droppedCha
   return { connStr, droppedChannelBinding: false };
 }
 
-export function buildLocalInstallTarget(name: string, connStr: string): { instance: Instance; probeConfig: ClientConfig } {
-  return {
-    instance: buildInstance(name, collectorConnStr(connStr).connStr),
-    probeConfig: buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }),
-  };
-}
-
 export function buildInstance(name: string, connStr: string): Instance {
   return {
     name,

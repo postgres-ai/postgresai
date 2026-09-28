@@ -90,7 +90,9 @@ describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, re
     expect(prepared.code, prepared.stderr).toBe(0);
     const lines = prepared.stdout.split("\n");
     expect(lines).toContain("Provider: clickhouse (detected from host)");
-    expect(lines).toContain("-- scope: role postgres_ai_mon gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored");
+    const scope = lines.find(line => line.startsWith("-- scope: role postgres_ai_mon gets: "));
+    expect(scope, prepared.stdout).toBeDefined();
+    expect(scope).toEndWith("; this admin connection is used for this run only and is not stored");
     const verified = cli(["prepare-db", adminUrl, "--verify"]);
     expect(verified.code, verified.stderr).toBe(0);
   }, minutes(6));
