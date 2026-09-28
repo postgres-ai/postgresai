@@ -10,12 +10,14 @@ export type Target = { instanceId: string; cluster: string; nodeName: string }
 export type Role = { arn: string; externalId: string }
 export type Auth = { username: string; password: string }
 
+export const requestHandler = { connectionTimeout: 5_000, requestTimeout: 10_000 }
+
 export function createClients(region: string, role?: Role): Clients {
   const credentials = role ? fromTemporaryCredentials({
     params: { RoleArn: role.arn, ExternalId: role.externalId, RoleSessionName: 'postgresai-rds-host-stats', DurationSeconds: 3600 },
-    clientConfig: { region, requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 } },
+    clientConfig: { region, requestHandler },
   }) : undefined
-  const config = { region, credentials, requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 } }
+  const config = { region, credentials, requestHandler }
   return { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), pi: new PIClient(config), logs: new CloudWatchLogsClient(config) }
 }
 
