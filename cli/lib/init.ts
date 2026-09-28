@@ -10,13 +10,12 @@ export const DEFAULT_MONITORING_USER = "postgres_ai_mon";
 /**
  * Database provider type. Affects which prepare-db steps are executed.
  * Known providers have specific behavior adjustments; unknown providers use default behavior.
- * TODO: Consider auto-detecting provider from connection string or server version string.
  * TODO: Consider making this more flexible via a config that specifies which steps/checks to skip.
  */
 export type DbProvider = string;
 
 /** Known providers with special handling. Unknown providers are treated as self-managed. */
-export const KNOWN_PROVIDERS = ["self-managed", "supabase"] as const;
+export const KNOWN_PROVIDERS = ["self-managed", "supabase", "clickhouse"] as const;
 
 /** Providers where we skip role creation (users managed externally). */
 const SKIP_ROLE_CREATION_PROVIDERS = ["supabase"];
@@ -33,8 +32,29 @@ export function validateProvider(provider: string | undefined): string | null {
   return `Unknown provider "${provider}". Known providers: ${KNOWN_PROVIDERS.join(", ")}. Treating as self-managed.`;
 }
 
+export function detectProvider(conn: string): "clickhouse" | null {
+  try {
+    const host = isLikelyUri(conn)
+      ? new URL(conn.trim()).hostname
+      : parseLibpqConninfo(conn).host;
+    return host?.toLowerCase().endsWith(".pg.clickhouse.cloud") ? "clickhouse" : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveProvider(
+  explicit: string | undefined,
+  conn: string | undefined,
+): { provider: string; detected: boolean } {
+  if (explicit !== undefined) return { provider: explicit, detected: false };
+  const provider = conn === undefined ? null : detectProvider(conn);
+  return { provider: provider ?? "self-managed", detected: provider !== null };
+}
+
 export type PgClientConfig = {
   connectionString?: string;
+  enableChannelBinding?: boolean;
   host?: string;
   port?: number;
   user?: string;
@@ -402,9 +422,20 @@ export function resolveAdminConnection(opts: {
         effectiveSslMode.toLowerCase() === "prefer" ||
         effectiveSslMode.toLowerCase() === "allow";
       // Strip sslmode from URI so pg uses our ssl config object instead
-      const cleanUri = stripSslModeFromUri(v);
+      let cleanUri = stripSslModeFromUri(v);
+      let enableChannelBinding = false;
+      try {
+        const uri = new URL(cleanUri);
+        enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
+        uri.searchParams.delete("channel_binding");
+        cleanUri = uri.toString();
+      } catch {}
       return {
-        clientConfig: { connectionString: cleanUri, ssl: sslConfig },
+        clientConfig: {
+          connectionString: cleanUri,
+          ssl: sslConfig,
+          ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
+        },
         display: maskConnectionString(v),
         sslFallbackEnabled: shouldFallback,
       };

@@ -50,7 +50,7 @@ import {
 } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
+import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1427,7 +1427,7 @@ program
   .option("--monitoring-user <name>", "Monitoring role name to create/update", DEFAULT_MONITORING_USER)
   .option("--password <password>", "Monitoring role password (overrides PGAI_MON_PASSWORD)")
   .option("--skip-optional-permissions", "Skip optional permissions (RDS/self-managed extras)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
   .option("--verify", "Verify that monitoring role/permissions are in place (no changes)", false)
   .option("--reset-password", "Reset monitoring role password only (no other changes)", false)
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
@@ -1549,10 +1549,18 @@ program
     const shouldPrintSql = !!opts.printSql;
     const redactPasswords = (sql: string): string => redactPasswordsInSql(sql);
 
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
+
     // Validate provider and warn if unknown
-    const providerWarning = validateProvider(opts.provider);
+    const providerWarning = validateProvider(provider);
     if (providerWarning) {
       console.warn(`⚠ ${providerWarning}`);
+    }
+
+    if (provider === "clickhouse" && !opts.verify) {
+      note(`-- scope: role ${opts.monitoringUser} gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored`);
     }
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
@@ -1572,13 +1580,13 @@ program
           monitoringUser: opts.monitoringUser,
           monitoringPassword: monPassword,
           includeOptionalPermissions,
-          provider: opts.provider,
+          provider,
         });
 
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
-        console.log(`-- provider: ${opts.provider ?? "self-managed"}`);
+        console.log(`-- provider: ${provider}`);
         console.log(`-- optional permissions: ${includeOptionalPermissions ? "enabled" : "skipped"}`);
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
@@ -1957,7 +1965,7 @@ program
           database,
           monitoringUser: opts.monitoringUser,
           includeOptionalPermissions,
-          provider: opts.provider,
+          provider,
         });
         if (v.ok) {
           if (jsonOutput) {
@@ -1967,12 +1975,12 @@ program
               action: "verify",
               database,
               monitoringUser: opts.monitoringUser,
-              provider: opts.provider,
+              provider,
               verified: true,
               missingOptional: v.missingOptional,
             });
           } else {
-            console.log(`✓ prepare-db verify: OK${opts.provider ? ` (provider: ${opts.provider})` : ""}`);
+            console.log(`✓ prepare-db verify: OK${opts.provider || detected ? ` (provider: ${provider})` : ""}`);
             if (v.missingOptional.length > 0) {
               console.error("⚠ Optional items missing:");
               for (const m of v.missingOptional) console.error(`- ${m}`);
@@ -2054,7 +2062,7 @@ program
         monitoringUser: opts.monitoringUser,
         monitoringPassword: monPassword,
         includeOptionalPermissions,
-        provider: opts.provider,
+        provider,
       });
 
       // For reset-password, we only want the role step. But if provider skips role creation,
@@ -2064,7 +2072,7 @@ program
         : plan;
 
       if (opts.resetPassword && effectivePlan.steps.length === 0) {
-        console.error(`✗ --reset-password not supported for provider "${opts.provider}" (role creation is skipped)`);
+        console.error(`✗ --reset-password not supported for provider "${provider}" (role creation is skipped)`);
         process.exitCode = 1;
         return;
       }
@@ -2218,7 +2226,7 @@ program
   .option("--admin-password <password>", "Admin connection password (otherwise uses PGPASSWORD if set)")
   .option("--monitoring-user <name>", "Monitoring role name to remove", DEFAULT_MONITORING_USER)
   .option("--keep-role", "Keep the monitoring role (only revoke permissions and drop objects)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
   .option("--force", "Skip confirmation prompt", false)
   .option("--json", "Output result as JSON (machine-readable)", false)
@@ -2291,8 +2299,12 @@ program
     const shouldPrintSql = !!opts.printSql;
     const dropRole = !opts.keepRole;
 
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
+
     // Validate provider and warn if unknown
-    const providerWarning = validateProvider(opts.provider);
+    const providerWarning = validateProvider(provider);
     if (providerWarning) {
       console.warn(`⚠ ${providerWarning}`);
     }
@@ -2306,13 +2318,13 @@ program
           database,
           monitoringUser: opts.monitoringUser,
           dropRole,
-          provider: opts.provider,
+          provider,
         });
 
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
-        console.log(`-- provider: ${opts.provider ?? "self-managed"}`);
+        console.log(`-- provider: ${provider}`);
         console.log(`-- drop role: ${dropRole}`);
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}`);
@@ -2386,7 +2398,7 @@ program
         database,
         monitoringUser: opts.monitoringUser,
         dropRole,
-        provider: opts.provider,
+        provider,
       });
 
       if (shouldPrintSql) {

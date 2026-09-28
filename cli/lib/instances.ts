@@ -295,6 +295,11 @@ export function buildClientConfig(
   extra: { connectionTimeoutMillis?: number } = {},
 ): ClientConfig {
   const sslmode = extractSslmode(connStr);
+  let enableChannelBinding = false;
+  try {
+    const uri = new URL(connStr);
+    enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
+  } catch {}
   const parsed = parseConnString(withoutSslmode(connStr));
   return {
     host: parsed.host || undefined,
@@ -303,6 +308,7 @@ export function buildClientConfig(
     password: parsed.password,
     database: parsed.database || undefined,
     ssl: sslOptionFromSslmode(sslmode),
+    ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
     ...extra,
   };
 }
@@ -311,6 +317,7 @@ function withoutSslmode(connStr: string): string {
   try {
     const u = new URL(connStr);
     u.searchParams.delete("sslmode");
+    u.searchParams.delete("channel_binding");
     return u.toString();
   } catch {
     return connStr;
