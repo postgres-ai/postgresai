@@ -38,6 +38,19 @@ for (const name of readdirSync(root)) {
     expect(pending).toEqual([])
   })
 
+  test(`${name}: a sample that shows up late behind a newer one is still written`, async () => {
+    const late = structuredClone(recorded)
+    const cpu = late
+      .find((r) => r.command === 'GetMetricDataCommand')!
+      .output as { MetricDataResults: { Id: string; Timestamps: string[]; Values: number[] }[] }
+    const series = cpu.MetricDataResults.find((r) => r.Id === 'host_cpu_utilization_percent')!
+    const [time, value] = [series.Timestamps.splice(1, 1)[0], series.Values.splice(1, 1)[0]]
+    const state = new Map<string, number>()
+    await pollOnce(replay(late).clients, target, new Date(now), state)
+    const text = await pollOnce(replay(recorded).clients, target, new Date(now), state)
+    expect(text).toBe(`host_cpu_utilization_percent{cluster="ci",node_name="node-01"} ${value} ${Date.parse(time)}\n`)
+  })
+
   test(`${name}: a repeated poll writes nothing already written`, async () => {
     const state = new Map<string, number>()
     await pollOnce(replay(recorded).clients, target, new Date(now), state)
