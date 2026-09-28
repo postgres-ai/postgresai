@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import { scramSha256Verifier } from "./scram";
+import { SCRAM_DEFAULT_ITERATIONS, scramSha256Verifier } from "./scram";
 import { URL, fileURLToPath } from "url";
 import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import type { Client as PgClient } from "pg";
@@ -587,6 +587,8 @@ export async function buildInitPlan(params: {
   database: string;
   monitoringUser?: string;
   monitoringPassword: string;
+  /** Server SCRAM iteration count; never use fewer than the default 4096. */
+  iterations?: number;
   includeOptionalPermissions: boolean;
   /** Provider type. Affects which steps are included. Defaults to "self-managed". */
   provider?: DbProvider;
@@ -607,7 +609,9 @@ export async function buildInitPlan(params: {
   if (params.monitoringPassword.includes("\0")) {
     throw new Error("Password cannot contain null bytes");
   }
-  const qPwVerifier = quoteLiteral(scramSha256Verifier(params.monitoringPassword));
+  const serverIterations = Number.isFinite(params.iterations) ? params.iterations! : 0;
+  const iterations = Math.max(SCRAM_DEFAULT_ITERATIONS, serverIterations);
+  const qPwVerifier = quoteLiteral(scramSha256Verifier(params.monitoringPassword, { iterations }));
   const qRoleNameLit = quoteLiteral(monitoringUser);
 
   const steps: InitStep[] = [];

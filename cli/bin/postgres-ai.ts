@@ -1761,10 +1761,12 @@ program
           return;
         }
 
+        const scramSetting = await supabaseClient.query("select current_setting('scram_iterations', true) as iterations");
         const plan = await buildInitPlan({
           database,
           monitoringUser: opts.monitoringUser,
           monitoringPassword: monPassword,
+          iterations: Number(scramSetting.rows[0]?.iterations),
           includeOptionalPermissions,
         });
 
@@ -2073,10 +2075,12 @@ program
         return;
       }
 
+      const scramSetting = await client.query("select current_setting('scram_iterations', true) as iterations");
       const plan = await buildInitPlan({
         database,
         monitoringUser: opts.monitoringUser,
         monitoringPassword: monPassword,
+        iterations: Number(scramSetting.rows[0]?.iterations),
         includeOptionalPermissions,
         provider,
       });
