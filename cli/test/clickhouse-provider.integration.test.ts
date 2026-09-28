@@ -14,6 +14,15 @@ function runCli(args: string[]) {
   return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
+const scope = "-- scope: role postgres_ai_mon gets: create/update role | create extension pg_stat_statements | connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path | execute on postgres_ai.table_describe (SECURITY DEFINER, owned by the admin user) | execute on rds_tools.pg_ls_multixactdir (RDS only) | execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file; this admin connection is used for this run only and is not stored";
+
+// The suite below skips without a database. In CI that must never happen silently:
+// the cli:clickhouse-like:tests job sets PGAI_TEST_CLICKHOUSE_LIKE_URL, so a missing
+// variable there is a wiring bug, not a reason for a green run with zero tests.
+test.if(!!process.env.CI)("PGAI_TEST_CLICKHOUSE_LIKE_URL is set in CI", () => {
+  expect(adminUrl).toBeTruthy();
+});
+
 describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
   let prepared: ReturnType<typeof runCli>;
   let preparedJson: ReturnType<typeof runCli>;
@@ -55,11 +64,12 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
     expect(preparedJson.exitCode, preparedJson.stderr).toBe(0);
     expect(() => JSON.parse(preparedJson.stdout)).not.toThrow();
     expect(preparedJson.stdout).not.toContain("-- scope:");
-    expect(preparedJson.stderr.split("\n")).toContain("-- scope: role postgres_ai_mon gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored");
+    expect(preparedJson.stderr.split("\n")).toContain(scope);
   });
 
   test("announces the scope of the admin connection", () => {
-    expect(prepared.stdout.split("\n")).toContain("-- scope: role postgres_ai_mon gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored");
+    expect(prepared.stdout.split("\n")).toContain(scope);
+    expect(prepared.stdout.indexOf(scope)).toBeLessThan(prepared.stdout.indexOf("Connecting to:"));
   });
 
   test("verifies the prepared database", () => {
@@ -76,8 +86,8 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
         pg_has_role('postgres_ai_mon', 'pg_read_all_stats', 'member') as stats,
         rolsuper from pg_roles where rolname = current_user`);
       expect(roles.rows).toEqual([{ monitor: true, stats: true, rolsuper: false }]);
-      const statements = await mon.query("select count(*) from pg_stat_statements");
-      expect(Number(statements.rows[0].count)).toBeGreaterThanOrEqual(0);
+      // pg_read_all_stats: reading pg_stat_statements as the monitoring role must not throw
+      await mon.query("select count(*) from pg_stat_statements");
     } finally {
       await mon.end();
     }

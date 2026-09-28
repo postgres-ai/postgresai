@@ -125,6 +125,23 @@ Notes:
 - All standard options work with Supabase mode (`--verify`, `--print-sql`, `--skip-optional-permissions`, etc.)
 - When using `--verify`, the tool checks if all required setup is in place
 
+### ClickHouse Managed Postgres
+
+Hosts ending in `.pg.clickhouse.cloud` are auto-detected; `--provider clickhouse` forces it.
+The plan is the same superuser plan as self-managed Postgres (`--print-sql` shows it).
+
+```bash
+npx postgresai prepare-db 'postgres://postgres:...@xxx.pg.clickhouse.cloud:5432/postgres?channel_binding=require'
+```
+
+Before the admin connection is used, one `-- scope:` line lists exactly what the run grants the
+monitoring role, derived from the steps about to run (so it shrinks under `--skip-optional-permissions`
+and is not printed on `--reset-password`, which grants nothing). With `--json` it goes to stderr.
+
+`channel_binding=require` in a URI or conninfo string enables SCRAM-SHA-256-PLUS when the server
+offers it, disables the plaintext retry that `sslmode=prefer` would otherwise do, and is rejected
+together with `sslmode=disable`. The mechanism actually negotiated is not enforced by the driver.
+
 ### Verify and password reset
 
 Verify that everything is configured as expected (no changes):
