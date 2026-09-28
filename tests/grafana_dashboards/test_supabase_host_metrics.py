@@ -52,20 +52,20 @@ def test_supabase_scrape_is_internal():
 
 def _active_jobs(flag):
     """Start the pinned VictoriaMetrics with our scrape config; return active target jobs."""
-    import shutil, socket, subprocess, time, urllib.request, uuid
+    import shutil, subprocess, time, urllib.request, uuid
     import pytest
-    if not shutil.which('docker') or subprocess.run(['docker', 'info'], capture_output=True).returncode:
+    if not shutil.which('docker') or subprocess.run(['docker', 'info'], capture_output=True, timeout=30).returncode:
         pytest.skip('docker unavailable')
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        port = s.getsockname()[1]
     name = f'pgai-test-vm-{uuid.uuid4().hex[:8]}'
-    subprocess.run(['docker', 'run', '-d', '--rm', '--name', name, '-p', f'127.0.0.1:{port}:8428',
-                    '-v', f'{ROOT}/config/prometheus/prometheus.yml:/p.yml:ro',
-                    '-e', 'VM_AUTH_USERNAME=u', '-e', 'VM_AUTH_PASSWORD=p', '-e', f'PGAI_SUPABASE_HOST_METRICS={flag}',
-                    'victoriametrics/victoria-metrics:v1.140.0',
-                    '-promscrape.config=/p.yml', '-promscrape.config.strictParse=false'], check=True, capture_output=True)
     try:
+        subprocess.run(['docker', 'run', '-d', '--rm', '--name', name, '-p', '127.0.0.1::8428',
+                        '-v', f'{ROOT}/config/prometheus/prometheus.yml:/p.yml:ro',
+                        '-e', 'VM_AUTH_USERNAME=u', '-e', 'VM_AUTH_PASSWORD=p', '-e', f'PGAI_SUPABASE_HOST_METRICS={flag}',
+                        'victoriametrics/victoria-metrics:v1.140.0',
+                        '-promscrape.config=/p.yml', '-promscrape.config.strictParse=false'],
+                       check=True, capture_output=True, timeout=120)
+        port = subprocess.run(['docker', 'port', name, '8428/tcp'], check=True, capture_output=True,
+                              text=True, timeout=30).stdout.split()[0].rsplit(':', 1)[1]
         deadline = time.time() + 30
         while True:
             try:
@@ -78,7 +78,7 @@ def _active_jobs(flag):
                 raise AssertionError('VictoriaMetrics did not report targets')
             time.sleep(0.5)
     finally:
-        subprocess.run(['docker', 'rm', '-f', name], capture_output=True)
+        subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=60)
 
 
 def test_supabase_target_only_when_enabled():
