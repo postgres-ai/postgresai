@@ -318,6 +318,9 @@ export function buildClientConfig(
     const uri = new URL(connStr);
     enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
   } catch {}
+  if (enableChannelBinding && sslmode === "disable") {
+    throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
+  }
   const parsed = parseConnString(withoutSslmode(connStr));
   return {
     host: parsed.host || undefined,

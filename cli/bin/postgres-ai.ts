@@ -44,7 +44,7 @@ import { enqueueQuery, awaitQueryResult, isTerminal, renderPromQL, type EnqueueA
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1546,7 +1546,7 @@ program
     const shouldPrintSql = !!opts.printSql;
     const redactPasswords = (sql: string): string => redactPasswordsInSql(sql);
 
-    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
     const note = opts.json ? console.error : console.log;
     if (detected) note("Provider: clickhouse (detected from host)");
 
@@ -1556,9 +1556,20 @@ program
       console.warn(`⚠ ${providerWarning}`);
     }
 
-    if (provider === "clickhouse" && !opts.verify) {
-      note(`-- scope: role ${opts.monitoringUser} gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored`);
-    }
+    // ClickHouse Managed Postgres hands us a superuser connection; say exactly what this run
+    // grants before using it. Derived from the plan steps that will actually run, so it is
+    // accurate under --skip-optional-permissions and silent on --reset-password (grants nothing).
+    const announceScope = async (includeOptionalPermissions: boolean) => {
+      if (provider !== "clickhouse" || opts.verify || opts.resetPassword) return;
+      const preview = await buildInitPlan({
+        database: (opts.dbname ?? process.env.PGDATABASE ?? "postgres").trim(),
+        monitoringUser: opts.monitoringUser,
+        monitoringPassword: "<redacted>",
+        includeOptionalPermissions,
+        provider,
+      });
+      note(describeInitScope(preview));
+    };
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
     // Useful for audits/reviews; caller can provide -d/PGDATABASE.
@@ -1580,6 +1591,7 @@ program
           provider,
         });
 
+        await announceScope(includeOptionalPermissions);
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
@@ -1938,6 +1950,7 @@ program
 
     const includeOptionalPermissions = !opts.skipOptionalPermissions;
 
+    await announceScope(includeOptionalPermissions);
     if (!jsonOutput) {
       console.log(`Connecting to: ${adminConn.display}`);
       console.log(`Monitoring user: ${opts.monitoringUser}`);
@@ -1972,7 +1985,7 @@ program
               action: "verify",
               database,
               monitoringUser: opts.monitoringUser,
-              provider,
+              provider: opts.provider ?? (detected ? provider : undefined),
               verified: true,
               missingOptional: v.missingOptional,
             });
@@ -2296,7 +2309,7 @@ program
     const shouldPrintSql = !!opts.printSql;
     const dropRole = !opts.keepRole;
 
-    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
     const note = opts.json ? console.error : console.log;
     if (detected) note("Provider: clickhouse (detected from host)");
 
