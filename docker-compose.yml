@@ -146,6 +146,8 @@ services:
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
       - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
       - VM_RETENTION_PERIOD=${VM_RETENTION_PERIOD:-336h}
+      # Keeps the supabase-host-metrics scrape target only when enabled.
+      - PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}
       - VM_QUERY_DURATION=${VM_QUERY_DURATION:-30s}
       - VM_MAX_CONCURRENT_REQUESTS=${VM_MAX_CONCURRENT_REQUESTS:-16}
       # Query guardrails: a runaway dashboard query must fail with an error,

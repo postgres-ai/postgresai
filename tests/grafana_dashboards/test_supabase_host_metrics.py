@@ -37,9 +37,14 @@ def test_supabase_scrape_is_internal():
     assert job['metrics_path'] == '/supabase/metrics'
     assert job['static_configs'] == [{'targets': ['instance-jobs:9188']}]
     assert 'http_sd_configs' not in job
-    assert 'relabel_configs' not in job
+    # Only a keep/drop gate on the feature flag; nothing may rewrite the address.
+    assert job['relabel_configs'] == [
+        {'target_label': '__tmp_enabled', 'replacement': '%{PGAI_SUPABASE_HOST_METRICS}'},
+        {'source_labels': ['__tmp_enabled'], 'regex': '(?i)\\s*true\\s*', 'action': 'keep'},
+    ]
     assert job['metric_relabel_configs'] == [{'source_labels': ['__name__'], 'regex': 'node_cpu_seconds_total|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*', 'action': 'keep'}]
     compose = yaml.safe_load((ROOT / 'docker-compose.yml').read_text())
+    assert 'PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}' in compose['services']['sink-prometheus']['environment']
     service = compose['services']['instance-jobs']
     assert not service.get('ports')
     assert not any('instances.yml' in volume for volume in service['volumes'])

@@ -69,12 +69,20 @@ scrape_configs:
     sample_limit: 5000
 
   # Each monitoring instance relays host metrics for one Supabase project.
+  # The target exists only when PGAI_SUPABASE_HOST_METRICS=true; otherwise it
+  # is dropped, so boxes without the feature carry no failing up=0 target.
   - job_name: 'supabase-host-metrics'
     scrape_interval: 60s
     scrape_timeout: 20s
     metrics_path: /supabase/metrics
     static_configs:
       - targets: ['instance-jobs:9188']
+    relabel_configs:
+      - target_label: __tmp_enabled
+        replacement: '%{PGAI_SUPABASE_HOST_METRICS}'
+      - source_labels: [__tmp_enabled]
+        regex: '(?i)\s*true\s*'
+        action: keep
     metric_relabel_configs:
       - source_labels: [__name__]
         regex: 'node_cpu_seconds_total|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*'
