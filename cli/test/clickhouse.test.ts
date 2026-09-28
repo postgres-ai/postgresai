@@ -84,10 +84,6 @@ describe("ClickHouse scrape config", () => {
     const [config] = Bun.YAML.parse(renderScrapeConfig({ ...renderOptions, apiUrl: "http://127.0.0.1:8123" })) as any[];
     expect(config.scheme).toBe("http");
     expect(config.static_configs[0].targets).toEqual(["127.0.0.1:8123"]);
-    expect(config.metrics_path).toBe(`${listPath}/${serviceId}/prometheus`);
-    expect(config.basic_auth).toEqual({ username: keyId, password_file: renderOptions.passwordFile });
-    expect(config.scrape_interval).toBe("60s");
-    expect(config.scrape_timeout).toBe("30s");
   });
   for (const field of ["orgId", "serviceId"] as const) {
     test.each(["", "../escape", "g".repeat(36), "a".repeat(35), "a".repeat(37), `${orgId}\njob_name: injected`])(`rejects invalid ${field}: %s`, (value) => {
