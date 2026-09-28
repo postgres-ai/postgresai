@@ -1,0 +1,106 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { findService, renderScrapeConfig, serviceStateProblem } from "../lib/clickhouse";
+
+const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
+const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
+const hostname = "my-postgres.us-east-1.aws.pg.clickhouse.cloud";
+const keyId = "test-key-id";
+const keySecret = "fixture-only-secret";
+const listPath = `/v1/organizations/${orgId}/postgres`;
+let server: ReturnType<typeof Bun.serve> | undefined;
+afterEach(() => server?.stop(true));
+
+function api(fetch: (request: Request) => Response) {
+  server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch });
+  return { apiUrl: server.url.origin, orgId, keyId, keySecret, hostname };
+}
+
+const renderOptions = {
+  name: "my-postgres", cluster: "default", orgId, serviceId, keyId,
+  passwordFile: "/etc/pgai/host-metrics/clickhouse-my-postgres.secret",
+  apiUrl: "https://api.clickhouse.cloud",
+};
+
+describe("ClickHouse service discovery", () => {
+  test.each(["running", "creating", "stopped"])("matches hostname case-insensitively and returns %s without judging state", async (state) => {
+    const requests: string[] = [];
+    const options = api((request) => {
+      expect(request.method).toBe("GET");
+      expect(request.headers.get("authorization")).toBe(`Basic ${btoa(`${keyId}:${keySecret}`)}`);
+      const path = new URL(request.url).pathname;
+      requests.push(path);
+      if (path === listPath) return Response.json({ result: [
+        { id: "11111111-1111-1111-1111-111111111111", name: "other", state: "running" },
+        { id: serviceId, name: "my-postgres", state },
+        { id: "22222222-2222-2222-2222-222222222222", name: "unvisited", state: "running" },
+      ], status: 200 });
+      if (path === `${listPath}/11111111-1111-1111-1111-111111111111`) return Response.json({ result: { hostname: "other.pg.clickhouse.cloud" } });
+      if (path === `${listPath}/${serviceId}`) return Response.json({ result: { id: serviceId, name: "my-postgres", state, hostname: hostname.toUpperCase() } });
+      return new Response("unexpected request", { status: 404 });
+    });
+    expect(await findService(options)).toEqual({ id: serviceId, name: "my-postgres", state });
+    expect(requests).toEqual([listPath, `${listPath}/11111111-1111-1111-1111-111111111111`, `${listPath}/${serviceId}`]);
+  });
+
+  for (const stage of ["list", "get"]) {
+    for (const status of [401, 403]) {
+      test(`${stage} HTTP ${status} has the exact actionable error`, async () => {
+        const options = api((request) => stage === "get" && new URL(request.url).pathname === listPath
+          ? Response.json({ result: [{ id: serviceId, name: "my-postgres", state: "running" }], status: 200 })
+          : new Response("denied", { status }));
+        const message = status === 401
+          ? "ClickHouse Cloud rejected the API key (401). Check the key id and secret."
+          : `The API key cannot read Postgres services in organization ${orgId} (403). Give it read access to this organization.`;
+        const error = await findService(options).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(message);
+      });
+    }
+  }
+
+  test.each([false, true])("no hostname match (empty list: %s) has the exact error", async (empty) => {
+    const options = api((request) => new URL(request.url).pathname === listPath
+      ? Response.json({ result: empty ? [] : [{ id: serviceId, name: "other", state: "running" }], status: 200 })
+      : Response.json({ result: { id: serviceId, hostname: `other.${hostname}` } }));
+    const error = await findService(options).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`No ClickHouse Managed Postgres service in organization ${orgId} has hostname ${hostname}.`);
+  });
+});
+
+describe("ClickHouse service state", () => {
+  test("running is ready", () => expect(serviceStateProblem("running")).toBeNull());
+  test.each(["creating", "stopped", "unknown"])("%s is not ready", (state) => {
+    expect(serviceStateProblem(state)).toBe(`ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`);
+  });
+});
+
+describe("ClickHouse scrape config", () => {
+  test("matches the list-form golden exactly", () => {
+    expect(renderScrapeConfig(renderOptions)).toBe(readFileSync(`${import.meta.dir}/fixtures/clickhouse-scrape.golden.yml`, "utf8"));
+  });
+  test("uses the override scheme and host including port", () => {
+    const [config] = Bun.YAML.parse(renderScrapeConfig({ ...renderOptions, apiUrl: "http://127.0.0.1:8123" })) as any[];
+    expect(config.scheme).toBe("http");
+    expect(config.static_configs[0].targets).toEqual(["127.0.0.1:8123"]);
+    expect(config.metrics_path).toBe(`${listPath}/${serviceId}/prometheus`);
+    expect(config.basic_auth).toEqual({ username: keyId, password_file: renderOptions.passwordFile });
+    expect(config.scrape_interval).toBe("60s");
+    expect(config.scrape_timeout).toBe("30s");
+  });
+  for (const field of ["orgId", "serviceId"] as const) {
+    test.each(["", "../escape", "g".repeat(36), "a".repeat(35), "a".repeat(37), `${orgId}\njob_name: injected`])(`rejects invalid ${field}: %s`, (value) => {
+      expect(() => renderScrapeConfig({ ...renderOptions, [field]: value })).toThrow();
+    });
+  }
+  test.each(["", "../escape", "a/b", "a b", "name\njob_name: injected", "x: y"])("rejects invalid name: %s", (name) => {
+    expect(() => renderScrapeConfig({ ...renderOptions, name })).toThrow();
+  });
+  test("quotes YAML-sensitive scalar values without changing their meaning", () => {
+    const values = { cluster: "default\nextra: injected", keyId: "key: #id", passwordFile: "/tmp/secret: #file" };
+    const [config] = Bun.YAML.parse(renderScrapeConfig({ ...renderOptions, ...values, name: "CH_01-test" })) as any[];
+    expect(config.static_configs).toEqual([{ targets: ["api.clickhouse.cloud"], labels: { cluster: values.cluster, node_name: "CH_01-test" } }]);
+    expect(config.basic_auth).toEqual({ username: values.keyId, password_file: values.passwordFile });
+  });
+});
