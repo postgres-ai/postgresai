@@ -1,0 +1,10 @@
+{
+  "pg_stat_kcache_status": {
+    "extension_available": false,
+    "metrics_count": 0,
+    "total_exec_time": 0,
+    "total_user_time": 0,
+    "total_system_time": 0,
+    "sample_queries": []
+  }
+}
