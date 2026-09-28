@@ -76,6 +76,21 @@ test.each(["creating", "stopped", "unknown"])("add with service %s throws and wr
   await expect(add()).rejects.toEqual(new Error(`ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`));
   expectNothingWritten();
 });
+test("add recovers from a stale secret tmp file left by an interrupted run", async () => {
+  mkdirSync(`${dir}/host-metrics`);
+  const tmpPath = `${dir}/host-metrics/clickhouse-ch-test.secret.tmp`;
+  writeFileSync(tmpPath, "stale-secret");
+  expect(await add()).toBe("Host metrics: ClickHouse Cloud Prometheus endpoint for service my-postgres (scraped every 60s)");
+  expect(existsSync(tmpPath)).toBe(false);
+  expect(readFileSync(`${dir}/host-metrics/clickhouse-ch-test.secret`, "utf8")).toBe(keySecret);
+  expect(readdirSync(`${dir}/host-metrics`).sort()).toEqual(["clickhouse-ch-test.secret", "clickhouse-ch-test.yml"]);
+});
+test("remove deletes a stale secret tmp file", () => {
+  mkdirSync(`${dir}/host-metrics`);
+  writeFileSync(`${dir}/host-metrics/clickhouse-ch-test.secret.tmp`, "stale-secret");
+  removeHostMetrics(dir, "ch-test");
+  expect(readdirSync(`${dir}/host-metrics`)).toEqual([]);
+});
 test.each(["both", "config", "secret", "neither"])("remove cleans up optional host files (%s present)", async (present) => {
   mkdirSync(`${dir}/host-metrics`);
   for (const [kind, extension] of [["config", "yml"], ["secret", "secret"]]) {

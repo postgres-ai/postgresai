@@ -72,11 +72,14 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
   const dir = join(projectDir, "host-metrics");
   mkdirSync(dir, { recursive: true });
   const secretFile = join(dir, `${prefix}.secret`);
-  writeFileSync(`${secretFile}.tmp`, keySecret, { mode: 0o600, flag: "wx" });
+  const tmpFile = `${secretFile}.tmp`;
+  // A previous run killed between write and rename leaves the tmp file behind; drop it so a retry does not fail with EEXIST.
+  rmSync(tmpFile, { force: true });
   try {
-    renameSync(`${secretFile}.tmp`, secretFile);
+    writeFileSync(tmpFile, keySecret, { mode: 0o600, flag: "wx" });
+    renameSync(tmpFile, secretFile);
   } finally {
-    rmSync(`${secretFile}.tmp`, { force: true });
+    rmSync(tmpFile, { force: true });
   }
   const configFile = join(dir, `${prefix}.yml`);
   writeFileSync(configFile, text, { mode: 0o644 });
@@ -86,5 +89,5 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
 
 export function removeHostMetrics(projectDir: string, name: string): void {
   validateName(name);
-  for (const extension of ["yml", "secret"]) rmSync(join(projectDir, "host-metrics", `clickhouse-${name}.${extension}`), { force: true });
+  for (const extension of ["yml", "secret", "secret.tmp"]) rmSync(join(projectDir, "host-metrics", `clickhouse-${name}.${extension}`), { force: true });
 }

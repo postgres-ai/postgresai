@@ -5415,7 +5415,7 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
-      const hadHostMetrics = ["yml", "secret"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
+      const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
       if (hadHostMetrics) {
         removeHostMetrics(projectDir, name);
         await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
