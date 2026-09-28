@@ -4,7 +4,7 @@ We poll one RDS or Aurora PostgreSQL instance every 60 seconds from the monitori
 
 ## Metrics
 
-CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `RDSOSMetrics`. We collect PI and OS metrics only when enabled on the instance.
+CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `RDSOSMetrics`. We collect PI and OS metrics only when enabled on the instance. Each poll reads the newest GetLogEvents page (up to 1 MB); at Enhanced Monitoring intervals of 1–5 s, OS samples missed while the service was down are not backfilled.
 
 | Series | Source | Unit |
 | --- | --- | --- |
