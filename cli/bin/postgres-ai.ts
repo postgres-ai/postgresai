@@ -4296,7 +4296,7 @@ mon
         const autoInstanceName = match ? match[1] : "db-instance";
 
         const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+        const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
 
         if (!m) {
           console.error("✗ Invalid connection string format");
@@ -4348,7 +4348,7 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+            const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
             if (!m) {
               console.error("✗ Invalid connection string format");
               console.error("⚠ Continuing without adding instance\n");
@@ -5281,7 +5281,7 @@ export async function addTarget(
     process.exitCode = 1;
     return;
   }
-  const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+  const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
   if (!m) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
