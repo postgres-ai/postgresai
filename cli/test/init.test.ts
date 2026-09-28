@@ -110,6 +110,20 @@ describe("init module", () => {
     expect(roleStep!.sql).toMatch(/password 'SCRAM-SHA-256\$\d+:[^']*'/);
   });
 
+  for (const [iterations, expected] of [[10000, 10000], [1000, 4096], [undefined, 4096], [Number.NaN, 4096]]) {
+    test(`buildInitPlan uses SCRAM iterations ${expected} when given ${iterations}`, async () => {
+      const plan = await init.buildInitPlan({
+        database: "mydb",
+        monitoringPassword: "test-only",
+        includeOptionalPermissions: false,
+        iterations,
+      });
+      const sql = plan.steps.find(s => s.name === "01.role")!.sql;
+      const counts = [...sql.matchAll(/password 'SCRAM-SHA-256\$(\d+):/g)].map(m => Number(m[1]));
+      expect(counts).toEqual([expected, expected]);
+    });
+  }
+
   test("buildInitPlan rejects non-ASCII passwords until SASLprep is supported", async () => {
     await expect(init.buildInitPlan({ database: "mydb", monitoringPassword: "test-\u00adpassword", includeOptionalPermissions: false })).rejects.toThrow(/ASCII/);
   });
