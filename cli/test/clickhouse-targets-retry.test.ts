@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { addTarget } from "../bin/postgres-ai";
 import { loadInstances } from "../lib/instances";
@@ -50,6 +50,16 @@ function expectConfigured() {
   expect(existsSync(`${dir}/host-metrics/clickhouse-retry.yml`)).toBe(true);
   expect(readFileSync(`${dir}/host-metrics/clickhouse-retry.secret`, "utf8")).toBe("good-secret");
 }
+
+test("targets add resolves with a format error for a malformed channel_binding URL", async () => {
+  await expect(run(credentials, "postgres://u:p@[bad/db?channel_binding=require")).resolves.toEqual({
+    code: 1,
+    stdout: "",
+    stderr: "Invalid connection string format",
+  });
+  expect(requests).toEqual([]);
+  expect(readdirSync(dir)).toEqual([]);
+});
 
 test("targets add retries host metrics after missing credentials", async () => {
   const first = await run({});
