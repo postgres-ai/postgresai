@@ -6,11 +6,14 @@ let status = 204
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
+    if (new URL(req.url).pathname === '/stall/api/v1/import/prometheus') return new Promise<Response>(() => {})
     requests.push({ path: new URL(req.url).pathname, auth: req.headers.get('authorization'), body: await req.text() })
     return new Response(null, { status })
   },
 })
-afterAll(() => server.stop())
+afterAll(() => {
+  void server.stop(true)
+})
 const url = `http://127.0.0.1:${server.port}`
 
 test('posts the import text with basic auth', async () => {
@@ -35,3 +38,8 @@ test('a rejected write throws without echoing credentials', async () => {
   expect(String(error)).toContain('401')
   expect(String(error)).not.toContain('secret-pw')
 })
+
+test('a stalled VictoriaMetrics fails the write instead of hanging the poller', async () => {
+  const error = await writeSamples(`${url}/stall`, 'host_x 1 1000\n').catch((e: Error) => e)
+  expect(error).toBeInstanceOf(Error)
+}, 15_000)
