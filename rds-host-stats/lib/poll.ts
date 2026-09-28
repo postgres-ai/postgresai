@@ -82,10 +82,11 @@ export async function pollOnce(clients: Clients, target: Target, now: Date, stat
   }
   let text = ''
   const labels = `{cluster="${escapeLabel(target.cluster)}",node_name="${escapeLabel(target.nodeName)}"}`
+  for (const [key, time] of state) if (time < start.getTime() - 15 * 60_000) state.delete(key)
   const emit = (name: string, value: number, time: number) => {
-    const key = name + labels
-    if (time > (state.get(key) ?? -Infinity)) {
-      text += `${key} ${value} ${time}\n`
+    const key = `${name}${labels} ${time}`
+    if (!state.has(key)) {
+      text += `${name}${labels} ${value} ${time}\n`
       state.set(key, time)
     }
   }
