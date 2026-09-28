@@ -13,6 +13,7 @@
         cluster: default
         node_name: my-postgres
   metric_relabel_configs:
-    - source_labels: [__name__]
+    - source_labels:
+        - __name__
       regex: PostgresServiceInfo|PostgresServer_.*
       action: keep

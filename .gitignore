@@ -82,6 +82,7 @@ volumes/
 
 # Runtime instances config (created from instances.demo.yml or by CLI)
 instances.yml
+host-metrics/
 
 # Build artifact: copied from repo root into cli/ during build
 cli/instances.demo.yml

@@ -12,7 +12,7 @@ afterAll(async () => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-test.skipIf(!vmBin)("VictoriaMetrics scrapes eight CPU modes, rejects bad auth, and drops non-Postgres metrics", async () => {
+test.skipIf(!vmBin)("VictoriaMetrics starts with an empty glob, reloads on SIGHUP, and scrapes filtered authenticated metrics", async () => {
   const { renderScrapeConfig } = await import("../lib/clickhouse");
   const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
   const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
@@ -33,20 +33,13 @@ test.skipIf(!vmBin)("VictoriaMetrics scrapes eight CPU modes, rejects bad auth, 
   } });
   dir = mkdtempSync(`${tmpdir()}/clickhouse-vm-`);
   mkdirSync(`${dir}/scrapes`);
-  for (const [name, secret] of [["ch-good", keySecret], ["ch-bad", "wrong-fixture-secret"]]) {
-    const passwordFile = `${dir}/${name}.secret`;
-    writeFileSync(passwordFile, secret, { mode: 0o600 });
-    const text = renderScrapeConfig({ name, cluster: "default", orgId, serviceId, keyId, passwordFile, apiUrl: server.url.origin });
-    expect((Bun.YAML.parse(text) as any[])[0].scrape_interval).toBe("60s");
-    writeFileSync(`${dir}/scrapes/${name}.yml`, text);
-  }
   const main = `${dir}/prometheus.yml`;
   writeFileSync(main, `scrape_config_files:\n  - '${dir}/scrapes/*.yml'\n`);
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   const vmUrl = reservation.url.origin;
   const listenAddr = reservation.url.host;
   reservation.stop(true);
-  const child = Bun.spawn([vmBin!, `-promscrape.config=${main}`, `-httpListenAddr=${listenAddr}`, `-storageDataPath=${dir}/data`, "-promscrape.configCheckInterval=1s", "-search.latencyOffset=0s"], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([vmBin!, `-promscrape.config=${main}`, `-httpListenAddr=${listenAddr}`, `-storageDataPath=${dir}/data`, "-search.latencyOffset=0s"], { stdout: "pipe", stderr: "pipe" });
   vm = child;
   const vmOutput = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]).then((parts) => parts.join("\n"));
   async function query(expression: string): Promise<Array<{ metric: Record<string, string>; value: [number, string] }>> {
@@ -56,6 +49,25 @@ test.skipIf(!vmBin)("VictoriaMetrics scrapes eight CPU modes, rejects bad auth, 
     expect(body.status).toBe("success");
     return body.data.result;
   }
+  const startupDeadline = Date.now() + 10_000;
+  let emptyTargets: unknown;
+  while (Date.now() < startupDeadline) {
+    try {
+      const body = await (await fetch(`${vmUrl}/api/v1/targets`)).json() as any;
+      emptyTargets = body.data?.activeTargets;
+      if (Array.isArray(emptyTargets)) break;
+    } catch {}
+    await Bun.sleep(100);
+  }
+  expect(emptyTargets).toEqual([]);
+  for (const [name, secret] of [["ch-good", keySecret], ["ch-bad", "wrong-fixture-secret"]]) {
+    const passwordFile = `${dir}/${name}.secret`;
+    writeFileSync(passwordFile, secret, { mode: 0o600 });
+    const text = renderScrapeConfig({ name, cluster: "default", orgId, serviceId, keyId, passwordFile, apiUrl: server.url.origin });
+    expect((Bun.YAML.parse(text) as any[])[0].scrape_interval).toBe("60s");
+    writeFileSync(`${dir}/scrapes/${name}.yml`, text);
+  }
+  child.kill("SIGHUP");
   let ready = false;
   const deadline = Date.now() + 100_000;
   while (Date.now() < deadline) {
