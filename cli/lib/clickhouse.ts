@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dump } from "js-yaml";
 import { requestTimeoutSignal } from "./util";
@@ -45,7 +46,7 @@ export function renderScrapeConfig({ name, cluster, nodeName = name, orgId, serv
   validateId(serviceId);
   const url = new URL(apiUrl);
   if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid ClickHouse API URL scheme.");
-  return dump([{
+  const config = {
     job_name: `clickhouse-${name}`,
     scheme: url.protocol.slice(0, -1),
     metrics_path: `/v1/organizations/${orgId}/postgres/${serviceId}/prometheus`,
@@ -53,8 +54,26 @@ export function renderScrapeConfig({ name, cluster, nodeName = name, orgId, serv
     basic_auth: { username: keyId, password_file: passwordFile },
     static_configs: [{ targets: [url.host], labels: { cluster, node_name: nodeName } }],
     metric_relabel_configs: [{ source_labels: ["__name__"], regex: "PostgresServiceInfo|PostgresServer_.*", action: "keep" }],
-  }], { lineWidth: -1 });
+  };
+  // The "__" prefix keeps this label out of stored series, but the targets API
+  // lists it, so a reload can be matched to this exact file.
+  const revision = `r${createHash("sha256").update(dump([config], { lineWidth: -1 })).digest("hex").slice(0, 16)}`;
+  Object.assign(config.static_configs[0].labels, { __pgai_rev: revision });
+  return dump([config], { lineWidth: -1 });
 }
+
+export function scrapeRevision(projectDir: string, name: string): string {
+  validateName(name);
+  const revision = readFileSync(join(projectDir, "host-metrics", `clickhouse-${name}.yml`), "utf8").match(/__pgai_rev: (r[0-9a-f]{16})\n/)?.[1];
+  if (!revision) throw new Error(`host-metrics/clickhouse-${name}.yml has no __pgai_rev label.`);
+  return revision;
+}
+
+// Runs inside sink-prometheus: sh -c SCRIPT sh NEEDLE present|absent. VictoriaMetrics
+// applies a SIGHUP asynchronously and skips a scrape file it cannot parse while
+// still counting the reload as successful, so only the targets list shows the
+// outcome. Polls it until NEEDLE is present (or absent), for at most ~10s.
+export const HOST_METRICS_VERIFY_SCRIPT = `auth="Authorization: Basic $(printf '%s:%s' "$VM_AUTH_USERNAME" "$VM_AUTH_PASSWORD" | base64 | tr -d '\\n')"; end=$(($(date +%s) + 10)); while [ "$(date +%s)" -lt "$end" ]; do if t=$(wget -qO- -T 2 --header "$auth" http://127.0.0.1:9090/api/v1/targets); then case "$t" in '{"status":"success"'*) case "$t" in *"$1"*) [ "$2" = present ] && exit 0 ;; *) [ "$2" = absent ] && exit 0 ;; esac ;; esac; fi; sleep 0.5; done; exit 1`;
 
 export async function addHostMetrics({ projectDir, name, conn, env, cluster = "default", nodeName = name }: {
   projectDir: string; name: string; conn: string; env: Record<string, string | undefined>; cluster?: string; nodeName?: string;

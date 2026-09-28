@@ -1,13 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/clickhouse";
 
 // Runs the exact script sink-prometheus executes, with a fake wget standing in
 // for VictoriaMetrics' /api/v1/targets. Each call returns resp<N>, else resp.
-const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-
 const targets = (...pools: [string, string][]) => JSON.stringify({ status: "success", data: {
   activeTargets: pools.map(([pool, rev]) => ({ discoveredLabels: { __pgai_rev: rev, job: pool }, scrapePool: pool })), droppedTargets: [],
 } });
@@ -16,23 +13,26 @@ const pool = `"scrapePool":"clickhouse-a"`;
 
 async function verify(needle: string, mode: "present" | "absent", responses: string[], { hang = false } = {}) {
   const dir = mkdtempSync(`${tmpdir()}/clickhouse-verify-`);
-  dirs.push(dir);
-  mkdirSync(`${dir}/bin`);
-  writeFileSync(`${dir}/bin/wget`, `#!/bin/sh
+  try {
+    mkdirSync(`${dir}/bin`);
+    writeFileSync(`${dir}/bin/wget`, `#!/bin/sh
 printf '%s\\n' "$@" > "$DIR/args"
 n=$(cat "$DIR/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$DIR/count"
 if [ -n "$HANG" ]; then sleep 2; exit 1; fi
 f="$DIR/resp$n"; [ -f "$f" ] || f="$DIR/resp"; [ -f "$f" ] || exit 1
 cat "$f"
-`);
-  chmodSync(`${dir}/bin/wget`, 0o755);
-  responses.forEach((body, i) => writeFileSync(i === responses.length - 1 ? `${dir}/resp` : `${dir}/resp${i + 1}`, body));
-  const started = Date.now();
-  const proc = Bun.spawn(["/bin/sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, mode], {
-    env: { PATH: `${dir}/bin:/usr/bin:/bin`, DIR: dir, VM_AUTH_USERNAME: "u", VM_AUTH_PASSWORD: "p@ss:w/rd", ...(hang ? { HANG: "1" } : {}) },
-  });
-  const exitCode = await proc.exited;
-  return { exitCode, seconds: (Date.now() - started) / 1000, calls: Number(readFileSync(`${dir}/count`, "utf8")), args: readFileSync(`${dir}/args`, "utf8").trim().split("\n") };
+  `);
+    chmodSync(`${dir}/bin/wget`, 0o755);
+    responses.forEach((body, i) => writeFileSync(i === responses.length - 1 ? `${dir}/resp` : `${dir}/resp${i + 1}`, body));
+    const started = Date.now();
+    const proc = Bun.spawn(["/bin/sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, mode], {
+      env: { PATH: `${dir}/bin:/usr/bin:/bin`, DIR: dir, VM_AUTH_USERNAME: "u", VM_AUTH_PASSWORD: "p@ss:w/rd", ...(hang ? { HANG: "1" } : {}) },
+    });
+    const exitCode = await proc.exited;
+    return { exitCode, seconds: (Date.now() - started) / 1000, calls: Number(readFileSync(`${dir}/count`, "utf8")), args: readFileSync(`${dir}/args`, "utf8").trim().split("\n") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test("sends a bounded, authenticated request for the targets list", async () => {
