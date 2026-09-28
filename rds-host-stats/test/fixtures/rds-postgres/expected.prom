@@ -10,7 +10,6 @@ host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 4.416666666666666
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 5.058333333333334 1790574600000
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 5.563884724304514 1790574660000
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 5.702851425712856 1790574720000
-host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 4.231288210698162 1790574780000
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 240934912 1790574120000
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 194080768 1790574180000
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 177762304 1790574240000
@@ -22,7 +21,6 @@ host_memory_available_bytes{cluster="ci",node_name="node-01"} 185606144 17905745
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 171474944 1790574600000
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 181559296 1790574660000
 host_memory_available_bytes{cluster="ci",node_name="node-01"} 167460864 1790574720000
-host_memory_available_bytes{cluster="ci",node_name="node-01"} 165081088 1790574780000
 host_disk_read_iops{cluster="ci",node_name="node-01"} 9.870779491454773 1790574180000
 host_disk_read_iops{cluster="ci",node_name="node-01"} 0.5833236112731455 1790574240000
 host_disk_read_iops{cluster="ci",node_name="node-01"} 1.2664344870107147 1790574300000
@@ -33,7 +31,6 @@ host_disk_read_iops{cluster="ci",node_name="node-01"} 1.08253947105456 179057454
 host_disk_read_iops{cluster="ci",node_name="node-01"} 0 1790574600000
 host_disk_read_iops{cluster="ci",node_name="node-01"} 0.19995334421968208 1790574660000
 host_disk_read_iops{cluster="ci",node_name="node-01"} 0.033332222259258026 1790574720000
-host_disk_read_iops{cluster="ci",node_name="node-01"} 0.08339588024351598 1790574780000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 48.40350145894123 1790574180000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.7833202779953667 1790574240000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.36659945676625955 1790574300000
@@ -44,7 +41,6 @@ host_disk_write_iops{cluster="ci",node_name="node-01"} 1.3656651788688294 179057
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.48367190366589946 1790574600000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.38324390975439065 1790574660000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.2666577780740642 1790574720000
-host_disk_write_iops{cluster="ci",node_name="node-01"} 20.181803018930864 1790574780000
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0.00042124542124542125 1790574180000
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574240000
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0.0004123711340206186 1790574300000
@@ -55,7 +51,6 @@ host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0.0002380952380
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574600000
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574660000
 host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574720000
-host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574780000
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0.001414695945945946 1790574180000
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574240000
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574300000
@@ -66,7 +61,6 @@ host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0.000149812734
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574600000
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574660000
 host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0.0004 1790574720000
-host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0.003543307086614173 1790574780000
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.06386170797979629 1790574180000
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.00115 1790574240000
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.0012331072636683274 1790574300000
@@ -77,7 +71,6 @@ host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.001515555259476384 179
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.00025018346787644273 1790574600000
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.00041656252603515786 1790574660000
 host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.00015002750504259114 1790574720000
-host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.07383814971068385 1790574780000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 120272.44685285536 1790574180000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 7005.317021134742 1790574240000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1436.1033810468082 1790574300000
@@ -88,7 +81,6 @@ host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1277.252
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1640.9439626417611 1790574600000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1280.4552878045529 1790574660000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1302.3496083986001 1790574720000
-host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 1134.26412450583 1790574780000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 27366.402667778242 1790574180000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 29264.38429228615 1790574240000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 11948.126176867574 1790574300000
@@ -99,7 +91,6 @@ host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 12084.0
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 11940.060040026685 1790574600000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 12409.325734093258 1790574660000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 13569.688385269123 1790574720000
-host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 12133.830422525814 1790574780000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20710682624 1790574120000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609404928 1790574180000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609236992 1790574240000
@@ -111,7 +102,6 @@ host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574540000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574600000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574660000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574720000
-host_disk_free_bytes{cluster="ci",node_name="node-01"} 20474888192 1790574780000
 host_ebs_io_balance_percent{cluster="ci",node_name="node-01"} 99 1790574300000
 host_ebs_io_balance_percent{cluster="ci",node_name="node-01"} 99 1790574600000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790574240000

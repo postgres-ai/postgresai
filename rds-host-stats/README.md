@@ -1,6 +1,8 @@
 # RDS host stats
 
-We poll one RDS or Aurora PostgreSQL instance every 60 seconds from the monitoring VM. We read a 15-minute window, deduplicate timestamps, and send `host_*` series to VictoriaMetrics with the pgwatch `cluster` and `node_name` labels.
+We poll one RDS or Aurora PostgreSQL instance every 60 seconds (`RDS_POLL_INTERVAL_SECONDS`) from the monitoring VM. We read a 15-minute window, deduplicate timestamps, and send `host_*` series to VictoriaMetrics with the pgwatch `cluster` and `node_name` labels.
+
+CloudWatch and Performance Insights are queried up to the last minute boundary, and a bucket is written only once a further period has passed after it closed (about 1–2 minutes behind the clock for 60 s metrics, 5–10 minutes for the 5-minute Aurora volume metrics). A bucket written while CloudWatch is still aggregating it would be frozen by the per-timestamp dedupe. Enhanced Monitoring events are individual samples and are written as soon as they are read.
 
 ## Metrics
 
@@ -39,7 +41,7 @@ CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `R
 
 We use `docker compose --profile rds up -d rds-host-stats`. Set `PGAI_TAG`, `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`, `PGAI_CLUSTER`, and `PGAI_NODE_NAME`; the last two must match the pgwatch target labels. Set both `RDS_ROLE_ARN` and `RDS_EXTERNAL_ID` to assume a customer role, or neither to use the default AWS credential chain. Base credentials come from the VM instance profile; containers reach IMDSv2 only when the instance's metadata hop limit is at least 2.
 
-`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick. A poll that exceeds 30 s exits the service with status 1, and the compose restart policy starts it again without the stuck connection. SIGTERM/SIGINT exit cleanly.
+`PROMETHEUS_URL` defaults to `http://sink-prometheus:9090` (also fixed in compose). We use basic auth when both `VM_AUTH_USERNAME` and `VM_AUTH_PASSWORD` are set. Compose limits default to `RDS_HOST_STATS_CPUS=0.1` and `RDS_HOST_STATS_MEM=134217728` bytes. Failed polls are logged and retried on the next tick; samples of a failed VictoriaMetrics write are sent again with the next poll. A Performance Insights or Enhanced Monitoring failure, or a malformed Enhanced Monitoring event, is logged and skipped for that poll while the CloudWatch samples are still written. A poll that exceeds 30 s exits the service with status 1, and the compose restart policy starts it again without the stuck connection. SIGTERM/SIGINT exit cleanly.
 
 ## Customer IAM
 
@@ -47,7 +49,7 @@ The customer creates the role with the PostgresAI RDS provider template (platfor
 
 ## Customer cost and Enhanced Monitoring
 
-GetMetricData costs $0.01 per 1,000 metrics requested: 13 RDS metrics × 1,440 polls/day × 30 days ≈ $5.60/month per instance (Aurora requests 14 metrics). Logs GetLogEvents and PI Standard API reads are free. AWS bills Enhanced Monitoring's own Logs ingestion when the customer enables it.
+GetMetricData costs $0.01 per 1,000 metrics requested: 13 RDS metrics × 1,440 polls/day × 30 days ≈ $5.60/month per instance (Aurora requests 14 metrics). A longer `RDS_POLL_INTERVAL_SECONDS` lowers this in proportion; the 15-minute window still covers every bucket up to 13 minutes. Logs GetLogEvents and PI Standard API reads are free. AWS bills Enhanced Monitoring's own Logs ingestion when the customer enables it.
 
 We enable Enhanced Monitoring with `aws rds modify-db-instance --db-instance-identifier <id> --monitoring-interval 15 --monitoring-role-arn <arn> --apply-immediately`. The monitoring role must allow RDS Enhanced Monitoring to publish OS metrics to CloudWatch Logs.
 
@@ -55,4 +57,4 @@ We enable Enhanced Monitoring with `aws rds modify-db-instance --db-instance-ide
 
 From `rds-host-stats/`, run `bun install --frozen-lockfile`, `bun test`, and `bunx tsc --noEmit`. Fixture tests run offline; the live e2e is skipped unless its environment variables are set.
 
-To re-record against AWS, run `bun test/record.ts test/fixtures/<case>` with authorized AWS credentials. For the live e2e, see the command and prerequisites in the header of `test/e2e.test.ts`; it needs a real instance with PI and Enhanced Monitoring, plus VictoriaMetrics.
+To re-record against AWS, run `bun test/record.ts test/fixtures/<case>` with authorized AWS credentials; the recorder redacts endpoint addresses, the account ID in ARNs, VPC/subnet/security-group IDs and KMS key IDs. For the live e2e, see the command and prerequisites in the header of `test/e2e.test.ts`; it needs a real instance with PI and Enhanced Monitoring, plus VictoriaMetrics.

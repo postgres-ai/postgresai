@@ -26,7 +26,7 @@
           "DBSecurityGroups": [],
           "VpcSecurityGroups": [
             {
-              "VpcSecurityGroupId": "sg-0546b2723c6f6e7ac",
+              "VpcSecurityGroupId": "sg-redacted",
               "Status": "active"
             }
           ],
@@ -40,11 +40,11 @@
           "DBSubnetGroup": {
             "DBSubnetGroupName": "default",
             "DBSubnetGroupDescription": "default",
-            "VpcId": "vpc-0b773efac82251644",
+            "VpcId": "vpc-redacted",
             "SubnetGroupStatus": "Complete",
             "Subnets": [
               {
-                "SubnetIdentifier": "subnet-064ba7aabf2563f17",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1d"
                 },
@@ -52,7 +52,7 @@
                 "SubnetStatus": "Active"
               },
               {
-                "SubnetIdentifier": "subnet-0cada953dd29793f2",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1c"
                 },
@@ -60,7 +60,7 @@
                 "SubnetStatus": "Active"
               },
               {
-                "SubnetIdentifier": "subnet-0c8bf9181ddb8e987",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1a"
                 },
@@ -68,7 +68,7 @@
                 "SubnetStatus": "Active"
               },
               {
-                "SubnetIdentifier": "subnet-0dc62a83a3da0ab2f",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1b"
                 },
@@ -76,7 +76,7 @@
                 "SubnetStatus": "Active"
               },
               {
-                "SubnetIdentifier": "subnet-0fcf6f0b00a5ed2a7",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1e"
                 },
@@ -84,7 +84,7 @@
                 "SubnetStatus": "Active"
               },
               {
-                "SubnetIdentifier": "subnet-05e66965b803098f6",
+                "SubnetIdentifier": "subnet-redacted",
                 "SubnetAvailabilityZone": {
                   "Name": "us-east-1f"
                 },
@@ -113,17 +113,17 @@
           "StorageType": "gp3",
           "DbInstancePort": 0,
           "StorageEncrypted": true,
-          "KmsKeyId": "arn:aws:kms:us-east-1:783495713736:key/24b1e6d4-c63e-4dad-bdc3-002c124bf30b",
+          "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/redacted",
           "DbiResourceId": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
           "CACertificateIdentifier": "rds-ca-rsa2048-g1",
           "DomainMemberships": [],
           "CopyTagsToSnapshot": false,
           "MonitoringInterval": 0,
-          "DBInstanceArn": "arn:aws:rds:us-east-1:783495713736:db:pgai-test-hoststats-b9e0be1f",
+          "DBInstanceArn": "arn:aws:rds:us-east-1:123456789012:db:pgai-test-hoststats-b9e0be1f",
           "IAMDatabaseAuthenticationEnabled": false,
           "DatabaseInsightsMode": "standard",
           "PerformanceInsightsEnabled": true,
-          "PerformanceInsightsKMSKeyId": "arn:aws:kms:us-east-1:783495713736:key/24b1e6d4-c63e-4dad-bdc3-002c124bf30b",
+          "PerformanceInsightsKMSKeyId": "arn:aws:kms:us-east-1:123456789012:key/redacted",
           "PerformanceInsightsRetentionPeriod": 7,
           "DeletionProtection": false,
           "AssociatedRoles": [],

@@ -20,6 +20,11 @@ const target = {
   nodeName: required('PGAI_NODE_NAME'),
 }
 const region = required('AWS_REGION')
+const interval = Number(env.RDS_POLL_INTERVAL_SECONDS || 60)
+if (!Number.isInteger(interval) || interval < 1) {
+  console.error('RDS_POLL_INTERVAL_SECONDS must be a positive integer')
+  process.exit(2)
+}
 const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined
 const clients = createClients(region, role)
 const url = env.PROMETHEUS_URL || 'http://sink-prometheus:9090'
@@ -31,8 +36,11 @@ let nextTick = Date.now()
 while (true) {
   let written = 0
   try {
+    // state is committed only after the write succeeds, so the samples of a
+    // failed write are sent again on the next tick.
     const pending = new Map(state)
-    const text = await pollOnce(clients, target, new Date(), pending)
+    const { text, errors } = await pollOnce(clients, target, new Date(), pending)
+    for (const error of errors) console.error(`${error.name}: ${error.message}`)
     await writeSamples(url, text, auth)
     state = pending
     written = text.split('\n').length - 1
@@ -42,6 +50,6 @@ while (true) {
     if (error instanceof PollTimeout) process.exit(1)
   }
   console.log(`samples written: ${written}`)
-  do { nextTick += 60_000 } while (nextTick <= Date.now())
+  do { nextTick += interval * 1000 } while (nextTick <= Date.now())
   await Bun.sleep(nextTick - Date.now())
 }

@@ -3630,14 +3630,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "percent"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 143},
+      "gridPos": {"h": 15, "w": 12, "x": 0, "y": 143},
       "id": 54,
       "options": {
         "legend": {
@@ -3691,14 +3691,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "bytes"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 143},
+      "gridPos": {"h": 15, "w": 12, "x": 12, "y": 143},
       "id": 55,
       "options": {
         "legend": {
@@ -3776,14 +3776,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "bytes"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 151},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 158},
       "id": 56,
       "options": {
         "legend": {
@@ -3837,14 +3837,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "iops"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 151},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 158},
       "id": 57,
       "options": {
         "legend": {
@@ -3906,14 +3906,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 159},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 166},
       "id": 58,
       "options": {
         "legend": {
@@ -3959,14 +3959,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 159},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 166},
       "id": 59,
       "options": {
         "legend": {
@@ -4004,14 +4004,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "binBps"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 167},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 174},
       "id": 60,
       "options": {
         "legend": {
@@ -4057,14 +4057,14 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": 180000,
             "stacking": {"group": "A", "mode": "none"}
           },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 167},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 174},
       "id": 61,
       "options": {
         "legend": {
@@ -4088,6 +4088,106 @@
         }
       ],
       "title": "DB load (Performance Insights)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+      "description": "Delay of this replica behind its source: ReplicaLag on RDS, AuroraReplicaLag on Aurora. Empty on a primary.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {"group": "A", "mode": "none"}
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 182},
+      "id": 62,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "host_replica_lag_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "replica lag",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Replica lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+      "description": "Credits left for gp2 volume bursting (BurstBalance) and for EBS-optimized instance I/O (EBSIOBalance%). RDS only; gp3 volumes report no burst balance. A balance near zero throttles I/O.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {"group": "A", "mode": "none"}
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 182},
+      "id": 63,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull", "min"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "host_burst_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "burst balance",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
+          "editorMode": "code",
+          "expr": "host_ebs_io_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "EBS I/O balance",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Burst and EBS I/O balance",
       "type": "timeseries"
     }
   ],
