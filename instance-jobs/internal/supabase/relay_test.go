@@ -31,12 +31,13 @@ type rig struct {
 	calls, scrapes int
 	status, url    string
 	upstreamStatus int
+	contentType    string
 	fixture        []byte
 }
 
 func setup(t *testing.T) *rig {
 	t.Helper()
-	x := &rig{now: time.Unix(1800000000, 0), status: "ok", url: metricsURL, upstreamStatus: 200}
+	x := &rig{now: time.Unix(1800000000, 0), status: "ok", url: metricsURL, upstreamStatus: 200, contentType: "text/plain; version=0.0.4"}
 	var err error
 	x.fixture, err = os.ReadFile("testdata/supabase_metrics.prom")
 	if err != nil {
@@ -57,7 +58,7 @@ func setup(t *testing.T) *rig {
 			io.WriteString(w, fakeKey)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.Header().Set("Content-Type", x.contentType)
 		w.Write(x.fixture)
 	}))
 	t.Cleanup(upstream.Close)
@@ -102,7 +103,7 @@ func TestPassthrough(t *testing.T) {
 	x := setup(t)
 	for range 2 {
 		w := x.get("/supabase/metrics")
-		if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), x.fixture) || w.Header().Get("Content-Type") != "text/plain; version=0.0.4" {
+		if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), x.fixture) || w.Header().Get("Content-Type") != "text/plain; version=0.0.4; charset=utf-8" {
 			t.Fatal("passthrough differs")
 		}
 	}
@@ -111,6 +112,58 @@ func TestPassthrough(t *testing.T) {
 	}
 	if x.relay.client.Timeout != 20*time.Second {
 		t.Fatal("wrong upstream timeout")
+	}
+}
+
+func TestCredentialTTL(t *testing.T) {
+	for _, minutes := range []int{59, 60, 61} {
+		t.Run((time.Duration(minutes) * time.Minute).String(), func(t *testing.T) {
+			x := setup(t)
+			if x.get("/supabase/metrics").Code != 200 || x.calls != 1 {
+				t.Fatal("initial credential fetch failed")
+			}
+			x.now = x.now.Add(time.Duration(minutes) * time.Minute)
+			wantCalls := 1
+			if minutes >= 60 {
+				wantCalls++
+			}
+			for range 2 {
+				if x.get("/supabase/metrics").Code != 200 || x.calls != wantCalls {
+					t.Fatalf("RPCs=%d, want %d", x.calls, wantCalls)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialExpiryFetchCooldown(t *testing.T) {
+	x := setup(t)
+	x.get("/supabase/metrics")
+	x.now = x.now.Add(61 * time.Minute)
+	x.status = "no_key"
+	for range 2 {
+		if x.get("/supabase/metrics").Code != 503 || x.calls != 2 || x.scrapes != 1 {
+			t.Fatal("expired credential retained or fetch cooldown bypassed")
+		}
+	}
+	x.now = x.now.Add(5 * time.Minute)
+	x.status = "ok"
+	if x.get("/supabase/metrics").Code != 200 || x.calls != 3 {
+		t.Fatal("did not recover after expiry fetch cooldown")
+	}
+}
+
+func TestContentTypeDoesNotExposeCredential(t *testing.T) {
+	x := setup(t)
+	x.contentType = "text/plain; key=" + fakeKey
+	w := x.get("/supabase/metrics")
+	for name, values := range w.Header() {
+		if strings.Contains(name, fakeKey) || strings.Contains(strings.Join(values, ","), fakeKey) {
+			t.Fatal("key leaked into response headers")
+		}
+	}
+	if w.Code != 200 || w.Header().Get("Content-Type") != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatal("incorrect metrics content type")
 	}
 }
 

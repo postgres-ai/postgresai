@@ -16,6 +16,7 @@ def test_supabase_host_panels():
     for panel in row['panels']:
         assert panel['datasource']['uid'] == 'P7A0D6631BB10B34F'
         for target in panel['targets']:
+            assert target.get('interval') == '60s'
             assert 'cluster=' not in target['expr']
             assert 'node_name=' not in target['expr']
             assert 'service_type="db"' in target['expr']
