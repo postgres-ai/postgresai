@@ -55,7 +55,7 @@ for (const missing of ["all", "CLICKHOUSE_ORG_ID", "CLICKHOUSE_KEY_ID", "CLICKHO
     if (missing === "all") for (const key of Object.keys(credentials)) delete credentials[key];
     else delete credentials[missing];
     expect(await add(credentials)).toBe("Host metrics: set CLICKHOUSE_ORG_ID, CLICKHOUSE_KEY_ID and CLICKHOUSE_KEY_SECRET and re-run to collect CPU, memory, disk and I/O from ClickHouse Cloud");
-      expect(requests).toEqual([]);
+    expect(requests).toEqual([]);
     expectNothingWritten();
   });
 }

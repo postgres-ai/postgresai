@@ -43,7 +43,8 @@ import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { enqueueQuery, awaitQueryResult, isTerminal, renderPromQL, type EnqueueArgs } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -959,7 +960,7 @@ function composeRefCandidates(): string[] {
   ].filter((v): v is string => Boolean(v && v.trim()));
 }
 
-async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
+export async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
   const projectDir = getDefaultMonitoringProjectDir();
   const composeFile = path.resolve(projectDir, "docker-compose.yml");
   const instancesFile = path.resolve(projectDir, "instances.yml");
@@ -988,6 +989,8 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
       throw new Error(`Failed to bootstrap docker-compose.yml: ${msg}`);
     }
   }
+
+  fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true });
 
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
@@ -2941,11 +2944,14 @@ function resolvePaths(): PathResolution {
 }
 
 async function resolveOrInitPaths(): Promise<PathResolution> {
+  let paths: PathResolution;
   try {
-    return resolvePaths();
+    paths = resolvePaths();
   } catch {
     return ensureDefaultMonitoringProject();
   }
+  fs.mkdirSync(path.join(paths.projectDir, "host-metrics"), { recursive: true });
+  return paths;
 }
 
 /**
@@ -5291,7 +5297,7 @@ targets
   .command("add [connStr] [name]")
   .description("add monitoring target database")
   .action(async (connStr?: string, name?: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     if (!connStr) {
       console.error("Connection string required: postgresql://user:pass@host:port/db");
       process.exitCode = 1;
@@ -5310,6 +5316,19 @@ targets
     try {
       addInstanceToFile(file, buildInstance(instanceName, connStr));
       console.log(`Monitoring target '${instanceName}' added`);
+      if (detectProvider(connStr) === "clickhouse") {
+        try {
+          const message = await addHostMetrics({ projectDir, name: instanceName, conn: connStr, env: process.env });
+          console.log(message);
+          if (message.startsWith("Host metrics: ClickHouse Cloud")) {
+            if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          console.error("The Postgres target was added; host metrics were not.");
+          process.exitCode = 1;
+        }
+      }
 
       const applyCode = await applyMonitoringTargetsConfig();
       if (applyCode !== 0) {
@@ -5331,7 +5350,7 @@ targets
   .command("remove <name>")
   .description("remove monitoring target database")
   .action(async (name: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     if (!fs.existsSync(file) || fs.lstatSync(file).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
@@ -5346,6 +5365,11 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
+      const hadHostMetrics = ["yml", "secret"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
+      if (hadHostMetrics) {
+        removeHostMetrics(projectDir, name);
+        if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) process.exitCode = 1;
+      }
 
       const applyCode = await applyMonitoringTargetsConfig();
       if (applyCode !== 0) {
