@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { findService, renderScrapeConfig } from "../lib/clickhouse";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { findService, renderScrapeConfig, scrapeRevision } from "../lib/clickhouse";
 
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
@@ -74,6 +75,17 @@ describe("ClickHouse scrape config", () => {
     const revision = (options: typeof renderOptions) => (Bun.YAML.parse(renderScrapeConfig(options)) as any[])[0].static_configs[0].labels.__pgai_rev;
     expect(revision(renderOptions)).toBe(revision({ ...renderOptions }));
     expect(revision({ ...renderOptions, keyId: "other-key-id" })).not.toBe(revision(renderOptions));
+  });
+  test("reads the revision label, not revision-like text in another label", () => {
+    const dir = mkdtempSync(`${tmpdir()}/clickhouse-revision-`);
+    try {
+      const text = renderScrapeConfig({ ...renderOptions, cluster: "x\n__pgai_rev: r0000000000000000" });
+      mkdirSync(`${dir}/host-metrics`);
+      writeFileSync(`${dir}/host-metrics/clickhouse-my-postgres.yml`, text);
+      expect(scrapeRevision(dir, "my-postgres")).toBe((Bun.YAML.parse(text) as any[])[0].static_configs[0].labels.__pgai_rev);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   test("quotes YAML-sensitive scalar values without changing their meaning", () => {
     const values = { cluster: "default\nextra: injected", keyId: "key: #id", passwordFile: "/tmp/secret: #file" };
