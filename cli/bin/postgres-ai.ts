@@ -5274,7 +5274,7 @@ async function reloadHostMetrics(name?: string): Promise<boolean> {
   if (name && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
     `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
     "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
-    console.error("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon restart'. The scrape files are saved and will be picked up.");
+    console.error("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.");
     return false;
   }
   if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {

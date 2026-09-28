@@ -83,7 +83,7 @@ test("targets add fails when the sink-prometheus reload fails", () => {
 test("targets add reports an older stack instead of success", () => {
   const result = run(["add", conn, "ch"], { FAKE_EXEC_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
-  expect(result.stderr).toContain("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon restart'. The scrape files are saved and will be picked up.");
+  expect(result.stderr).toContain("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.");
   expect(result.stdout).not.toContain("Host metrics: ClickHouse Cloud");
   expect(reloadLog()).toEqual([execLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(true);
