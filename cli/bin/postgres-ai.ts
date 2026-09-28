@@ -5267,11 +5267,16 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+// VictoriaMetrics applies a SIGHUP asynchronously, and it skips a scrape file
+// it cannot parse while still counting the reload as successful. Only the
+// targets list shows whether the job was loaded or dropped, so poll it for 10s.
+const HOST_METRICS_VERIFY_SCRIPT = `auth="Authorization: Basic $(printf '%s:%s' "$VM_AUTH_USERNAME" "$VM_AUTH_PASSWORD" | base64 | tr -d '\\n')"; i=0; while [ $i -lt 20 ]; do if t=$(wget -qO- --header "$auth" http://127.0.0.1:9090/api/v1/targets); then case "$t" in *"\\"scrapePool\\":\\"$1\\""*) [ "$2" = present ] && exit 0 ;; *) [ "$2" = absent ] && exit 0 ;; esac; fi; i=$((i+1)); sleep 0.5; done; exit 1`;
+
 // Stacks older than host metrics support lack the ./host-metrics mount or
 // scrape_config_files, so check that the running sink-prometheus can see the
 // new scrape file before reporting success.
-async function reloadHostMetrics(name?: string): Promise<boolean> {
-  if (name && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
+async function reloadHostMetrics(name: string, added: boolean): Promise<boolean> {
+  if (added && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
     `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
     "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
     console.error("sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. Run 'postgresai mon update', then 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.");
@@ -5279,6 +5284,13 @@ async function reloadHostMetrics(name?: string): Promise<boolean> {
   }
   if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
     console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
+    return false;
+  }
+  const job = `clickhouse-${name}`;
+  if (await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", job, added ? "present" : "absent"]) !== 0) {
+    console.error(added
+      ? `sink-prometheus did not load the scrape job '${job}' after the reload. Check 'docker logs sink-prometheus' for the error. The scrape files are saved.`
+      : `sink-prometheus still scrapes '${job}' after the reload. Check 'docker logs sink-prometheus' for the error.`);
     return false;
   }
   return true;
@@ -5329,7 +5341,7 @@ export async function addTarget(
           nodeName: instance.custom_tags?.node_name ?? instanceName,
         });
         if (!apply || !message.startsWith("Host metrics: ClickHouse Cloud")) console.log(message);
-        else if (await reloadHostMetrics(instanceName)) console.log(message);
+        else if (await reloadHostMetrics(instanceName, true)) console.log(message);
         else process.exitCode = 1;
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
@@ -5434,7 +5446,7 @@ targets
       const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
       if (hadHostMetrics) {
         removeHostMetrics(projectDir, name);
-        if (!(await reloadHostMetrics())) process.exitCode = 1;
+        if (!(await reloadHostMetrics(name, false))) process.exitCode = 1;
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
