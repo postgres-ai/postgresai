@@ -129,10 +129,27 @@ the Supabase key using the existing org token and instance id, at most once per
 five minutes, keeping it only in memory. No customer key entry is needed.
 Each monitoring instance serves exactly one Supabase project, selected by the
 platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
-(20-second timeout); 503 means
-`up=0`, independently of runner health. For `consent_needed`, open the Supabase
-page in the PostgresAI console and click **Allow host metrics**. Dashboard 01
-includes a collapsed **Host (Supabase)** row, labeled by `supabase_project_ref`.
+(20-second timeout); the relay answers 503 (no usable credential) or 502
+(upstream scrape failed) and either one means `up=0`, independently of runner
+health. For `consent_needed`, open the Supabase page in the PostgresAI console
+and click **Allow host metrics**. Dashboard 01 includes a collapsed
+**Host (Supabase)** row, labeled by `supabase_identifier` (the project ref for
+the primary, a distinct value per read replica).
+
+Credential lifecycle: the key is cached for one hour, then fetched again. A
+`401`/`403` from Supabase discards it and triggers one immediate refetch; a
+second rejection answers 502 and the next fetch waits for the five-minute
+cooldown. Nothing re-checks the platform inside the hour, so a connection or
+consent revoked in the console keeps working for up to one hour. The credential
+RPC runs detached from the scrape request (10-second timeout), so a scraper
+that gives up does not consume the cooldown.
+
+The listener has no authentication: every service on the compose network can
+read `/supabase/metrics`. Reads inside a 30-second window are answered from
+the last exposition held in memory, so a peer cannot turn the relay into a loop
+of upstream scrapes against Supabase. Neither the key nor the org token is ever
+sent to a client; error bodies are fixed status strings. A relay that cannot
+bind its address is logged and disabled; the runner keeps going.
 
 The opt-in live test requires `SUPABASE_TEST_ACCESS_TOKEN` and
 `SUPABASE_TEST_PROJECT_REF`. From `instance-jobs`, run

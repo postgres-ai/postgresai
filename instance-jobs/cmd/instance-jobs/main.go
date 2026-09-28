@@ -73,18 +73,13 @@ func main() {
 	// yet be read. The relay re-reads platform credentials when it needs them.
 	cfg, _ := config.Load()
 	if cfg.SupabaseHostMetrics {
-		listener, err := net.Listen("tcp", cfg.SupabaseMetricsListen)
-		if err != nil {
-			log.Fatal("Supabase metrics listener failed")
+		// The relay is optional: a listener failure disables it and is logged,
+		// it never takes the runner down. net.Listen errors carry no secrets.
+		if closeRelay, err := serveRelay(cfg.SupabaseMetricsListen, supabase.New(config.Load, slog.Default()).Handler(true)); err != nil {
+			log.Printf("Supabase metrics relay disabled: %v", err)
+		} else {
+			defer closeRelay()
 		}
-		server := &http.Server{Handler: supabase.New(config.Load, slog.Default()).Handler(true), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
-		defer server.Close()
-		go func() {
-			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Print("Supabase metrics listener stopped")
-				stop()
-			}
-		}()
 	}
 
 	log.Printf("starting (version %s)", version)
@@ -93,6 +88,22 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Print("stopped")
+}
+
+// serveRelay binds addr and serves handler until the returned function is
+// called. A failure after the bind is logged and leaves the runner running.
+func serveRelay(addr string, handler http.Handler) (func(), error) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Supabase metrics relay stopped: %v", err)
+		}
+	}()
+	return func() { server.Close() }, nil
 }
 
 func clientVersion() string {

@@ -1,8 +1,9 @@
-# instance-jobs: the monitoring instance's outbound job runner.
+# instance-jobs: the monitoring instance's job runner and Supabase metrics relay.
 #
 # It asks the platform for collection work, runs it against the local metric
-# store and posts the results back. No published port, no docker socket, no host
-# filesystem -- see instance-jobs/README.md.
+# store and posts the results back; with PGAI_SUPABASE_HOST_METRICS=true it also
+# relays one Supabase project's host metrics to the local store. No published
+# port, no docker socket, no host filesystem -- see instance-jobs/README.md.
 
 # ---- Stage 1: build ----
 # Pinned to BUILDPLATFORM with Go's own cross-compilation (BuildKit injects

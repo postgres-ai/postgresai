@@ -3586,12 +3586,37 @@
       "type": "stat"
     },
     {
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 139
+      },
+      "id": 40,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<h1>\n  Brought to you by <a href=\"https://postgres.ai\">PostgresAI</a>\n  <img src=\"https://postgres.ai/img/logo.svg\" alt=\"Postgres.AI\" style=\"height: 2em; vertical-align: middle; margin-left: 0.3em;\">\n</h1>\n",
+        "mode": "html"
+      },
+      "pluginVersion": "12.0.2",
+      "title": "",
+      "type": "text"
+    },
+    {
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 139
+        "y": 142
       },
       "id": 53,
       "panels": [
@@ -3621,7 +3646,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 140
+            "y": 143
           },
           "id": 54,
           "options": {
@@ -3646,9 +3671,9 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "100 * (1 - avg by (supabase_project_ref) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
+              "expr": "100 * (1 - avg by (supabase_project_ref, supabase_identifier) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} CPU busy",
+              "legendFormat": "{{supabase_identifier}} CPU busy",
               "range": true,
               "refId": "A"
             }
@@ -3682,7 +3707,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 140
+            "y": 143
           },
           "id": 55,
           "options": {
@@ -3709,7 +3734,7 @@
               "editorMode": "code",
               "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} Available",
+              "legendFormat": "{{supabase_identifier}} Available",
               "range": true,
               "refId": "A"
             }
@@ -3743,7 +3768,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 140
+            "y": 143
           },
           "id": 56,
           "options": {
@@ -3770,7 +3795,7 @@
               "editorMode": "code",
               "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} {{mountpoint}} ({{device}})",
+              "legendFormat": "{{supabase_identifier}} {{mountpoint}} ({{device}})",
               "range": true,
               "refId": "A"
             }
@@ -3804,7 +3829,7 @@
             "h": 7,
             "w": 12,
             "x": 0,
-            "y": 147
+            "y": 150
           },
           "id": 57,
           "options": {
@@ -3831,7 +3856,7 @@
               "editorMode": "code",
               "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} {{device}}",
+              "legendFormat": "{{supabase_identifier}} {{device}}",
               "range": true,
               "refId": "A"
             }
@@ -3865,7 +3890,7 @@
             "h": 7,
             "w": 12,
             "x": 12,
-            "y": 147
+            "y": 150
           },
           "id": 58,
           "options": {
@@ -3892,7 +3917,7 @@
               "editorMode": "code",
               "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} {{device}} rx",
+              "legendFormat": "{{supabase_identifier}} {{device}} rx",
               "range": true,
               "refId": "A"
             },
@@ -3904,7 +3929,7 @@
               "editorMode": "code",
               "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
-              "legendFormat": "{{supabase_project_ref}} {{device}} tx",
+              "legendFormat": "{{supabase_identifier}} {{device}} tx",
               "range": true,
               "refId": "B"
             }
@@ -3915,31 +3940,6 @@
       ],
       "title": "Host (Supabase)",
       "type": "row"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 24,
-        "x": 0,
-        "y": 140
-      },
-      "id": 40,
-      "options": {
-        "code": {
-          "language": "plaintext",
-          "showLineNumbers": false,
-          "showMiniMap": false
-        },
-        "content": "<h1>\n  Brought to you by <a href=\"https://postgres.ai\">PostgresAI</a>\n  <img src=\"https://postgres.ai/img/logo.svg\" alt=\"Postgres.AI\" style=\"height: 2em; vertical-align: middle; margin-left: 0.3em;\">\n</h1>\n",
-        "mode": "html"
-      },
-      "pluginVersion": "12.0.2",
-      "title": "",
-      "type": "text"
     }
   ],
   "preload": false,

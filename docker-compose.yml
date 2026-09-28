@@ -380,8 +380,9 @@ services:
 
   # Instance jobs - collection runs HERE and the results are posted out.
   # Profile-gated, so an upgrade brings the definition and starts nothing;
-  # outbound only, and the one mount is the credential file the reporter
-  # already uses. See instance-jobs/README.md and postgresai#366.
+  # no published port (the Supabase relay listens on the compose network only)
+  # and the one mount is the credential file the reporter already uses.
+  # See instance-jobs/README.md and postgresai#366.
   instance-jobs:
     image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
     container_name: instance-jobs
