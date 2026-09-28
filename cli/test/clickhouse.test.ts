@@ -60,7 +60,8 @@ describe("ClickHouse service discovery", () => {
 
 describe("ClickHouse service state", () => {
   test("running is ready", () => expect(serviceStateProblem("running")).toBeNull());
-  test.each(["unknown"])("%s is not ready", (state) => {
+  test("unknown is not ready", () => {
+    const state = "unknown";
     expect(serviceStateProblem(state)).toBe(`ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`);
   });
 });
