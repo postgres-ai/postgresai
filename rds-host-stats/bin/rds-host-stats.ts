@@ -19,7 +19,9 @@ const target = {
   cluster: required('PGAI_CLUSTER'),
   nodeName: required('PGAI_NODE_NAME'),
 }
-const clients = createClients(required('AWS_REGION'), env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined)
+const region = required('AWS_REGION')
+const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined
+let clients = createClients(region, role)
 const url = env.PROMETHEUS_URL || 'http://sink-prometheus:9090'
 const auth = env.VM_AUTH_USERNAME && env.VM_AUTH_PASSWORD ? { username: env.VM_AUTH_USERNAME, password: env.VM_AUTH_PASSWORD } : undefined
 process.on('SIGTERM', () => process.exit(0))
@@ -35,6 +37,7 @@ while (true) {
     state = pending
     written = text.split('\n').length - 1
   } catch (error) {
+    clients = createClients(region, role)
     console.error(error instanceof Error ? `${error.name}: ${error.message}` : 'poll failed')
   }
   console.log(`samples written: ${written}`)
