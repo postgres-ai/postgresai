@@ -1543,7 +1543,8 @@ program
     const redactPasswords = (sql: string): string => redactPasswordsInSql(sql);
 
     const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
-    if (detected) console.log("Provider: clickhouse (detected from host)");
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
 
     // Validate provider and warn if unknown
     const providerWarning = validateProvider(provider);
@@ -1552,7 +1553,7 @@ program
     }
 
     if (provider === "clickhouse" && !opts.verify) {
-      console.log(`-- scope: role ${opts.monitoringUser} gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored`);
+      note(`-- scope: role ${opts.monitoringUser} gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored`);
     }
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
@@ -2292,7 +2293,8 @@ program
     const dropRole = !opts.keepRole;
 
     const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl);
-    if (detected) console.log("Provider: clickhouse (detected from host)");
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
 
     // Validate provider and warn if unknown
     const providerWarning = validateProvider(provider);

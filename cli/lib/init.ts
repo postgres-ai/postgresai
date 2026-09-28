@@ -318,7 +318,6 @@ function tokenizeConninfo(input: string): string[] {
       i++;
     }
 
-    if (inSingle) throw new Error("Unterminated quote in connection string");
     tokens.push(tok);
     while (i < s.length && isSpace(s[i]!)) i++;
   }
@@ -333,7 +332,7 @@ export function parseLibpqConninfo(input: string): PgClientConfig {
 
   for (const t of tokens) {
     const eq = t.indexOf("=");
-    if (eq <= 0) throw new Error("Invalid connection string parameter");
+    if (eq <= 0) continue;
     const key = t.slice(0, eq).trim();
     const rawVal = t.slice(eq + 1);
     const val = rawVal.trim();
