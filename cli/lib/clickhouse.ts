@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dump } from "js-yaml";
+import { dump, load } from "js-yaml";
 import { requestTimeoutSignal } from "./util";
 
 function validateName(name: string): void {
@@ -64,8 +64,9 @@ export function renderScrapeConfig({ name, cluster, nodeName = name, orgId, serv
 
 export function scrapeRevision(projectDir: string, name: string): string {
   validateName(name);
-  const revision = readFileSync(join(projectDir, "host-metrics", `clickhouse-${name}.yml`), "utf8").match(/__pgai_rev: (r[0-9a-f]{16})\n/)?.[1];
-  if (!revision) throw new Error(`host-metrics/clickhouse-${name}.yml has no __pgai_rev label.`);
+  const [config] = load(readFileSync(join(projectDir, "host-metrics", `clickhouse-${name}.yml`), "utf8")) as any[];
+  const revision = config?.static_configs?.[0]?.labels?.__pgai_rev;
+  if (typeof revision !== "string" || !/^r[0-9a-f]{16}$/.test(revision)) throw new Error(`host-metrics/clickhouse-${name}.yml has no __pgai_rev label.`);
   return revision;
 }
 
