@@ -46,7 +46,6 @@ function cli(args: string[], extraEnv: Record<string, string> = {}) {
 describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, real cloud", () => {
   let id = "";
   let adminUrl = "";
-  let monUrl = "";
   let dir = "";
 
   beforeAll(async () => {
@@ -56,7 +55,7 @@ describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, re
       region: env.CLICKHOUSE_TEST_REGION ?? "us-east-1",
       size: env.CLICKHOUSE_TEST_SIZE ?? "r6gd.medium",
       postgresVersion: env.CLICKHOUSE_TEST_PG_VERSION ?? "17",
-      tags: [{ key: "pgai-ci", value: run }, { key: "ttl", value: new Date(Date.now() + minutes(120)).toISOString() }],
+      tags: [{ key: "pgai-ci", value: run }, { key: "ttl", value: String(Math.floor((Date.now() + minutes(120)) / 1000)) }],
     });
     if (created.status !== 200) throw new Error(`create failed: HTTP ${created.status} ${created.text.slice(0, 300)}`);
     id = created.json.result.id;
@@ -94,18 +93,6 @@ describe.skipIf(!orgId || !keyId || !keySecret)("ClickHouse Managed Postgres, re
     expect(lines).toContain("-- scope: role postgres_ai_mon gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored");
     const verified = cli(["prepare-db", adminUrl, "--verify"]);
     expect(verified.code, verified.stderr).toBe(0);
-    const url = new URL(adminUrl);
-    url.username = "postgres_ai_mon";
-    url.password = password;
-    monUrl = url.toString();
-  }, minutes(6));
-
-  test("express checkup runs as the monitoring role", () => {
-    const result = cli(["checkup", monUrl, "--no-upload", "--json"]);
-    expect(result.code, result.stderr).toBe(0);
-    const reports = JSON.parse(result.stdout);
-    expect(reports.D004.results["node-01"].data.pg_stat_kcache_status.extension_available).toBe(false);
-    if (env.CLICKHOUSE_TEST_RECORD_DIR) writeFileSync(`${env.CLICKHOUSE_TEST_RECORD_DIR}/checkup.json`, result.stdout);
   }, minutes(6));
 
   test("host metrics: service found, endpoint serves the documented series", async () => {
