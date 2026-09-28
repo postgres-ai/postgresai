@@ -406,6 +406,9 @@ services:
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
     environment:
+      - PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}
+      # Internal compose listener only; never publish this port.
+      - PGAI_SUPABASE_METRICS_LISTEN=:9188
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
       - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}

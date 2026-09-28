@@ -249,3 +249,14 @@ func TestPlatformErrorDoesNotExposeResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestSingleProjectRoutes(t *testing.T) {
+	x := setup(t)
+	if x.get("/supabase/targets").Code != http.StatusNotFound || x.calls != 0 {
+		t.Fatal("discovery route still exists")
+	}
+	w := x.get("/supabase/metrics?project_ref=zyxwvutsrqponmlkjihgf")
+	if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), x.fixture) || x.scrapes != 1 {
+		t.Fatal("query parameter changed the single-project scrape")
+	}
+}

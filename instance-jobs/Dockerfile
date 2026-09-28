@@ -1,7 +1,7 @@
 # instance-jobs: the monitoring instance's outbound job runner.
 #
 # It asks the platform for collection work, runs it against the local metric
-# store and posts the results back. No inbound port, no docker socket, no host
+# store and posts the results back. No published port, no docker socket, no host
 # filesystem -- see instance-jobs/README.md.
 
 # ---- Stage 1: build ----
@@ -50,7 +50,7 @@ RUN printf '%s' "${VERSION}" > /VERSION \
 USER pgai
 
 # The loop records its verdict in a file rather than on a port, because this
-# service is defined with no ports at all. `healthcheck` fails whenever the loop
+# service has no published ports. `healthcheck` fails whenever the loop
 # reports itself unwell -- an unusable config, N failed polls, N failed jobs --
 # or has stopped writing altogether, so `mon health` sees a dead channel instead
 # of a container that has idled since it started.
