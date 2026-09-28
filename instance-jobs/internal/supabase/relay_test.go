@@ -68,7 +68,7 @@ func setup(t *testing.T) *rig {
 			t.Error("incorrect RPC")
 		}
 		var body map[string]string
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body["api_token"] != "test-org-token" || body["instance_id"] != "test-instance" || len(body) != 2 {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body["instance_id"] != "test-instance" || len(body) != 1 || r.Header.Get("access-token") != "test-org-token" {
 			t.Error("incorrect RPC contract")
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": x.status, "project_ref": projectRef, "metrics_url": x.url, "username": "service_role", "password": fakeKey})

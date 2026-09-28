@@ -14,12 +14,12 @@ type SupabaseCredential struct {
 	Password   string `json:"password"`
 }
 
-// SupabaseHostMetricsCredential follows the host-metrics RPC contract, which
-// explicitly requires api_token in the body (unlike Poll and Submit).
+// SupabaseHostMetricsCredential authenticates through the access-token header,
+// like Poll and Submit, so the org token cannot reach Postgres bind-parameter logs.
 func (c *Client) SupabaseHostMetricsCredential(ctx context.Context, creds Credentials) (*SupabaseCredential, error) {
 	var out SupabaseCredential
 	err := c.call(ctx, "supabase_host_metrics_credential", creds, map[string]any{
-		"api_token": creds.APIToken, "instance_id": creds.InstanceID,
+		"instance_id": creds.InstanceID,
 	}, &out)
 	if err != nil || out.Status == "" {
 		// Neither response messages nor transport errors may escape this boundary:
