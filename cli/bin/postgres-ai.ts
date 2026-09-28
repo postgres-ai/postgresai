@@ -5281,6 +5281,12 @@ export async function addTarget(
     process.exitCode = 1;
     return;
   }
+  if (/[?&]channel_binding=/.test(connStr)) {
+    const url = new URL(connStr);
+    url.searchParams.delete("channel_binding");
+    connStr = url.toString();
+    console.log("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+  }
   const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
   if (!m) {
     console.error("Invalid connection string format");
