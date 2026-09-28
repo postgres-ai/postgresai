@@ -10,7 +10,7 @@ export type Target = { instanceId: string; cluster: string; nodeName: string }
 export type Role = { arn: string; externalId: string }
 export type Auth = { username: string; password: string }
 
-export const requestHandler = { connectionTimeout: 5_000, requestTimeout: 10_000 }
+export const requestHandler = { connectionTimeout: 5_000, requestTimeout: 10_000, throwOnRequestTimeout: true }
 
 export function createClients(region: string, role?: Role): Clients {
   const credentials = role ? fromTemporaryCredentials({
