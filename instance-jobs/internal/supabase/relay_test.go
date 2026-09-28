@@ -253,7 +253,7 @@ func TestCredentialExpiryFetchCooldown(t *testing.T) {
 	x := setup(t)
 	x.get("/supabase/metrics")
 	x.now = x.now.Add(61 * time.Minute)
-	x.status = "no_key"
+	x.status = "upstream_error"
 	for range 2 {
 		if x.get("/supabase/metrics").Code != 503 || x.calls != 2 || x.scrapes != 1 {
 			t.Fatal("expired credential retained or fetch cooldown bypassed")
@@ -328,6 +328,21 @@ func TestAuthRateLimit(t *testing.T) {
 	}
 }
 
+// A box without the feature granted is not a failed scrape: it answers an
+// empty exposition, so up stays 1 and no series exist. Faults stay 503.
+func TestNotApplicableIsEmptyNotDown(t *testing.T) {
+	for status, want := range map[string]int{"consent_needed": 200, "not_supabase": 200, "no_key": 200, "upstream_error": 503, fakeKey: 503} {
+		t.Run(status, func(t *testing.T) {
+			x := setup(t)
+			x.status = status
+			w := x.get("/supabase/metrics")
+			if w.Code != want || (want == 200 && w.Body.Len() != 0) {
+				t.Fatalf("code=%d body=%q", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestNegativeStatusAndLogThrottle(t *testing.T) {
 	for _, status := range []string{"consent_needed", "not_supabase", "no_key", "upstream_error", fakeKey} {
 		t.Run(status, func(t *testing.T) {
@@ -335,7 +350,7 @@ func TestNegativeStatusAndLogThrottle(t *testing.T) {
 			x.status = status
 			for range 3 {
 				w := x.get("/supabase/metrics")
-				if w.Code != 503 || strings.Contains(w.Body.String(), fakeKey) {
+				if w.Code == 200 && w.Body.Len() != 0 || strings.Contains(w.Body.String(), fakeKey) {
 					t.Fatal("unsafe negative response")
 				}
 			}
