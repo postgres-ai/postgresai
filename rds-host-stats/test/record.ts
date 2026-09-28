@@ -1,11 +1,13 @@
 // Re-records a fixture case against the real AWS APIs:
 //   bun test/record.ts test/fixtures/<case>
 // Reads <case>/calls.json, sends each call with the default credential chain,
-// and writes <case>/recorded.json. Endpoint addresses are redacted.
+// and writes <case>/recorded.json. Endpoint addresses, the account ID in ARNs,
+// VPC/subnet/security-group IDs and KMS key IDs are redacted (test/redact.ts).
 import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch'
 import { CloudWatchLogsClient, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs'
 import { GetResourceMetricsCommand, PIClient } from '@aws-sdk/client-pi'
 import { DescribeDBInstancesCommand, RDSClient } from '@aws-sdk/client-rds'
+import { redact } from './redact'
 
 const dir = process.argv[2]
 if (!dir) throw new Error('usage: bun test/record.ts <fixture dir>')
@@ -28,5 +30,4 @@ for (const call of calls) {
   const { $metadata, ...output } = await client.send(new (commands[call.command] as new (i: unknown) => unknown)(input))
   recorded.push({ ...call, output })
 }
-const json = JSON.stringify(recorded, null, 2).replace(/"Address": "[^"]+"/g, '"Address": "redacted"')
-await Bun.write(`${dir}/recorded.json`, json + '\n')
+await Bun.write(`${dir}/recorded.json`, redact(JSON.stringify(recorded, null, 2)) + '\n')

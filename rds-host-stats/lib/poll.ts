@@ -67,11 +67,21 @@ const osMetrics: [string, (m: OSMetric) => number][] = [
 ]
 const escapeLabel = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
 
+export class PollTimeout extends Error {
+  name = 'PollTimeout'
+}
+
+// text: the import body of the samples not yet written. errors: sources that
+// failed this poll (Performance Insights, Enhanced Monitoring); their samples
+// are retried on the next poll, the rest are kept. A malformed Enhanced
+// Monitoring event is reported once and never retried: it stays malformed.
+export type Poll = { text: string; errors: Error[] }
+
 // requestTimeout stops at the response headers; a stalled body would otherwise hang the loop.
-export async function pollOnce(clients: Clients, target: Target, now: Date, state: Map<string, number>): Promise<string> {
+export async function pollOnce(clients: Clients, target: Target, now: Date, state: Map<string, number>): Promise<Poll> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('poll timed out after 30 s')), 30_000)
+    timer = setTimeout(() => reject(new PollTimeout('poll timed out after 30 s')), 30_000)
   })
   try {
     return await Promise.race([poll(clients, target, now, state), deadline])
@@ -80,12 +90,24 @@ export async function pollOnce(clients: Clients, target: Target, now: Date, stat
   }
 }
 
-async function poll(clients: Clients, target: Target, now: Date, state: Map<string, number>): Promise<string> {
+const toError = (e: unknown) => (e instanceof Error ? e : new Error(String(e)))
+
+async function poll(clients: Clients, target: Target, now: Date, state: Map<string, number>): Promise<Poll> {
   const description: DescribeDBInstancesCommandOutput = await clients.rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: target.instanceId }))
   const db = description.DBInstances?.[0]
   if (!db) throw new Error('RDS instance not found')
   const aurora = db.Engine === 'aurora-postgresql'
-  const start = new Date(now.getTime() - 15 * 60_000)
+  // CloudWatch and PI buckets are queried over the 15 minutes up to the last
+  // minute boundary, so no bucket is cut by the wall clock. A bucket is written
+  // only once a further period has passed after it closed: a partial Average
+  // written early would be frozen by the per-timestamp dedupe, and the complete
+  // one dropped. CloudWatch stamps a bucket at its start, PI at its end, so the
+  // gate is 2 periods for CloudWatch and 1 for PI. The OS log window follows
+  // the clock; its events are samples.
+  const end = new Date(Math.floor(now.getTime() / 60_000) * 60_000)
+  const start = new Date(end.getTime() - 15 * 60_000)
+  const closed = (time: number, period: number) => time + 2 * period * 1000 <= end.getTime()
+  const closedPI = (time: number) => time + 60_000 <= end.getTime()
   const metrics = [...common, ...(aurora ? auroraMetrics : rdsMetrics)]
   const queries = (items: Metric[], dimension: string, value: string | undefined, period: number) => items.map(([Id, MetricName]) => ({
     Id, MetricStat: { Metric: { Namespace: 'AWS/RDS', MetricName, Dimensions: [{ Name: dimension, Value: value }] }, Period: period, Stat: 'Average' },
@@ -96,48 +118,88 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
     metrics.push(...volumeMetrics)
   }
   let text = ''
+  const errors: Error[] = []
   const labels = `{cluster="${escapeLabel(target.cluster)}",node_name="${escapeLabel(target.nodeName)}"}`
   for (const [key, time] of state) if (time < start.getTime() - 15 * 60_000) state.delete(key)
-  const emit = (name: string, value: number, time: number) => {
+  // Only finite numbers reach the import body: a value from a log event is
+  // untrusted text, and a string with a newline would add lines of its own.
+  const emit = (name: string, value: unknown, time: number) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(time)) return
     const key = `${name}${labels} ${time}`
     if (!state.has(key)) {
       text += `${name}${labels} ${value} ${time}\n`
       state.set(key, time)
     }
   }
-  const result: GetMetricDataCommandOutput = await clients.cloudwatch.send(new GetMetricDataCommand({ StartTime: start, EndTime: now, MetricDataQueries }))
+  const result: GetMetricDataCommandOutput = await clients.cloudwatch.send(new GetMetricDataCommand({ StartTime: start, EndTime: end, MetricDataQueries }))
   for (const [name, , scale = 1] of metrics) {
     const data = result.MetricDataResults?.find(r => r.Id === name)
+    const period = MetricDataQueries.find(q => q.Id === name)?.MetricStat.Period ?? 60
     const points = (data?.Timestamps ?? []).map((time, i) => ({ time: time.getTime(), value: data?.Values?.[i] }))
     for (const point of points.sort((a, b) => a.time - b.time)) {
-      if (typeof point.value === 'number') emit(name, point.value * scale, point.time)
+      if (typeof point.value === 'number' && closed(point.time, period)) emit(name, point.value * scale, point.time)
     }
   }
   if (db.PerformanceInsightsEnabled) {
-    const result: GetResourceMetricsCommandOutput = await clients.pi.send(new GetResourceMetricsCommand({
-      ServiceType: 'RDS', Identifier: db.DbiResourceId, StartTime: start, EndTime: now,
-      PeriodInSeconds: 60, MetricQueries: [{ Metric: 'db.load.avg' }],
-    }))
-    for (const metric of result.MetricList ?? []) {
-      for (const point of metric.DataPoints ?? []) {
-        if (typeof point.Value === 'number' && point.Timestamp) emit('host_db_load', point.Value, point.Timestamp.getTime())
+    try {
+      const result: GetResourceMetricsCommandOutput = await clients.pi.send(new GetResourceMetricsCommand({
+        ServiceType: 'RDS', Identifier: db.DbiResourceId, StartTime: start, EndTime: end,
+        PeriodInSeconds: 60, MetricQueries: [{ Metric: 'db.load.avg' }],
+      }))
+      // PI stamps a point at the end of its minute and rounds EndTime up, so a
+      // point after `end` covers a minute that is still open, and the point at
+      // `end` a minute that closed moments ago and may still be ingesting.
+      for (const metric of result.MetricList ?? []) {
+        for (const point of metric.DataPoints ?? []) {
+          if (point.Timestamp && closedPI(point.Timestamp.getTime())) emit('host_db_load', point.Value, point.Timestamp.getTime())
+        }
       }
+    } catch (error) {
+      errors.push(toError(error))
     }
   }
   if ((db.MonitoringInterval ?? 0) > 0) {
-    const result: GetLogEventsCommandOutput = await clients.logs.send(new GetLogEventsCommand({
-      logGroupName: 'RDSOSMetrics', logStreamName: db.DbiResourceId, startTime: start.getTime(), endTime: now.getTime(),
-    }))
-    const events: OSMetric[] = (result.events ?? []).map(event => JSON.parse(event.message!))
-    for (const [name, value] of osMetrics) {
-      for (const event of events) emit(name, value(event), new Date(event.timestamp).getTime())
-    }
-    for (const event of events) {
-      const processes = event.processList?.filter(p => p.id !== 0) ?? []
-      if (processes.length) emit('host_os_process_max_rss_bytes', Math.max(...processes.map(p => p.rss)) * 1024, new Date(event.timestamp).getTime())
+    try {
+      const result: GetLogEventsCommandOutput = await clients.logs.send(new GetLogEventsCommand({
+        logGroupName: 'RDSOSMetrics', logStreamName: db.DbiResourceId, startTime: now.getTime() - 15 * 60_000, endTime: now.getTime(),
+      }))
+      const events: OSMetric[] = []
+      for (const event of result.events ?? []) {
+        try {
+          const os = JSON.parse(event.message ?? '')
+          if (typeof os?.timestamp !== 'string' || !Number.isFinite(Date.parse(os.timestamp))) throw new Error('no timestamp')
+          events.push(os)
+        } catch (error) {
+          // The 15-minute log window returns the same event on every poll;
+          // report it once. Remembered in state like a written sample, so
+          // it is pruned with them and re-reported only if the write failed.
+          const key = `skipped ${event.timestamp} ${event.message}`
+          if (!state.has(key)) {
+            state.set(key, event.timestamp ?? now.getTime())
+            errors.push(new Error(`Enhanced Monitoring event at ${event.timestamp} skipped: ${toError(error).message}`))
+          }
+        }
+      }
+      const at = (os: OSMetric) => new Date(os.timestamp).getTime()
+      for (const [name, value] of osMetrics) {
+        for (const os of events) {
+          try {
+            emit(name, value(os), at(os))
+          } catch {
+            // a field missing from this event; the series stays empty for it
+          }
+        }
+      }
+      for (const os of events) {
+        // id 0 rows are the "OS processes" and "RDS processes" aggregates.
+        const rss = Array.isArray(os.processList) ? os.processList.filter(p => p && p.id !== 0 && typeof p.rss === 'number').map(p => p.rss) : []
+        if (rss.length) emit('host_os_process_max_rss_bytes', Math.max(...rss) * 1024, at(os))
+      }
+    } catch (error) {
+      errors.push(toError(error))
     }
   }
-  return text
+  return { text, errors }
 }
 
 export async function writeSamples(url: string, text: string, auth?: Auth): Promise<void> {
