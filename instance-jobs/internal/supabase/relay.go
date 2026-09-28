@@ -28,12 +28,10 @@ type Relay struct {
 	credential         *platform.SupabaseCredential
 	status             string
 	lastFetch, lastLog time.Time
-	instancesPath      string
-	target             string
 }
 
 func New(load func() (config.Config, error), logger *slog.Logger) *Relay {
-	return &Relay{load: load, logger: logger, now: time.Now, instancesPath: "/app/instances.yml", target: "instance-jobs:9188",
+	return &Relay{load: load, logger: logger, now: time.Now,
 		client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
@@ -43,7 +41,6 @@ func (r *Relay) Handler(enabled bool) http.Handler {
 	mux := http.NewServeMux()
 	if enabled {
 		mux.HandleFunc("GET /supabase/metrics", r.metrics)
-		mux.HandleFunc("GET /supabase/targets", r.targets)
 	}
 	return mux
 }
@@ -110,10 +107,6 @@ func (r *Relay) metrics(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		c := r.credential
-		if ref := req.URL.Query().Get("project_ref"); ref != "" && ref != c.ProjectRef {
-			http.Error(w, "project_mismatch", http.StatusServiceUnavailable)
-			return
-		}
 		upstream, err := http.NewRequestWithContext(req.Context(), http.MethodGet, c.MetricsURL, nil)
 		if err != nil {
 			http.Error(w, "upstream_error", http.StatusBadGateway)

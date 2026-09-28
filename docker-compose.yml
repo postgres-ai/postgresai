@@ -404,7 +404,6 @@ services:
       - no-new-privileges:true
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
-      - ./instances.yml:/app/instances.yml:ro
     environment:
       - PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}
       # Internal compose listener only; never publish this port.

@@ -68,13 +68,13 @@ scrape_configs:
     # of headroom, well clear of what the top-100 caps can produce.
     sample_limit: 5000
 
-  # Labels come from the same enabled instances.yml custom_tags as pgwatch.
+  # Each monitoring instance relays host metrics for one Supabase project.
   - job_name: 'supabase-host-metrics'
     scrape_interval: 60s
     scrape_timeout: 20s
     metrics_path: /supabase/metrics
-    http_sd_configs:
-      - url: http://instance-jobs:9188/supabase/targets
+    static_configs:
+      - targets: ['instance-jobs:9188']
     metric_relabel_configs:
       - source_labels: [__name__]
         regex: 'node_cpu_seconds_total|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*'

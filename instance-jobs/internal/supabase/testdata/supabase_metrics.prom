@@ -1,17 +1,49 @@
-# Schema-shaped, not recorded; https://github.com/supabase/supabase-grafana/blob/main/docs/metrics.md
-# TYPE node_cpu_seconds_total counter
-node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"} 120
-# TYPE node_memory_MemAvailable_bytes gauge
-node_memory_MemAvailable_bytes{supabase_project_ref="abcdefghijklmnopqrst",service_type="db"} 1073741824
-# TYPE node_filesystem_free_bytes gauge
-node_filesystem_free_bytes{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="/dev/vda",fstype="ext4",mountpoint="/"} 2147483648
-# TYPE node_disk_reads_completed_total counter
-node_disk_reads_completed_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="vda"} 100
-# TYPE node_disk_writes_completed_total counter
-node_disk_writes_completed_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="vda"} 200
-# TYPE node_network_receive_bytes_total counter
-node_network_receive_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="eth0"} 4096
-# TYPE node_network_transmit_bytes_total counter
-node_network_transmit_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",service_type="db",device="eth0"} 8192
+# HELP node_filesystem_avail_bytes Filesystem space available to non-root users in bytes.
+# TYPE node_filesystem_avail_bytes gauge
+node_filesystem_avail_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme0n1p2",device_error="",fstype="ext4",mountpoint="/"} 3.171229696e+09
+node_filesystem_avail_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme1n1",device_error="",fstype="ext4",mountpoint="/data"} 1.808470016e+09
+# HELP node_load1 1m load average.
 # TYPE node_load1 gauge
-node_load1{supabase_project_ref="abcdefghijklmnopqrst",service_type="db"} 0.25
+node_load1{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"} 0.05
+# HELP node_disk_writes_completed_total The total number of writes completed successfully.
+# TYPE node_disk_writes_completed_total counter
+node_disk_writes_completed_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"} 69326
+node_disk_writes_completed_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"} 1851
+# HELP node_network_transmit_bytes_total Network device statistic transmit_bytes.
+# TYPE node_network_transmit_bytes_total counter
+node_network_transmit_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"} 1.5017418e+07
+# HELP node_network_receive_bytes_total Network device statistic receive_bytes.
+# TYPE node_network_receive_bytes_total counter
+node_network_receive_bytes_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"} 7.2629422e+07
+# HELP node_memory_MemAvailable_bytes Memory information field MemAvailable_bytes.
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"} 2.0656128e+08
+# HELP node_disk_reads_completed_total The total number of reads completed successfully.
+# TYPE node_disk_reads_completed_total counter
+node_disk_reads_completed_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"} 342696
+node_disk_reads_completed_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"} 5407
+# HELP node_filesystem_size_bytes Filesystem size in bytes.
+# TYPE node_filesystem_size_bytes gauge
+node_filesystem_size_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme0n1p2",device_error="",fstype="ext4",mountpoint="/"} 1.0359754752e+10
+node_filesystem_size_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme1n1",device_error="",fstype="ext4",mountpoint="/data"} 2.077073408e+09
+# HELP node_memory_MemTotal_bytes Memory information field MemTotal_bytes.
+# TYPE node_memory_MemTotal_bytes gauge
+node_memory_MemTotal_bytes{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"} 4.26258432e+08
+# HELP node_cpu_seconds_total Seconds the CPUs spent in each mode.
+# TYPE node_cpu_seconds_total counter
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"} 6105.96
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="iowait"} 87.81
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="irq"} 0
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="nice"} 0.12
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="softirq"} 1.79
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="steal"} 0
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="system"} 35.55
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="user"} 71.82
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="idle"} 6115.54
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="iowait"} 80.46
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="irq"} 0
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="nice"} 0.18
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="softirq"} 1.81
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="steal"} 0
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="system"} 35.47
+node_cpu_seconds_total{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="user"} 69.12

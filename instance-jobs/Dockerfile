@@ -16,7 +16,8 @@ ARG VERSION
 WORKDIR /src
 COPY . /src
 
-# YAML decoding is used for the same instances.yml labels as pgwatch.
+# No third-party dependencies: `go mod download` would be a no-op and the build
+# never reaches the network.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \

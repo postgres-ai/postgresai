@@ -127,13 +127,17 @@ Enable the `instance-jobs` profile and set `PGAI_SUPABASE_HOST_METRICS=true` in
 (`PGAI_SUPABASE_METRICS_LISTEN`; pinned in compose, no published port). It fetches
 the Supabase key using the existing org token and instance id, at most once per
 five minutes, keeping it only in memory. No customer key entry is needed.
-`/supabase/targets` derives cluster/node labels from enabled direct or pooler
-URLs and `custom_tags` in `instances.yml`, omitting entries without both tags
-and deduplicating databases on a node. Scrapes verify the project ref. The
-scraper calls `/supabase/metrics` every 60 seconds (20-second timeout); 503 means
+Each monitoring instance serves exactly one Supabase project, selected by the
+platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
+(20-second timeout); 503 means
 `up=0`, independently of runner health. For `consent_needed`, open the Supabase
 page in the PostgresAI console and click **Allow host metrics**. Dashboard 01
-includes a collapsed **Host (Supabase)** row.
+includes a collapsed **Host (Supabase)** row, labeled by `supabase_project_ref`.
+
+The opt-in live test requires `SUPABASE_TEST_ACCESS_TOKEN` and
+`SUPABASE_TEST_PROJECT_REF`. From `instance-jobs`, run
+`go test -tags supabase_live ./internal/supabase -run TestSupabaseLive`.
+It fetches the project secret key only in memory.
 
 ## What this is not
 
