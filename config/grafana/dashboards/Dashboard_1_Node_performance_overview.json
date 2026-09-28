@@ -3647,6 +3647,7 @@
               },
               "editorMode": "code",
               "expr": "100 * (1 - avg by (supabase_project_ref) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} CPU busy",
               "range": true,
               "refId": "A"
@@ -3707,6 +3708,7 @@
               },
               "editorMode": "code",
               "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} Available",
               "range": true,
               "refId": "A"
@@ -3767,6 +3769,7 @@
               },
               "editorMode": "code",
               "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} {{mountpoint}} ({{device}})",
               "range": true,
               "refId": "A"
@@ -3827,6 +3830,7 @@
               },
               "editorMode": "code",
               "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} {{device}}",
               "range": true,
               "refId": "A"
@@ -3887,6 +3891,7 @@
               },
               "editorMode": "code",
               "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} {{device}} rx",
               "range": true,
               "refId": "A"
@@ -3898,6 +3903,7 @@
               },
               "editorMode": "code",
               "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
               "legendFormat": "{{supabase_project_ref}} {{device}} tx",
               "range": true,
               "refId": "B"
