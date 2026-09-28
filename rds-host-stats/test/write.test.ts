@@ -1,12 +1,13 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeSamples } from '../lib/poll'
+import { CloudWatchClient, ListMetricsCommand } from '@aws-sdk/client-cloudwatch'
+import { requestHandler, writeSamples } from '../lib/poll'
 
 const requests: { path: string; auth: string | null; body: string }[] = []
 let status = 204
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
-    if (new URL(req.url).pathname === '/stall/api/v1/import/prometheus') return new Promise<Response>(() => {})
+    if (new URL(req.url).pathname.startsWith('/stall')) return new Promise<Response>(() => {})
     requests.push({ path: new URL(req.url).pathname, auth: req.headers.get('authorization'), body: await req.text() })
     return new Response(null, { status })
   },
@@ -41,5 +42,17 @@ test('a rejected write throws without echoing credentials', async () => {
 
 test('a stalled VictoriaMetrics fails the write instead of hanging the poller', async () => {
   const error = await writeSamples(`${url}/stall`, 'host_x 1 1000\n').catch((e: Error) => e)
+  expect(error).toBeInstanceOf(Error)
+}, 15_000)
+
+test('a stalled AWS endpoint fails the call instead of hanging the poller', async () => {
+  const client = new CloudWatchClient({
+    region: 'us-east-1',
+    endpoint: `${url}/stall`,
+    credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+    requestHandler,
+    maxAttempts: 1,
+  })
+  const error = await client.send(new ListMetricsCommand({})).catch((e: Error) => e)
   expect(error).toBeInstanceOf(Error)
 }, 15_000)
