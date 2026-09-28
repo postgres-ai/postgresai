@@ -20,14 +20,15 @@ var metricsHost = regexp.MustCompile(`^[a-z]{20}\.supabase\.co$`)
 // Relay serializes scrapes and credential fetches to enforce a process-wide
 // cooldown, including concurrent requests and negative platform responses.
 type Relay struct {
-	mu                 sync.Mutex
-	load               func() (config.Config, error)
-	logger             *slog.Logger
-	client             *http.Client
-	now                func() time.Time
-	credential         *platform.SupabaseCredential
-	status             string
-	lastFetch, lastLog time.Time
+	mu                  sync.Mutex
+	load                func() (config.Config, error)
+	logger              *slog.Logger
+	client              *http.Client
+	now                 func() time.Time
+	credential          *platform.SupabaseCredential
+	credentialFetchedAt time.Time
+	status              string
+	lastFetch, lastLog  time.Time
 }
 
 func New(load func() (config.Config, error), logger *slog.Logger) *Relay {
@@ -55,6 +56,9 @@ func validCredential(c *platform.SupabaseCredential) bool {
 
 // fetch must be called with mu held. Even failed calls consume the cooldown.
 func (r *Relay) fetch(ctx context.Context) {
+	if r.credential != nil && r.now().Sub(r.credentialFetchedAt) >= time.Hour {
+		r.credential = nil
+	}
 	if r.credential != nil || (!r.lastFetch.IsZero() && r.now().Sub(r.lastFetch) < 5*time.Minute) {
 		return
 	}
@@ -76,6 +80,7 @@ func (r *Relay) fetch(ctx context.Context) {
 			return
 		}
 		r.credential = c
+		r.credentialFetchedAt = r.now()
 		r.status = "ok"
 	case "not_supabase", "consent_needed", "no_key", "upstream_error":
 		r.status = c.Status
@@ -127,7 +132,7 @@ func (r *Relay) metrics(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 		} else if resp.StatusCode == http.StatusOK {
-			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 			// On a mid-stream failure, abort the HTTP response so the scraper cannot
 			// accept a truncated exposition as a successful collection.
 			_, err = io.Copy(w, resp.Body)
