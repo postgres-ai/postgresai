@@ -256,6 +256,43 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     }
   }, { timeout: 60000 });
 
+  test("creation and reset honor the server SCRAM iteration count", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      // Older PostgreSQL versions have no configurable SCRAM iteration count.
+      const setting = await admin.query("select current_setting('scram_iterations', true) as iterations");
+      if (setting.rows[0].iterations === null) return;
+      // Set the default for the new connections opened by prepare-db.
+      await admin.query("alter database testdb set scram_iterations = 10000");
+      for (const reset of [false, true]) {
+        const password = reset ? "test-only-reset" : "test-only-create";
+        const result = runCliInit([
+          pg.adminUri, "--password", password, "--skip-optional-permissions",
+          ...(reset ? ["--reset-password"] : []),
+        ]);
+        expect(result.status).toBe(0);
+        const stored = await admin.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+        // Assert a boolean to avoid exposing the verifier in failure output.
+        expect(stored.rows[0].rolpassword.startsWith("SCRAM-SHA-256$10000:")).toBe(true);
+        const mon = new Client({
+          host: "127.0.0.1", port: pg.port, database: "testdb",
+          user: "postgres_ai_mon", password,
+        });
+        try {
+          await mon.connect();
+          expect((await mon.query("select current_user as u")).rows[0].u).toBe("postgres_ai_mon");
+        } finally {
+          await mon.end();
+        }
+      }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   test("requires explicit monitoring password in non-interactive mode", async () => {
     pg = await createTempPostgres();
 
