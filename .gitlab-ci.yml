@@ -410,6 +410,33 @@ cli:clickhouse-like:tests:
         - cli/**/*
         - .gitlab-ci.yml
 
+cli:clickhouse-scrape:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+    PGAI_TEST_VM_BIN: /tmp/vm/victoria-metrics-prod
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+    - mkdir -p /tmp/vm
+    - curl -fL https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.140.0/victoria-metrics-linux-amd64-v1.140.0.tar.gz -o /tmp/vm/vm.tar.gz
+    - tar -xzf /tmp/vm/vm.tar.gz -C /tmp/vm
+  script:
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-scrape.integration.test.ts
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/**/*
+        - config/prometheus/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - cli/**/*
+        - config/prometheus/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+
 telemetry:tests:
   stage: test
   image: oven/bun:1
