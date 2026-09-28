@@ -16,6 +16,7 @@ function runCli(args: string[]) {
 
 describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
   let prepared: ReturnType<typeof runCli>;
+  let preparedJson: ReturnType<typeof runCli>;
   let monUrl: string;
 
   beforeAll(async () => {
@@ -38,6 +39,7 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
     monUrl = url.toString();
     prepared = runCli(["prepare-db", adminUrl!, "--provider", "clickhouse", "--password", password]);
     expect(prepared.exitCode, prepared.stderr).toBe(0);
+    preparedJson = runCli(["prepare-db", adminUrl!, "--provider", "clickhouse", "--password", password, "--json"]);
   });
 
   afterAll(() => {
@@ -47,6 +49,13 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
 
   test("recognizes clickhouse without an unknown-provider warning", () => {
     expect(prepared.stderr).not.toContain('Unknown provider "clickhouse"');
+  });
+
+  test("keeps JSON stdout separate from the scope announcement", () => {
+    expect(preparedJson.exitCode, preparedJson.stderr).toBe(0);
+    expect(() => JSON.parse(preparedJson.stdout)).not.toThrow();
+    expect(preparedJson.stdout).not.toContain("-- scope:");
+    expect(preparedJson.stderr.split("\n")).toContain("-- scope: role postgres_ai_mon gets pg_monitor, pg_read_all_stats; this admin connection is used for this run only and is not stored");
   });
 
   test("announces the scope of the admin connection", () => {

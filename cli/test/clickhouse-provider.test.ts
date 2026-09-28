@@ -40,11 +40,7 @@ describe("ClickHouse provider", () => {
     ["not a connection string", null],
     ["postgres://[malformed", null],
   ] as const)("detects provider for %j", (connectionString, expected) => {
-    const detectProvider = (init as typeof init & {
-      detectProvider?: (connectionString: string) => "clickhouse" | null;
-    }).detectProvider;
-    expect(detectProvider).toBeFunction();
-    expect(detectProvider?.(connectionString)).toBe(expected);
+    expect(init.detectProvider(connectionString)).toBe(expected);
   });
 
   test("uses the self-managed superuser plan", async () => {
