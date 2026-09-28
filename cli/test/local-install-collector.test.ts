@@ -15,6 +15,6 @@ test.each(["postgres", "postgresql"])("local-install shared target builder prese
     `${scheme}://monitor:password@test.pg.clickhouse.cloud:5432/postgres?sslmode=require`,
   );
   expect(probeConfig).toEqual(instances.buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
-  expect(probeConfig.enableChannelBinding).toBe(true);
+  expect(probeConfig).toMatchObject({ enableChannelBinding: true });
   expect(probeConfig.ssl).toEqual({ rejectUnauthorized: false });
 });

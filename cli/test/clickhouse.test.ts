@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { findService, renderScrapeConfig, serviceStateProblem } from "../lib/clickhouse";
+import { findService, renderScrapeConfig } from "../lib/clickhouse";
 
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
@@ -55,14 +55,6 @@ describe("ClickHouse service discovery", () => {
   test("empty list has the exact no-match error", async () => {
     await expect(findService(api(() => Response.json({ result: [] })))).rejects.toEqual(
       new Error(`No ClickHouse Managed Postgres service in organization ${orgId} has hostname ${hostname}.`));
-  });
-});
-
-describe("ClickHouse service state", () => {
-  test("running is ready", () => expect(serviceStateProblem("running")).toBeNull());
-  test("unknown is not ready", () => {
-    const state = "unknown";
-    expect(serviceStateProblem(state)).toBe(`ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`);
   });
 });
 

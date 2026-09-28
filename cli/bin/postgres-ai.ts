@@ -69,6 +69,8 @@ import {
   InstancesParseError,
   loadInstances,
   buildInstance,
+  collectorConnStr,
+  buildLocalInstallTarget,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -4308,7 +4310,8 @@ mon
         const db = m[5];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
+        const { instance, probeConfig } = buildLocalInstallTarget(instanceName, connStr);
+        addInstanceToFile(instancesPath, instance);
         console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
         // Test connection
@@ -4318,7 +4321,7 @@ mon
           try {
             warnIfLaxSslmode(connStr);
             warnIfTransactionPoolerPort(connStr);
-            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+            testClient = new Client(probeConfig);
             await testClient.connect();
             const result = await testClient.query("select version();");
             console.log("✓ Connection successful");
@@ -4357,7 +4360,8 @@ mon
               const db = m[5];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
+              const { instance, probeConfig } = buildLocalInstallTarget(instanceName, connStr);
+              addInstanceToFile(instancesPath, instance);
               console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
               // Test connection
@@ -4367,7 +4371,7 @@ mon
                 try {
                   warnIfLaxSslmode(connStr);
                   warnIfTransactionPoolerPort(connStr);
-            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                  testClient = new Client(probeConfig);
                   await testClient.connect();
                   const result = await testClient.query("select version();");
                   console.log("✓ Connection successful");
@@ -5281,17 +5285,20 @@ export async function addTarget(
     process.exitCode = 1;
     return;
   }
-  if (/[?&]channel_binding=/.test(connStr)) {
-    const url = new URL(connStr);
-    url.searchParams.delete("channel_binding");
-    connStr = url.toString();
-    console.log("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
-  }
-  const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+  const collector = collectorConnStr(connStr);
+  connStr = collector.connStr;
+  let m: RegExpMatchArray | null = null;
+  try {
+    new URL(connStr);
+    m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+  } catch {}
   if (!m) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
     return;
+  }
+  if (collector.droppedChannelBinding) {
+    console.log("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
   const host = m[3];
   const db = m[5];

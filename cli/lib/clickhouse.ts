@@ -37,10 +37,6 @@ export async function findService({ apiUrl, orgId, keyId, keySecret, hostname }:
   throw new Error(`No ClickHouse Managed Postgres service in organization ${orgId} has hostname ${hostname}.`);
 }
 
-export function serviceStateProblem(state: string): string | null {
-  return state === "running" ? null : `ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`;
-}
-
 export function renderScrapeConfig({ name, cluster, orgId, serviceId, keyId, passwordFile, apiUrl }: {
   name: string; cluster: string; orgId: string; serviceId: string; keyId: string; passwordFile: string; apiUrl: string;
 }): string {
@@ -68,8 +64,9 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
   if (!orgId || !keyId || !keySecret) return "Host metrics: set CLICKHOUSE_ORG_ID, CLICKHOUSE_KEY_ID and CLICKHOUSE_KEY_SECRET and re-run to collect CPU, memory, disk and I/O from ClickHouse Cloud";
   const apiUrl = env.CLICKHOUSE_API_URL || "https://api.clickhouse.cloud";
   const service = await findService({ apiUrl, orgId, keyId, keySecret, hostname: new URL(conn).hostname });
-  const problem = serviceStateProblem(service.state);
-  if (problem) throw new Error(problem);
+  if (service.state !== "running") {
+    throw new Error(`ClickHouse Managed Postgres service is ${service.state}, not running. Start it in the ClickHouse Cloud console, then retry.`);
+  }
   const prefix = `clickhouse-${name}`;
   const text = renderScrapeConfig({ name, cluster, orgId, serviceId: service.id, keyId, passwordFile: `/etc/pgai/host-metrics/${prefix}.secret`, apiUrl });
   const dir = join(projectDir, "host-metrics");

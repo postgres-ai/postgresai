@@ -71,7 +71,7 @@ test("add without a matching hostname throws and writes nothing", async () => {
   await expect(add()).rejects.toEqual(new Error(`No ClickHouse Managed Postgres service in organization ${orgId} has hostname ${hostname}.`));
   expectNothingWritten();
 });
-test.each(["creating", "stopped"])("add with service %s throws and writes nothing", async (value) => {
+test.each(["creating", "stopped", "unknown"])("add with service %s throws and writes nothing", async (value) => {
   state = value;
   await expect(add()).rejects.toEqual(new Error(`ClickHouse Managed Postgres service is ${state}, not running. Start it in the ClickHouse Cloud console, then retry.`));
   expectNothingWritten();
