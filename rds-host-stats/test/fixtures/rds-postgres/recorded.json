@@ -1,0 +1,982 @@
+[
+  {
+    "client": "rds",
+    "command": "DescribeDBInstancesCommand",
+    "input": {
+      "DBInstanceIdentifier": "pgai-test-hoststats-b9e0be1f"
+    },
+    "output": {
+      "DBInstances": [
+        {
+          "DBInstanceIdentifier": "pgai-test-hoststats-b9e0be1f",
+          "DBInstanceClass": "db.t4g.micro",
+          "Engine": "postgres",
+          "DBInstanceStatus": "available",
+          "MasterUsername": "pgai",
+          "DBName": "postgres",
+          "Endpoint": {
+            "Address": "redacted",
+            "Port": 5432,
+            "HostedZoneId": "Z2R2ITUGPM61AM"
+          },
+          "AllocatedStorage": 20,
+          "InstanceCreateTime": "2026-09-28T05:43:18.375Z",
+          "PreferredBackupWindow": "09:37-10:07",
+          "BackupRetentionPeriod": 0,
+          "DBSecurityGroups": [],
+          "VpcSecurityGroups": [
+            {
+              "VpcSecurityGroupId": "sg-0546b2723c6f6e7ac",
+              "Status": "active"
+            }
+          ],
+          "DBParameterGroups": [
+            {
+              "DBParameterGroupName": "default.postgres18",
+              "ParameterApplyStatus": "in-sync"
+            }
+          ],
+          "AvailabilityZone": "us-east-1d",
+          "DBSubnetGroup": {
+            "DBSubnetGroupName": "default",
+            "DBSubnetGroupDescription": "default",
+            "VpcId": "vpc-0b773efac82251644",
+            "SubnetGroupStatus": "Complete",
+            "Subnets": [
+              {
+                "SubnetIdentifier": "subnet-064ba7aabf2563f17",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1d"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-0cada953dd29793f2",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1c"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-0c8bf9181ddb8e987",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1a"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-0dc62a83a3da0ab2f",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1b"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-0fcf6f0b00a5ed2a7",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1e"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-05e66965b803098f6",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1f"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              }
+            ]
+          },
+          "PreferredMaintenanceWindow": "fri:08:15-fri:08:45",
+          "UpgradeRolloutOrder": "second",
+          "PendingModifiedValues": {},
+          "MultiAZ": false,
+          "EngineVersion": "18.6",
+          "AutoMinorVersionUpgrade": true,
+          "ReadReplicaDBInstanceIdentifiers": [],
+          "LicenseModel": "postgresql-license",
+          "Iops": 3000,
+          "StorageThroughput": 125,
+          "OptionGroupMemberships": [
+            {
+              "OptionGroupName": "default:postgres-18",
+              "Status": "in-sync"
+            }
+          ],
+          "PubliclyAccessible": false,
+          "StorageType": "gp3",
+          "DbInstancePort": 0,
+          "StorageEncrypted": true,
+          "KmsKeyId": "arn:aws:kms:us-east-1:783495713736:key/24b1e6d4-c63e-4dad-bdc3-002c124bf30b",
+          "DbiResourceId": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+          "CACertificateIdentifier": "rds-ca-rsa2048-g1",
+          "DomainMemberships": [],
+          "CopyTagsToSnapshot": false,
+          "MonitoringInterval": 15,
+          "EnhancedMonitoringResourceArn": "arn:aws:logs:us-east-1:783495713736:log-group:RDSOSMetrics:log-stream:db-VPCWK4FHJJIK26W66NYKPKIK4U",
+          "MonitoringRoleArn": "arn:aws:iam::783495713736:role/rds-monitoring-role",
+          "DBInstanceArn": "arn:aws:rds:us-east-1:783495713736:db:pgai-test-hoststats-b9e0be1f",
+          "IAMDatabaseAuthenticationEnabled": false,
+          "DatabaseInsightsMode": "standard",
+          "PerformanceInsightsEnabled": true,
+          "PerformanceInsightsKMSKeyId": "arn:aws:kms:us-east-1:783495713736:key/24b1e6d4-c63e-4dad-bdc3-002c124bf30b",
+          "PerformanceInsightsRetentionPeriod": 7,
+          "DeletionProtection": false,
+          "AssociatedRoles": [],
+          "TagList": [
+            {
+              "Key": "expires-at",
+              "Value": "2026-09-28T07:39:08Z"
+            },
+            {
+              "Key": "owner",
+              "Value": "rds-hoststats"
+            },
+            {
+              "Key": "pgai-test",
+              "Value": "true"
+            }
+          ],
+          "CustomerOwnedIpEnabled": false,
+          "NetworkType": "IPV4",
+          "ActivityStreamStatus": "stopped",
+          "BackupTarget": "region",
+          "CertificateDetails": {
+            "CAIdentifier": "rds-ca-rsa2048-g1",
+            "ValidTill": "2027-09-28T05:41:51.000Z"
+          },
+          "DedicatedLogVolume": false,
+          "IsStorageConfigUpgradeAvailable": false,
+          "EngineLifecycleSupport": "open-source-rds-extended-support"
+        }
+      ]
+    }
+  },
+  {
+    "client": "cloudwatch",
+    "command": "GetMetricDataCommand",
+    "input": {
+      "StartTime": "2026-09-28T05:39:00.000Z",
+      "EndTime": "2026-09-28T05:54:00.000Z",
+      "MetricDataQueries": [
+        {
+          "Id": "host_cpu_utilization_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "CPUUtilization",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_memory_available_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeableMemory",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_queue_depth",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "DiskQueueDepth",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_receive_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkReceiveThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_transmit_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkTransmitThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_free_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeStorageSpace",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_burst_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "BurstBalance",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "EBSIOBalance%",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_replica_lag_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReplicaLag",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        }
+      ]
+    },
+    "output": {
+      "MetricDataResults": [
+        {
+          "Id": "host_cpu_utilization_percent",
+          "Label": "CPUUtilization",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z",
+            "2026-09-28T05:41:00.000Z"
+          ],
+          "Values": [
+            4.231288210698162,
+            5.702851425712856,
+            5.563884724304514,
+            5.058333333333334,
+            4.416666666666666,
+            4.983333333333333,
+            6.083333333333333,
+            6.066666666666666,
+            6.816666666666666,
+            5.7,
+            8.1,
+            30.474999999999998,
+            39.22729319170933
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_memory_available_bytes",
+          "Label": "FreeableMemory",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z"
+          ],
+          "Values": [
+            165081088,
+            167460864,
+            181559296,
+            171474944,
+            185606144,
+            170737664,
+            176771072,
+            171732992,
+            185978880,
+            177762304,
+            194080768,
+            240934912
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_read_iops",
+          "Label": "ReadIOPS",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.08339588024351598,
+            0.033332222259258026,
+            0.19995334421968208,
+            0,
+            1.08253947105456,
+            0.23339168125364673,
+            0.06666777779629661,
+            0.2667733760170735,
+            1.2664344870107147,
+            0.5833236112731455,
+            9.870779491454773
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_write_iops",
+          "Label": "WriteIOPS",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            20.181803018930864,
+            0.2666577780740642,
+            0.38324390975439065,
+            0.48367190366589946,
+            1.3656651788688294,
+            18.487955322163874,
+            0.40000666677777963,
+            0.41683340002667735,
+            0.36659945676625955,
+            0.7833202779953667,
+            48.40350145894123
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_read_latency_seconds",
+          "Label": "ReadLatency",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0,
+            0,
+            0,
+            0,
+            0.0002380952380952381,
+            0.0007142857142857143,
+            0,
+            0.0016666666666666668,
+            0.0004123711340206186,
+            0,
+            0.00042124542124542125
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_write_latency_seconds",
+          "Label": "WriteLatency",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.003543307086614173,
+            0.0004,
+            0,
+            0,
+            0.000149812734082397,
+            0.00220452640402347,
+            0,
+            0,
+            0,
+            0,
+            0.001414695945945946
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_queue_depth",
+          "Label": "DiskQueueDepth",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.07383814971068385,
+            0.00015002750504259114,
+            0.00041656252603515786,
+            0.00025018346787644273,
+            0.001515555259476384,
+            0.03787550428433301,
+            0.0004333477782592753,
+            0.0006335762042116145,
+            0.0012331072636683274,
+            0.00115,
+            0.06386170797979629
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_network_receive_bytes_per_second",
+          "Label": "NetworkReceiveThroughput",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            1134.26412450583,
+            1302.3496083986001,
+            1280.4552878045529,
+            1640.9439626417611,
+            1277.2522897585345,
+            1252.06721792478,
+            2113.2018866981116,
+            1144.5911698012537,
+            1436.1033810468082,
+            7005.317021134742,
+            120272.44685285536
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_network_transmit_bytes_per_second",
+          "Label": "NetworkTransmitThroughput",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            12133.830422525814,
+            13569.688385269123,
+            12409.325734093258,
+            11940.060040026685,
+            12084.063280599501,
+            12036.343024806614,
+            15720.945349089152,
+            11870.414832599707,
+            11948.126176867574,
+            29264.38429228615,
+            27366.402667778242
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_free_bytes",
+          "Label": "FreeStorageSpace",
+          "Timestamps": [
+            "2026-09-28T05:53:00.000Z",
+            "2026-09-28T05:52:00.000Z",
+            "2026-09-28T05:51:00.000Z",
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:49:00.000Z",
+            "2026-09-28T05:48:00.000Z",
+            "2026-09-28T05:47:00.000Z",
+            "2026-09-28T05:46:00.000Z",
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z"
+          ],
+          "Values": [
+            20474888192,
+            20541997056,
+            20541997056,
+            20541997056,
+            20541997056,
+            20542115840,
+            20609228800,
+            20609228800,
+            20609228800,
+            20609236992,
+            20609404928,
+            20710682624
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_burst_balance_percent",
+          "Label": "BurstBalance",
+          "Timestamps": [],
+          "Values": [],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "Label": "EBSIOBalance%",
+          "Timestamps": [
+            "2026-09-28T05:50:00.000Z",
+            "2026-09-28T05:45:00.000Z"
+          ],
+          "Values": [
+            99,
+            99
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_replica_lag_seconds",
+          "Label": "ReplicaLag",
+          "Timestamps": [],
+          "Values": [],
+          "StatusCode": "Complete"
+        }
+      ],
+      "Messages": []
+    }
+  },
+  {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "StartTime": "2026-09-28T05:39:00.000Z",
+      "EndTime": "2026-09-28T05:54:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    },
+    "output": {
+      "AlignedStartTime": "2026-09-28T05:43:00.000Z",
+      "AlignedEndTime": "2026-09-28T05:54:00.000Z",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "MetricList": [
+        {
+          "Key": {
+            "Metric": "db.load.avg"
+          },
+          "DataPoints": [
+            {
+              "Timestamp": "2026-09-28T05:44:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:45:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:46:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:47:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:48:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:49:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:50:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:51:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:52:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:53:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:54:00.000Z",
+              "Value": 0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "client": "logs",
+    "command": "GetLogEventsCommand",
+    "input": {
+      "logGroupName": "RDSOSMetrics",
+      "logStreamName": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "startTime": 1790573940000,
+      "endTime": 1790574840000
+    },
+    "output": {
+      "events": [
+        {
+          "timestamp": 1790574398000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:46:38Z\",\"version\":1,\"uptime\":\"00:07:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":4.3,\"wait\":6.5,\"idle\":74.2,\"user\":13.9,\"total\":25.8,\"steal\":0.7,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.22,\"five\":0.4,\"fifteen\":0.25},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":198364,\"hugePagesSize\":2048,\"free\":149024,\"hugePagesTotal\":0,\"inactive\":477108,\"pageTables\":4624,\"dirty\":856,\"mapped\":105272,\"active\":119548,\"total\":938796,\"slab\":82272,\"buffers\":12208},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":1,\"stopped\":0,\"total\":144,\"blocked\":0},\"swap\":{\"cached\":44,\"total\":4193276,\"free\":4191740},\"network\":[{\"interface\":\"eth0\",\"rx\":20507.19,\"tx\":16007.53}],\"diskIO\":[{\"writeKbPS\":1344.25,\"readIOsPS\":1.81,\"await\":1.4,\"readKbPS\":29.64,\"rrqmPS\":0.0,\"util\":2.68,\"avgQueueLen\":0.03,\"tps\":24.69,\"readKb\":12557,\"device\":\"rdsdev\",\"writeKb\":569424,\"avgReqSz\":111.29,\"wrqmPS\":0.0,\"writeIOsPS\":22.88},{\"writeKbPS\":917.23,\"readIOsPS\":46.59,\"await\":4.2,\"readKbPS\":1953.67,\"rrqmPS\":8.9,\"util\":13.85,\"avgQueueLen\":0.28,\"tps\":65.53,\"readKb\":827574,\"device\":\"filesystem\",\"writeKb\":388537,\"avgReqSz\":87.63,\"wrqmPS\":13.39,\"writeIOsPS\":18.94}],\"physicalDeviceIO\":[{\"writeKbPS\":1355.38,\"readIOsPS\":4.12,\"await\":1.56,\"readKbPS\":115.66,\"rrqmPS\":0.06,\"util\":2.84,\"avgQueueLen\":0.03,\"tps\":21.08,\"readKb\":48993,\"device\":\"nvme2n1\",\"writeKb\":574137,\"avgReqSz\":139.59,\"wrqmPS\":7.13,\"writeIOsPS\":16.95}],\"fileSys\":[{\"used\":99136,\"name\":\"rdsfilesys\",\"usedFiles\":1360,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.48},{\"used\":2901852,\"name\":\"rootfilesys\",\"usedFiles\":44773,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.39}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.85,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":83100,\"vmlimit\":0},{\"vss\":5899976,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.14,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":423768,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.52,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":33092,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":5200,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":0.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":6556,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.71,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":6688,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.3,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":12184,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.98,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":9204,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.77,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":7260,\"vmlimit\":\"unlimited\"},{\"vss\":392136,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.28,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":21400,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574398847
+        },
+        {
+          "timestamp": 1790574413000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:46:53Z\",\"version\":1,\"uptime\":\"00:07:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":5.1,\"wait\":0.9,\"idle\":88.2,\"user\":4.4,\"total\":11.8,\"steal\":0.8,\"nice\":0.5},\"loadAverageMinute\":{\"one\":0.17,\"five\":0.38,\"fifteen\":0.24},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":198096,\"hugePagesSize\":2048,\"free\":163832,\"hugePagesTotal\":0,\"inactive\":486488,\"pageTables\":5024,\"dirty\":340,\"mapped\":101920,\"active\":112304,\"total\":938796,\"slab\":82420,\"buffers\":5536},\"tasks\":{\"sleeping\":147,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":147,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":6.4},\"network\":[{\"interface\":\"eth0\",\"rx\":2300.13,\"tx\":24935.58}],\"diskIO\":[{\"writeKbPS\":4.26,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":64,\"avgReqSz\":8.53,\"wrqmPS\":0.0,\"writeIOsPS\":1.0},{\"writeKbPS\":123.12,\"readIOsPS\":65.56,\"await\":0.68,\"readKbPS\":2121.79,\"rrqmPS\":4.73,\"util\":1.67,\"avgQueueLen\":0.06,\"tps\":85.14,\"readKb\":31848,\"device\":\"filesystem\",\"writeKb\":1848,\"avgReqSz\":52.73,\"wrqmPS\":3.73,\"writeIOsPS\":19.59}],\"physicalDeviceIO\":[{\"writeKbPS\":4.26,\"readIOsPS\":0.0,\"await\":0.91,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.73,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":64,\"avgReqSz\":11.64,\"wrqmPS\":0.27,\"writeIOsPS\":0.73}],\"fileSys\":[{\"used\":99136,\"name\":\"rdsfilesys\",\"usedFiles\":1360,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.48},{\"used\":2901996,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.39}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.6,\"cpuUsedPc\":0.2,\"id\":0,\"rss\":80716,\"vmlimit\":0},{\"vss\":6752588,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.28,\"cpuUsedPc\":3.53,\"id\":0,\"rss\":425064,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.42,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":32108,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.5,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":4716,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":0.65,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":6124,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.67,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":6256,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.25,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":11752,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.93,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":8720,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.72,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":6780,\"vmlimit\":\"unlimited\"},{\"vss\":392136,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.21,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":20732,\"vmlimit\":\"unlimited\"},{\"vss\":392368,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.22,\"cpuUsedPc\":0.0,\"id\":1654,\"rss\":20876,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.67,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":15704,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574413832
+        },
+        {
+          "timestamp": 1790574428000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:47:08Z\",\"version\":1,\"uptime\":\"00:07:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":1.5,\"wait\":0.0,\"idle\":94.0,\"user\":2.4,\"total\":5.8,\"steal\":1.4,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.21,\"five\":0.38,\"fifteen\":0.24},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":198704,\"hugePagesSize\":2048,\"free\":154400,\"hugePagesTotal\":0,\"inactive\":486056,\"pageTables\":5032,\"dirty\":860,\"mapped\":102164,\"active\":113560,\"total\":938796,\"slab\":82492,\"buffers\":5676},\"tasks\":{\"sleeping\":147,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":147,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1319.8,\"tx\":9760.53}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.07,\"await\":10.0,\"readKbPS\":0.27,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":0.07,\"readKb\":4,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":14.93,\"readIOsPS\":3.4,\"await\":0.54,\"readKbPS\":28.27,\"rrqmPS\":1.13,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":4.8,\"readKb\":424,\"device\":\"filesystem\",\"writeKb\":224,\"avgReqSz\":18.0,\"wrqmPS\":2.33,\"writeIOsPS\":1.4}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.07,\"await\":1.0,\"readKbPS\":0.27,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":0.07,\"readKb\":4,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":99136,\"name\":\"rdsfilesys\",\"usedFiles\":1360,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.48},{\"used\":2902260,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.39}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.6,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":80772,\"vmlimit\":0},{\"vss\":6769100,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.37,\"cpuUsedPc\":2.77,\"id\":0,\"rss\":425972,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.42,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":32108,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.5,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":4716,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":0.65,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":6124,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.67,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":6256,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.25,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":11752,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.93,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":8720,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.72,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":6780,\"vmlimit\":\"unlimited\"},{\"vss\":391088,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.21,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":20712,\"vmlimit\":\"unlimited\"},{\"vss\":392368,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.22,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":20876,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.67,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":15704,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574428820
+        },
+        {
+          "timestamp": 1790574443000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:47:23Z\",\"version\":1,\"uptime\":\"00:07:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.3,\"wait\":0.0,\"idle\":95.9,\"user\":2.3,\"total\":4.1,\"steal\":0.2,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.16,\"five\":0.36,\"fifteen\":0.24},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":199016,\"hugePagesSize\":2048,\"free\":147884,\"hugePagesTotal\":0,\"inactive\":486656,\"pageTables\":5040,\"dirty\":352,\"mapped\":102256,\"active\":113684,\"total\":938796,\"slab\":82400,\"buffers\":5716},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1292.8,\"tx\":15499.0}],\"diskIO\":[{\"writeKbPS\":1.33,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.33,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":20,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.33},{\"writeKbPS\":78.67,\"readIOsPS\":0.53,\"await\":0.73,\"readKbPS\":3.73,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.01,\"tps\":9.87,\"readKb\":56,\"device\":\"filesystem\",\"writeKb\":1180,\"avgReqSz\":16.7,\"wrqmPS\":2.8,\"writeIOsPS\":9.33}],\"physicalDeviceIO\":[{\"writeKbPS\":1.33,\"readIOsPS\":0.0,\"await\":0.75,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.27,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":20,\"avgReqSz\":10.0,\"wrqmPS\":0.07,\"writeIOsPS\":0.27}],\"fileSys\":[{\"used\":99136,\"name\":\"rdsfilesys\",\"usedFiles\":1360,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.48},{\"used\":2902388,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.61,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":80832,\"vmlimit\":0},{\"vss\":6785612,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.38,\"cpuUsedPc\":2.43,\"id\":0,\"rss\":426060,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.42,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":32108,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.5,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":4716,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":0.65,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":6124,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.67,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":6256,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.25,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":11752,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.93,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":8720,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.72,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":6780,\"vmlimit\":\"unlimited\"},{\"vss\":391088,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.21,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":20712,\"vmlimit\":\"unlimited\"},{\"vss\":392368,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.22,\"cpuUsedPc\":0.03,\"id\":1654,\"rss\":20876,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.67,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":15704,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574443831
+        },
+        {
+          "timestamp": 1790574458000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:47:38Z\",\"version\":1,\"uptime\":\"00:08:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.0,\"wait\":0.3,\"idle\":95.5,\"user\":1.5,\"total\":4.5,\"steal\":0.2,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.13,\"five\":0.34,\"fifteen\":0.23},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":209932,\"hugePagesSize\":2048,\"free\":158080,\"hugePagesTotal\":0,\"inactive\":523816,\"pageTables\":5080,\"dirty\":332,\"mapped\":94320,\"active\":86152,\"total\":938796,\"slab\":81252,\"buffers\":4336},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":44,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":3.2},\"network\":[{\"interface\":\"eth0\",\"rx\":830.87,\"tx\":6642.6}],\"diskIO\":[{\"writeKbPS\":7983.2,\"readIOsPS\":0.73,\"await\":2.26,\"readKbPS\":2.93,\"rrqmPS\":0.0,\"util\":0.8,\"avgQueueLen\":0.18,\"tps\":77.53,\"readKb\":44,\"device\":\"rdsdev\",\"writeKb\":119748,\"avgReqSz\":206.01,\"wrqmPS\":0.0,\"writeIOsPS\":76.8},{\"writeKbPS\":38.93,\"readIOsPS\":6.13,\"await\":0.68,\"readKbPS\":154.67,\"rrqmPS\":0.0,\"util\":0.27,\"avgQueueLen\":0.01,\"tps\":12.47,\"readKb\":2320,\"device\":\"filesystem\",\"writeKb\":584,\"avgReqSz\":31.06,\"wrqmPS\":1.6,\"writeIOsPS\":6.33}],\"physicalDeviceIO\":[{\"writeKbPS\":7983.2,\"readIOsPS\":0.73,\"await\":2.05,\"readKbPS\":2.93,\"rrqmPS\":0.0,\"util\":0.8,\"avgQueueLen\":0.15,\"tps\":73.47,\"readKb\":44,\"device\":\"nvme2n1\",\"writeKb\":119748,\"avgReqSz\":217.41,\"wrqmPS\":4.07,\"writeIOsPS\":72.73}],\"fileSys\":[{\"used\":164676,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2902472,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.09,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":75952,\"vmlimit\":0},{\"vss\":6785612,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.09,\"cpuUsedPc\":1.5,\"id\":0,\"rss\":423336,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.47,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391088,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":19520,\"vmlimit\":\"unlimited\"},{\"vss\":392368,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19668,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.55,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":14556,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574458829
+        },
+        {
+          "timestamp": 1790574473000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:47:53Z\",\"version\":1,\"uptime\":\"00:08:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":2.8,\"wait\":0.2,\"idle\":92.7,\"user\":2.7,\"total\":7.3,\"steal\":0.8,\"nice\":0.6},\"loadAverageMinute\":{\"one\":0.1,\"five\":0.32,\"fifteen\":0.23},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":213320,\"hugePagesSize\":2048,\"free\":144060,\"hugePagesTotal\":0,\"inactive\":521008,\"pageTables\":5080,\"dirty\":236,\"mapped\":96036,\"active\":93092,\"total\":938796,\"slab\":81172,\"buffers\":4616},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":44,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1559.87,\"tx\":16209.6}],\"diskIO\":[{\"writeKbPS\":10.4,\"readIOsPS\":0.13,\"await\":0.0,\"readKbPS\":0.53,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":2.53,\"readKb\":8,\"device\":\"rdsdev\",\"writeKb\":156,\"avgReqSz\":8.63,\"wrqmPS\":0.0,\"writeIOsPS\":2.4},{\"writeKbPS\":82.13,\"readIOsPS\":14.0,\"await\":0.7,\"readKbPS\":186.67,\"rrqmPS\":1.4,\"util\":0.13,\"avgQueueLen\":0.02,\"tps\":27.73,\"readKb\":2800,\"device\":\"filesystem\",\"writeKb\":1232,\"avgReqSz\":19.38,\"wrqmPS\":3.07,\"writeIOsPS\":13.73}],\"physicalDeviceIO\":[{\"writeKbPS\":10.4,\"readIOsPS\":0.13,\"await\":0.56,\"readKbPS\":0.53,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.07,\"readKb\":8,\"device\":\"nvme2n1\",\"writeKb\":156,\"avgReqSz\":20.5,\"wrqmPS\":1.47,\"writeIOsPS\":0.93}],\"fileSys\":[{\"used\":164676,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2902604,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.13,\"cpuUsedPc\":0.23,\"id\":0,\"rss\":76328,\"vmlimit\":0},{\"vss\":6785612,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.19,\"cpuUsedPc\":2.83,\"id\":0,\"rss\":424288,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391088,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.03,\"id\":1482,\"rss\":19520,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.55,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":14556,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574473828
+        },
+        {
+          "timestamp": 1790574488000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:48:08Z\",\"version\":1,\"uptime\":\"00:08:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.0,\"system\":2.1,\"wait\":0.2,\"idle\":92.4,\"user\":3.1,\"total\":7.6,\"steal\":1.8,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.08,\"five\":0.31,\"fifteen\":0.22},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":216052,\"hugePagesSize\":2048,\"free\":140560,\"hugePagesTotal\":0,\"inactive\":522928,\"pageTables\":5032,\"dirty\":368,\"mapped\":98004,\"active\":94728,\"total\":938796,\"slab\":81192,\"buffers\":4904},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":44,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1373.53,\"tx\":9979.4}],\"diskIO\":[{\"writeKbPS\":33.87,\"readIOsPS\":4.53,\"await\":0.07,\"readKbPS\":34.13,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":9.67,\"readKb\":512,\"device\":\"rdsdev\",\"writeKb\":508,\"avgReqSz\":14.07,\"wrqmPS\":0.0,\"writeIOsPS\":5.13},{\"writeKbPS\":52.0,\"readIOsPS\":2.87,\"await\":0.7,\"readKbPS\":52.27,\"rrqmPS\":0.0,\"util\":0.2,\"avgQueueLen\":0.01,\"tps\":12.33,\"readKb\":784,\"device\":\"filesystem\",\"writeKb\":780,\"avgReqSz\":16.91,\"wrqmPS\":2.27,\"writeIOsPS\":9.47}],\"physicalDeviceIO\":[{\"writeKbPS\":33.87,\"readIOsPS\":3.27,\"await\":0.65,\"readKbPS\":34.13,\"rrqmPS\":1.27,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":5.53,\"readKb\":512,\"device\":\"nvme2n1\",\"writeKb\":508,\"avgReqSz\":24.58,\"wrqmPS\":2.87,\"writeIOsPS\":2.27}],\"fileSys\":[{\"used\":164780,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2902872,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.15,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":76512,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.22,\"cpuUsedPc\":3.67,\"id\":0,\"rss\":424560,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.03,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.07,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.55,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":14556,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574488825
+        },
+        {
+          "timestamp": 1790574503000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:48:23Z\",\"version\":1,\"uptime\":\"00:08:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.2,\"wait\":0.0,\"idle\":96.7,\"user\":1.6,\"total\":3.3,\"steal\":0.1,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.06,\"five\":0.29,\"fifteen\":0.22},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":211300,\"hugePagesSize\":2048,\"free\":150204,\"hugePagesTotal\":0,\"inactive\":519332,\"pageTables\":5096,\"dirty\":472,\"mapped\":97508,\"active\":93788,\"total\":938796,\"slab\":81260,\"buffers\":4900},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":52,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":1.33},\"network\":[{\"interface\":\"eth0\",\"rx\":1340.8,\"tx\":15188.53}],\"diskIO\":[{\"writeKbPS\":8.0,\"readIOsPS\":0.0,\"await\":1.38,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.13,\"avgQueueLen\":0.0,\"tps\":1.93,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":120,\"avgReqSz\":8.28,\"wrqmPS\":0.0,\"writeIOsPS\":1.93},{\"writeKbPS\":42.13,\"readIOsPS\":1.8,\"await\":0.59,\"readKbPS\":67.73,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":3.73,\"readKb\":1016,\"device\":\"filesystem\",\"writeKb\":632,\"avgReqSz\":58.86,\"wrqmPS\":2.47,\"writeIOsPS\":1.93}],\"physicalDeviceIO\":[{\"writeKbPS\":8.0,\"readIOsPS\":0.0,\"await\":0.5,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.13,\"avgQueueLen\":0.0,\"tps\":1.07,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":120,\"avgReqSz\":15.0,\"wrqmPS\":0.87,\"writeIOsPS\":1.07}],\"fileSys\":[{\"used\":164780,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903008,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.15,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":76508,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.24,\"cpuUsedPc\":1.73,\"id\":0,\"rss\":424728,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.03,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.55,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":14556,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574503825
+        },
+        {
+          "timestamp": 1790574518000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:48:38Z\",\"version\":1,\"uptime\":\"00:09:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.3,\"wait\":0.1,\"idle\":96.1,\"user\":2.0,\"total\":4.0,\"steal\":0.2,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.05,\"five\":0.27,\"fifteen\":0.22},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":211904,\"hugePagesSize\":2048,\"free\":145980,\"hugePagesTotal\":0,\"inactive\":519524,\"pageTables\":5092,\"dirty\":692,\"mapped\":97548,\"active\":94256,\"total\":938796,\"slab\":81148,\"buffers\":4932},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":52,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":797.47,\"tx\":6268.93}],\"diskIO\":[{\"writeKbPS\":21.6,\"readIOsPS\":0.8,\"await\":0.12,\"readKbPS\":8.53,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":5.4,\"readKb\":128,\"device\":\"rdsdev\",\"writeKb\":324,\"avgReqSz\":11.16,\"wrqmPS\":0.0,\"writeIOsPS\":4.6},{\"writeKbPS\":15.47,\"readIOsPS\":0.8,\"await\":0.56,\"readKbPS\":25.33,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":2.87,\"readKb\":380,\"device\":\"filesystem\",\"writeKb\":232,\"avgReqSz\":28.47,\"wrqmPS\":1.73,\"writeIOsPS\":2.07}],\"physicalDeviceIO\":[{\"writeKbPS\":21.6,\"readIOsPS\":0.8,\"await\":0.6,\"readKbPS\":8.53,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":1.33,\"readKb\":128,\"device\":\"nvme2n1\",\"writeKb\":324,\"avgReqSz\":45.2,\"wrqmPS\":4.07,\"writeIOsPS\":0.53}],\"fileSys\":[{\"used\":164628,\"name\":\"rdsfilesys\",\"usedFiles\":1360,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.8},{\"used\":2903092,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.15,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":76508,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.25,\"cpuUsedPc\":2.17,\"id\":0,\"rss\":424800,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.03,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":389464,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1655,\"parentID\":1332,\"memoryUsedPc\":1.55,\"cpuUsedPc\":0.0,\"id\":1655,\"rss\":14556,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574518840
+        },
+        {
+          "timestamp": 1790574533000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:48:53Z\",\"version\":1,\"uptime\":\"00:09:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.3,\"wait\":0.1,\"idle\":93.9,\"user\":2.3,\"total\":6.0,\"steal\":0.9,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.03,\"five\":0.26,\"fifteen\":0.21},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":212544,\"hugePagesSize\":2048,\"free\":144236,\"hugePagesTotal\":0,\"inactive\":519084,\"pageTables\":4944,\"dirty\":444,\"mapped\":97768,\"active\":94656,\"total\":938796,\"slab\":81108,\"buffers\":4972},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":52,\"total\":4193276,\"free\":4191484,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1551.8,\"tx\":16733.93}],\"diskIO\":[{\"writeKbPS\":25.33,\"readIOsPS\":0.27,\"await\":0.0,\"readKbPS\":1.6,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":6.4,\"readKb\":24,\"device\":\"rdsdev\",\"writeKb\":380,\"avgReqSz\":8.42,\"wrqmPS\":0.0,\"writeIOsPS\":6.13},{\"writeKbPS\":84.27,\"readIOsPS\":1.53,\"await\":1.55,\"readKbPS\":16.0,\"rrqmPS\":0.0,\"util\":0.27,\"avgQueueLen\":0.02,\"tps\":13.0,\"readKb\":240,\"device\":\"filesystem\",\"writeKb\":1264,\"avgReqSz\":15.43,\"wrqmPS\":2.73,\"writeIOsPS\":11.47}],\"physicalDeviceIO\":[{\"writeKbPS\":25.33,\"readIOsPS\":0.27,\"await\":0.57,\"readKbPS\":1.6,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.87,\"readKb\":24,\"device\":\"nvme2n1\",\"writeKb\":380,\"avgReqSz\":28.86,\"wrqmPS\":4.53,\"writeIOsPS\":1.6}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903212,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.4}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.16,\"cpuUsedPc\":0.1,\"id\":0,\"rss\":76644,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.28,\"cpuUsedPc\":1.97,\"id\":0,\"rss\":425064,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574533828
+        },
+        {
+          "timestamp": 1790574548000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:49:08Z\",\"version\":1,\"uptime\":\"00:09:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":1.7,\"wait\":0.1,\"idle\":94.2,\"user\":2.7,\"total\":6.0,\"steal\":1.0,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.03,\"five\":0.25,\"fifteen\":0.21},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":203312,\"hugePagesSize\":2048,\"free\":164176,\"hugePagesTotal\":0,\"inactive\":510968,\"pageTables\":4956,\"dirty\":796,\"mapped\":96308,\"active\":90532,\"total\":938796,\"slab\":81056,\"buffers\":4804},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.8},\"network\":[{\"interface\":\"eth0\",\"rx\":3058.47,\"tx\":10088.07}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":35.2,\"readIOsPS\":2.2,\"await\":0.66,\"readKbPS\":82.4,\"rrqmPS\":0.0,\"util\":0.13,\"avgQueueLen\":0.01,\"tps\":7.93,\"readKb\":1236,\"device\":\"filesystem\",\"writeKb\":528,\"avgReqSz\":29.65,\"wrqmPS\":2.4,\"writeIOsPS\":5.73}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903472,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.08,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":75880,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.81,\"cpuUsedPc\":3.2,\"id\":0,\"rss\":420636,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574548826
+        },
+        {
+          "timestamp": 1790574563000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:49:23Z\",\"version\":1,\"uptime\":\"00:09:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.1,\"wait\":0.1,\"idle\":96.1,\"user\":1.8,\"total\":3.8,\"steal\":0.2,\"nice\":0.5},\"loadAverageMinute\":{\"one\":0.02,\"five\":0.23,\"fifteen\":0.2},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":203548,\"hugePagesSize\":2048,\"free\":152864,\"hugePagesTotal\":0,\"inactive\":511288,\"pageTables\":4880,\"dirty\":612,\"mapped\":96356,\"active\":90856,\"total\":938796,\"slab\":81056,\"buffers\":4836},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1320.93,\"tx\":14815.47}],\"diskIO\":[{\"writeKbPS\":5.6,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.4,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":84,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":1.4},{\"writeKbPS\":42.4,\"readIOsPS\":0.47,\"await\":3.7,\"readKbPS\":6.93,\"rrqmPS\":0.0,\"util\":0.2,\"avgQueueLen\":0.01,\"tps\":2.0,\"readKb\":104,\"device\":\"filesystem\",\"writeKb\":636,\"avgReqSz\":49.33,\"wrqmPS\":2.4,\"writeIOsPS\":1.53}],\"physicalDeviceIO\":[{\"writeKbPS\":5.6,\"readIOsPS\":0.0,\"await\":0.56,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.2,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":84,\"avgReqSz\":9.33,\"wrqmPS\":0.2,\"writeIOsPS\":1.2}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903604,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.09,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":75916,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.86,\"cpuUsedPc\":1.73,\"id\":0,\"rss\":421156,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574563828
+        },
+        {
+          "timestamp": 1790574578000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:49:38Z\",\"version\":1,\"uptime\":\"00:10:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.2,\"wait\":0.1,\"idle\":96.9,\"user\":1.3,\"total\":3.2,\"steal\":0.2,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.02,\"five\":0.22,\"fifteen\":0.2},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":203764,\"hugePagesSize\":2048,\"free\":150596,\"hugePagesTotal\":0,\"inactive\":511704,\"pageTables\":4932,\"dirty\":424,\"mapped\":96488,\"active\":91020,\"total\":938796,\"slab\":81068,\"buffers\":4860},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":804.47,\"tx\":6266.53}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":52.53,\"readIOsPS\":0.6,\"await\":0.74,\"readKbPS\":8.8,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.01,\"tps\":10.07,\"readKb\":132,\"device\":\"filesystem\",\"writeKb\":788,\"avgReqSz\":12.19,\"wrqmPS\":2.27,\"writeIOsPS\":9.47}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903688,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.09,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":75972,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.91,\"cpuUsedPc\":1.37,\"id\":0,\"rss\":421568,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16508,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.38,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22340,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574578826
+        },
+        {
+          "timestamp": 1790574593000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:49:53Z\",\"version\":1,\"uptime\":\"00:10:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.5,\"wait\":0.4,\"idle\":93.1,\"user\":2.6,\"total\":6.8,\"steal\":0.9,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.21,\"fifteen\":0.19},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":199612,\"hugePagesSize\":2048,\"free\":159168,\"hugePagesTotal\":0,\"inactive\":509228,\"pageTables\":4944,\"dirty\":1056,\"mapped\":96164,\"active\":89776,\"total\":938796,\"slab\":81052,\"buffers\":4720},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":1.07},\"network\":[{\"interface\":\"eth0\",\"rx\":1084.87,\"tx\":15842.27}],\"diskIO\":[{\"writeKbPS\":4.53,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.07,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":68,\"avgReqSz\":8.5,\"wrqmPS\":0.0,\"writeIOsPS\":1.07},{\"writeKbPS\":21.6,\"readIOsPS\":1.53,\"await\":2.51,\"readKbPS\":20.27,\"rrqmPS\":0.0,\"util\":1.0,\"avgQueueLen\":0.01,\"tps\":4.2,\"readKb\":304,\"device\":\"filesystem\",\"writeKb\":324,\"avgReqSz\":19.94,\"wrqmPS\":2.53,\"writeIOsPS\":2.67}],\"physicalDeviceIO\":[{\"writeKbPS\":4.53,\"readIOsPS\":0.0,\"await\":0.55,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.73,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":68,\"avgReqSz\":12.36,\"wrqmPS\":0.33,\"writeIOsPS\":0.73}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2903816,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.07,\"cpuUsedPc\":0.23,\"id\":0,\"rss\":75800,\"vmlimit\":0},{\"vss\":6793868,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.95,\"cpuUsedPc\":2.57,\"id\":0,\"rss\":421988,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.76,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16496,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.37,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22264,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574593827
+        },
+        {
+          "timestamp": 1790574608000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:50:08Z\",\"version\":1,\"uptime\":\"00:10:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":2.1,\"wait\":0.2,\"idle\":93.6,\"user\":2.2,\"total\":6.4,\"steal\":1.4,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.2,\"fifteen\":0.19},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":205004,\"hugePagesSize\":2048,\"free\":150376,\"hugePagesTotal\":0,\"inactive\":505292,\"pageTables\":4940,\"dirty\":676,\"mapped\":97588,\"active\":100144,\"total\":938796,\"slab\":81084,\"buffers\":5096},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":1.33},\"network\":[{\"interface\":\"eth0\",\"rx\":2127.27,\"tx\":10579.87}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.13,\"await\":0.0,\"readKbPS\":17.07,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.13,\"readKb\":256,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":256.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":100.8,\"readIOsPS\":18.87,\"await\":0.79,\"readKbPS\":687.47,\"rrqmPS\":5.47,\"util\":0.67,\"avgQueueLen\":0.03,\"tps\":34.13,\"readKb\":10312,\"device\":\"filesystem\",\"writeKb\":1512,\"avgReqSz\":46.19,\"wrqmPS\":2.53,\"writeIOsPS\":15.27}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.8,\"await\":1.0,\"readKbPS\":102.4,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.8,\"readKb\":1536,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":256.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1361,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904084,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.17,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":76708,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.99,\"cpuUsedPc\":2.63,\"id\":0,\"rss\":422348,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.75,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16408,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":391164,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1482,\"parentID\":1332,\"memoryUsedPc\":2.35,\"cpuUsedPc\":0.0,\"id\":1482,\"rss\":22084,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574608831
+        },
+        {
+          "timestamp": 1790574623000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:50:23Z\",\"version\":1,\"uptime\":\"00:10:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.4,\"wait\":0.5,\"idle\":95.7,\"user\":1.7,\"total\":4.3,\"steal\":0.2,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.19,\"fifteen\":0.18},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":206816,\"hugePagesSize\":2048,\"free\":149648,\"hugePagesTotal\":0,\"inactive\":503680,\"pageTables\":4920,\"dirty\":968,\"mapped\":97932,\"active\":102404,\"total\":938796,\"slab\":80932,\"buffers\":5504},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1311.53,\"tx\":15294.4}],\"diskIO\":[{\"writeKbPS\":4.27,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.93,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":64,\"avgReqSz\":9.14,\"wrqmPS\":0.0,\"writeIOsPS\":0.93},{\"writeKbPS\":38.67,\"readIOsPS\":6.13,\"await\":1.42,\"readKbPS\":121.87,\"rrqmPS\":4.67,\"util\":1.0,\"avgQueueLen\":0.02,\"tps\":10.53,\"readKb\":1828,\"device\":\"filesystem\",\"writeKb\":580,\"avgReqSz\":30.48,\"wrqmPS\":2.67,\"writeIOsPS\":4.4}],\"physicalDeviceIO\":[{\"writeKbPS\":4.27,\"readIOsPS\":0.0,\"await\":0.5,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.53,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":64,\"avgReqSz\":16.0,\"wrqmPS\":0.4,\"writeIOsPS\":0.53}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904232,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.3,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":77936,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.1,\"cpuUsedPc\":1.83,\"id\":0,\"rss\":423352,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.75,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16408,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.03,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":390248,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":1.79,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":16772,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574623828
+        },
+        {
+          "timestamp": 1790574638000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:50:38Z\",\"version\":1,\"uptime\":\"00:11:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.0,\"system\":1.0,\"wait\":0.1,\"idle\":96.8,\"user\":1.3,\"total\":3.1,\"steal\":0.5,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.0,\"five\":0.18,\"fifteen\":0.18},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":207352,\"hugePagesSize\":2048,\"free\":149648,\"hugePagesTotal\":0,\"inactive\":503824,\"pageTables\":4916,\"dirty\":876,\"mapped\":98036,\"active\":103376,\"total\":938796,\"slab\":80884,\"buffers\":6016},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":846.33,\"tx\":6682.73}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":66.93,\"readIOsPS\":0.8,\"await\":0.67,\"readKbPS\":29.33,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":3.2,\"readKb\":440,\"device\":\"filesystem\",\"writeKb\":1004,\"avgReqSz\":60.17,\"wrqmPS\":3.27,\"writeIOsPS\":2.4}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904320,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.41}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.3,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":77936,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.1,\"cpuUsedPc\":1.5,\"id\":0,\"rss\":423372,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.75,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16408,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.12,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19932,\"vmlimit\":\"unlimited\"},{\"vss\":390248,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":1.79,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":16772,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574638826
+        },
+        {
+          "timestamp": 1790574653000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:50:53Z\",\"version\":1,\"uptime\":\"00:11:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.3,\"wait\":0.0,\"idle\":92.9,\"user\":3.3,\"total\":7.1,\"steal\":0.9,\"nice\":0.5},\"loadAverageMinute\":{\"one\":0.0,\"five\":0.17,\"fifteen\":0.18},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202748,\"hugePagesSize\":2048,\"free\":160616,\"hugePagesTotal\":0,\"inactive\":501416,\"pageTables\":4920,\"dirty\":888,\"mapped\":97620,\"active\":101820,\"total\":938796,\"slab\":81036,\"buffers\":5656},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.8},\"network\":[{\"interface\":\"eth0\",\"rx\":1253.0,\"tx\":18378.87}],\"diskIO\":[{\"writeKbPS\":5.33,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.27,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":80,\"avgReqSz\":8.42,\"wrqmPS\":0.0,\"writeIOsPS\":1.27},{\"writeKbPS\":66.67,\"readIOsPS\":0.53,\"await\":0.72,\"readKbPS\":6.13,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.01,\"tps\":12.07,\"readKb\":92,\"device\":\"filesystem\",\"writeKb\":1000,\"avgReqSz\":12.07,\"wrqmPS\":2.93,\"writeIOsPS\":11.53}],\"physicalDeviceIO\":[{\"writeKbPS\":5.33,\"readIOsPS\":0.0,\"await\":0.57,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.93,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":80,\"avgReqSz\":11.43,\"wrqmPS\":0.33,\"writeIOsPS\":0.93}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904452,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.31,\"cpuUsedPc\":0.13,\"id\":0,\"rss\":77968,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.21,\"cpuUsedPc\":3.17,\"id\":0,\"rss\":424432,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390248,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":1.75,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":16472,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574653829
+        },
+        {
+          "timestamp": 1790574668000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:51:08Z\",\"version\":1,\"uptime\":\"00:11:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.0,\"system\":2.3,\"wait\":5.4,\"idle\":85.3,\"user\":4.6,\"total\":14.7,\"steal\":1.9,\"nice\":0.5},\"loadAverageMinute\":{\"one\":0.08,\"five\":0.18,\"fifteen\":0.18},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":201992,\"hugePagesSize\":2048,\"free\":158952,\"hugePagesTotal\":0,\"inactive\":506588,\"pageTables\":4944,\"dirty\":364,\"mapped\":97364,\"active\":98044,\"total\":938796,\"slab\":80860,\"buffers\":4788},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":1.33},\"network\":[{\"interface\":\"eth0\",\"rx\":1346.87,\"tx\":9702.53}],\"diskIO\":[{\"writeKbPS\":2.93,\"readIOsPS\":0.13,\"await\":0.0,\"readKbPS\":1.07,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.67,\"readKb\":16,\"device\":\"rdsdev\",\"writeKb\":44,\"avgReqSz\":12.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.53},{\"writeKbPS\":97.6,\"readIOsPS\":105.73,\"await\":1.15,\"readKbPS\":1319.73,\"rrqmPS\":0.0,\"util\":12.13,\"avgQueueLen\":0.14,\"tps\":118.07,\"readKb\":19796,\"device\":\"filesystem\",\"writeKb\":1464,\"avgReqSz\":24.01,\"wrqmPS\":1.33,\"writeIOsPS\":12.33}],\"physicalDeviceIO\":[{\"writeKbPS\":2.93,\"readIOsPS\":0.13,\"await\":0.57,\"readKbPS\":1.07,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.47,\"readKb\":16,\"device\":\"nvme2n1\",\"writeKb\":44,\"avgReqSz\":17.14,\"wrqmPS\":0.2,\"writeIOsPS\":0.33}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904744,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.21,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":77088,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.4,\"cpuUsedPc\":5.07,\"id\":0,\"rss\":426216,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390452,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.03,\"id\":1808,\"rss\":19524,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574668819
+        },
+        {
+          "timestamp": 1790574683000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:51:23Z\",\"version\":1,\"uptime\":\"00:11:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":1.4,\"wait\":0.4,\"idle\":95.1,\"user\":2.4,\"total\":4.9,\"steal\":0.3,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.06,\"five\":0.17,\"fifteen\":0.18},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202160,\"hugePagesSize\":2048,\"free\":153940,\"hugePagesTotal\":0,\"inactive\":507032,\"pageTables\":4944,\"dirty\":616,\"mapped\":97412,\"active\":98188,\"total\":938796,\"slab\":80868,\"buffers\":4820},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1441.73,\"tx\":17812.8}],\"diskIO\":[{\"writeKbPS\":1.33,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.33,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":20,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.33},{\"writeKbPS\":17.87,\"readIOsPS\":0.47,\"await\":3.49,\"readKbPS\":2.13,\"rrqmPS\":0.0,\"util\":0.73,\"avgQueueLen\":0.01,\"tps\":2.6,\"readKb\":32,\"device\":\"filesystem\",\"writeKb\":268,\"avgReqSz\":15.38,\"wrqmPS\":2.33,\"writeIOsPS\":2.13}],\"physicalDeviceIO\":[{\"writeKbPS\":1.33,\"readIOsPS\":0.0,\"await\":0.5,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.27,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":20,\"avgReqSz\":10.0,\"wrqmPS\":0.07,\"writeIOsPS\":0.27}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904880,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.21,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":77088,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.41,\"cpuUsedPc\":2.63,\"id\":0,\"rss\":426300,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.03,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.03,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390452,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19524,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574683827
+        },
+        {
+          "timestamp": 1790574698000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:51:38Z\",\"version\":1,\"uptime\":\"00:12:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.0,\"system\":1.2,\"wait\":0.0,\"idle\":97.1,\"user\":1.1,\"total\":2.7,\"steal\":0.2,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.04,\"five\":0.16,\"fifteen\":0.17},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202348,\"hugePagesSize\":2048,\"free\":164548,\"hugePagesTotal\":0,\"inactive\":507260,\"pageTables\":4944,\"dirty\":224,\"mapped\":97580,\"active\":97996,\"total\":938796,\"slab\":80864,\"buffers\":4856},\"tasks\":{\"sleeping\":146,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":146,\"blocked\":0},\"swap\":{\"cached\":52,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":1.07},\"network\":[{\"interface\":\"eth0\",\"rx\":1233.53,\"tx\":6663.87}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":58.93,\"readIOsPS\":1.07,\"await\":0.87,\"readKbPS\":51.47,\"rrqmPS\":0.07,\"util\":0.13,\"avgQueueLen\":0.01,\"tps\":10.13,\"readKb\":772,\"device\":\"filesystem\",\"writeKb\":884,\"avgReqSz\":21.79,\"wrqmPS\":1.6,\"writeIOsPS\":9.07}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2904968,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.22,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":77196,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.42,\"cpuUsedPc\":1.27,\"id\":0,\"rss\":426412,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390452,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19524,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574698828
+        },
+        {
+          "timestamp": 1790574713000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:51:53Z\",\"version\":1,\"uptime\":\"00:12:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":4.1,\"wait\":0.1,\"idle\":91.0,\"user\":3.6,\"total\":9.0,\"steal\":0.7,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.03,\"five\":0.15,\"fifteen\":0.17},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":204288,\"hugePagesSize\":2048,\"free\":147872,\"hugePagesTotal\":0,\"inactive\":506968,\"pageTables\":4940,\"dirty\":868,\"mapped\":97732,\"active\":100312,\"total\":938796,\"slab\":81012,\"buffers\":4900},\"tasks\":{\"sleeping\":145,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":145,\"blocked\":0},\"swap\":{\"cached\":52,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1150.0,\"tx\":19719.53}],\"diskIO\":[{\"writeKbPS\":3.73,\"readIOsPS\":0.0,\"await\":0.77,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":0.87,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":56,\"avgReqSz\":8.62,\"wrqmPS\":0.0,\"writeIOsPS\":0.87},{\"writeKbPS\":23.73,\"readIOsPS\":2.93,\"await\":1.67,\"readKbPS\":121.07,\"rrqmPS\":0.0,\"util\":0.27,\"avgQueueLen\":0.01,\"tps\":5.73,\"readKb\":1816,\"device\":\"filesystem\",\"writeKb\":356,\"avgReqSz\":50.51,\"wrqmPS\":2.93,\"writeIOsPS\":2.8}],\"physicalDeviceIO\":[{\"writeKbPS\":3.73,\"readIOsPS\":0.0,\"await\":0.5,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":0.53,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":56,\"avgReqSz\":14.0,\"wrqmPS\":0.33,\"writeIOsPS\":0.53}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2905096,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.24,\"cpuUsedPc\":0.13,\"id\":0,\"rss\":77364,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.44,\"cpuUsedPc\":2.9,\"id\":0,\"rss\":426552,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390452,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19524,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574713828
+        },
+        {
+          "timestamp": 1790574728000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:52:08Z\",\"version\":1,\"uptime\":\"00:12:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.0,\"wait\":0.0,\"idle\":92.8,\"user\":3.2,\"total\":7.2,\"steal\":1.6,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.03,\"five\":0.14,\"fifteen\":0.17},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":196352,\"hugePagesSize\":2048,\"free\":166828,\"hugePagesTotal\":0,\"inactive\":502168,\"pageTables\":4944,\"dirty\":360,\"mapped\":97152,\"active\":97460,\"total\":938796,\"slab\":80848,\"buffers\":4796},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.8},\"network\":[{\"interface\":\"eth0\",\"rx\":1309.33,\"tx\":10074.2}],\"diskIO\":[{\"writeKbPS\":1.6,\"readIOsPS\":0.07,\"await\":0.0,\"readKbPS\":0.27,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.47,\"readKb\":4,\"device\":\"rdsdev\",\"writeKb\":24,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.4},{\"writeKbPS\":101.87,\"readIOsPS\":0.47,\"await\":1.25,\"readKbPS\":20.27,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.02,\"tps\":14.27,\"readKb\":304,\"device\":\"filesystem\",\"writeKb\":1528,\"avgReqSz\":17.12,\"wrqmPS\":2.0,\"writeIOsPS\":13.8}],\"physicalDeviceIO\":[{\"writeKbPS\":1.6,\"readIOsPS\":0.07,\"await\":0.57,\"readKbPS\":0.27,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.47,\"readKb\":4,\"device\":\"nvme2n1\",\"writeKb\":24,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.4}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2905368,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.42}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.21,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":77044,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.45,\"cpuUsedPc\":3.27,\"id\":0,\"rss\":426696,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390504,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19528,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574728832
+        },
+        {
+          "timestamp": 1790574743000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:52:23Z\",\"version\":1,\"uptime\":\"00:12:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.4,\"wait\":0.0,\"idle\":96.6,\"user\":1.5,\"total\":3.5,\"steal\":0.2,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.02,\"five\":0.13,\"fifteen\":0.17},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":196560,\"hugePagesSize\":2048,\"free\":163100,\"hugePagesTotal\":0,\"inactive\":501964,\"pageTables\":4936,\"dirty\":628,\"mapped\":97188,\"active\":97732,\"total\":938796,\"slab\":80936,\"buffers\":4828},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":40,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1363.8,\"tx\":15651.33}],\"diskIO\":[{\"writeKbPS\":1.07,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.27,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":16,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.27},{\"writeKbPS\":20.53,\"readIOsPS\":0.27,\"await\":0.55,\"readKbPS\":5.07,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":2.93,\"readKb\":76,\"device\":\"filesystem\",\"writeKb\":308,\"avgReqSz\":17.45,\"wrqmPS\":2.47,\"writeIOsPS\":2.67}],\"physicalDeviceIO\":[{\"writeKbPS\":1.07,\"readIOsPS\":0.0,\"await\":1.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.2,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":16,\"avgReqSz\":10.67,\"wrqmPS\":0.07,\"writeIOsPS\":0.2}],\"fileSys\":[{\"used\":164792,\"name\":\"rdsfilesys\",\"usedFiles\":1362,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":0.81},{\"used\":2905500,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.21,\"cpuUsedPc\":0.0,\"id\":0,\"rss\":77096,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.44,\"cpuUsedPc\":1.7,\"id\":0,\"rss\":426548,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":3.0,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":28148,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.42,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3940,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.74,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":16352,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.59,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5500,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.17,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10996,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.84,\"cpuUsedPc\":0.03,\"id\":1338,\"rss\":7888,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.64,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5972,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.1,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19704,\"vmlimit\":\"unlimited\"},{\"vss\":390504,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.08,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19528,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574743832
+        },
+        {
+          "timestamp": 1790574758000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:52:38Z\",\"version\":1,\"uptime\":\"00:13:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":1.5,\"wait\":0.5,\"idle\":94.9,\"user\":2.1,\"total\":5.1,\"steal\":0.2,\"nice\":0.6},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.13,\"fifteen\":0.16},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":200580,\"hugePagesSize\":2048,\"free\":164904,\"hugePagesTotal\":0,\"inactive\":516456,\"pageTables\":4940,\"dirty\":348,\"mapped\":94180,\"active\":86816,\"total\":938796,\"slab\":81164,\"buffers\":4368},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":3.2},\"network\":[{\"interface\":\"eth0\",\"rx\":807.67,\"tx\":6504.53}],\"diskIO\":[{\"writeKbPS\":8800.0,\"readIOsPS\":0.2,\"await\":3.61,\"readKbPS\":0.8,\"rrqmPS\":0.0,\"util\":1.07,\"avgQueueLen\":0.3,\"tps\":83.07,\"readKb\":12,\"device\":\"rdsdev\",\"writeKb\":132000,\"avgReqSz\":211.9,\"wrqmPS\":0.0,\"writeIOsPS\":82.87},{\"writeKbPS\":61.87,\"readIOsPS\":1.87,\"await\":0.73,\"readKbPS\":18.67,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.01,\"tps\":10.8,\"readKb\":280,\"device\":\"filesystem\",\"writeKb\":928,\"avgReqSz\":14.91,\"wrqmPS\":2.13,\"writeIOsPS\":8.93}],\"physicalDeviceIO\":[{\"writeKbPS\":8800.0,\"readIOsPS\":0.2,\"await\":3.7,\"readKbPS\":0.8,\"rrqmPS\":0.0,\"util\":1.07,\"avgQueueLen\":0.29,\"tps\":79.53,\"readKb\":12,\"device\":\"nvme2n1\",\"writeKb\":132000,\"avgReqSz\":221.31,\"wrqmPS\":3.53,\"writeIOsPS\":79.33}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2905588,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":7.95,\"cpuUsedPc\":0.07,\"id\":0,\"rss\":74632,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.31,\"cpuUsedPc\":2.13,\"id\":0,\"rss\":425344,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.47,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.05,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":19232,\"vmlimit\":\"unlimited\"},{\"vss\":390504,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.0,\"cpuUsedPc\":0.03,\"id\":1808,\"rss\":18756,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574758831
+        },
+        {
+          "timestamp": 1790574773000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:52:53Z\",\"version\":1,\"uptime\":\"00:13:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.1,\"wait\":0.1,\"idle\":94.0,\"user\":2.3,\"total\":6.0,\"steal\":1.0,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.12,\"fifteen\":0.16},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":201772,\"hugePagesSize\":2048,\"free\":151872,\"hugePagesTotal\":0,\"inactive\":513676,\"pageTables\":4960,\"dirty\":148,\"mapped\":94636,\"active\":91008,\"total\":938796,\"slab\":81224,\"buffers\":4408},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1072.4,\"tx\":16165.27}],\"diskIO\":[{\"writeKbPS\":4.8,\"readIOsPS\":0.07,\"await\":0.0,\"readKbPS\":0.53,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.0,\"readKb\":8,\"device\":\"rdsdev\",\"writeKb\":72,\"avgReqSz\":10.67,\"wrqmPS\":0.0,\"writeIOsPS\":0.93},{\"writeKbPS\":84.53,\"readIOsPS\":4.67,\"await\":0.74,\"readKbPS\":52.27,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.01,\"tps\":18.93,\"readKb\":784,\"device\":\"filesystem\",\"writeKb\":1268,\"avgReqSz\":14.45,\"wrqmPS\":3.07,\"writeIOsPS\":14.27}],\"physicalDeviceIO\":[{\"writeKbPS\":4.8,\"readIOsPS\":0.07,\"await\":0.5,\"readKbPS\":0.53,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.67,\"readKb\":8,\"device\":\"nvme2n1\",\"writeKb\":72,\"avgReqSz\":16.0,\"wrqmPS\":0.33,\"writeIOsPS\":0.6}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2905724,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":7.97,\"cpuUsedPc\":0.1,\"id\":0,\"rss\":74792,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.31,\"cpuUsedPc\":1.9,\"id\":0,\"rss\":425348,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.16,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":20288,\"vmlimit\":\"unlimited\"},{\"vss\":390504,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.0,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":18756,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574773833
+        },
+        {
+          "timestamp": 1790574788000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:53:08Z\",\"version\":1,\"uptime\":\"00:13:33\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.2,\"system\":1.5,\"wait\":0.1,\"idle\":94.7,\"user\":2.3,\"total\":5.5,\"steal\":1.1,\"nice\":0.3},\"loadAverageMinute\":{\"one\":0.01,\"five\":0.11,\"fifteen\":0.16},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202288,\"hugePagesSize\":2048,\"free\":163492,\"hugePagesTotal\":0,\"inactive\":513872,\"pageTables\":4964,\"dirty\":152,\"mapped\":94832,\"active\":91636,\"total\":938796,\"slab\":81272,\"buffers\":4472},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.27},\"network\":[{\"interface\":\"eth0\",\"rx\":1276.6,\"tx\":9601.87}],\"diskIO\":[{\"writeKbPS\":13.07,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":3.27,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":196,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":3.27},{\"writeKbPS\":64.53,\"readIOsPS\":1.67,\"await\":0.92,\"readKbPS\":20.8,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.01,\"tps\":10.87,\"readKb\":312,\"device\":\"filesystem\",\"writeKb\":968,\"avgReqSz\":15.71,\"wrqmPS\":2.53,\"writeIOsPS\":9.2}],\"physicalDeviceIO\":[{\"writeKbPS\":13.07,\"readIOsPS\":0.0,\"await\":0.55,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.47,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":196,\"avgReqSz\":17.82,\"wrqmPS\":1.8,\"writeIOsPS\":1.47}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2905980,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":7.99,\"cpuUsedPc\":0.1,\"id\":0,\"rss\":74964,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.3,\"cpuUsedPc\":2.2,\"id\":0,\"rss\":425316,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.16,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":20288,\"vmlimit\":\"unlimited\"},{\"vss\":390560,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.03,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19036,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574788832
+        },
+        {
+          "timestamp": 1790574803000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:53:23Z\",\"version\":1,\"uptime\":\"00:13:48\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":1.3,\"wait\":0.0,\"idle\":96.7,\"user\":1.5,\"total\":3.3,\"steal\":0.2,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.0,\"five\":0.11,\"fifteen\":0.15},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202628,\"hugePagesSize\":2048,\"free\":157696,\"hugePagesTotal\":0,\"inactive\":513932,\"pageTables\":4968,\"dirty\":624,\"mapped\":94888,\"active\":91888,\"total\":938796,\"slab\":81260,\"buffers\":4512},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":1293.33,\"tx\":14658.8}],\"diskIO\":[{\"writeKbPS\":4.27,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.07,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":64,\"avgReqSz\":8.0,\"wrqmPS\":0.0,\"writeIOsPS\":1.07},{\"writeKbPS\":14.93,\"readIOsPS\":0.2,\"await\":0.83,\"readKbPS\":1.6,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.0,\"tps\":1.53,\"readKb\":24,\"device\":\"filesystem\",\"writeKb\":224,\"avgReqSz\":21.57,\"wrqmPS\":2.27,\"writeIOsPS\":1.33}],\"physicalDeviceIO\":[{\"writeKbPS\":4.27,\"readIOsPS\":0.0,\"await\":0.33,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.4,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":64,\"avgReqSz\":21.33,\"wrqmPS\":0.67,\"writeIOsPS\":0.4}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2906116,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.0,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":75096,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.31,\"cpuUsedPc\":1.73,\"id\":0,\"rss\":425388,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.16,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":20288,\"vmlimit\":\"unlimited\"},{\"vss\":390560,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.03,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19036,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574803832
+        },
+        {
+          "timestamp": 1790574818000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:53:38Z\",\"version\":1,\"uptime\":\"00:14:03\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.0,\"system\":1.2,\"wait\":0.0,\"idle\":97.3,\"user\":1.1,\"total\":2.7,\"steal\":0.2,\"nice\":0.2},\"loadAverageMinute\":{\"one\":0.0,\"five\":0.1,\"fifteen\":0.15},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":202720,\"hugePagesSize\":2048,\"free\":155680,\"hugePagesTotal\":0,\"inactive\":514008,\"pageTables\":4964,\"dirty\":604,\"mapped\":94932,\"active\":91932,\"total\":938796,\"slab\":81264,\"buffers\":4536},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":805.2,\"tx\":6379.07}],\"diskIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0},{\"writeKbPS\":25.87,\"readIOsPS\":0.07,\"await\":1.05,\"readKbPS\":0.27,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.4,\"readKb\":4,\"device\":\"filesystem\",\"writeKb\":388,\"avgReqSz\":37.33,\"wrqmPS\":1.47,\"writeIOsPS\":1.33}],\"physicalDeviceIO\":[{\"writeKbPS\":0.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":0.0,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":0,\"avgReqSz\":0.0,\"wrqmPS\":0.0,\"writeIOsPS\":0.0}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2906204,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.0,\"cpuUsedPc\":0.03,\"id\":0,\"rss\":75096,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":45.31,\"cpuUsedPc\":1.2,\"id\":0,\"rss\":425400,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.0,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.0,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.16,\"cpuUsedPc\":0.07,\"id\":1654,\"rss\":20288,\"vmlimit\":\"unlimited\"},{\"vss\":390560,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.03,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19036,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574818832
+        },
+        {
+          "timestamp": 1790574833000,
+          "message": "{\"engine\":\"POSTGRES\",\"instanceID\":\"pgai-test-hoststats-b9e0be1f\",\"instanceResourceID\":\"db-VPCWK4FHJJIK26W66NYKPKIK4U\",\"timestamp\":\"2026-09-28T05:53:53Z\",\"version\":1,\"uptime\":\"00:14:18\",\"numVCPUs\":2,\"cpuUtilization\":{\"guest\":0.0,\"irq\":0.1,\"system\":2.2,\"wait\":0.1,\"idle\":93.7,\"user\":2.4,\"total\":6.3,\"steal\":1.1,\"nice\":0.4},\"loadAverageMinute\":{\"one\":0.0,\"five\":0.1,\"fifteen\":0.15},\"memory\":{\"writeback\":0,\"hugePagesFree\":0,\"hugePagesRsvd\":0,\"hugePagesSurp\":0,\"cached\":203076,\"hugePagesSize\":2048,\"free\":149696,\"hugePagesTotal\":0,\"inactive\":510152,\"pageTables\":4964,\"dirty\":444,\"mapped\":95024,\"active\":92124,\"total\":938796,\"slab\":81284,\"buffers\":4576},\"tasks\":{\"sleeping\":143,\"zombie\":0,\"running\":0,\"stopped\":0,\"total\":143,\"blocked\":0},\"swap\":{\"cached\":48,\"total\":4193276,\"free\":4191228,\"in\":0.0,\"out\":0.0},\"network\":[{\"interface\":\"eth0\",\"rx\":2782.53,\"tx\":17210.27}],\"diskIO\":[{\"writeKbPS\":8.0,\"readIOsPS\":0.0,\"await\":0.0,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.93,\"readKb\":0,\"device\":\"rdsdev\",\"writeKb\":120,\"avgReqSz\":8.28,\"wrqmPS\":0.0,\"writeIOsPS\":1.93},{\"writeKbPS\":74.93,\"readIOsPS\":0.87,\"await\":0.98,\"readKbPS\":6.93,\"rrqmPS\":0.0,\"util\":0.07,\"avgQueueLen\":0.01,\"tps\":13.13,\"readKb\":104,\"device\":\"filesystem\",\"writeKb\":1124,\"avgReqSz\":12.47,\"wrqmPS\":3.2,\"writeIOsPS\":12.27}],\"physicalDeviceIO\":[{\"writeKbPS\":8.0,\"readIOsPS\":0.0,\"await\":1.04,\"readKbPS\":0.0,\"rrqmPS\":0.0,\"util\":0.0,\"avgQueueLen\":0.0,\"tps\":1.53,\"readKb\":0,\"device\":\"nvme2n1\",\"writeKb\":120,\"avgReqSz\":10.43,\"wrqmPS\":0.4,\"writeIOsPS\":1.53}],\"fileSys\":[{\"used\":230328,\"name\":\"rdsfilesys\",\"usedFiles\":1363,\"usedFilePercent\":0.1,\"maxFiles\":1310720,\"mountPoint\":\"/rdsdbdata\",\"total\":20451284,\"usedPercent\":1.13},{\"used\":2906328,\"name\":\"rootfilesys\",\"usedFiles\":44775,\"usedFilePercent\":6.83,\"maxFiles\":655360,\"mountPoint\":\"/\",\"total\":10221384,\"usedPercent\":28.43}],\"processList\":[{\"vss\":1656916,\"name\":\"OS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":8.01,\"cpuUsedPc\":0.2,\"id\":0,\"rss\":75232,\"vmlimit\":0},{\"vss\":6793876,\"name\":\"RDS processes\",\"tgid\":0,\"parentID\":0,\"memoryUsedPc\":44.88,\"cpuUsedPc\":1.87,\"id\":0,\"rss\":421296,\"vmlimit\":0},{\"vss\":387452,\"name\":\"postgres\",\"tgid\":1332,\"parentID\":1,\"memoryUsedPc\":2.96,\"cpuUsedPc\":0.03,\"id\":1332,\"rss\":27744,\"vmlimit\":\"unlimited\"},{\"vss\":173624,\"name\":\"postgres: logger \",\"tgid\":1333,\"parentID\":1332,\"memoryUsedPc\":0.38,\"cpuUsedPc\":0.0,\"id\":1333,\"rss\":3600,\"vmlimit\":\"unlimited\"},{\"vss\":387596,\"name\":\"postgres: checkpointer \",\"tgid\":1334,\"parentID\":1332,\"memoryUsedPc\":1.7,\"cpuUsedPc\":0.0,\"id\":1334,\"rss\":15936,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: background writer \",\"tgid\":1335,\"parentID\":1332,\"memoryUsedPc\":0.55,\"cpuUsedPc\":0.0,\"id\":1335,\"rss\":5164,\"vmlimit\":\"unlimited\"},{\"vss\":387452,\"name\":\"postgres: walwriter \",\"tgid\":1337,\"parentID\":1332,\"memoryUsedPc\":1.13,\"cpuUsedPc\":0.03,\"id\":1337,\"rss\":10624,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: autovacuum launcher \",\"tgid\":1338,\"parentID\":1332,\"memoryUsedPc\":0.8,\"cpuUsedPc\":0.0,\"id\":1338,\"rss\":7540,\"vmlimit\":\"unlimited\"},{\"vss\":388884,\"name\":\"postgres: logical replication launcher \",\"tgid\":1339,\"parentID\":1332,\"memoryUsedPc\":0.6,\"cpuUsedPc\":0.0,\"id\":1339,\"rss\":5624,\"vmlimit\":\"unlimited\"},{\"vss\":392896,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1654,\"parentID\":1332,\"memoryUsedPc\":2.16,\"cpuUsedPc\":0.1,\"id\":1654,\"rss\":20288,\"vmlimit\":\"unlimited\"},{\"vss\":390560,\"name\":\"postgres: rdsadmin rdsadmin [local] idle\",\"tgid\":1808,\"parentID\":1332,\"memoryUsedPc\":2.03,\"cpuUsedPc\":0.0,\"id\":1808,\"rss\":19036,\"vmlimit\":\"unlimited\"}]}",
+          "ingestionTime": 1790574833830
+        }
+      ],
+      "nextForwardToken": "f/39931153109634522379205926258151766489039912563975651328/s",
+      "nextBackwardToken": "b/39931143408810361018384859164252589836068740614371803136/s"
+    }
+  }
+]
