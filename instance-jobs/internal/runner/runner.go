@@ -71,6 +71,26 @@ const (
 	// A rejected credential or a missing RPC is not fixed by polling harder.
 	longBackoff = 10 * time.Minute
 
+	// transientBackoffBase is the first wait after a poll that reached no verdict
+	// at all, doubling per consecutive failure to transientBackoffMax. Two
+	// seconds rather than minPollInterval because `connection refused` returns
+	// instantly: at a one-second floor that is a poll per second, and the
+	// jitter's -20% is clamped back up, so the fleet stops spreading exactly
+	// when all of it fails together.
+	transientBackoffBase = 2 * time.Second
+
+	// transientBackoffMax is deliberately BELOW longBackoff: a platform that
+	// ANSWERED "go away" said something a dropped connection did not, and must
+	// keep backing off harder. Not maxPollInterval either -- that bounds what
+	// the PLATFORM may ask for. The minute is a small fraction of the 30 minutes
+	// the platform goes on dispatching work here (c_job_backed_window), so a box
+	// is answering again well inside it.
+	transientBackoffMax = 1 * time.Minute
+
+	// outageUnhealthyAfter is how long polls may go on failing before the
+	// container reports unhealthy. See pollHealthy.
+	outageUnhealthyAfter = 5 * time.Minute
+
 	// unhealthyAfter consecutive failed polls flips the healthcheck.
 	unhealthyAfter = 3
 
@@ -128,6 +148,9 @@ type Runner struct {
 	// yields a negative duration_ms. Injectable so tests can produce a
 	// deterministic one.
 	elapsed func(time.Time) time.Duration
+	// monotonic stamps and reads failingSince, for the same reason: an outage
+	// timed on r.now() stays green through a backward step as long as the step.
+	monotonic func() time.Time
 	// sleep is overridden in tests; it returns false when the context ended.
 	sleep func(ctx context.Context, d time.Duration) bool
 	// shutdownDeadline is the single wall-clock deadline shared by every submit
@@ -139,7 +162,15 @@ type Runner struct {
 
 	consecutiveFailures    int
 	consecutiveJobFailures int
-	lastIdleLog            time.Time
+	// hardFailures counts the polls in the current run that the platform
+	// refused rather than never answered. The count rule applies to these
+	// alone: transient retries are seconds apart and would trip it in six.
+	hardFailures int
+	// failingSince is when the current run of failed polls started. Re-stamped
+	// whenever consecutiveFailures leaves zero, so a successful poll clearing
+	// the counter is all it takes to forget it.
+	failingSince time.Time
+	lastIdleLog  time.Time
 }
 
 // New builds a Runner with the production dependencies.
@@ -158,6 +189,7 @@ func New(healthPath, clientVersion string) *Runner {
 		healthPath: healthPath,
 		now:        func() time.Time { return time.Now().UTC() },
 		elapsed:    time.Since,
+		monotonic:  time.Now,
 		sleep:      sleepCtx,
 		budget:     jobBudget,
 	}
@@ -202,6 +234,7 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 	}
 
 	r.consecutiveFailures = 0
+	r.hardFailures = 0
 	next := clampInterval(time.Duration(resp.NextPollMS) * time.Millisecond)
 
 	// One job at a time, each answered before the next is started. The platform
@@ -254,20 +287,54 @@ func (r *Runner) idle(cfg config.Config, problem string, detail error) time.Dura
 
 // pollError classifies a failed poll and returns how long to wait.
 func (r *Runner) pollError(err error) time.Duration {
-	switch platform.Classify(err) {
-	case platform.ClassAuth:
-		r.pollFailed("platform rejected the credential", err)
-		return longBackoff
-	case platform.ClassUnavailable:
-		r.pollFailed(unavailableReason(err), err)
-		return longBackoff
-	case platform.ClassRequest:
-		r.pollFailed("platform refused the poll"+codeSuffix(err), err)
-		return longBackoff
-	default:
-		r.pollFailed("poll failed", err)
-		return defaultPollInterval
+	// Counted before the wait is chosen: the transient ladder is a function of
+	// how many polls in a row have failed, this one included.
+	r.consecutiveFailures++
+	if r.consecutiveFailures == 1 {
+		r.failingSince = r.monotonic()
 	}
+	class := platform.Classify(err)
+	if class != platform.ClassTransient {
+		r.hardFailures++
+	}
+	switch class {
+	case platform.ClassAuth:
+		return r.pollFailed("platform rejected the credential", err, longBackoff)
+	case platform.ClassUnavailable:
+		return r.pollFailed(unavailableReason(err), err, longBackoff)
+	case platform.ClassRequest:
+		return r.pollFailed("platform refused the poll"+codeSuffix(err), err, longBackoff)
+	case platform.ClassTransient:
+		// Nothing was decided platform-side. Parking defaultPollInterval here
+		// threw away the pacing the platform had just asked for and left the box
+		// a black hole for work it went on dispatching (#388) -- green
+		// throughout, since one failure never reaches unhealthyAfter. Classify
+		// routes a 503 to this class rather than ClassUnavailable precisely to
+		// avoid that park; this arm is what makes that true.
+		return r.pollFailed("poll failed", err, r.transientBackoff())
+	default:
+		// ClassJobGone: on the POLL path, instance_job_auth answering PT404 for
+		// an instance id this credential does not own. The token and the id
+		// disagree, so seconds-scale retries would just be a misconfigured box
+		// hammering the platform.
+		return r.pollFailed("poll failed", err, defaultPollInterval)
+	}
+}
+
+// transientBackoff is the wait after consecutiveFailures transient polls in a
+// row: transientBackoffBase, doubling, up to transientBackoffMax. Doubled in a
+// loop with an early return rather than shifted by the count: a platform down
+// for a day reaches four figures of consecutive failures, and `base << n` is a
+// negative duration -- an immediate re-poll -- long before that.
+func (r *Runner) transientBackoff() time.Duration {
+	wait := transientBackoffBase
+	for i := 1; i < r.consecutiveFailures; i++ {
+		wait *= 2
+		if wait >= transientBackoffMax {
+			return transientBackoffMax
+		}
+	}
+	return wait
 }
 
 // stampHealth refreshes the health file with the verdict as it stands.
@@ -279,18 +346,40 @@ func (r *Runner) stampHealth(next time.Duration) {
 	r.setHealth(true, "", next)
 }
 
-// pollFailed records a failed poll and flips health after unhealthyAfter of
-// them in a row. reason is ours and goes in the health file, which an operator
-// reads through `docker inspect`; detail may carry a message the platform
-// wrote, so it only ever reaches the local log.
-func (r *Runner) pollFailed(reason string, detail error) {
-	r.consecutiveFailures++
+// pollFailed logs a failed poll, stamps the health file and hands back the wait
+// it was given, so each arm of pollError is one line. reason is ours and goes in
+// the health file, which an operator reads through `docker inspect`; detail may
+// carry a message the platform wrote, so it only ever reaches the local log.
+func (r *Runner) pollFailed(reason string, detail error, wait time.Duration) time.Duration {
 	if detail != nil {
 		log.Printf("%s: %v (consecutive failures: %d)", reason, sanitize(detail), r.consecutiveFailures)
 	} else {
 		log.Printf("%s (consecutive failures: %d)", reason, r.consecutiveFailures)
 	}
-	r.setHealth(r.consecutiveFailures < unhealthyAfter, reason, defaultPollInterval)
+	// The wait that was actually scheduled, not defaultPollInterval: next_check_by
+	// says when this file is expected to have been written again, and a
+	// two-second retry promising ten minutes of slack would let a genuinely
+	// wedged loop go on reading fresh for the whole ten.
+	r.setHealth(r.pollHealthy(), reason, wait)
+	return wait
+}
+
+// pollHealthy decides whether a run of failed polls has gone on long enough to
+// take the container off the channel.
+//
+// Refusals are counted: longBackoff paces them, so unhealthyAfter of them is
+// twenty minutes. Transient failures are paced in seconds, so a run that has
+// any is measured in time instead -- outageUnhealthyAfter, inside the
+// platform's 30-minute routing window. The run's total must still reach
+// unhealthyAfter, so a lone failure followed by a long wait is not an outage.
+func (r *Runner) pollHealthy() bool {
+	if r.hardFailures >= unhealthyAfter {
+		return false
+	}
+	if r.consecutiveFailures < unhealthyAfter {
+		return true
+	}
+	return r.monotonic().Sub(r.failingSince) < outageUnhealthyAfter
 }
 
 // unavailableReason separates the two things ClassUnavailable covers. A

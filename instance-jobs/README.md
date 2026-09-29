@@ -20,8 +20,11 @@ The sleep is the platform's `next_poll_ms`, clamped locally to [1s, 1h] -- with
 a zero, absent or negative value taking the 10-minute default rather than the
 1s floor, since "no interval" is not a request to poll every second -- with
 ±20% jitter so a fleet provisioned together does not poll in lockstep. A poll
-that fails, or a platform that has no channel at this `api_base_url`, backs off
-ten minutes instead.
+the platform refused -- a rejected credential, a refused request, no channel at
+this `api_base_url` -- backs off ten minutes instead, and three in a row (about
+twenty minutes) report the container unhealthy. One that reached no verdict (a
+dropped connection, a 5xx, a 429) retries after 2s, doubling to a one-minute
+ceiling, and reports unhealthy once such a run has lasted five minutes.
 
 Four job kinds, in two groups.
 
