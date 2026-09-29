@@ -93,6 +93,42 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
     }
   });
 
+  // On ClickHouse the definer of table_describe is a real superuser, so any role that
+  // can create objects in public must not be able to get code run inside it.
+  test("table_describe cannot be hijacked through objects in public", async () => {
+    const admin = new Client({ connectionString: adminUrl, connectionTimeoutMillis: 10000 });
+    const mon = new Client({ connectionString: monUrl, connectionTimeoutMillis: 10000 });
+    try {
+      await admin.connect();
+      await admin.query("create table public.td_probe (id int primary key, note text default 'x')");
+      await admin.query("create schema td_app");
+      await admin.query("create table td_app.orders (id int references public.td_probe (id))");
+      await admin.query("grant create on schema public to postgres_ai_mon");
+      await mon.connect();
+      // An exact-type overload in public outranks pg_catalog's polymorphic array_append.
+      await mon.query(`create function public.array_append(text[], text) returns text[]
+        language plpgsql as $$ begin raise exception 'hijacked as %', current_user; end $$`);
+      await mon.query(`create function public.format(text, text, text) returns text
+        language plpgsql as $$ begin raise exception 'hijacked as %', current_user; end $$`);
+      const probe = await mon.query("select postgres_ai.table_describe('td_probe') as r");
+      expect(probe.rows[0].r).toContain("Table: public.td_probe");
+      expect(probe.rows[0].r).toContain("td_app.orders");
+      const orders = await mon.query("select postgres_ai.table_describe('td_app.orders') as r");
+      expect(orders.rows[0].r).toContain("Table: td_app.orders");
+      const catalog = await mon.query("select postgres_ai.table_describe('pg_class') as r");
+      expect(catalog.rows[0].r).toContain("Table: pg_catalog.pg_class");
+      await expect(mon.query("select postgres_ai.table_describe('td_missing')")).rejects.toThrow('relation "td_missing" does not exist');
+    } finally {
+      await mon.end();
+      await admin.query("drop function if exists public.array_append(text[], text)");
+      await admin.query("drop function if exists public.format(text, text, text)");
+      await admin.query("revoke create on schema public from postgres_ai_mon");
+      await admin.query("drop schema if exists td_app cascade");
+      await admin.query("drop table if exists public.td_probe");
+      await admin.end();
+    }
+  });
+
   test("full collector presets match expected failures", async () => {
     const mon = new Client({ connectionString: monUrl, connectionTimeoutMillis: 10000 });
     const failures: { metric: string; error: string }[] = [];
