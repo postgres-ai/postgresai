@@ -1,0 +1,57 @@
+{
+  "databaseConfigs": {
+    "configs": {
+      "maintenance_work_mem": "500MB",
+      "shared_buffers": "1GB",
+      "shared_preload_libraries": "pg_stat_statements, pg_stat_kcache, auto_explain, logerrors",
+      "work_mem": "100MB"
+    }
+  },
+  "databaseContainer": {
+    "dockerImage": "postgresai/extended-postgres:18-0.6.2"
+  },
+  "global": {
+    "debug": true
+  },
+  "retrieval": {
+    "refresh": {
+      "timetable": "0 0 * * 1"
+    },
+    "spec": {
+      "logicalDump": {
+        "options": {
+          "databases": {
+            "dblab_src": {}
+          },
+          "parallelJobs": 4,
+          "source": {
+            "connection": {
+              "dbname": "dblab_src",
+              "host": "172.17.0.1",
+              "port": 5433,
+              "username": "postgres"
+            }
+          }
+        }
+      },
+      "logicalRestore": {
+        "options": {
+          "configs": {
+            "maintenance_work_mem": "500MB",
+            "shared_buffers": "1GB",
+            "shared_preload_libraries": "pg_stat_statements, pg_stat_kcache, auto_explain, logerrors",
+            "work_mem": "100MB"
+          },
+          "customOptions": [
+            "--no-tablespaces",
+            "--no-privileges",
+            "--no-owner",
+            "--exit-on-error"
+          ],
+          "parallelJobs": 4
+        }
+      }
+    }
+  },
+  "retrievalMode": "logical"
+}

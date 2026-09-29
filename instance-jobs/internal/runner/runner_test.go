@@ -21,6 +21,7 @@ import (
 
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/collect"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/config"
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/dblab"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/platform"
 )
 
@@ -1059,6 +1060,23 @@ func TestEveryFailureIsClassified(t *testing.T) {
 		{collect.ErrWindowTooLong, "collection window is too long", "window_too_long"},
 		{context.DeadlineExceeded, "collection exceeded the local time budget", "timeout"},
 		{context.Canceled, "collection was cancelled", "cancelled"},
+		// A dblab_call is not a collection, and this text is what the person
+		// waiting on `pgai dblab clone create` is shown. The CLASS is the same
+		// either way -- the platform aggregates on that, and a timeout is a
+		// timeout whichever channel produced it, so only the words move.
+		{fmt.Errorf("%w: %w", errDBLabCall, context.DeadlineExceeded),
+			"the engine call exceeded the local time budget", "timeout"},
+		{fmt.Errorf("%w: %w", errDBLabCall, context.Canceled),
+			"the engine call was cancelled", "cancelled"},
+		// ...and the marker takes over NOTHING else: every arm that already had
+		// DBLab wording keeps it, which is what stops the mark from becoming a
+		// second classification.
+		{fmt.Errorf("%w: %w", errDBLabCall, dblab.ErrEngineUnreachable),
+			"dblab engine unreachable", "engine_unreachable"},
+		{fmt.Errorf("%w: %w", errDBLabCall, dblab.ErrOversizeReply),
+			"the engine reply is too large to submit", "oversize_reply"},
+		{fmt.Errorf("%w: %w", errDBLabCall, dblab.ErrInvalidArgs),
+			"job args could not be used", "invalid_args"},
 		{fmt.Errorf("%w: json", errUnencodableResult),
 			"the collected result could not be encoded", "unencodable_result"},
 		{&collect.UpstreamError{StatusCode: 503}, "metric store returned 503", "store_error"},
@@ -1167,7 +1185,7 @@ func TestJobsFailingInARowFlipHealth(t *testing.T) {
 	}
 	if err := h.health(t); err == nil {
 		t.Fatal("three jobs failed in a row and the container still reports healthy")
-	} else if !strings.Contains(err.Error(), "jobs in a row failed") {
+	} else if !strings.Contains(err.Error(), "runs in a row failed") {
 		t.Fatalf("health reason does not name the cause: %v", err)
 	}
 

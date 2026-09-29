@@ -23,9 +23,13 @@ repos:
         args: ['--branch', 'main']
       # Ensure files end with newline
       - id: end-of-file-fixer
+        # Captured engine responses are asserted BYTE FOR BYTE. A hook that
+        # tidies them turns the assertion into a reading of its own output.
+        exclude: '^instance-jobs/internal/dblab/testdata/.*\.golden$'
       # Remove trailing whitespace
       - id: trailing-whitespace
         args: ['--markdown-linebreak-ext=md']
+        exclude: '^instance-jobs/internal/dblab/testdata/.*\.golden$'
 
   - repo: local
     hooks:

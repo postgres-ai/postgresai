@@ -24,7 +24,19 @@ const DefaultAPIBaseURL = "https://postgres.ai/api/general"
 // DefaultStoreURL is the metric store on the compose network.
 const DefaultStoreURL = "http://sink-prometheus:9090"
 
+// DefaultDBLabURL is the engine's address on a DBLab box. The engine listens on
+// 2345 and this process runs beside it, so loopback is the address -- the
+// platform never supplies one (platform-all#805).
+const DefaultDBLabURL = "http://127.0.0.1:2345"
+
 // Config is the resolved runtime configuration. Nothing here is ever logged.
+//
+// ONE BOX SERVES ONE CHANNEL. InstanceID names a monitoring instance and
+// DBLabToken stands for a DBLab engine -- there is no dblab instance id, by
+// design: the token identifies the engine. Exactly one of the two may be set,
+// because the loop polls one rpc per tick, so a config naming both is an
+// ambiguity to report rather than a preference to resolve silently
+// (platform-all#805).
 type Config struct {
 	Path          string
 	APIToken      string
@@ -33,23 +45,71 @@ type Config struct {
 	StoreURL      string
 	StoreUsername string
 	StorePassword string
+	// DBLabToken is the engine's OWN per-instance platform token, issued by
+	// v1.dblab_instance_register on first registration. There is NO instance id
+	// here and there is not meant to be: the token identifies the engine, so the
+	// box names nothing and cannot name another (platform-all#805).
+	DBLabToken       string
+	DBLabURL         string
+	DBLabVerifyToken string
 }
+
+// IsDBLab reports whether this box serves the DBLab channel.
+func (c Config) IsDBLab() bool { return c.DBLabToken != "" }
 
 // Problem returns why this instance cannot poll yet, or "" when it can. The
 // text names what is wrong, never a value, and is safe to log and to put in the
 // health file.
 func (c Config) Problem() string {
 	var missing []string
-	if c.APIToken == "" {
-		missing = append(missing, "api_key")
+
+	// Named first, or a box carrying both would be reported as fully configured
+	// and would then serve whichever channel the code happened to prefer.
+	if c.InstanceID != "" && c.IsDBLab() {
+		return "instance_id and dblab_token are both set; one box serves one channel"
 	}
-	if c.InstanceID == "" {
-		missing = append(missing, "instance_id")
+
+	if c.IsDBLab() {
+		// No api_key: a DBLab box has none. Its credential IS dblab_token, which
+		// is set by definition here.
+		if c.DBLabVerifyToken == "" {
+			missing = append(missing, "dblab_verify_token")
+		}
+	} else {
+		if c.APIToken == "" {
+			missing = append(missing, "api_key")
+		}
+		if c.InstanceID == "" {
+			missing = append(missing, "instance_id")
+		}
 	}
+
 	if len(missing) > 0 {
 		return strings.Join(missing, ", ") + " missing"
 	}
+	if c.IsDBLab() {
+		if p := engineURLProblem(c.DBLabURL); p != "" {
+			return p
+		}
+	}
 	return baseURLProblem(c.APIBaseURL)
+}
+
+// engineURLProblem rejects a DBLab address this process cannot call. Plain http
+// is fine and is the norm: the engine runs BESIDE this process on the same box,
+// so the request does not leave it -- which is the point of the inversion. What
+// is rejected is a value that is not an address at all, because the alternative
+// is every job failing as a transport error rather than being reported here as
+// the configuration problem it is.
+func engineURLProblem(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "dblab_url is not a url"
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "dblab_url scheme is not http(s)"
+	}
+	return ""
 }
 
 // baseURLProblem rejects a platform URL that would put the org token on the
@@ -94,6 +154,7 @@ func Load() (Config, error) {
 		StoreURL:      envOr("PROMETHEUS_URL", DefaultStoreURL),
 		StoreUsername: os.Getenv("VM_AUTH_USERNAME"),
 		StorePassword: os.Getenv("VM_AUTH_PASSWORD"),
+		DBLabURL:      envOr("PGAI_DBLAB_URL", DefaultDBLabURL),
 	}
 
 	values, err := parseFile(cfg.Path)
@@ -111,6 +172,18 @@ func Load() (Config, error) {
 	// instance, while the env var is inherited from whatever ran `compose up`.
 	if v := values["api_base_url"]; v != "" {
 		cfg.APIBaseURL = v
+	}
+
+	// The DBLab channel (platform-all#805). Same file, same precedence: an
+	// install writes the keys, the environment is what a hand-started container
+	// inherits. A box with none of these is a monitoring instance and nothing
+	// below changes for it.
+	cfg.DBLabToken = firstNonEmpty(values["dblab_token"],
+		os.Getenv("PGAI_DBLAB_TOKEN"))
+	cfg.DBLabVerifyToken = firstNonEmpty(values["dblab_verify_token"],
+		os.Getenv("PGAI_DBLAB_VERIFY_TOKEN"))
+	if v := values["dblab_url"]; v != "" {
+		cfg.DBLabURL = v
 	}
 	return cfg, nil
 }

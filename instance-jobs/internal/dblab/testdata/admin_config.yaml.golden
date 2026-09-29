@@ -1,0 +1,206 @@
+# Copy this configuration to: ~/.dblab/engine/configs/server.yml
+# Configuration reference guide: https://postgres.ai/docs/reference-guides/database-lab-engine-configuration-reference
+# Since 4.2 the UI Configuration page offers a Simple-mode "paste URL + password" setup;
+# hand-editing this file remains fully supported and is what the Expert tab writes back to.
+#
+# A value that is exactly ${VAR} or $VAR is replaced with that environment
+# variable when the config is read, and DBLab refuses to start when the variable
+# is unset. Anything else is a literal: a "$" inside a password, a regex, or a
+# SQL block needs no escaping and reaches its consumer untouched. Quoting decides
+# the resulting type - a quoted placeholder is always a string, while an unquoted
+# one can also stand in for a numeric or boolean setting (spell booleans "true"
+# and "false"; "yes" and "no" stay strings).
+server:
+    verificationToken: "****" # Primary auth token; can be empty (not recommended); for multi-user mode, use DBLab EE
+    port: 2345 # API server port; default: "2345"
+    disableConfigModification: false # When true, configuration changes via API/CLI/UI are disabled; default: "false"
+retention: # Background auto-deletion of unused branches/snapshots; safe-only (never force-deletes dependents)
+    unusedSnapshotMinutes: 0 # Auto-delete a snapshot with no clones/children after N minutes unused; 0 = disabled (default)
+    unusedBranchMinutes: 0 # Auto-delete a branch with no clones/child branches after N minutes unused; 0 = disabled (default)
+    checkIntervalMinutes: 5 # Sweep cadence in minutes; default: "5"
+    protectionMaxDurationMinutes: 0 # Cap for timed protection set via API/CLI, in minutes; 0 = no cap (default)
+    maxDeletionsPerTick: 50 # Max entities deleted per sweep; default: "50"; excess deferred to the next tick
+embeddedUI:
+    enabled: false # If enabled, a separate UI container will be started
+    dockerImage: "postgresai/ce-ui:latest" # Default: "postgresai/ce-ui:latest"
+    host: "127.0.0.1" # Default: "127.0.0.1" (accepts only local connections)
+    port: 2346 # UI port; default: "2346"
+global:
+    engine: postgres # Default: "postgres" (only Postgres is currently supported)
+    debug: true # When true, more detailed logs are written to the server log
+    database: # DB credentials used for management connections
+        username: postgres # DB user, default: "postgres" (user must exist)
+        dbname: postgres # DB name, default: "postgres" (DB must exist)
+poolManager: # Manages filesystem pools (ZFS) or volume groups (LVM)
+    mountDir: /var/lib/dblab # Pool mount directory; can contain multiple pools; default: "/var/lib/dblab"
+    dataSubDir: data # The "golden copy" data directory location, relative to mountDir; must exist; default: "data"
+    # Example: for "/var/lib/dblab/dblab_pool/data" set mountDir: "/var/lib/dblab" and dataSubDir: "data" (assuming mount point is "/var/lib/dblab/dblab_pool")
+    clonesMountSubDir: clones # Where clones are mounted, relative to mountDir; default: "clones"
+    # Example: for "/var/lib/dblab/dblab_pool/clones" set mountDir: "/var/lib/dblab" and clonesMountSubDir: "clones" (assuming mount point is "/var/lib/dblab/dblab_pool"), resulting path for a clone running on port 6000: "/var/lib/dblab/dblab_pool/clones/6000"
+    socketSubDir: sockets # Where sockets are located, relative to mountDir; default: "sockets"
+    observerSubDir: observer # Where observability artifacts are located, relative to clone's data directory; default: "observer"
+    preSnapshotSuffix: "_pre" # Suffix for preliminary snapshots; default: "_pre"
+    selectedPool: "" # Force selection of working pool inside mountDir; default: "" (standard selection and rotation mechanism will be applied)
+databaseContainer: &db_container
+    # See https://postgres.ai/docs/database-lab/supported_databases
+    # DBLab SE and EE customers get images compatible with RDS, RDS Aurora, GCP CloudSQL, Heroku, Timescale Cloud, Supabase, PostGIS
+    dockerImage: "postgresai/extended-postgres:18-0.6.2" # Postgres image; major version (18) must match source if physical mode
+    containerConfig: # Custom container config; see https://docs.docker.com/engine/reference/run/#runtime-constraints-on-resources
+        "shm-size": 1gb # Shared memory size; increase if "could not resize shared memory segment" errors occur
+databaseConfigs: &db_configs
+    configs: # Postgres config for all DB containers
+        shared_buffers: 1GB # Postgres buffer pool size; large values can lead to OOM
+        shared_preload_libraries: "pg_stat_statements, pg_stat_kcache, auto_explain, logerrors" # Shared libraries; copy from source
+        maintenance_work_mem: "500MB" # Maximum memory for maintenance operations (VACUUM, CREATE INDEX, etc.)
+        work_mem: "100MB" # This and Query Planning parameters should be copied from source; see https://postgres.ai/docs/how-to-guides/administration/postgresql-configuration#postgresql-configuration-in-clones
+        # ... put Query Planning parameters here
+provision: # Defines how data is provisioned
+    !!merge <<: *db_container
+    portPool: # Range of ports for Postgres clones; ports will be allocated sequentially, starting from the lowest value
+        from: 6000
+        to: 6009
+    useSudo: false # Use sudo for ZFS/LVM and Docker commands if DBLab server running outside a container (not recommended)
+    keepUserPasswords: '****' # Keep user passwords in clones; default: "false"
+    cloneAccessAddresses: "127.0.0.1" # IP addresses that can be used to access clones; supports multiple IPs and IPv6; default: "127.0.0.1" (loop-back)
+    # pgUpgradeImage: "postgresai/pg-upgrade:17" # Image running pg_upgrade for "dblab clone upgrade"; its major is the version clones are upgraded to.
+    # pgUpgradeTimeout: 3h # How long a single "dblab clone upgrade" run may take before the clone is put back on its original version.
+    # pgUpgradePullTimeout: 1h # How long a single image pull made for "dblab clone upgrade" may take; the clone keeps running while it happens.
+    # upgradeImageAllowList: # Repositories an explicit "dblab clone upgrade --docker-image" may name. Empty (default) allows any.
+    #   - "postgresai/extended-postgres"
+    #                                           # Leave unset to disable clone major upgrades.
+retrieval: # Data retrieval: initial sync and ongoing updates. Two methods:
+    #   - logical: dump/restore (works with RDS, different physical layout)
+    #   - physical: direct copy (identical layout, not for RDS) e.g. using pg_basebackup, WAL-G, or pgBackRest
+    refresh:
+        timetable: "0 0 * * 1" # Full data refresh schedule in crontab format; see https://en.wikipedia.org/wiki/Cron#Overview
+        skipStartRefresh: false # Skip data refresh while the retrieval starts
+    jobs: # Jobs to run; must not contain physical and logical restore jobs simultaneously
+        - logicalDump
+        - logicalRestore
+        - logicalSnapshot
+    spec:
+        logicalDump: # Dumps PostgreSQL database from provided source
+            options:
+                !!merge <<: *db_container
+                dumpLocation: "/var/lib/dblab/dblab_pool/dump" # Dump file location; ensure enough disk space
+                source:
+                    type: remote # Source types: "local", "remote", "rdsIam"
+                    # connectionString: an optional full libpq connection string (URI
+                    # "postgresql://user@host:5432/dbname?sslmode=require" or keyword/value
+                    # "host=... port=... dbname=... sslmode=...") for the source. When set it
+                    # wins over the discrete connection.* fields below and preserves every
+                    # libpq option (sslmode, connect_timeout, sslrootcert, options, ...)
+                    # end-to-end into pg_dump and the engine's own connections to the source.
+                    # The password must NOT be embedded here — set it via connection.password
+                    # or the PGPASSWORD env var.
+                    # connectionString: "postgresql://postgres@host:5432/postgres?sslmode=require"
+                    connection: # Database connection parameters; use PGPASSWORD env var for password
+                        dbname: dblab_src
+                        host: 172.17.0.1
+                        port: 5433
+                        username: postgres
+                        password: "****"
+                databases: # List of databases to dump; leave empty to dump all databases
+                    dblab_src:
+                #   database1:
+                #     tables: # Partial dump tables; corresponds to --table option of pg_dump
+                #       - table1
+                #     excludeTables: # Exclude tables; corresponds to --exclude-table option of pg_dump
+                #       - table2
+                #   database2:
+                #   databaseN:
+
+                parallelJobs: 4 # Parallel jobs for faster dump; ignored if immediateRestore.enabled is true
+                # immediateRestore: # Direct restore to DBLab Engine instance; single-threaded unlike logicalRestore
+                #   enabled: true
+                #   <<: *db_configs # Adjust PostgreSQL configuration for logical dump job
+                #   customOptions: # Custom options for pg_restore command
+                #     - "--no-privileges"
+                #     - "--no-owner"
+                #     - "--exit-on-error"
+                customOptions: # Custom options for pg_dump command
+                #  - --no-publications
+                #  - --no-subscriptions
+        logicalRestore: # Restores PostgreSQL database from dump; don't use with immediateRestore
+            options:
+                !!merge <<: *db_container
+                dumpLocation: "/var/lib/dblab/dblab_pool/dump" # Location of archive files to restore
+                parallelJobs: 4 # Parallel jobs for faster restore
+                !!merge <<: *db_configs # Adjust PostgreSQL configuration for logical restore job
+                databases: # Database list to restore; comment out to restore all databases
+                #   database1:
+                #     format: directory # Dump format: directory, custom, plain; default: directory
+                #     compression: no # Compression for plain-text dumps: gzip, bzip2, no; default: no
+                #     tables: # Partial restore tables
+                #       - table1
+                #       - table2
+                #   database2:
+                #   databaseN:
+                queryPreprocessing: # Pre-processing SQL queries
+                    queryPath: "" # Path to SQL pre-processing queries; default: empty (no pre-processing)
+                    maxParallelWorkers: 2 # Worker limit for parallel queries; doesn't work for inline SQL
+                    inline: "" # Inline SQL; runs after scripts in queryPath
+                customOptions: # Custom options for pg_restore command
+                    - "--no-tablespaces"
+                    - "--no-privileges"
+                    - "--no-owner"
+                    - "--exit-on-error"
+                skipPolicies: true # Skip policies during restore
+        logicalSnapshot: # Final snapshot configuration
+            options:
+                !!merge <<: *db_configs # Adjust PostgreSQL configuration
+                preprocessingScript: "" # Pre-processing script for data scrubbing/masking; e.g., "/tmp/scripts/custom.sh"
+                databaseRename: # Rename databases before finalizing snapshot; runs after preprocessingScript; default: empty (disabled)
+                #  mydb_prod: mydb_dblab # Rename "mydb_prod" to "mydb_dblab"
+                dataPatching: # Pre-processing SQL queries for data patching
+                    !!merge <<: *db_container
+                    queryPreprocessing:
+                        queryPath: "" # Path to SQL pre-processing queries; default: empty
+                        maxParallelWorkers: 2 # Worker limit for parallel queries
+                        inline: "" # Inline SQL; runs after scripts in queryPath
+cloning:
+    accessHost: "localhost" # Host that will be specified in database connection info for all clones (only used to inform users)
+    maxIdleMinutes: 120 # Automatically delete clones after the specified minutes of inactivity; 0 - disable automatic deletion
+    protectionLeaseDurationMinutes: 1440 # Default protection duration in minutes (default: 1 day); 0 - infinite protection
+    protectionMaxDurationMinutes: 10080 # Maximum allowed protection duration in minutes (default: 7 days); 0 - no limit
+    protectionExpiryWarningMinutes: 1440 # Send warning webhook N minutes before expiry (default: 24 hours)
+diagnostic:
+    logsRetentionDays: 7 # How many days to keep logs
+observer: # CI Observer configuration
+#  replacementRules:  # Regexp rules for masking personal data in Postgres logs; applied before sending the logs to the Platform
+#                     # Check the syntax of regular expressions: https://github.com/google/re2/wiki/Syntax
+#    "regexp": "replace"
+#    "select \\d+": "***"
+#    "[a-z0-9._%+\\-]+(@[a-z0-9.\\-]+\\.[a-z]{2,4})": "***$1"
+webhooks: # Webhooks can be used to trigger actions in external systems upon events such as clone creation
+#  hooks:
+#    - url: ""
+#      secret: "" # (optional) Sent with the request in the `DBLab-Webhook-Token` HTTP header.
+#      trigger:
+#        - clone_create
+#        - clone_reset
+#        - clone_upgrade
+platform:
+    url: "https://postgres.ai/api/general" # Default: "https://postgres.ai/api/general"
+    enableTelemetry: true
+    #  ╔══════════════════════════════════════════════════════════════════════════╗
+    #  ║                     POSTGRES AI PLATFORM INTEGRATION                     ║
+    #  ╠══════════════════════════════════════════════════════════════════════════╣
+    #  ║                                                                          ║
+    #  ║  - Production-ready UI, AI assistance and support from human experts     ║
+    #  ║  - Enterprise-grade user management & role-based access control          ║
+    #  ║  - Advanced security: audit trails, SIEM integration, compliance         ║
+    #  ║  - Real-time performance monitoring & intelligent recommendations        ║
+    #  ║                                                                          ║
+    #  ║  Learn more at https://postgres.ai/                                      ║
+    #  ║                                                                          ║
+    #  ╚══════════════════════════════════════════════════════════════════════════╝
+    #
+    # Uncomment the following lines if you need the Platform integration
+    #
+    projectName: "dblab-inversion-e2e" # Project name
+    orgKey: "****" # Organization key
+#  accessToken: "${PGAI_PLATFORM_ACCESS_TOKEN}" # Token for authorization in Platform API; get it at https://postgres.ai/console/YOUR_ORG_NAME/tokens
+#  enablePersonalTokens: true # Enable authorization with personal tokens of the organization's members.
+#  bindClonesToUser: false # Label each clone with a trusted Teleport dblab_user tag from the authenticated user's email local part (requires enablePersonalTokens); shared-token clones are left untagged and the clone's Postgres username is unchanged.
+#

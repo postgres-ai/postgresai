@@ -1,0 +1,114 @@
+# HELP dblab_branches_total Total number of branches
+# TYPE dblab_branches_total gauge
+dblab_branches_total 1
+# HELP dblab_clone_avg_cpu_usage_percent Average CPU usage percentage across all clone containers with valid data
+# TYPE dblab_clone_avg_cpu_usage_percent gauge
+dblab_clone_avg_cpu_usage_percent 0.04254509018036072
+# HELP dblab_clone_max_age_seconds Maximum age of any clone in seconds
+# TYPE dblab_clone_max_age_seconds gauge
+dblab_clone_max_age_seconds 1506.29266541
+# HELP dblab_clone_protected_count Number of protected clones
+# TYPE dblab_clone_protected_count gauge
+dblab_clone_protected_count 0
+# HELP dblab_clone_total_cpu_usage_percent Total CPU usage percentage across all clone containers
+# TYPE dblab_clone_total_cpu_usage_percent gauge
+dblab_clone_total_cpu_usage_percent 0.04254509018036072
+# HELP dblab_clone_total_diff_size_bytes Total extra disk space used by all clones (sum of diffs from snapshots)
+# TYPE dblab_clone_total_diff_size_bytes gauge
+dblab_clone_total_diff_size_bytes 1.248256e+06
+# HELP dblab_clone_total_logical_size_bytes Total logical size of all clone data
+# TYPE dblab_clone_total_logical_size_bytes gauge
+dblab_clone_total_logical_size_bytes 12288
+# HELP dblab_clone_total_memory_limit_bytes Total memory limit in bytes across all clone containers
+# TYPE dblab_clone_total_memory_limit_bytes gauge
+dblab_clone_total_memory_limit_bytes 3.994259456e+09
+# HELP dblab_clone_total_memory_usage_bytes Total memory usage in bytes across all clone containers
+# TYPE dblab_clone_total_memory_usage_bytes gauge
+dblab_clone_total_memory_usage_bytes 4.28032e+07
+# HELP dblab_clones_by_status Number of clones by status
+# TYPE dblab_clones_by_status gauge
+dblab_clones_by_status{status="OK"} 1
+# HELP dblab_clones_total Total number of clones
+# TYPE dblab_clones_total gauge
+dblab_clones_total 1
+# HELP dblab_datasets_available Number of available (non-busy) dataset slots for reuse
+# TYPE dblab_datasets_available gauge
+dblab_datasets_available{pool="dblab_pool"} 0
+# HELP dblab_datasets_total Total number of datasets (slots) in the pool
+# TYPE dblab_datasets_total gauge
+dblab_datasets_total{pool="dblab_pool"} 1
+# HELP dblab_disk_compress_ratio Compression ratio of the filesystem
+# TYPE dblab_disk_compress_ratio gauge
+dblab_disk_compress_ratio{pool="dblab_pool"} 4.15
+# HELP dblab_disk_data_size_bytes Size of the data directory in bytes
+# TYPE dblab_disk_data_size_bytes gauge
+dblab_disk_data_size_bytes{pool="dblab_pool"} 4.834304e+07
+# HELP dblab_disk_free_bytes Free disk space in bytes
+# TYPE dblab_disk_free_bytes gauge
+dblab_disk_free_bytes{pool="dblab_pool"} 2.027049984e+10
+# HELP dblab_disk_total_bytes Total disk space in bytes
+# TYPE dblab_disk_total_bytes gauge
+dblab_disk_total_bytes{pool="dblab_pool"} 2.0283654144e+10
+# HELP dblab_disk_used_by_clones_bytes Disk space used by clones in bytes
+# TYPE dblab_disk_used_by_clones_bytes gauge
+dblab_disk_used_by_clones_bytes{pool="dblab_pool"} 1.584128e+06
+# HELP dblab_disk_used_by_snapshots_bytes Disk space used by snapshots in bytes
+# TYPE dblab_disk_used_by_snapshots_bytes gauge
+dblab_disk_used_by_snapshots_bytes{pool="dblab_pool"} 33792
+# HELP dblab_disk_used_bytes Used disk space in bytes
+# TYPE dblab_disk_used_bytes gauge
+dblab_disk_used_bytes{pool="dblab_pool"} 1.3154304e+07
+# HELP dblab_instance_info Information about the DBLab instance
+# TYPE dblab_instance_info gauge
+dblab_instance_info{edition="community",instance_id="dar7150j0h0000b0tpcg",version="v4.2.0-20260911-0242"} 1
+# HELP dblab_instance_status_code Status code of the DBLab instance (0=OK, 1=Warning, 2=Bad)
+# TYPE dblab_instance_status_code gauge
+dblab_instance_status_code 0
+# HELP dblab_instance_uptime_seconds Time in seconds since the DBLab instance started
+# TYPE dblab_instance_uptime_seconds gauge
+dblab_instance_uptime_seconds 88245.587061654
+# HELP dblab_pool_status Status of the pool (1=active for status)
+# TYPE dblab_pool_status gauge
+dblab_pool_status{mode="zfs",pool="dblab_pool",status="active"} 1
+# HELP dblab_retrieval_status Status of data retrieval (1=active for status)
+# TYPE dblab_retrieval_status gauge
+dblab_retrieval_status{mode="logical",status="finished"} 1
+# HELP dblab_scrape_duration_seconds Duration of last metrics collection in seconds
+# TYPE dblab_scrape_duration_seconds gauge
+dblab_scrape_duration_seconds 0.059316557
+# HELP dblab_scrape_errors_total Total number of errors during metrics collection
+# TYPE dblab_scrape_errors_total counter
+dblab_scrape_errors_total 0
+# HELP dblab_scrape_success_timestamp Unix timestamp of last successful metrics collection
+# TYPE dblab_scrape_success_timestamp gauge
+dblab_scrape_success_timestamp 1.790430255e+09
+# HELP dblab_snapshot_max_age_seconds Maximum age of any snapshot in seconds
+# TYPE dblab_snapshot_max_age_seconds gauge
+dblab_snapshot_max_age_seconds 88182.638774892
+# HELP dblab_snapshot_max_data_lag_seconds Maximum data lag of any snapshot in seconds
+# TYPE dblab_snapshot_max_data_lag_seconds gauge
+dblab_snapshot_max_data_lag_seconds 88240.638774892
+# HELP dblab_snapshot_total_logical_size_bytes Total logical size of all snapshot data
+# TYPE dblab_snapshot_total_logical_size_bytes gauge
+dblab_snapshot_total_logical_size_bytes 4.833792e+07
+# HELP dblab_snapshot_total_num_clones Total number of clones across all snapshots
+# TYPE dblab_snapshot_total_num_clones gauge
+dblab_snapshot_total_num_clones 1
+# HELP dblab_snapshot_total_physical_size_bytes Total physical disk space used by all snapshots
+# TYPE dblab_snapshot_total_physical_size_bytes gauge
+dblab_snapshot_total_physical_size_bytes 24576
+# HELP dblab_snapshots_by_pool Number of snapshots by pool
+# TYPE dblab_snapshots_by_pool gauge
+dblab_snapshots_by_pool{pool="dblab_pool"} 1
+# HELP dblab_snapshots_total Total number of snapshots
+# TYPE dblab_snapshots_total gauge
+dblab_snapshots_total 1
+# HELP dblab_sync_last_replayed_timestamp Unix timestamp of the last replayed transaction
+# TYPE dblab_sync_last_replayed_timestamp gauge
+dblab_sync_last_replayed_timestamp 0
+# HELP dblab_sync_uptime_seconds Uptime of the sync instance in seconds
+# TYPE dblab_sync_uptime_seconds gauge
+dblab_sync_uptime_seconds 0
+# HELP dblab_sync_wal_lag_seconds WAL replay lag in seconds for the sync instance (physical mode)
+# TYPE dblab_sync_wal_lag_seconds gauge
+dblab_sync_wal_lag_seconds 0

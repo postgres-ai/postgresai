@@ -1,5 +1,6 @@
-// Package runner is the loop: ask the platform for work, run one job at a time
-// against the local metric store, post the answer back, sleep.
+// Package runner is the loop: ask the platform for work, run it -- one job at a
+// time on the monitoring arm, on a bounded pool on the DBLab arm -- against the
+// local metric store or the local DBLab engine, post the answer back, sleep.
 //
 // Every connection it makes is outbound. The platform never dials in.
 package runner
@@ -11,13 +12,17 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"runtime/debug"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/collect"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/config"
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/dblab"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/platform"
 )
 
@@ -134,12 +139,47 @@ const (
 
 	// errorMaxBytes is the platform's cap on the submitted error text.
 	errorMaxBytes = 512
+
+	// dblabGetTimeout bounds ONE read against the local engine. Short, because a
+	// read is retried and each attempt has to leave room for the next.
+	dblabGetTimeout = 2 * time.Minute
+
+	// dblabConcurrency is how many jobs of ONE claimed batch the DBLab arm runs at
+	// once; the monitoring arm stays strictly sequential (see tick).
+	//
+	// IT MUST EQUAL THE PLATFORM'S CLAIM LIMIT (app.settings.dblab_job_claim_limit,
+	// which platform-all#816 seeds to 5). That equality is what stops anything
+	// claimed sitting unstarted, so claimed_at is a true proxy for started_at and
+	// claim_limit x per_job_ceiling < the sweep's stuck_after collapses to ONE
+	// ceiling whatever the batch size. Claim more and the tail is swept to
+	// 'failed' while this process is still going to run it: the caller is told a
+	// POST /clone failed and the clone exists anyway -- the mirror of the write
+	// rule below. runBatchConcurrently logs a batch wider than the pool, and
+	// TestADBLabBatchRunsAtMostThePoolAtOnce pins the number.
+	//
+	// Five is the Console instance page's own call count, and deliberately small
+	// -- the engine is the customer's box, and the point is to stop a cheap read
+	// queueing behind an expensive write, not to parallelise load onto it. It is
+	// NOT applied per method, so a batch of writes runs concurrently too;
+	// bounding that belongs on the claim, the only place that can refuse work
+	// without having already taken it (#391).
+	dblabConcurrency = 5
+
+	// dblabWriteAttempts is 1, and that is the whole point: a POST, a PATCH or a
+	// DELETE against the engine is NOT idempotent. A `POST /clone` whose answer
+	// we never saw may well have created the clone, so re-sending it would create
+	// a second one -- on the customer's disk, charged to the customer -- to
+	// recover from a timeout. A read is safe to repeat and is repeated
+	// (dblabReadAttempts); a write is answered as failed and the platform decides.
+	dblabWriteAttempts = 1
+	dblabReadAttempts  = 3
 )
 
 // Runner owns the loop's state.
 type Runner struct {
 	platformClient func(baseURL string) *platform.Client
 	storeClient    func(cfg config.Config) *collect.Client
+	dblabClient    func(cfg config.Config) *dblab.Client
 	healthPath     string
 	now            func() time.Time
 	// elapsed measures a job's duration. Separate from now() because now() is
@@ -154,14 +194,21 @@ type Runner struct {
 	// sleep is overridden in tests; it returns false when the context ended.
 	sleep func(ctx context.Context, d time.Duration) bool
 	// shutdownDeadline is the single wall-clock deadline shared by every submit
-	// sent after cancellation. Zero until the first one. See submit.
+	// sent after cancellation. Zero until the first one. See submit. Guarded by
+	// mu: a DBLab batch can be cancelled with several workers in flight and any
+	// of them may be the one to set it.
 	shutdownDeadline time.Time
 	// budget is the per-job ceiling. A field rather than the constant directly
 	// so a test can shorten it and see what a job that overruns is answered as.
 	budget time.Duration
 
-	consecutiveFailures    int
-	consecutiveJobFailures int
+	// The poll loop's own state, written only from tick/pollError/idle and
+	// therefore only ever from the single loop goroutine. Kept ABOVE mu on
+	// purpose: the merge that brought #388's backoff onto this branch landed
+	// hardFailures and failingSince below it, inside the block mu's comment
+	// enumerates, which reads as a claim that the lock covers them.
+	consecutiveFailures int
+	lastIdleLog         time.Time
 	// hardFailures counts the polls in the current run that the platform
 	// refused rather than never answered. The count rule applies to these
 	// alone: transient retries are seconds apart and would trip it in six.
@@ -170,7 +217,20 @@ type Runner struct {
 	// whenever consecutiveFailures leaves zero, so a successful poll clearing
 	// the counter is all it takes to forget it.
 	failingSince time.Time
-	lastIdleLog  time.Time
+	// afterSlot runs between a worker slot being taken and the re-check that
+	// follows it, and is nil outside tests. The window it opens onto -- a
+	// cancellation arriving while the dispatch loop is parked on a slot -- is
+	// not reachable from outside the loop, so without a seam the re-check in
+	// runBatchConcurrently cannot be covered at all.
+	afterSlot func()
+	// mu guards the two fields a DBLab batch's workers share:
+	// consecutiveJobFailures and shutdownDeadline. NOT the health file -- that
+	// is written outside the lock, because writeHealth is write-and-rename and
+	// tick re-stamps after wg.Wait(), so a concurrent stamp can only be
+	// transiently stale. Move a stamp later into a worker and that stops being
+	// true. The monitoring arm is single-goroutine and the lock is free there.
+	mu                     sync.Mutex
+	consecutiveJobFailures int
 }
 
 // New builds a Runner with the production dependencies.
@@ -185,6 +245,12 @@ func New(healthPath, clientVersion string) *Runner {
 				log.Printf("query-text enrichment dropped (non-fatal): %v", sanitize(err))
 			}
 			return c
+		},
+		// Built with the whole job budget as its client timeout: a write gets one
+		// attempt and the budget IS its bound, while a read is bounded tighter by
+		// a per-attempt context in executeDBLab.
+		dblabClient: func(cfg config.Config) *dblab.Client {
+			return dblab.NewClient(cfg.DBLabURL, cfg.DBLabVerifyToken, jobBudget)
 		},
 		healthPath: healthPath,
 		now:        func() time.Time { return time.Now().UTC() },
@@ -225,6 +291,11 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 
 	client := r.platformClient(cfg.APIBaseURL)
 	creds := platform.Credentials{APIToken: cfg.APIToken, InstanceID: cfg.InstanceID}
+	if cfg.IsDBLab() {
+		// The engine's OWN token and nothing else: no org token, and no instance
+		// id, because the token identifies the engine (platform-all#805).
+		creds = platform.Credentials{DBLabToken: cfg.DBLabToken}
+	}
 
 	pollCtx, cancel := context.WithTimeout(ctx, platformTimeout)
 	resp, err := client.Poll(pollCtx, creds)
@@ -237,34 +308,203 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 	r.hardFailures = 0
 	next := clampInterval(time.Duration(resp.NextPollMS) * time.Millisecond)
 
-	// One job at a time, each answered before the next is started. The platform
-	// stamps started_at at pickup and sweeps anything still running after an
-	// hour, so running a claimed batch concurrently -- or slowly -- is how real
-	// answers get refused. The "one job per poll" pacing (issue #366) is the
-	// platform's own (c_claim_limit := 1); this side just never runs a claimed
-	// batch in parallel, and re-polls only on the next tick after the sleep.
+	// HOW MANY A POLL HANDS OUT IS THE PLATFORM'S BUSINESS, not this loop's, and
+	// since platform-all#816 it is a SETTING per channel
+	// (app.settings.instance_job_claim_limit, 1; dblab_job_claim_limit, 5), not a
+	// constant. Nothing here had to change to DRAIN a wider one: `jobs` has been
+	// an array since platform-all#805, so a box installed before #816 parses and
+	// answers five. Running five SEQUENTIALLY is the tail-sweep below, though,
+	// which is why !866 and #391 land together and why dblab_jobs_enabled being
+	// off is what holds it until they do.
+	//
+	// THIS SIDE DECLINES NOTHING IT IS HANDED, deliberately: a job claimed here
+	// and then refused would sit 'running' until the platform's hourly sweep
+	// failed it. Only the claim can refuse work without having already taken it.
+	// dblabConcurrency bounds how many RUN at once, never how many are answered.
+	//
+	// WHAT THIS SIDE OWES IN RETURN is the arithmetic behind that limit:
+	// claim_limit x per_job_ceiling must stay under the sweep's stuck_after, and
+	// the ceiling is NOT jobBudget alone -- it is jobBudget + 2*submitBudget
+	// (32m20s; see submitBudget), because a job can burn the answer ladder and
+	// then the terminal close after a refusal. Against a 1-hour stuck_after that
+	// permits a SEQUENTIAL claim of one, which is why monitoring's limit is 1: a
+	// sequential loop leaves the tail of a batch claimed-but-not-started for
+	// (n-1) ceilings, which the platform cannot tell from a box that died.
+	//
+	// THE DBLAB ARM RUNS ITS BATCH CONCURRENTLY (runBatchConcurrently), which is
+	// what collapses the product to one ceiling WITHIN A CLAIMED BATCH and lets
+	// its limit be 5. It does not make this loop poll while a batch runs: the
+	// tick still waits the batch out, so a call enqueued after the claim waits
+	// for the slowest job in it. Monitoring stays strictly one at a time below.
 	if len(resp.Jobs) == 0 {
 		// Nothing to run means nothing is failing: a fleet being drained (the
 		// flag turned off) hands out no work, and a box must not stay red on a
 		// run of failures it can no longer retry.
+		r.mu.Lock()
 		r.consecutiveJobFailures = 0
+		r.mu.Unlock()
 	}
 
-	for _, job := range resp.Jobs {
-		// Stamped before AND after each job: the deadline in the file allows one
-		// job budget, so a tick that runs several would otherwise look wedged
-		// while it is doing exactly what it should. It carries the CURRENT
-		// verdict -- re-stamping healthy here would make a box already judged
-		// dead report green for the whole duration of every later job.
-		r.stampHealth(next)
-		r.runJob(ctx, client, creds, cfg, job)
-		if ctx.Err() != nil {
-			break
+	if cfg.IsDBLab() {
+		r.runBatchConcurrently(ctx, client, creds, cfg, resp.Jobs, next)
+	} else {
+		for _, job := range resp.Jobs {
+			// Stamped before AND after each job: the deadline in the file allows
+			// one job budget, so a tick that runs several would otherwise look
+			// wedged while it is doing exactly what it should. It carries the
+			// CURRENT verdict -- re-stamping healthy here would make a box
+			// already judged dead report green for the whole duration of every
+			// later job.
+			r.stampHealth(next)
+			if r.runJob(ctx, client, creds, cfg, job) {
+				r.recordRun(0, 1)
+			} else {
+				r.recordRun(1, 1)
+			}
+			if ctx.Err() != nil {
+				break
+			}
 		}
 	}
 
 	r.stampHealth(next)
 	return r.jittered(next)
+}
+
+// runBatchConcurrently runs a claimed DBLab batch on a bounded worker pool. The
+// monitoring arm does not come through here: that fleet is live, its claim limit
+// is 1, and a pool would be a behaviour change for no gain.
+//
+// EACH JOB IS STILL HANDED TO runJob UNCHANGED, which keeps every rule intact: a
+// write is attempted ONCE (dblabWriteAttempts), a read is retried, each job is
+// answered for its own id, and a failure is submitted rather than swallowed.
+// Concurrency changes WHEN jobs run, never how many times a call is sent.
+//
+// jobs should never exceed dblabConcurrency -- see there for why that equality
+// is load-bearing. If it does, the surplus queues here rather than being
+// declined, and the log line below is the only warning anyone gets.
+func (r *Runner) runBatchConcurrently(
+	ctx context.Context,
+	client *platform.Client,
+	creds platform.Credentials,
+	cfg config.Config,
+	jobs []platform.Job,
+	next time.Duration,
+) {
+	if len(jobs) == 0 {
+		return
+	}
+
+	if len(jobs) > dblabConcurrency {
+		// The equality this rests on has broken, and nothing else reports it:
+		// the surplus waits for a slot while the platform counts it as running,
+		// and the sweep can fail it to its caller before this process starts it.
+		log.Printf("the platform claimed %d jobs but this agent runs %d at a time; "+
+			"the surplus can be swept as failed while it is still going to be run "+
+			"(lower app.settings.dblab_job_claim_limit, or upgrade the agent)",
+			len(jobs), dblabConcurrency)
+	}
+
+	slots := make(chan struct{}, dblabConcurrency)
+	var wg sync.WaitGroup
+	// The batch's verdict, counted once and applied once: see recordRun. Only
+	// the jobs this loop actually STARTED are judged -- one it never dispatched
+	// says nothing about whether the box works.
+	var failed atomic.Int64
+	started := 0
+
+dispatch:
+	for _, job := range jobs {
+		// THE LOOP NEVER DISPATCHES AFTER OBSERVING THE CONTEXT END. Not the
+		// same as "nothing is started after it ends" -- the context can die
+		// between the last check and the goroutine's first instruction, and no
+		// arrangement here closes that. What is closed is the loop deciding to
+		// start one.
+		//
+		// The early-out is a cheap skip and the <-ctx.Done() arm keeps the park
+		// interruptible; neither is load-bearing alone. THE RE-CHECK AFTER THE
+		// SEND IS: select picks uniformly at random when both cases are ready,
+		// so without it a cancellation landing while the loop is parked starts
+		// one more job about half the time. afterSlot is the seam that lets a
+		// test reach that interleaving, which no amount of scheduling pressure
+		// can produce from outside.
+		//
+		// The jobs left undispatched were already CLAIMED, so they are 'running'
+		// platform-side and wait out the sweep; beginning a call this process is
+		// about to abandon is the worse of the two.
+		if ctx.Err() != nil {
+			break dispatch
+		}
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case slots <- struct{}{}:
+		}
+		if r.afterSlot != nil {
+			r.afterSlot()
+		}
+		if ctx.Err() != nil {
+			<-slots
+			break dispatch
+		}
+		wg.Add(1)
+		started++
+		go func(job platform.Job) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			if !r.runWorker(ctx, client, creds, cfg, job, next) {
+				failed.Add(1)
+			}
+		}(job)
+	}
+
+	// The tick does not return until the batch is done: the next poll must not
+	// overlap this one, or the platform hands out more work while these are
+	// still running and the pool's equality with the claim limit stops meaning
+	// anything.
+	wg.Wait()
+	r.recordRun(int(failed.Load()), started)
+}
+
+// runWorker is one pool worker's whole body, panic guard first.
+//
+// The stamp is per worker for the same reason the sequential arm stamps per
+// job: the health deadline allows one job budget, so a batch that outlives one
+// reads as wedged and a working box reports dead through the container
+// HEALTHCHECK -- `mon health` shows a dead channel and someone restarts it,
+// mid-clone-create. (Nothing restarts it automatically: the compose service
+// carries `restart: unless-stopped`, which fires on process exit, not on an
+// unhealthy status.)
+//
+// THE GUARD COVERS BOTH, and it is here rather than only around the job because
+// a panic in either ends the process. runCollectSafely already covers a
+// COLLECTION's body; a dblab_call has no equivalent, and a panic on this arm
+// strands up to dblabConcurrency-1 siblings already CLAIMED and now never
+// answered -- including a POST /clone the engine may have carried out, which is
+// the outcome dblabWriteAttempts exists to prevent (#391).
+//
+// The answer is best effort and safe to duplicate: a job already answered comes
+// back PT404, which submit treats as routine. It does NOT catch runtime.Goexit
+// -- recover() returns nil for that -- so a t.Fatalf from an injected hook on a
+// worker drops the job silently; assert from the test goroutine.
+func (r *Runner) runWorker(ctx context.Context, client *platform.Client, creds platform.Credentials, cfg config.Config, job platform.Job, next time.Duration) (ok bool) {
+	defer func() {
+		if p := recover(); p == nil {
+			return
+		}
+		ok = false
+		// The panic VALUE can carry a payload or a label, so only the stack is
+		// logged -- the same rule runCollectSafely follows.
+		log.Printf("job %s (%s) panicked; recovered\n%s", job.ID, job.Kind, debug.Stack())
+		answer := platform.Submission{JobID: job.ID, Outcome: platform.OutcomeError}
+		answer.Error, answer.FailureClass = describeFailure(errJobPanicked)
+		if err := r.submit(ctx, client, creds, answer); err != nil {
+			log.Printf("job %s: panicked and the failure could not be recorded: %v",
+				job.ID, sanitize(err))
+		}
+	}()
+	r.stampHealth(next)
+	return r.runJob(ctx, client, creds, cfg, job)
 }
 
 // idle handles an instance that cannot poll: no credential, no instance id, or
@@ -339,8 +579,15 @@ func (r *Runner) transientBackoff() time.Duration {
 
 // stampHealth refreshes the health file with the verdict as it stands.
 func (r *Runner) stampHealth(next time.Duration) {
-	if r.consecutiveJobFailures >= unhealthyAfter {
-		r.setHealth(false, fmt.Sprintf("%d jobs in a row failed", r.consecutiveJobFailures), next)
+	// Read under the lock: a DBLab batch's workers stamp concurrently, and the
+	// branch below must act on the value it reported.
+	r.mu.Lock()
+	failures := r.consecutiveJobFailures
+	r.mu.Unlock()
+	if failures >= unhealthyAfter {
+		// "runs", not "jobs": the counter now moves once per poll's worth of
+		// work, so on the DBLab arm one unit is a whole batch.
+		r.setHealth(false, fmt.Sprintf("%d runs in a row failed", failures), next)
 		return
 	}
 	r.setHealth(true, "", next)
@@ -403,8 +650,11 @@ func codeSuffix(err error) string {
 	return ""
 }
 
-// runJob executes one job and submits its answer.
-func (r *Runner) runJob(ctx context.Context, client *platform.Client, creds platform.Credentials, cfg config.Config, job platform.Job) {
+// runJob executes one job, submits its answer, and reports whether the job
+// landed. The caller owns what a failure MEANS for the box's health, because
+// the two arms answer that differently: sequentially it is one more failure in
+// a row, while a DBLab batch is judged as a whole (see runBatchConcurrently).
+func (r *Runner) runJob(ctx context.Context, client *platform.Client, creds platform.Credentials, cfg config.Config, job platform.Job) (ok bool) {
 	// Monotonic, not r.now(): see the elapsed field. r.now() stays wall-clock
 	// for the collection window, which is compared against RFC3339 args.
 	startedAt := time.Now()
@@ -464,17 +714,43 @@ func (r *Runner) runJob(ctx context.Context, client *platform.Client, creds plat
 				log.Printf("job %s: result refused, job closed as failed", job.ID)
 			}
 		}
-		r.consecutiveJobFailures++
-		log.Printf("job %s was not accepted: %v (consecutive job failures: %d)",
-			job.ID, sanitize(err), r.consecutiveJobFailures)
-		return
+		log.Printf("job %s was not accepted: %v", job.ID, sanitize(err))
+		return false
 	}
 	if runErr != nil {
 		// Accepted, but the box could not do the work.
-		r.consecutiveJobFailures++
+		return false
+	}
+	return true
+}
+
+// recordRun folds one run's verdict into the failure count the healthcheck
+// reads. failed is how many jobs did not land and total is how many ran, so the
+// unit is a RUN rather than a job: sequentially that is one job, and for a
+// DBLab batch it is the whole batch.
+//
+// A batch has to be judged whole, and the old per-job bump made that impossible
+// rather than merely imprecise. Workers raced to bump and reset, so an
+// identical batch of 5 with 3 failures ended on 0, 1, 2 or 3 depending purely
+// on which goroutine finished last -- measured across 300 ticks as
+// {0: 125, 1: 94, 2: 49, 3: 32}. 11% of them crossed unhealthyAfter and took a
+// working box off the channel for three bad call arguments; 42% reported a
+// clean run for a box that had failed 60% of its work. unhealthyAfter was sized
+// against three bad RUNS in a row, and this is what restores that meaning.
+func (r *Runner) recordRun(failed, total int) {
+	if total == 0 {
 		return
 	}
-	r.consecutiveJobFailures = 0
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if failed < total {
+		// Anything landed, so the box can reach the platform and do work.
+		r.consecutiveJobFailures = 0
+		return
+	}
+	r.consecutiveJobFailures++
+	log.Printf("all %d job(s) of this run failed (consecutive failed runs: %d)",
+		total, r.consecutiveJobFailures)
 }
 
 // submit posts one answer, retrying while the failure is transient. The work is
@@ -498,12 +774,26 @@ func (r *Runner) submit(ctx context.Context, client *platform.Client, creds plat
 	// it is replacing (#378).
 	if ctx.Err() != nil {
 		// One deadline for the whole shutdown, set on the first detached submit
-		// and reused by any that follow. The loop is single-goroutine, so this
-		// needs no synchronisation.
-		if r.shutdownDeadline.IsZero() {
-			r.shutdownDeadline = r.now().Add(shutdownSubmitBudget)
-		}
-		detached, cancel := context.WithDeadline(context.WithoutCancel(ctx), r.shutdownDeadline)
+		// and reused by any that follow. Under mu because the DBLab arm's
+		// workers can all reach this at once on a cancelled batch, and any of
+		// them may be the one to set it -- which is what makes "one deadline for
+		// the whole shutdown" a claim rather than a tautology.
+		// r.now() is read BEFORE the lock and the unlock is deferred into a
+		// closure: r.now is injectable, and a panic under this lock would
+		// deadlock runWorker's recovery -- it answers the job by calling this
+		// same function, which on a cancelled batch re-enters this branch and
+		// takes mu again -- turning a loud crash into a silent wedge with
+		// nothing to restart it.
+		candidate := r.now().Add(shutdownSubmitBudget)
+		deadline := func() time.Time {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.shutdownDeadline.IsZero() {
+				r.shutdownDeadline = candidate
+			}
+			return r.shutdownDeadline
+		}()
+		detached, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 		defer cancel()
 		err := client.Submit(detached, creds, s)
 		if err != nil && platform.Classify(err) != platform.ClassJobGone {
@@ -576,14 +866,20 @@ func refusedByPlatform(err error) bool {
 // store was fine.
 var errCollectionPanicked = errors.New("collection panicked")
 
+// errJobPanicked marks a panic anywhere else in a job -- outside the collection
+// body runCollectSafely guards. It is separate because the two are answered
+// from different places and a dblab_call has no "collection" to name.
+var errJobPanicked = errors.New("job panicked")
+
 // runCollectSafely turns a panic in a collection into an ordinary error.
 //
 // Nothing panics today -- the parsers guard their type assertions and lengths,
 // and a fuzz sweep over hostile kinds, args and store responses found none. The
 // guard is here because of what a panic would cost rather than how likely it
 // is: the container restarts `unless-stopped`, the platform re-queues a swept
-// job, and the loop runs jobs one at a time, so a single poison job would
-// crash-loop the box and starve every other job on it indefinitely. The whole
+// job, and the MONITORING loop runs jobs one at a time, so a single poison job
+// would crash-loop the box and starve every other job on it indefinitely. (The
+// DBLab arm runs a batch on a pool and is guarded by runWorker.) The whole
 // design is "never crash, always answer"; this makes that true of the job body
 // too, and the job comes back as an error the platform can see.
 func runCollectSafely(ctx context.Context, store *collect.Client, job platform.Job, now time.Time) (outcome collect.Outcome, err error) {
@@ -608,6 +904,13 @@ func (r *Runner) execute(ctx context.Context, cfg config.Config, job platform.Jo
 	jobCtx, cancel := context.WithTimeout(ctx, r.budget)
 	defer cancel()
 
+	// A DBLab call is not a collection: its args are their own shape, its target
+	// is the engine on this box rather than the metric store, and its result is
+	// relayed verbatim instead of applied to anything.
+	if job.Kind == dblab.KindCall {
+		return r.executeDBLab(jobCtx, cfg, job)
+	}
+
 	store := r.storeClient(cfg)
 
 	var lastErr error
@@ -625,6 +928,88 @@ func (r *Runner) execute(ctx context.Context, cfg config.Config, job platform.Jo
 		}
 	}
 	return collect.Outcome{}, lastErr
+}
+
+// executeDBLab runs one engine call.
+//
+// A READ is retried while the failure is one a retry could clear; a WRITE is
+// not, ever -- see dblabWriteAttempts. The distinction is made here rather than
+// inside the client because it is a statement about the JOB, not about the
+// transport.
+func (r *Runner) executeDBLab(ctx context.Context, cfg config.Config, job platform.Job) (outcome collect.Outcome, err error) {
+	// EVERY failure leaving here is marked as an engine call's, so
+	// classifyFailure can answer in the caller's own terms. Its deadline and
+	// cancellation arms are worded for a COLLECTION, which is the monitoring
+	// fleet's vocabulary and not this one's: someone waiting on `pgai dblab
+	// clone create` was told their clone "exceeded the local time budget" as a
+	// collection, naming work this box was never doing. Marked at the one exit
+	// rather than per return, and with two %w, so errors.Is/As through the
+	// chain -- the dblab sentinels, *EngineError -- all still match and every
+	// arm below keeps its own wording.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", errDBLabCall, err)
+		}
+	}()
+
+	req, err := dblab.Parse(job.Args)
+	if err != nil {
+		return collect.Outcome{}, err
+	}
+
+	engine := r.dblabClient(cfg)
+	attempts := dblabWriteAttempts
+	if req.Method == http.MethodGet {
+		attempts = dblabReadAttempts
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		callCtx := ctx
+		var cancel context.CancelFunc
+		if attempts > 1 {
+			// Only a retried call is bounded tighter than the job budget: giving a
+			// single-attempt write the same short deadline would fail a clone that
+			// was about to succeed, and there would be no second attempt to save it.
+			callCtx, cancel = context.WithTimeout(ctx, dblabGetTimeout)
+		}
+		payload, err := engine.Do(callCtx, req)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			// payload is nil when the engine answered with no body (platform-all#815). It
+			// marshals to a JSON null, which PostgREST v9.0.1 binds to a SQL NULL
+			// -- measured, because the distinction matters:
+			// public.data_usage_collect gates on `result is not null`, so an
+			// empty /status reading stays invisible to it.
+			return collect.Outcome{Status: collect.OutcomeOK, Payload: payload}, nil
+		}
+		lastErr = err
+		if !retryableEngineError(err) || ctx.Err() != nil {
+			return collect.Outcome{}, err
+		}
+		if attempt < attempts && !r.sleep(ctx, storeBackoff*time.Duration(attempt)) {
+			break
+		}
+	}
+	return collect.Outcome{}, lastErr
+}
+
+// retryableEngineError reports whether re-running the same engine call could
+// clear the error.
+func retryableEngineError(err error) bool {
+	if errors.Is(err, dblab.ErrInvalidArgs) || errors.Is(err, dblab.ErrOversizeReply) {
+		// Both are decided by what came back, not by the transport: the same
+		// call would produce the same unusable answer.
+		return false
+	}
+	var engineErr *dblab.EngineError
+	if errors.As(err, &engineErr) {
+		return engineErr.Retryable()
+	}
+	// Network or timeout against a service on this very box.
+	return true
 }
 
 // retryableStoreError reports whether re-running the job could clear the error.
@@ -648,6 +1033,12 @@ func retryableStoreError(err error) bool {
 // errUnencodableResult marks a payload json.Marshal refuses (a non-finite
 // sample that reached the AAS metrics).
 var errUnencodableResult = errors.New("result cannot be encoded")
+
+// errDBLabCall marks a failure as an engine call's rather than a collection's.
+// It carries no classification of its own -- every dblab arm of classifyFailure
+// keys on its own sentinel -- and exists only so the two arms worded for the
+// monitoring channel can be answered in this one's vocabulary.
+var errDBLabCall = errors.New("dblab call")
 
 // describeFailure turns an error into the short (error, failure_class) pair the
 // submit takes. The raw error is deliberately NOT forwarded: a transport error
@@ -680,6 +1071,14 @@ func classifyFailure(err error) (string, string) {
 		return "this instance does not know this job kind", "unknown_kind"
 	case errors.Is(err, collect.ErrWindowTooLong):
 		return "collection window is too long", "window_too_long"
+	// Before the two arms below, which say "collection": a dblab_call is not
+	// one, and the text is what its caller is shown. The CLASS is unchanged --
+	// the platform stores and aggregates on that, and a timeout is a timeout
+	// whichever channel produced it.
+	case errors.Is(err, errDBLabCall) && errors.Is(err, context.DeadlineExceeded):
+		return "the engine call exceeded the local time budget", "timeout"
+	case errors.Is(err, errDBLabCall) && errors.Is(err, context.Canceled):
+		return "the engine call was cancelled", "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "collection exceeded the local time budget", "timeout"
 	case errors.Is(err, context.Canceled):
@@ -688,12 +1087,33 @@ func classifyFailure(err error) (string, string) {
 		return "the collected result could not be encoded", "unencodable_result"
 	case errors.Is(err, errCollectionPanicked):
 		return "collection failed unexpectedly", "panic"
+	case errors.Is(err, errJobPanicked):
+		return "the job failed unexpectedly", "panic"
 	case errors.Is(err, errResultRefused):
 		return "the platform refused the result", "result_rejected"
+	case errors.Is(err, dblab.ErrInvalidArgs):
+		return "job args could not be used", "invalid_args"
+	case errors.Is(err, dblab.ErrOversizeReply):
+		return "the engine reply is too large to submit", "oversize_reply"
+	case errors.Is(err, dblab.ErrEngineUnreachable):
+		// Named before the default arm, whose fallback is "metric store
+		// unreachable" -- a component a DBLab box does not have.
+		return "dblab engine unreachable", "engine_unreachable"
 	default:
 		var upstream *collect.UpstreamError
 		if errors.As(err, &upstream) {
 			return fmt.Sprintf("metric store returned %d", upstream.StatusCode), "store_error"
+		}
+		var engineErr *dblab.EngineError
+		if errors.As(err, &engineErr) {
+			// The engine is ours and its message names what was wrong with the
+			// call, which is the whole diagnostic to whoever made it. Controls are
+			// stripped and the length capped by truncate(): the text is rendered on
+			// a terminal and reaches it from outside this process.
+			if msg := collect.StripControls(engineErr.Message); msg != "" {
+				return fmt.Sprintf("dblab engine returned %d: %s", engineErr.StatusCode, msg), "engine_error"
+			}
+			return fmt.Sprintf("dblab engine returned %d", engineErr.StatusCode), "engine_error"
 		}
 		return "metric store unreachable", "store_unreachable"
 	}

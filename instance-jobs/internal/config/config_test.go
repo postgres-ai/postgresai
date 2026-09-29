@@ -22,6 +22,11 @@ func writeConfig(t *testing.T, content string) string {
 	t.Setenv("PROMETHEUS_URL", "")
 	t.Setenv("VM_AUTH_USERNAME", "")
 	t.Setenv("VM_AUTH_PASSWORD", "")
+	// The DBLab channel falls back to the environment the same way, and a value
+	// on the machine running the tests would flip a monitoring fixture onto it.
+	t.Setenv("PGAI_DBLAB_TOKEN", "")
+	t.Setenv("PGAI_DBLAB_URL", "")
+	t.Setenv("PGAI_DBLAB_VERIFY_TOKEN", "")
 	return path
 }
 

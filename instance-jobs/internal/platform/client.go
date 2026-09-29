@@ -162,11 +162,53 @@ func Classify(err error) Class {
 	}
 }
 
-// Credentials are read fresh on every call, so a .pgwatch-config written after
-// the container started is picked up without a restart.
+// Credentials are read fresh on every call, so a config written after the
+// container started is picked up without a restart.
+//
+// Exactly one channel is configured: an org APIToken plus an InstanceID for
+// monitoring, or a DBLabToken on its own. config.Config.Problem() refuses a box
+// carrying both.
+//
+// THE DBLAB CHANNEL SENDS NO INSTANCE ID, and that is the design rather than an
+// omission (platform-all#805). DBLabToken is the engine's own per-instance
+// token, so the platform derives the engine from the credential; there is
+// nothing for this process to name and therefore nothing for it to name wrongly.
 type Credentials struct {
 	APIToken   string
 	InstanceID string
+	DBLabToken string
+}
+
+// isDBLab reports which channel these credentials serve.
+func (c Credentials) isDBLab() bool { return c.DBLabToken != "" }
+
+// credential is the value that goes in the `access-token` header.
+func (c Credentials) credential() string {
+	if c.isDBLab() {
+		return c.DBLabToken
+	}
+	return c.APIToken
+}
+
+// The two channels' rpc names. The platform keeps the surfaces separate on
+// purpose: the instance_jobs TABLE is shared, so the reply shapes and the whole
+// protocol below are identical, but a DBLab change cannot reach the monitoring
+// fleet's hottest rpc.
+func (c Credentials) rpcs() (poll, submit string) {
+	if c.isDBLab() {
+		return "dblab_job_poll", "dblab_job_submit"
+	}
+	return "instance_job_poll", "instance_job_submit"
+}
+
+// target adds the body key that names the instance -- for the monitoring
+// channel only. The DBLab rpcs take no such argument at all, and sending one
+// would not be ignored: PostgREST resolves an rpc by its body keys, so an extra
+// key matches no function and the call 404s.
+func (c Credentials) target(body map[string]any) {
+	if !c.isDBLab() {
+		body["instance_id"] = c.InstanceID
+	}
 }
 
 // The outcome literals the rpc takes, and the only three it accepts.
@@ -216,12 +258,11 @@ func NewClient(baseURL, clientVersion string, timeout time.Duration) *Client {
 
 // Poll asks for work.
 func (c *Client) Poll(ctx context.Context, creds Credentials) (*PollResponse, error) {
-	body := map[string]any{
-		"instance_id":    creds.InstanceID,
-		"client_version": c.clientVersion,
-	}
+	poll, _ := creds.rpcs()
+	body := map[string]any{"client_version": c.clientVersion}
+	creds.target(body)
 	var out PollResponse
-	if err := c.call(ctx, "instance_job_poll", creds, body, &out); err != nil {
+	if err := c.call(ctx, poll, creds, body, &out); err != nil {
 		return nil, err
 	}
 	// server_time is unconditional in the rpc's json_build_object, so its
@@ -274,13 +315,14 @@ var ErrUnknownOutcome = errors.New("submission names no known outcome")
 // Submit posts the answer to one job. A non-nil error means the answer did not
 // land: either the call failed, or the platform refused the payload.
 func (c *Client) Submit(ctx context.Context, creds Credentials, s Submission) error {
+	_, submit := creds.rpcs()
 	body := map[string]any{
-		"instance_id":    creds.InstanceID,
 		"job_id":         s.JobID,
 		"client_version": c.clientVersion,
 		"duration_ms":    s.DurationMS,
 		"outcome":        s.Outcome,
 	}
+	creds.target(body)
 	// Exactly the fields the named outcome allows: the platform rejects any
 	// other combination, and rejects it without consuming the job.
 	switch s.Outcome {
@@ -298,7 +340,7 @@ func (c *Client) Submit(ctx context.Context, creds Credentials, s Submission) er
 		return fmt.Errorf("%w: outcome %q", ErrUnknownOutcome, s.Outcome)
 	}
 	var out SubmitResult
-	if err := c.call(ctx, "instance_job_submit", creds, body, &out); err != nil {
+	if err := c.call(ctx, submit, creds, body, &out); err != nil {
 		return err
 	}
 	// Same guard as the poll, and for the same reason: `null` and `{}` decode
@@ -337,7 +379,7 @@ func (c *Client) call(ctx context.Context, rpc string, creds Credentials, body m
 	// The credential, deliberately not a body parameter -- see the package
 	// comment. api_token_check falls back to this header when the rpc's
 	// api_token argument is null.
-	req.Header.Set("access-token", creds.APIToken)
+	req.Header.Set("access-token", creds.credential())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

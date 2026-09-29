@@ -26,7 +26,8 @@ twenty minutes) report the container unhealthy. One that reached no verdict (a
 dropped connection, a 5xx, a 429) retries after 2s, doubling to a one-minute
 ceiling, and reports unhealthy once such a run has lasted five minutes.
 
-Four job kinds, in two groups.
+Four job kinds on the monitoring channel, in two groups. The DBLab channel
+has one of its own, `dblab_call` -- see **The DBLab channel** below.
 
 **Collection** — real work the pull path does today, applied by the platform to
 `checkup_reports`:
@@ -66,6 +67,111 @@ open, and neither happens as a side effect of an upgrade:
    the poll authenticates, is handed no work, and routing stays on the pull
    path — even for a machine whose container is running and polling.
 
+## The DBLab channel
+
+The same loop serves a **DBLab engine** instead of a monitoring instance when
+its config names one (platform-all#805). The shape is the same -- poll, do the
+work locally, submit -- and four things differ:
+
+* it authenticates with the **engine's own per-instance token**, not an org
+  token -- a DBLab box holds no org token at all -- and it **names no instance**:
+  the platform derives the engine from the credential, so a holder of one
+  engine's token cannot poll or answer as another. It calls `v1.dblab_job_poll` /
+  `v1.dblab_job_submit` rather than the monitoring pair. Separate rpcs on a **shared** `instance_jobs` table: one
+  claim, one sweep, one expiry path, but a DBLab change cannot reach the
+  monitoring fleet's hottest rpc, and neither channel's kill switch takes the
+  other down. The platform's flag here is `app.settings.dblab_jobs_enabled`;
+* the work is an HTTP call against the engine on this box, not a query against
+  the metric store;
+* **a write is never retried.** A read (`GET`) is repeated while the failure is
+  one a retry could clear. Every other verb -- `POST`, `PATCH`, `DELETE` -- is
+  answered as failed after one attempt, because it is not idempotent: a
+  `POST /clone` whose answer never came back may well have created the clone,
+  and re-sending it would create a second one on the customer's disk;
+* **a claimed batch runs concurrently**, on a pool of 5 (`dblabConcurrency`), so
+  a cheap read does not queue behind a `POST /clone`. The monitoring channel
+  stays strictly one job at a time. The pool is kept **equal to the platform's
+  claim limit** (`app.settings.dblab_job_claim_limit`, seeded to 5 by
+  platform-all#816), and claiming more than it is a correctness change rather
+  than tuning: anything claimed and not started is `running` platform-side
+  with nothing running it, and the sweep can fail it to its caller while this
+  process is still going to run it -- the same "you were told it failed, and the
+  clone exists" as a retried write (#391).
+
+**The platform never supplies a host.** The job carries a method, an absolute
+path and an optional body; the host is this box's own `dblab_url`. Both sides
+refuse an `action` that is not a path -- a value like `//host/x` resolves to a
+host of the caller's choosing, and agreeing about that in one place only would
+put the guard on the far side of a channel this box does not control.
+
+**One box serves one channel.** `instance_id` and `dblab_token` are mutually
+exclusive; a config naming both is reported as a problem rather than resolved by
+preference, because the loop polls one rpc per tick and the other target would
+look dead with nothing saying why.
+
+### What a DBLab call answers with
+
+The engine's reply is stored verbatim in the job row's `result` jsonb, so the
+channel answers with one of three shapes -- decided by the **reply** and never
+by the path, because a channel that knew which endpoints answer in what would
+be wrong again the next time the engine grew one (#392, platform-all#815):
+
+| the engine answered | `result` |
+|---|---|
+| a JSON body the column can hold | those bytes, unwrapped |
+| anything else | `{"pgai_body": {"content_type": ..., "encoding": ..., "body": ...}}` |
+| nothing at all (an empty 200) | `null` |
+
+`/admin/config.yaml` answers YAML and `/metrics` answers the Prometheus text
+format, so both take the envelope. So does a JSON body carrying what a jsonb
+column will not hold, because `json.Valid` is Go's grammar and not Postgres's
+acceptance: **invalid UTF-8** (22021) and a **`\u0000` escape** (22P05) are
+checked on both arms. `encoding` is then `text`, or `base64` where a jsonb
+string could not hold the bytes verbatim.
+
+One further class is **not** detected and is relayed as it arrives: a lone
+surrogate escape (`\ud800`), which Postgres refuses with 22P02 while Go's
+decoder silently substitutes U+FFFD, so nothing on this side can see it.
+Telling it apart means modelling Postgres's JSON acceptance rather than Go's;
+if an endpoint is ever found to produce one, that is a new issue rather than a
+gap in this one. The symptom is a submit refused with `result_rejected`, not a
+wrong value stored.
+
+The empty 200 is an **answer**, not a failure: `DELETE /clone/{id}` and
+`POST /clone/{id}/reset` write no body at all, and `public.data_usage_collect`
+already gates on `result is not null`, so a null is invisible to it. Failing it
+reported a red error over a clone that was already gone -- on a verb that is
+never retried.
+
+**The pull path builds the same envelope for the same reply**
+(`v1.dblab_api_call`), so nothing downstream has to know which route a call
+took -- for a genuinely non-JSON body and for the empty 200. It does **not**
+hold for a JSON body the column refuses, which is a case only this side
+handles: the pull path reaches its envelope only when `json.loads` *fails*, and
+`requests` decodes with `errors='replace'`, so a JSON body carrying invalid
+UTF-8 parses there into U+FFFD and is returned unwrapped and corrupted, while
+one carrying `\u0000` parses and then raises 22P05 at the jsonb conversion.
+Three answers for one reply. The gap is the pull path's, and its own.
+
+What the two also do not share is the size ceiling: the pull path caps the raw
+body, while this box caps the *encoded envelope* against the 1 MiB
+`v1.dblab_job_submit` accepts -- escaping and base64 both inflate, so a reply
+that passed the read cap can still be too large to submit, and the cap is
+measured the way the platform measures it (`octet_length(result::text)`, which
+adds a space after every separator). Past it the call fails with an oversize
+error; nothing is truncated, because a truncated body is a valid-looking
+partial answer.
+
+That ceiling is enforced on the **envelope arm only**. A pass-through JSON body
+is bounded by the 1 MiB read cap alone, and there is no useful ceiling on what
+`::text` does to it, because jsonb re-renders every number through `numeric`
+and exponent notation expands: a 109-byte array of `1e100000` stores as 1.2 MB.
+Typical replies go the other way -- the real `/admin/config` capture is 1378
+bytes on the wire and stores as 920, **458 below** -- but "typical" is the only
+claim available. Bounding it would mean modelling Postgres's number
+normalisation as well as its renderer, which is a model of Postgres rather than
+a check; the symptom is a `result_rejected` submit, not a wrong value.
+
 ## Configuration
 
 Everything comes from `.pgwatch-config`, the file the reporter container already
@@ -76,6 +182,14 @@ mounts. There is no new credential and no new file.
 | `api_key` | the org API token, the same one the reporter uploads with |
 | `instance_id` | this monitoring instance's id; falls back to `PGAI_INSTANCE_ID`, which `mon local-install` writes into `.env` and compose passes through, then to `PGAI_MONITORING_INSTANCE_ID`, which nothing on the box writes (it is the name the telemetry service uses, accepted here so the two agree) |
 | `api_base_url` | the platform that provisioned this instance (optional; else `PGAI_API_BASE_URL`, else production). Must be `https`, or a loopback `http` for a local rig: the token goes on the wire either way |
+
+On a **DBLab** box, three keys replace `api_key` and `instance_id`:
+
+| key | what |
+|---|---|
+| `dblab_token` | the engine's own per-instance platform token, issued by `v1.dblab_instance_register` in its `platform_access_token` reply field; falls back to `PGAI_DBLAB_TOKEN`. Sent as the `access-token` header. **This replaces `api_key`** -- a DBLab box has no org token |
+| `dblab_verify_token` | the engine's shared verification token, sent as `Verification-Token`; falls back to `PGAI_DBLAB_VERIFY_TOKEN` |
+| `dblab_url` | the engine's address on this box (optional; else `PGAI_DBLAB_URL`, else `http://127.0.0.1:2345`). Plain `http` is fine and is the norm -- the engine runs beside this process, so the request does not leave the box |
 
 `mon local-install` records the instance id in `.pgwatch-config` on **both**
 registration paths: the console-provisioned one (`--instance-id`, where the
@@ -249,12 +363,19 @@ they can collect. Slicing by series count belongs in its own issue.
 
 ## Timing, and what a restart does
 
-One job is claimed at a time, and the platform fails a job still `running` after
-an hour (`public.instance_jobs_expire_sweep`, `stuck_after`). The local ceiling
-under that is the collection budget (15 min) plus the worst case for answering
-it — every submit attempt timing out, plus every backoff between them, 8m40s.
+The platform fails a job still `running` after an hour
+(`public.instance_jobs_expire_sweep`, `stuck_after`). The local ceiling under
+that is the collection budget (15 min) plus the worst case for answering it —
+every submit attempt timing out, plus every backoff between them, 8m40s.
 A refused answer costs that budget TWICE, because the terminal close that
 follows is a second submit on the same ladder — so 32m20s against the hour.
+
+What that permits is `claim_limit × 32m20s < stuck_after`, which is **one** for
+a loop that runs its batch in sequence — hence the monitoring channel's claim
+limit of 1. The DBLab channel claims 5 and runs them concurrently, so every job
+in a batch starts at about claim time and the product collapses to one ceiling
+whatever the batch size. That is what the pool is for; it is not a throughput
+knob.
 
 Answering retries for 4m40s of backoff — 8m40s including every attempt's own timeout — rather than ~20 seconds on purpose.
 `v1.instance_job_submit` waits out its own 5s `lock_timeout` for the
