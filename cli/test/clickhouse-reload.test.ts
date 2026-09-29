@@ -12,6 +12,7 @@ const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
 const execLine = `exec -T sink-prometheus sh -c grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1" sh /etc/pgai/host-metrics/clickhouse-ch.yml`;
 const killLine = "kill -s SIGHUP sink-prometheus";
+const probeLine = "exec -T sink-prometheus true";
 const verifyRemoveLine = `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "scrapePool":"clickhouse-ch" absent`;
 const reloadError = "Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.";
 let dir: string, projectDir: string, log: string, workerUrl: string, server: Worker;
@@ -91,7 +92,9 @@ test("targets add reports an older stack instead of success", () => {
   const result = run(["add", conn, "ch"], { FAKE_EXEC_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   // `mon update` keeps PGAI_TAG, so without this step the stack restarts on the old config image.
-  expect(result.stderr).toContain(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade, set PGAI_TAG=${pkg.version} in ${projectDir}/.env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+  // `mon update` moves PGAI_TAG to the CLI version, so no manual .env edit is needed.
+  expect(result.stderr).toContain(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+  expect(result.stderr).not.toContain("PGAI_TAG");
   expect(result.stdout).not.toContain("Host metrics: ClickHouse Cloud");
   expect(reloadLog()).toEqual([execLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(true);
@@ -113,7 +116,7 @@ test("targets remove fails when the sink-prometheus reload fails", () => {
   const result = run(["remove", "ch"], { FAKE_KILL_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain(reloadError);
-  expect(reloadLog()).toEqual([killLine]);
+  expect(reloadLog()).toEqual([probeLine, killLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(false);
 });
 
@@ -132,7 +135,7 @@ test("targets remove fails when sink-prometheus still scrapes the removed job", 
   const result = run(["remove", "ch"], { FAKE_VERIFY_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain("sink-prometheus still scrapes 'clickhouse-ch' after the reload. Check 'docker logs sink-prometheus' for the error.");
-  expect(reloadLog()).toEqual([killLine, verifyRemoveLine]);
+  expect(reloadLog()).toEqual([probeLine, killLine, verifyRemoveLine]);
 });
 
 test("targets remove succeeds after a verified reload", () => {
@@ -142,5 +145,39 @@ test("targets remove succeeds after a verified reload", () => {
   const result = run(["remove", "ch"]);
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stderr).not.toContain("sink-prometheus");
-  expect(reloadLog()).toEqual([killLine, verifyRemoveLine]);
+  expect(reloadLog()).toEqual([probeLine, killLine, verifyRemoveLine]);
+});
+
+test("targets remove on a stopped stack succeeds without a reload", () => {
+  const added = run(["add", conn, "ch"]);
+  expect(added.exitCode, added.stderr).toBe(0);
+  writeFileSync(log, "");
+  const result = run(["remove", "ch"], { FAKE_EXEC_CODE: "1", FAKE_VERIFY_CODE: "1" });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stderr).not.toContain("still scrapes");
+  expect(result.stdout).toContain("sink-prometheus is not running; it will not load 'clickhouse-ch' when it starts.");
+  expect(reloadLog()).toEqual([probeLine]);
+  expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(false);
+});
+
+test("a failed targets add leaves the stack alone", () => {
+  const result = run(["add", conn, "ch"], { FAKE_EXEC_CODE: "1" });
+  expect(result.exitCode, result.stderr).toBe(1);
+  const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
+  // `up -d pgwatch-*` would start a stopped sink-prometheus again as a dependency.
+  expect(calls.filter((line) => /^(up|run|start|restart)(?: |$)/.test(line))).toEqual([]);
+  expect(result.stdout).not.toContain("Monitoring target configuration applied");
+  expect(result.stderr).toContain("The Postgres target is saved but not applied. Fix the error above and re-run this command.");
+});
+
+test("targets add output never carries the key secret", () => {
+  for (const codes of [{}, { FAKE_EXEC_CODE: "1" }, { FAKE_KILL_CODE: "1" }, { FAKE_VERIFY_CODE: "1" }]) {
+    const result = run(["add", conn, "ch"], codes);
+    expect(result.stdout + result.stderr).not.toContain("good-secret");
+  }
+  const denied = Bun.spawnSync([process.execPath, cli, "mon", "targets", "add", conn, "ch"], {
+    cwd: dir, env: { ...env, CLICKHOUSE_KEY_SECRET: "bad-secret-value" }, timeout: 20000,
+  });
+  expect(denied.exitCode).toBe(1);
+  expect(denied.stdout.toString() + denied.stderr.toString()).not.toContain("bad-secret-value");
 });
