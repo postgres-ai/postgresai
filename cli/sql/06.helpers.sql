@@ -50,7 +50,7 @@ begin
     select c.oid into v_oid
     from pg_class c
     join pg_namespace n on n.oid = c.relnamespace
-    where c.relname = v_ident[1] and n.nspname in ('pg_catalog', 'public')
+    where c.relname = v_ident[1]::name and n.nspname in ('pg_catalog', 'public')
     order by n.nspname = 'public'
     limit 1;
     if v_oid is null then
@@ -227,7 +227,7 @@ begin
         when 'f' then v_line := v_line || 'FK: ';
         when 'u' then v_line := v_line || 'UNIQUE: ';
         when 'c' then v_line := v_line || 'CHECK: ';
-        else v_line := v_line || v_rec.contype || ': ';
+        else v_line := v_line || v_rec.contype::text || ': ';
       end case;
       v_line := v_line || v_rec.conname || ' ' || v_rec.condef;
       v_lines := array_append(v_lines, v_line);

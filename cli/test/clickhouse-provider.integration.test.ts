@@ -119,12 +119,14 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
       expect(catalog.rows[0].r).toContain("Table: pg_catalog.pg_class");
       await expect(mon.query("select postgres_ai.table_describe('td_missing')")).rejects.toThrow('relation "td_missing" does not exist');
     } finally {
-      await mon.end();
-      await admin.query("drop function if exists public.array_append(text[], text)");
-      await admin.query("drop function if exists public.format(text, text, text)");
-      await admin.query("revoke create on schema public from postgres_ai_mon");
-      await admin.query("drop schema if exists td_app cascade");
-      await admin.query("drop table if exists public.td_probe");
+      await mon.end().catch(() => {});
+      for (const sql of [
+        "drop function if exists public.array_append(text[], text)",
+        "drop function if exists public.format(text, text, text)",
+        "revoke create on schema public from postgres_ai_mon",
+        "drop schema if exists td_app cascade",
+        "drop table if exists public.td_probe",
+      ]) await admin.query(sql).catch(() => {});
       await admin.end();
     }
   });
