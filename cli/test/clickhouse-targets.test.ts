@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
@@ -46,6 +46,21 @@ test("add discovers the service and writes config 0644 and secret 0600 without a
   expect(config.basic_auth).toEqual({ username: keyId, password_file: "/etc/pgai/host-metrics/clickhouse-ch-test.secret" });
   expect(config.static_configs[0].targets).toEqual([server.url.host]);
   expect(config.static_configs[0].labels.node_name).toBe("ch-test");
+});
+test("add keeps the key file in a 0700 directory, also when the directory already exists", async () => {
+  mkdirSync(`${dir}/host-metrics`, { mode: 0o755 });
+  chmodSync(`${dir}/host-metrics`, 0o755);
+  await add();
+  expect(statSync(`${dir}/host-metrics`).mode & 0o777).toBe(0o700);
+  expect(statSync(`${dir}/host-metrics/clickhouse-ch-test.secret`).mode & 0o777).toBe(0o600);
+});
+test("add errors never carry the key secret", async () => {
+  for (const code of [401, 403, 500]) {
+    status = code;
+    const error = await add().catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect(String((error as Error).message)).not.toContain(keySecret);
+  }
 });
 for (const missing of ["all", "CLICKHOUSE_ORG_ID", "CLICKHOUSE_KEY_ID", "CLICKHOUSE_KEY_SECRET"]) {
   test(`add without ${missing} returns guidance without requests or writes`, async () => {
