@@ -6,6 +6,7 @@ import {
   isTerminal,
   renderPromQL,
   formatMetric,
+  resolveMonitoringInstanceId,
   type PromQLPayload,
 } from "../lib/promql";
 
@@ -412,5 +413,67 @@ describe("first_answer_estimate_s", () => {
       });
       expect(out.firstAnswerEstimateS).toBeNull();
     }
+  });
+});
+
+describe("resolveMonitoringInstanceId", () => {
+  const MI = "01a0d3bc-629f-75a5-99e1-a3f34d01d813";
+  const row = (over: Record<string, unknown>) => ({
+    project_id: 2310,
+    alias: "denis-mon-reverse-conn-5",
+    name: "Reverse conn 5",
+    joe_ready: false,
+    tunnel: false,
+    instance_id: null,
+    dblab_instance_id: null,
+    monitoring_instance_ids: [MI],
+    ...over,
+  });
+  const resolve = (project: string) =>
+    resolveMonitoringInstanceId({ apiKey: "pai-token", apiBaseUrl: "https://api.test", project });
+
+  test("resolves by alias, name (any case) and numeric id", async () => {
+    const calls = stubFetch(() => ({ body: [row({ project_id: 1, alias: "other", name: "Other", monitoring_instance_ids: [] }), row({})] }));
+    await expect(resolve("denis-mon-reverse-conn-5")).resolves.toBe(MI);
+    await expect(resolve("REVERSE CONN 5")).resolves.toBe(MI);
+    await expect(resolve("2310")).resolves.toBe(MI);
+    expect(calls[0].url).toContain("/rpc/projects_list");
+  });
+
+  test("a project without a monitoring instance says so", async () => {
+    stubFetch(() => ({ body: [row({ monitoring_instance_ids: [] })] }));
+    await expect(resolve("2310")).rejects.toThrow("has no active monitoring instance");
+  });
+
+  test("several instances refuse and name them all, never pick one", async () => {
+    const other = "01a0d3bc-0000-7000-8000-000000000001";
+    stubFetch(() => ({ body: [row({ monitoring_instance_ids: [MI, other] })] }));
+    const err = await resolve("2310").catch((e: Error) => e);
+    expect(String(err)).toContain("has 2 active monitoring instances");
+    expect(String(err)).toContain(MI);
+    expect(String(err)).toContain(other);
+    expect(String(err)).toContain("Pass --instance <uuid>");
+  });
+
+  test("a name shared by two projects is refused, not resolved to the first", async () => {
+    stubFetch(() => ({ body: [row({ project_id: 1, alias: "a" }), row({ project_id: 2, alias: "b" })] }));
+    await expect(resolve("reverse conn 5")).rejects.toThrow("matches 2 projects (ids 1, 2)");
+  });
+
+  test("a numeric ref ignores leading zeros", async () => {
+    stubFetch(() => ({ body: [row({})] }));
+    await expect(resolve("002310")).resolves.toBe(MI);
+  });
+
+  test("an unknown project is not found", async () => {
+    stubFetch(() => ({ body: [row({})] }));
+    await expect(resolve("nope")).rejects.toThrow("Project not found");
+  });
+
+  test("a platform without the column is told apart from 'no instance'", async () => {
+    // Older platforms omit the key entirely; that must not read as null.
+    const { monitoring_instance_ids: _drop, ...old } = row({});
+    stubFetch(() => ({ body: [old] }));
+    await expect(resolve("2310")).rejects.toThrow("Pass --instance <uuid> instead");
   });
 });

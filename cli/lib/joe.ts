@@ -85,6 +85,12 @@ export interface ProjectListItem {
   instance_id: number | string | null;
   /** The project's active DBLAB instance id (not used by the Joe verbs). */
   dblab_instance_id: number | string | null;
+  /**
+   * Every active MONITORING instance uuid of the project, newest first
+   * (`pgai promql`). Undefined when the platform predates the column, so the
+   * caller can tell "no instance" from "cannot know".
+   */
+  monitoring_instance_ids?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +262,7 @@ interface RawProjectRow {
   tunnel?: boolean;
   instance_id?: number | string | null;
   dblab_instance_id?: number | string | null;
+  monitoring_instance_ids?: string[] | null;
 }
 
 function preserveIntegerId(value: number | string): number | string {
@@ -273,6 +280,9 @@ function normalizeProjectRow(row: RawProjectRow): ProjectListItem {
     tunnel: Boolean(row.tunnel ?? false),
     instance_id: row.instance_id == null ? null : preserveIntegerId(row.instance_id),
     dblab_instance_id: row.dblab_instance_id == null ? null : preserveIntegerId(row.dblab_instance_id),
+    ...(row.monitoring_instance_ids !== undefined && {
+      monitoring_instance_ids: row.monitoring_instance_ids ?? [],
+    }),
   };
 }
 

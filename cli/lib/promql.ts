@@ -14,6 +14,7 @@
 
 import { resolveBaseUrls } from "./util";
 import { orgScopeHeaders, getActiveOrgScope } from "./org-scope";
+import { listProjects, isNumericProjectRef } from "./joe";
 
 export type PromQLKind = "promql_instant" | "promql_range";
 
@@ -114,6 +115,67 @@ export interface EnqueuedQuery {
    * to the client default", never "estimate zero".
    */
   firstAnswerEstimateS: number | null;
+}
+
+export interface ResolveMonitoringInstanceParams {
+  apiKey: string;
+  apiBaseUrl: string;
+  project: string;
+  orgId?: number;
+}
+
+/**
+ * Resolve `--project <id|alias>` to the project's monitoring instance uuid,
+ * via `v1.projects_list` like the joe and dblab resolvers. A numeric ref
+ * matches the project id; anything else the alias or name, case-insensitive.
+ */
+export async function resolveMonitoringInstanceId(params: ResolveMonitoringInstanceParams): Promise<string> {
+  const ref = String(params.project ?? "").trim();
+  if (!ref) {
+    throw new Error("project is required (--project <id|alias>)");
+  }
+  const projects = await listProjects({
+    apiKey: params.apiKey,
+    apiBaseUrl: params.apiBaseUrl,
+    orgId: params.orgId,
+  });
+  const needle = ref.toLowerCase();
+  // BigInt, not the raw text: `--project 007` means project 7.
+  const matches = isNumericProjectRef(ref)
+    ? projects.filter((p) => String(p.project_id) === BigInt(ref).toString())
+    : projects.filter(
+        (p) =>
+          (p.alias !== null && p.alias.toLowerCase() === needle) ||
+          (p.name !== null && p.name.toLowerCase() === needle),
+      );
+  if (matches.length === 0) {
+    throw new Error(`Project not found for id/alias/name '${ref}'. Run 'pgai projects' to see available projects.`);
+  }
+  // Names are not unique, and one project's name can be another's alias.
+  if (matches.length > 1) {
+    throw new Error(
+      `'${ref}' matches ${matches.length} projects (ids ${matches.map((p) => p.project_id).join(", ")}). ` +
+        "Pass --project <id> instead.",
+    );
+  }
+  const match = matches[0];
+  const ids = match.monitoring_instance_ids;
+  if (ids === undefined) {
+    throw new Error(
+      "This platform does not report monitoring instances per project yet. Pass --instance <uuid> instead.",
+    );
+  }
+  if (ids.length === 0) {
+    throw new Error(`Project '${ref}' has no active monitoring instance.`);
+  }
+  // Nothing on the platform enforces one per project; guessing would query a
+  // box the user did not mean.
+  if (ids.length > 1) {
+    throw new Error(
+      `Project '${ref}' has ${ids.length} active monitoring instances: ${ids.join(", ")}. Pass --instance <uuid>.`,
+    );
+  }
+  return ids[0];
 }
 
 /** Enqueue one query. */

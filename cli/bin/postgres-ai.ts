@@ -40,7 +40,14 @@ import {
   destroySnapshot,
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
-import { enqueueQuery, awaitQueryResult, isTerminal, renderPromQL, type EnqueueArgs } from "../lib/promql";
+import {
+  enqueueQuery,
+  awaitQueryResult,
+  isTerminal,
+  renderPromQL,
+  resolveMonitoringInstanceId,
+  type EnqueueArgs,
+} from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
@@ -3325,6 +3332,7 @@ function applyApiKey(projectDir: string, apiKey: string): boolean {
 
 interface PromQLOptions extends OrgOptions {
   instance?: string;
+  project?: string;
   at?: string;
   range?: boolean;
   start?: string;
@@ -5993,7 +6001,8 @@ program
 withOrgOptions(program.command("promql"))
   .description("run a PromQL query on a monitoring instance's own metric store")
   .argument("<expr>", "PromQL expression")
-  .option("--instance <uuid>", "monitoring instance id (default: this box's .pgwatch-config)")
+  .option("--instance <uuid>", "monitoring instance id (default: this box's .pgwatch-config); not with --project")
+  .option("--project <id|alias>", "the project's monitoring instance, by project id, alias or name; not with --instance")
   .option("--at <rfc3339>", "evaluate an instant query at this time (default: now; ignored with --range)")
   .option("--range", "run a range query (requires --start, --end, --step)")
   .option("--start <rfc3339>", "range start")
@@ -6013,9 +6022,23 @@ withOrgOptions(program.command("promql"))
       }
       const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
-      const instanceId = opts.instance || readInstanceIdFromProject();
+      if (opts.instance && opts.project) {
+        console.error("Pass --instance or --project, not both.");
+        process.exitCode = 1;
+        return;
+      }
+      const instanceId =
+        opts.instance ||
+        (opts.project
+          ? await resolveMonitoringInstanceId({
+              apiKey,
+              apiBaseUrl,
+              project: opts.project,
+              orgId: configOrgIdForBody(apiKey, cfg.orgId),
+            })
+          : readInstanceIdFromProject());
       if (!instanceId) {
-        console.error("No monitoring instance. Pass --instance <uuid>, or run this on a box whose");
+        console.error("No monitoring instance. Pass --project <id|alias> or --instance <uuid>, or run this on a box whose");
         console.error(".pgwatch-config has an instance_id (written by 'pgai mon local-install').");
         process.exitCode = 1;
         return;
