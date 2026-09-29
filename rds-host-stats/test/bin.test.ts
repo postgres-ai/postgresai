@@ -1,14 +1,42 @@
 import { createServer, type AddressInfo } from 'node:net'
 import { expect, test } from 'bun:test'
 
-test('refuses a role ARN without an External ID, and the reverse', () => {
-  const base = { PATH: process.env.PATH, RDS_DB_INSTANCE_IDENTIFIER: 'db', AWS_REGION: 'us-east-1', PGAI_CLUSTER: 'c', PGAI_NODE_NAME: 'n' }
-  for (const extra of [{ RDS_ROLE_ARN: 'arn:aws:iam::123456789012:role/r' }, { RDS_EXTERNAL_ID: 'postgresai-org-1' }]) {
-    const run = Bun.spawnSync(['bun', `${import.meta.dir}/../bin/rds-host-stats.ts`], { env: { ...base, ...extra } })
-    expect(run.exitCode).toBe(2)
-    expect(run.stderr.toString()).toContain('RDS_ROLE_ARN and RDS_EXTERNAL_ID')
+// Compose restarts the service on any exit, so a configuration error must
+// idle with one clear log line instead of exiting into a restart loop.
+async function idlesWith(env: Record<string, string | undefined>, message: string) {
+  const run = Bun.spawn(['bun', `${import.meta.dir}/../bin/rds-host-stats.ts`], { env, stdout: 'pipe', stderr: 'pipe' })
+  let stderr = ''
+  const reader = run.stderr.getReader()
+  const decoder = new TextDecoder()
+  const deadline = Date.now() + 15_000
+  while (!stderr.includes('\n') && Date.now() < deadline) {
+    const { value, done } = await reader.read()
+    if (done) break
+    stderr += decoder.decode(value)
   }
-})
+  await Bun.sleep(1_500)
+  const alive = run.exitCode === null
+  run.kill('SIGTERM')
+  const code = await run.exited
+  expect(stderr, message).toContain(message)
+  expect(stderr, message).toContain('idle until the configuration is fixed')
+  expect(alive, message).toBe(true)
+  expect(code, message).toBe(0)
+}
+
+const configured = { PATH: process.env.PATH, RDS_DB_INSTANCE_IDENTIFIER: 'db', AWS_REGION: 'us-east-1', PGAI_CLUSTER: 'c', PGAI_NODE_NAME: 'n' }
+
+test('idles on a role ARN without an External ID, and the reverse', async () => {
+  for (const extra of [{ RDS_ROLE_ARN: 'arn:aws:iam::123456789012:role/r' }, { RDS_EXTERNAL_ID: 'postgresai-org-1' }]) {
+    await idlesWith({ ...configured, ...extra }, 'RDS_ROLE_ARN and RDS_EXTERNAL_ID')
+  }
+}, 60_000)
+
+test('idles when a required variable is empty, as compose defaults them', async () => {
+  for (const name of ['RDS_DB_INSTANCE_IDENTIFIER', 'PGAI_CLUSTER', 'PGAI_NODE_NAME', 'AWS_REGION']) {
+    await idlesWith({ ...configured, [name]: '' }, `${name} is required`)
+  }
+}, 90_000)
 
 // A timed-out poll can leave a socket stuck mid-body that neither aborting nor
 // destroying the SDK client closes under Bun, so the service exits and the
@@ -130,11 +158,8 @@ test('stays up and reports zero samples when the instance is not found', async (
 }, 30_000)
 
 // Above 300 s a poll could miss a 300 s Aurora volume bucket entirely.
-test('refuses a poll interval that is not an integer from 1 to 300', () => {
+test('idles on a poll interval that is not an integer from 1 to 300', async () => {
   for (const value of ['0', '1.5', '60s', '301']) {
-    const env = { PATH: process.env.PATH, RDS_DB_INSTANCE_IDENTIFIER: 'db', AWS_REGION: 'us-east-1', PGAI_CLUSTER: 'c', PGAI_NODE_NAME: 'n', RDS_POLL_INTERVAL_SECONDS: value }
-    const run = Bun.spawnSync(['bun', `${import.meta.dir}/../bin/rds-host-stats.ts`], { env })
-    expect(run.exitCode, value).toBe(2)
-    expect(run.stderr.toString(), value).toContain('RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300')
+    await idlesWith({ ...configured, RDS_POLL_INTERVAL_SECONDS: value }, 'RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300')
   }
-})
+}, 90_000)
