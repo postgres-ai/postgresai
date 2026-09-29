@@ -1,38 +1,40 @@
 import { createClients, PollTimeout, pollOnce, writeSamples } from '../lib/poll'
 
 const env = process.env
-function required(name: string): string {
-  const value = env[name]
-  if (!value) {
-    console.error(`${name} is required`)
-    process.exit(2)
+process.on('SIGTERM', () => process.exit(0))
+process.on('SIGINT', () => process.exit(0))
+
+// Returns the first configuration problem, or undefined.
+function problem(): string | undefined {
+  if (Boolean(env.RDS_ROLE_ARN) !== Boolean(env.RDS_EXTERNAL_ID)) {
+    return 'RDS_ROLE_ARN and RDS_EXTERNAL_ID must both be set or both be unset'
   }
-  return value
+  for (const name of ['RDS_DB_INSTANCE_IDENTIFIER', 'PGAI_CLUSTER', 'PGAI_NODE_NAME', 'AWS_REGION']) {
+    if (!env[name]) return `${name} is required`
+  }
+  // A 300 s bucket is written by a poll that ends 10 to 15 minutes after it
+  // starts, so a longer interval would skip Aurora volume buckets.
+  const interval = Number(env.RDS_POLL_INTERVAL_SECONDS || 60)
+  if (!Number.isInteger(interval) || interval < 1 || interval > 300) {
+    return 'RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300'
+  }
 }
 
-if (Boolean(env.RDS_ROLE_ARN) !== Boolean(env.RDS_EXTERNAL_ID)) {
-  console.error('RDS_ROLE_ARN and RDS_EXTERNAL_ID must both be set or both be unset')
-  process.exit(2)
+// Compose restarts the service on any exit and defaults every variable to
+// empty, so a configuration error idles with one log line instead of exiting
+// into a restart loop.
+const invalid = problem()
+if (invalid) {
+  console.error(`${invalid}; rds-host-stats will idle until the configuration is fixed and the container is restarted`)
+  await new Promise(() => setInterval(() => {}, 2 ** 31 - 1))
 }
-const target = {
-  instanceId: required('RDS_DB_INSTANCE_IDENTIFIER'),
-  cluster: required('PGAI_CLUSTER'),
-  nodeName: required('PGAI_NODE_NAME'),
-}
-const region = required('AWS_REGION')
-// A 300 s bucket is written by a poll that ends 10 to 15 minutes after it
-// starts, so a longer interval would skip Aurora volume buckets.
+const target = { instanceId: env.RDS_DB_INSTANCE_IDENTIFIER!, cluster: env.PGAI_CLUSTER!, nodeName: env.PGAI_NODE_NAME! }
+const region = env.AWS_REGION!
 const interval = Number(env.RDS_POLL_INTERVAL_SECONDS || 60)
-if (!Number.isInteger(interval) || interval < 1 || interval > 300) {
-  console.error('RDS_POLL_INTERVAL_SECONDS must be an integer from 1 to 300')
-  process.exit(2)
-}
 const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined
 const clients = createClients(region, role)
 const url = env.PROMETHEUS_URL || 'http://sink-prometheus:9090'
 const auth = env.VM_AUTH_USERNAME && env.VM_AUTH_PASSWORD ? { username: env.VM_AUTH_USERNAME, password: env.VM_AUTH_PASSWORD } : undefined
-process.on('SIGTERM', () => process.exit(0))
-process.on('SIGINT', () => process.exit(0))
 let state = new Map<string, number>()
 let nextTick = Date.now()
 while (true) {
