@@ -96,10 +96,14 @@ def _panels(path):
     return json.loads(path.read_text())["panels"]
 
 
+def _row(path):
+    return next(p for p in _panels(path) if p.get("type") == "row" and p["title"] == "Host stats")
+
+
 def _host_panels(path):
     return {
         p["title"]: p
-        for p in _panels(path)
+        for p in _row(path)["panels"]
         if any("host_" in t.get("expr", "") for t in p.get("targets", []))
     }
 
@@ -110,9 +114,6 @@ def _family(expr):
 
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
 def test_host_stats_row_charts_every_family_on_its_panel(path):
-    panels = _panels(path)
-    titles = [p.get("title") for p in panels if p.get("type") == "row"]
-    assert "Host stats" in titles
     host = _host_panels(path)
     assert sorted(host) == sorted(PANEL_FAMILIES)
     for title, families in PANEL_FAMILIES.items():
@@ -122,6 +123,19 @@ def test_host_stats_row_charts_every_family_on_its_panel(path):
             assert 'cluster="$cluster_name"' in expr and 'node_name="$node_name"' in expr, expr
     charted = sorted(f for families in PANEL_FAMILIES.values() for f in families)
     assert charted == sorted(COLLECTED)
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
+def test_host_stats_row_is_collapsed_and_last(path):
+    # Only RDS/Aurora boxes write host_* today; an expanded row would show
+    # every other box a screen of "No data". A collapsed row keeps its panels
+    # inside it, and must be the last top-level panel: collapsing a row from
+    # the UI folds every following top-level panel into it.
+    panels = _panels(path)
+    row = _row(path)
+    assert row["collapsed"] is True
+    assert panels[-1] is row
+    assert not any("host_" in t.get("expr", "") for p in panels for t in p.get("targets", []))
 
 
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
