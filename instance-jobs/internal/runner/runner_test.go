@@ -311,6 +311,7 @@ func TestRejectedCredentialBacksOffAndFlipsHealth(t *testing.T) {
 		t.Fatalf("a rejected credential backs off %v, want longBackoff", got)
 	}
 	h.runner.consecutiveFailures = 0
+	h.runner.hardFailures = 0
 	for i := 1; i <= flipsAt; i++ {
 		wait := h.runner.tick(context.Background())
 		if wait < 8*time.Minute {
@@ -2285,5 +2286,422 @@ func TestABackwardClockStepDoesNotSubmitANegativeDuration(t *testing.T) {
 	if d < 0 {
 		t.Fatalf("duration_ms = %v: a negative duration reaches the platform, "+
 			"which can reject the submit and strand the job", d)
+	}
+}
+
+// --- the transient poll backoff -----------------------------------------------
+
+// transientPollError is what a dropped connection to the platform edge looks
+// like by the time it reaches the runner: not an APIError, so nothing was
+// decided platform-side and Classify calls it ClassTransient. This is the error
+// two production collectors logged twice in ten minutes.
+func transientPollError() error {
+	return errors.New(`Post "https://postgres.ai/api/general/rpc/instance_job_poll": ` +
+		`read tcp 10.0.0.2:40112->10.0.0.9:443: read: connection reset by peer`)
+}
+
+// Literals rather than the runner's own constants throughout this block, the way
+// TestRejectedCredentialBacksOffAndFlipsHealth does it: a test written in terms
+// of the constant it is pinning cannot notice that constant moving, and what is
+// being pinned here is precisely that one reset connection costs seconds and not
+// the ten minutes it used to.
+func TestOneTransientPollFailureRetriesInSecondsNotTenMinutes(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	got := h.runner.pollError(transientPollError())
+	if got > 5*time.Second {
+		t.Fatalf("a single transient poll failure waits %v. The channel exists to "+
+			"answer in ~30s, and the platform goes on dispatching work here until "+
+			"jobs_last_poll_at is 30 minutes old, so a wait on this scale is a "+
+			"blackout nothing can see", got)
+	}
+	// Not a hot loop either. minPollInterval is 1s, and a first wait at that
+	// floor would have its -20% jitter clamped straight back up, so the fleet
+	// would stop spreading exactly when it all failed at once.
+	if got < time.Second {
+		t.Fatalf("a transient poll failure waits %v, which is a poll per second "+
+			"against a host that is refusing connections instantly", got)
+	}
+}
+
+// The escalation and its ceiling. A flat two-second retry passes the test above
+// and hammers a platform that is down for an hour.
+func TestTheTransientPollBackoffEscalatesToACeiling(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	waits := make([]time.Duration, 0, 20)
+	for i := 0; i < 20; i++ {
+		waits = append(waits, h.runner.pollError(transientPollError()))
+	}
+
+	if waits[1] <= waits[0] {
+		t.Fatalf("the transient backoff does not escalate: %v", waits[:4])
+	}
+	for i := 1; i < len(waits); i++ {
+		if waits[i] < waits[i-1] {
+			t.Fatalf("the transient backoff went backwards at failure %d: %v", i+1, waits)
+		}
+	}
+	ceiling := waits[len(waits)-1]
+	if ceiling != waits[len(waits)-2] {
+		t.Fatalf("the backoff was still growing after %d consecutive failures (%v). "+
+			"A platform that stays unreachable for a day reaches four figures of "+
+			"them, and unbounded doubling is a negative duration long before that",
+			len(waits), waits)
+	}
+	if ceiling <= 0 || ceiling > 2*time.Minute {
+		t.Fatalf("the transient backoff settles at %v, which leaves the box "+
+			"unreachable for most of the platform's 30-minute routing window "+
+			"after the network is already back", ceiling)
+	}
+}
+
+// A platform that ANSWERED -- "no such function here", "I refuse this request",
+// "that credential is no good" -- is telling us something a dropped TCP
+// connection does not, and must go on being backed off harder than one.
+func TestARefusedPollStillBacksOffFarLongerThanADroppedConnection(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// The transient ceiling, reached, so the comparison below is against the
+	// most a dropped connection can ever cost rather than its first retry.
+	var ceiling time.Duration
+	for i := 0; i < 20; i++ {
+		ceiling = h.runner.pollError(transientPollError())
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"missing RPC", &platform.APIError{StatusCode: 404, Code: "PGRST202"}},
+		{"refused request", &platform.APIError{StatusCode: 400, Code: "PT400"}},
+		{"rejected credential", &platform.APIError{StatusCode: 401, Code: "PT401"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.runner.consecutiveFailures = 0
+			h.runner.hardFailures = 0
+			got := h.runner.pollError(tc.err)
+			if got != 10*time.Minute {
+				t.Fatalf("a %s backs off %v, want the ten minutes longBackoff specifies",
+					tc.name, got)
+			}
+			if got <= ceiling {
+				t.Fatalf("a %s backs off %v, no longer than a dropped connection (%v). "+
+					"A platform saying 'go away' is not a TCP blip and must not be "+
+					"retried like one", tc.name, got, ceiling)
+			}
+		})
+	}
+}
+
+// Recovery. Without the reset a box that lost the platform for an hour comes
+// back and goes on polling at the ceiling; and the platform's own pacing has to
+// win again the moment a poll succeeds.
+func TestAGoodPollResetsTheTransientBackoff(t *testing.T) {
+	ok := false
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		if !ok {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+	})
+
+	first := h.runner.pollError(transientPollError())
+	if second := h.runner.pollError(transientPollError()); second <= first {
+		t.Fatalf("the backoff did not escalate before the recovery: %v then %v", first, second)
+	}
+
+	ok = true
+	if wait := h.runner.tick(context.Background()); wait < 4*time.Second || wait > 6*time.Second {
+		t.Fatalf("after a good poll the wait is %v, want the platform's own 5s "+
+			"next_poll_ms (+/- the 20%% jitter)", wait)
+	}
+	if h.runner.consecutiveFailures != 0 {
+		t.Fatalf("consecutiveFailures = %d after a good poll", h.runner.consecutiveFailures)
+	}
+
+	ok = false
+	if again := h.runner.pollError(transientPollError()); again != first {
+		t.Fatalf("the first failure after a recovery waits %v, want the opening "+
+			"%v again", again, first)
+	}
+}
+
+// The health signal. A container retrying correctly through a ten-second blip is
+// not unhealthy, and flipping it there would restart a loop doing exactly the
+// right thing. One that has reached nothing for minutes IS unhealthy, and has to
+// say so while the platform is still routing work to it.
+func TestABlipStaysGreenButASustainedOutageGoesRed(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	// A clock the test drives, so "ten seconds of failures" and "ten minutes of
+	// failures" are the retry schedule's own elapsed time rather than the wall's.
+	clock := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	h.runner.now = func() time.Time { return clock }
+	h.runner.monotonic = func() time.Time { return clock }
+
+	start := clock
+	for clock.Sub(start) < 10*time.Minute {
+		wait := h.runner.pollError(transientPollError())
+		if elapsed := clock.Sub(start); elapsed <= 10*time.Second {
+			if err := h.health(t); err != nil {
+				t.Fatalf("the container went unhealthy %v into a blip, after %d failed "+
+					"polls: %v", elapsed, h.runner.consecutiveFailures, err)
+			}
+		}
+		clock = clock.Add(wait)
+	}
+
+	if err := h.health(t); err == nil {
+		t.Fatalf("still green after %v of failed polls and %d of them in a row. The "+
+			"platform keeps dispatching work here until jobs_last_poll_at is 30 "+
+			"minutes old, so an operator has to be able to see this one inside that "+
+			"window", clock.Sub(start), h.runner.consecutiveFailures)
+	}
+}
+
+// The deadline written into the health file is what `docker inspect` reads as
+// "this loop is stuck". It has to describe the retry that was actually
+// scheduled: a two-second retry promising ten minutes of slack lets a genuinely
+// wedged loop keep reading fresh for the whole ten.
+func TestTheHealthDeadlineFollowsTheTransientRetry(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h.runner.pollError(transientPollError())
+
+	raw, err := os.ReadFile(h.healthPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state healthState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	// By hand, the way worstCaseJob and worstCaseSubmit are: the stamp covers the
+	// wait, one whole job, the two submits that can follow it, and the slack. On
+	// a seconds-scale retry the job and its submits are the whole of it, so a
+	// minute of headroom above them is generous -- and still nine minutes short
+	// of what a ten-minute wait would have promised.
+	want := worstCaseJob + 2*worstCaseSubmit + 2*time.Minute + time.Minute
+	if got := state.NextCheckBy.Sub(state.UpdatedAt); got > want {
+		t.Fatalf("a transient retry promises the next health stamp within %v, want "+
+			"at most %v: the deadline is describing a ten-minute park that is no "+
+			"longer scheduled", got, want)
+	}
+}
+
+// The outage is timed on the monotonic seam, not r.now(). r.now() is
+// time.Now().UTC(), which drops the monotonic reading, so a backward NTP step
+// early in an outage kept the box green for as long as the step. Here the wall
+// clock jumps back two hours after the first failure and the retries then run
+// for ten real minutes.
+func TestABackwardClockStepDoesNotHideAnOutage(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	wall := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	mono := wall
+	h.runner.now = func() time.Time { return wall }
+	h.runner.monotonic = func() time.Time { return mono }
+
+	wait := h.runner.pollError(transientPollError())
+	wall = wall.Add(-2 * time.Hour)
+	for spent := time.Duration(0); spent < 10*time.Minute; {
+		wall, mono = wall.Add(wait), mono.Add(wait)
+		spent += wait
+		wait = h.runner.pollError(transientPollError())
+	}
+
+	if err := h.health(t); err == nil {
+		t.Fatalf("still green after ten minutes of failed polls because the wall " +
+			"clock stepped back two hours: the outage is being timed on it")
+	}
+}
+
+// And the production seam really is monotonic. `==`, not Equal(), for the
+// reason given in the duration test above: Round(0) keeps the instant and
+// drops only the reading.
+func TestTheOutageStartCarriesAMonotonicReading(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h.runner.pollError(transientPollError())
+	if s := h.runner.failingSince; s == s.Round(0) {
+		t.Fatalf("failingSince = %v has no monotonic reading: an NTP step moves "+
+			"the outage clock with it", s)
+	}
+}
+
+// A platform deploy: two dropped connections while it restarts, then one
+// PGRST202 while PostgREST's schema cache is still stale. Sharing one count
+// between the two rules flipped this red six seconds in; the refusal count
+// has to be of refusals. Still failing ten minutes later IS an outage.
+func TestTwoBlipsAndARefusalAreNotAnOutage(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	clock := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	h.runner.monotonic = func() time.Time { return clock }
+
+	clock = clock.Add(h.runner.pollError(transientPollError()))
+	clock = clock.Add(h.runner.pollError(transientPollError()))
+	clock = clock.Add(h.runner.pollError(&platform.APIError{StatusCode: 404, Code: "PGRST202"}))
+	if err := h.health(t); err != nil {
+		t.Fatalf("unhealthy six seconds into a platform deploy, after two dropped "+
+			"connections and one refusal: %v", err)
+	}
+
+	h.runner.pollError(&platform.APIError{StatusCode: 404, Code: "PGRST202"})
+	if err := h.health(t); err == nil {
+		t.Fatal("still green after ten minutes of failed polls")
+	}
+}
+
+// ClassJobGone on the POLL path is instance_job_auth saying the token and the
+// instance id disagree. It stays on the ten-minute park and the count rule: a
+// misconfigured box on the transient ladder would hammer the platform, and no
+// outage clock should buy it five minutes of green.
+func TestAForeignInstanceIdIsNotRetriedLikeABlip(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	clock := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	h.runner.monotonic = func() time.Time { return clock }
+
+	for i := 1; i <= 3; i++ {
+		wait := h.runner.pollError(&platform.APIError{StatusCode: 404, Code: "PT404"})
+		if wait != 10*time.Minute {
+			t.Fatalf("a PT404 poll waits %v, want ten minutes", wait)
+		}
+		err := h.health(t)
+		if i < 3 && err != nil {
+			t.Fatalf("unhealthy after %d PT404 poll(s), want 3: %v", i, err)
+		}
+		if i == 3 && err == nil {
+			t.Fatal("still green after 3 PT404 polls in a row")
+		}
+	}
+}
+
+// The outage clock starts again with each run of failures. Stamping it only
+// once would let a blip long after an earlier outage inherit that outage's age.
+func TestTheOutageClockRestartsAfterARecovery(t *testing.T) {
+	ok := false
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		if !ok {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+	})
+	clock := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	h.runner.monotonic = func() time.Time { return clock }
+
+	h.runner.pollError(transientPollError())
+	ok = true
+	h.runner.tick(context.Background())
+	clock = clock.Add(time.Hour)
+
+	for i := 0; i < 3; i++ {
+		clock = clock.Add(h.runner.pollError(transientPollError()))
+	}
+	if err := h.health(t); err != nil {
+		t.Fatalf("a fresh blip an hour after the last one reads as an outage: %v", err)
+	}
+}
+
+// The outage rule's edge: a refusal, its ten-minute park, then two blips. The
+// run is three failures old and past five minutes at the third, so that is
+// where it goes red -- not one retry later.
+func TestARunPastTheOutageWindowGoesRedAtTheThirdFailure(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	clock := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	h.runner.monotonic = func() time.Time { return clock }
+
+	clock = clock.Add(h.runner.pollError(&platform.APIError{StatusCode: 404, Code: "PGRST202"}))
+	clock = clock.Add(h.runner.pollError(transientPollError()))
+	if err := h.health(t); err != nil {
+		t.Fatalf("unhealthy after two failed polls: %v", err)
+	}
+	h.runner.pollError(transientPollError())
+	if err := h.health(t); err == nil {
+		t.Fatal("still green at the third failed poll of a run ten minutes old")
+	}
+}
+
+// A good poll clears the refusal count too: two refusals, a recovery, two more
+// is two in a row, not four.
+func TestAGoodPollResetsTheRefusalCount(t *testing.T) {
+	ok := false
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		if !ok {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+	})
+	refusal := &platform.APIError{StatusCode: 401, Code: "PT401"}
+
+	h.runner.pollError(refusal)
+	h.runner.pollError(refusal)
+	ok = true
+	h.runner.tick(context.Background())
+	h.runner.pollError(refusal)
+	h.runner.pollError(refusal)
+	if err := h.health(t); err != nil {
+		t.Fatalf("unhealthy after two refusals since the last good poll: %v", err)
+	}
+}
+
+// The schedule itself, in literals. The tests above pin its properties in
+// ranges; this is what catches the ceiling or the first step drifting inside
+// them.
+func TestTheTransientPollScheduleIsTwoSecondsDoublingToAMinute(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second,
+		16 * time.Second, 32 * time.Second, time.Minute, time.Minute}
+	for i, w := range want {
+		if got := h.runner.pollError(transientPollError()); got != w {
+			t.Fatalf("transient failure %d waits %v, want %v", i+1, got, w)
+		}
+	}
+}
+
+// The outage edge: a run already past the count goes red at five minutes, and
+// not a retry before.
+func TestATransientRunGoesRedAtFiveMinutes(t *testing.T) {
+	h := newHarness(t, true, func(_ *harness, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	start := time.Date(2026, 9, 24, 19, 29, 7, 0, time.UTC)
+	clock := start
+	h.runner.monotonic = func() time.Time { return clock }
+
+	for i := 0; i < 3; i++ {
+		h.runner.pollError(transientPollError())
+	}
+	clock = start.Add(5*time.Minute - time.Second)
+	h.runner.pollError(transientPollError())
+	if err := h.health(t); err != nil {
+		t.Fatalf("unhealthy %v into the run: %v", clock.Sub(start), err)
+	}
+	clock = start.Add(5 * time.Minute)
+	h.runner.pollError(transientPollError())
+	if err := h.health(t); err == nil {
+		t.Fatal("still green five minutes into a run of failed polls")
 	}
 }
