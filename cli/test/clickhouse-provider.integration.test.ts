@@ -120,6 +120,14 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
       expect(probe.rows[0].r).toContain("td_app.orders");
       const orders = await mon.query("select postgres_ai.table_describe('td_app.orders') as r");
       expect(orders.rows[0].r).toContain("Table: td_app.orders");
+      // Names regclass accepted keep working: the caller's own temp schema, and a
+      // database-qualified name for the current database.
+      await mon.query("create temp table td_tmp (id int)");
+      const temp = await mon.query("select postgres_ai.table_describe('pg_temp.td_tmp') as r");
+      expect(temp.rows[0].r).toMatch(/^Table: pg_temp_\d+\.td_tmp/);
+      const qualified = await mon.query("select postgres_ai.table_describe(current_database() || '.public.td_probe') as r");
+      expect(qualified.rows[0].r).toContain("Table: public.td_probe");
+      await expect(mon.query("select postgres_ai.table_describe('other_db.public.td_probe')")).rejects.toThrow("does not exist");
       const catalog = await mon.query("select postgres_ai.table_describe('pg_class') as r");
       expect(catalog.rows[0].r).toContain("Table: pg_catalog.pg_class");
       await expect(mon.query("select postgres_ai.table_describe('td_missing')")).rejects.toThrow('relation "td_missing" does not exist');
