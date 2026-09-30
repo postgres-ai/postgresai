@@ -40,6 +40,28 @@ function findPgBin(cmd: string): string | null {
   return null;
 }
 
+/** First directory with initdb and postgres of at least `minMajor`: PATH, then Debian/Homebrew layouts. */
+function findPgBinDirAtLeast(minMajor: number): string | null {
+  const onPath = findPgBin("initdb");
+  const probe = Bun.spawnSync([
+    "sh",
+    "-c",
+    "ls -1d /usr/lib/postgresql/*/bin /opt/homebrew/opt/postgresql@*/bin 2>/dev/null || true",
+  ]);
+  const dirs = [
+    ...(onPath ? [path.dirname(onPath)] : []),
+    ...new TextDecoder().decode(probe.stdout).split("\n").filter(Boolean),
+  ];
+  for (const dir of dirs) {
+    const initdb = path.join(dir, "initdb");
+    if (!fs.existsSync(initdb) || !fs.existsSync(path.join(dir, "postgres"))) continue;
+    const version = new TextDecoder().decode(Bun.spawnSync([initdb, "--version"]).stdout);
+    const major = Number(version.match(/\(PostgreSQL\) (\d+)/)?.[1] ?? 0);
+    if (major >= minMajor) return dir;
+  }
+  return null;
+}
+
 function havePostgresBinaries(): boolean {
   return !!(findPgBin("initdb") && findPgBin("postgres"));
 }
@@ -85,14 +107,14 @@ interface TempPostgres {
   cleanup: () => Promise<void>;
 }
 
-async function createTempPostgres(): Promise<TempPostgres> {
+async function createTempPostgres(binDir?: string): Promise<TempPostgres> {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "postgresai-init-"));
   const dataDir = path.join(tmpRoot, "data");
   const socketDir = path.join(tmpRoot, "sock");
   fs.mkdirSync(socketDir, { recursive: true });
 
-  const initdb = findPgBin("initdb");
-  const postgresBin = findPgBin("postgres");
+  const initdb = binDir ? path.join(binDir, "initdb") : findPgBin("initdb");
+  const postgresBin = binDir ? path.join(binDir, "postgres") : findPgBin("postgres");
   if (!initdb || !postgresBin) {
     throw new Error("PostgreSQL binaries not found (need initdb and postgres)");
   }
@@ -257,13 +279,22 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
   }, { timeout: 60000 });
 
   test("creation and reset honor the server SCRAM iteration count", async () => {
-    pg = await createTempPostgres();
+    // scram_iterations exists since PostgreSQL 16. CI sets PGAI_TEST_REQUIRE_PG16=1 so
+    // this test fails instead of passing vacuously when only older binaries exist.
+    const binDir = findPgBinDirAtLeast(16);
+    if (!binDir) {
+      if (process.env.PGAI_TEST_REQUIRE_PG16 === "1") {
+        throw new Error("PGAI_TEST_REQUIRE_PG16=1 but no PostgreSQL >= 16 initdb/postgres found");
+      }
+      console.warn("skipped: SCRAM iteration test needs PostgreSQL >= 16 binaries");
+      return;
+    }
+    pg = await createTempPostgres(binDir);
     const admin = new Client({ connectionString: pg.adminUri });
     try {
       await admin.connect();
-      // Older PostgreSQL versions have no configurable SCRAM iteration count.
       const setting = await admin.query("select current_setting('scram_iterations', true) as iterations");
-      if (setting.rows[0].iterations === null) return;
+      expect(setting.rows[0].iterations).not.toBeNull();
       // Set the default for the new connections opened by prepare-db.
       await admin.query("alter database testdb set scram_iterations = 10000");
       for (const reset of [false, true]) {
