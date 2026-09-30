@@ -134,7 +134,7 @@ The plan is the same superuser plan as self-managed Postgres (`--print-sql` show
 npx postgresai prepare-db 'postgres://postgres:...@xxx.pg.clickhouse.cloud:5432/postgres?channel_binding=require'
 ```
 
-Before the admin connection is used, one `-- scope:` line lists exactly what the run grants the
+Before any grant runs, one `-- scope:` line lists exactly what the run grants the
 monitoring role, derived from the steps about to run (so it shrinks under `--skip-optional-permissions`
 and is not printed on `--reset-password`, which grants nothing). With `--json` it goes to stderr.
 
