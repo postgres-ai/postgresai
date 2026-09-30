@@ -589,6 +589,8 @@ export async function buildInitPlan(params: {
   includeOptionalPermissions: boolean;
   /** Provider type. Affects which steps are included. Defaults to "self-managed". */
   provider?: DbProvider;
+  /** Create the role if missing, but never change an existing role's password. */
+  keepExistingPassword?: boolean;
 }): Promise<InitPlan> {
   // NOTE: kept async for API stability / potential future async template loading.
   const monitoringUser = params.monitoringUser || DEFAULT_MONITORING_USER;
@@ -622,8 +624,8 @@ export async function buildInitPlan(params: {
     exception when duplicate_object then
       null;
     end;
-  end if;
-  alter user ${qRole} with password ${qPw};
+  end if;${params.keepExistingPassword ? "" : `
+  alter user ${qRole} with password ${qPw};`}
 end $$;`;
 
     const roleSql = applyTemplate(loadSqlTemplate("01.role.sql"), { ...vars, ROLE_STMT: roleStmt });
