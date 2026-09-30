@@ -997,9 +997,9 @@ describe("CLI commands", () => {
     const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/SQL plan \(offline; not connected\)/);
+    expect(r.stdout).toMatch(new RegExp(`grant connect on database "mydb" to "${DEFAULT_MONITORING_USER}"`, "i"));
     expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
     expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
-    expect(r.stdout).toMatch(new RegExp(`grant connect on database "mydb" to "${DEFAULT_MONITORING_USER}"`, "i"));
   });
 
   test("cli: prepare-db --print-sql with --provider supabase skips role step", () => {
