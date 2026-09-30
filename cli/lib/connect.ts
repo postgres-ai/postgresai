@@ -90,6 +90,21 @@ export function parseClickhouseKey(value: string | undefined, env: Record<string
   return { keyId: value.slice(0, i), keySecret: value.slice(i + 1) };
 }
 
+/** A disconnect in flight (not one that failed to launch, which can be retried). */
+export const disconnecting = (status: string | null) => /delet/.test(status ?? "") && !/fail/.test(status ?? "");
+
+/** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
+function monitoringUrlFor(url: string, db: string, password?: string): string {
+  const u = new URL(url);
+  const pw = password ?? (decodeURIComponent(u.password) || u.searchParams.get("password") || "");
+  u.username = DEFAULT_MONITORING_USER;
+  u.password = pw;
+  u.pathname = `/${encodeURIComponent(db)}`;
+  u.searchParams.delete("user");
+  u.searchParams.delete("password");
+  return u.toString();
+}
+
 /** A platform row as a result with its next action; `fresh` (provisioned just now) adds the first-checkup ETA. */
 export function connectStatus(row: Database, provider = row.provider as Provider, fresh = false): ConnectResult {
   const base = { provider, name: row.name, id: row.id, dashboard_url: row.dashboard_url, host_metrics: row.host_metrics };
@@ -100,7 +115,7 @@ export function connectStatus(row: Database, provider = row.provider as Provider
       next: row.dashboard_url ? `Open ${row.dashboard_url}` : `pgai status ${row.name}`,
     };
   }
-  if (/delet/.test(row.status ?? "")) return { ...base, status: "disconnecting", next: "none" };
+  if (disconnecting(row.status)) return { ...base, status: "disconnecting", next: "none" };
   if (/fail|error/.test(row.status ?? "")) {
     return { ...base, status: "failed", next: `pgai disconnect ${row.name} --yes, then pgai connect again` };
   }
@@ -122,7 +137,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'" };
   }
 
-  let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name && !/delet/.test(d.status ?? ""));
+  let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name && !disconnecting(d.status));
   const fresh = !row;
   if (!row) {
     deps.progress(`Preparing ${maskConnectionString(url)}`);
@@ -178,21 +193,15 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
     )).rows[0];
     if (me.name === DEFAULT_MONITORING_USER) {
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
-      if (v.ok) return { monitoringUrl: url };
+      if (v.ok) return { monitoringUrl: monitoringUrlFor(url, me.db) };
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password.
-      if (me.mon_exists && !process.env.PGAI_MON_PASSWORD) {
+      if (me.mon_exists && !process.env.PGAI_MON_PASSWORD?.trim()) {
         return { next: `${DEFAULT_MONITORING_USER} already exists on this server; re-run with PGAI_MON_PASSWORD=<its password>, or connect with its URL` };
       }
       const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider }) });
-      const u = new URL(url);
-      u.username = DEFAULT_MONITORING_USER;
-      u.password = password;
-      u.pathname = `/${encodeURIComponent(me.db)}`;
-      u.searchParams.delete("user");
-      u.searchParams.delete("password");
-      return { monitoringUrl: u.toString() };
+      return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider });
     return {

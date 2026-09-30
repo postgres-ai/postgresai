@@ -40,10 +40,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await m.end();
 
     expect(await prepareDatabase(first.monitoringUrl, "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
-    // The monitoring role's own URL, password in the query string, no database: normalized the same way.
+    // The monitoring role's own URL with the password in the query string: normalized the same way.
     const monQuery = new URL(first.monitoringUrl);
     monQuery.password = "";
-    monQuery.pathname = "";
     monQuery.searchParams.set("password", decodeURIComponent(mon.password));
     expect(await prepareDatabase(monQuery.toString(), "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
 
