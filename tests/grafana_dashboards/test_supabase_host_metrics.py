@@ -23,7 +23,8 @@ def test_supabase_scrape_is_internal() -> None:
         {'target_label': '__tmp_enabled', 'replacement': '%{PGAI_SUPABASE_HOST_METRICS}'},
         {'source_labels': ['__tmp_enabled'], 'regex': '(?i)\\s*true\\s*', 'action': 'keep'},
     ]
-    assert job['metric_relabel_configs'] == [{'source_labels': ['__name__'], 'regex': 'node_cpu_seconds_total|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*', 'action': 'keep'}]
+    # node_time_seconds is the host clock the host_* rates are divided by.
+    assert job['metric_relabel_configs'] == [{'source_labels': ['__name__'], 'regex': 'node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*', 'action': 'keep'}]
     compose = yaml.safe_load((ROOT / 'docker-compose.yml').read_text())
     assert 'PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}' in compose['services']['sink-prometheus']['environment']
     service = compose['services']['instance-jobs']
