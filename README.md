@@ -316,12 +316,9 @@ postgresai mon stop
 
 ### Step 3: Pull new Docker images and restart
 
-`mon update` migrates `.env` (adds any newly-required keys), refreshes `docker-compose.yml` to the new stack version, and pulls images — all while preserving your user-managed `instances.yml`. It does **not** change `PGAI_TAG`, so set the new image tag yourself first — otherwise `mon update` just re-pulls and restarts the *old* version:
+`mon update` migrates `.env` (adds any newly-required keys), moves `PGAI_TAG` to your CLI's version, refreshes `docker-compose.yml` to the new stack version, and pulls images — all while preserving your user-managed `instances.yml`. It never moves `PGAI_TAG` to an older version than the one deployed, and a development build of the CLI leaves it alone (set it in `.env` yourself in that case):
 
 ```bash
-# In your monitoring directory (typically ~/.postgres_ai/), edit .env and set
-# PGAI_TAG to the version you are upgrading to (it should match your new CLI
-# version), e.g. for the 0.15 line:  PGAI_TAG=0.15.0
 postgresai mon update
 postgresai mon start
 ```
@@ -329,7 +326,7 @@ postgresai mon start
 This will:
 - Add any newly required `.env` keys for the newer stack (existing values, your secrets, and `instances.yml` targets are preserved)
 - Refresh `docker-compose.yml` to match the new stack version on non-git installs (e.g. npx / `npm install -g`), backing up the old file as `docker-compose.yml.bak-<oldtag>-<hash>` (the original is never overwritten on repeated runs) — this is what wires newly-required service config such as `VM_AUTH_*` on `sink-prometheus`. The fetched compose is validated before it replaces your working one, so a network proxy/login page can never clobber it. Git checkouts already get this via `git pull`, so it is skipped for them.
-- Pull the Docker images for the `PGAI_TAG` you set
+- Set `PGAI_TAG` in `.env` to the CLI version and pull those Docker images
 - Start the services on the new images
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords. It also holds the VictoriaMetrics admin-endpoint keys `VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY` and `VM_PPROF_AUTH_KEY` (added in 0.17, see #359), which follow the same preserve-or-generate lifecycle and guard the endpoints that can destroy the metrics store.

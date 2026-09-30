@@ -1045,6 +1045,48 @@ function sanitizeTagForBackup(tag: string | null | undefined): string | null {
  * if the value fails {@link sanitizeTagForBackup}). Used only to compute the
  * compose backup file suffix; callers fall back to a timestamp when this is null.
  */
+/**
+ * What `mon update` does with PGAI_TAG: move the stack to this CLI's version,
+ * like `mon local-install` does, so an upgrade needs no manual .env edit. It
+ * never downgrades a newer tag, and a non-release CLI build moves nothing.
+ */
+export function planUpdateTag(current: string | null, cliVersion: string): { tag: string | null; note: string } {
+  const semver = (v: string) => /^(\d+)\.(\d+)\.(\d+)$/.exec(v)?.slice(1).map(Number);
+  const cli = semver(cliVersion);
+  if (!cli) {
+    return { tag: null, note: `PGAI_TAG stays ${current ?? "unset"}: this CLI (${cliVersion}) is not a release. To pick a stack version, set PGAI_TAG=<version> in .env and re-run 'postgresai mon update'` };
+  }
+  if (current === cliVersion) return { tag: null, note: `PGAI_TAG is ${cliVersion}, matching this CLI` };
+  const cur = current ? semver(current) : undefined;
+  const newer = cur && cur.findIndex((part, i) => part !== cli[i]);
+  if (cur && newer !== undefined && newer >= 0 && cur[newer] > cli[newer]) {
+    return { tag: null, note: `PGAI_TAG stays ${current}: it is newer than this CLI (${cliVersion}). Upgrade the CLI to move the stack: npm install -g postgresai@latest` };
+  }
+  return { tag: cliVersion, note: `PGAI_TAG: ${current ?? "unset"} -> ${cliVersion}` };
+}
+
+/** The PGAI_TAG compose would use: the last assignment in .env, or null. */
+function readEnvTag(projectDir: string): string | null {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return null;
+  let tag: string | null = null;
+  for (const m of fs.readFileSync(envFile, "utf8").matchAll(/^[ \t]*(?:export[ \t]+)?PGAI_TAG=(.*)$/gm)) {
+    tag = stripMatchingQuotes(m[1].trim()) || null;
+  }
+  return tag;
+}
+
+/** Set every PGAI_TAG assignment in .env to `tag` (compose reads the last one), or append one. */
+function writeEnvTag(projectDir: string, tag: string): void {
+  const envFile = path.resolve(projectDir, ".env");
+  const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  const re = /^([ \t]*(?:export[ \t]+)?PGAI_TAG=).*$/gm;
+  const content = re.test(existing)
+    ? existing.replace(re, (_match, prefix: string) => `${prefix}${tag}`)
+    : `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}PGAI_TAG=${tag}\n`;
+  writeEnvFile(envFile, content);
+}
+
 function readDeployedTag(projectDir: string): string | null {
   const envFile = path.resolve(projectDir, ".env");
   if (!fs.existsSync(envFile)) return null;
@@ -5067,6 +5109,15 @@ mon
       } else {
         console.log("✓ .env is up to date");
       }
+      const deployedTag = readEnvTag(projectDir);
+      const tagPlan = planUpdateTag(deployedTag, pkg.version);
+      if (tagPlan.tag) {
+        writeEnvTag(projectDir, tagPlan.tag);
+        // Bun loads .env into process.env at startup, and compose prefers the
+        // environment over .env: carry the move over so `pull` gets the new tag.
+        if (process.env.PGAI_TAG === deployedTag) process.env.PGAI_TAG = tagPlan.tag;
+      }
+      console.log(`${tagPlan.tag ? "✓ " : ""}${tagPlan.note}`);
       console.log();
 
 
@@ -5120,8 +5171,14 @@ mon
           }
         }
         console.log("\n✓ Update completed successfully");
-        console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon restart");
+        if (tagPlan.tag) {
+          // `mon restart` keeps the old containers; stop/start re-runs config-init on the new images.
+          console.log("\nTo run the new version, restart monitoring services:");
+          console.log("  postgres-ai mon stop && postgres-ai mon start");
+        } else {
+          console.log("\nTo apply updates, restart monitoring services:");
+          console.log("  postgres-ai mon restart");
+        }
       } else {
         console.error("\n✗ Docker image update failed");
         process.exitCode = 1;
