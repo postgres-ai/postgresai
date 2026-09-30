@@ -75,7 +75,7 @@ func main() {
 	if cfg.SupabaseHostMetrics {
 		// The relay is optional: a listener failure disables it and is logged,
 		// it never takes the runner down. net.Listen errors carry no secrets.
-		if closeRelay, err := serveRelay(cfg.SupabaseMetricsListen, supabase.New(config.Load, slog.Default()).Handler(true)); err != nil {
+		if closeRelay, err := serveRelay(cfg.SupabaseMetricsListen, supabase.New(config.Load, slog.Default()).Handler()); err != nil {
 			log.Printf("Supabase metrics relay disabled: %v", err)
 		} else {
 			defer closeRelay()

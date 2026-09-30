@@ -4,15 +4,17 @@ Every managed-Postgres provider we collect host metrics from lands in VictoriaMe
 
 | Provider | Raw source | How it becomes `host_*` | Labels from |
 | --- | --- | --- | --- |
-| RDS / Aurora | CloudWatch, Performance Insights, Enhanced Monitoring | `rds-host-stats` writes `host_*` directly ([README](../rds-host-stats/README.md)) | `PGAI_CLUSTER`, `PGAI_NODE_NAME` (must equal the target's tags) |
-| Supabase | node_exporter families from `/customer/v1/privileged/metrics`, relayed by `instance-jobs` (job `supabase-host-metrics`) | recording rules, group `host-supabase` | `sources-generator` copies the tags of the one Supabase target in `instances.yml` into the scrape target |
-| ClickHouse Managed Postgres | `PostgresServer_*` from the ClickHouse Cloud `/prometheus` endpoint (jobs `clickhouse-<name>`) | recording rules, group `host-clickhouse` | `mon targets add` writes the target's tags into the scrape file |
+| RDS / Aurora | CloudWatch, Enhanced Monitoring | `rds-host-stats` writes `host_*` directly ([README](../rds-host-stats/README.md)) | `.env`: `PGAI_CLUSTER`, `PGAI_NODE_NAME` (with `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`) |
+| Supabase | node_exporter families from `/customer/v1/privileged/metrics`, relayed by `instance-jobs` (job `supabase-host-metrics`) | recording rules, group `host-supabase` | the scrape file `host-metrics/supabase-<name>.yml`, while `PGAI_SUPABASE_HOST_METRICS` is true |
+| ClickHouse Managed Postgres | `PostgresServer_*` from the ClickHouse Cloud `/prometheus` endpoint (jobs `clickhouse-<name>`) | recording rules, group `host-clickhouse` | the scrape file `host-metrics/clickhouse-<name>.yml` |
+
+`mon targets add` (and `mon local-install --db-url`, which goes through it) copies the target's tags into the last column, so they are set in one place. A scrape file is reloaded into `sink-prometheus`; `rds-host-stats` pushes past samples and is not scraped, so it reads `.env` and starts with `docker compose --profile rds up -d rds-host-stats`. It polls one instance: the last RDS instance endpoint added. A cluster, reader or proxy endpoint names no instance and sets nothing. After editing a target's tags in `instances.yml`, re-run `mon targets add` for it.
 
 The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` service evaluates them every 60 s over 3-minute rate windows and writes the results back to `sink-prometheus`. Their golden evaluation is `tests/host_rules/host_rules.test.yml`, and CI runs it (`quality:host-rules`).
 
 ## Names
 
-A dash means the provider does not expose the value. RDS sources are CloudWatch `AWS/RDS` metrics unless marked PI (Performance Insights) or EM (Enhanced Monitoring). Supabase sources are node_exporter metrics without the `node_` prefix.
+A dash means the provider does not expose the value. RDS sources are CloudWatch `AWS/RDS` metrics unless marked EM (Enhanced Monitoring). Supabase sources are node_exporter metrics without the `node_` prefix.
 
 | Name | Unit | RDS / Aurora | Supabase | ClickHouse |
 | --- | --- | --- | --- | --- |
@@ -33,26 +35,19 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_disk_write_iops` | operations/s | WriteIOPS | rate of `disk_writes_completed_total`, all disks, per second of `time_seconds` | rate of `DiskWrites_Total` |
 | `host_volume_read_iops` | operations/s | VolumeReadIOPs / 300 (Aurora cluster) | – | – |
 | `host_volume_write_iops` | operations/s | VolumeWriteIOPs / 300 (Aurora cluster) | – | – |
-| `host_disk_read_latency_seconds` | seconds | ReadLatency | read time / reads completed (0 when idle) | – |
-| `host_disk_write_latency_seconds` | seconds | WriteLatency | write time / writes completed (0 when idle) | – |
-| `host_disk_queue_depth` | requests | DiskQueueDepth | rate of `disk_io_time_weighted_seconds_total`, per second of `time_seconds` | – |
 | `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkReceiveBytes_Total` |
 | `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkTransmitBytes_Total` |
-| `host_db_load` | average active sessions | PI db.load.avg | – | – |
-| `host_replica_lag_seconds` | seconds | ReplicaLag (RDS), AuroraReplicaLag × 0.001 (Aurora) | – | – |
-| `host_burst_balance_percent` | percent | BurstBalance (RDS) | – | – |
-| `host_ebs_io_balance_percent` | percent | EBSIOBalance% (RDS) | – | – |
 
 `tests/grafana_dashboards/test_host_row.py` fails if this table and the names the providers write drift apart.
 
 ## Dashboard
 
-Dashboard 1 has one collapsed **Host** row, the last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families (latency, queue depth, load, PI DB load, replica lag, burst and EBS balance) are not every provider's, so they are stored and queryable but not charted.
+Dashboard 1 has one collapsed **Host** row, the last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. Series no panel reads are not collected: GetMetricData bills per metric.
 
 ## Limits
 
-- Supabase: only the primary (`supabase_identifier` = `supabase_project_ref`) is mapped. Read replicas are relayed but get no `host_*`. With no Supabase target in `instances.yml`, or more than one, the series carry no `cluster`/`node_name` and produce no `host_*`.
-- Supabase disk IOPS and latency are summed over all block devices, including the root disk.
+- Supabase: only the primary (`supabase_identifier` = `supabase_project_ref`) is mapped. Read replicas are relayed but get no `host_*`. The relay serves one project, so a box has one Supabase scrape job: the last Supabase target added owns it.
+- Supabase disk IOPS are summed over all block devices, including the root disk.
 - Supabase serves an exposition sampled up to a minute before the scrape, and with one 60 s scraper it refreshes only every other scrape. So the CPU shares are ratios of the CPU counters, and the per-second rates are divided by the rate of the host's own `node_time_seconds`. A plain `rate()` swings between 2/3 and 4/3 of the true value, and `1 − idle rate` went negative on a live project.
 - ClickHouse: the raw names and units match a response recorded from a live service (`cli/test/fixtures/clickhouse-prometheus.txt`). Its HELP text says `DiskReads_Total` and `DiskWrites_Total` count operations. The endpoint refreshes once a minute. A new service serves no counters (CPU, disk, network) for its first few minutes, so those panels start a little later than memory and storage.
 - ClickHouse network bytes include loopback. On a live r6gd.medium with light pgbench load they were about 2.5 times the NIC traffic in `/proc/net/dev`, and loopback made up the difference. Memory is relative to `MemoryLimitBytes` (8 GiB on r6gd.medium), not the guest's `MemTotal` (7.6 GiB), so available memory reads about 5 % higher than `MemAvailable`.

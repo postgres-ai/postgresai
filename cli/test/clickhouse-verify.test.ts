@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/clickhouse";
+import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/host-metrics";
 
 // Runs the exact script sink-prometheus executes, with a fake wget standing in
 // for VictoriaMetrics' /api/v1/targets. Each call returns resp<N>, else resp.

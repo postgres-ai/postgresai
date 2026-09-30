@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/clickhouse";
+import { HOST_METRICS_VERIFY_SCRIPT } from "../lib/host-metrics";
 import pkg from "../package.json";
 
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");

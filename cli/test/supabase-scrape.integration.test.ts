@@ -17,7 +17,7 @@ afterAll(async () => {
 });
 
 test.skipIf(!vmBin)("VictoriaMetrics scrapes the Supabase relay with the target's labels", async () => {
-  const { renderSupabaseScrapeConfig } = await import("../lib/supabase");
+  const { renderSupabaseScrapeConfig } = await import("../lib/host-metrics");
   const exposition = readFileSync(`${import.meta.dir}/../../instance-jobs/internal/supabase/testdata/supabase_metrics.prom`, "utf8")
     + "go_goroutines 7\n";
   relay = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
