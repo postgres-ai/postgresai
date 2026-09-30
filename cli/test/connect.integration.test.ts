@@ -141,6 +141,24 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
+  test("a new role's verifier uses the server's scram_iterations (PG 16+)", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    if ((await c.query("select current_setting('scram_iterations', true) as i")).rows[0].i === null) return void (await c.end());
+    await c.query("alter role current_user set scram_iterations = 10000");
+    try {
+      if (!("monitoringUrl" in await prepareDatabase(ADMIN!, "self-managed"))) throw new Error("expected a URL");
+      const stored = await c.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+      expect(stored.rows[0].rolpassword.startsWith("SCRAM-SHA-256$10000:")).toBe(true);
+    } finally {
+      await c.query("alter role current_user reset scram_iterations");
+      await c.end();
+    }
+  });
+
   test("a URL that can neither create roles nor is the monitoring role: the SQL, passwords redacted", async () => {
     const c = await admin();
     await c.query("drop role if exists pgai_connect_app");
