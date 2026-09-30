@@ -40,12 +40,24 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await m.end();
 
     expect(await prepareDatabase(first.monitoringUrl, "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
+    // The monitoring role's own URL, password in the query string, no database: normalized the same way.
+    const monQuery = new URL(first.monitoringUrl);
+    monQuery.password = "";
+    monQuery.pathname = "";
+    monQuery.searchParams.set("password", decodeURIComponent(mon.password));
+    expect(await prepareDatabase(monQuery.toString(), "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
 
     // The role already exists: another database on this server may use its
     // password, so it is never rotated silently.
     const again = await prepareDatabase(ADMIN!, "self-managed");
     expect("monitoringUrl" in again).toBe(false);
     expect((again as { next: string }).next).toContain("PGAI_MON_PASSWORD");
+    process.env.PGAI_MON_PASSWORD = "   ";
+    try {
+      expect("monitoringUrl" in await prepareDatabase(ADMIN!, "self-managed")).toBe(false);
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
     const still = new Client({ connectionString: first.monitoringUrl });
     await still.connect();
     await still.end();
