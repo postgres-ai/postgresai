@@ -507,7 +507,7 @@ export function extractProjectRefFromUrl(dbUrl: string): string | undefined {
 
     // Modern pooler URLs: project ref is in the username as <user>.<ref>
     // Example: postgresql://postgres_ai_mon.abcdefghij:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-    if (host.includes("pooler.supabase.com")) {
+    if (host.endsWith(".pooler.supabase.com")) {
       const username = decodeURIComponent(url.username);
       const userMatch = username.match(/^[^.]+\.([a-z0-9]+)$/i);
       if (userMatch && userMatch[1]) {
