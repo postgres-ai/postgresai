@@ -51,7 +51,7 @@ import {
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, HOST_METRICS_VERIFY_SCRIPT, removeHostMetrics, scrapeRevision } from "../lib/clickhouse";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -4357,7 +4357,7 @@ mon
 
       if (opts.dbUrl) {
         console.log("Using database URL provided via --db-url parameter");
-        console.log(`Adding PostgreSQL instance from: ${opts.dbUrl}\n`);
+        console.log(`Adding PostgreSQL instance from: ${maskConnectionString(opts.dbUrl)}\n`);
 
         const match = opts.dbUrl.match(/^postgresql:\/\/[^@]+@([^:/]+)/);
         const autoInstanceName = match ? match[1] : "db-instance";
@@ -5460,7 +5460,7 @@ export async function addTarget(
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
   const host = m[3];
-  const db = m[5];
+  const db = m[5].split("?")[0];
   const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
   try {

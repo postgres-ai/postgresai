@@ -63,3 +63,22 @@ test("a corrupted instances.yml error does not print stored passwords", () => {
     expect(out).not.toContain(secret.slice(0, 4));
   }
 });
+
+test("maskConnectionString hides a query password in a string URL parsing rejects", () => {
+  const masked = maskConnectionString(`postgresql://u@host:bad/db?password=${secret}`);
+  expect(masked).not.toContain(secret);
+});
+
+test("mon targets add does not put a query password into the generated name", () => {
+  const add = run(["mon", "targets", "add", `postgresql://u:p@db.example:5432/app?password=${secret}`]);
+  expect(add.out).toContain("Monitoring target 'db-example-app' added");
+  expect(add.out).not.toContain(secret);
+});
+
+test("a YAML error reason that quotes a connection string is masked", () => {
+  writeFileSync(`${projectDir}/instances.yml`, `- conn_str: *postgresql://u:${secret}@db.example:5432/app\n`);
+  const { exitCode, out } = run(["mon", "targets", "list"]);
+  expect(exitCode).toBe(1);
+  expect(out).toContain("Failed to parse");
+  expect(out).not.toContain(secret);
+});
