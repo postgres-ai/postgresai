@@ -31,10 +31,13 @@ type Config struct {
 	Path                  string
 	APIToken              string
 	InstanceID            string
-	APIBaseURL            string
-	StoreURL              string
-	StoreUsername         string
-	StorePassword         string
+	// InstanceSecret is the instance's own secret that provisioning writes to
+	// .pgwatch-config (platform-all!884). File only, never the environment.
+	InstanceSecret string
+	APIBaseURL     string
+	StoreURL       string
+	StoreUsername  string
+	StorePassword  string
 }
 
 // Problem returns why this instance cannot poll yet, or "" when it can. The
@@ -105,6 +108,7 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	cfg.APIToken = values["api_key"]
+	cfg.InstanceSecret = values["instance_secret"]
 	// The file is the source of truth once the install writes the id there. Until
 	// it does, the environment is the only place the id exists on a box:
 	// PGAI_INSTANCE_ID is what the provisioning flow already passes to the CLI,

@@ -15,10 +15,11 @@ type SupabaseCredential struct {
 }
 
 // SupabaseHostMetricsCredential authenticates through the access-token header,
-// like Poll and Submit, so the org token cannot reach Postgres bind-parameter logs.
-func (c *Client) SupabaseHostMetricsCredential(ctx context.Context, creds Credentials) (*SupabaseCredential, error) {
+// like Poll and Submit, plus the instance's own secret in the instance-secret
+// header (platform-all!884), so neither reaches Postgres bind-parameter logs.
+func (c *Client) SupabaseHostMetricsCredential(ctx context.Context, creds Credentials, instanceSecret string) (*SupabaseCredential, error) {
 	var out SupabaseCredential
-	err := c.call(ctx, "supabase_host_metrics_credential", creds, map[string]any{
+	err := c.callWithHeaders(ctx, "supabase_host_metrics_credential", creds, map[string]string{"instance-secret": instanceSecret}, map[string]any{
 		"instance_id": creds.InstanceID,
 	}, &out)
 	if err != nil || out.Status == "" {

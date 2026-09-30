@@ -94,9 +94,14 @@ func (r *Relay) fetch(ctx context.Context) {
 		r.status = "configuration_unavailable"
 		return
 	}
+	// Without it the platform refuses every fetch (platform-all!884).
+	if cfg.InstanceSecret == "" {
+		r.status = "instance_secret_missing"
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), platformTimeout)
 	defer cancel()
-	c, err := platform.NewClient(cfg.APIBaseURL, "", platformTimeout).SupabaseHostMetricsCredential(ctx, platform.Credentials{APIToken: cfg.APIToken, InstanceID: cfg.InstanceID})
+	c, err := platform.NewClient(cfg.APIBaseURL, "", platformTimeout).SupabaseHostMetricsCredential(ctx, platform.Credentials{APIToken: cfg.APIToken, InstanceID: cfg.InstanceID}, cfg.InstanceSecret)
 	if err != nil {
 		return
 	}
@@ -132,6 +137,8 @@ func (r *Relay) unavailable(w http.ResponseWriter) {
 			r.logger.Warn("Supabase host metrics need re-authorization: open the Supabase page in the PostgresAI console and click Allow host metrics")
 		case "not_supabase":
 			r.logger.Debug("Supabase host metrics: not_supabase")
+		case "instance_secret_missing":
+			r.logger.Warn("Supabase host metrics need instance_secret in .pgwatch-config: re-provision this monitoring instance")
 		default:
 			r.logger.Warn("Supabase host metrics unavailable", "status", r.status)
 		}

@@ -458,7 +458,7 @@ func TestPlatformErrorDoesNotExposeResponse(t *testing.T) {
 		t.Run(http.StatusText(code), func(t *testing.T) {
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code); io.WriteString(w, fakeKey) }))
 			defer s.Close()
-			_, err := platform.NewClient(s.URL, "test", time.Second).SupabaseHostMetricsCredential(context.Background(), platform.Credentials{APIToken: "test", InstanceID: "id"})
+			_, err := platform.NewClient(s.URL, "test", time.Second).SupabaseHostMetricsCredential(context.Background(), platform.Credentials{APIToken: "test", InstanceID: "id"}, instanceSecret)
 			if err == nil || strings.Contains(err.Error(), fakeKey) {
 				t.Fatal("unsafe platform error")
 			}

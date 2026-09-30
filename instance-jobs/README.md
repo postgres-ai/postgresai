@@ -66,12 +66,13 @@ open, and neither happens as a side effect of an upgrade:
 ## Configuration
 
 Everything comes from `.pgwatch-config`, the file the reporter container already
-mounts. There is no new credential and no new file.
+mounts. There is no new file.
 
 | key | what |
 |---|---|
 | `api_key` | the org API token, the same one the reporter uploads with |
 | `instance_id` | this monitoring instance's id; falls back to `PGAI_INSTANCE_ID`, which `mon local-install` writes into `.env` and compose passes through, then to `PGAI_MONITORING_INSTANCE_ID`, which nothing on the box writes (it is the name the telemetry service uses, accepted here so the two agree) |
+| `instance_secret` | Supabase host metrics only: this instance's own secret, minted by `supabase_monitoring_provision` and written here by provisioning. The relay sends it in the `instance-secret` header of `rpc/supabase_host_metrics_credential` (platform-all!884) and never logs it. File only, no environment fallback. Without it the relay makes no call and answers 503 `instance_secret_missing`; an instance provisioned before !884 needs re-provisioning |
 | `api_base_url` | the platform that provisioned this instance (optional; else `PGAI_API_BASE_URL`, else production). Must be `https`, or a loopback `http` for a local rig: the token goes on the wire either way |
 
 `mon local-install` records the instance id in `.pgwatch-config` on **both**
