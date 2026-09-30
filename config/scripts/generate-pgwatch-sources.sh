@@ -81,6 +81,7 @@ write_supabase_targets() {
         if (c == "\\") out = out "\\\\"
         else if (c == "\"") out = out "\\\""
         else if (c == "\t") out = out "\\t"
+        else if (c == "\n") out = out "\\n"
         else if (c >= " ") out = out c
       }
       return "\"" out "\""
@@ -91,8 +92,15 @@ write_supabase_targets() {
       else if (field == "t:cluster") cluster = v
       else if (field == "t:node_name") node = v
     }
+    # A block scalar ends: | keeps newlines, > folds them to spaces; the
+    # chomping indicator (- strip, + or none keep one) sets the trailing one.
+    function close_block() {
+      if (block_chomp != "-" && block != "") block = block "\n"
+      assign(pending, block); pending = ""
+    }
     function finish() {
-      if (pending != "") { assign(pending, block); pending = "" }
+      if (pending != "") close_block()
+      sub(/\n+$/, "", conn)
       if (seen && enabled != "false" && conn ~ /@[^\/]*(\.supabase\.co|\.pooler\.supabase\.com)(:[0-9]+)?([\/?]|$)/) {
         n++; cluster_out = cluster; node_out = node
       }
@@ -103,15 +111,15 @@ write_supabase_targets() {
       match(line, /^ *[A-Za-z_]+:/)
       key = trim(substr(line, 1, RLENGTH - 1)); val = trim(substr(line, RLENGTH + 1))
       if (prefix == "f:") tags = (key == "custom_tags")
-      if (val ~ /^[>|][-+]?$/) { pending = prefix key; pending_indent = indent; block = "" }
+      if (val ~ /^[>|][-+]?$/) { pending = prefix key; pending_indent = indent; block = ""; block_style = substr(val, 1, 1); block_chomp = substr(val, 2, 1) }
       else assign(prefix key, unquote(val))
     }
     { line = $0; sub(/\r$/, "", line) }
     pending != "" {
-      if (line ~ /^[ \t]*$/) next
+      if (line ~ /^[ \t]*$/) { if (block_style == "|" && block != "") block = block "\n"; next }
       match(line, /^ */)
-      if (RLENGTH > pending_indent) { block = (block == "" ? trim(line) : block " " trim(line)); next }
-      assign(pending, block); pending = ""
+      if (RLENGTH > pending_indent) { block = (block == "" ? trim(line) : block (block_style == "|" ? "\n" : " ") trim(line)); next }
+      close_block()
     }
     /^- / { finish(); seen = 1; line = "  " substr(line, 3) }
     line ~ /^  [A-Za-z_]+:/ { field(line, 2, "f:"); next }
