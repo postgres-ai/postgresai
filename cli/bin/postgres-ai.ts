@@ -4081,7 +4081,7 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
 // ---- pgai connect / init / databases / status / disconnect (postgres-ai/internal#354) ----
 // JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
 // Exit codes: 0 connected or provisioning, 1 failed, 3 action required.
-const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, action_required: 3, failed: 1 };
+const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, action_required: 3, failed: 1 };
 
 function cloudApi(debug?: boolean) {
   const rootOpts = program.opts<CliOptions>();
