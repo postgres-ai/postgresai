@@ -78,6 +78,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     const c = await admin();
     await c.query("drop database if exists pgai_connect_db2");
     await c.query("create database pgai_connect_db2");
+    // A hardened database: the existing role may not connect until prepared.
+    await c.query("revoke connect on database pgai_connect_db2 from public");
     await c.end();
     // The role already exists from the test above; its password is in that URL.
     const db2 = new URL(ADMIN!);
