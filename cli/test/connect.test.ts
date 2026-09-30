@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
-import { clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
+import { HttpStatusError } from "../lib/util";
+import { resolveAdminConnection } from "../lib/init";
+import { checkUrlParams, clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -20,6 +22,7 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     list: async () => { calls.push("list"); const r = rows[Math.min(listed++, rows.length - 1)]; return r ? [r] : []; },
     create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); return { id: "i-1", name: CH_NAME, status: "launch_requested" }; },
     prepare: async (url, provider) => { calls.push(`prepare ${provider}`); return { monitoringUrl: MON }; },
+    unprepare: async () => { calls.push("unprepare"); return true; },
     localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
@@ -52,6 +55,17 @@ describe("provider and name", () => {
     expect(databaseName("postgresql://u:p@db2.example.com:6432/app")).toBe("db2.example.com:6432/app");
   });
 
+  test("a URL without a database: the name has the one pg connects to, as the monitoring URL will", () => {
+    expect(databaseName("postgresql://postgres:p@db2.example.com:6432")).toBe("db2.example.com:6432/postgres");
+    expect(databaseName("postgresql://db2.example.com/?user=app_admin&password=p&sslmode=require")).toBe("db2.example.com/app_admin");
+    process.env.PGDATABASE = "orders";
+    try {
+      expect(databaseName("postgresql://postgres:p@db2.example.com")).toBe("db2.example.com/orders");
+    } finally {
+      delete process.env.PGDATABASE;
+    }
+  });
+
   test("ClickHouse key from the flag or the environment", () => {
     expect(parseClickhouseKey(KEY, {})).toEqual({ keyId: "AbCdEf0123456789XyZa", keySecret: "Sec4b1dTestSecret0123456789" });
     expect(parseClickhouseKey(undefined, { CLICKHOUSE_KEY_ID: "a", CLICKHOUSE_KEY_SECRET: "b" })).toEqual({ keyId: "a", keySecret: "b" });
@@ -61,13 +75,13 @@ describe("provider and name", () => {
 });
 
 describe("connect", () => {
-  test("ClickHouse with a key: prepare, find the org, provision, wait, dashboard", async () => {
+  test("ClickHouse with a key: find the org, prepare, provision, wait, dashboard", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested"), row("active")] });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps);
     expect(calls).toEqual([
       "list",
-      "prepare clickhouse",
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
+      "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`,
       "sleep", "list", "sleep", "list",
     ]);
@@ -124,21 +138,66 @@ describe("connect", () => {
     expect(calls).toEqual(["list"]);
   });
 
-  test("a stopped ClickHouse service: start it first, nothing provisioned", async () => {
+  test("a stopped ClickHouse service: start it first, the database is not touched", async () => {
     const { deps, calls } = fake({ clickhouseOrg: async () => ({ orgId: ORG, state: "stopped" }) });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 0 }, deps);
     expect(result).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
       next: "Start the service in the ClickHouse Cloud console (it is stopped), then re-run",
     });
-    expect(calls.some((c) => c.startsWith("create"))).toBe(false);
+    expect(calls).toEqual(["list"]);
   });
 
+  test("a rejected ClickHouse key: an error before the database is touched", async () => {
+    const { deps, calls } = fake({ clickhouseOrg: async () => { throw new Error("ClickHouse Cloud rejected the API key (401). Check the key id and secret."); } });
+    await expect(connect(CH, { clickhouseKey: KEY, waitMs: 0 }, deps)).rejects.toThrow("rejected the API key (401)");
+    expect(calls).toEqual(["list"]);
+  });
+
+  const REFUSED = { id: "i-9", name: CH_NAME, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." };
+
   test("the platform could not launch the box", async () => {
-    const { deps } = fake({ create: async () => ({ id: "i-9", name: CH_NAME, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." }) });
+    const { deps, calls } = fake({ create: async () => REFUSED });
     expect(await connect(CH, { waitMs: 60_000 }, deps)).toEqual({
       status: "failed", provider: "clickhouse", name: CH_NAME, id: "i-9",
       next: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later. Re-run pgai connect later.",
+    });
+    // The role was there before, or has the user's PGAI_MON_PASSWORD: it stays.
+    expect(calls).toEqual(["list", "prepare clickhouse"]);
+  });
+
+  // The role this run created with a generated password: nobody has the
+  // password, so the re-run would stop at "postgres_ai_mon already exists".
+  describe("a launch that fails after the role was created with a generated password", () => {
+    const generated: Partial<ConnectDeps> = { prepare: async () => ({ monitoringUrl: MON, generated: true }) };
+
+    test("refused by the platform (in the reply, or a 4xx): the role is dropped again", async () => {
+      const inReply = fake({ ...generated, create: async () => REFUSED });
+      expect((await connect(CH, { waitMs: 0 }, inReply.deps)).status).toBe("failed");
+      expect(inReply.calls).toEqual(["list", "unprepare"]);
+
+      const http = fake({ ...generated, create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect: HTTP 402", 402); } });
+      await expect(connect(CH, { waitMs: 0 }, http.deps)).rejects.toThrow("HTTP 402");
+      expect(http.calls).toEqual(["list", "unprepare"]);
+    });
+
+    test("a drop that fails does not hide the refusal", async () => {
+      const { deps } = fake({ ...generated, create: async () => REFUSED, unprepare: async () => { throw new Error("connection refused"); } });
+      expect((await connect(CH, { waitMs: 0 }, deps)).next).toBe(`${REFUSED.error} Re-run pgai connect later.`);
+    });
+
+    test("a 5xx or no answer: a box may be starting with this URL, so the role stays", async () => {
+      for (const err of [new HttpStatusError("HTTP 502", 502), new Error("timed out")]) {
+        const { deps, calls } = fake({ ...generated, create: async () => { throw err; } });
+        await expect(connect(CH, { waitMs: 0 }, deps)).rejects.toThrow(err.message);
+        expect(calls).toEqual(["list"]);
+      }
+    });
+
+    test("a launch that starts: the role stays", async () => {
+      const { deps, calls } = fake({ ...generated });
+      expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("provisioning");
+      expect(calls).not.toContain("unprepare");
     });
   });
 
@@ -167,8 +226,8 @@ describe("connect", () => {
     const { deps, calls } = fake();
     const result = await connect(CH, { clickhouseKey: KEY, selfHosted: true, waitMs: 0 }, deps);
     expect(calls).toEqual([
-      "prepare clickhouse",
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
+      "prepare clickhouse",
       `selfHosted ${MON} ${JSON.stringify({ CLICKHOUSE_ORG_ID: ORG, CLICKHOUSE_KEY_ID: "AbCdEf0123456789XyZa", CLICKHOUSE_KEY_SECRET: "Sec4b1dTestSecret0123456789" })}`,
     ]);
     expect(result).toEqual({ status: "connected", provider: "clickhouse", name: CH_NAME, dashboard_url: "http://localhost:3000", host_metrics: true, next: "pgai mon health" });
@@ -199,7 +258,7 @@ describe("connect", () => {
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
-      expect(calls.at(-2)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
+      expect(calls.at(-3)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
     } finally {
       delete process.env.CLICKHOUSE_KEY_ID;
       delete process.env.CLICKHOUSE_KEY_SECRET;
@@ -218,6 +277,54 @@ describe("connect", () => {
     expect(polls).toBe(3);
   });
 
+  test("every poll failing until the deadline: provisioning, from the state the launch returned", async () => {
+    let polls = 0;
+    const { deps } = fake({
+      list: async () => {
+        if (polls++ > 0) throw new Error("HTTP 502");
+        return [];
+      },
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
+    });
+    expect(await connect(CH, { waitMs: 100 }, deps)).toEqual({
+      status: "provisioning", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, next: `pgai status ${CH_NAME}`,
+    });
+    expect(polls).toBeGreaterThan(2);
+  });
+
+  test("host or port in the query string is refused: the server prepared must be the server named", async () => {
+    const { deps, calls } = fake();
+    await expect(connect("postgresql://postgres:pw@db.example.invalid:5432/postgres?host=127.0.0.1&port=32785", { waitMs: 0 }, deps))
+      .rejects.toThrow("The URL's query string sets host and port: put the host and the port in the URL itself (postgresql://user:password@host:5432/dbname), so that the server prepared is the server monitored");
+    await expect(connect("postgresql://postgres:pw@db.example.invalid/postgres?host=%2Fvar%2Frun%2Fpostgresql", { selfHosted: true, waitMs: 0 }, deps)).rejects.toThrow("sets host:");
+    expect(calls).toEqual([]);
+    // Certificate files and the rest are the user's own to give.
+    expect(() => checkUrlParams("postgresql://postgres:pw@db.example.com/postgres?sslmode=verify-full&sslrootcert=/tmp/ca.pem&sslcert=/tmp/c.pem&sslkey=/tmp/k.pem&options=-c%20role%3Dx&connect_timeout=5")).not.toThrow();
+  });
+
+  test("an agent's URL: only the query parameters the box gets, and no ClickHouse key from the environment", async () => {
+    const { deps, calls } = fake();
+    for (const q of ["sslcert=/home/u/.postgresql/postgresql.crt&sslkey=/home/u/.postgresql/postgresql.key", "sslrootcert=/etc/passwd", "host=127.0.0.1", "options=-c%20role%3Dx", "user=postgres"]) {
+      await expect(connect(`postgresql://postgres:pw@db.example.invalid:5432/postgres?sslmode=require&${q}`, { waitMs: 0, agent: true }, deps))
+        .rejects.toThrow(`database_url may carry only these query parameters: sslmode, channel_binding, application_name (got: ${q.split("&").map((kv) => kv.split("=")[0]).join(", ")})`);
+    }
+    expect(calls).toEqual([]);
+    expect(() => checkUrlParams("postgresql://postgres@db.example.com/postgres?password=pw&sslmode=require&channel_binding=require&application_name=x", true)).not.toThrow();
+
+    process.env.CLICKHOUSE_KEY_ID = "kid";
+    process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
+    try {
+      expect((await connect(CH, { waitMs: 0, agent: true }, deps)).host_metrics).toBe(false);
+      expect(calls).toEqual(["list", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`]);
+      // The key the agent passes is used.
+      await connect(CH, { clickhouseKey: KEY, waitMs: 0, agent: true }, deps);
+      expect(calls).toContain("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa");
+    } finally {
+      delete process.env.CLICKHOUSE_KEY_ID;
+      delete process.env.CLICKHOUSE_KEY_SECRET;
+    }
+  });
+
   test("a note from the prepare step ends the next action", async () => {
     const { deps } = fake({ prepare: async () => ({ monitoringUrl: MON, note: "the password was not checked" }) });
     expect((await connect(CH, { waitMs: 0 }, deps)).next).toBe(`pgai status ${CH_NAME}; the password was not checked`);
@@ -233,16 +340,19 @@ describe("prepareDatabase (a fake pg client)", () => {
   const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
 
   /** `logins` answers each postgres_ai_mon login in turn (an error to throw, or "ok"); the last one repeats. */
-  function server(me: { name?: string; admin?: boolean; mon_exists: boolean }, logins: (Error | "ok")[] = ["ok"]) {
+  function server(me: { name?: string; admin?: boolean; mon_exists: boolean; fails?: RegExp }, logins: (Error | "ok")[] = ["ok"]) {
     const ran: string[] = [];
     const monLogins: string[] = [];
+    const monUrls: string[] = [];
     class FakeClient {
       password: string;
       private user: string;
       constructor(private config: { connectionString: string; ssl?: unknown }) {
         const u = new URL(config.connectionString);
         this.user = u.username;
-        this.password = decodeURIComponent(u.password);
+        // As pg does: PGPASSWORD for a URL without a password.
+        this.password = decodeURIComponent(u.password) || process.env.PGPASSWORD || "";
+        if (this.user === "postgres_ai_mon") monUrls.push(config.connectionString);
       }
       async connect() {
         if (this.config.ssl && me.name === "no-tls") throw new Error("The server does not support SSL connections");
@@ -254,12 +364,15 @@ describe("prepareDatabase (a fake pg client)", () => {
       async query(sql: string) {
         if (/session_user as name/.test(sql)) return { rows: [{ name: "postgres", db: "app", admin: true, iterations: "4096", ...me }] };
         if (this.user !== "postgres_ai_mon" && !/statement_timeout/.test(sql)) ran.push(sql.trim().split("\n")[0]);
+        if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
+        // The monitoring role's own session: every check of verifyInitSetup passes.
+        if (me.name === "postgres_ai_mon") return { rowCount: 1, rows: [{ ok: true, rolconfig: ["search_path=postgres_ai, public, pg_catalog"] }] };
         return { rows: [] };
       }
       async end() {}
     }
     const prepare = (opts: PrepareOptions = {}, url = ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
-    return { prepare, ran, monLogins };
+    return { prepare, ran, monLogins, monUrls };
   }
   const withMonPassword = async <T>(value: string | undefined, fn: () => Promise<T>) => {
     if (value !== undefined) process.env.PGAI_MON_PASSWORD = value;
@@ -325,6 +438,26 @@ describe("prepareDatabase (a fake pg client)", () => {
     });
   });
 
+  test("a new role with a generated password is marked, so a refused launch can drop it; with PGAI_MON_PASSWORD it is not", async () => {
+    const result = await withMonPassword(undefined, () => server({ mon_exists: false }).prepare());
+    expect(result).toMatchObject({ generated: true });
+    expect(await withMonPassword("ours", () => server({ mon_exists: false }).prepare())).not.toHaveProperty("generated");
+  });
+
+  test("a plan that fails after the role was created with a generated password: the role is dropped again", async () => {
+    const s = server({ mon_exists: false, fails: /create extension/ });
+    await expect(withMonPassword(undefined, () => s.prepare())).rejects.toThrow('Failed at step "02.extensions": permission denied');
+    expect(s.ran.at(-1)).toBe("drop role postgres_ai_mon");
+  });
+
+  test("a plan that fails: a role with the user's PGAI_MON_PASSWORD, or one that does not log in with ours, is left alone", async () => {
+    const mine = server({ mon_exists: false, fails: /create extension/ });
+    await expect(withMonPassword("ours", () => mine.prepare())).rejects.toThrow('Failed at step "02.extensions"');
+    const notOurs = server({ mon_exists: false, fails: /create extension/ }, [pgError("28P01", "password authentication failed")]);
+    await expect(withMonPassword(undefined, () => notOurs.prepare())).rejects.toThrow('Failed at step "02.extensions"');
+    for (const s of [mine, notOurs]) expect(s.ran.some((q) => q.startsWith("drop"))).toBe(false);
+  });
+
   test("the MCP tool's prepare: PGAI_MON_PASSWORD is not read, and TLS is not given up", async () => {
     const existing = server({ mon_exists: true });
     expect(await withMonPassword("its-password", () => existing.prepare({ agent: true }))).toEqual({
@@ -342,6 +475,62 @@ describe("prepareDatabase (a fake pg client)", () => {
     const url = "postgresql://postgres:adminpw@db.example.com:5432/app";
     await expect(noTls.prepare({ agent: true }, url)).rejects.toThrow("The server does not support SSL connections");
     expect(await noTls.prepare({}, url)).toHaveProperty("monitoringUrl");
+  });
+
+  // The first login in these is the given URL's own session; the second is the random-password probe.
+  const MON_URL = "postgresql://postgres_ai_mon:its-password@db.example.com:5432/app?sslmode=require";
+  const REJECTED = pgError("28P01", "password authentication failed");
+
+  test("a postgres_ai_mon URL on a server that checks passwords: its URL, no note", async () => {
+    const s = server({ name: "postgres_ai_mon", mon_exists: true }, ["ok", REJECTED]);
+    expect(await s.prepare({}, MON_URL)).toEqual({ monitoringUrl: MON_URL });
+    expect(s.monLogins.length).toBe(2);
+    expect(s.monLogins[1]).not.toBe("its-password");
+  });
+
+  test("a postgres_ai_mon URL on a server that accepts any password: a note that the URL's password was not checked", async () => {
+    const s = server({ name: "postgres_ai_mon", mon_exists: true });
+    expect(await s.prepare({}, MON_URL)).toEqual({
+      monitoringUrl: MON_URL,
+      note: "this server accepts any password from this host, so the password in the URL was not checked; if no data arrives, disconnect and connect again with the right password",
+    });
+  });
+
+  test("a postgres_ai_mon URL without a password: PGPASSWORD is used only when the server checked it", async () => {
+    const bare = "postgresql://postgres_ai_mon@db.example.com:5432/app?sslmode=require";
+    process.env.PGPASSWORD = "unrelated-secret";
+    try {
+      const trusting = await server({ name: "postgres_ai_mon", mon_exists: true }).prepare({}, bare);
+      expect(trusting).toEqual({ next: "This server accepts any password from this host, so the one from the environment was not checked and is not used. Put the password of postgres_ai_mon in the URL: the monitoring box logs in with it" });
+      expect(JSON.stringify(trusting)).not.toContain("unrelated-secret");
+      expect(await server({ name: "postgres_ai_mon", mon_exists: true }, ["ok", REJECTED]).prepare({}, bare)).toEqual({
+        monitoringUrl: "postgresql://postgres_ai_mon:unrelated-secret@db.example.com:5432/app?sslmode=require",
+      });
+    } finally {
+      delete process.env.PGPASSWORD;
+    }
+  });
+
+  test("a private CA (sslrootcert): the logins from this machine use it, the box's URL does not carry it, and next says so", async () => {
+    const url = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=verify-full&sslrootcert=%2Ftmp%2Fca.pem&sslcert=%2Ftmp%2Fc.pem&sslkey=%2Ftmp%2Fk.pem&options=-c%20role%3Dx&user=postgres";
+    const CA_NOTE = "the monitoring box has no copy of the CA in sslrootcert: with sslmode=verify-full it connects only to a server certificate signed by a public CA (else connect with sslmode=require)";
+    const s = server({ mon_exists: true }, ["ok", REJECTED, "ok"]);
+    expect(await withMonPassword("right", () => s.prepare({}, url))).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:right@db.example.com:5432/app?sslmode=verify-full",
+      note: CA_NOTE,
+    });
+    // Pre-check, probe, post-plan check: the TLS files, and nothing else of the admin's session.
+    expect(s.monUrls.length).toBe(3);
+    for (const u of s.monUrls) expect([...new URL(u).searchParams.keys()].sort()).toEqual(["sslcert", "sslkey", "sslrootcert"]);
+
+    // The monitoring role's own URL: the same note; with a trusting server, both.
+    const own = await server({ name: "postgres_ai_mon", mon_exists: true }).prepare({}, "postgresql://postgres_ai_mon:pw@db.example.com/app?sslmode=verify-ca&sslrootcert=%2Ftmp%2Fca.pem");
+    expect(own).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:pw@db.example.com/app?sslmode=verify-ca",
+      note: `${CA_NOTE.replace("verify-full", "verify-ca")}; this server accepts any password from this host, so the password in the URL was not checked; if no data arrives, disconnect and connect again with the right password`,
+    });
+    // sslmode=require does not verify at the box: nothing to say.
+    expect(await withMonPassword("ours", () => server({ mon_exists: false }).prepare())).not.toHaveProperty("note");
   });
 
   test("a role that may not grant pg_monitor: the SQL to run, nothing created", async () => {
@@ -462,6 +651,12 @@ describe("MCP connect_database", () => {
     }
   });
 
+  test("query parameters pg would obey (host, port, certificate files) are refused before anything is contacted", async () => {
+    const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
+    const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url: "postgresql://postgres:pw@db.example.invalid:5432/postgres?host=127.0.0.1&port=32785&sslkey=/home/u/key.pem" } } }, opts);
+    expect(result).toEqual({ content: [{ type: "text", text: "database_url may carry only these query parameters: sslmode, channel_binding, application_name (got: host, port, sslkey)" }], isError: true });
+  });
+
   test("the URL must carry its password: nothing of this machine (PGPASSWORD) is sent to a host an agent chose", async () => {
     const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
     for (const database_url of ["postgresql://postgres@db.example.com:5432/app", "host=db dbname=app", undefined]) {
@@ -477,4 +672,16 @@ test("debug logs never carry the database URL or the ClickHouse key secret", () 
   expect(out).not.toContain("genpw");
   expect(out).not.toContain("Sec4b1d");
   expect(out).toContain("kid");
+});
+
+test("sslmode in the URL wins over PGSSLMODE, as in libpq; PGSSLMODE applies to a URL without one", () => {
+  process.env.PGSSLMODE = "disable";
+  try {
+    const strict = resolveAdminConnection({ conn: "postgresql://u:p@h:5432/d?sslmode=verify-full" });
+    expect(strict.clientConfig.ssl).toBe(true);
+    expect(strict.sslFallbackEnabled).toBe(false);
+    expect(resolveAdminConnection({ conn: "postgresql://u:p@h:5432/d" }).clientConfig.ssl).toBe(false);
+  } finally {
+    delete process.env.PGSSLMODE;
+  }
 });

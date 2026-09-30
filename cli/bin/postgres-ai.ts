@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, PROVIDERS, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -1484,6 +1484,7 @@ program
       "  Tries SSL first, falls back to non-SSL if server doesn't support it.",
       "  To force SSL: PGSSLMODE=require or ?sslmode=require in URL",
       "  To disable SSL: PGSSLMODE=disable or ?sslmode=disable in URL",
+      "  sslmode in the URL wins over PGSSLMODE (as in libpq)",
       "",
       "Environment variables (libpq standard):",
       "  PGHOST, PGPORT, PGUSER, PGDATABASE  — connection defaults",
@@ -4137,12 +4138,14 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
   }
+  // What --provider names, when it is one; else the host's.
+  const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
   const waitMinutes = Number(opts.wait ?? 20);
   if (!Number.isFinite(waitMinutes) || waitMinutes < 0) {
-    return emitConnect({ status: "failed", provider: detectCloudProvider(url), name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
+    return emitConnect({ status: "failed", provider, name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
   }
   if (!opts.selfHosted && !signedIn(opts)) {
-    return emitConnect({ status: "action_required", provider: detectCloudProvider(url), name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+    return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
   }
   const api = cloudApi(opts.debug);
   try {
@@ -4166,7 +4169,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
     });
     emitConnect(result, opts.json);
   } catch (err) {
-    emitConnect({ status: "failed", provider: detectCloudProvider(url), name, next: err instanceof Error ? err.message : String(err) }, opts.json);
+    emitConnect({ status: "failed", provider, name, next: err instanceof Error ? err.message : String(err) }, opts.json);
   }
 }
 
@@ -4189,6 +4192,7 @@ withOrgOptions(program.command("connect <database-url>"))
     "",
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed),",
+    "PGPASSWORD (the password for a URL without one),",
     "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
     "",
     "Examples:",

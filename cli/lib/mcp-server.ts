@@ -123,6 +123,7 @@ export async function handleToolCall(
         provider: args.provider ? String(args.provider) : undefined,
         clickhouseKey: args.clickhouse_key ? String(args.clickhouse_key) : undefined,
         waitMs: 0,
+        agent: true,
       }, {
         ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug, agent: true }),
         selfHosted: async () => { throw new Error("A self-hosted stack is set up from the CLI: pgai connect <url> --self-hosted"); },
@@ -733,7 +734,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "connect_database",
-          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | disconnecting | action_required | failed), dashboard_url and next (the exact next action). It does not wait for the box: call it again to see the status. Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host. The URL must carry its password; PGAI_MON_PASSWORD is not read, and a TLS failure is not retried in plaintext (say sslmode=disable for a server without TLS).",
+          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | disconnecting | action_required | failed), dashboard_url and next (the exact next action). It does not wait for the box: call it again to see the status. Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host. The URL must carry its password, and only these query parameters: sslmode, channel_binding, application_name. PGAI_MON_PASSWORD, PGPASSWORD and CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET of the server process are not used (pass clickhouse_key), and a TLS failure is not retried in plaintext (say sslmode=disable for a server without TLS).",
           inputSchema: {
             type: "object",
             properties: {

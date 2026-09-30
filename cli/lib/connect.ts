@@ -6,7 +6,7 @@ import {
 } from "./init";
 import { callRpc } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
-import { requestTimeoutSignal } from "./util";
+import { HttpStatusError, requestTimeoutSignal } from "./util";
 
 // `pgai connect <database-url>`: put a database under PostgresAI's care
 // (postgres-ai/internal#354). Each step is skipped when already done, so a
@@ -37,13 +37,19 @@ export interface Database {
   host_metrics: boolean;
 }
 
-/** The monitoring URL (with a note for the user, if any), or what to do first. */
-export type Prepared = { monitoringUrl: string; note?: string } | { next: string; sql?: string };
+/**
+ * The monitoring URL (with a note for the user, if any), or what to do first.
+ * `generated`: this run created the role with a password generated here, which
+ * nobody has once the run ends.
+ */
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string };
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
   prepare(url: string, provider: Provider): Promise<Prepared>;
+  /** Drops the role a `generated` prepare created; false when it could not. */
+  unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
@@ -57,13 +63,15 @@ export interface ConnectOptions {
   clickhouseKey?: string;
   selfHosted?: boolean;
   waitMs: number;
+  /** The URL comes from an agent (the MCP tool): nothing of this process's environment or files goes to the host it names. */
+  agent?: boolean;
 }
 
 // The reporter's first run is 30 minutes after the stack starts
 // (REPORTER_INITIAL_DELAY_SECONDS in config/scripts/postgres-reports.sh).
 const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
 const POLL_MS = 15_000;
-const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
+export const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
 
 /** `new URL`, or undefined for text that is not a URL (URL.canParse needs Node 18.17). */
 export function parseUrl(url: string): URL | undefined {
@@ -82,11 +90,22 @@ export function detectCloudProvider(url: string): Provider {
   return "self-managed";
 }
 
-/** The instance name the platform derives from the URL (monitoring_instance_create, #712). */
+/**
+ * The instance name the platform derives from the monitoring URL
+ * (monitoring_instance_create, #712). That URL always names the database, so
+ * for a URL without one this is the database pg connects to (PGDATABASE, else the user).
+ */
 export function databaseName(url: string): string {
   const u = new URL(url);
   const port = u.port && u.port !== "5432" ? `:${u.port}` : "";
-  const db = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  let db = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  if (!db) {
+    try {
+      db = new Client(resolveAdminConnection({ conn: url }).clientConfig).database ?? "";
+    } catch {
+      // Not a URL pg can use: the connection reports that.
+    }
+  }
   return `${u.hostname}${port}${db ? `/${db}` : ""}`;
 }
 
@@ -110,15 +129,46 @@ const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams
 // What of the given URL's query string goes to the box: `options`, certificate
 // paths and the rest describe this machine's session, not the box's.
 const URL_PARAMS_KEPT = ["sslmode", "channel_binding", "application_name"];
+// Kept for the logins made from this machine: the files are here.
+const URL_PARAMS_TLS = ["sslrootcert", "sslcert", "sslkey", "uselibpqcompat"];
 
-/** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
-function monitoringUrlFor(url: string, db: string, password: string): string {
+/**
+ * Refuses query parameters that pg obeys over the URL itself. `host` and `port`
+ * would prepare one server while the name and the box's URL say another. An
+ * agent's URL may carry only what the box gets (and its password): `sslcert`
+ * or `sslkey` would present this machine's files to a host the agent chose.
+ */
+export function checkUrlParams(url: string, agent?: boolean): void {
+  const keys = [...new Set(new URL(url).searchParams.keys())];
+  if (agent) {
+    const refused = keys.filter((k) => k !== "password" && !URL_PARAMS_KEPT.includes(k));
+    if (refused.length) throw new Error(`database_url may carry only these query parameters: ${URL_PARAMS_KEPT.join(", ")} (got: ${refused.join(", ")})`);
+  }
+  const moved = keys.filter((k) => k === "host" || k === "port");
+  if (moved.length) throw new Error(`The URL's query string sets ${moved.join(" and ")}: put the host and the port in the URL itself (postgresql://user:password@host:5432/dbname), so that the server prepared is the server monitored`);
+}
+
+/** postgres_ai_mon's URL for the prepared database, with the query parameters in `kept`. */
+function roleUrlFor(url: string, db: string, password: string, kept: string[]): string {
   const u = new URL(url);
   u.username = DEFAULT_MONITORING_USER;
   u.password = encodeURIComponent(password);
   u.pathname = `/${encodeURIComponent(db)}`;
-  for (const name of [...u.searchParams.keys()]) if (!URL_PARAMS_KEPT.includes(name)) u.searchParams.delete(name);
+  for (const name of [...u.searchParams.keys()]) if (!kept.includes(name)) u.searchParams.delete(name);
   return u.toString();
+}
+
+/** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
+const monitoringUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, URL_PARAMS_KEPT);
+
+/** The same login from this machine: with the given URL's TLS files (a private CA, say). */
+const loginUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, [...URL_PARAMS_KEPT, ...URL_PARAMS_TLS]);
+
+/** What to tell the user when the URL verifies the server with a CA file the box will not have. */
+function caNote(url: string): string | undefined {
+  const q = new URL(url).searchParams;
+  if (!q.get("sslrootcert") || !/^verify-/.test(q.get("sslmode") ?? "")) return undefined;
+  return `the monitoring box has no copy of the CA in sslrootcert: with sslmode=${q.get("sslmode")} it connects only to a server certificate signed by a public CA (else connect with sslmode=require)`;
 }
 
 /** A platform row as a result with its next action; `fresh` (provisioned just now) adds the first-checkup ETA. */
@@ -141,9 +191,10 @@ export function connectStatus(row: Database, provider = row.provider as Provider
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
   const provider = (opts.provider ?? detectCloudProvider(url)) as Provider;
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
+  checkUrlParams(url, opts.agent);
   const name = databaseName(url);
-  // The exported key pair is read for ClickHouse only; elsewhere only the flag is an error.
-  const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" ? process.env : {});
+  // The exported key pair is read for ClickHouse only, and never for an agent's URL; elsewhere only the flag is an error.
+  const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" && !opts.agent ? process.env : {});
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
 
   if (!opts.selfHosted && (provider === "rds" || provider === "supabase")) {
@@ -158,10 +209,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const fresh = !row;
   let note = "";
   if (!row) {
-    deps.progress(`Preparing ${maskConnectionString(url)}`);
-    const prepared = await deps.prepare(url, provider);
-    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
-    if (prepared.note) note = `; ${prepared.note}`;
+    // The key is checked before the database is touched: a rejected key or a stopped service changes nothing.
     let ch: { orgId: string } | undefined;
     if (key) {
       const found = await deps.clickhouseOrg(new URL(url).hostname, key.keyId, key.keySecret);
@@ -170,6 +218,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       }
       ch = found;
     }
+    deps.progress(`Preparing ${maskConnectionString(url)}`);
+    const prepared = await deps.prepare(url, provider);
+    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
+    if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
       await deps.selfHosted(prepared.monitoringUrl, key && ch
         ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
@@ -177,12 +229,22 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
     }
     deps.progress(`Provisioning monitoring for ${name}`);
+    // A refused launch starts no box, so a role with a generated password is
+    // dropped again: nobody has that password, and the re-run would stop at it.
+    const undo = async () => { if (prepared.generated) await deps.unprepare(url).catch(() => false); };
     const created = await deps.create({
       db_url: prepared.monitoringUrl,
       ...(provider === "clickhouse" ? { provider } : {}),
       ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
+    }).catch(async (err) => {
+      // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
+      if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
+      throw err;
     });
-    if (created.status === "failed") return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
+    if (created.status === "failed") {
+      await undo();
+      return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
+    }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
   }
 
@@ -203,6 +265,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
 }
 
 type PgClientClass = Parameters<typeof connectWithSslFallback>[0];
+type PgClient = Awaited<ReturnType<typeof connectWithSslFallback>>["client"];
 
 export interface PrepareOptions {
   /** The URL comes from an agent (the MCP tool): PGAI_MON_PASSWORD is not read and a TLS failure is not retried in plaintext. */
@@ -211,13 +274,34 @@ export interface PrepareOptions {
   Client?: PgClientClass;
 }
 
+function openConnection(url: string, opts: PrepareOptions) {
+  const conn = resolveAdminConnection({ conn: url });
+  return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
+}
+
+/** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
+async function dropMonitoringRole(client: PgClient): Promise<boolean> {
+  // Alone first: a role with no grants yet needs no DROP OWNED, which a CREATEROLE admin may not run.
+  for (const sql of [`drop role ${DEFAULT_MONITORING_USER}`, `drop owned by ${DEFAULT_MONITORING_USER}; drop role ${DEFAULT_MONITORING_USER}`]) {
+    if (await client.query(sql).then(() => true, () => false)) return true;
+  }
+  return false;
+}
+
+/** Undoes a `generated` prepareDatabase over the same admin URL: drops the role that run created. */
+export async function unprepareDatabase(url: string, opts: PrepareOptions = {}): Promise<boolean> {
+  const { client } = await openConnection(url, opts);
+  try {
+    return await dropMonitoringRole(client);
+  } finally {
+    await client.end();
+  }
+}
+
 /** Creates (or checks) the monitoring role over the given URL. The admin URL is used for this run only. */
 export async function prepareDatabase(url: string, provider: Provider, opts: PrepareOptions = {}): Promise<Prepared> {
   const pgProvider = provider === "rds" ? "self-managed" : provider;
-  const open = (u: string) => {
-    const conn = resolveAdminConnection({ conn: u });
-    return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
-  };
+  const open = (u: string) => openConnection(u, opts);
   // Whether `u` logs in; false only when the server rejects the password.
   const logsIn = async (u: string): Promise<boolean> => {
     try {
@@ -237,23 +321,42 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
     throw err;
   });
   try {
-    // Admin: a superuser, or CREATEROLE that can also grant pg_monitor (PG 16+ needs ADMIN OPTION for that).
+    // Admin: a superuser, or CREATEROLE that can run the rest of the plan too: grant pg_monitor and
+    // pg_read_all_stats (PG 16+ needs ADMIN OPTION for that), create the postgres_ai schema, and
+    // find pg_stat_statements installed (creating it takes a superuser).
     const me = (await client.query(
       `select session_user as name, current_database() as db,
-         rolsuper or (rolcreaterole and (current_setting('server_version_num')::int < 160000
-           or pg_has_role(current_user, 'pg_monitor', 'USAGE WITH ADMIN OPTION'))) as admin,
+         rolsuper or (rolcreaterole
+           and (current_setting('server_version_num')::int < 160000
+             or (pg_has_role(current_user, 'pg_monitor', 'USAGE WITH ADMIN OPTION')
+               and pg_has_role(current_user, 'pg_read_all_stats', 'USAGE WITH ADMIN OPTION')))
+           and has_database_privilege(current_user, current_database(), 'CREATE')
+           and exists (select 1 from pg_extension where extname = 'pg_stat_statements')) as admin,
          exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists,
          current_setting('scram_iterations', true) as iterations
        from pg_roles where rolname = current_user`,
     )).rows[0];
+    const notes = [caNote(url)].filter((n): n is string => !!n);
+    const noted = () => (notes.length ? { note: notes.join("; ") } : {});
+    // A server that does not check passwords for this client (trust) accepts a random one too.
+    const acceptsAnyPassword = async () =>
+      logsIn(loginUrlFor(url, me.db, (await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER })).password)).catch(() => false);
+    const unchecked = (what: string) => `this server accepts any password from this host, so ${what} was not checked; if no data arrives, disconnect and connect again with the right password`;
     if (me.name === DEFAULT_MONITORING_USER) {
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
       if (v.ok) {
         // A URL without a password (PGPASSWORD, say): the box gets the one this client logged in with.
         const used = (client as { password?: unknown }).password;
-        const password = urlPassword(new URL(url)) || (typeof used === "string" ? used : "");
-        if (!password) return { next: `Put the password of ${DEFAULT_MONITORING_USER} in the URL: the monitoring box logs in with it` };
-        return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
+        const inUrl = urlPassword(new URL(url));
+        const password = inUrl || (typeof used === "string" ? used : "");
+        const putInUrl = `Put the password of ${DEFAULT_MONITORING_USER} in the URL: the monitoring box logs in with it`;
+        if (!password) return { next: putInUrl };
+        if (await acceptsAnyPassword()) {
+          // What pg read from PGPASSWORD may be for another role or server: unchecked, it is not sent on.
+          if (!inUrl) return { next: `This server accepts any password from this host, so the one from the environment was not checked and is not used. ${putInUrl}` };
+          notes.push(unchecked("the password in the URL"));
+        }
+        return { monitoringUrl: monitoringUrlFor(url, me.db, password), ...noted() };
       }
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password,
@@ -261,29 +364,34 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
       const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)`;
-      const { password } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
-      let note: string | undefined;
+      const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       if (me.mon_exists) {
         if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}` };
         let accepted: boolean;
         try {
-          accepted = await logsIn(monitoringUrlFor(url, me.db, password));
+          accepted = await logsIn(loginUrlFor(url, me.db, password));
         } catch (err) {
           // pg_hba for this client, say: neither accepted nor rejected.
           return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai connect from a host that ${DEFAULT_MONITORING_USER} may connect from` };
         }
         if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${setPassword}` };
-        // A server that does not check passwords for this client (trust) accepts a random one too.
-        const random = (await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER })).password;
-        if (await logsIn(monitoringUrlFor(url, me.db, random)).catch(() => false)) {
-          note = "this server accepts any password from this host, so PGAI_MON_PASSWORD was not checked; if no data arrives, disconnect and connect again with the right password";
-        }
+        if (await acceptsAnyPassword()) notes.push(unchecked("PGAI_MON_PASSWORD"));
       }
-      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
+      const monitoringUrl = monitoringUrlFor(url, me.db, password);
+      const loginUrl = loginUrlFor(url, me.db, password);
+      const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+      try {
+        await applyInitPlan({ client, plan });
+      } catch (err) {
+        // A later step failed after the role was created with a generated password (it logs in,
+        // so the role is this run's): nobody has that password, so the role is dropped again.
+        if (generated && !me.mon_exists && (await logsIn(loginUrl).catch(() => false))) await dropMonitoringRole(client);
+        throw err;
+      }
       // Another session may have created the role meanwhile, with its own password.
       // Other login errors (pg_hba for this client, say) do not tell, so they pass.
-      if (!(await logsIn(monitoringUrlFor(url, me.db, password)).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
-      return { monitoringUrl: monitoringUrlFor(url, me.db, password), ...(note ? { note } : {}) };
+      if (!(await logsIn(loginUrl).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
+      return { monitoringUrl, ...noted(), ...(generated && !me.mon_exists ? { generated: true as const } : {}) };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
@@ -331,6 +439,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
     prepare: (url: string, provider: Provider) => prepareDatabase(url, provider, { agent: p.agent }),
+    unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
