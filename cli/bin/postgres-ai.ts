@@ -1344,7 +1344,9 @@ function withOrgOptions(command: Command): Command {
 // remembered to wire. Emitting the header is the lib layer's job (see
 // lib/org-scope.ts); both halves must hold for the org to reach the wire.
 program.hook("preAction", (_thisCommand, actionCommand) => {
-  if (!ORG_SCOPED_COMMANDS.has(actionCommand)) {
+  // Not at a terminal, pgai init only points to pgai connect: no org needed for that.
+  const initPointsToConnect = actionCommand.parent === program && actionCommand.name() === "init" && !interactive(actionCommand.opts().json);
+  if (!ORG_SCOPED_COMMANDS.has(actionCommand) || initPointsToConnect) {
     setActiveOrgScope(undefined);
     return;
   }
@@ -4164,14 +4166,17 @@ withOrgOptions(program.command("connect <database-url>"))
   ].join("\n"))
   .action(runConnect);
 
+const interactive = (json?: boolean) => !!process.stdin.isTTY && !!process.stdout.isTTY && !json;
+
 withOrgOptions(program.command("init"))
   .description("first run for a person at a terminal: sign in, ask for the database URL, then pgai connect")
   .option("--json", "JSON output (init is interactive: prints the pgai connect command to use instead)")
   .action(async (opts: { json?: boolean }) => {
-    if (!process.stdin.isTTY || !process.stdout.isTTY || opts.json) {
+    if (!interactive(opts.json)) {
       return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" }, opts.json);
     }
     if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
+    process.exitCode = 130; // Ctrl-C / Ctrl-D at a prompt; runConnect sets the real code
     const url = (await question("Database URL (postgresql://...): ")).trim();
     const needsKey = URL.canParse(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
     const clickhouseKey = needsKey ? (await question("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ")).trim() : "";
