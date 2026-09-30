@@ -233,57 +233,6 @@
           }
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReadLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "WriteLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "DiskQueueDepth",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "MetricStat": {
             "Metric": {
@@ -323,23 +272,6 @@
             "Metric": {
               "Namespace": "AWS/RDS",
               "MetricName": "FreeLocalStorage",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_replica_lag_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "AuroraReplicaLag",
               "Dimensions": [
                 {
                   "Name": "DBInstanceIdentifier",
@@ -563,123 +495,6 @@
           "StatusCode": "Complete"
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "Label": "pgai-test-hoststats-aur-473585-1 ReadLatency",
-          "Timestamps": [
-            "2026-09-28T06:17:00.000Z",
-            "2026-09-28T06:16:00.000Z",
-            "2026-09-28T06:15:00.000Z",
-            "2026-09-28T06:14:00.000Z",
-            "2026-09-28T06:13:00.000Z",
-            "2026-09-28T06:12:00.000Z",
-            "2026-09-28T06:11:00.000Z",
-            "2026-09-28T06:10:00.000Z",
-            "2026-09-28T06:09:00.000Z",
-            "2026-09-28T06:08:00.000Z",
-            "2026-09-28T06:07:00.000Z",
-            "2026-09-28T06:06:00.000Z",
-            "2026-09-28T06:05:00.000Z",
-            "2026-09-28T06:04:00.000Z",
-            "2026-09-28T06:03:00.000Z"
-          ],
-          "Values": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "Label": "pgai-test-hoststats-aur-473585-1 WriteLatency",
-          "Timestamps": [
-            "2026-09-28T06:17:00.000Z",
-            "2026-09-28T06:16:00.000Z",
-            "2026-09-28T06:15:00.000Z",
-            "2026-09-28T06:14:00.000Z",
-            "2026-09-28T06:13:00.000Z",
-            "2026-09-28T06:12:00.000Z",
-            "2026-09-28T06:11:00.000Z",
-            "2026-09-28T06:10:00.000Z",
-            "2026-09-28T06:09:00.000Z",
-            "2026-09-28T06:08:00.000Z",
-            "2026-09-28T06:07:00.000Z",
-            "2026-09-28T06:06:00.000Z",
-            "2026-09-28T06:05:00.000Z",
-            "2026-09-28T06:04:00.000Z",
-            "2026-09-28T06:03:00.000Z"
-          ],
-          "Values": [
-            0.0006854791784946237,
-            0.0006909942268722467,
-            0.0007080568175965666,
-            0.0007058286231263383,
-            0.0006920986592920354,
-            0.0006799120472103004,
-            0.0007109051094420601,
-            0.0006932221934065933,
-            0.0006916374381778741,
-            0.0008566390064377683,
-            0.0007293912210065646,
-            0.000717477661637931,
-            0.0007156088779443255,
-            0.0007180660262582057,
-            0.0007194928608137046
-          ],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "Label": "pgai-test-hoststats-aur-473585-1 DiskQueueDepth",
-          "Timestamps": [
-            "2026-09-28T06:17:00.000Z",
-            "2026-09-28T06:16:00.000Z",
-            "2026-09-28T06:15:00.000Z",
-            "2026-09-28T06:14:00.000Z",
-            "2026-09-28T06:13:00.000Z",
-            "2026-09-28T06:12:00.000Z",
-            "2026-09-28T06:11:00.000Z",
-            "2026-09-28T06:10:00.000Z",
-            "2026-09-28T06:09:00.000Z",
-            "2026-09-28T06:08:00.000Z",
-            "2026-09-28T06:07:00.000Z",
-            "2026-09-28T06:06:00.000Z",
-            "2026-09-28T06:05:00.000Z",
-            "2026-09-28T06:04:00.000Z",
-            "2026-09-28T06:03:00.000Z"
-          ],
-          "Values": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "StatusCode": "Complete"
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "Label": "pgai-test-hoststats-aur-473585-1 NetworkReceiveThroughput",
           "Timestamps": [
@@ -765,13 +580,6 @@
           "StatusCode": "Complete"
         },
         {
-          "Id": "host_replica_lag_seconds",
-          "Label": "pgai-test-hoststats-aur-473585-1 AuroraReplicaLag",
-          "Timestamps": [],
-          "Values": [],
-          "StatusCode": "Complete"
-        },
-        {
           "Id": "host_volume_used_bytes",
           "Label": "pgai-test-hoststats-aur-473585 VolumeBytesUsed",
           "Timestamps": [],
@@ -794,96 +602,6 @@
         }
       ],
       "Messages": []
-    }
-  },
-  {
-    "client": "pi",
-    "command": "GetResourceMetricsCommand",
-    "input": {
-      "ServiceType": "RDS",
-      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
-      "StartTime": "2026-09-28T06:03:00.000Z",
-      "EndTime": "2026-09-28T06:18:00.000Z",
-      "PeriodInSeconds": 60,
-      "MetricQueries": [
-        {
-          "Metric": "db.load.avg"
-        }
-      ]
-    },
-    "output": {
-      "AlignedStartTime": "2026-09-28T06:03:00.000Z",
-      "AlignedEndTime": "2026-09-28T06:18:00.000Z",
-      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
-      "MetricList": [
-        {
-          "Key": {
-            "Metric": "db.load.avg"
-          },
-          "DataPoints": [
-            {
-              "Timestamp": "2026-09-28T06:04:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:05:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:06:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:07:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:08:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:09:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:10:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:11:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:12:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:13:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:14:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:15:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:16:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:17:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T06:18:00.000Z",
-              "Value": 0
-            }
-          ]
-        }
-      ]
     }
   },
   {
