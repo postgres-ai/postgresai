@@ -226,7 +226,7 @@ function isSensitiveLogKey(key: string): boolean {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[-\s]+/g, "_")
     .toLowerCase();
-  return /^(?:password|passwd|db_(?:pass|password)|conn_?str|secret|token|api_key|private_key|access_key|access_token|refresh_token|auth|auth_key|auth_token|authorization|credentials?|dsn)$/.test(normalized);
+  return /^(?:password|passwd|db_(?:pass|password|url)|conn_?str|secret|(?:[a-z]+_)?key_secret|token|api_key|private_key|access_key|access_token|refresh_token|auth|auth_key|auth_token|authorization|credentials?|dsn)$/.test(normalized);
 }
 
 /**

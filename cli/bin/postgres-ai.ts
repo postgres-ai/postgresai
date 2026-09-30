@@ -4108,27 +4108,29 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
   }
+  const waitMinutes = Number(opts.wait ?? 20);
+  if (!Number.isFinite(waitMinutes) || waitMinutes < 0) {
+    return emitConnect({ status: "failed", provider: detectCloudProvider(url), name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
+  }
   if (!opts.selfHosted && !signedIn(opts)) {
     return emitConnect({ status: "action_required", provider: detectCloudProvider(url), name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
   }
   const api = cloudApi(opts.debug);
   try {
-    const result = await connect(url, { ...opts, waitMs: Number(opts.wait ?? 20) * 60_000 }, {
+    const result = await connect(url, { ...opts, waitMs: waitMinutes * 60_000 }, {
       ...api,
       selfHosted: async (monitoringUrl, env) => {
-        // In-process, so the monitoring password never lands in a process list;
-        // its output goes to stderr to keep stdout for the result.
-        const log = console.log;
-        Object.assign(process.env, env);
-        console.log = console.error;
-        try {
-          await program.parseAsync(["mon", "local-install", "--db-url", monitoringUrl, "-y", ...(api.apiKey ? ["--api-key", api.apiKey] : [])], { from: "user" });
-        } finally {
-          console.log = log;
-          for (const k of Object.keys(env)) delete process.env[k];
-        }
-        if (process.exitCode) throw new Error("mon local-install failed (see above)");
+        // A child `mon local-install`: the URL, API key and ClickHouse key ride in its
+        // environment (never argv), and its output goes to stderr, so stdout is the result.
+        const scope = getActiveOrgScope();
+        const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
+        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org], {
+          stdio: ["ignore", 2, 2],
+          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
+        });
+        if (r.status !== 0) throw new Error("mon local-install failed (see above)");
       },
+      localStackRunning: () => checkRunningContainers().running,
       progress: (line) => console.error(line),
     });
     emitConnect(result, opts.json);
@@ -4253,7 +4255,7 @@ mon
   // anything. The requirement is enforced where registration actually happens.
   .option("--org <alias>", `organization alias (or ${ORG_ENV}); required to register with a global token`)
   .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`)
-  .option("--db-url <url>", "PostgreSQL connection URL to monitor")
+  .option("--db-url <url>", "PostgreSQL connection URL to monitor (or PGAI_DB_URL)")
   .option("--tag <tag>", "Docker image tag to use (e.g., 0.14.0, 0.14.0-dev.33)")
   .option("--project <name>", "Docker Compose project name (default: postgres_ai)")
   .option(
@@ -4278,7 +4280,9 @@ mon
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
-    let apiKey = opts.apiKey || globalOpts.apiKey;
+    let apiKey = opts.apiKey || globalOpts.apiKey || process.env.PGAI_API_KEY;
+    // `pgai connect --self-hosted` passes the monitoring URL here, never in argv.
+    opts.dbUrl ??= process.env.PGAI_DB_URL;
 
     console.log("\n=================================");
     console.log("  PostgresAI monitoring local install");
