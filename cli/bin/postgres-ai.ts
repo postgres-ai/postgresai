@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4163,6 +4163,20 @@ withOrgOptions(program.command("connect <database-url>"))
     "  pgai connect '<url>' --self-hosted",
   ].join("\n"))
   .action(runConnect);
+
+withOrgOptions(program.command("init"))
+  .description("first run for a person at a terminal: sign in, ask for the database URL, then pgai connect")
+  .option("--json", "JSON output (init is interactive: prints the pgai connect command to use instead)")
+  .action(async (opts: { json?: boolean }) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY || opts.json) {
+      return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" }, opts.json);
+    }
+    if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
+    const url = (await question("Database URL (postgresql://...): ")).trim();
+    const needsKey = URL.canParse(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
+    const clickhouseKey = needsKey ? (await question("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ")).trim() : "";
+    await runConnect(url, { clickhouseKey: clickhouseKey || undefined });
+  });
 
 async function cloudDatabases(opts: { debug?: boolean }, name?: string): Promise<Database[]> {
   const rows = await cloudApi(opts.debug).list();

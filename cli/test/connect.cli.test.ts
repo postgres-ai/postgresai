@@ -44,22 +44,28 @@ async function withApi(fn: (env: Record<string, string>, calls: string[]) => Pro
   }
 }
 
+// Drop terminal control sequences and carriage returns, keep what a person reads.
+const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+
 /** Runs in a terminal, typing each answer when its prompt appears; returns the screen text. */
 async function runTty(args: string[], env: Record<string, string>, answers: [prompt: string, answer: string][]) {
   let out = "";
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
-    env: cliEnv(env),
+    env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", ...env }),
     terminal: {
       cols: 200, rows: 50,
       data(term, bytes) {
         out += new TextDecoder().decode(bytes);
-        if (answers[0] && out.endsWith(answers[0][0])) term.write(`${answers.shift()![1]}\r`);
+        // Typed a moment after the prompt, once readline owns the terminal (input sent earlier can be flushed).
+        if (answers[0] && clean(out).endsWith(answers[0][0])) {
+          const answer = answers.shift()![1];
+          setTimeout(() => term.write(`${answer}\r`), 100);
+        }
       },
     },
   });
   const status = await proc.exited;
-  // Drop terminal control sequences and carriage returns, keep what a person reads.
-  return { status, screen: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "") };
+  return { status, screen: clean(out) };
 }
 
 const KEY_PROMPT = "ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ";
@@ -87,13 +93,14 @@ describe("pgai init", () => {
       expect(r.screen).toBe([
         `${URL_PROMPT}${CH}`,
         KEY_PROMPT,
-        "status: connected",
         "provider: clickhouse",
         `name: ${NAME}`,
         "id: i-1",
         "dashboard_url: https://abc.pgai.watch",
         "host_metrics: true",
+        "status: connected",
         "next: Open https://abc.pgai.watch",
+        "",
         "",
       ].join("\n"));
       expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}"]);
@@ -105,7 +112,7 @@ describe("pgai init", () => {
     await withApi(async (env) => {
       const r = await runTty(["init"], env, [[URL_PROMPT, url]]);
       expect(r.status).toBe(0);
-      expect(r.screen).toStartWith(`${URL_PROMPT}${url}\nstatus: connected\nprovider: self-managed\nname: db.example.com/app\n`);
+      expect(r.screen).toStartWith(`${URL_PROMPT}${url}\nprovider: self-managed\nname: db.example.com/app\n`);
       expect(r.screen).not.toContain("ClickHouse");
     }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed" }]);
   });
@@ -114,7 +121,7 @@ describe("pgai init", () => {
     await withApi(async (env) => {
       const r = await runTty(["init"], env, [[URL_PROMPT, CH], [KEY_PROMPT, "nocolon"]]);
       expect(r.status).toBe(1);
-      expect(r.screen).toContain("next: --clickhouse-key must be <key-id>:<key-secret>");
+      expect(r.screen).toContain("status: failed\nprovider: clickhouse\nname: abc123.us-east-1.aws.pg.clickhouse.cloud/postgres\nnext: '--clickhouse-key must be <key-id>:<key-secret>'\n");
     });
   });
 });
