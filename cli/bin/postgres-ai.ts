@@ -5395,8 +5395,8 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     }
     const projectRef = extractProjectRefFromUrl(connStr);
     if (projectRef) {
-      if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
       const on = /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+      if (on && !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));

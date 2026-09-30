@@ -150,6 +150,21 @@ test.each([["false"], [""]])("Supabase: with the flag %p the job is removed and 
   expect(vmalertCalls()).toEqual(["rm -sf vmalert"]);
 });
 
+test("Supabase: with host metrics off, a dotted target name is still added and pgwatch reloaded", () => {
+  const added = run(["add", supabase(), "prod.main"]);
+  expect(added.exitCode, added.out).toBe(0);
+  expect(readFileSync(`${projectDir}/instances.yml`, "utf8")).toContain("- name: prod.main\n");
+  expect(scrapeFiles()).toEqual([]);
+  expect(readFileSync(log, "utf8")).toBe("run --rm sources-generator\nup -d --force-recreate pgwatch-prometheus pgwatch-postgres\n");
+});
+
+test("Supabase: with host metrics on, a dotted target name is refused", () => {
+  const added = run(["add", supabase(), "prod.main"], { PGAI_SUPABASE_HOST_METRICS: "true" });
+  expect(added.exitCode).toBe(1);
+  expect(added.out).toContain("a Supabase target name may use only letters, digits, '_' and '-'");
+  expect(scrapeFiles()).toEqual([]);
+});
+
 test("Supabase: targets remove drops the relay job", () => {
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
   const removed = run(["remove", "sb"]);
