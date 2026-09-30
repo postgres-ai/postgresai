@@ -50,7 +50,7 @@ describe("ClickHouse service discovery", () => {
         ? Response.json({ result: [{ id: serviceId }] }) : new Response("denied", { status }));
       await expect(findService(options)).rejects.toEqual(new Error(status === 401
         ? "ClickHouse Cloud rejected the API key (401). Check the key id and secret."
-        : `The API key cannot read Postgres services in organization ${orgId} (403). Give it read access to this organization.`));
+        : `The API key cannot read Postgres services in organization ${orgId} (403). Use a key with the Basic Service API Reader role, or one that includes it.`));
     });
   }
   test("empty list has the exact no-match error", async () => {

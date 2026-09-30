@@ -77,7 +77,7 @@ for (const denied of [401, 403]) {
     status = denied;
     await expect(add()).rejects.toEqual(new Error(denied === 401
       ? "ClickHouse Cloud rejected the API key (401). Check the key id and secret."
-      : `The API key cannot read Postgres services in organization ${orgId} (403). Give it read access to this organization.`));
+      : `The API key cannot read Postgres services in organization ${orgId} (403). Use a key with the Basic Service API Reader role, or one that includes it.`));
     expectNothingWritten();
   });
 }
