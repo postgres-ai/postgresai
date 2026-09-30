@@ -93,6 +93,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await probe.connect();
     await probe.end();
 
+    const verifier = async () => { const a = await admin(); const r = (await a.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword; await a.end(); return r; };
+    const before = await verifier();
     process.env.PGAI_MON_PASSWORD = decodeURIComponent(new URL(monUrlFromEarlierTest).password);
     try {
       const second = await prepareDatabase(db2.toString(), "self-managed");
@@ -104,9 +106,30 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     } finally {
       delete process.env.PGAI_MON_PASSWORD;
     }
+    // The existing role's password is not even re-set to the same value.
+    expect(await verifier()).toBe(before);
     const still = new Client({ connectionString: monUrlFromEarlierTest });
     await still.connect();
     await still.end();
+  });
+
+  test("a new role's password with '%' and spaces survives into the monitoring URL", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.end();
+    process.env.PGAI_MON_PASSWORD = "p%40ss w%rd";
+    try {
+      const result = await prepareDatabase(ADMIN!, "self-managed");
+      if (!("monitoringUrl" in result)) throw new Error(`expected a URL, got: ${JSON.stringify(result)}`);
+      const m = new Client({ connectionString: result.monitoringUrl });
+      await m.connect();
+      await m.end();
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
   });
 
   test("a URL that can neither create roles nor is the monitoring role: the SQL, passwords redacted", async () => {
@@ -120,6 +143,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     const result = await prepareDatabase(url.toString(), "clickhouse");
     if (!("sql" in result) || !result.sql) throw new Error("expected SQL");
     expect(result.sql).toContain("-- 01.role");
+    // Running the SQL must not change the password of an existing postgres_ai_mon.
+    expect(result.sql).not.toMatch(/alter user [^;]* password/i);
     expect(result.sql).toContain("password '<redacted>'");
     expect(result.sql).not.toContain("app-pw-123");
   });
