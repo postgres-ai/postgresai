@@ -197,14 +197,18 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password,
       // so it is never changed, and only a password that logs in is used.
+      const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)`;
       const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       if (me.mon_exists) {
         const given = process.env.PGAI_MON_PASSWORD?.trim();
         if (!given || !(await logsIn(monitoringUrlFor(url, me.db, password)))) {
-          return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)` };
+          return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. ${setPassword}` };
         }
       }
       await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
+      // Another session may have created the role meanwhile, with its own password.
+      // Other login errors (pg_hba for this client, say) do not tell, so they pass.
+      if (!(await logsIn(monitoringUrlFor(url, me.db, password)).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
       return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
@@ -223,7 +227,10 @@ async function logsIn(url: string): Promise<boolean> {
     await (await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }))).client.end();
     return true;
   } catch (err) {
-    if ((err as { code?: string }).code === "28P01") return false;
+    const { code, routine } = err as { code?: string; routine?: string };
+    if (code === "28P01") return false;
+    // No CONNECT on the database yet: CheckMyDatabase runs after the password was accepted.
+    if (code === "42501" && routine === "CheckMyDatabase") return true;
     throw err;
   }
 }
