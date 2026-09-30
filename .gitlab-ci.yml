@@ -357,7 +357,11 @@ cli:node:tests:
   before_script:
     - corepack enable || true
     - apt-get update
-    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip && rm -rf /var/lib/apt/lists/*
+    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip
+    # PostgreSQL 17 from PGDG for tests that need scram_iterations (PG >= 16); the
+    # default binaries found by the tests stay at bookworm's PostgreSQL 15.
+    - /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+    - apt-get install -y --no-install-recommends postgresql-17 && rm -rf /var/lib/apt/lists/*
     # Install Bun
     - curl -fsSL https://bun.sh/install | bash
     - export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
