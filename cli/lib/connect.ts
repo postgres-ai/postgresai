@@ -6,7 +6,7 @@ import {
 } from "./init";
 import { callRpc } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
-import { requestTimeoutSignal } from "./util";
+import { HttpStatusError, requestTimeoutSignal } from "./util";
 
 // `pgai connect <database-url>`: put a database under PostgresAI's care
 // (postgres-ai/internal#354). Each step is skipped when already done, so a
@@ -37,13 +37,19 @@ export interface Database {
   host_metrics: boolean;
 }
 
-/** The monitoring URL (with a note for the user, if any), or what to do first. */
-export type Prepared = { monitoringUrl: string; note?: string } | { next: string; sql?: string };
+/**
+ * The monitoring URL (with a note for the user, if any), or what to do first.
+ * `generated`: this run created the role with a password generated here, which
+ * nobody has once the run ends.
+ */
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string };
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
   prepare(url: string, provider: Provider): Promise<Prepared>;
+  /** Drops the role a `generated` prepare created; false when it could not. */
+  unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
@@ -63,7 +69,7 @@ export interface ConnectOptions {
 // (REPORTER_INITIAL_DELAY_SECONDS in config/scripts/postgres-reports.sh).
 const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
 const POLL_MS = 15_000;
-const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
+export const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
 
 /** `new URL`, or undefined for text that is not a URL (URL.canParse needs Node 18.17). */
 export function parseUrl(url: string): URL | undefined {
@@ -82,11 +88,22 @@ export function detectCloudProvider(url: string): Provider {
   return "self-managed";
 }
 
-/** The instance name the platform derives from the URL (monitoring_instance_create, #712). */
+/**
+ * The instance name the platform derives from the monitoring URL
+ * (monitoring_instance_create, #712). That URL always names the database, so
+ * for a URL without one this is the database pg connects to (PGDATABASE, else the user).
+ */
 export function databaseName(url: string): string {
   const u = new URL(url);
   const port = u.port && u.port !== "5432" ? `:${u.port}` : "";
-  const db = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  let db = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  if (!db) {
+    try {
+      db = new Client(resolveAdminConnection({ conn: url }).clientConfig).database ?? "";
+    } catch {
+      // Not a URL pg can use: the connection reports that.
+    }
+  }
   return `${u.hostname}${port}${db ? `/${db}` : ""}`;
 }
 
@@ -158,10 +175,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const fresh = !row;
   let note = "";
   if (!row) {
-    deps.progress(`Preparing ${maskConnectionString(url)}`);
-    const prepared = await deps.prepare(url, provider);
-    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
-    if (prepared.note) note = `; ${prepared.note}`;
+    // The key is checked before the database is touched: a rejected key or a stopped service changes nothing.
     let ch: { orgId: string } | undefined;
     if (key) {
       const found = await deps.clickhouseOrg(new URL(url).hostname, key.keyId, key.keySecret);
@@ -170,6 +184,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       }
       ch = found;
     }
+    deps.progress(`Preparing ${maskConnectionString(url)}`);
+    const prepared = await deps.prepare(url, provider);
+    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
+    if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
       await deps.selfHosted(prepared.monitoringUrl, key && ch
         ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
@@ -177,12 +195,22 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
     }
     deps.progress(`Provisioning monitoring for ${name}`);
+    // A refused launch starts no box, so a role with a generated password is
+    // dropped again: nobody has that password, and the re-run would stop at it.
+    const undo = async () => { if (prepared.generated) await deps.unprepare(url).catch(() => false); };
     const created = await deps.create({
       db_url: prepared.monitoringUrl,
       ...(provider === "clickhouse" ? { provider } : {}),
       ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
+    }).catch(async (err) => {
+      // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
+      if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
+      throw err;
     });
-    if (created.status === "failed") return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
+    if (created.status === "failed") {
+      await undo();
+      return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
+    }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
   }
 
@@ -203,6 +231,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
 }
 
 type PgClientClass = Parameters<typeof connectWithSslFallback>[0];
+type PgClient = Awaited<ReturnType<typeof connectWithSslFallback>>["client"];
 
 export interface PrepareOptions {
   /** The URL comes from an agent (the MCP tool): PGAI_MON_PASSWORD is not read and a TLS failure is not retried in plaintext. */
@@ -211,13 +240,34 @@ export interface PrepareOptions {
   Client?: PgClientClass;
 }
 
+function openConnection(url: string, opts: PrepareOptions) {
+  const conn = resolveAdminConnection({ conn: url });
+  return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
+}
+
+/** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
+async function dropMonitoringRole(client: PgClient): Promise<boolean> {
+  // Alone first: a role with no grants yet needs no DROP OWNED, which a CREATEROLE admin may not run.
+  for (const sql of [`drop role ${DEFAULT_MONITORING_USER}`, `drop owned by ${DEFAULT_MONITORING_USER}; drop role ${DEFAULT_MONITORING_USER}`]) {
+    if (await client.query(sql).then(() => true, () => false)) return true;
+  }
+  return false;
+}
+
+/** Undoes a `generated` prepareDatabase over the same admin URL: drops the role that run created. */
+export async function unprepareDatabase(url: string, opts: PrepareOptions = {}): Promise<boolean> {
+  const { client } = await openConnection(url, opts);
+  try {
+    return await dropMonitoringRole(client);
+  } finally {
+    await client.end();
+  }
+}
+
 /** Creates (or checks) the monitoring role over the given URL. The admin URL is used for this run only. */
 export async function prepareDatabase(url: string, provider: Provider, opts: PrepareOptions = {}): Promise<Prepared> {
   const pgProvider = provider === "rds" ? "self-managed" : provider;
-  const open = (u: string) => {
-    const conn = resolveAdminConnection({ conn: u });
-    return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
-  };
+  const open = (u: string) => openConnection(u, opts);
   // Whether `u` logs in; false only when the server rejects the password.
   const logsIn = async (u: string): Promise<boolean> => {
     try {
@@ -261,7 +311,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
       const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)`;
-      const { password } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
+      const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       let note: string | undefined;
       if (me.mon_exists) {
         if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}` };
@@ -279,11 +329,20 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
           note = "this server accepts any password from this host, so PGAI_MON_PASSWORD was not checked; if no data arrives, disconnect and connect again with the right password";
         }
       }
-      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
+      const monitoringUrl = monitoringUrlFor(url, me.db, password);
+      const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+      try {
+        await applyInitPlan({ client, plan });
+      } catch (err) {
+        // A later step failed after the role was created with a generated password (it logs in,
+        // so the role is this run's): nobody has that password, so the role is dropped again.
+        if (generated && !me.mon_exists && (await logsIn(monitoringUrl).catch(() => false))) await dropMonitoringRole(client);
+        throw err;
+      }
       // Another session may have created the role meanwhile, with its own password.
       // Other login errors (pg_hba for this client, say) do not tell, so they pass.
-      if (!(await logsIn(monitoringUrlFor(url, me.db, password)).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
-      return { monitoringUrl: monitoringUrlFor(url, me.db, password), ...(note ? { note } : {}) };
+      if (!(await logsIn(monitoringUrl).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
+      return { monitoringUrl, ...(note ? { note } : {}), ...(generated && !me.mon_exists ? { generated: true as const } : {}) };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
@@ -331,6 +390,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
     prepare: (url: string, provider: Provider) => prepareDatabase(url, provider, { agent: p.agent }),
+    unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });

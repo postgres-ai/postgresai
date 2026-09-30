@@ -222,6 +222,19 @@ describe("pgai connect / databases / status / disconnect", () => {
     expect(r.json().next).toBe("--wait must be a number of minutes (0 = do not wait)");
   });
 
+  test("a failed result names the provider of --provider, not the host's", async () => {
+    const url = "postgresql://postgres:pw@10.0.0.5:5432/app";
+    const env = { PGAI_API_KEY: "k", PGAI_API_BASE_URL: "http://127.0.0.1:9" };
+    for (const flags of [["--clickhouse-key", "nocolon"], ["--wait", "soon"]]) {
+      const r = await run(["connect", url, "--provider", "clickhouse", ...flags], env);
+      expect(r.status).toBe(1);
+      expect(r.json()).toMatchObject({ status: "failed", provider: "clickhouse", name: "10.0.0.5/app" });
+    }
+    expect((await run(["connect", url, "--provider", "oracle"], env)).json()).toEqual({
+      status: "failed", provider: "self-managed", name: "10.0.0.5/app", next: "--provider must be one of: clickhouse, rds, supabase, self-managed",
+    });
+  });
+
   test("disconnect picks the live instance, not an earlier one still being deleted", async () => {
     await withApi(async (env, calls) => {
       expect((await run(["disconnect", NAME, "--yes"], env)).status).toBe(0);

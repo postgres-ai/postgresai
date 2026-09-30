@@ -11,6 +11,8 @@
   disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
   JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required).
   An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
+  A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
+  created with a generated password is dropped again when the launch is refused.
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
