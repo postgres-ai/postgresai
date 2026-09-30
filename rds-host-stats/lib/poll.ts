@@ -1,11 +1,10 @@
 import { CloudWatchClient, GetMetricDataCommand, type GetMetricDataCommandOutput } from '@aws-sdk/client-cloudwatch'
 import { CloudWatchLogsClient, GetLogEventsCommand, type GetLogEventsCommandOutput } from '@aws-sdk/client-cloudwatch-logs'
-import { GetResourceMetricsCommand, PIClient, type GetResourceMetricsCommandOutput } from '@aws-sdk/client-pi'
 import { DescribeDBInstancesCommand, RDSClient, type DescribeDBInstancesCommandOutput } from '@aws-sdk/client-rds'
 import { fromTemporaryCredentials } from '@aws-sdk/credential-providers'
 
 type Client = { send(command: any): Promise<any> }
-export type Clients = { rds: Client; cloudwatch: Client; pi: Client; logs: Client }
+export type Clients = { rds: Client; cloudwatch: Client; logs: Client }
 export type Target = { instanceId: string; cluster: string; nodeName: string }
 export type Role = { arn: string; externalId: string }
 export type Auth = { username: string; password: string }
@@ -18,7 +17,7 @@ export function createClients(region: string, role?: Role): Clients {
     clientConfig: { region, requestHandler },
   }) : undefined
   const config = { region, credentials, requestHandler }
-  return { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), pi: new PIClient(config), logs: new CloudWatchLogsClient(config) }
+  return { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), logs: new CloudWatchLogsClient(config) }
 }
 
 type Metric = [name: string, source: string, scale?: number]
@@ -27,21 +26,14 @@ const common: Metric[] = [
   ['host_memory_available_bytes', 'FreeableMemory'],
   ['host_disk_read_iops', 'ReadIOPS'],
   ['host_disk_write_iops', 'WriteIOPS'],
-  ['host_disk_read_latency_seconds', 'ReadLatency'],
-  ['host_disk_write_latency_seconds', 'WriteLatency'],
-  ['host_disk_queue_depth', 'DiskQueueDepth'],
   ['host_network_receive_bytes_per_second', 'NetworkReceiveThroughput'],
   ['host_network_transmit_bytes_per_second', 'NetworkTransmitThroughput'],
 ]
 const rdsMetrics: Metric[] = [
   ['host_disk_free_bytes', 'FreeStorageSpace'],
-  ['host_burst_balance_percent', 'BurstBalance'],
-  ['host_ebs_io_balance_percent', 'EBSIOBalance%'],
-  ['host_replica_lag_seconds', 'ReplicaLag'],
 ]
 const auroraMetrics: Metric[] = [
   ['host_local_storage_free_bytes', 'FreeLocalStorage'],
-  ['host_replica_lag_seconds', 'AuroraReplicaLag', 0.001],
 ]
 const volumeMetrics: Metric[] = [
   ['host_volume_used_bytes', 'VolumeBytesUsed'],
@@ -72,7 +64,7 @@ export class PollTimeout extends Error {
 }
 
 // text: the import body of the samples not yet written. errors: sources that
-// failed this poll (Performance Insights, Enhanced Monitoring); their samples
+// failed this poll (Enhanced Monitoring); their samples
 // are retried on the next poll, the rest are kept. A malformed Enhanced
 // Monitoring event is reported once and never retried: it stays malformed.
 export type Poll = { text: string; errors: Error[] }
@@ -97,17 +89,15 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
   const db = description.DBInstances?.[0]
   if (!db) throw new Error('RDS instance not found')
   const aurora = db.Engine === 'aurora-postgresql'
-  // CloudWatch and PI buckets are queried over the 15 minutes up to the last
-  // minute boundary, so no bucket is cut by the wall clock. A bucket is written
-  // only once a further period has passed after it closed: a partial Average
-  // written early would be frozen by the per-timestamp dedupe, and the complete
-  // one dropped. CloudWatch stamps a bucket at its start, PI at its end, so the
-  // gate is 2 periods for CloudWatch and 1 for PI. The OS log window follows
-  // the clock; its events are samples.
+  // CloudWatch buckets are queried over the 15 minutes up to the last minute
+  // boundary, so no bucket is cut by the wall clock. A bucket is written only
+  // once a further period has passed after it closed: a partial Average written
+  // early would be frozen by the per-timestamp dedupe, and the complete one
+  // dropped. CloudWatch stamps a bucket at its start, so the gate is 2 periods.
+  // The OS log window follows the clock; its events are samples.
   const end = new Date(Math.floor(now.getTime() / 60_000) * 60_000)
   const start = new Date(end.getTime() - 15 * 60_000)
   const closed = (time: number, period: number) => time + 2 * period * 1000 <= end.getTime()
-  const closedPI = (time: number) => time + 60_000 <= end.getTime()
   const metrics = [...common, ...(aurora ? auroraMetrics : rdsMetrics)]
   const queries = (items: Metric[], dimension: string, value: string | undefined, period: number) => items.map(([Id, MetricName]) => ({
     Id, MetricStat: { Metric: { Namespace: 'AWS/RDS', MetricName, Dimensions: [{ Name: dimension, Value: value }] }, Period: period, Stat: 'Average' },
@@ -138,24 +128,6 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
     const points = (data?.Timestamps ?? []).map((time, i) => ({ time: time.getTime(), value: data?.Values?.[i] }))
     for (const point of points.sort((a, b) => a.time - b.time)) {
       if (typeof point.value === 'number' && closed(point.time, period)) emit(name, point.value * scale, point.time)
-    }
-  }
-  if (db.PerformanceInsightsEnabled) {
-    try {
-      const result: GetResourceMetricsCommandOutput = await clients.pi.send(new GetResourceMetricsCommand({
-        ServiceType: 'RDS', Identifier: db.DbiResourceId, StartTime: start, EndTime: end,
-        PeriodInSeconds: 60, MetricQueries: [{ Metric: 'db.load.avg' }],
-      }))
-      // PI stamps a point at the end of its minute and rounds EndTime up, so a
-      // point after `end` covers a minute that is still open, and the point at
-      // `end` a minute that closed moments ago and may still be ingesting.
-      for (const metric of result.MetricList ?? []) {
-        for (const point of metric.DataPoints ?? []) {
-          if (point.Timestamp && closedPI(point.Timestamp.getTime())) emit('host_db_load', point.Value, point.Timestamp.getTime())
-        }
-      }
-    } catch (error) {
-      errors.push(toError(error))
     }
   }
   if ((db.MonitoringInterval ?? 0) > 0) {
