@@ -16,24 +16,46 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await c.end();
   });
 
-  test("an admin URL creates the monitoring role; its URL connects and verifies; a re-run still works", async () => {
-    const first = await prepareDatabase(ADMIN!, "self-managed");
-    if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got SQL:\n${first.sql}`);
+  test("an admin URL creates the monitoring role; its URL connects to the prepared database as postgres_ai_mon", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.end();
+    // No database in the path and credentials in the query string: the monitoring
+    // URL must still name the prepared database and carry only the new role.
+    const tricky = new URL(ADMIN!);
+    tricky.pathname = "";
+    tricky.searchParams.set("user", tricky.username);
+    tricky.searchParams.set("password", decodeURIComponent(tricky.password));
+    const first = await prepareDatabase(tricky.toString(), "self-managed");
+    if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got: ${JSON.stringify(first)}`);
     const mon = new URL(first.monitoringUrl);
     expect(mon.username).toBe("postgres_ai_mon");
-    expect(mon.password.length).toBeGreaterThanOrEqual(16);
-    expect(mon.password).not.toBe(new URL(ADMIN!).password);
+    expect(mon.searchParams.has("user") || mon.searchParams.has("password")).toBe(false);
+    expect(first.monitoringUrl).not.toContain(new URL(ADMIN!).password);
+    const m = new Client({ connectionString: first.monitoringUrl });
+    await m.connect();
+    expect((await m.query("select current_user as u, current_database() as d")).rows[0]).toEqual({ u: "postgres_ai_mon", d: "postgres" });
+    await m.end();
 
-    const again = await prepareDatabase(first.monitoringUrl, "self-managed");
-    expect(again).toEqual({ monitoringUrl: first.monitoringUrl });
+    expect(await prepareDatabase(first.monitoringUrl, "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
 
-    // A second admin run rotates the password; the new URL is the one that works.
-    const second = await prepareDatabase(ADMIN!, "self-managed");
-    if (!("monitoringUrl" in second)) throw new Error("expected a URL");
-    const c = new Client({ connectionString: second.monitoringUrl });
-    await c.connect();
-    expect((await c.query("select current_user as u")).rows[0].u).toBe("postgres_ai_mon");
-    await c.end();
+    // The role already exists: another database on this server may use its
+    // password, so it is never rotated silently.
+    const again = await prepareDatabase(ADMIN!, "self-managed");
+    expect("monitoringUrl" in again).toBe(false);
+    expect((again as { next: string }).next).toContain("PGAI_MON_PASSWORD");
+    const still = new Client({ connectionString: first.monitoringUrl });
+    await still.connect();
+    await still.end();
+
+    process.env.PGAI_MON_PASSWORD = decodeURIComponent(mon.password);
+    try {
+      expect(await prepareDatabase(ADMIN!, "self-managed")).toHaveProperty("monitoringUrl");
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
   });
 
   test("a URL that can neither create roles nor is the monitoring role: the SQL, passwords redacted", async () => {
@@ -45,7 +67,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     url.username = "pgai_connect_app";
     url.password = "app-pw-123";
     const result = await prepareDatabase(url.toString(), "clickhouse");
-    if (!("sql" in result)) throw new Error("expected SQL");
+    if (!("sql" in result) || !result.sql) throw new Error("expected SQL");
     expect(result.sql).toContain("-- 01.role");
     expect(result.sql).toContain("password '<redacted>'");
     expect(result.sql).not.toContain("app-pw-123");
