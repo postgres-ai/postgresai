@@ -90,5 +90,8 @@ test("mon update leaves a PGAI_TAG it cannot resolve alone", () => {
     env: { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: project, GIT_DIR: `${project}/.git` },
   });
   expect(result.stdout.toString()).toContain("PGAI_TAG in .env is not a plain value, so it is left as is.");
-  expect(readFileSync(`${project}/.env`, "utf8")).toBe(content);
+  // Newly required keys are still appended; the PGAI_TAG line is untouched.
+  const env = readFileSync(`${project}/.env`, "utf8");
+  expect(env.startsWith(content)).toBe(true);
+  expect(env.match(/PGAI_TAG/g)).toHaveLength(1);
 });
