@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, detectCloudProvider, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4086,7 +4086,8 @@ const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, di
 function cloudApi(debug?: boolean) {
   const rootOpts = program.opts<CliOptions>();
   const { apiKey } = getConfig(rootOpts);
-  return { apiKey, ...platformDeps({ apiKey, ...resolveBaseUrls(rootOpts, config.readConfig()), orgScope: getActiveOrgScope(), debug }) };
+  const urls = resolveBaseUrls(rootOpts, config.readConfig());
+  return { apiKey, apiBaseUrl: urls.apiBaseUrl, ...platformDeps({ apiKey, ...urls, orgScope: getActiveOrgScope(), debug }) };
 }
 
 function emitConnect(result: ConnectResult, json?: boolean): void {
@@ -4126,7 +4127,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
         const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org], {
           stdio: ["ignore", 2, 2],
-          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
+          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
         });
         if (r.status !== 0) throw new Error("mon local-install failed (see above)");
       },
@@ -4213,7 +4214,7 @@ withOrgOptions(program.command("disconnect <name>"))
   .option("--debug", "print HTTP requests (secrets masked)")
   .action(async (name: string, opts: { yes?: boolean; json?: boolean; debug?: boolean }) => {
     try {
-      const [row] = (await cloudDatabases(opts, name)).filter((d) => !/delet/.test(d.status ?? ""));
+      const [row] = (await cloudDatabases(opts, name)).filter((d) => !disconnecting(d.status));
       if (!row) throw new Error(`No database named ${name}. See: pgai databases`);
       if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
