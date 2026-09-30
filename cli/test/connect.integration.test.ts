@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
-import { prepareDatabase } from "../lib/connect";
+import { prepareDatabase, unprepareDatabase } from "../lib/connect";
 
 // `pgai connect`'s prepare step against a real Postgres, with a superuser URL
 // like the one ClickHouse Managed Postgres hands out. CI: the
@@ -37,6 +37,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     tricky.searchParams.set("password", decodeURIComponent(tricky.password));
     const first = await prepareDatabase(tricky.toString(), "self-managed");
     if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got: ${JSON.stringify(first)}`);
+    // The password was generated here, for a role this run created.
+    expect(first.generated).toBe(true);
     monUrlFromEarlierTest = first.monitoringUrl;
     const mon = new URL(first.monitoringUrl);
     expect(mon.username).toBe("postgres_ai_mon");
@@ -217,6 +219,121 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     } finally {
       await c.end();
     }
+  });
+
+  test("CREATEROLE that passes the admin check but cannot finish the plan: the error, and no role left behind", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.query("drop role if exists pgai_connect_creator");
+    await c.query("create role pgai_connect_creator login createrole password 'creator-pw-123'");
+    try {
+      if (!(await c.query("select current_setting('server_version_num')::int < 160000 as old")).rows[0].old) {
+        await c.query("grant pg_monitor to pgai_connect_creator with admin option");
+      }
+      const url = new URL(ADMIN!);
+      url.username = "pgai_connect_creator";
+      url.password = "creator-pw-123";
+      await expect(prepareDatabase(url.toString(), "self-managed")).rejects.toThrow(/^Failed at step "0[23]\./);
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+    } finally {
+      await c.query("drop owned by pgai_connect_creator").catch(() => {});
+      await c.end();
+    }
+  });
+
+  test("unprepareDatabase drops the role a run created, with its grants; the next run prepares again", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    try {
+      expect(await prepareDatabase(ADMIN!, "self-managed")).toMatchObject({ generated: true });
+      expect(await unprepareDatabase(ADMIN!)).toBe(true);
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+      expect(await prepareDatabase(ADMIN!, "self-managed")).toMatchObject({ generated: true });
+    } finally {
+      await c.end();
+    }
+  });
+
+  // A run that fails after (or before) the prepare step must not block the
+  // re-run: the same command again, against a platform and a ClickHouse Cloud
+  // API that answer differently each time.
+  describe("pgai connect re-runs (the real CLI, a fake platform)", () => {
+    const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+
+    test("a rejected ClickHouse key, then a refused launch, then a launch: each re-run goes through; a URL without a database matches its row", async () => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      const roles = async () => (await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n;
+      // No database in the URL: pg connects to the one named like the user.
+      const url = new URL(ADMIN!);
+      url.pathname = "";
+      const name = `${url.hostname}${url.port && url.port !== "5432" ? `:${url.port}` : ""}/${url.username}`;
+      const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-rerun-"));
+      const SERVICE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+      let keyOk = false;
+      let launch: "refuse" | "accept" = "refuse";
+      const rows: unknown[] = [];
+      const calls: string[] = [];
+      const api = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+          const path = new URL(req.url).pathname;
+          calls.push(path);
+          if (path === "/v1/organizations") return keyOk ? Response.json({ result: [{ id: "11111111-2222-3333-4444-555555555555" }] }) : new Response("", { status: 401 });
+          if (path.endsWith("/postgres")) return Response.json({ result: [{ id: SERVICE, name: "svc", state: "running" }] });
+          if (path.endsWith(`/postgres/${SERVICE}`)) return Response.json({ result: { id: SERVICE, name: "svc", state: "running", hostname: url.hostname } });
+          if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+          if (path.endsWith("/rpc/cloud_monitoring_connect")) {
+            const dbUrl = new URL(JSON.parse(await req.text()).db_url);
+            const row = { id: "i-1", name: `${dbUrl.hostname}${dbUrl.port ? `:${dbUrl.port}` : ""}${dbUrl.pathname}`, provider: "clickhouse", status: "launch_requested", dashboard_url: null, host_metrics: true };
+            if (launch === "refuse") return Response.json({ id: row.id, name: row.name, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." });
+            rows.push(row);
+            return Response.json(row);
+          }
+          return new Response("not found", { status: 404 });
+        },
+      });
+      const run = async () => {
+        const proc = Bun.spawn([process.execPath, CLI, "connect", url.toString(), "--provider", "clickhouse", "--clickhouse-key", "kid:Sec4b1dTestSecret", "--wait", "0"], {
+          cwd: home, stdout: "pipe", stderr: "pipe",
+          env: {
+            PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key",
+            PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`, CLICKHOUSE_API_URL: `http://127.0.0.1:${api.port}`,
+          },
+        });
+        const [stdout, exit] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+        return { exit, ...JSON.parse(stdout) };
+      };
+      try {
+        // The key is checked first: the database is not touched.
+        expect(await run()).toEqual({ exit: 1, status: "failed", provider: "clickhouse", name, next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret." });
+        expect(await roles()).toBe(0);
+
+        // A refused launch: the role this run created is dropped again.
+        keyOk = true;
+        expect(await run()).toEqual({ exit: 1, status: "failed", provider: "clickhouse", name, id: "i-1", next: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later. Re-run pgai connect later." });
+        expect(await roles()).toBe(0);
+
+        launch = "accept";
+        expect(await run()).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
+        expect(await roles()).toBe(1);
+
+        // The re-run finds its row by name: nothing is prepared or provisioned again.
+        const before = calls.length;
+        expect((await run()).exit).toBe(0);
+        expect(calls.slice(before)).toEqual(["/rpc/cloud_monitoring_list"]);
+      } finally {
+        api.stop(true);
+        await c.end();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 120_000);
   });
 
   // The stub docker records who called it (argv and environment names, from

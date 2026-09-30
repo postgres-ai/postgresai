@@ -217,6 +217,15 @@ update every monitoring box that uses it:
 `pgai prepare-db <admin-url> --reset-password --password <new-password>`, then
 `PGAI_MON_PASSWORD=<new-password> pgai connect <admin-url>`.
 
+A run that fails does not leave such a role behind. The ClickHouse key and the service state are
+checked before the database is touched. If the platform refuses the launch, or a later step of the
+preparation fails, a role that this run created with a generated password is dropped again, so the
+same command can be run again. (After a platform error that is not a refusal, such as a 5xx or a
+timeout, the role stays: a monitoring box may be starting with it.)
+
+An admin URL without a database connects to `PGDATABASE`, or else to the database named like the
+user; the name of the connected database (`<host>[:<port>]/<database>`) uses that database.
+
 | `status` | Meaning | Exit code |
 |---|---|---|
 | `connected` | monitoring works; `dashboard_url` is set | 0 |

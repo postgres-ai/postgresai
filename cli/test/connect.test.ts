@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
+import { HttpStatusError } from "../lib/util";
 import { clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
@@ -20,6 +21,7 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     list: async () => { calls.push("list"); const r = rows[Math.min(listed++, rows.length - 1)]; return r ? [r] : []; },
     create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); return { id: "i-1", name: CH_NAME, status: "launch_requested" }; },
     prepare: async (url, provider) => { calls.push(`prepare ${provider}`); return { monitoringUrl: MON }; },
+    unprepare: async () => { calls.push("unprepare"); return true; },
     localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
@@ -52,6 +54,17 @@ describe("provider and name", () => {
     expect(databaseName("postgresql://u:p@db2.example.com:6432/app")).toBe("db2.example.com:6432/app");
   });
 
+  test("a URL without a database: the name has the one pg connects to, as the monitoring URL will", () => {
+    expect(databaseName("postgresql://postgres:p@db2.example.com:6432")).toBe("db2.example.com:6432/postgres");
+    expect(databaseName("postgresql://db2.example.com/?user=app_admin&password=p&sslmode=require")).toBe("db2.example.com/app_admin");
+    process.env.PGDATABASE = "orders";
+    try {
+      expect(databaseName("postgresql://postgres:p@db2.example.com")).toBe("db2.example.com/orders");
+    } finally {
+      delete process.env.PGDATABASE;
+    }
+  });
+
   test("ClickHouse key from the flag or the environment", () => {
     expect(parseClickhouseKey(KEY, {})).toEqual({ keyId: "AbCdEf0123456789XyZa", keySecret: "Sec4b1dTestSecret0123456789" });
     expect(parseClickhouseKey(undefined, { CLICKHOUSE_KEY_ID: "a", CLICKHOUSE_KEY_SECRET: "b" })).toEqual({ keyId: "a", keySecret: "b" });
@@ -61,13 +74,13 @@ describe("provider and name", () => {
 });
 
 describe("connect", () => {
-  test("ClickHouse with a key: prepare, find the org, provision, wait, dashboard", async () => {
+  test("ClickHouse with a key: find the org, prepare, provision, wait, dashboard", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested"), row("active")] });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps);
     expect(calls).toEqual([
       "list",
-      "prepare clickhouse",
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
+      "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`,
       "sleep", "list", "sleep", "list",
     ]);
@@ -124,21 +137,66 @@ describe("connect", () => {
     expect(calls).toEqual(["list"]);
   });
 
-  test("a stopped ClickHouse service: start it first, nothing provisioned", async () => {
+  test("a stopped ClickHouse service: start it first, the database is not touched", async () => {
     const { deps, calls } = fake({ clickhouseOrg: async () => ({ orgId: ORG, state: "stopped" }) });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 0 }, deps);
     expect(result).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
       next: "Start the service in the ClickHouse Cloud console (it is stopped), then re-run",
     });
-    expect(calls.some((c) => c.startsWith("create"))).toBe(false);
+    expect(calls).toEqual(["list"]);
   });
 
+  test("a rejected ClickHouse key: an error before the database is touched", async () => {
+    const { deps, calls } = fake({ clickhouseOrg: async () => { throw new Error("ClickHouse Cloud rejected the API key (401). Check the key id and secret."); } });
+    await expect(connect(CH, { clickhouseKey: KEY, waitMs: 0 }, deps)).rejects.toThrow("rejected the API key (401)");
+    expect(calls).toEqual(["list"]);
+  });
+
+  const REFUSED = { id: "i-9", name: CH_NAME, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." };
+
   test("the platform could not launch the box", async () => {
-    const { deps } = fake({ create: async () => ({ id: "i-9", name: CH_NAME, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." }) });
+    const { deps, calls } = fake({ create: async () => REFUSED });
     expect(await connect(CH, { waitMs: 60_000 }, deps)).toEqual({
       status: "failed", provider: "clickhouse", name: CH_NAME, id: "i-9",
       next: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later. Re-run pgai connect later.",
+    });
+    // The role was there before, or has the user's PGAI_MON_PASSWORD: it stays.
+    expect(calls).toEqual(["list", "prepare clickhouse"]);
+  });
+
+  // The role this run created with a generated password: nobody has the
+  // password, so the re-run would stop at "postgres_ai_mon already exists".
+  describe("a launch that fails after the role was created with a generated password", () => {
+    const generated: Partial<ConnectDeps> = { prepare: async () => ({ monitoringUrl: MON, generated: true }) };
+
+    test("refused by the platform (in the reply, or a 4xx): the role is dropped again", async () => {
+      const inReply = fake({ ...generated, create: async () => REFUSED });
+      expect((await connect(CH, { waitMs: 0 }, inReply.deps)).status).toBe("failed");
+      expect(inReply.calls).toEqual(["list", "unprepare"]);
+
+      const http = fake({ ...generated, create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect: HTTP 402", 402); } });
+      await expect(connect(CH, { waitMs: 0 }, http.deps)).rejects.toThrow("HTTP 402");
+      expect(http.calls).toEqual(["list", "unprepare"]);
+    });
+
+    test("a drop that fails does not hide the refusal", async () => {
+      const { deps } = fake({ ...generated, create: async () => REFUSED, unprepare: async () => { throw new Error("connection refused"); } });
+      expect((await connect(CH, { waitMs: 0 }, deps)).next).toBe(`${REFUSED.error} Re-run pgai connect later.`);
+    });
+
+    test("a 5xx or no answer: a box may be starting with this URL, so the role stays", async () => {
+      for (const err of [new HttpStatusError("HTTP 502", 502), new Error("timed out")]) {
+        const { deps, calls } = fake({ ...generated, create: async () => { throw err; } });
+        await expect(connect(CH, { waitMs: 0 }, deps)).rejects.toThrow(err.message);
+        expect(calls).toEqual(["list"]);
+      }
+    });
+
+    test("a launch that starts: the role stays", async () => {
+      const { deps, calls } = fake({ ...generated });
+      expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("provisioning");
+      expect(calls).not.toContain("unprepare");
     });
   });
 
@@ -167,8 +225,8 @@ describe("connect", () => {
     const { deps, calls } = fake();
     const result = await connect(CH, { clickhouseKey: KEY, selfHosted: true, waitMs: 0 }, deps);
     expect(calls).toEqual([
-      "prepare clickhouse",
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
+      "prepare clickhouse",
       `selfHosted ${MON} ${JSON.stringify({ CLICKHOUSE_ORG_ID: ORG, CLICKHOUSE_KEY_ID: "AbCdEf0123456789XyZa", CLICKHOUSE_KEY_SECRET: "Sec4b1dTestSecret0123456789" })}`,
     ]);
     expect(result).toEqual({ status: "connected", provider: "clickhouse", name: CH_NAME, dashboard_url: "http://localhost:3000", host_metrics: true, next: "pgai mon health" });
@@ -199,7 +257,7 @@ describe("connect", () => {
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
-      expect(calls.at(-2)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
+      expect(calls.at(-3)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
     } finally {
       delete process.env.CLICKHOUSE_KEY_ID;
       delete process.env.CLICKHOUSE_KEY_SECRET;
@@ -233,7 +291,7 @@ describe("prepareDatabase (a fake pg client)", () => {
   const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
 
   /** `logins` answers each postgres_ai_mon login in turn (an error to throw, or "ok"); the last one repeats. */
-  function server(me: { name?: string; admin?: boolean; mon_exists: boolean }, logins: (Error | "ok")[] = ["ok"]) {
+  function server(me: { name?: string; admin?: boolean; mon_exists: boolean; fails?: RegExp }, logins: (Error | "ok")[] = ["ok"]) {
     const ran: string[] = [];
     const monLogins: string[] = [];
     class FakeClient {
@@ -254,6 +312,7 @@ describe("prepareDatabase (a fake pg client)", () => {
       async query(sql: string) {
         if (/session_user as name/.test(sql)) return { rows: [{ name: "postgres", db: "app", admin: true, iterations: "4096", ...me }] };
         if (this.user !== "postgres_ai_mon" && !/statement_timeout/.test(sql)) ran.push(sql.trim().split("\n")[0]);
+        if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
         return { rows: [] };
       }
       async end() {}
@@ -323,6 +382,26 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(await withMonPassword("right", () => s.prepare())).toEqual({
       monitoringUrl: "postgresql://postgres_ai_mon:right@db.example.com:5432/app?sslmode=require&application_name=pgai",
     });
+  });
+
+  test("a new role with a generated password is marked, so a refused launch can drop it; with PGAI_MON_PASSWORD it is not", async () => {
+    const result = await withMonPassword(undefined, () => server({ mon_exists: false }).prepare());
+    expect(result).toMatchObject({ generated: true });
+    expect(await withMonPassword("ours", () => server({ mon_exists: false }).prepare())).not.toHaveProperty("generated");
+  });
+
+  test("a plan that fails after the role was created with a generated password: the role is dropped again", async () => {
+    const s = server({ mon_exists: false, fails: /create extension/ });
+    await expect(withMonPassword(undefined, () => s.prepare())).rejects.toThrow('Failed at step "02.extensions": permission denied');
+    expect(s.ran.at(-1)).toBe("drop role postgres_ai_mon");
+  });
+
+  test("a plan that fails: a role with the user's PGAI_MON_PASSWORD, or one that does not log in with ours, is left alone", async () => {
+    const mine = server({ mon_exists: false, fails: /create extension/ });
+    await expect(withMonPassword("ours", () => mine.prepare())).rejects.toThrow('Failed at step "02.extensions"');
+    const notOurs = server({ mon_exists: false, fails: /create extension/ }, [pgError("28P01", "password authentication failed")]);
+    await expect(withMonPassword(undefined, () => notOurs.prepare())).rejects.toThrow('Failed at step "02.extensions"');
+    for (const s of [mine, notOurs]) expect(s.ran.some((q) => q.startsWith("drop"))).toBe(false);
   });
 
   test("the MCP tool's prepare: PGAI_MON_PASSWORD is not read, and TLS is not given up", async () => {
