@@ -172,3 +172,15 @@ def test_generator_in_the_shipped_image(tmp_path: Path) -> None:
                     '-e', 'INSTANCES_PATH=/w/instances.yml', '-e', 'CONFIGS_DIR=/w/out', image, 'bash', '/s/generate-pgwatch-sources.sh'],
                    check=True, capture_output=True, timeout=120)
     assert json.loads((tmp_path / 'out/prometheus/supabase-host-metrics.json').read_text()) == CLI_EXPECTED
+
+
+def test_generator_keeps_block_scalar_semantics(tmp_path: Path) -> None:
+    # The label must equal what pgwatch reads from the same YAML: a literal
+    # block keeps its newlines (clip keeps one at the end, - strips it), a
+    # folded block joins lines with spaces.
+    conn = 'postgresql://m:s@db.abcdefghijklmnopqrst.supabase.co:5432/postgres'
+    literal = f'- name: main\n  conn_str: {conn}\n  is_enabled: true\n  custom_tags:\n    cluster: |\n      prod\n      east\n    node_name: >-\n      main\n      db\n'
+    assert _generate(tmp_path, literal)[0] == [{'targets': [TARGET], 'labels': {'cluster': 'prod\neast\n', 'node_name': 'main db'}}]
+    assert yaml.safe_load(literal)[0]['custom_tags'] == {'cluster': 'prod\neast\n', 'node_name': 'main db'}
+    stripped = literal.replace('cluster: |', 'cluster: |-')
+    assert _generate(tmp_path, stripped)[0][0]['labels']['cluster'] == 'prod\neast'
