@@ -91,6 +91,12 @@ describe("connect", () => {
     });
   });
 
+  test("a row still being deleted (a disconnect in flight) is not reused", async () => {
+    const { deps, calls } = fake({ rows: [row("deleting_launched"), row("launch_requested")] });
+    await connect(CH, { waitMs: 0 }, deps);
+    expect(calls.slice(0, 2)).toEqual(["list", "prepare clickhouse"]);
+  });
+
   test("RDS and Supabase hand off to the console flow, touching nothing", async () => {
     const { deps, calls } = fake();
     expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).toEqual({
