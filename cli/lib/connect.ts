@@ -195,9 +195,13 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
       if (v.ok) return { monitoringUrl: monitoringUrlFor(url, me.db) };
     } else if (me.admin && pgProvider !== "supabase") {
-      // The role is cluster-wide: another database here may use its password.
-      if (me.mon_exists && !process.env.PGAI_MON_PASSWORD?.trim()) {
-        return { next: `${DEFAULT_MONITORING_USER} already exists on this server; re-run with PGAI_MON_PASSWORD=<its password>, or connect with its URL` };
+      // The role is cluster-wide: another database here may use its password,
+      // so only a password that logs in as it is accepted, and nothing changes.
+      if (me.mon_exists) {
+        const given = process.env.PGAI_MON_PASSWORD?.trim() ? process.env.PGAI_MON_PASSWORD : undefined;
+        if (!given || !(await logsIn(monitoringUrlFor(url, me.db, given)))) {
+          return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)` };
+        }
       }
       const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider }) });
@@ -210,6 +214,17 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
     };
   } finally {
     await client.end();
+  }
+}
+
+/** Whether `url` logs in; false only when the server rejects the password. */
+async function logsIn(url: string): Promise<boolean> {
+  try {
+    await (await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }))).client.end();
+    return true;
+  } catch (err) {
+    if ((err as { code?: string }).code === "28P01") return false;
+    throw err;
   }
 }
 
