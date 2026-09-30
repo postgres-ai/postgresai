@@ -5076,6 +5076,9 @@ mon
       const tagPlan = envTag.plain
         ? planUpdateTag(deployedTag, pkg.version)
         : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
+      if (process.env.PGAI_TAG && process.env.PGAI_TAG !== deployedTag) {
+        console.error(`⚠ PGAI_TAG=${process.env.PGAI_TAG} in the environment overrides .env for docker compose; unset it to use the .env value`);
+      }
       if (tagPlan.tag) {
         writeEnvTag(projectDir, tagPlan.tag);
         // Bun loads .env into process.env at startup, and compose prefers the
