@@ -209,6 +209,8 @@ terminal, or with `--json`, it only points to `pgai connect`.
 |---|---|
 | `PGAI_API_KEY` | the API key, instead of signing in (agents, CI) |
 | `PGAI_MON_PASSWORD` | the password of `postgres_ai_mon`. For a new role it is set; for an existing role it is checked by logging in, and never changed. Without it a new role gets a generated password |
+| `PGPASSWORD` | the password for a URL without one. With a `postgres_ai_mon` URL it is the password the monitoring box gets, once the server has checked it |
+| `PGSSLMODE` | the `sslmode` for a URL without one (`sslmode` in the URL wins, as in libpq) |
 | `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` | instead of `--clickhouse-key`; read for ClickHouse hosts only |
 
 `postgres_ai_mon` is one role for the whole server, so `connect` never changes the password of an
@@ -216,6 +218,25 @@ existing one. If the role exists and you do not have its password, change it exp
 update every monitoring box that uses it:
 `pgai prepare-db <admin-url> --reset-password --password <new-password>`, then
 `PGAI_MON_PASSWORD=<new-password> pgai connect <admin-url>`.
+
+When the role exists (an admin URL with `PGAI_MON_PASSWORD`, or the role's own URL), `connect`
+also logs in once as `postgres_ai_mon` with a random password, to learn whether the server checks
+passwords for this host at all. On a server that does, this is one
+`password authentication failed for user "postgres_ai_mon"` line in the server log per run, and it
+counts toward failed-login policies (credcheck, fail2ban). On a server that does not (`trust`),
+`next` says that the password was not checked; a password from `PGPASSWORD` is then not used:
+put it in the URL.
+
+A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole
+preparation: `CREATEROLE`, `CREATE` on the database, `pg_stat_statements` already installed, and
+on PostgreSQL 16+ `ADMIN OPTION` on `pg_monitor` and `pg_read_all_stats`. Otherwise the SQL is
+printed and nothing is created.
+
+The host and the port are the ones in the URL: `host` or `port` in the query string is refused.
+Of the query string, the monitoring box gets `sslmode`, `channel_binding` and `application_name`.
+Certificate files (`sslrootcert`, `sslcert`, `sslkey`) are used for the connections from this
+machine only; with `sslmode=verify-ca` or `verify-full` and a private CA in `sslrootcert`, `next`
+says that the box has no copy of that CA.
 
 A run that fails does not leave such a role behind. The ClickHouse key and the service state are
 checked before the database is touched. If the platform refuses the launch, or a later step of the
@@ -437,7 +458,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password; `PGAI_MON_PASSWORD` and `PGPASSWORD` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only.
+- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only.
 
 #### `attachments` parameter (issue/comment tools)
 

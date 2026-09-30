@@ -445,8 +445,8 @@ export function resolveAdminConnection(opts: {
     const v = conn || dbUrlFlag;
     if (isLikelyUri(v)) {
       const urlSslMode = extractSslModeFromUri(v);
-      const effectiveSslMode = explicitSsl || urlSslMode;
-      // SSL priority: PGSSLMODE env > URL param > auto (sslmode=prefer behavior)
+      const effectiveSslMode = urlSslMode || explicitSsl;
+      // SSL priority, as in libpq: URL param > PGSSLMODE env > auto (sslmode=prefer behavior)
       const sslConfig = effectiveSslMode
         ? sslModeToConfig(effectiveSslMode)
         : { rejectUnauthorized: false }; // Default: try SSL (with fallback)

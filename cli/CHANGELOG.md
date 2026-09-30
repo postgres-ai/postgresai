@@ -9,10 +9,14 @@
   SQL is printed), provisions the monitoring box, waits, and prints the dashboard URL. ClickHouse,
   RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
   disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
-  JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required).
+  JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required),
+  and 130 for a `pgai init` cancelled at a prompt.
   An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
   A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
   created with a generated password is dropped again when the launch is refused.
+  A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole preparation;
+  `host` / `port` in the URL's query string is refused; certificate files in the URL are used from
+  this machine only (the monitoring box does not get them).
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
@@ -32,6 +36,10 @@
   job; for an RDS instance endpoint, the instance, region and labels `rds-host-stats` reads from `.env`.
 
 ### Changed
+
+- `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
+  `checkup`, `connect`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
+  a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.
 
 - `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
   as before; it is no longer filled with `self-managed`.
