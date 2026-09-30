@@ -140,6 +140,7 @@ services:
     ports:
       - "${BIND_HOST:-}59090:9090"
     volumes:
+      - ./host-metrics:/etc/pgai/host-metrics:ro
       - victoria_metrics_data:/victoria-metrics-data
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
