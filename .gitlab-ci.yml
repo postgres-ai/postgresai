@@ -411,8 +411,10 @@ cli:clickhouse-like:tests:
   variables:
     GIT_STRATEGY: fetch
     POSTGRES_PASSWORD: "chlike"
-    # The service shares the job's localhost, which initdb trusts by default:
-    # check passwords there too, so the connect tests see a wrong one refused.
+    # components/index_pilot/.gitlab-ci.yml sets POSTGRES_HOST_AUTH_METHOD: trust
+    # for every job, and the service's pg_hba.conf then trusts the job container.
+    # Check passwords instead, so the connect tests see a wrong one refused.
+    POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
     POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
   script:
