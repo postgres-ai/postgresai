@@ -5372,10 +5372,16 @@ async function composeServiceState(service: string): Promise<string | null> {
   }
   const ids = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", service]);
   if (ids.status !== 0) return null;
-  const id = ids.stdout.trim().split("\n")[0];
-  if (!id) return "";
-  const state = spawnSync("docker", ["inspect", "-f", "{{.State.Status}}", id]);
-  return state.status === 0 ? state.stdout.trim().toLowerCase() : null;
+  const list = ids.stdout.split(/\s+/).filter(Boolean);
+  if (list.length === 0) return "";
+  // v1 also lists one-off (`run`) containers: skip them, and report the
+  // service as running if any of its real containers is not stopped.
+  const inspected = spawnSync("docker", ["inspect", "-f", '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}}', ...list]);
+  if (inspected.status !== 0) return null;
+  const states = inspected.stdout.split("\n").map((line) => line.trim().split(/\s+/))
+    .filter(([oneoff, state]) => state && oneoff.toLowerCase() !== "true")
+    .map(([, state]) => state.toLowerCase());
+  return states.find((state) => !["created", "exited", "dead"].includes(state)) ?? states[0] ?? "";
 }
 
 // Stacks older than host metrics support lack the ./host-metrics mount or
