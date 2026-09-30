@@ -350,7 +350,11 @@ answers an empty 200, so `up=1` with no series and the box carries no failing
 target. For `consent_needed`, the relay logs a warning; open the Supabase page
 in the PostgresAI console and click **Allow host metrics**. Dashboard 01 includes a collapsed
 **Host (Supabase)** row, labeled by `supabase_identifier` (the project ref for
-the primary, a distinct value per read replica).
+the primary, a distinct value per read replica). The scrape target carries the
+`cluster` and `node_name` tags of the one Supabase target in `instances.yml`
+(sources-generator writes it to `prometheus/supabase-host-metrics.json`), so the
+row follows the dashboard's cluster and node selectors. With no Supabase target,
+or more than one, the series carry no such labels and the row stays empty.
 
 Credential lifecycle: the key is cached for one hour, then fetched again. A
 `401`/`403` from Supabase discards it and triggers one immediate refetch; a

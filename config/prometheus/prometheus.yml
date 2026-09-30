@@ -73,12 +73,14 @@ scrape_configs:
   # Each monitoring instance relays host metrics for one Supabase project.
   # The target exists only when PGAI_SUPABASE_HOST_METRICS=true; otherwise it
   # is dropped, so boxes without the feature carry no failing up=0 target.
+  # sources-generator writes the target file from instances.yml with the
+  # cluster/node_name tags of the Supabase target, the labels pgwatch uses.
   - job_name: 'supabase-host-metrics'
     scrape_interval: 60s
     scrape_timeout: 20s
     metrics_path: /supabase/metrics
-    static_configs:
-      - targets: ['instance-jobs:9188']
+    file_sd_configs:
+      - files: ['/postgres_ai_configs/prometheus/supabase-host-metrics.json']
     relabel_configs:
       - target_label: __tmp_enabled
         replacement: '%{PGAI_SUPABASE_HOST_METRICS}'
