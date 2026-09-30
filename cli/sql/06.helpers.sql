@@ -15,7 +15,13 @@
  *
  * Usage:
  *   select postgres_ai.table_describe('public.users');
- *   select postgres_ai.table_describe('my_table');  -- uses search_path
+ *   select postgres_ai.table_describe('my_table');  -- pg_catalog, then public
+ *
+ * search_path is pg_catalog, pg_temp, not pg_catalog, public: the owner can be a
+ * superuser (ClickHouse Managed Postgres), and with public on the path any role
+ * allowed to create there could shadow a built-in (for example an exact-type
+ * format(text, text, text)) and run code as the owner. Unqualified names are
+ * looked up in pg_catalog, then public, by catalog query instead.
  */
 create or replace function postgres_ai.table_describe(
   in table_name text,
@@ -23,10 +29,11 @@ create or replace function postgres_ai.table_describe(
 )
 language plpgsql
 security definer
-set search_path = pg_catalog, public
+set search_path = pg_catalog, pg_temp
 as $$
 declare
   v_oid oid;
+  v_ident text[];
   v_schema text;
   v_table text;
   v_relkind char;
@@ -37,8 +44,21 @@ declare
   v_rec record;
   v_constraint_count int := 0;
 begin
-  -- Resolve table name to OID (handles schema-qualified and search_path)
-  v_oid := table_name::regclass::oid;
+  -- Resolve table name to OID: schema-qualified, or pg_catalog then public
+  v_ident := parse_ident(table_name);
+  if cardinality(v_ident) = 1 then
+    select c.oid into v_oid
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where c.relname = v_ident[1]::name and n.nspname in ('pg_catalog', 'public')
+    order by n.nspname = 'public'
+    limit 1;
+    if v_oid is null then
+      raise exception 'relation "%" does not exist', table_name using errcode = '42P01';
+    end if;
+  else
+    v_oid := table_name::regclass::oid;
+  end if;
 
   -- Get basic table info
   select
@@ -207,7 +227,7 @@ begin
         when 'f' then v_line := v_line || 'FK: ';
         when 'u' then v_line := v_line || 'UNIQUE: ';
         when 'c' then v_line := v_line || 'CHECK: ';
-        else v_line := v_line || v_rec.contype || ': ';
+        else v_line := v_line || v_rec.contype::text || ': ';
       end case;
       v_line := v_line || v_rec.conname || ' ' || v_rec.condef;
       v_lines := array_append(v_lines, v_line);
