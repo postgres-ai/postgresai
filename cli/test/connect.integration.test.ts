@@ -223,7 +223,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
   // /proc), so the child `mon local-install` is checked as it was started.
   describe.skipIf(process.platform !== "linux")("pgai connect --self-hosted (the real CLI, a stub docker)", () => {
     const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const NAME = (() => { const u = new URL(ADMIN!); return `${u.hostname}${u.port && u.port !== "5432" ? `:${u.port}` : ""}/postgres`; })();
+    // A function: a skipped describe still runs its body, and ADMIN is unset there.
+    const name = () => { const u = new URL(ADMIN!); return `${u.hostname}${u.port && u.port !== "5432" ? `:${u.port}` : ""}/postgres`; };
 
     async function selfHosted(dockerExit: number) {
       const c = await admin();
@@ -271,9 +272,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     test("the child gets the org and a project in argv, the URL and the key only in its environment; stdout is the result", async () => {
       const r = await selfHosted(0);
       expect(r.stderr).toContain("Local install completed!");
-      expect(JSON.parse(r.stdout)).toEqual({ status: "connected", provider: "self-managed", name: NAME, dashboard_url: "http://localhost:3000", host_metrics: false, next: "pgai mon health" });
+      expect(JSON.parse(r.stdout)).toEqual({ status: "connected", provider: "self-managed", name: name(), dashboard_url: "http://localhost:3000", host_metrics: false, next: "pgai mon health" });
       expect(r.status).toBe(0);
-      const project = NAME.replace(/[^A-Za-z0-9._-]+/g, "-");
+      const project = name().replace(/[^A-Za-z0-9._-]+/g, "-");
       expect(r.childArgv).toBe(`mon local-install -y --org acme --project ${project}`);
       expect(r.childEnv).toBe("env: PGAI_API_BASE_URL PGAI_API_KEY PGAI_DB_URL PGAI_PROJECT_DIR ");
       // The child took the monitoring URL from PGAI_DB_URL and registered with PGAI_API_KEY.
@@ -284,7 +285,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
 
     test("a child that fails: failed, exit 1, stdout still only the result", async () => {
       const r = await selfHosted(1);
-      expect(JSON.parse(r.stdout)).toEqual({ status: "failed", provider: "self-managed", name: NAME, next: "mon local-install failed (see above)" });
+      expect(JSON.parse(r.stdout)).toEqual({ status: "failed", provider: "self-managed", name: name(), next: "mon local-install failed (see above)" });
       expect(r.status).toBe(1);
     }, 120_000);
   });
