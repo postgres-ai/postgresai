@@ -4078,7 +4078,7 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
 // standard `error: unknown command '<x>'` on stderr and exits non-zero. The
 // bare-`pgai` nicety (show help, exit 0) is preserved explicitly at the parse
 // entrypoint below.
-// ---- pgai connect / init / databases / status / disconnect (postgres-ai/internal#354) ----
+// ---- pgai connect / databases / status / disconnect (postgres-ai/internal#354) ----
 // JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
 // Exit codes: 0 connected or provisioning, 1 failed, 3 action required.
 const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, action_required: 3, failed: 1 };
@@ -4163,16 +4163,6 @@ withOrgOptions(program.command("connect <database-url>"))
     "  pgai connect '<url>' --self-hosted",
   ].join("\n"))
   .action(runConnect);
-
-withOrgOptions(program.command("init"))
-  .description("first run: sign in, ask for a database URL, then pgai connect")
-  .action(async () => {
-    if (!process.stdin.isTTY) {
-      return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai connect <database-url>" });
-    }
-    if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai auth login" });
-    await runConnect((await question("Database URL (postgresql://...): ")).trim(), {});
-  });
 
 async function cloudDatabases(opts: { debug?: boolean }, name?: string): Promise<Database[]> {
   const rows = await cloudApi(opts.debug).list();
