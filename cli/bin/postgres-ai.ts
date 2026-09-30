@@ -1071,19 +1071,22 @@ export function planUpdateTag(current: string | null, cliVersion: string): { tag
   return { tag: cliVersion, note: `PGAI_TAG: ${current ?? "unset"} -> ${cliVersion}` };
 }
 
-// One PGAI_TAG assignment the way compose reads it: optional export, spaces
-// around "=", a quoted value or an unquoted one ending at " #" (a comment).
-const ENV_TAG_LINE = /^([ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*=[ \t]*)("[^"\r\n]*"|'[^'\r\n]*'|[^ \t#\r\n]*)([^\r\n]*)$/gm;
+// A PGAI_TAG assignment we can read and rewrite safely: optional export,
+// spaces around "=", a plain tag (optionally quoted), then only a " #" comment.
+// Anything else that assigns PGAI_TAG (interpolation, "KEY: value", a comment
+// glued to a quote) resolves in ways we do not model, so it is left alone.
+const ENV_TAG_LINE = /^([ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*=[ \t]*)(["']?)([A-Za-z0-9._-]*)\2((?:[ \t]+#[^\r\n]*)?[ \t]*\r?)$/gm;
+const ENV_TAG_ANY = /^[ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*[=:]/gm;
 
-/** The PGAI_TAG compose would use: the last assignment in .env, or null. */
-export function readEnvTag(projectDir: string): string | null {
+/** The PGAI_TAG compose would use (last assignment, null if none), and whether every assignment is plain. */
+export function readEnvTag(projectDir: string): { tag: string | null; plain: boolean } {
   const envFile = path.resolve(projectDir, ".env");
-  if (!fs.existsSync(envFile)) return null;
-  let tag: string | null = null;
-  for (const m of fs.readFileSync(envFile, "utf8").matchAll(ENV_TAG_LINE)) {
-    tag = stripMatchingQuotes(m[2]) || null;
-  }
-  return tag;
+  if (!fs.existsSync(envFile)) return { tag: null, plain: true };
+  const content = fs.readFileSync(envFile, "utf8");
+  const plainLines = [...content.matchAll(ENV_TAG_LINE)];
+  if (plainLines.length !== [...content.matchAll(ENV_TAG_ANY)].length) return { tag: null, plain: false };
+  const last = plainLines.at(-1);
+  return { tag: last && last[3] ? last[3] : null, plain: true };
 }
 
 /** Set every PGAI_TAG assignment in .env to `tag` (compose reads the last one), or append one. */
@@ -1091,7 +1094,7 @@ export function writeEnvTag(projectDir: string, tag: string): void {
   const envFile = path.resolve(projectDir, ".env");
   const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
   const content = new RegExp(ENV_TAG_LINE.source, "m").test(existing)
-    ? existing.replace(ENV_TAG_LINE, (_match, prefix: string, _value: string, rest: string) => `${prefix}${tag}${rest}`)
+    ? existing.replace(ENV_TAG_LINE, (_match, prefix: string, quote: string, _value: string, rest: string) => `${prefix}${quote}${tag}${quote}${rest}`)
     : `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}PGAI_TAG=${tag}\n`;
   writeEnvFile(envFile, content);
 }
@@ -4419,7 +4422,11 @@ mon
               const db = m[5].split("?")[0];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false });
+              if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+                console.error("✗ The monitoring target was not saved");
+                process.exitCode = 1;
+                return;
+              }
               console.log();
 
               // Test connection
@@ -5122,8 +5129,11 @@ mon
       } else {
         console.log("✓ .env is up to date");
       }
-      const deployedTag = readEnvTag(projectDir);
-      const tagPlan = planUpdateTag(deployedTag, pkg.version);
+      const envTag = readEnvTag(projectDir);
+      const deployedTag = envTag.tag;
+      const tagPlan = envTag.plain
+        ? planUpdateTag(deployedTag, pkg.version)
+        : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
       if (tagPlan.tag) {
         writeEnvTag(projectDir, tagPlan.tag);
         // Bun loads .env into process.env at startup, and compose prefers the
@@ -5346,7 +5356,11 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
-/** A compose service's container state ("running", "exited", ...; "" when it has none), or null on error. */
+/**
+ * A compose service's container state ("running", "exited", ...; "" when it has
+ * no container), or null when it cannot be read. `ps --format` is v2-only, so
+ * this takes the id from `ps -a -q` and the state from `docker inspect`.
+ */
 async function composeServiceState(service: string): Promise<string | null> {
   const cmd = getComposeCmd();
   if (!cmd) return null;
@@ -5356,8 +5370,12 @@ async function composeServiceState(service: string): Promise<string | null> {
   } catch {
     return null;
   }
-  const result = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "--format", "{{.State}}", service]);
-  return result.status === 0 ? result.stdout.trim().toLowerCase() : null;
+  const ids = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", service]);
+  if (ids.status !== 0) return null;
+  const id = ids.stdout.trim().split("\n")[0];
+  if (!id) return "";
+  const state = spawnSync("docker", ["inspect", "-f", "{{.State.Status}}", id]);
+  return state.status === 0 ? state.stdout.trim().toLowerCase() : null;
 }
 
 // Stacks older than host metrics support lack the ./host-metrics mount or
