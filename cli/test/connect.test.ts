@@ -97,6 +97,10 @@ describe("connect", () => {
     expect(calls.slice(0, 2)).toEqual(["list", "prepare clickhouse"]);
   });
 
+  test("a disconnect that failed to launch is failed (and can be retried), not disconnecting", () => {
+    expect(connectStatus(row("deleting_failed_to_launch")).status).toBe("failed");
+  });
+
   test("pgai status shows a disconnect in flight as disconnecting, not provisioning", () => {
     expect(connectStatus(row("deleting_launched"))).toEqual({
       status: "disconnecting", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: true, next: "none",
