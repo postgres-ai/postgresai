@@ -8,11 +8,13 @@ import { prepareDatabase } from "../lib/connect";
 const ADMIN = process.env.PGAI_TEST_CLICKHOUSE_LIKE_URL;
 
 describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
+  let monUrlFromEarlierTest = "";
   const admin = () => { const c = new Client({ connectionString: ADMIN }); return c.connect().then(() => c); };
 
   afterAll(async () => {
     const c = await admin();
     await c.query("drop role if exists pgai_connect_app");
+    await c.query("drop database if exists pgai_connect_db2");
     await c.end();
   });
 
@@ -30,6 +32,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     tricky.searchParams.set("password", decodeURIComponent(tricky.password));
     const first = await prepareDatabase(tricky.toString(), "self-managed");
     if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got: ${JSON.stringify(first)}`);
+    monUrlFromEarlierTest = first.monitoringUrl;
     const mon = new URL(first.monitoringUrl);
     expect(mon.username).toBe("postgres_ai_mon");
     expect(mon.searchParams.has("user") || mon.searchParams.has("password")).toBe(false);
@@ -67,6 +70,43 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     } finally {
       delete process.env.PGAI_MON_PASSWORD;
     }
+  });
+
+  // postgres_ai_mon is cluster-wide: preparing a second database must never
+  // change the password the first database's box uses.
+  test("a second database on the server: a wrong PGAI_MON_PASSWORD is refused and the first box keeps working", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("create database pgai_connect_db2");
+    await c.end();
+    // The role already exists from the test above; its password is in that URL.
+    const db2 = new URL(ADMIN!);
+    db2.pathname = "/pgai_connect_db2";
+    process.env.PGAI_MON_PASSWORD = "not-the-password";
+    try {
+      const refused = await prepareDatabase(db2.toString(), "self-managed");
+      expect(refused).toEqual({ next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)" });
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
+    const probe = new Client({ connectionString: monUrlFromEarlierTest });
+    await probe.connect();
+    await probe.end();
+
+    process.env.PGAI_MON_PASSWORD = decodeURIComponent(new URL(monUrlFromEarlierTest).password);
+    try {
+      const second = await prepareDatabase(db2.toString(), "self-managed");
+      if (!("monitoringUrl" in second)) throw new Error(`expected a URL, got: ${JSON.stringify(second)}`);
+      const m = new Client({ connectionString: second.monitoringUrl });
+      await m.connect();
+      expect((await m.query("select current_database() as d")).rows[0].d).toBe("pgai_connect_db2");
+      await m.end();
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
+    const still = new Client({ connectionString: monUrlFromEarlierTest });
+    await still.connect();
+    await still.end();
   });
 
   test("a URL that can neither create roles nor is the monitoring role: the SQL, passwords redacted", async () => {
