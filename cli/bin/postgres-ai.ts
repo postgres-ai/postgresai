@@ -991,7 +991,7 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     }
   }
 
-  fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true });
+  ensureHostMetricsDir(projectDir);
 
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
@@ -2964,8 +2964,20 @@ async function resolveOrInitPaths(): Promise<PathResolution> {
   } catch {
     return ensureDefaultMonitoringProject();
   }
-  fs.mkdirSync(path.join(paths.projectDir, "host-metrics"), { recursive: true });
+  ensureHostMetricsDir(paths.projectDir);
   return paths;
+}
+
+// Created before any `docker compose up`, which would otherwise create the
+// bind-mount source itself, owned by root. Best effort: every command resolves
+// paths, and a read-only one must work in a directory it cannot write.
+// addHostMetrics creates it for real (0700: it holds the ClickHouse API key).
+function ensureHostMetricsDir(projectDir: string): void {
+  try {
+    fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true, mode: 0o700 });
+  } catch {
+    // ignored, see above
+  }
 }
 
 /**
@@ -4298,12 +4310,13 @@ mon
         }
 
         const host = m[3];
-        const db = m[5];
+        const db = m[5].split("?")[0];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
-        addInstanceToFile(instancesPath, instance);
-        console.log(`✓ Monitoring target '${instanceName}' added\n`);
+        // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
+        // the stack is started below, so nothing is applied here.
+        await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false });
+        console.log();
 
         // Test connection
         console.log("Testing connection to the added instance...");
@@ -4348,12 +4361,11 @@ mon
               console.error("⚠ Continuing without adding instance\n");
             } else {
               const host = m[3];
-              const db = m[5];
+              const db = m[5].split("?")[0];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
-              addInstanceToFile(instancesPath, instance);
-              console.log(`✓ Monitoring target '${instanceName}' added\n`);
+              await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false });
+              console.log();
 
               // Test connection
               console.log("Testing connection to the added instance...");
@@ -5274,9 +5286,15 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
   if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
     `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
     "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
-    // `mon update` keeps PGAI_TAG, so without it the stack restarts on the old config image.
-    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade, set PGAI_TAG=${pkg.version} in ${path.join(projectDir, ".env")}, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+    // `mon update` moves PGAI_TAG to this CLI's version; stop/start re-runs config-init.
+    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
     return false;
+  }
+  // A stopped sink-prometheus cannot be reloaded, and it will not load the
+  // deleted file when it starts, so a removal needs nothing more.
+  if (!revision && await runCompose(["exec", "-T", "sink-prometheus", "true"]) !== 0) {
+    console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
+    return true;
   }
   if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
     console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
@@ -5331,6 +5349,7 @@ export async function addTarget(
       console.log(`Monitoring target '${instanceName}' added`);
     }
     if (detectProvider(connStr) === "clickhouse") {
+      let hostMetricsOk = true;
       try {
         const message = await addHostMetrics({
           projectDir, name: instanceName, conn: connStr, env,
@@ -5339,11 +5358,19 @@ export async function addTarget(
         });
         if (!apply || !message.startsWith("Host metrics: ClickHouse Cloud")) console.log(message);
         else if (await reloadHostMetrics(projectDir, instanceName, scrapeRevision(projectDir, instanceName))) console.log(message);
-        else process.exitCode = 1;
+        else hostMetricsOk = false;
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
-        console.error("The Postgres target was added; host metrics were not.");
+        hostMetricsOk = false;
+      }
+      if (!hostMetricsOk) {
         process.exitCode = 1;
+        // Applying runs `up -d pgwatch-*`, which would also start a stopped
+        // sink-prometheus as a dependency: a failed add leaves the stack alone.
+        console.error(apply
+          ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
+          : "The Postgres target was added; host metrics were not.");
+        return;
       }
     }
 

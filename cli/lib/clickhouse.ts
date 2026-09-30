@@ -90,7 +90,9 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
   const prefix = `clickhouse-${name}`;
   const text = renderScrapeConfig({ name, cluster, nodeName, orgId, serviceId: service.id, keyId, passwordFile: `/etc/pgai/host-metrics/${prefix}.secret`, apiUrl });
   const dir = join(projectDir, "host-metrics");
-  mkdirSync(dir, { recursive: true });
+  // The directory holds the org API key: 0700, also when an older CLI created it 0755.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
   const secretFile = join(dir, `${prefix}.secret`);
   const tmpFile = `${secretFile}.tmp`;
   // A previous run killed between write and rename leaves the tmp file behind; drop it so a retry does not fail with EEXIST.
