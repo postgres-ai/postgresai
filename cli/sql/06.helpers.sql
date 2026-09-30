@@ -42,16 +42,18 @@ declare
   v_rec record;
   v_constraint_count int := 0;
 begin
-  -- Resolve table name to OID: schema-qualified, or pg_catalog then public
+  -- Resolve table name to OID: [current database.]schema.table (pg_temp is the
+  -- caller's temp schema), or an unqualified name in pg_catalog, then public
   v_ident := parse_ident(table_name);
   select c.oid into v_oid
   from pg_class c
   join pg_namespace n on n.oid = c.relnamespace
-  where cardinality(v_ident) <= 2
+  where (cardinality(v_ident) <= 2 or (cardinality(v_ident) = 3 and v_ident[1] = current_database()))
     and c.relname = v_ident[cardinality(v_ident)]::name
-    and case cardinality(v_ident)
-      when 1 then n.nspname in ('pg_catalog', 'public')
-      else n.nspname = v_ident[1]::name
+    and case
+      when cardinality(v_ident) = 1 then n.nspname in ('pg_catalog', 'public')
+      when v_ident[cardinality(v_ident) - 1] = 'pg_temp' then n.oid = pg_my_temp_schema()
+      else n.nspname = v_ident[cardinality(v_ident) - 1]::name
     end
   order by n.nspname = 'public'
   limit 1;
