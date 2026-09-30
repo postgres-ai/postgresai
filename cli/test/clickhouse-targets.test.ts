@@ -108,6 +108,9 @@ test("add recovers from a stale secret tmp file left by an interrupted run", asy
   expect(readFileSync(`${dir}/host-metrics/clickhouse-ch-test.secret`, "utf8")).toBe(keySecret);
   expect(readdirSync(`${dir}/host-metrics`).sort()).toEqual(["clickhouse-ch-test.secret", "clickhouse-ch-test.yml"]);
 });
+test("remove is a no-op for a target name no host metrics file can have", () => {
+  expect(removeHostMetrics(dir, "prod.db")).toBe(false);
+});
 test("remove deletes a stale secret tmp file", () => {
   mkdirSync(`${dir}/host-metrics`);
   writeFileSync(`${dir}/host-metrics/clickhouse-ch-test.secret.tmp`, "stale-secret");
