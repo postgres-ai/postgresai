@@ -320,15 +320,9 @@ export function buildClientConfig(
   extra: { connectionTimeoutMillis?: number } = {},
 ): ClientConfig {
   const sslmode = extractSslmode(connStr);
-  let enableChannelBinding = false;
-  try {
-    const uri = new URL(connStr);
-    enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
-  } catch {}
-  if (enableChannelBinding && sslmode === "disable") {
-    throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
-  }
-  const parsed = parseConnString(withoutSslmode(connStr));
+  const channelBinding = splitChannelBinding(connStr);
+  const enableChannelBinding = requireChannelBinding(channelBinding.value, sslmode === "disable");
+  const parsed = parseConnString(withoutSslmode(channelBinding.uri));
   return {
     host: parsed.host || undefined,
     port: parsed.port ? Number(parsed.port) : undefined,
@@ -345,9 +339,38 @@ function withoutSslmode(connStr: string): string {
   try {
     const u = new URL(connStr);
     u.searchParams.delete("sslmode");
-    u.searchParams.delete("channel_binding");
     return u.toString();
   } catch {
     return connStr;
   }
+}
+
+/**
+ * Removes channel_binding from a URI, keeping the rest of the text as is. pg ignores
+ * the parameter, so callers turn `value` into `enableChannelBinding` themselves.
+ */
+export function splitChannelBinding(uri: string): { uri: string; value: string | null } {
+  let value: string | null = null;
+  try {
+    value = new URL(uri).searchParams.get("channel_binding");
+  } catch {}
+  if (value === null) return { uri, value };
+  const fragment = uri.indexOf("#");
+  const end = fragment < 0 ? uri.length : fragment;
+  const start = uri.indexOf("?");
+  const params = uri.slice(start + 1, end).split("&")
+    .filter((param) => !new URLSearchParams(param).has("channel_binding"));
+  return { uri: uri.slice(0, start) + (params.length ? `?${params.join("&")}` : "") + uri.slice(end), value };
+}
+
+/**
+ * Whether to enable channel binding. channel_binding=require (libpq semantics) needs TLS:
+ * with sslmode=disable libpq refuses to connect, so do the same instead of silently sending
+ * SCRAM without channel binding. node-postgres only *prefers* SCRAM-SHA-256-PLUS when the
+ * server offers it; the mechanism actually negotiated is not enforced here.
+ */
+export function requireChannelBinding(value: string | null | undefined, sslDisabled: boolean): boolean {
+  if (value !== "require") return false;
+  if (sslDisabled) throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
+  return true;
 }
