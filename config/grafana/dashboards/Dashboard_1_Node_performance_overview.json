@@ -3671,7 +3671,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "100 * (1 - avg by (supabase_project_ref, supabase_identifier) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
+              "expr": "100 * (1 - avg by (supabase_project_ref, supabase_identifier) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} CPU busy",
               "range": true,
@@ -3732,7 +3732,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
+              "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} Available",
               "range": true,
@@ -3793,7 +3793,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", service_type=\"db\"}",
+              "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} {{mountpoint}} ({{device}})",
               "range": true,
@@ -3854,7 +3854,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} {{device}}",
               "range": true,
@@ -3915,7 +3915,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} {{device}} rx",
               "range": true,
@@ -3927,7 +3927,7 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", service_type=\"db\"}[$__rate_interval])",
+              "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
               "interval": "60s",
               "legendFormat": "{{supabase_identifier}} {{device}} tx",
               "range": true,
