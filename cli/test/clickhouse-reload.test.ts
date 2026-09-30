@@ -93,9 +93,7 @@ test("targets add reports an older stack instead of success", () => {
   const result = run(["add", conn, "ch"], { FAKE_EXEC_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   // `mon update` keeps PGAI_TAG, so without this step the stack restarts on the old config image.
-  // `mon update` moves PGAI_TAG to the CLI version, so no manual .env edit is needed.
-  expect(result.stderr).toContain(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
-  expect(result.stderr).not.toContain("PGAI_TAG");
+  expect(result.stderr).toContain(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
   expect(result.stdout).not.toContain("Host metrics: ClickHouse Cloud");
   expect(reloadLog()).toEqual([execLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(true);

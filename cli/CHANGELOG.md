@@ -18,9 +18,6 @@
 
 ### Changed
 
-- `mon update` moves `PGAI_TAG` in `.env` to the CLI version (never to an older one), so an upgrade
-  no longer needs a manual `.env` edit; after a move it suggests `mon stop && mon start`.
-
 - `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
   as before; it is no longer filled with `self-managed`.
 
