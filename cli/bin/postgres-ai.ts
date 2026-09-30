@@ -5262,18 +5262,21 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
-/** Whether sink-prometheus has a running or paused container; null when that cannot be read. */
-async function sinkPrometheusUp(): Promise<boolean | null> {
+/**
+ * Whether sink-prometheus may be up: it has a running or paused container, or
+ * compose cannot tell (docker-compose v1 has no `ps --status`).
+ */
+async function sinkPrometheusMaybeUp(): Promise<boolean> {
   const cmd = getComposeCmd();
-  if (!cmd) return null;
+  if (!cmd) return true;
   let composeFile: string;
   try {
     ({ composeFile } = await resolveOrInitPaths());
   } catch {
-    return null;
+    return true;
   }
   const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", "--status", "running", "--status", "paused", "sink-prometheus"]);
-  return ps.status === 0 ? ps.stdout.trim() !== "" : null;
+  return ps.status !== 0 || ps.stdout.trim() !== "";
 }
 
 // Stacks older than host metrics support lack the ./host-metrics mount or
@@ -5288,15 +5291,10 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
     return false;
   }
   // A stopped sink-prometheus cannot be reloaded, and it will not load the
-  // deleted file when it starts, so a removal needs nothing more. A running or
-  // paused one goes through reload and verification.
+  // deleted file when it starts, so a removal needs nothing more. Any other
+  // goes through reload and verification.
   if (!revision) {
-    const up = await sinkPrometheusUp();
-    if (up === null) {
-      console.error("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
-      return false;
-    }
-    if (!up) {
+    if (!(await sinkPrometheusMaybeUp())) {
       console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
       return true;
     }
