@@ -18,7 +18,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
   afterAll(async () => {
     const c = await admin();
     await c.query("drop role if exists pgai_connect_app");
+    await c.query("drop owned by pgai_connect_creator cascade").catch(() => {});
     await c.query("drop role if exists pgai_connect_creator");
+    await c.query("drop role if exists pgai_connect_login");
     await c.query("drop database if exists pgai_connect_db2");
     await c.end();
   });
@@ -201,47 +203,140 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
-  test("CREATEROLE alone cannot grant pg_monitor on PG 16+: the SQL, and no role left behind", async () => {
+  // A CREATEROLE role counts as admin only when it can run the whole plan; each
+  // case below lacks one thing the plan needs (PG 15 needs no ADMIN OPTION to grant a role).
+  describe("a CREATEROLE role (not a superuser)", () => {
+    const creator = async (grants: string[]) => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      await c.query("drop owned by pgai_connect_creator cascade").catch(() => {});
+      await c.query("drop role if exists pgai_connect_creator");
+      await c.query("create role pgai_connect_creator login createrole password 'creator-pw-123'");
+      await c.query("create extension if not exists pg_stat_statements");
+      for (const sql of grants) await c.query(sql);
+      const url = new URL(ADMIN!);
+      url.username = "pgai_connect_creator";
+      url.password = "creator-pw-123";
+      const roles = async () => (await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n;
+      return { c, url: url.toString(), roles, pg16: !(await c.query("select current_setting('server_version_num')::int < 160000 as old")).rows[0].old };
+    };
+    const ROLE_GRANTS = ["grant pg_monitor to pgai_connect_creator with admin option", "grant pg_read_all_stats to pgai_connect_creator with admin option"];
+    const CREATE = "grant create on database postgres to pgai_connect_creator";
+
+    test("without what the plan needs (ADMIN OPTION on both roles on PG 16+, CREATE on the database, pg_stat_statements): the SQL, and no role left behind", async () => {
+      const { c, pg16 } = await creator([]);
+      await c.end();
+      // On PG 15 CREATEROLE grants any role, so only CREATE on the database can be missing there.
+      const lacking = pg16 ? [[], [CREATE], [ROLE_GRANTS[0]!, CREATE], ROLE_GRANTS] : [[]];
+      for (const grants of lacking) {
+        const s = await creator(grants);
+        try {
+          expect(await prepareDatabase(s.url, "self-managed")).toHaveProperty("sql");
+          expect(await s.roles()).toBe(0);
+        } finally {
+          await s.c.end();
+        }
+      }
+      const s = await creator([...ROLE_GRANTS, CREATE]);
+      try {
+        await s.c.query("drop extension pg_stat_statements");
+        expect(await prepareDatabase(s.url, "self-managed")).toHaveProperty("sql");
+        expect(await s.roles()).toBe(0);
+      } finally {
+        await s.c.query("create extension if not exists pg_stat_statements");
+        await s.c.end();
+      }
+    });
+
+    test("with all of it: the role is created and its URL logs in", async () => {
+      const s = await creator([...ROLE_GRANTS, CREATE]);
+      try {
+        const result = await prepareDatabase(s.url, "self-managed");
+        if (!("monitoringUrl" in result)) throw new Error(`expected a URL, got: ${JSON.stringify(result)}`);
+        expect(result.generated).toBe(true);
+        const m = new Client({ connectionString: result.monitoringUrl });
+        await m.connect();
+        expect((await m.query("select pg_has_role('pg_monitor', 'member') as monitor, has_schema_privilege('postgres_ai', 'usage') as schema")).rows[0]).toEqual({ monitor: true, schema: true });
+        await m.end();
+      } finally {
+        await s.c.end();
+      }
+    });
+
+    test("passes the check but a later step fails (postgres_ai belongs to someone else): the error, and no role left behind", async () => {
+      const s = await creator([...ROLE_GRANTS, CREATE, "create schema postgres_ai"]);
+      try {
+        await expect(prepareDatabase(s.url, "self-managed")).rejects.toThrow('Failed at step "03.permissions": permission denied for schema postgres_ai');
+        expect(await s.roles()).toBe(0);
+      } finally {
+        await s.c.end();
+      }
+    });
+  });
+
+  test("a login role whose session runs as an admin role (session_user is not current_user): prepared as the admin", async () => {
     const c = await admin();
     await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
     await c.query("drop schema if exists postgres_ai cascade");
     await c.query("drop role if exists postgres_ai_mon");
-    await c.query("drop role if exists pgai_connect_creator");
-    await c.query("create role pgai_connect_creator login createrole password 'creator-pw-123'");
+    await c.query("drop role if exists pgai_connect_login");
+    await c.query("create role pgai_connect_login login password 'login-pw-123'");
+    const adminRole = `"${decodeURIComponent(new URL(ADMIN!).username).replace(/"/g, '""')}"`;
+    await c.query(`grant ${adminRole} to pgai_connect_login`);
+    await c.query(`alter role pgai_connect_login set role to ${adminRole}`);
     try {
-      if ((await c.query("select current_setting('server_version_num')::int < 160000 as old")).rows[0].old) return;
       const url = new URL(ADMIN!);
-      url.username = "pgai_connect_creator";
-      url.password = "creator-pw-123";
+      url.username = "pgai_connect_login";
+      url.password = "login-pw-123";
+      const probe = new Client({ connectionString: url.toString() });
+      await probe.connect();
+      expect((await probe.query("select session_user::text as s, current_user::text as c")).rows[0]).toEqual({ s: "pgai_connect_login", c: new URL(ADMIN!).username });
+      await probe.end();
       const result = await prepareDatabase(url.toString(), "self-managed");
-      expect(result).toHaveProperty("sql");
-      expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+      if (!("monitoringUrl" in result)) throw new Error(`expected a URL, got: ${JSON.stringify(result)}`);
+      expect(new URL(result.monitoringUrl).username).toBe("postgres_ai_mon");
+      const m = new Client({ connectionString: result.monitoringUrl });
+      await m.connect();
+      await m.end();
     } finally {
       await c.end();
     }
   });
 
-  test("CREATEROLE that passes the admin check but cannot finish the plan: the error, and no role left behind", async () => {
+  test("at a terminal the SQL is printed as it is (to paste into psql), then the rest as YAML; exit 3", async () => {
     const c = await admin();
-    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
-    await c.query("drop schema if exists postgres_ai cascade");
-    await c.query("drop role if exists postgres_ai_mon");
-    await c.query("drop role if exists pgai_connect_creator");
-    await c.query("create role pgai_connect_creator login createrole password 'creator-pw-123'");
+    await c.query("drop role if exists pgai_connect_app");
+    await c.query("create role pgai_connect_app login password 'app-pw-123'");
+    await c.end();
+    const url = new URL(ADMIN!);
+    url.username = "pgai_connect_app";
+    url.password = "app-pw-123";
+    const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-tty-"));
+    const api = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json([]) });
+    let out = "";
+    const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), "connect", url.toString()], {
+      cwd: home,
+      env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_NO_FEEDBACK_TIP: "1", PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` },
+      terminal: { cols: 200, rows: 50, data(_term, bytes) { out += new TextDecoder().decode(bytes); } },
+    });
     try {
-      if (!(await c.query("select current_setting('server_version_num')::int < 160000 as old")).rows[0].old) {
-        await c.query("grant pg_monitor to pgai_connect_creator with admin option");
-      }
-      const url = new URL(ADMIN!);
-      url.username = "pgai_connect_creator";
-      url.password = "creator-pw-123";
-      await expect(prepareDatabase(url.toString(), "self-managed")).rejects.toThrow(/^Failed at step "0[23]\./);
-      expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+      expect(await proc.exited).toBe(3);
+      const screen = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+      // The SQL as psql takes it: statements at the start of a line, not folded into a YAML string.
+      expect(screen).toMatch(/^-- 01\.role$/m);
+      expect(screen).toMatch(/^create extension if not exists pg_stat_statements;$/m);
+      expect(screen).toContain("password '<redacted>'");
+      expect(screen).not.toMatch(/^sql:/m);
+      expect(screen).toMatch(/^status: action_required$/m);
+      expect(screen).toMatch(/^next: >?-?\s*Run the SQL as an admin/m);
+      expect(screen.indexOf("-- 01.role")).toBeLessThan(screen.indexOf("status: action_required"));
     } finally {
-      await c.query("drop owned by pgai_connect_creator").catch(() => {});
-      await c.end();
+      api.stop(true);
+      rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   test("unprepareDatabase drops the role a run created, with its grants; the next run prepares again", async () => {
     const c = await admin();
