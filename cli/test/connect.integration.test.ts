@@ -1,10 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { Client } from "pg";
 import { prepareDatabase } from "../lib/connect";
 
 // `pgai connect`'s prepare step against a real Postgres, with a superuser URL
 // like the one ClickHouse Managed Postgres hands out. CI: the
-// cli:clickhouse-like:tests job (PG 17 and 18).
+// cli:clickhouse-like:tests job (PG 15, 17 and 18), whose server checks passwords
+// (scram-sha-256) on every connection, so the refusals below are asserted there.
 const ADMIN = process.env.PGAI_TEST_CLICKHOUSE_LIKE_URL;
 
 describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
@@ -14,6 +18,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
   afterAll(async () => {
     const c = await admin();
     await c.query("drop role if exists pgai_connect_app");
+    await c.query("drop role if exists pgai_connect_creator");
     await c.query("drop database if exists pgai_connect_db2");
     await c.end();
   });
@@ -141,6 +146,24 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
+  test("a new role's verifier uses the server's scram_iterations (PG 16+)", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    if ((await c.query("select current_setting('scram_iterations', true) as i")).rows[0].i === null) return void (await c.end());
+    await c.query("alter role current_user set scram_iterations = 10000");
+    try {
+      if (!("monitoringUrl" in await prepareDatabase(ADMIN!, "self-managed"))) throw new Error("expected a URL");
+      const stored = await c.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+      expect(stored.rows[0].rolpassword.startsWith("SCRAM-SHA-256$10000:")).toBe(true);
+    } finally {
+      await c.query("alter role current_user reset scram_iterations");
+      await c.end();
+    }
+  });
+
   test("a URL that can neither create roles nor is the monitoring role: the SQL, passwords redacted", async () => {
     const c = await admin();
     await c.query("drop role if exists pgai_connect_app");
@@ -156,5 +179,114 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     expect(result.sql).not.toMatch(/^[ \t]*alter user[^;\n]*password/im);
     expect(result.sql).toContain("password '<redacted>'");
     expect(result.sql).not.toContain("app-pw-123");
+  });
+
+  test("a postgres_ai_mon URL without a password (PGPASSWORD): the monitoring URL carries the password used", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.end();
+    const first = await prepareDatabase(ADMIN!, "self-managed");
+    if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got: ${JSON.stringify(first)}`);
+    const bare = new URL(first.monitoringUrl);
+    process.env.PGPASSWORD = decodeURIComponent(bare.password);
+    bare.password = "";
+    try {
+      expect(await prepareDatabase(bare.toString(), "self-managed")).toEqual({ monitoringUrl: first.monitoringUrl });
+    } finally {
+      delete process.env.PGPASSWORD;
+    }
+  });
+
+  test("CREATEROLE alone cannot grant pg_monitor on PG 16+: the SQL, and no role left behind", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.query("drop role if exists pgai_connect_creator");
+    await c.query("create role pgai_connect_creator login createrole password 'creator-pw-123'");
+    try {
+      if ((await c.query("select current_setting('server_version_num')::int < 160000 as old")).rows[0].old) return;
+      const url = new URL(ADMIN!);
+      url.username = "pgai_connect_creator";
+      url.password = "creator-pw-123";
+      const result = await prepareDatabase(url.toString(), "self-managed");
+      expect(result).toHaveProperty("sql");
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+    } finally {
+      await c.end();
+    }
+  });
+
+  // The stub docker records who called it (argv and environment names, from
+  // /proc), so the child `mon local-install` is checked as it was started.
+  describe.skipIf(process.platform !== "linux")("pgai connect --self-hosted (the real CLI, a stub docker)", () => {
+    const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+    // A function: a skipped describe still runs its body, and ADMIN is unset there.
+    const name = () => { const u = new URL(ADMIN!); return `${u.hostname}${u.port && u.port !== "5432" ? `:${u.port}` : ""}/postgres`; };
+
+    async function selfHosted(dockerExit: number) {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      await c.end();
+      const dir = mkdtempSync(resolve(tmpdir(), "pgai-self-hosted-"));
+      for (const path of ["project", "project/.git", "bin", "home"]) mkdirSync(`${dir}/${path}`);
+      writeFileSync(`${dir}/project/docker-compose.yml`, "services: {}\n");
+      writeFileSync(`${dir}/bin/docker`, [
+        "#!/bin/sh",
+        `{ printf 'argv: '; tr '\\0' ' ' < /proc/$PPID/cmdline; echo; printf 'env: '; tr '\\0' '\\n' < /proc/$PPID/environ | grep -E '^(PGAI_|CLICKHOUSE_)' | cut -d= -f1 | sort | tr '\\n' ' '; echo; } >> ${dir}/docker.log`,
+        `exit ${dockerExit}`,
+        "",
+      ].join("\n"));
+      chmodSync(`${dir}/bin/docker`, 0o755);
+      const registered: string[] = [];
+      const api = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+          registered.push(`${new URL(req.url).pathname} ${await req.text()}`);
+          return Response.json({ instance_id: "11111111-2222-3333-4444-555555555555", project_id: 7 });
+        },
+      });
+      try {
+        const proc = Bun.spawn([process.execPath, CLI, "connect", ADMIN!, "--self-hosted", "--org", "acme"], {
+          cwd: dir, stdout: "pipe", stderr: "pipe",
+          env: {
+            PATH: `${dir}/bin:${process.env.PATH}`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/home`, PGAI_PROJECT_DIR: `${dir}/project`,
+            PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`,
+          },
+        });
+        const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        const log = readFileSync(`${dir}/docker.log`, "utf8").split("\n");
+        const child = log.findIndex((line) => line.startsWith("argv: ") && line.includes(" mon local-install "));
+        const instances = await Bun.file(`${dir}/project/instances.yml`).text().catch(() => "");
+        return { status, stdout, stderr, registered, instances, childArgv: log[child]?.split(`${CLI} `)[1]?.trim(), childEnv: log[child + 1] };
+      } finally {
+        api.stop(true);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    test("the child gets the org and a project in argv, the URL and the key only in its environment; stdout is the result", async () => {
+      const r = await selfHosted(0);
+      expect(r.stderr).toContain("Local install completed!");
+      expect(JSON.parse(r.stdout)).toEqual({ status: "connected", provider: "self-managed", name: name(), dashboard_url: "http://localhost:3000", host_metrics: false, next: "pgai mon health" });
+      expect(r.status).toBe(0);
+      const project = name().replace(/[^A-Za-z0-9._-]+/g, "-");
+      expect(r.childArgv).toBe(`mon local-install -y --org acme --project ${project}`);
+      expect(r.childEnv).toBe("env: PGAI_API_BASE_URL PGAI_API_KEY PGAI_DB_URL PGAI_PROJECT_DIR ");
+      // The child took the monitoring URL from PGAI_DB_URL and registered with PGAI_API_KEY.
+      expect(r.instances).toContain("postgresql://postgres_ai_mon:");
+      expect(r.instances).not.toContain(new URL(ADMIN!).password);
+      expect(r.registered).toEqual([`/rpc/monitoring_instance_register ${JSON.stringify({ api_token: "test-key", project_name: project })}`]);
+    }, 120_000);
+
+    test("a child that fails: failed, exit 1, stdout still only the result", async () => {
+      const r = await selfHosted(1);
+      expect(JSON.parse(r.stdout)).toEqual({ status: "failed", provider: "self-managed", name: name(), next: "mon local-install failed (see above)" });
+      expect(r.status).toBe(1);
+    }, 120_000);
   });
 });

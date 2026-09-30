@@ -19,7 +19,7 @@ import {
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "./storage";
 import { resolveBaseUrls } from "./util";
-import { connect, platformDeps } from "./connect";
+import { connect, parseUrl, platformDeps } from "./connect";
 
 // MCP SDK imports - Bun handles these directly
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -112,12 +112,19 @@ export async function handleToolCall(
     if (toolName === "connect_database") {
       const scope = resolveMcpOrgScope(args, apiKey, cfg);
       if (scope.error) return scope.error;
-      const result = await connect(String(args.database_url ?? ""), {
+      const url = String(args.database_url ?? "");
+      // The URL comes from an agent: it must carry its own password, so that
+      // PGPASSWORD (or a password file) of this process is never sent to its host.
+      const u = parseUrl(url);
+      if (!u || !/^postgres(ql)?:$/.test(u.protocol) || !(u.password || u.searchParams.get("password"))) {
+        throw new Error("database_url must be postgresql://user:password@host:5432/dbname, with the password in it");
+      }
+      const result = await connect(url, {
         provider: args.provider ? String(args.provider) : undefined,
         clickhouseKey: args.clickhouse_key ? String(args.clickhouse_key) : undefined,
         waitMs: 0,
       }, {
-        ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug }),
+        ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug, agent: true }),
         selfHosted: async () => { throw new Error("A self-hosted stack is set up from the CLI: pgai connect <url> --self-hosted"); },
         localStackRunning: () => false,
         progress: () => {},
@@ -726,12 +733,12 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "connect_database",
-          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | action_required | failed), dashboard_url and next (the exact next action). Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host.",
+          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | disconnecting | action_required | failed), dashboard_url and next (the exact next action). It does not wait for the box: call it again to see the status. Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host. The URL must carry its password; PGAI_MON_PASSWORD is not read, and a TLS failure is not retried in plaintext (say sslmode=disable for a server without TLS).",
           inputSchema: {
             type: "object",
             properties: {
               ...ORG_ID_TOOL_PROPERTY,
-              database_url: { type: "string", description: "postgresql:// URL (admin, or the postgres_ai_mon role)" },
+              database_url: { type: "string", description: "postgresql:// URL with the password in it (admin, or the postgres_ai_mon role)" },
               provider: { type: "string", description: "clickhouse | rds | supabase | self-managed (default: detected from the host)" },
               clickhouse_key: { type: "string", description: "ClickHouse Cloud API key as <key-id>:<key-secret> (Basic Service API Reader), for CPU, memory and disk" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },

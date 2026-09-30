@@ -68,7 +68,7 @@ async function runTty(args: string[], env: Record<string, string>, answers: [pro
   return { status, screen: clean(out) };
 }
 
-const KEY_PROMPT = "ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ";
+const KEY_PROMPT = "ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ";
 const URL_PROMPT = "Database URL (postgresql://...): ";
 const TO_CONNECT = { status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" };
 
@@ -124,6 +124,24 @@ describe("pgai init", () => {
     });
   });
 
+  test("Ctrl-C while waiting for the box ends the run at once (the prompt no longer holds the terminal)", async () => {
+    await withApi(async (env) => {
+      const started = Date.now();
+      const r = await runTty(["init"], env, [[URL_PROMPT, "postgresql://postgres:pw@db.example.com:5432/app\r"], ["Waiting for the monitoring box (launch_requested)\n", "\x03"]]);
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(r.status).not.toBe(0);
+    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", status: "launch_requested", dashboard_url: null }]);
+  });
+
+  test("the ClickHouse key is not shown as it is typed", async () => {
+    await withApi(async (env) => {
+      const r = await runTty(["init"], env, [[URL_PROMPT, `${CH}\r`], [KEY_PROMPT, "kid:Sec4b1dTestSecret\r"]]);
+      expect(r.status).toBe(0);
+      expect(r.screen).toStartWith(`${URL_PROMPT}${CH}\n${KEY_PROMPT}\nprovider: clickhouse\n`);
+      expect(r.screen).not.toContain("Sec4b1d");
+    });
+  });
+
   test("--json with a global token and no org: still points to pgai connect", async () => {
     const r = await runTty(["init", "--json"], { PGAI_API_KEY: `pai_global_${"a".repeat(43)}` }, []);
     expect(r.status).toBe(3);
@@ -170,8 +188,18 @@ describe("pgai connect / databases / status / disconnect", () => {
       expect(s.json()).toEqual([{ status: "connected", provider: "clickhouse", name: NAME, id: "i-1", dashboard_url: "https://abc.pgai.watch", host_metrics: true, next: "Open https://abc.pgai.watch" }]);
       const missing = await run(["status", "nope"], env);
       expect(missing.status).toBe(1);
-      expect(missing.stderr).toContain("No database named nope. See: pgai databases");
+      expect(missing.json()).toEqual({ status: "failed", next: "No database named nope. See: pgai databases" });
     });
+  });
+
+  test("an API error is a failed result in JSON, exit 1, for every command", async () => {
+    const env = { PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: "http://127.0.0.1:9" };
+    for (const args of [["databases"], ["status"], ["disconnect", NAME, "--yes"], ["connect", CH]]) {
+      const r = await run(args, env);
+      expect(r.status).toBe(1);
+      expect(r.json().status).toBe("failed");
+      expect(r.json().next).not.toBe("");
+    }
   });
 
   test("disconnect needs --yes when not interactive", async () => {

@@ -10,6 +10,8 @@
   RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
   disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
   JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required).
+  An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
+  `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
 
