@@ -11,11 +11,15 @@ const CH = "postgresql://postgres:adminpw@abc123.us-east-1.aws.pg.clickhouse.clo
 const NAME = "abc123.us-east-1.aws.pg.clickhouse.cloud/postgres";
 const ROW = { id: "i-1", name: NAME, provider: "clickhouse", mode: "cloud", status: "active", dashboard_url: "https://abc.pgai.watch", host_metrics: true, created_at: "2026-09-30T00:00:00Z" };
 
-async function run(args: string[], env: Record<string, string>) {
+const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+const cliEnv = (env: Record<string, string>) => {
   const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-"));
-  const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), ...args], {
-    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "", ...env },
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  return { ...process.env, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "", CLICKHOUSE_KEY_ID: "", CLICKHOUSE_KEY_SECRET: "", ...env };
+};
+
+async function run(args: string[], env: Record<string, string>, stdin?: string) {
+  const proc = Bun.spawn([process.execPath, CLI, ...args], {
+    env: cliEnv(env), stdin: stdin === undefined ? "ignore" : new Blob([stdin]), stdout: "pipe", stderr: "pipe",
   });
   const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { status, stdout, stderr, json: () => JSON.parse(stdout) };
@@ -39,6 +43,81 @@ async function withApi(fn: (env: Record<string, string>, calls: string[]) => Pro
     server.stop(true);
   }
 }
+
+/** Runs in a terminal, typing each answer when its prompt appears; returns the screen text. */
+async function runTty(args: string[], env: Record<string, string>, answers: [prompt: string, answer: string][]) {
+  let out = "";
+  const proc = Bun.spawn([process.execPath, CLI, ...args], {
+    env: cliEnv(env),
+    terminal: {
+      cols: 200, rows: 50,
+      data(term, bytes) {
+        out += new TextDecoder().decode(bytes);
+        if (answers[0] && out.endsWith(answers[0][0])) term.write(`${answers.shift()![1]}\r`);
+      },
+    },
+  });
+  const status = await proc.exited;
+  // Drop terminal control sequences and carriage returns, keep what a person reads.
+  return { status, screen: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "") };
+}
+
+const KEY_PROMPT = "ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ";
+const URL_PROMPT = "Database URL (postgresql://...): ";
+const TO_CONNECT = { status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" };
+
+describe("pgai init", () => {
+  test("piped stdin: points to pgai connect, exit 3, nothing asked", async () => {
+    const r = await run(["init"], {}, `${CH}\n`);
+    expect(r.status).toBe(3);
+    expect(r.json()).toEqual(TO_CONNECT);
+    expect(r.stdout + r.stderr).not.toContain("Database URL");
+  });
+
+  test("--json in a terminal: points to pgai connect, exit 3", async () => {
+    const r = await runTty(["init", "--json"], {}, []);
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.screen)).toEqual(TO_CONNECT);
+  });
+
+  test("ClickHouse: asks for the URL and the key, then runs pgai connect", async () => {
+    await withApi(async (env, calls) => {
+      const r = await runTty(["init"], env, [[URL_PROMPT, CH], [KEY_PROMPT, ""]]);
+      expect(r.status).toBe(0);
+      expect(r.screen).toBe([
+        `${URL_PROMPT}${CH}`,
+        KEY_PROMPT,
+        "status: connected",
+        "provider: clickhouse",
+        `name: ${NAME}`,
+        "id: i-1",
+        "dashboard_url: https://abc.pgai.watch",
+        "host_metrics: true",
+        "next: Open https://abc.pgai.watch",
+        "",
+      ].join("\n"));
+      expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}"]);
+    });
+  });
+
+  test("a provider without a key: asks only for the URL", async () => {
+    const url = "postgresql://postgres:pw@db.example.com:5432/app";
+    await withApi(async (env) => {
+      const r = await runTty(["init"], env, [[URL_PROMPT, url]]);
+      expect(r.status).toBe(0);
+      expect(r.screen).toStartWith(`${URL_PROMPT}${url}\nstatus: connected\nprovider: self-managed\nname: db.example.com/app\n`);
+      expect(r.screen).not.toContain("ClickHouse");
+    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed" }]);
+  });
+
+  test("a bad key goes through pgai connect's own check", async () => {
+    await withApi(async (env) => {
+      const r = await runTty(["init"], env, [[URL_PROMPT, CH], [KEY_PROMPT, "nocolon"]]);
+      expect(r.status).toBe(1);
+      expect(r.screen).toContain("next: --clickhouse-key must be <key-id>:<key-secret>");
+    });
+  });
+});
 
 describe("pgai connect / databases / status / disconnect", () => {
   test("not signed in and not interactive: action required, exit 3", async () => {
