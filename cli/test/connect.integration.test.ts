@@ -386,7 +386,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
           if (path.endsWith("/rpc/cloud_monitoring_connect")) {
             const dbUrl = new URL(JSON.parse(await req.text()).db_url);
-            const row = { id: "i-1", name: `${dbUrl.hostname}${dbUrl.port ? `:${dbUrl.port}` : ""}${dbUrl.pathname}`, provider: "clickhouse", status: "launch_requested", dashboard_url: null, host_metrics: true };
+            const row = { id: "i-1", name: `${dbUrl.hostname}${dbUrl.port && dbUrl.port !== "5432" ? `:${dbUrl.port}` : ""}${dbUrl.pathname}`, provider: "clickhouse", status: "launch_requested", dashboard_url: null, host_metrics: true };
             if (launch === "refuse") return Response.json({ id: row.id, name: row.name, status: "failed", error: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later." });
             rows.push(row);
             return Response.json(row);
