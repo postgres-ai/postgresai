@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dump, load } from "js-yaml";
 import { requestTimeoutSignal } from "./util";
@@ -90,7 +90,9 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
   const prefix = `clickhouse-${name}`;
   const text = renderScrapeConfig({ name, cluster, nodeName, orgId, serviceId: service.id, keyId, passwordFile: `/etc/pgai/host-metrics/${prefix}.secret`, apiUrl });
   const dir = join(projectDir, "host-metrics");
-  // The directory holds the org API key: 0700, also when an older CLI created it 0755.
+  // The directory holds the org API key: 0700, also when an older CLI created it
+  // 0755. Never through a symlink, which would retarget the chmod and the key.
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${dir}: host-metrics must be a directory, not a symlink.`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const secretFile = join(dir, `${prefix}.secret`);
