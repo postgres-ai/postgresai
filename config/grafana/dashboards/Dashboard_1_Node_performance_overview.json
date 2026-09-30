@@ -3611,583 +3611,854 @@
       "type": "text"
     },
     {
-      "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 142},
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 142
+      },
       "id": 53,
-      "panels": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "CPU busy from CloudWatch and, with Enhanced Monitoring, from the OS, plus the share of time waiting on I/O.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 15,
+            "w": 12,
+            "x": 0,
+            "y": 143
+          },
+          "id": 54,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "CPU (CloudWatch)",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "CPU (OS)",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "I/O wait (OS)",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "CPU utilization",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Freeable memory from CloudWatch; total, free, cached, swap used and the largest process RSS from Enhanced Monitoring.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 15,
+            "w": 12,
+            "x": 12,
+            "y": 143
+          },
+          "id": 55,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "freeable",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "total (OS)",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "free (OS)",
+              "range": true,
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "cached (OS)",
+              "range": true,
+              "refId": "D"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_swap_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "swap used (OS)",
+              "range": true,
+              "refId": "E"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_process_max_rss_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "largest process RSS (OS)",
+              "range": true,
+              "refId": "F"
+            }
+          ],
+          "title": "Memory",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "RDS free storage; for Aurora, free local storage and the cluster volume size.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 158
+          },
+          "id": 56,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "free",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_local_storage_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "local free (Aurora)",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_volume_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "volume used (Aurora)",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "Storage",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Read and write operations per second; Aurora cluster volume IOPS are 5-minute averages.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "iops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 158
+          },
+          "id": 57,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "read",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "write",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_volume_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "volume read (Aurora)",
+              "range": true,
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_volume_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "volume write (Aurora)",
+              "range": true,
+              "refId": "D"
+            }
+          ],
+          "title": "Disk IOPS /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Average time per read and write operation.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 166
+          },
+          "id": 58,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_read_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "read",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_write_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "write",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Disk latency",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Outstanding I/O requests waiting for the disk.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 166
+          },
+          "id": 59,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_queue_depth{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "queue depth",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Disk queue depth",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Network receive and transmit throughput.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "binBps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 174
+          },
+          "id": 60,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_network_receive_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "receive",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_network_transmit_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "transmit",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Network /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Average active sessions (db.load.avg) from Performance Insights.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 174
+          },
+          "id": 61,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_db_load{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "average active sessions",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "DB load (Performance Insights)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Delay of this replica behind its source: ReplicaLag on RDS, AuroraReplicaLag on Aurora. Empty on a primary.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 182
+          },
+          "id": 62,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_replica_lag_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "replica lag",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Replica lag",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Credits left for gp2 volume bursting (BurstBalance) and for EBS-optimized instance I/O (EBSIOBalance%). RDS only; gp3 volumes report no burst balance. A balance near zero throttles I/O.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMax": 100,
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 182
+          },
+          "id": 63,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_burst_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "burst balance",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_ebs_io_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "EBS I/O balance",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Burst and EBS I/O balance",
+          "type": "timeseries"
+        }
+      ],
       "title": "Host stats",
       "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "CPU busy from CloudWatch and, with Enhanced Monitoring, from the OS, plus the share of time waiting on I/O.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 15, "w": 12, "x": 0, "y": 143},
-      "id": 54,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "CPU (CloudWatch)",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "CPU (OS)",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "I/O wait (OS)",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "CPU utilization",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Freeable memory from CloudWatch; total, free, cached, swap used and the largest process RSS from Enhanced Monitoring.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 15, "w": 12, "x": 12, "y": 143},
-      "id": 55,
-      "options": {
-        "legend": {
-          "calcs": ["lastNotNull", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Last *",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "freeable",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "total (OS)",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "free (OS)",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "cached (OS)",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_swap_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "swap used (OS)",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_os_process_max_rss_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "largest process RSS (OS)",
-          "range": true,
-          "refId": "F"
-        }
-      ],
-      "title": "Memory",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "RDS free storage; for Aurora, free local storage and the cluster volume size.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 158},
-      "id": 56,
-      "options": {
-        "legend": {
-          "calcs": ["lastNotNull", "min"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Last *",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "free",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_local_storage_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "local free (Aurora)",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_volume_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "volume used (Aurora)",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Storage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Read and write operations per second; Aurora cluster volume IOPS are 5-minute averages.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "iops"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 158},
-      "id": 57,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Mean",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "read",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "write",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_volume_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "volume read (Aurora)",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_volume_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "volume write (Aurora)",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Disk IOPS /s",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Average time per read and write operation.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 166},
-      "id": 58,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_read_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "read",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_write_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "write",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Disk latency",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Outstanding I/O requests waiting for the disk.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 166},
-      "id": 59,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_disk_queue_depth{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "queue depth",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Disk queue depth",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Network receive and transmit throughput.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "binBps"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 174},
-      "id": 60,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Mean",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_network_receive_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "receive",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_network_transmit_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "transmit",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Network /s",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Average active sessions (db.load.avg) from Performance Insights.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 174},
-      "id": 61,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Mean",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_db_load{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "average active sessions",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "DB load (Performance Insights)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Delay of this replica behind its source: ReplicaLag on RDS, AuroraReplicaLag on Aurora. Empty on a primary.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 182},
-      "id": 62,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_replica_lag_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "replica lag",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Replica lag",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-      "description": "Credits left for gp2 volume bursting (BurstBalance) and for EBS-optimized instance I/O (EBSIOBalance%). RDS only; gp3 volumes report no burst balance. A balance near zero throttles I/O.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisSoftMax": 100,
-            "axisSoftMin": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "spanNulls": 180000,
-            "stacking": {"group": "A", "mode": "none"}
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 182},
-      "id": 63,
-      "options": {
-        "legend": {
-          "calcs": ["lastNotNull", "min"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Last *",
-          "sortDesc": true
-        },
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_burst_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "burst balance",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "P7A0D6631BB10B34F"},
-          "editorMode": "code",
-          "expr": "host_ebs_io_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-          "legendFormat": "EBS I/O balance",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Burst and EBS I/O balance",
-      "type": "timeseries"
     }
   ],
   "preload": false,

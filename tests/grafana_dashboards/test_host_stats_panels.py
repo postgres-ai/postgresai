@@ -134,7 +134,7 @@ def test_host_stats_row_is_collapsed_and_last(path):
     panels = _panels(path)
     row = _row(path)
     assert row["collapsed"] is True
-    assert panels[-1] is row
+    assert panels[-1] == row
     assert not any("host_" in t.get("expr", "") for p in panels for t in p.get("targets", []))
 
 
