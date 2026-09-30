@@ -1,6 +1,4 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
--- These functions use SECURITY DEFINER to allow the monitoring user to perform
--- operations they don't have direct permissions for.
 
 /*
  * table_describe
@@ -17,18 +15,18 @@
  *   select postgres_ai.table_describe('public.users');
  *   select postgres_ai.table_describe('my_table');  -- pg_catalog, then public
  *
- * search_path is pg_catalog, pg_temp, not pg_catalog, public: the owner can be a
- * superuser (ClickHouse Managed Postgres), and with public on the path any role
- * allowed to create there could shadow a built-in (for example an exact-type
- * format(text, text, text)) and run code as the owner. Unqualified names are
- * looked up in pg_catalog, then public, by catalog query instead.
+ * SECURITY INVOKER: it reads only the world-readable catalog, so it needs no
+ * privilege the caller lacks. Names are resolved by catalog query, not regclass
+ * (which demands USAGE on the schema): unqualified in pg_catalog, then public.
+ * search_path is pg_catalog, pg_temp so objects in a writable schema cannot
+ * shadow a built-in the function calls.
  */
 create or replace function postgres_ai.table_describe(
   in table_name text,
   out result text
 )
 language plpgsql
-security definer
+security invoker
 set search_path = pg_catalog, pg_temp
 as $$
 declare
@@ -46,18 +44,19 @@ declare
 begin
   -- Resolve table name to OID: schema-qualified, or pg_catalog then public
   v_ident := parse_ident(table_name);
-  if cardinality(v_ident) = 1 then
-    select c.oid into v_oid
-    from pg_class c
-    join pg_namespace n on n.oid = c.relnamespace
-    where c.relname = v_ident[1]::name and n.nspname in ('pg_catalog', 'public')
-    order by n.nspname = 'public'
-    limit 1;
-    if v_oid is null then
-      raise exception 'relation "%" does not exist', table_name using errcode = '42P01';
-    end if;
-  else
-    v_oid := table_name::regclass::oid;
+  select c.oid into v_oid
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where cardinality(v_ident) <= 2
+    and c.relname = v_ident[cardinality(v_ident)]::name
+    and case cardinality(v_ident)
+      when 1 then n.nspname in ('pg_catalog', 'public')
+      else n.nspname = v_ident[1]::name
+    end
+  order by n.nspname = 'public'
+  limit 1;
+  if v_oid is null then
+    raise exception 'relation "%" does not exist', table_name using errcode = '42P01';
   end if;
 
   -- Get basic table info

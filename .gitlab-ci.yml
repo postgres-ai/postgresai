@@ -389,7 +389,7 @@ cli:clickhouse-like:tests:
   image: oven/bun:1
   parallel:
     matrix:
-      - PG_VERSION: ["17", "18"]
+      - PG_VERSION: ["15", "17", "18"]
   services:
     - name: postgres:${PG_VERSION}
       alias: pg
