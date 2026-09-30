@@ -23,7 +23,7 @@ export async function findService({ apiUrl, orgId, keyId, keySecret, hostname }:
       redirect: "error",
     });
     if (response.status === 401) throw new Error("ClickHouse Cloud rejected the API key (401). Check the key id and secret.");
-    if (response.status === 403) throw new Error(`The API key cannot read Postgres services in organization ${orgId} (403). Give it read access to this organization.`);
+    if (response.status === 403) throw new Error(`The API key cannot read Postgres services in organization ${orgId} (403). Use a key with the Basic Service API Reader role, or one that includes it.`);
     if (!response.ok) throw new Error(`ClickHouse Cloud API request failed (${response.status}).`);
     return ((await response.json()) as { result: T }).result;
   }

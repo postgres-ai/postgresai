@@ -11,7 +11,15 @@
   `channel_binding=require` in a URI or conninfo string is honoured: SCRAM-SHA-256-PLUS is
   preferred, the plaintext retry is disabled, and `sslmode=disable` is rejected.
 
+- ClickHouse Cloud host metrics: `mon local-install --db-url` and `mon targets add` write a
+  VictoriaMetrics scrape job for the service's Prometheus endpoint when `CLICKHOUSE_ORG_ID`,
+  `CLICKHOUSE_KEY_ID` and `CLICKHOUSE_KEY_SECRET` are set. The key secret is kept in
+  `host-metrics/clickhouse-<name>.secret` (0600, directory 0700); a Basic Service API Reader key is enough.
+
 ### Changed
+
+- `mon update` moves `PGAI_TAG` in `.env` to the CLI version (never to an older one), so an upgrade
+  no longer needs a manual `.env` edit; after a move it suggests `mon stop && mon start`.
 
 - `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
   as before; it is no longer filled with `self-managed`.
