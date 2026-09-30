@@ -50,7 +50,7 @@ function localInstall(dbUrl: string, extra: Record<string, string> = {}) {
   const result = Bun.spawnSync([process.execPath, cli, "mon", "local-install", "--db-url", dbUrl, "-y"], {
     cwd: dir, env: { ...env, ...extra }, timeout: 60000,
   });
-  return { stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+  return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
 test("local-install --db-url sets up ClickHouse host metrics", () => {
@@ -76,8 +76,39 @@ test("local-install --db-url keeps the Postgres target when host metrics fail", 
 
 test("local-install stops when the target is not saved", () => {
   const result = localInstall("postgresql://monitor:password@[bad/postgres");
+  expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("Invalid connection string format");
   expect(result.stdout).not.toContain("Step 3");
+});
+
+test("interactive local-install stops when the target is not saved", async () => {
+  // Answer each prompt only once it is shown: piped stdin at EOF closes the prompt reader.
+  const proc = Bun.spawn([process.execPath, cli, "mon", "local-install"], { cwd: dir, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const answers: [string, string][] = [
+    ["API key? (Y/n)", "n\n"],
+    ["add a PostgreSQL instance now? (Y/n)", "y\n"],
+    ["Enter connection string", "postgresql://monitor:password@[bad/postgres\n"],
+  ];
+  let stdout = "";
+  const decoder = new TextDecoder();
+  const reader = proc.stdout.getReader();
+  const timer = setTimeout(() => proc.kill(), 30000);
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    stdout += decoder.decode(value);
+    while (answers.length && stdout.includes(answers[0][0])) {
+      proc.stdin.write(answers.shift()![1]);
+      proc.stdin.flush();
+    }
+  }
+  clearTimeout(timer);
+  const exitCode = await proc.exited;
+  const stderr = await new Response(proc.stderr).text();
+  expect(answers).toEqual([]);
+  expect(stderr).toContain("Invalid connection string format");
+  expect(stdout).not.toContain("Step 3");
+  expect(exitCode).toBe(1);
 });
 
 test("read-only commands work in a project directory they cannot write", () => {
