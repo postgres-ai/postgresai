@@ -380,7 +380,7 @@ cli:node:tests:
   script:
     # Use 'bun run test' (not 'bun test') to invoke the npm script which generates metrics-embedded.ts first
     # Coverage is enabled via bunfig.toml and outputs text + lcov reports
-    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" && bun run test"
+    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" PGAI_TEST_REQUIRE_PG16=1 && bun run test"
     # Fix ownership of coverage directory for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/cli/coverage" || true
   # Regex matches Bun coverage table: "All files | % Funcs | % Lines |" - captures % Lines
