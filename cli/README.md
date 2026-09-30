@@ -177,6 +177,20 @@ npx postgresai prepare-db postgresql://admin@host:5432/dbname --reset-password -
 
 ## Quick start
 
+### One command: `pgai connect`
+
+```bash
+pgai connect 'postgresql://postgres:<password>@<host>:5432/postgres'
+```
+
+It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
+prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints the dashboard URL.
+Safe to re-run. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
+(a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
+machine instead. When stdout is not a terminal the result is JSON with `status`, `dashboard_url`
+and `next`; exit code 3 means an action is needed (see `next`). Then: `pgai databases`,
+`pgai status <name>`, `pgai disconnect <name>`.
+
 ### Authentication
 
 Authenticate via browser to obtain API key:

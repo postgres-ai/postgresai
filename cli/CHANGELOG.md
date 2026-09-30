@@ -4,6 +4,15 @@
 
 ### Added
 
+- `pgai connect <database-url>`: put a database under PostgresAI Cloud monitoring in one command.
+  Signs in if needed, prepares the database (an admin URL creates `postgres_ai_mon`; otherwise the
+  SQL is printed), provisions the monitoring box, waits, and prints the dashboard URL. ClickHouse,
+  RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
+  disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
+  JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required).
+  Also `pgai init`, `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
+  tool `connect_database`.
+
 - `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
   from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
   Before any grant runs, a `-- scope:` line lists what the run grants the monitoring

@@ -19,6 +19,7 @@ import {
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "./storage";
 import { resolveBaseUrls } from "./util";
+import { connect, platformDeps } from "./connect";
 
 // MCP SDK imports - Bun handles these directly
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -89,7 +90,7 @@ export async function handleToolCall(
 
   const cfg = config.readConfig();
   const apiKey = (rootOpts?.apiKey || process.env.PGAI_API_KEY || cfg.apiKey || "").toString();
-  const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+  const { apiBaseUrl, uiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
   const debug = Boolean(args.debug ?? extra?.debug);
 
@@ -106,6 +107,23 @@ export async function handleToolCall(
   }
 
   try {
+    // `pgai connect`, same steps and JSON; it does not wait for the box (a tool
+    // call must return), so it answers provisioning with the next step.
+    if (toolName === "connect_database") {
+      const scope = resolveMcpOrgScope(args, apiKey, cfg);
+      if (scope.error) return scope.error;
+      const result = await connect(String(args.database_url ?? ""), {
+        provider: args.provider ? String(args.provider) : undefined,
+        clickhouseKey: args.clickhouse_key ? String(args.clickhouse_key) : undefined,
+        waitMs: 0,
+      }, {
+        ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug }),
+        selfHosted: async () => { throw new Error("A self-hosted stack is set up from the CLI: pgai connect <url> --self-hosted"); },
+        progress: () => {},
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result.status === "failed" };
+    }
+
     if (toolName === "list_issues") {
       // Under a global token org_id is REQUIRED with no silent cfg fallback
       // (issue #250): a default that spans every org the user can reach is
@@ -702,6 +720,22 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["action_item_id"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "connect_database",
+          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | action_required | failed), dashboard_url and next (the exact next action). Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              ...ORG_ID_TOOL_PROPERTY,
+              database_url: { type: "string", description: "postgresql:// URL (admin, or the postgres_ai_mon role)" },
+              provider: { type: "string", description: "clickhouse | rds | supabase | self-managed (default: detected from the host)" },
+              clickhouse_key: { type: "string", description: "ClickHouse Cloud API key as <key-id>:<key-secret> (Basic Service API Reader), for CPU, memory and disk" },
+              debug: { type: "boolean", description: "Enable verbose debug logs" },
+            },
+            required: ["database_url"],
             additionalProperties: false,
           },
         },
