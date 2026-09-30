@@ -23,6 +23,7 @@ import (
 const projectRef = "abcdefghijklmnopqrst"
 const metricsURL = "https://" + projectRef + ".supabase.co/customer/v1/privileged/metrics"
 const fakeKey = "synthetic-test-password-do-not-use"
+const instanceSecret = "synthetic-instance-secret-do-not-use"
 
 type rig struct {
 	relay          *Relay
@@ -77,13 +78,13 @@ func setup(t *testing.T) *rig {
 			t.Error("incorrect RPC")
 		}
 		var body map[string]string
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body["instance_id"] != "test-instance" || len(body) != 1 || r.Header.Get("access-token") != "test-org-token" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body["instance_id"] != "test-instance" || len(body) != 1 || r.Header.Get("access-token") != "test-org-token" || r.Header.Get("instance-secret") != instanceSecret {
 			t.Error("incorrect RPC contract")
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": x.status, "project_ref": projectRef, "metrics_url": x.url, "username": "service_role", "password": fakeKey})
 	}))
 	t.Cleanup(rpc.Close)
-	cfg := config.Config{APIToken: "test-org-token", InstanceID: "test-instance", APIBaseURL: rpc.URL, SupabaseHostMetrics: true}
+	cfg := config.Config{APIToken: "test-org-token", InstanceID: "test-instance", InstanceSecret: instanceSecret, APIBaseURL: rpc.URL, SupabaseHostMetrics: true}
 	x.relay = New(func() (config.Config, error) { return cfg, nil }, slog.New(slog.NewTextHandler(&x.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	transport := upstream.Client().Transport.(*http.Transport).Clone()
 	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
@@ -97,6 +98,9 @@ func setup(t *testing.T) *rig {
 	t.Cleanup(func() {
 		if strings.Contains(x.logs.String(), fakeKey) {
 			t.Error("key leaked into logs")
+		}
+		if strings.Contains(x.logs.String(), instanceSecret) {
+			t.Error("instance secret leaked into logs")
 		}
 	})
 	return x
@@ -173,6 +177,27 @@ func TestConfigurationUnavailable(t *testing.T) {
 				t.Fatal("configuration problem not logged")
 			}
 		})
+	}
+}
+
+// An instance provisioned before platform-all!884 has no secret: every RPC
+// would be refused, so none is made, and the log says what to do.
+func TestMissingInstanceSecret(t *testing.T) {
+	x := setup(t)
+	cfg, _ := x.relay.load()
+	cfg.InstanceSecret = ""
+	x.relay.load = func() (config.Config, error) { return cfg, nil }
+	for range 2 {
+		w := x.get("/supabase/metrics")
+		if w.Code != 503 || strings.TrimSpace(w.Body.String()) != "instance_secret_missing" {
+			t.Fatalf("code=%d body=%q", w.Code, w.Body.String())
+		}
+	}
+	if x.calls != 0 || x.scrapes != 0 {
+		t.Fatal("RPC or scrape attempted without the instance secret")
+	}
+	if !strings.Contains(x.logs.String(), "instance_secret") || !strings.Contains(x.logs.String(), "re-provision") {
+		t.Fatalf("missing secret not explained: %s", x.logs.String())
 	}
 }
 
