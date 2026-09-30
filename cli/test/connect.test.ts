@@ -20,6 +20,7 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     list: async () => { calls.push("list"); const r = rows[Math.min(listed++, rows.length - 1)]; return r ? [r] : []; },
     create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); return { id: "i-1", name: CH_NAME, status: "launch_requested" }; },
     prepare: async (url, provider) => { calls.push(`prepare ${provider}`); return { monitoringUrl: MON }; },
+    localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
     handoffUrl: async (provider) => `https://console.postgres.ai/acme/monitoring/scale/create/${provider}`,
@@ -100,10 +101,9 @@ describe("connect", () => {
   });
 
   test("a URL that cannot create the role: the SQL and the next step, nothing provisioned", async () => {
-    const { deps, calls } = fake({ prepare: async () => ({ sql: "-- 01.role\ncreate role ..." }) });
+    const { deps, calls } = fake({ prepare: async () => ({ sql: "-- 01.role\ncreate role ...", next: "Run the SQL" }) });
     expect(await connect(CH, { waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME, sql: "-- 01.role\ncreate role ...",
-      next: `Run the SQL above as an admin (or re-run with an admin URL: pgai connect postgresql://<admin>@${CH_NAME}), then pgai connect again with the postgres_ai_mon URL`,
+      status: "action_required", provider: "clickhouse", name: CH_NAME, sql: "-- 01.role\ncreate role ...", next: "Run the SQL",
     });
     expect(calls).toEqual(["list"]);
   });
@@ -156,6 +156,15 @@ describe("connect", () => {
       `selfHosted ${MON} ${JSON.stringify({ CLICKHOUSE_ORG_ID: ORG, CLICKHOUSE_KEY_ID: "AbCdEf0123456789XyZa", CLICKHOUSE_KEY_SECRET: "Sec4b1dTestSecret0123456789" })}`,
     ]);
     expect(result).toEqual({ status: "connected", provider: "clickhouse", name: CH_NAME, dashboard_url: "http://localhost:3000", host_metrics: true, next: "pgai mon health" });
+  });
+
+  test("--self-hosted with a stack already running here: add the database to it, nothing prepared", async () => {
+    const { deps, calls } = fake({ localStackRunning: () => true });
+    expect(await connect(CH, { selfHosted: true, waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME,
+      next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'",
+    });
+    expect(calls).toEqual([]);
   });
 
   test("a ClickHouse key on another provider, or an unknown provider, is an error", async () => {
@@ -235,4 +244,12 @@ describe("MCP connect_database", () => {
       server.stop(true);
     }
   });
+});
+
+test("debug logs never carry the database URL or the ClickHouse key secret", () => {
+  const { redactSecretsForLog } = require("../lib/util");
+  const out = redactSecretsForLog(JSON.stringify({ db_url: MON, clickhouse_key_id: "kid", clickhouse_key_secret: "Sec4b1d" }));
+  expect(out).not.toContain("genpw");
+  expect(out).not.toContain("Sec4b1d");
+  expect(out).toContain("kid");
 });

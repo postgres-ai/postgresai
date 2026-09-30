@@ -89,6 +89,12 @@ describe("pgai connect / databases / status / disconnect", () => {
     });
   });
 
+  test("an unusable --wait is refused before anything is touched", async () => {
+    const r = await run(["connect", CH, "--wait", "soon"], { PGAI_API_KEY: "k", PGAI_API_BASE_URL: "http://127.0.0.1:9" });
+    expect(r.status).toBe(1);
+    expect(r.json().next).toBe("--wait must be a number of minutes (0 = do not wait)");
+  });
+
   test("init without a terminal points to pgai connect", async () => {
     const r = await run(["init"], {});
     expect(r.status).toBe(3);
