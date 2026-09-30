@@ -13,7 +13,7 @@ import { requestTimeoutSignal } from "./util";
 // re-run is safe; every outcome carries the exact next action.
 
 export type Provider = "clickhouse" | "rds" | "supabase" | "self-managed";
-export type Status = "connected" | "provisioning" | "action_required" | "failed";
+export type Status = "connected" | "provisioning" | "disconnecting" | "action_required" | "failed";
 
 export interface ConnectResult {
   status: Status;
@@ -59,7 +59,7 @@ export interface ConnectOptions {
 
 // The reporter's first run is 30 minutes after the stack starts
 // (REPORTER_INITIAL_DELAY_SECONDS in docker-compose.yml).
-export const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
+const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
 const POLL_MS = 15_000;
 const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
 
@@ -101,6 +101,7 @@ export function connectStatus(row: Database, provider = row.provider as Provider
       next: row.dashboard_url ? `Open ${row.dashboard_url}` : `pgai status ${row.name}`,
     };
   }
+  if (/delet/.test(row.status ?? "")) return { ...base, status: "disconnecting", next: "none" };
   if (/fail|error/.test(row.status ?? "")) {
     return { ...base, status: "failed", next: `pgai disconnect ${row.name} --yes, then pgai connect again` };
   }
