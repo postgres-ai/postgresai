@@ -58,7 +58,9 @@ describe("ClickHouse provider", () => {
     const plan = await init.buildInitPlan({ ...options, provider: "clickhouse" });
     const selfManaged = await init.buildInitPlan({ ...options, provider: "self-managed" });
     expect(plan.steps.map(step => step.name)).toEqual(["01.role", "02.extensions", "03.permissions", "06.helpers", "04.optional_rds", "05.optional_self_managed"]);
-    expect(plan.steps).toEqual(selfManaged.steps);
+    // Salted SCRAM verifiers (!336) differ per plan, so compare with passwords redacted.
+    const redacted = (steps: typeof plan.steps) => steps.map((step) => ({ ...step, sql: init.redactPasswordsInSql(step.sql) }));
+    expect(redacted(plan.steps)).toEqual(redacted(selfManaged.steps));
   });
 
   test("prints the exact scope before SQL", () => {
