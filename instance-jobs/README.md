@@ -26,8 +26,9 @@ twenty minutes) report the container unhealthy. One that reached no verdict (a
 dropped connection, a 5xx, a 429) retries after 2s, doubling to a one-minute
 ceiling, and reports unhealthy once such a run has lasted five minutes.
 
-Four job kinds on the monitoring channel, in two groups. The DBLab channel
-has one of its own, `dblab_call` -- see **The DBLab channel** below.
+Four job kinds on the monitoring channel, in two groups. The DBLab and Joe
+channels have one each of their own, `dblab_call` and `joe_call` -- see **The
+DBLab channel** and **The Joe channel** below.
 
 **Collection** — real work the pull path does today, applied by the platform to
 `checkup_reports`:
@@ -104,10 +105,11 @@ refuse an `action` that is not a path -- a value like `//host/x` resolves to a
 host of the caller's choosing, and agreeing about that in one place only would
 put the guard on the far side of a channel this box does not control.
 
-**One box serves one channel.** `instance_id` and `dblab_token` are mutually
-exclusive; a config naming both is reported as a problem rather than resolved by
-preference, because the loop polls one rpc per tick and the other target would
-look dead with nothing saying why.
+**One box serves one channel.** `instance_id`, `dblab_token` and `joe_token` are
+mutually exclusive; a config naming any two is reported as a problem rather than
+resolved by preference, because the loop polls one rpc per tick and the other
+target would look dead with nothing saying why. A box that runs both an engine
+and a Joe runs a **second container** of this image, one channel each.
 
 ### What a DBLab call answers with
 
@@ -172,6 +174,89 @@ claim available. Bounding it would mean modelling Postgres's number
 normalisation as well as its renderer, which is a model of Postgres rather than
 a check; the symptom is a `result_rejected` submit, not a wrong value.
 
+## The Joe channel
+
+The same loop serves a **Joe** when its config names one (#398). Poll, do the
+work locally, submit -- as above -- and it authenticates with **Joe's own
+per-instance token**, names no instance, and calls `v1.joe_job_poll` /
+`v1.joe_job_submit`. Three things are Joe's own rather than the engine's.
+
+**Every call is signed, not bearer-authenticated.** Joe's verifier computes
+`HMAC-SHA256(secret, "v0:" || body)`, hex, and compares it against the
+`Verification-Signature` header with its `v0=` prefix stripped. The secret is
+this box's `joe_verify_token`, and it **never goes on the wire**. Because the MAC
+covers *the bytes actually transmitted*, the platform cannot pre-compute a
+signature and hand it over in a job -- only the side that assembles the final
+body can produce one, which is half the reason the channel resolution below
+happens here.
+
+A **bodyless `GET`** whose signature is refused is retried once with the second
+scheme -- signing `v0:{}` and sending `{}`. It is the same pair
+`v1.joe_command_run` tries today, in the **opposite order**: that path signs
+`v0:{}` and hands pg_http a `{}` body, pg_http sends a bodyless `GET`, and Joe --
+having read nothing -- MACs `v0:`, so `v0:` is the pair that succeeds in
+production and the one this side sends *first*. The `{}` pair is the belt here,
+for a proxy that materialises a body. A request **with** a body has one true
+rendering and gets one attempt, and only a **403** earns the second scheme.
+
+**The channel is resolved on this box, in the same job.** `v1.joe_command_run`
+does a pre-flight `GET /webui/channels` before `POST /webui/command`. Splitting
+that into two serial jobs would pay the poll interval twice and double the
+latency the inversion exists to remove, so a `joe_call` carrying
+`resolve_channel` does the lookup itself, takes Joe's **first** advertised
+channel (which is what the pull path takes), puts it in the body, and only then
+signs and posts. The lookup **is retried even when the job is a write**: a failed
+lookup means the command was never sent, so repeating it cannot duplicate
+anything.
+
+A Joe that **answers a channel list and serves none** -- a `200` with `[]`, which
+is what Joe replies when its `webui` workspace configures no channel -- is
+**skipped**, not failed (`skip_reason` `no_channels`) and not retried: nothing was
+delivered and nothing at Joe failed, so an error would report a fault that did not
+happen, and it is Joe's own config so asking again says the same thing. That is
+the **only** lookup outcome that is a skip.
+
+Every *other* lookup failure is an error, because those are faults: unreachable, a
+5xx, a refused signature, a `404` (no `webui` communication type at all, so Joe
+never registers the route) -- and a `200` that is **not a channel list**
+(`failure_class` `bad_channel_list`): an HTML error page from a proxy, a JSON error
+envelope, something else listening on Joe's port, an empty body, or a shape a
+future Joe renamed. None of those says anything about how many channels Joe serves,
+and folding them into the skip would submit a command that never left the box as
+`skipped`, let the platform close the job `done`, and -- because a skip counts as a
+success for the healthcheck -- leave the box green while every command vanished.
+
+**A write is still never retried.** `POST /webui/command` is answered as failed
+after one attempt, because Joe returns `200` *before* it has done anything: a
+reply that never came back may mean the command was accepted, and re-sending it
+would run it a second time on the customer's clone. Only `GET` and `POST` are
+accepted at all -- narrower than the engine's four verbs, since a `PATCH` or
+`DELETE` against Joe has no meaning. The platform's `joe_call_precheck` accepts
+the same two, so the verb set is one decision in the two places that have to
+agree about it.
+
+A claimed batch runs concurrently on a pool of 5 (`joeConcurrency`), kept
+**equal to `app.settings.joe_job_claim_limit`** for exactly the reason the DBLab
+pool is. The number is derived rather than copied: the per-job ceiling is
+unchanged at 32m20s against a 1-hour sweep, so with pool == claim limit the
+sweep bounds no pool size at all, and what sizes this is draining a poll window
+on a channel whose calls are two sub-second local hops.
+
+### What a Joe call answers with
+
+The same three shapes as a DBLab call, from the same code (`internal/reply`), so
+the same body answers identically on either channel. One of them is the **normal**
+answer here rather than an edge case: `POST /webui/command` writes no body, so
+there is nothing to relay. Nothing consuming `joe_call` may gate on
+`result is not null` -- and `v1.joe_job_submit` has no apply, so nothing does.
+
+With nothing to relay, a **`resolve_channel` job records the channel this box
+chose** instead: `{"channel_id": "..."}`. It is stored and never read, and it is
+the only record anywhere of where the command actually went -- which is what
+someone debugging "the command went nowhere" needs. It **displaces nothing**: a
+`resolve_channel` job that does get a reply stores that reply, and every other
+action is relayed verbatim or stores `NULL` as before.
+
 ## Configuration
 
 Everything comes from `.pgwatch-config`, the file the reporter container already
@@ -190,6 +275,18 @@ On a **DBLab** box, three keys replace `api_key` and `instance_id`:
 | `dblab_token` | the engine's own per-instance platform token, issued by `v1.dblab_instance_register` in its `platform_access_token` reply field; falls back to `PGAI_DBLAB_TOKEN`. Sent as the `access-token` header. **This replaces `api_key`** -- a DBLab box has no org token |
 | `dblab_verify_token` | the engine's shared verification token, sent as `Verification-Token`; falls back to `PGAI_DBLAB_VERIFY_TOKEN` |
 | `dblab_url` | the engine's address on this box (optional; else `PGAI_DBLAB_URL`, else `http://127.0.0.1:2345`). Plain `http` is fine and is the norm -- the engine runs beside this process, so the request does not leave the box |
+
+On a **Joe** box, three more do the same. A box running **both** an engine and a Joe
+runs a second container of this image with its **own** config file: one file naming
+two channels makes *both* agents **idle and report unhealthy without ever
+polling** -- `Problem()` names the conflict before it names a missing key -- and the
+symptom lands on the DBLab agent that was working before.
+
+| key | what |
+|---|---|
+| `joe_token` | Joe's own per-instance platform token; falls back to `PGAI_JOE_TOKEN`. Sent as the `access-token` header. **This replaces `api_key`** -- a Joe box has no org token |
+| `joe_verify_token` | the **HMAC key** every call to Joe is signed with, *not* a bearer token: its value is Joe's own `signingSecret`. It never goes on the wire. Falls back to `PGAI_JOE_VERIFY_TOKEN`. In `dle-se-ansible` the operator sets `joe_agent_signing_secret`, which defaults to the `joe_communication_signing_secret` Joe already holds and is *rendered* into this key — the same indirection that repo uses for `dblab_engine_verification_token` → `dblab_verify_token` |
+| `joe_url` | Joe's address on this box (optional; else `PGAI_JOE_URL`, else `http://127.0.0.1:2400`). Plain `http` for the same reason |
 
 `mon local-install` records the instance id in `.pgwatch-config` on **both**
 registration paths: the console-provisioned one (`--instance-id`, where the
@@ -262,7 +359,7 @@ one.
 | `outcome` | carries | platform |
 |---|---|---|
 | `ok` | `result`: the **bare** payload, `{checkId, results}` | applies it |
-| `skipped` | `skip_reason`: `retention`, `density` or `no_data` | records `*_last_error = 'skipped:<reason>'`, does not apply, job ends `done` |
+| `skipped` | `skip_reason`: free text under 64 characters -- `retention`, `density` or `no_data` on the monitoring channel, `no_channels` on Joe's | records `*_last_error = 'skipped:<reason>'`, does not apply, job ends `done` |
 | `error` | `error` and `failure_class` | job ends `failed` |
 
 The payload is bare because `public.instance_job_apply_collection` reads
@@ -372,10 +469,11 @@ follows is a second submit on the same ladder — so 32m20s against the hour.
 
 What that permits is `claim_limit × 32m20s < stuck_after`, which is **one** for
 a loop that runs its batch in sequence — hence the monitoring channel's claim
-limit of 1. The DBLab channel claims 5 and runs them concurrently, so every job
-in a batch starts at about claim time and the product collapses to one ceiling
-whatever the batch size. That is what the pool is for; it is not a throughput
-knob.
+limit of 1. The DBLab and Joe channels claim 5 and run them concurrently, so
+every job in a batch starts at about claim time and the product collapses to one
+ceiling whatever the batch size. That is what the pool is for; it is not a
+throughput knob -- and it is why each pool has to stay equal to its own channel's
+claim limit rather than to the other's.
 
 Answering retries for 4m40s of backoff — 8m40s including every attempt's own timeout — rather than ~20 seconds on purpose.
 `v1.instance_job_submit` waits out its own 5s `lock_timeout` for the

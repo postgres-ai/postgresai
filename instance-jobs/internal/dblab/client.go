@@ -14,7 +14,6 @@ package dblab
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +22,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/reply"
 )
 
 // KindCall is the platform's job kind for an engine API call.
@@ -34,15 +34,8 @@ const KindCall = "dblab_call"
 // reading more than this could only ever produce a payload the platform would
 // reject after we had spent the memory on it. It is a READ bound and, since
 // #392, no longer a sufficient condition for submittability -- see
-// maxResultBytes below, which is the one the platform actually checks.
+// reply.MaxResultBytes, which is the one the platform actually checks.
 const maxResponseBytes = 1 << 20
-
-// maxResultBytes is that platform cap, stated here because since platform-all#815 it has to
-// be checked against the ENVELOPE rather than the raw body: JSON-escaping text
-// and base64-ing binary both inflate, so a reply that passed maxResponseBytes
-// can still be too large to submit. v1.dblab_job_submit measures
-// octet_length(result::text) against the same number.
-const maxResultBytes = 1 << 20
 
 // maxErrorBodyBytes bounds the non-2xx read, which is a different question: no
 // engine error message is near the success cap, and reading the full cap on
@@ -187,7 +180,7 @@ func resolvePath(action string) (string, error) {
 // Three shapes come back, decided by the REPLY and never by the path (platform-all#815) --
 // a channel that knew which endpoints answer in what would be wrong again the
 // next time the engine grew one: a JSON body verbatim, never wrapped; anything
-// else in an encodeRawBody envelope; and (nil, nil) for an empty 200, which is
+// else in a reply.Encode envelope; and (nil, nil) for an empty 200, which is
 // an answer rather than a failure. Each branch below says why.
 func (c *Client) Do(ctx context.Context, req Request) (json.RawMessage, error) {
 	path, err := resolvePath(req.Action)
@@ -246,156 +239,12 @@ func (c *Client) Do(ctx context.Context, req Request) (json.RawMessage, error) {
 	if len(raw) > maxResponseBytes {
 		return nil, fmt.Errorf("%w: engine reply exceeds %d bytes", ErrOversizeReply, maxResponseBytes)
 	}
-	// Nothing to carry, and nothing wrong. The concern that used to fail this --
-	// "the engine said nothing" recorded as a successful reading -- belongs to
-	// public.data_usage_collect, and that consumer already gates on
-	// `result is not null`, so a null answer is structurally invisible to it.
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil, nil
-	}
-	// json.Valid is Go's grammar, not what a jsonb column will hold. The same
-	// two classes the envelope arm refuses have to be refused here, or the fix
-	// covers every endpoint except the ones the console uses: invalid UTF-8
-	// (22021) and a \u0000 escape (22P05). Both take the envelope instead.
-	if json.Valid(raw) && utf8.Valid(raw) && !containsNulEscape(raw) {
-		return json.RawMessage(raw), nil
-	}
-	return encodeRawBody(resp.Header.Get("Content-Type"), raw)
-}
-
-const (
-	// encodingText is a body a jsonb string can hold verbatim.
-	encodingText = "text"
-	// encodingBase64 is one it cannot. Carrying it is what makes this a fix for
-	// the class rather than for config.yaml: an endpoint that answers with a
-	// gzip or an image round-trips too.
-	encodingBase64 = "base64"
-)
-
-// contentTypeMaxBytes bounds the relayed header. The engine is ours, but this
-// value reaches a browser, and every other piece of text this box forwards is
-// bounded.
-const contentTypeMaxBytes = 256
-
-// rawEnvelope is a reply that is not JSON, carried so it can round-trip through
-// a jsonb column. It is SELF-DESCRIBING on purpose: the alternative the issue
-// weighed -- wrapping the body in a bare json string -- is cheaper but leaves
-// the caller needing to know which endpoints are wrapped, which is exactly the
-// per-endpoint knowledge that drifts.
-//
-// One reserved key, so a caller's test for "is this an envelope?" is one
-// lookup, and a distinctive one, so no engine object is KNOWN to use it.
-// Nothing enforces that: a reply shaped exactly like the envelope passes
-// through and the console would unwrap it. Enforcing it would mean wrapping a
-// JSON body for containing a string, which is the one thing this must not do.
-type rawEnvelope struct {
-	Body rawBody `json:"pgai_body"`
-}
-
-type rawBody struct {
-	ContentType string `json:"content_type"`
-	Encoding    string `json:"encoding"`
-	Body        string `json:"body"`
-}
-
-// encodeRawBody wraps a non-JSON reply.
-func encodeRawBody(contentType string, raw []byte) (json.RawMessage, error) {
-	// Cleaned BEFORE it is bounded, the same order runner.truncate uses: without
-	// any cleaning a header of invalid bytes was carried as 768, because Go's
-	// encoder turns each into a 3-byte U+FFFD; and cleaning after the cut would
-	// spend the 256 on bytes that are then dropped. The NUL goes too -- it is
-	// valid UTF-8, so ToValidUTF8 would leave the one escape the column refuses
-	// in the one field that is not the body. Unreachable over the wire today
-	// (net/textproto rejects a control byte in a header), so this is the belt.
-	cleanType := strings.ReplaceAll(strings.ToValidUTF8(contentType, ""), "\x00", "")
-	env := rawEnvelope{Body: rawBody{ContentType: truncateUTF8(cleanType, contentTypeMaxBytes)}}
-
-	// TEXT only for what a jsonb string can actually hold. utf8.Valid rules out
-	// the silent U+FFFD substitution Go's encoder would otherwise make, and the
-	// NUL check rules out \u0000 -- the one escape Postgres refuses outright
-	// ("unsupported Unicode escape sequence"), which would turn a reply that is
-	// merely unreadable into a submit the platform rejects.
-	if utf8.Valid(raw) && !bytes.ContainsRune(raw, 0) {
-		env.Body.Encoding = encodingText
-		env.Body.Body = string(raw)
-	} else {
-		env.Body.Encoding = encodingBase64
-		env.Body.Body = base64.StdEncoding.EncodeToString(raw)
-	}
-
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	// Go escapes <, > and & by default, six bytes for one. jsonb's ::text
-	// renders them back as themselves, so leaving the escaping on would measure
-	// this payload against the platform's cap in a currency the platform does
-	// not use -- and could refuse a body that would have fit.
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(env); err != nil {
-		return nil, fmt.Errorf("dblab reply could not be encoded: %w", err)
-	}
-	out := bytes.TrimRight(buf.Bytes(), "\n")
-
-	// Against the cap MINUS what Postgres's renderer adds, because the platform
-	// measures octet_length(result::text) and jsonb's ::text puts a space after
-	// every separator. Measuring Go's compact bytes alone accepts an envelope
-	// the submit then refuses with a PT400.
-	limit := maxResultBytes - jsonbSeparatorBytes
-	if len(out) > limit {
-		// Reported in the platform's currency, not the local budget: what it
-		// measures is the STORED length, and what it accepts is maxResultBytes.
-		// "at most": Go escapes U+2028/U+2029 where jsonb writes them raw, so
-		// this over-counts by 3 per occurrence. Over-refusal, never the reverse.
-		return nil, fmt.Errorf("%w: carrying the %d-byte reply stores as at most %d bytes, over the %d the platform accepts",
-			ErrOversizeReply, len(raw), len(out)+jsonbSeparatorBytes, maxResultBytes)
-	}
-	return json.RawMessage(out), nil
-}
-
-// jsonbSeparatorBytes is what Postgres adds to THIS envelope when it renders
-// the stored jsonb back as text: one space after each of its four colons and
-// two commas. Derived from the shape above, so it changes if a field does.
-const jsonbSeparatorBytes = 6
-
-// containsNulEscape reports whether a JSON body carries a \u0000 Postgres
-// refuses ("unsupported Unicode escape sequence"). The substring is a PREFILTER
-// only: `\\u0000` is a backslash followed by five characters and stores fine, so
-// wrapping on the text alone would wrap a reply that had to pass through.
-//
-// The decision is made on the TOKEN STREAM rather than a decoded document,
-// because unmarshalling loses the answer two ways -- a map keeps only the last
-// of a duplicate key, and a number no float64 holds fails the whole decode
-// while Postgres stores it in numeric and still refuses the escape. Both were
-// measured relaying a NUL the column then rejected. Go resolves the escape into
-// a real NUL in the token and leaves the literal alone, which is the whole
-// reason this reads tokens instead of bytes.
-func containsNulEscape(raw []byte) bool {
-	if !bytes.Contains(raw, []byte("u0000")) {
-		return false
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	// UseNumber, or a big exponent ends the scan early on a body that json.Valid
-	// already accepted.
-	dec.UseNumber()
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return false
-		}
-		if str, ok := tok.(string); ok && strings.ContainsRune(str, 0) {
-			return true
-		}
-	}
-}
-
-// truncateUTF8 cuts s to at most n bytes without splitting a rune.
-func truncateUTF8(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
+	// Empty, verbatim or enveloped -- the SHARED decision (internal/reply), made
+	// on the reply and never on the path, so Joe's channel answers the same shape
+	// for the same body. An empty 200 is an ANSWER: the concern that used to fail
+	// it belongs to public.data_usage_collect, which gates on
+	// `result is not null` and is therefore blind to a null answer anyway.
+	return reply.Carry(resp.Header.Get("Content-Type"), raw)
 }
 
 // rootCause unwraps to the innermost error.
@@ -412,11 +261,14 @@ func rootCause(err error) error {
 // The one way a 200 can still fail to be an answer: it does not fit. Permanent
 // for this attempt's payload, so the runner reports it rather than retrying.
 //
-// platform-all#815 removed the other two. A non-JSON body is now carried (encodeRawBody)
-// and an empty one is an answer, so ErrNonJSONReply and ErrEmptyReply no longer
-// have a producer; leaving the sentinels behind would claim a behaviour that
-// is gone.
-var ErrOversizeReply = errors.New("dblab engine reply is too large")
+// It IS reply.ErrOversize rather than a sentinel of its own, so the read bound
+// here and the envelope's ceiling there are one condition for every caller that
+// matches on it -- and Joe's channel refuses an oversize reply as the same thing.
+//
+// platform-all#815 removed the other two. A non-JSON body is now carried and an
+// empty one is an answer, so ErrNonJSONReply and ErrEmptyReply no longer have a
+// producer; leaving the sentinels behind would claim a behaviour that is gone.
+var ErrOversizeReply = reply.ErrOversize
 
 // ErrEngineUnreachable marks a transport failure against the local engine. It
 // is a sentinel rather than a bare wrap because the runner's fallback

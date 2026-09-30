@@ -166,49 +166,62 @@ func Classify(err error) Class {
 // container started is picked up without a restart.
 //
 // Exactly one channel is configured: an org APIToken plus an InstanceID for
-// monitoring, or a DBLabToken on its own. config.Config.Problem() refuses a box
-// carrying both.
+// monitoring, or a DBLabToken or a JoeToken on its own. config.Config.Problem()
+// refuses a box carrying more than one.
 //
-// THE DBLAB CHANNEL SENDS NO INSTANCE ID, and that is the design rather than an
-// omission (platform-all#805). DBLabToken is the engine's own per-instance
-// token, so the platform derives the engine from the credential; there is
-// nothing for this process to name and therefore nothing for it to name wrongly.
+// NEITHER THE DBLAB NOR THE JOE CHANNEL SENDS AN INSTANCE ID, and that is the
+// design rather than an omission (platform-all#805, #398). Each token is that
+// box's own per-instance credential, so the platform derives the target from the
+// credential; there is nothing for this process to name and therefore nothing for
+// it to name wrongly.
 type Credentials struct {
 	APIToken   string
 	InstanceID string
 	DBLabToken string
+	JoeToken   string
 }
 
-// isDBLab reports which channel these credentials serve.
+// isDBLab and isJoe report which channel these credentials serve.
 func (c Credentials) isDBLab() bool { return c.DBLabToken != "" }
+func (c Credentials) isJoe() bool   { return c.JoeToken != "" }
 
 // credential is the value that goes in the `access-token` header.
 func (c Credentials) credential() string {
-	if c.isDBLab() {
+	switch {
+	case c.isDBLab():
 		return c.DBLabToken
+	case c.isJoe():
+		return c.JoeToken
+	default:
+		return c.APIToken
 	}
-	return c.APIToken
 }
 
-// The two channels' rpc names. The platform keeps the surfaces separate on
+// The three channels' rpc names. The platform keeps the surfaces separate on
 // purpose: the instance_jobs TABLE is shared, so the reply shapes and the whole
-// protocol below are identical, but a DBLab change cannot reach the monitoring
-// fleet's hottest rpc.
+// protocol below are identical, but a DBLab or Joe change cannot reach the
+// monitoring fleet's hottest rpc, and neither channel's kill switch can take
+// another down.
 func (c Credentials) rpcs() (poll, submit string) {
-	if c.isDBLab() {
+	switch {
+	case c.isDBLab():
 		return "dblab_job_poll", "dblab_job_submit"
+	case c.isJoe():
+		return "joe_job_poll", "joe_job_submit"
+	default:
+		return "instance_job_poll", "instance_job_submit"
 	}
-	return "instance_job_poll", "instance_job_submit"
 }
 
-// target adds the body key that names the instance -- for the monitoring
-// channel only. The DBLab rpcs take no such argument at all, and sending one
+// target adds the body key that names the instance -- for the monitoring channel
+// only. The DBLab and Joe rpcs take no such argument at all, and sending one
 // would not be ignored: PostgREST resolves an rpc by its body keys, so an extra
 // key matches no function and the call 404s.
 func (c Credentials) target(body map[string]any) {
-	if !c.isDBLab() {
-		body["instance_id"] = c.InstanceID
+	if c.isDBLab() || c.isJoe() {
+		return
 	}
+	body["instance_id"] = c.InstanceID
 }
 
 // The outcome literals the rpc takes, and the only three it accepts.
@@ -284,7 +297,9 @@ type Submission struct {
 	Outcome string
 	// Result is the bare payload; only with Outcome "ok".
 	Result any
-	// SkipReason is "retention", "density" or "no_data"; only with "skipped".
+	// SkipReason is the CHANNEL's own reason, free text under the rpcs' 64-character
+	// cap -- monitoring's three are "retention", "density" and "no_data" (internal/
+	// collect), Joe's is "no_channels"; only with "skipped".
 	SkipReason string
 	// Error and FailureClass; only with "error".
 	Error        string
