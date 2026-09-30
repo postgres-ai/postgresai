@@ -95,3 +95,20 @@ test("mon update leaves a PGAI_TAG it cannot resolve alone", () => {
   expect(env.startsWith(content)).toBe(true);
   expect(env.match(/PGAI_TAG/g)).toHaveLength(1);
 });
+
+// Compose prefers the environment over .env, so a PGAI_TAG exported in the
+// shell would silently win over the one this command writes.
+test("mon update warns when an exported PGAI_TAG overrides .env", () => {
+  dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
+  const project = `${dir}/project`;
+  mkdirSync(project); mkdirSync(`${dir}/bin`); mkdirSync(`${project}/.git`);
+  writeFileSync(`${project}/docker-compose.yml`, "services: {}\n");
+  writeFileSync(`${project}/.env`, "PGAI_TAG=0.16.0\n");
+  writeFileSync(`${dir}/bin/docker`, "#!/bin/sh\nexit 1\n");
+  chmodSync(`${dir}/bin/docker`, 0o755);
+  const result = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "../bin/postgres-ai.ts"), "mon", "update"], {
+    cwd: dir, timeout: 30000,
+    env: { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: project, GIT_DIR: `${project}/.git`, PGAI_TAG: "0.15.0" },
+  });
+  expect(result.stderr.toString()).toContain("PGAI_TAG=0.15.0 in the environment overrides .env for docker compose; unset it");
+});
