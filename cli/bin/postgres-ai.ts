@@ -4290,8 +4290,9 @@ mon
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
-    let apiKey = opts.apiKey || globalOpts.apiKey || process.env.PGAI_API_KEY;
-    // `pgai connect --self-hosted` passes the monitoring URL here, never in argv.
+    // `pgai connect --self-hosted` passes the monitoring URL and key here, never
+    // in argv. PGAI_API_KEY alone (agents export it) must not reach --demo.
+    let apiKey = opts.apiKey || globalOpts.apiKey || (process.env.PGAI_DB_URL ? process.env.PGAI_API_KEY : undefined);
     opts.dbUrl ??= process.env.PGAI_DB_URL;
 
     console.log("\n=================================");
