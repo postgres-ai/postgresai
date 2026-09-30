@@ -15,15 +15,14 @@ for (const scheme of ["postgres", "postgresql"]) {
     ["?channel%5Fbinding=require&sslmode=require", "?sslmode=require", true],
     ["?application_name=channel_binding%3Drequire", "?application_name=channel_binding%3Drequire", false],
   ])(`${scheme} collector URL: %s`, (query, expected, dropped) => {
-    expect(instances.collectorConnStr(base + query)).toEqual({
-      connStr: base + expected,
-      droppedChannelBinding: dropped,
-    });
+    const { uri, value } = instances.splitChannelBinding(base + query);
+    expect(uri).toBe(base + expected);
+    expect(value !== null).toBe(dropped);
   });
 }
 
 test.each(["not a URL", "postgres://u:p@[bad/db?channel_binding=require"])(
   "malformed collector URL is unchanged: %s", (connStr) => {
-    expect(instances.collectorConnStr(connStr)).toEqual({ connStr, droppedChannelBinding: false });
+    expect(instances.splitChannelBinding(connStr)).toEqual({ uri: connStr, value: null });
   },
 );

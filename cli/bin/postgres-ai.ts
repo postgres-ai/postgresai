@@ -69,7 +69,7 @@ import {
   InstancesParseError,
   loadInstances,
   buildInstance,
-  collectorConnStr,
+  splitChannelBinding,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -4363,9 +4363,8 @@ mon
         const autoInstanceName = match ? match[1] : "db-instance";
 
         const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-
-        if (!m) {
+        const instanceName = defaultTargetName(connStr);
+        if (!instanceName) {
           console.error("✗ Invalid connection string format");
           process.exitCode = 1;
           return;
@@ -4421,8 +4420,8 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-            if (!m) {
+            const instanceName = defaultTargetName(connStr);
+            if (!instanceName) {
               console.error("✗ Invalid connection string format");
               console.error("⚠ Continuing without adding instance\n");
             } else {
@@ -5366,6 +5365,17 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
+function defaultTargetName(connStr: string): string | null {
+  try {
+    new URL(connStr);
+  } catch {
+    return null;
+  }
+  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/(.+)$/);
+  return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+}
+
 /**
  * A compose service's container state ("running", "exited", ...; "" when it has
  * no container), or null when it cannot be read. `ps --format` is v2-only, so
@@ -5444,24 +5454,18 @@ export async function addTarget(
     process.exitCode = 1;
     return false;
   }
-  const collector = collectorConnStr(connStr);
-  connStr = collector.connStr;
-  let m: RegExpMatchArray | null = null;
-  try {
-    new URL(connStr);
-    m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-  } catch {}
-  if (!m) {
+  const channelBinding = splitChannelBinding(connStr);
+  connStr = channelBinding.uri;
+  const defaultName = defaultTargetName(connStr);
+  if (!defaultName) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
     return false;
   }
-  if (collector.droppedChannelBinding) {
+  if (channelBinding.value !== null) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
-  const host = m[3];
-  const db = m[5].split("?")[0];
-  const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  const instanceName = name && name.trim() ? name.trim() : defaultName;
 
   try {
     const existing = loadInstances(file).find((instance) => instance.name === instanceName);

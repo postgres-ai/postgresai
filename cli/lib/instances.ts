@@ -66,24 +66,6 @@ export function loadInstances(file: string): Instance[] {
   return parsed as Instance[];
 }
 
-export function collectorConnStr(connStr: string): { connStr: string; droppedChannelBinding: boolean } {
-  try {
-    const url = new URL(connStr);
-    if (url.searchParams.has("channel_binding")) {
-      const fragment = connStr.indexOf("#");
-      const end = fragment < 0 ? connStr.length : fragment;
-      const start = connStr.indexOf("?");
-      const params = connStr.slice(start + 1, end).split("&")
-        .filter((param) => !new URLSearchParams(param).has("channel_binding"));
-      return {
-        connStr: connStr.slice(0, start) + (params.length ? `?${params.join("&")}` : "") + connStr.slice(end),
-        droppedChannelBinding: true,
-      };
-    }
-  } catch {}
-  return { connStr, droppedChannelBinding: false };
-}
-
 export function buildInstance(name: string, connStr: string): Instance {
   return {
     name,
