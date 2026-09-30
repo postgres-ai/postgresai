@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -61,6 +61,7 @@ import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgSco
 import { maskSecret } from "../lib/util";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
+import { Writable } from "stream";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
@@ -603,6 +604,20 @@ function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore
 async function question(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     getReadline().question(prompt, (answer) => {
+      resolve(answer);
+    });
+  });
+}
+
+/** question() for a secret: what is typed is not echoed. */
+async function questionHidden(prompt: string): Promise<string> {
+  closeReadline();
+  process.stdout.write(prompt);
+  const hidden = createInterface({ input: process.stdin, output: new Writable({ write: (_chunk, _encoding, done) => done() }), terminal: true });
+  return new Promise((resolve) => {
+    hidden.question("", (answer) => {
+      hidden.close();
+      process.stdout.write("\n");
       resolve(answer);
     });
   });
@@ -4077,16 +4092,10 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
   }
 }
 
-// `help` is intentionally NOT the default command: making it default causes
-// Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
-// as an excess positional argument, producing a misleading "too many arguments
-// for 'help'" error. With no default command, Commander instead emits its
-// standard `error: unknown command '<x>'` on stderr and exits non-zero. The
-// bare-`pgai` nicety (show help, exit 0) is preserved explicitly at the parse
-// entrypoint below.
 // ---- pgai connect / databases / status / disconnect (postgres-ai/internal#354) ----
 // JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
-// Exit codes: 0 connected or provisioning, 1 failed, 3 action required.
+// Exit codes: 0 connected or provisioning, 1 failed, 3 action required
+// (pgai init: 130 when cancelled at a prompt).
 const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, action_required: 3, failed: 1 };
 
 function cloudApi(debug?: boolean) {
@@ -4097,8 +4106,21 @@ function cloudApi(debug?: boolean) {
 }
 
 function emitConnect(result: ConnectResult, json?: boolean): void {
-  printResult(result, json);
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql).
+  if (result.sql && process.stdout.isTTY && !json) {
+    const { sql, ...rest } = result;
+    console.log(`${sql}\n`);
+    printResult(rest);
+  } else {
+    printResult(result, json);
+  }
   process.exitCode = CONNECT_EXIT[result.status];
+}
+
+/** An error of databases / status / disconnect, in the same shape as a connect result. */
+function failCloud(err: unknown, json?: boolean): void {
+  printResult({ status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
+  process.exitCode = 1;
 }
 
 /** Signs in through the browser when interactive; otherwise says how. */
@@ -4131,7 +4153,9 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         // environment (never argv), and its output goes to stderr, so stdout is the result.
         const scope = getActiveOrgScope();
         const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
-        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org], {
+        // Registering the stack needs a project name: the database's name, as a token.
+        const project = name.replace(/[^A-Za-z0-9._-]+/g, "-");
+        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project], {
           stdio: ["ignore", 2, 2],
           env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
         });
@@ -4163,6 +4187,10 @@ withOrgOptions(program.command("connect <database-url>"))
     "",
     "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
     "",
+    "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
+    "postgres_ai_mon when the role already exists; it is checked, never changed),",
+    "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
+    "",
     "Examples:",
     "  pgai connect 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
     "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai connect '<url>'",
@@ -4182,8 +4210,10 @@ withOrgOptions(program.command("init"))
     if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
     process.exitCode = 130; // Ctrl-C / Ctrl-D at a prompt; runConnect sets the real code
     const url = (await question("Database URL (postgresql://...): ")).trim();
-    const needsKey = URL.canParse(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
-    const clickhouseKey = needsKey ? (await question("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (Enter to skip): ")).trim() : "";
+    const needsKey = !!parseUrl(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
+    const clickhouseKey = needsKey ? (await questionHidden("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ")).trim() : "";
+    // An open prompt would take the first Ctrl-C while connect waits for the box.
+    closeReadline();
     await runConnect(url, { clickhouseKey: clickhouseKey || undefined });
   });
 
@@ -4200,8 +4230,7 @@ withOrgOptions(program.command("databases"))
     try {
       printResult(await cloudDatabases(opts), opts.json);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exitCode = 1;
+      failCloud(err, opts.json);
     }
   });
 
@@ -4215,8 +4244,7 @@ withOrgOptions(program.command("status [name]"))
       if (name && rows.length === 0) throw new Error(`No database named ${name}. See: pgai databases`);
       printResult(rows.map((d) => connectStatus(d)), opts.json);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exitCode = 1;
+      failCloud(err, opts.json);
     }
   });
 
@@ -4235,11 +4263,17 @@ withOrgOptions(program.command("disconnect <name>"))
       await cloudApi(opts.debug).disconnect(row.id);
       printResult({ status: "disconnected", name: row.name, id: row.id, next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exitCode = 1;
+      failCloud(err, opts.json);
     }
   });
 
+// `help` is intentionally NOT the default command: making it default causes
+// Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
+// as an excess positional argument, producing a misleading "too many arguments
+// for 'help'" error. With no default command, Commander instead emits its
+// standard `error: unknown command '<x>'` on stderr and exits non-zero. The
+// bare-`pgai` nicety (show help, exit 0) is preserved explicitly at the parse
+// entrypoint below.
 program.command("help").description("show help").action(() => {
   program.outputHelp();
 });

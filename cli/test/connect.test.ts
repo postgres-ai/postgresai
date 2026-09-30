@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
-import { clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, type ConnectDeps, type Database } from "../lib/connect";
+import { clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -188,12 +188,175 @@ describe("connect", () => {
     await expect(connect("postgresql://u:p@10.0.0.5:5432/app", { clickhouseKey: KEY, waitMs: 0 }, deps)).rejects.toThrow("--clickhouse-key applies to ClickHouse Managed Postgres only");
     await expect(connect(CH, { provider: "oracle", waitMs: 0 }, deps)).rejects.toThrow("--provider must be one of");
   });
+
+  test("an exported ClickHouse key pair is for ClickHouse only: other providers connect without it", async () => {
+    process.env.CLICKHOUSE_KEY_ID = "kid";
+    process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
+    try {
+      const { deps, calls } = fake();
+      expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("provisioning");
+      expect(calls).toEqual(["list", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`]);
+      expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
+        .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
+      await connect(CH, { waitMs: 0 }, deps);
+      expect(calls.at(-2)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
+    } finally {
+      delete process.env.CLICKHOUSE_KEY_ID;
+      delete process.env.CLICKHOUSE_KEY_SECRET;
+    }
+  });
+
+  test("a poll that fails while waiting keeps the requested box: provisioning, then connected", async () => {
+    let polls = 0;
+    const { deps } = fake({
+      list: async () => {
+        if (polls++ === 1) throw new Error("HTTP 502");
+        return polls === 1 ? [] : [row("active")];
+      },
+    });
+    expect((await connect(CH, { waitMs: 60_000 }, deps)).status).toBe("connected");
+    expect(polls).toBe(3);
+  });
+
+  test("a note from the prepare step ends the next action", async () => {
+    const { deps } = fake({ prepare: async () => ({ monitoringUrl: MON, note: "the password was not checked" }) });
+    expect((await connect(CH, { waitMs: 0 }, deps)).next).toBe(`pgai status ${CH_NAME}; the password was not checked`);
+    expect((await connect(CH, { selfHosted: true, waitMs: 0 }, deps)).next).toBe("pgai mon health; the password was not checked");
+  });
+});
+
+// The prepare step with a faked pg client: what the server answers to each
+// login is scripted, and every statement run over the admin connection is recorded.
+describe("prepareDatabase (a fake pg client)", () => {
+  const ADMIN = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&options=-c%20role%3Dx&sslrootcert=%2Ftmp%2Fca.pem&application_name=pgai";
+  const SET_PASSWORD = "Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)";
+  const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+  /** `logins` answers each postgres_ai_mon login in turn (an error to throw, or "ok"); the last one repeats. */
+  function server(me: { name?: string; admin?: boolean; mon_exists: boolean }, logins: (Error | "ok")[] = ["ok"]) {
+    const ran: string[] = [];
+    const monLogins: string[] = [];
+    class FakeClient {
+      password: string;
+      private user: string;
+      constructor(private config: { connectionString: string; ssl?: unknown }) {
+        const u = new URL(config.connectionString);
+        this.user = u.username;
+        this.password = decodeURIComponent(u.password);
+      }
+      async connect() {
+        if (this.config.ssl && me.name === "no-tls") throw new Error("The server does not support SSL connections");
+        if (this.user !== "postgres_ai_mon") return;
+        const answer = logins[Math.min(monLogins.length, logins.length - 1)];
+        monLogins.push(this.password);
+        if (answer !== "ok") throw answer;
+      }
+      async query(sql: string) {
+        if (/session_user as name/.test(sql)) return { rows: [{ name: "postgres", db: "app", admin: true, iterations: "4096", ...me }] };
+        if (this.user !== "postgres_ai_mon" && !/statement_timeout/.test(sql)) ran.push(sql.trim().split("\n")[0]);
+        return { rows: [] };
+      }
+      async end() {}
+    }
+    const prepare = (opts: PrepareOptions = {}, url = ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
+    return { prepare, ran, monLogins };
+  }
+  const withMonPassword = async <T>(value: string | undefined, fn: () => Promise<T>) => {
+    if (value !== undefined) process.env.PGAI_MON_PASSWORD = value;
+    try {
+      return await fn();
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+    }
+  };
+
+  test("an existing role and a rejected PGAI_MON_PASSWORD: refused before anything runs", async () => {
+    const s = server({ mon_exists: true }, [pgError("28P01", "password authentication failed")]);
+    expect(await withMonPassword("not-the-password", () => s.prepare())).toEqual({
+      next: `postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. ${SET_PASSWORD}`,
+    });
+    expect(s.monLogins).toEqual(["not-the-password"]);
+    expect(s.ran).toEqual([]);
+  });
+
+  test("an existing role and no PGAI_MON_PASSWORD: refused, no login tried", async () => {
+    const s = server({ mon_exists: true });
+    expect(await withMonPassword(undefined, () => s.prepare())).toEqual({ next: `postgres_ai_mon already exists on this server. ${SET_PASSWORD}` });
+    expect(s.monLogins).toEqual([]);
+    expect(s.ran).toEqual([]);
+  });
+
+  test("a role someone else created while the plan ran: its password is not ours, refused after the plan", async () => {
+    const s = server({ mon_exists: false }, [pgError("28P01", "password authentication failed")]);
+    expect(await withMonPassword("ours", () => s.prepare())).toEqual({ next: `postgres_ai_mon was created by someone else meanwhile. ${SET_PASSWORD}` });
+    expect(s.monLogins).toEqual(["ours"]);
+    expect(s.ran.filter((q) => q === "begin;").length).toBeGreaterThan(0);
+  });
+
+  test("an existing role whose login this host may not even try (pg_hba): says so, nothing runs", async () => {
+    const s = server({ mon_exists: true }, [pgError("28000", "no pg_hba.conf entry for host")]);
+    expect(await withMonPassword("its-password", () => s.prepare())).toEqual({
+      next: "postgres_ai_mon already exists on this server, and PGAI_MON_PASSWORD could not be checked from this host (no pg_hba.conf entry for host). Run pgai connect from a host that postgres_ai_mon may connect from",
+    });
+    expect(s.ran).toEqual([]);
+  });
+
+  test("a new role whose login this host may not try: prepared, the URL carries the password set", async () => {
+    const s = server({ mon_exists: false }, [pgError("28000", "no pg_hba.conf entry for host")]);
+    expect(await withMonPassword("ours", () => s.prepare())).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=pgai",
+    });
+  });
+
+  test("a server that accepts any password from this host: prepared, with a note that the password was not checked", async () => {
+    const s = server({ mon_exists: true });
+    expect(await withMonPassword("maybe", () => s.prepare())).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:maybe@db.example.com:5432/app?sslmode=require&application_name=pgai",
+      note: "this server accepts any password from this host, so PGAI_MON_PASSWORD was not checked; if no data arrives, disconnect and connect again with the right password",
+    });
+    expect(s.monLogins.length).toBe(3);
+    expect(s.monLogins[1]).not.toBe("maybe");
+  });
+
+  test("an existing role and the right password on a server that checks it: prepared, no note", async () => {
+    const s = server({ mon_exists: true }, ["ok", pgError("28P01", "password authentication failed"), "ok"]);
+    expect(await withMonPassword("right", () => s.prepare())).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:right@db.example.com:5432/app?sslmode=require&application_name=pgai",
+    });
+  });
+
+  test("the MCP tool's prepare: PGAI_MON_PASSWORD is not read, and TLS is not given up", async () => {
+    const existing = server({ mon_exists: true });
+    expect(await withMonPassword("its-password", () => existing.prepare({ agent: true }))).toEqual({
+      next: "postgres_ai_mon already exists on this server. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password",
+    });
+    expect(existing.monLogins).toEqual([]);
+
+    const created = server({ mon_exists: false });
+    const result = await withMonPassword("from-the-environment", () => created.prepare({ agent: true }));
+    expect(JSON.stringify(result)).not.toContain("from-the-environment");
+    expect(result).toHaveProperty("monitoringUrl");
+
+    // A server without TLS and a URL that does not ask for a mode: the CLI retries in plaintext, the tool does not.
+    const noTls = server({ name: "no-tls", mon_exists: false });
+    const url = "postgresql://postgres:adminpw@db.example.com:5432/app";
+    await expect(noTls.prepare({ agent: true }, url)).rejects.toThrow("The server does not support SSL connections");
+    expect(await noTls.prepare({}, url)).toHaveProperty("monitoringUrl");
+  });
+
+  test("a role that may not grant pg_monitor: the SQL to run, nothing created", async () => {
+    const s = server({ admin: false, mon_exists: false });
+    const result = await s.prepare();
+    expect((result as { next: string }).next).toBe("Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai connect again with the postgres_ai_mon URL");
+    expect((result as { sql: string }).sql).toContain("-- 01.role");
+    expect(s.ran).toEqual([]);
+  });
 });
 
 describe("clickhouseOrgFor (a fake ClickHouse Cloud API)", () => {
   const OTHER = "99999999-8888-7777-6666-555555555555";
   const SERVICE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-  async function withApi(orgsStatus: number, fn: () => Promise<void>) {
+  async function withApi(orgsStatus: number, fn: () => Promise<void>, otherStatus = 200, orgsBody?: unknown) {
     const seen: string[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
@@ -201,8 +364,9 @@ describe("clickhouseOrgFor (a fake ClickHouse Cloud API)", () => {
         const path = new URL(req.url).pathname;
         seen.push(`${req.headers.get("authorization")?.slice(0, 6)} ${path}`);
         const json = (result: unknown) => Response.json({ result });
+        if (path === "/v1/organizations" && orgsBody) return Response.json(orgsBody);
         if (path === "/v1/organizations") return orgsStatus === 200 ? json([{ id: OTHER }, { id: ORG }]) : new Response("", { status: orgsStatus });
-        if (path === `/v1/organizations/${OTHER}/postgres`) return json([]);
+        if (path === `/v1/organizations/${OTHER}/postgres`) return otherStatus === 200 ? json([]) : new Response("", { status: otherStatus });
         if (path === `/v1/organizations/${ORG}/postgres`) return json([{ id: SERVICE, name: "svc", state: "running" }]);
         if (path === `/v1/organizations/${ORG}/postgres/${SERVICE}`) return json({ id: SERVICE, name: "svc", state: "running", hostname: "abc123.us-east-1.aws.pg.clickhouse.cloud" });
         return new Response("", { status: 404 });
@@ -233,6 +397,18 @@ describe("clickhouseOrgFor (a fake ClickHouse Cloud API)", () => {
       await expect(clickhouseOrgFor("nope.pg.clickhouse.cloud", "kid", "secret")).rejects.toThrow("has hostname nope.pg.clickhouse.cloud");
     });
   });
+
+  test("an organization the key cannot read is reported, not the next one's missing service", async () => {
+    await withApi(200, async () => {
+      await expect(clickhouseOrgFor("nope.pg.clickhouse.cloud", "kid", "secret")).rejects.toThrow(`cannot read Postgres services in organization ${OTHER} (403)`);
+    }, 403);
+  });
+
+  test("a response without an organization list is a clear error", async () => {
+    await withApi(200, async () => {
+      await expect(clickhouseOrgFor("x.pg.clickhouse.cloud", "kid", "secret")).rejects.toThrow("ClickHouse Cloud API returned no organization list.");
+    }, 200, {});
+  });
 });
 
 describe("MCP connect_database", () => {
@@ -258,6 +434,39 @@ describe("MCP connect_database", () => {
         .toBe("Finish in the console: https://console.example/acme/monitoring/scale/create/rds");
     } finally {
       server.stop(true);
+    }
+  });
+
+  test("a box still provisioning is answered at once (no wait); a failed one is an error result", async () => {
+    let status = "launch_requested";
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => Response.json([row(status)]),
+    });
+    const opts = { apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}`, uiBaseUrl: "https://console.example" };
+    const call = () => handleToolCall({ params: { name: "connect_database", arguments: { database_url: CH } } }, opts);
+    try {
+      const started = Date.now();
+      const provisioning = await call();
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(provisioning.isError).toBe(false);
+      expect(JSON.parse(provisioning.content[0].text)).toEqual({
+        status: "provisioning", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${CH_NAME}`,
+      });
+      status = "failed";
+      const failed = await call();
+      expect(failed.isError).toBe(true);
+      expect(JSON.parse(failed.content[0].text).status).toBe("failed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("the URL must carry its password: nothing of this machine (PGPASSWORD) is sent to a host an agent chose", async () => {
+    const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
+    for (const database_url of ["postgresql://postgres@db.example.com:5432/app", "host=db dbname=app", undefined]) {
+      const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url } } }, opts);
+      expect(result).toEqual({ content: [{ type: "text", text: "database_url must be postgresql://user:password@host:5432/dbname, with the password in it" }], isError: true });
     }
   });
 });
