@@ -4829,6 +4829,8 @@ const MONITORING_CONTAINERS = [
   // which this list already tolerates - `docker rm -f` on a missing container
   // is caught and ignored below.
   "instance-jobs",
+  "rds-host-stats",
+  "vmalert",
 ];
 
 /**
