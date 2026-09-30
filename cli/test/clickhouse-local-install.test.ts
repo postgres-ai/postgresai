@@ -17,6 +17,8 @@ beforeEach(async () => {
   projectDir = `${dir}/project`;
   for (const path of [projectDir, `${dir}/bin`, `${dir}/home`, `${dir}/xdg`]) mkdirSync(path);
   writeFileSync(`${projectDir}/docker-compose.yml`, "services: {}\n");
+  // A git checkout, so local-install does not fetch a compose file from GitLab.
+  mkdirSync(`${projectDir}/.git`);
   // No Docker: local-install stops at its first compose call, after the target step.
   writeFileSync(`${dir}/bin/docker`, "#!/bin/sh\nexit 1\n");
   chmodSync(`${dir}/bin/docker`, 0o755);
@@ -76,7 +78,7 @@ test("read-only commands work in a project directory they cannot write", () => {
   writeFileSync(`${projectDir}/instances.yml`, "- name: ro\n  conn_str: postgresql://u:p@h:5432/d\n  is_enabled: true\n");
   chmodSync(projectDir, 0o555);
   try {
-    const result = Bun.spawnSync([process.execPath, cli, "mon", "targets", "list"], { cwd: dir, env, timeout: 30000 });
+    const result = Bun.spawnSync([process.execPath, cli, "mon", "targets", "list"], { cwd: projectDir, env, timeout: 30000 });
     expect(result.stderr.toString()).not.toContain("EACCES");
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain("Target: ro");
