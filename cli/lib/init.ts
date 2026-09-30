@@ -4,6 +4,7 @@ import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import type { Client as PgClient } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { requireChannelBinding, splitChannelBinding } from "./instances";
 
 export const DEFAULT_MONITORING_USER = "postgres_ai_mon";
 
@@ -144,18 +145,6 @@ function isSslNegotiationError(err: unknown): boolean {
 }
 
 /**
- * channel_binding=require (libpq semantics) needs TLS: with sslmode=disable libpq refuses to
- * connect, so do the same instead of silently sending SCRAM without channel binding.
- * Note: node-postgres only *prefers* SCRAM-SHA-256-PLUS when the server offers it; the
- * mechanism actually negotiated is not enforced here.
- */
-function assertChannelBindingPossible(ssl: PgClientConfig["ssl"]): void {
-  if (ssl === false) {
-    throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
-  }
-}
-
-/**
  * Connect to PostgreSQL with sslmode=prefer-like behavior.
  * If sslFallbackEnabled is true, tries SSL first, then falls back to non-SSL on failure.
  */
@@ -230,7 +219,7 @@ const STEP_SCOPE: Record<string, string> = {
   "01.role": "create/update role",
   "02.extensions": "create extension pg_stat_statements",
   "03.permissions": "connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path",
-  "06.helpers": "execute on postgres_ai.table_describe (SECURITY DEFINER, owned by the admin user)",
+  "06.helpers": "execute on postgres_ai.table_describe (SECURITY INVOKER, catalog only)",
   "04.optional_rds": "execute on rds_tools.pg_ls_multixactdir (RDS only)",
   "05.optional_self_managed": "execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file",
 };
@@ -466,15 +455,8 @@ export function resolveAdminConnection(opts: {
         effectiveSslMode.toLowerCase() === "prefer" ||
         effectiveSslMode.toLowerCase() === "allow";
       // Strip sslmode from URI so pg uses our ssl config object instead
-      let cleanUri = stripSslModeFromUri(v);
-      let enableChannelBinding = false;
-      try {
-        const uri = new URL(cleanUri);
-        enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
-        uri.searchParams.delete("channel_binding");
-        cleanUri = uri.toString();
-      } catch {}
-      if (enableChannelBinding) assertChannelBindingPossible(sslConfig);
+      const { uri: cleanUri, value: channelBinding } = splitChannelBinding(stripSslModeFromUri(v));
+      const enableChannelBinding = requireChannelBinding(channelBinding, sslConfig === false);
       return {
         clientConfig: {
           connectionString: cleanUri,
@@ -497,7 +479,7 @@ export function resolveAdminConnection(opts: {
     // Enable fallback for: no explicit mode OR explicit "prefer"/"allow"
     const shouldFallback = (!explicitSsl && !cfgHadSsl) ||
       (!!explicitSsl && (explicitSsl.toLowerCase() === "prefer" || explicitSsl.toLowerCase() === "allow"));
-    if (cfg.enableChannelBinding) assertChannelBindingPossible(cfg.ssl);
+    if (cfg.enableChannelBinding) requireChannelBinding("require", cfg.ssl === false);
     return {
       clientConfig: cfg,
       display: describePgConfig(cfg),
@@ -641,7 +623,7 @@ end $$;`;
     sql: permissionsSql,
   });
 
-  // Helper functions (SECURITY DEFINER) for plan analysis and table info
+  // Helper functions for table info
   steps.push({
     name: "06.helpers",
     sql: applyTemplate(loadSqlTemplate("06.helpers.sql"), vars),

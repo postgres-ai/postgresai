@@ -62,7 +62,7 @@ import {
   InstancesParseError,
   loadInstances,
   buildInstance,
-  collectorConnStr,
+  splitChannelBinding,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -4351,25 +4351,10 @@ mon
         console.log("Using database URL provided via --db-url parameter");
         console.log(`Adding PostgreSQL instance from: ${maskConnectionString(opts.dbUrl)}\n`);
 
-        const match = opts.dbUrl.match(/^postgresql:\/\/[^@]+@([^:/]+)/);
-        const autoInstanceName = match ? match[1] : "db-instance";
-
-        const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-
-        if (!m) {
-          console.error("✗ Invalid connection string format");
-          process.exitCode = 1;
-          return;
-        }
-
-        const host = m[3];
-        const db = m[5].split("?")[0];
-        const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
         // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
         // the stack is started below, so nothing is applied here.
-        if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+        const connStr = opts.dbUrl;
+        if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
           console.error("✗ The monitoring target was not saved");
           process.exitCode = 1;
           return;
@@ -4413,40 +4398,30 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-            if (!m) {
-              console.error("✗ Invalid connection string format");
-              console.error("⚠ Continuing without adding instance\n");
-            } else {
-              const host = m[3];
-              const db = m[5].split("?")[0];
-              const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+            if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
+              console.error("✗ The monitoring target was not saved");
+              process.exitCode = 1;
+              return;
+            }
+            console.log();
 
-              if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
-                console.error("✗ The monitoring target was not saved");
-                process.exitCode = 1;
-                return;
-              }
-              console.log();
-
-              // Test connection
-              console.log("Testing connection to the added instance...");
-              {
-                let testClient: InstanceType<typeof Client> | null = null;
-                try {
-                  warnIfLaxSslmode(connStr);
-                  warnIfTransactionPoolerPort(connStr);
-                  testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
-                  await testClient.connect();
-                  const result = await testClient.query("select version();");
-                  console.log("✓ Connection successful");
-                  console.log(`${result.rows[0].version}\n`);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  console.error(`✗ Connection failed: ${message}\n`);
-                } finally {
-                  if (testClient) await testClient.end();
-                }
+            // Test connection
+            console.log("Testing connection to the added instance...");
+            {
+              let testClient: InstanceType<typeof Client> | null = null;
+              try {
+                warnIfLaxSslmode(connStr);
+                warnIfTransactionPoolerPort(connStr);
+                testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                await testClient.connect();
+                const result = await testClient.query("select version();");
+                console.log("✓ Connection successful");
+                console.log(`${result.rows[0].version}\n`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`✗ Connection failed: ${message}\n`);
+              } finally {
+                if (testClient) await testClient.end();
               }
             }
           } else {
@@ -5424,6 +5399,17 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
   return true;
 }
 
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
+function defaultTargetName(connStr: string): string | null {
+  try {
+    new URL(connStr);
+  } catch {
+    return null;
+  }
+  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/([^?]+)/);
+  return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+}
+
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
@@ -5434,24 +5420,18 @@ export async function addTarget(
     process.exitCode = 1;
     return false;
   }
-  const collector = collectorConnStr(connStr);
-  connStr = collector.connStr;
-  let m: RegExpMatchArray | null = null;
-  try {
-    new URL(connStr);
-    m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-  } catch {}
-  if (!m) {
+  const channelBinding = splitChannelBinding(connStr);
+  connStr = channelBinding.uri;
+  const defaultName = defaultTargetName(connStr);
+  if (!defaultName) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
     return false;
   }
-  if (collector.droppedChannelBinding) {
+  if (channelBinding.value !== null) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
-  const host = m[3];
-  const db = m[5].split("?")[0];
-  const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  const instanceName = name && name.trim() ? name.trim() : defaultName;
 
   try {
     const existing = loadInstances(file).find((instance) => instance.name === instanceName);
@@ -5585,10 +5565,8 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
-      const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
-      if (hadHostMetrics) {
-        removeHostMetrics(projectDir, name);
-        if (!(await reloadHostMetrics(projectDir, name))) process.exitCode = 1;
+      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, name))) {
+        process.exitCode = 1;
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
