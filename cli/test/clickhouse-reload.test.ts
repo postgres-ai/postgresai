@@ -181,3 +181,9 @@ test("targets add output never carries the key secret", () => {
   expect(denied.exitCode).toBe(1);
   expect(denied.stdout.toString() + denied.stderr.toString()).not.toContain("bad-secret-value");
 });
+
+test("targets add help names the least-privilege key role and where the key is kept", () => {
+  const help = Bun.spawnSync([process.execPath, cli, "mon", "targets", "add", "--help"], { cwd: dir, env, timeout: 20000 }).stdout.toString();
+  expect(help).toContain("Basic Service API Reader");
+  expect(help).toContain("host-metrics/clickhouse-my-db.secret (the key secret, mode 0600)");
+});
