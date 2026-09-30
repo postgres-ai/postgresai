@@ -52,7 +52,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1663,6 +1663,7 @@ program
             monitoringUser: opts.monitoringUser,
             includeOptionalPermissions,
           });
+          v.missingOptional.push(...await legacyHelperWarnings(supabaseClient));
           if (v.ok) {
             if (jsonOutput) {
               const result: Record<string, unknown> = {
@@ -1789,6 +1790,7 @@ program
           client: supabaseClient,
           plan: effectivePlan,
         });
+        const legacyWarnings = await legacyHelperWarnings(supabaseClient);
 
         if (jsonOutput) {
           const result: Record<string, unknown> = {
@@ -1799,9 +1801,12 @@ program
             monitoringUser: opts.monitoringUser,
             applied,
             skippedOptional,
-            warnings: skippedOptional.length > 0
-              ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
-              : [],
+            warnings: [
+              ...(skippedOptional.length > 0
+                ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
+                : []),
+              ...legacyWarnings,
+            ],
           };
           if (passwordGenerated) {
             result.generatedPassword = monPassword;
@@ -1816,6 +1821,7 @@ program
             console.error("⚠ Some optional steps were skipped (not supported or insufficient privileges):");
             for (const s of skippedOptional) console.error(`- ${s}`);
           }
+          for (const w of legacyWarnings) console.error(`⚠ ${w}`);
           if (process.stdout.isTTY) {
             console.log(`Applied ${applied.length} steps`);
           }
@@ -1980,6 +1986,7 @@ program
           includeOptionalPermissions,
           provider,
         });
+        v.missingOptional.push(...await legacyHelperWarnings(client));
         if (v.ok) {
           if (jsonOutput) {
             outputJson({
@@ -2103,6 +2110,7 @@ program
       }
 
       const { applied, skippedOptional } = await applyInitPlan({ client, plan: effectivePlan });
+      const legacyWarnings = await legacyHelperWarnings(client);
 
       if (jsonOutput) {
         const result: Record<string, unknown> = {
@@ -2113,9 +2121,12 @@ program
           monitoringUser: opts.monitoringUser,
           applied,
           skippedOptional,
-          warnings: skippedOptional.length > 0
-            ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
-            : [],
+          warnings: [
+            ...(skippedOptional.length > 0
+              ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
+              : []),
+            ...legacyWarnings,
+          ],
         };
         if (passwordGenerated) {
           result.generatedPassword = monPassword;
@@ -2127,6 +2138,7 @@ program
           console.error("⚠ Some optional steps were skipped (not supported or insufficient privileges):");
           for (const s of skippedOptional) console.error(`- ${s}`);
         }
+        for (const w of legacyWarnings) console.error(`⚠ ${w}`);
         // Keep output compact but still useful
         if (process.stdout.isTTY) {
           console.log(`Applied ${applied.length} steps`);

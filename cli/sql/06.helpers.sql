@@ -1,7 +1,14 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
 
 -- Remove the retired helper from databases prepared by older CLI versions.
-drop function if exists postgres_ai.explain_generic(text, text, text);
+-- A non-owner cannot drop it: warn and continue instead of aborting prepare-db.
+do $$
+begin
+  drop function if exists postgres_ai.explain_generic(text, text, text);
+exception when insufficient_privilege then
+  raise warning 'postgres_ai: legacy SECURITY DEFINER helper was NOT removed: %', sqlerrm
+    using hint = 'Its owner or a superuser must drop it; see the drop function statement in step 06.helpers.';
+end $$;
 
 /*
  * table_describe
