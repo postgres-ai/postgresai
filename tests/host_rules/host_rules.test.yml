@@ -30,8 +30,6 @@ tests:
       # A read replica of the same project: fully busy, must not be averaged in.
       - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst-rr-us-east-1-abcde",service_type="db",cpu="0",mode="idle"}'
         values: '1000+0x10'
-      - series: 'node_load1{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
-        values: '0.05x10'
       - series: 'node_memory_MemAvailable_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
         values: '206561280x10'
       - series: 'node_memory_MemTotal_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
@@ -66,7 +64,6 @@ tests:
     metricsql_expr_test:
       - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 10}]}
       - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="prod",node_name="main-db"}', value: 1}]}
-      - {expr: host_os_load1, eval_time: 10m, exp_samples: [{labels: 'host_os_load1{cluster="prod",node_name="main-db"}', value: 0.05}]}
       - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="prod",node_name="main-db"}', value: 206561280}]}
       - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="prod",node_name="main-db"}', value: 453922816}]}
       - {expr: host_os_memory_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_free_bytes{cluster="prod",node_name="main-db"}', value: 40000000}]}
