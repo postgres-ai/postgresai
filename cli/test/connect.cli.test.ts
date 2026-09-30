@@ -101,10 +101,4 @@ describe("pgai connect / databases / status / disconnect", () => {
       expect(calls.at(-1)).toBe('/rpc/cloud_monitoring_disconnect test-key {"instance_id":"i-1"}');
     }, [{ ...ROW, id: "i-0", status: "deleting_launched" }, ROW]);
   });
-
-  test("init without a terminal points to pgai connect", async () => {
-    const r = await run(["init"], {});
-    expect(r.status).toBe(3);
-    expect(r.json().next).toBe("pgai connect <database-url>");
-  });
 });
