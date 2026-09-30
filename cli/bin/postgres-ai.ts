@@ -5076,8 +5076,10 @@ mon
       const tagPlan = envTag.plain
         ? planUpdateTag(deployedTag, pkg.version)
         : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
-      if (process.env.PGAI_TAG && process.env.PGAI_TAG !== deployedTag) {
-        console.error(`⚠ PGAI_TAG=${process.env.PGAI_TAG} in the environment overrides .env for docker compose; unset it to use the .env value`);
+      // Also when it equals the old tag: `pull` below gets the new one, but the
+      // user's own stop/start would still inherit the exported value.
+      if (process.env.PGAI_TAG && process.env.PGAI_TAG !== (tagPlan.tag ?? deployedTag)) {
+        console.error(`⚠ PGAI_TAG=${process.env.PGAI_TAG} is set in the environment, and docker compose prefers it over .env: unset it before 'postgresai mon stop && postgresai mon start'`);
       }
       if (tagPlan.tag) {
         writeEnvTag(projectDir, tagPlan.tag);
@@ -5143,7 +5145,7 @@ mon
         // pulled images and re-runs config-init. Always, since an earlier failed
         // run may already have moved PGAI_TAG.
         console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon stop && postgres-ai mon start");
+        console.log("  postgresai mon stop && postgresai mon start");
       } else {
         console.error("\n✗ Docker image update failed");
         process.exitCode = 1;

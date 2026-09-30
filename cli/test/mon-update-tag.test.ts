@@ -110,5 +110,5 @@ test("mon update warns when an exported PGAI_TAG overrides .env", () => {
     cwd: dir, timeout: 30000,
     env: { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: project, GIT_DIR: `${project}/.git`, PGAI_TAG: "0.15.0" },
   });
-  expect(result.stderr.toString()).toContain("PGAI_TAG=0.15.0 in the environment overrides .env for docker compose; unset it");
+  expect(result.stderr.toString()).toContain("PGAI_TAG=0.15.0 is set in the environment, and docker compose prefers it over .env: unset it before 'postgresai mon stop && postgresai mon start'");
 });
