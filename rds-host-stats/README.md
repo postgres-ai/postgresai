@@ -18,7 +18,9 @@ We use `docker compose --profile rds up -d rds-host-stats`. `postgresai mon targ
 
 ## Customer IAM
 
-The customer creates the role with the PostgresAI RDS provider template (platform-all `terraform/rds-privatelink-provider` or its CloudFormation twin). We make three read-only calls: `cloudwatch:GetMetricData`, `logs:GetLogEvents` on the instance's `RDSOSMetrics` stream, and `rds:DescribeDBInstances`. The trust policy admits the PostgresAI AWS account only with the `sts:ExternalId` the platform issued for this stack (`postgresai-` plus 32 random characters), and sessions last at most one hour. We pass that role as `RDS_ROLE_ARN` and the External ID as `RDS_EXTERNAL_ID`; the assumed credentials stay in this process's memory.
+The customer creates the role with the PostgresAI RDS provider template (platform-all `terraform/rds-privatelink-provider` or its CloudFormation twin). We make three read-only calls: `cloudwatch:GetMetricData`, `logs:GetLogEvents` on the instance's `RDSOSMetrics` stream, and `rds:DescribeDBInstances`. The trust policy admits only our collector role, `arn:aws:iam::005923036815:role/pgai-rds-host-stats-collector`, and only with `sts:ExternalId` equal to the organization's External ID: `postgresai-` plus 32 random hex characters, issued and stored by the platform and shown in the console setup. Sessions last at most one hour.
+
+The customer pastes the stack's `HostStatsRoleArn` output into the console. Provisioning passes it as `RDS_ROLE_ARN`, and the platform reads the External ID for the organization itself and passes it as `RDS_EXTERNAL_ID`; the browser never sends it. The collector EC2 runs with the `pgai-rds-host-stats-collector` instance profile, which may only assume other accounts' roles with an External ID of that shape. Its credentials, read from IMDSv2 (hop limit 2, so the container can reach it), are the source credentials for `sts:AssumeRole`. The assumed credentials stay in this process's memory.
 
 ## Customer cost and Enhanced Monitoring
 
