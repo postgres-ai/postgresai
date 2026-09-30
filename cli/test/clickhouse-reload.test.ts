@@ -13,7 +13,7 @@ const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
 const execLine = `exec -T sink-prometheus sh -c grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1" sh /etc/pgai/host-metrics/clickhouse-ch.yml`;
 const killLine = "kill -s SIGHUP sink-prometheus";
 const probeLine = "ps -a -q sink-prometheus";
-const inspectLine = "inspect -f {{.State.Status}} 0123abcd";
+const inspectLine = 'inspect -f {{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}} 0123abcd';
 const verifyRemoveLine = `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "scrapePool":"clickhouse-ch" absent`;
 const reloadError = "Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.";
 let dir: string, projectDir: string, log: string, workerUrl: string, server: Worker;
@@ -30,11 +30,11 @@ beforeEach(async () => {
   writeFileSync(`${fakeBin}/docker`, `#!/bin/sh
 if [ "$1" = info ]; then exit 0; fi
 if [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi
-if [ "$1" = inspect ]; then printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\n' "\${FAKE_PS_STATE-running}"; exit 0; fi
+if [ "$1" = inspect ]; then printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"; if [ -n "$FAKE_INSPECT_OUT" ]; then printf '%b\n' "$FAKE_INSPECT_OUT"; else printf 'False %s\n' "\${FAKE_PS_STATE-running}"; fi; exit 0; fi
 shift 3
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
-  ps) [ -n "$FAKE_PS_CODE" ] && exit "$FAKE_PS_CODE"; [ "$FAKE_PS_STATE" = none ] || echo 0123abcd; exit 0 ;;
+  ps) [ -n "$FAKE_PS_CODE" ] && exit "$FAKE_PS_CODE"; [ "$FAKE_PS_STATE" = none ] || printf '%s\n' \${FAKE_PS_IDS-0123abcd}; exit 0 ;;
   kill) exit \${FAKE_KILL_CODE:-0} ;;
   exec) case "$*" in *api/v1/targets*) exit \${FAKE_VERIFY_CODE:-0} ;; esac; exit \${FAKE_EXEC_CODE:-0} ;;
   *) exit 0 ;;
@@ -69,7 +69,7 @@ esac
 });
 afterEach(() => { server?.terminate(); URL.revokeObjectURL(workerUrl); rmSync(dir, { recursive: true, force: true }); });
 
-function run(args: string[], codes: { FAKE_KILL_CODE?: string; FAKE_EXEC_CODE?: string; FAKE_VERIFY_CODE?: string; FAKE_PS_STATE?: string; FAKE_PS_CODE?: string } = {}) {
+function run(args: string[], codes: { FAKE_KILL_CODE?: string; FAKE_EXEC_CODE?: string; FAKE_VERIFY_CODE?: string; FAKE_PS_STATE?: string; FAKE_PS_CODE?: string; FAKE_PS_IDS?: string; FAKE_INSPECT_OUT?: string } = {}) {
   const result = Bun.spawnSync([process.execPath, cli, "mon", "targets", ...args], {
     cwd: dir, env: { ...env, ...codes }, timeout: 20000,
   });
@@ -218,4 +218,15 @@ test("targets remove without a sink-prometheus container succeeds without a relo
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stdout).toContain("sink-prometheus is not running; it will not load 'clickhouse-ch' when it starts.");
   expect(reloadLog()).toEqual([probeLine]);
+});
+
+test("targets remove reloads when a stopped one-off container is listed before the running sink", () => {
+  const added = run(["add", conn, "ch"]);
+  expect(added.exitCode, added.stderr).toBe(0);
+  writeFileSync(log, "");
+  // docker-compose v1 lists one-off containers too, sorted by name.
+  const result = run(["remove", "ch"], { FAKE_PS_IDS: "aaaa bbbb", FAKE_INSPECT_OUT: "True exited\\nFalse running" });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).not.toContain("sink-prometheus is not running");
+  expect(reloadLog()).toEqual([probeLine, 'inspect -f {{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}} aaaa bbbb', killLine, verifyRemoveLine]);
 });
