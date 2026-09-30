@@ -21,14 +21,14 @@ async function run(args: string[], env: Record<string, string>) {
   return { status, stdout, stderr, json: () => JSON.parse(stdout) };
 }
 
-async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>) {
+async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] = [ROW]) {
   const calls: string[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
       calls.push(`${path} ${req.headers.get("access-token")} ${await req.text()}`);
-      if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([ROW]);
+      if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
       if (path.endsWith("/rpc/cloud_monitoring_disconnect")) return Response.json({ id: "i-1", status: "deleting_launched" });
       return new Response("not found", { status: 404 });
     },
@@ -93,6 +93,13 @@ describe("pgai connect / databases / status / disconnect", () => {
     const r = await run(["connect", CH, "--wait", "soon"], { PGAI_API_KEY: "k", PGAI_API_BASE_URL: "http://127.0.0.1:9" });
     expect(r.status).toBe(1);
     expect(r.json().next).toBe("--wait must be a number of minutes (0 = do not wait)");
+  });
+
+  test("disconnect picks the live instance, not an earlier one still being deleted", async () => {
+    await withApi(async (env, calls) => {
+      expect((await run(["disconnect", NAME, "--yes"], env)).status).toBe(0);
+      expect(calls.at(-1)).toBe('/rpc/cloud_monitoring_disconnect test-key {"instance_id":"i-1"}');
+    }, [{ ...ROW, id: "i-0", status: "deleting_launched" }, ROW]);
   });
 
   test("init without a terminal points to pgai connect", async () => {
