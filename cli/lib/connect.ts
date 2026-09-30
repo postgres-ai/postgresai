@@ -41,7 +41,8 @@ export interface Database {
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
-  prepare(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { sql: string }>;
+  prepare(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { next: string; sql?: string }>;
+  localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
@@ -117,17 +118,16 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}` };
   }
 
+  if (opts.selfHosted && deps.localStackRunning()) {
+    return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'" };
+  }
+
   let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name);
   const fresh = !row;
   if (!row) {
     deps.progress(`Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider);
-    if ("sql" in prepared) {
-      return {
-        status: "action_required", provider, name, sql: prepared.sql,
-        next: `Run the SQL above as an admin (or re-run with an admin URL: pgai connect postgresql://<admin>@${name}), then pgai connect again with the ${DEFAULT_MONITORING_USER} URL`,
-      };
-    }
+    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
     let ch: { orgId: string } | undefined;
     if (key) {
       const found = await deps.clickhouseOrg(new URL(url).hostname, key.keyId, key.keySecret);
@@ -167,26 +167,38 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
 }
 
 /** Creates (or checks) the monitoring role over the given URL. The admin URL is used for this run only. */
-export async function prepareDatabase(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { sql: string }> {
+export async function prepareDatabase(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { next: string; sql?: string }> {
   const pgProvider = provider === "rds" ? "self-managed" : provider;
   const { client } = await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }));
   try {
     const me = (await client.query(
-      "select current_user as name, current_database() as db, rolsuper or rolcreaterole as admin from pg_roles where rolname = current_user",
+      `select current_user as name, current_database() as db, rolsuper or rolcreaterole as admin,
+         exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists
+       from pg_roles where rolname = current_user`,
     )).rows[0];
     if (me.name === DEFAULT_MONITORING_USER) {
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
       if (v.ok) return { monitoringUrl: url };
     } else if (me.admin && pgProvider !== "supabase") {
-      const { password } = await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER });
+      // The role is cluster-wide: another database here may use its password.
+      if (me.mon_exists && !process.env.PGAI_MON_PASSWORD) {
+        return { next: `${DEFAULT_MONITORING_USER} already exists on this server; re-run with PGAI_MON_PASSWORD=<its password>, or connect with its URL` };
+      }
+      const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider }) });
       const u = new URL(url);
       u.username = DEFAULT_MONITORING_USER;
       u.password = password;
+      u.pathname = `/${encodeURIComponent(me.db)}`;
+      u.searchParams.delete("user");
+      u.searchParams.delete("password");
       return { monitoringUrl: u.toString() };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider });
-    return { sql: plan.steps.map((s) => `-- ${s.name}\n${redactPasswordsInSql(s.sql)}`).join("\n\n") };
+    return {
+      sql: plan.steps.map((s) => `-- ${s.name}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
+      next: `Run the SQL above as an admin (or re-run with an admin URL), then pgai connect again with the ${DEFAULT_MONITORING_USER} URL`,
+    };
   } finally {
     await client.end();
   }
