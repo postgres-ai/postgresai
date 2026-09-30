@@ -4,9 +4,6 @@
 
 ### Changed
 
-- `mon update` moves `PGAI_TAG` in `.env` to the CLI version (never to an older one), so an upgrade
-  no longer needs a manual `.env` edit; after a move it suggests `mon stop && mon start`.
-
 - `issues list` now shows **open issues only** by default. Closed issues need
   an explicit `--status closed` (or `--status all` for both); an unknown
   `--status` value is rejected instead of silently listing everything.
@@ -14,6 +11,8 @@
 - `issues list` / `issues view` and the MCP `list_issues` / `view_issue` tools
   render `status` as `open` / `closed` instead of the raw `0` / `1`. Scripts
   that compared `.status == 0` in the JSON output need updating. (#367)
+- `mon update` moves `PGAI_TAG` in `.env` to the CLI version (never to an older one), so an upgrade
+  no longer needs a manual `.env` edit; after a move it suggests `mon stop && mon start`.
 
 ### Added
 
