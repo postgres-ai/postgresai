@@ -38,9 +38,9 @@ func recordCalls(t *testing.T, reply string) (*Client, *[]call) {
 	return NewClient(srv.URL, "test", 5*time.Second), &calls
 }
 
-// The two channels are separate SURFACES on a shared table (platform-all#805).
-// Which rpc a box calls -- and whether it names an instance at all -- is decided
-// entirely by which credential its config carries.
+// The three channels are separate SURFACES on a shared table (platform-all#805,
+// #398). Which rpc a box calls -- and whether it names an instance at all -- is
+// decided entirely by which credential its config carries.
 func TestTheCredentialPicksTheChannel(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -67,6 +67,14 @@ func TestTheCredentialPicksTheChannel(t *testing.T) {
 			// The ENGINE's own token, not an org one -- a DBLab box holds no org
 			// token at all.
 			wantHeader: "engine-tok",
+		},
+		{
+			name:       "joe",
+			creds:      Credentials{JoeToken: "joe-tok"},
+			wantPoll:   "joe_job_poll",
+			wantSubmit: "joe_job_submit",
+			// Joe's own token, for the same reason, and no instance id either.
+			wantHeader: "joe-tok",
 		},
 	}
 
@@ -99,15 +107,17 @@ func assertCall(t *testing.T, got call, wantRPC, wantHeader, wantInstanceID stri
 	if got.Header != wantHeader {
 		t.Fatalf("access-token = %q, want %q", got.Header, wantHeader)
 	}
-	// Neither channel may carry the OTHER's key, and the DBLab channel may carry
-	// NEITHER: PostgREST resolves an rpc by its body keys, so a stray one matches
-	// no function and the call 404s rather than being ignored.
-	if _, ok := got.Body["dblab_instance_id"]; ok {
-		t.Fatalf("body carries dblab_instance_id, which no rpc takes: %v", got.Body)
+	// No channel may carry another's key, and only monitoring may carry an
+	// instance id: PostgREST resolves an rpc by its body keys, so a stray one
+	// matches no function and the call 404s rather than being ignored.
+	for _, key := range []string{"dblab_instance_id", "joe_instance_id"} {
+		if _, ok := got.Body[key]; ok {
+			t.Fatalf("body carries %s, which no rpc takes: %v", key, got.Body)
+		}
 	}
 	if wantInstanceID == "" {
 		if _, ok := got.Body["instance_id"]; ok {
-			t.Fatalf("the DBLab channel named an instance: %v", got.Body)
+			t.Fatalf("a box-credentialled channel named an instance: %v", got.Body)
 		}
 		return
 	}

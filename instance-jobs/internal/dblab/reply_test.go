@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/reply"
 	"unicode/utf8"
 )
 
@@ -521,14 +523,14 @@ func TestTheEnvelopeCeilingIsTheOneThePlatformMeasures(t *testing.T) {
 
 	// The scaffold is measured, not counted, so a field added to the envelope
 	// moves this test rather than quietly loosening it.
-	probe, err := encodeRawBody(ct, []byte("x"))
+	probe, err := reply.Encode(ct, []byte("x"))
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 	scaffold := len(probe) - 1
 
 	// The separator count is DERIVED, not counted by hand on both sides. A
-	// field added to rawBody brings a colon and a comma with it, and two
+	// field added to the envelope brings a colon and a comma with it, and two
 	// hand-written 6s would agree with each other while the cap quietly went
 	// two bytes too generous. No value in the probe holds a ':' or a ','.
 	if got := strings.Count(string(probe), ":") + strings.Count(string(probe), ","); got != pgSeparators {
@@ -538,14 +540,14 @@ func TestTheEnvelopeCeilingIsTheOneThePlatformMeasures(t *testing.T) {
 	// ASCII, so one raw byte is one encoded byte and the arithmetic is exact.
 	largest := submitCapBytes - pgSeparators - scaffold
 
-	payload, err := encodeRawBody(ct, bytes.Repeat([]byte("a"), largest))
+	payload, err := reply.Encode(ct, bytes.Repeat([]byte("a"), largest))
 	if err != nil {
 		t.Fatalf("a %d-byte body was refused: %v", largest, err)
 	}
 	if got := len(payload) + pgSeparators; got > submitCapBytes {
 		t.Errorf("the platform would measure %d bytes, over the %d it accepts", got, submitCapBytes)
 	}
-	if _, err := encodeRawBody(ct, bytes.Repeat([]byte("a"), largest+1)); !errors.Is(err, ErrOversizeReply) {
+	if _, err := reply.Encode(ct, bytes.Repeat([]byte("a"), largest+1)); !errors.Is(err, ErrOversizeReply) {
 		t.Errorf("one byte more = %v, want ErrOversizeReply", err)
 	}
 }
@@ -611,16 +613,16 @@ func TestDoRelaysAJsonReplyExactlyAtTheReadCap(t *testing.T) {
 	}
 }
 
-// encodeRawBody is reachable only through Do today, and Go's net/textproto
+// The envelope arm is reachable only through Do today, and Go's net/textproto
 // refuses a response whose header holds a control byte ("malformed MIME header
 // line") -- so this cannot arrive over the wire. It is cleaned anyway: a NUL is
 // valid UTF-8, so ToValidUTF8 alone would leave the one escape this whole
 // branch exists to keep out of the column, in the one field that is not the
 // body.
 func TestTheCarriedContentTypeHoldsNoNul(t *testing.T) {
-	payload, err := encodeRawBody("text/plain\x00x", []byte("not json"))
+	payload, err := reply.Encode("text/plain\x00x", []byte("not json"))
 	if err != nil {
-		t.Fatalf("encodeRawBody = %v", err)
+		t.Fatalf("reply.Encode = %v", err)
 	}
 	if bytes.Contains(payload, []byte(`\u0000`)) {
 		t.Errorf("payload carries a \\u0000 the column refuses: %s", payload)

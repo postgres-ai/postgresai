@@ -23,6 +23,7 @@ import (
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/collect"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/config"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/dblab"
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/joe"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/platform"
 )
 
@@ -173,6 +174,58 @@ const (
 	// (dblabReadAttempts); a write is answered as failed and the platform decides.
 	dblabWriteAttempts = 1
 	dblabReadAttempts  = 3
+
+	// joeGetTimeout bounds ONE read against the local Joe -- the channel lookup
+	// and any GET job. Short, because a read is retried and each attempt has to
+	// leave room for the next, and Joe's reads answer in milliseconds or they are
+	// not going to: the channel list is a read of its own config.
+	joeGetTimeout = 30 * time.Second
+
+	// joeConcurrency is how many jobs of ONE claimed batch the Joe arm runs at
+	// once, and IT MUST EQUAL THE PLATFORM'S CLAIM LIMIT
+	// (app.settings.joe_job_claim_limit) for the reason dblabConcurrency gives:
+	// the equality is what keeps claimed_at a true proxy for started_at, so
+	// claim_limit x per_job_ceiling collapses to ONE ceiling and the sweep cannot
+	// fail a tail this process is still going to run.
+	//
+	// DERIVED, not taken from dblabConcurrency -- landing on the same number is
+	// the arithmetic, not a copy. The ceiling is unchanged at 32m20s (jobBudget +
+	// 2*submitBudget; same ladders) against a 1-hour stuck_after, so with pool ==
+	// claim_limit the sweep bounds NO pool size at all. What bounds it is the box,
+	// and Joe is cheap: /webui/command hands the message to a goroutine and
+	// returns, /webui/channels reads config, so a joe_call is two sub-second local
+	// calls and the pool adds no load to the customer's database -- Joe's own
+	// per-channel processor serialises the SQL work. So this is sized to DRAIN A
+	// POLL WINDOW rather than to parallelise load: five covers a burst of five
+	// distinct users inside one active interval, and the sixth waits that interval
+	// rather than the idle one.
+	joeConcurrency = 5
+
+	// joeWriteAttempts is 1, for the reason dblabWriteAttempts is: a POST
+	// /webui/command is NOT idempotent. Joe answers 200 BEFORE it has done
+	// anything, so a POST whose reply we never saw may well have been accepted,
+	// and re-sending it would run the command a second time on the customer's
+	// clone. A read is safe to repeat and is repeated.
+	joeWriteAttempts = 1
+	joeReadAttempts  = 3
+
+	// joeChannelAttempts retries the channel lookup, and it is a READ ladder even
+	// when the job is a write: a failed lookup means the command was never sent,
+	// so repeating it cannot duplicate anything. Do not fold this into
+	// joeWriteAttempts -- failing a whole command because a preliminary config
+	// read blipped is stricter than the write contract asks for.
+	joeChannelAttempts = 3
+
+	// joeSkipNoChannels is the skip_reason for a Joe that ANSWERED A CHANNEL LIST
+	// and served none. A SKIP rather than a failure because there is nothing to
+	// deliver to and no Joe failure to report. A 200 that is not a channel list is
+	// NOT this -- see joe.ErrBadChannelList.
+	//
+	// v1.joe_job_submit takes free text under a 64-CHARACTER cap (length(), not
+	// octet_length(), which that same rpc uses for `error`). So does
+	// v1.instance_job_submit: the monitoring channel's three reasons are this
+	// agent's own vocabulary, not something either rpc enforces.
+	joeSkipNoChannels = "no_channels"
 )
 
 // Runner owns the loop's state.
@@ -180,6 +233,7 @@ type Runner struct {
 	platformClient func(baseURL string) *platform.Client
 	storeClient    func(cfg config.Config) *collect.Client
 	dblabClient    func(cfg config.Config) *dblab.Client
+	joeClient      func(cfg config.Config) *joe.Client
 	healthPath     string
 	now            func() time.Time
 	// elapsed measures a job's duration. Separate from now() because now() is
@@ -252,6 +306,11 @@ func New(healthPath, clientVersion string) *Runner {
 		dblabClient: func(cfg config.Config) *dblab.Client {
 			return dblab.NewClient(cfg.DBLabURL, cfg.DBLabVerifyToken, jobBudget)
 		},
+		// Same bound and the same reason: a write gets one attempt and the budget
+		// IS its bound, while a read is bounded tighter per attempt in executeJoe.
+		joeClient: func(cfg config.Config) *joe.Client {
+			return joe.NewClient(cfg.JoeURL, cfg.JoeVerifyToken, jobBudget)
+		},
 		healthPath: healthPath,
 		now:        func() time.Time { return time.Now().UTC() },
 		elapsed:    time.Since,
@@ -291,10 +350,14 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 
 	client := r.platformClient(cfg.APIBaseURL)
 	creds := platform.Credentials{APIToken: cfg.APIToken, InstanceID: cfg.InstanceID}
-	if cfg.IsDBLab() {
+	switch {
+	case cfg.IsDBLab():
 		// The engine's OWN token and nothing else: no org token, and no instance
 		// id, because the token identifies the engine (platform-all#805).
 		creds = platform.Credentials{DBLabToken: cfg.DBLabToken}
+	case cfg.IsJoe():
+		// Joe's own token, on the same terms (#398).
+		creds = platform.Credentials{JoeToken: cfg.JoeToken}
 	}
 
 	pollCtx, cancel := context.WithTimeout(ctx, platformTimeout)
@@ -310,8 +373,9 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 
 	// HOW MANY A POLL HANDS OUT IS THE PLATFORM'S BUSINESS, not this loop's, and
 	// since platform-all#816 it is a SETTING per channel
-	// (app.settings.instance_job_claim_limit, 1; dblab_job_claim_limit, 5), not a
-	// constant. Nothing here had to change to DRAIN a wider one: `jobs` has been
+	// (app.settings.instance_job_claim_limit, 1; dblab_job_claim_limit, 5;
+	// joe_job_claim_limit, 5 -- see joeConcurrency), not a constant. Nothing here
+	// had to change to DRAIN a wider one: `jobs` has been
 	// an array since platform-all#805, so a box installed before #816 parses and
 	// answers five. Running five SEQUENTIALLY is the tail-sweep below, though,
 	// which is why !866 and #391 land together and why dblab_jobs_enabled being
@@ -320,7 +384,7 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 	// THIS SIDE DECLINES NOTHING IT IS HANDED, deliberately: a job claimed here
 	// and then refused would sit 'running' until the platform's hourly sweep
 	// failed it. Only the claim can refuse work without having already taken it.
-	// dblabConcurrency bounds how many RUN at once, never how many are answered.
+	// The pool bounds how many RUN at once, never how many are answered.
 	//
 	// WHAT THIS SIDE OWES IN RETURN is the arithmetic behind that limit:
 	// claim_limit x per_job_ceiling must stay under the sweep's stuck_after, and
@@ -331,11 +395,12 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 	// sequential loop leaves the tail of a batch claimed-but-not-started for
 	// (n-1) ceilings, which the platform cannot tell from a box that died.
 	//
-	// THE DBLAB ARM RUNS ITS BATCH CONCURRENTLY (runBatchConcurrently), which is
-	// what collapses the product to one ceiling WITHIN A CLAIMED BATCH and lets
-	// its limit be 5. It does not make this loop poll while a batch runs: the
-	// tick still waits the batch out, so a call enqueued after the claim waits
-	// for the slowest job in it. Monitoring stays strictly one at a time below.
+	// THE DBLAB AND JOE ARMS RUN THEIR BATCH CONCURRENTLY (runBatchConcurrently),
+	// which is what collapses the product to one ceiling WITHIN A CLAIMED BATCH
+	// and lets each limit be its pool size. It does not make this loop poll while
+	// a batch runs: the tick still waits the batch out, so a call enqueued after
+	// the claim waits for the slowest job in it. Monitoring stays strictly one at
+	// a time below.
 	if len(resp.Jobs) == 0 {
 		// Nothing to run means nothing is failing: a fleet being drained (the
 		// flag turned off) hands out no work, and a box must not stay red on a
@@ -345,9 +410,14 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 		r.mu.Unlock()
 	}
 
-	if cfg.IsDBLab() {
-		r.runBatchConcurrently(ctx, client, creds, cfg, resp.Jobs, next)
-	} else {
+	switch {
+	case cfg.IsDBLab():
+		r.runBatchConcurrently(ctx, client, creds, cfg, resp.Jobs, next,
+			dblabConcurrency, "app.settings.dblab_job_claim_limit")
+	case cfg.IsJoe():
+		r.runBatchConcurrently(ctx, client, creds, cfg, resp.Jobs, next,
+			joeConcurrency, "app.settings.joe_job_claim_limit")
+	default:
 		for _, job := range resp.Jobs {
 			// Stamped before AND after each job: the deadline in the file allows
 			// one job budget, so a tick that runs several would otherwise look
@@ -371,18 +441,21 @@ func (r *Runner) tick(ctx context.Context) time.Duration {
 	return r.jittered(next)
 }
 
-// runBatchConcurrently runs a claimed DBLab batch on a bounded worker pool. The
+// runBatchConcurrently runs a claimed DBLab or Joe batch on a bounded worker
+// pool. The
 // monitoring arm does not come through here: that fleet is live, its claim limit
 // is 1, and a pool would be a behaviour change for no gain.
 //
 // EACH JOB IS STILL HANDED TO runJob UNCHANGED, which keeps every rule intact: a
-// write is attempted ONCE (dblabWriteAttempts), a read is retried, each job is
+// write is attempted ONCE (dblabWriteAttempts, joeWriteAttempts), a read is
+// retried, each job is
 // answered for its own id, and a failure is submitted rather than swallowed.
 // Concurrency changes WHEN jobs run, never how many times a call is sent.
 //
-// jobs should never exceed dblabConcurrency -- see there for why that equality
-// is load-bearing. If it does, the surplus queues here rather than being
-// declined, and the log line below is the only warning anyone gets.
+// jobs should never exceed pool -- see dblabConcurrency and joeConcurrency for
+// why that equality is load-bearing. If it does, the surplus queues here rather
+// than being declined, and the log line below is the only warning anyone gets;
+// claimSetting names the platform setting that has to come down.
 func (r *Runner) runBatchConcurrently(
 	ctx context.Context,
 	client *platform.Client,
@@ -390,22 +463,24 @@ func (r *Runner) runBatchConcurrently(
 	cfg config.Config,
 	jobs []platform.Job,
 	next time.Duration,
+	pool int,
+	claimSetting string,
 ) {
 	if len(jobs) == 0 {
 		return
 	}
 
-	if len(jobs) > dblabConcurrency {
+	if len(jobs) > pool {
 		// The equality this rests on has broken, and nothing else reports it:
 		// the surplus waits for a slot while the platform counts it as running,
 		// and the sweep can fail it to its caller before this process starts it.
 		log.Printf("the platform claimed %d jobs but this agent runs %d at a time; "+
 			"the surplus can be swept as failed while it is still going to be run "+
-			"(lower app.settings.dblab_job_claim_limit, or upgrade the agent)",
-			len(jobs), dblabConcurrency)
+			"(lower %s, or upgrade the agent)",
+			len(jobs), pool, claimSetting)
 	}
 
-	slots := make(chan struct{}, dblabConcurrency)
+	slots := make(chan struct{}, pool)
 	var wg sync.WaitGroup
 	// The batch's verdict, counted once and applied once: see recordRun. Only
 	// the jobs this loop actually STARTED are judged -- one it never dispatched
@@ -904,11 +979,14 @@ func (r *Runner) execute(ctx context.Context, cfg config.Config, job platform.Jo
 	jobCtx, cancel := context.WithTimeout(ctx, r.budget)
 	defer cancel()
 
-	// A DBLab call is not a collection: its args are their own shape, its target
-	// is the engine on this box rather than the metric store, and its result is
-	// relayed verbatim instead of applied to anything.
-	if job.Kind == dblab.KindCall {
+	// A DBLab or Joe call is not a collection: its args are their own shape, its
+	// target is a service on this box rather than the metric store, and its result
+	// is relayed verbatim instead of applied to anything.
+	switch job.Kind {
+	case dblab.KindCall:
 		return r.executeDBLab(jobCtx, cfg, job)
+	case joe.KindCall:
+		return r.executeJoe(jobCtx, cfg, job)
 	}
 
 	store := r.storeClient(cfg)
@@ -996,6 +1074,142 @@ func (r *Runner) executeDBLab(ctx context.Context, cfg config.Config, job platfo
 	return collect.Outcome{}, lastErr
 }
 
+// executeJoe runs one Joe call.
+//
+// TWO STEPS WITH DIFFERENT RETRY RULES, which is why this is not executeDBLab
+// with another client. The channel lookup is a READ and is retried even when the
+// job is a write, because a failed lookup means the command was never sent. The
+// call itself follows the method: a GET is retried, a POST is attempted ONCE.
+func (r *Runner) executeJoe(ctx context.Context, cfg config.Config, job platform.Job) (outcome collect.Outcome, err error) {
+	// EVERY failure leaving here is marked as a Joe call's, so classifyFailure can
+	// answer in the caller's own terms rather than a collection's -- and so the
+	// oversize ceiling, which is one shared sentinel across both channels, is
+	// still reported as Joe's. Marked at the one exit and with two %w, so
+	// errors.Is/As through the chain all still match.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", errJoeCall, err)
+		}
+	}()
+
+	req, err := joe.Parse(job.Args)
+	if err != nil {
+		return collect.Outcome{}, err
+	}
+
+	client := r.joeClient(cfg)
+
+	var channelID string
+	if req.ResolveChannel {
+		channelID, err = r.resolveJoeChannel(ctx, client)
+		// A Joe serving no channel is a SKIP, not a failure: nothing was
+		// delivered and nothing at Joe failed, so 'error' would report a fault
+		// that did not happen. Every OTHER lookup failure -- unreachable, a 5xx, a
+		// refused signature -- stays an error, because those are faults.
+		if errors.Is(err, joe.ErrNoChannels) {
+			return collect.Outcome{Status: collect.OutcomeSkipped, SkipReason: joeSkipNoChannels}, nil
+		}
+		if err != nil {
+			return collect.Outcome{}, err
+		}
+	}
+
+	attempts := joeWriteAttempts
+	if req.Method == http.MethodGet {
+		attempts = joeReadAttempts
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		callCtx := ctx
+		var cancel context.CancelFunc
+		if attempts > 1 {
+			// Only a retried call is bounded tighter than the job budget: giving a
+			// single-attempt write the same short deadline would fail a command that
+			// was about to be accepted, with no second attempt to save it.
+			callCtx, cancel = context.WithTimeout(ctx, joeGetTimeout)
+		}
+		payload, err := client.Do(callCtx, req, channelID)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return collect.Outcome{Status: collect.OutcomeOK, Payload: joeResult(req, channelID, payload)}, nil
+		}
+		lastErr = err
+		if !retryableJoeError(err) || ctx.Err() != nil {
+			return collect.Outcome{}, err
+		}
+		if attempt < attempts && !r.sleep(ctx, storeBackoff*time.Duration(attempt)) {
+			break
+		}
+	}
+	return collect.Outcome{}, lastErr
+}
+
+// joeResult is what the platform stores for one Joe call.
+//
+// Joe's reply, verbatim, for every action -- EXCEPT that a resolve_channel job
+// whose reply is empty records the channel this box chose instead. It displaces
+// nothing: Joe's command handler passes the message to a goroutine and writes no
+// body, so there is otherwise nothing at all to store, and this is then the only
+// record anywhere of which channel the command went to -- which is exactly what
+// someone debugging "the command went nowhere" has to have. The platform stores
+// it and reads nothing from it (v1.joe_job_submit has no apply).
+//
+// A nil payload marshals to a JSON null, which PostgREST binds to a SQL NULL, so
+// on every other action a successful call still stores NULL and nothing consuming
+// joe_call may gate on `result is not null`.
+func joeResult(req joe.Request, channelID string, payload json.RawMessage) any {
+	if !req.ResolveChannel || len(payload) > 0 {
+		return payload
+	}
+	return map[string]string{"channel_id": channelID}
+}
+
+// resolveJoeChannel asks the local Joe which channel to address.
+//
+// THE FIRST advertised channel, which is exactly what v1.joe_command_run takes
+// today, so the inverted route addresses the same channel as the pull path does
+// for the same box.
+func (r *Runner) resolveJoeChannel(ctx context.Context, client *joe.Client) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= joeChannelAttempts; attempt++ {
+		lookupCtx, cancel := context.WithTimeout(ctx, joeGetTimeout)
+		ids, err := client.Channels(lookupCtx)
+		cancel()
+		if err == nil {
+			return ids[0], nil
+		}
+		lastErr = err
+		if !retryableJoeError(err) || ctx.Err() != nil {
+			return "", err
+		}
+		if attempt < joeChannelAttempts && !r.sleep(ctx, storeBackoff*time.Duration(attempt)) {
+			break
+		}
+	}
+	return "", lastErr
+}
+
+// retryableJoeError reports whether re-running the same Joe call could clear the
+// error.
+func retryableJoeError(err error) bool {
+	if errors.Is(err, joe.ErrInvalidArgs) || errors.Is(err, joe.ErrOversizeReply) ||
+		errors.Is(err, joe.ErrNoChannels) {
+		// Decided by what came back rather than by the transport, so the same call
+		// produces the same unusable answer. ErrNoChannels is Joe's OWN config:
+		// asking three times says the same thing.
+		return false
+	}
+	var joeErr *joe.JoeError
+	if errors.As(err, &joeErr) {
+		return joeErr.Retryable()
+	}
+	// Network or timeout against a service on this very box.
+	return true
+}
+
 // retryableEngineError reports whether re-running the same engine call could
 // clear the error.
 func retryableEngineError(err error) bool {
@@ -1033,6 +1247,12 @@ func retryableStoreError(err error) bool {
 // errUnencodableResult marks a payload json.Marshal refuses (a non-finite
 // sample that reached the AAS metrics).
 var errUnencodableResult = errors.New("result cannot be encoded")
+
+// errJoeCall marks a failure as a Joe call's rather than a collection's. It
+// carries no classification of its own, and it is load-bearing beyond wording:
+// the oversize ceiling is ONE shared sentinel across both channels
+// (internal/reply), so this is what tells the two apart when reporting it.
+var errJoeCall = errors.New("joe call")
 
 // errDBLabCall marks a failure as an engine call's rather than a collection's.
 // It carries no classification of its own -- every dblab arm of classifyFailure
@@ -1079,6 +1299,10 @@ func classifyFailure(err error) (string, string) {
 		return "the engine call exceeded the local time budget", "timeout"
 	case errors.Is(err, errDBLabCall) && errors.Is(err, context.Canceled):
 		return "the engine call was cancelled", "cancelled"
+	case errors.Is(err, errJoeCall) && errors.Is(err, context.DeadlineExceeded):
+		return "the joe call exceeded the local time budget", "timeout"
+	case errors.Is(err, errJoeCall) && errors.Is(err, context.Canceled):
+		return "the joe call was cancelled", "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "collection exceeded the local time budget", "timeout"
 	case errors.Is(err, context.Canceled):
@@ -1091,6 +1315,28 @@ func classifyFailure(err error) (string, string) {
 		return "the job failed unexpectedly", "panic"
 	case errors.Is(err, errResultRefused):
 		return "the platform refused the result", "result_rejected"
+	// THE JOE ARMS COME FIRST, and the oversize one is why: the ceiling is one
+	// shared sentinel across both channels (internal/reply), so the engine's arm
+	// below would otherwise report a Joe reply as the engine's.
+	case errors.Is(err, joe.ErrNoChannels):
+		// A BACKSTOP: executeJoe turns this into a skip, so it does not reach here
+		// today. Kept because the default arm's fallback is "metric store
+		// unreachable", which on a Joe box names a component that is not there.
+		return "joe advertises no channels", "no_channels"
+	case errors.Is(err, joe.ErrBadChannelList):
+		// NOT the arm above, and the distinction is the whole reason the sentinel
+		// exists: a body that is not a channel list says nothing about how many
+		// channels Joe serves, so reporting it as a skip would close a lost command
+		// as done with the box still green.
+		return "joe did not answer with a channel list", "bad_channel_list"
+	case errors.Is(err, joe.ErrInvalidArgs):
+		return "job args could not be used", "invalid_args"
+	case errors.Is(err, errJoeCall) && errors.Is(err, joe.ErrOversizeReply):
+		return "the joe reply is too large to submit", "oversize_reply"
+	case errors.Is(err, joe.ErrJoeUnreachable):
+		// Named before the default arm, whose fallback is "metric store
+		// unreachable" -- a component a Joe box does not have.
+		return "joe unreachable", "joe_unreachable"
 	case errors.Is(err, dblab.ErrInvalidArgs):
 		return "job args could not be used", "invalid_args"
 	case errors.Is(err, dblab.ErrOversizeReply):
@@ -1103,6 +1349,18 @@ func classifyFailure(err error) (string, string) {
 		var upstream *collect.UpstreamError
 		if errors.As(err, &upstream) {
 			return fmt.Sprintf("metric store returned %d", upstream.StatusCode), "store_error"
+		}
+		var joeErr *joe.JoeError
+		if errors.As(err, &joeErr) {
+			// Joe usually says nothing at all -- its verifier's 403 and its command
+			// handler's 400 write a status and no body -- so the status IS the
+			// diagnostic, and whatever text there is joins it. Controls are stripped
+			// and the length capped by truncate(): the text is rendered on a terminal
+			// and reaches it from outside this process.
+			if msg := collect.StripControls(joeErr.Message); msg != "" {
+				return fmt.Sprintf("joe returned %d: %s", joeErr.StatusCode, msg), "joe_error"
+			}
+			return fmt.Sprintf("joe returned %d", joeErr.StatusCode), "joe_error"
 		}
 		var engineErr *dblab.EngineError
 		if errors.As(err, &engineErr) {

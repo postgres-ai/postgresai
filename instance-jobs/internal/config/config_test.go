@@ -27,6 +27,11 @@ func writeConfig(t *testing.T, content string) string {
 	t.Setenv("PGAI_DBLAB_TOKEN", "")
 	t.Setenv("PGAI_DBLAB_URL", "")
 	t.Setenv("PGAI_DBLAB_VERIFY_TOKEN", "")
+	// And the Joe channel, for the same reason: a stray joe_token in the
+	// environment would make every monitoring fixture read as a channel conflict.
+	t.Setenv("PGAI_JOE_TOKEN", "")
+	t.Setenv("PGAI_JOE_URL", "")
+	t.Setenv("PGAI_JOE_VERIFY_TOKEN", "")
 	return path
 }
 

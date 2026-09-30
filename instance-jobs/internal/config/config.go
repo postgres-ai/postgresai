@@ -29,14 +29,20 @@ const DefaultStoreURL = "http://sink-prometheus:9090"
 // platform never supplies one (platform-all#805).
 const DefaultDBLabURL = "http://127.0.0.1:2345"
 
+// DefaultJoeURL is Joe's address on a Joe box, for the same reason and with the
+// same shape: Joe listens on 2400 (JOE_APP_PORT's default) and this process runs
+// beside it, so the platform supplies no host here either (#398).
+const DefaultJoeURL = "http://127.0.0.1:2400"
+
 // Config is the resolved runtime configuration. Nothing here is ever logged.
 //
-// ONE BOX SERVES ONE CHANNEL. InstanceID names a monitoring instance and
-// DBLabToken stands for a DBLab engine -- there is no dblab instance id, by
-// design: the token identifies the engine. Exactly one of the two may be set,
-// because the loop polls one rpc per tick, so a config naming both is an
-// ambiguity to report rather than a preference to resolve silently
-// (platform-all#805).
+// ONE BOX SERVES ONE CHANNEL, and there are now three of them: InstanceID names
+// a monitoring instance, DBLabToken stands for a DBLab engine and JoeToken for a
+// Joe -- neither of the latter two carries an instance id, by design, because
+// the token identifies the box. Exactly ONE may be set: the loop polls one rpc
+// per tick, so a config naming two is an ambiguity to report rather than a
+// preference to resolve silently (platform-all#805, #398). A box that runs both
+// an engine and a Joe runs a SECOND CONTAINER of this image, one channel each.
 type Config struct {
 	Path          string
 	APIToken      string
@@ -52,30 +58,49 @@ type Config struct {
 	DBLabToken       string
 	DBLabURL         string
 	DBLabVerifyToken string
+	// JoeToken is Joe's OWN per-instance platform token, the mirror of
+	// DBLabToken and carrying no instance id for the same reason (#398).
+	JoeToken string
+	JoeURL   string
+	// JoeVerifyToken is NOT a bearer token despite the name it shares with the
+	// engine's: it is the HMAC KEY every call to Joe is signed with, and its
+	// value is the box's joe_communication_signing_secret (Joe's own
+	// `signingSecret`). It never goes on the wire -- see internal/joe.
+	JoeVerifyToken string
 }
 
 // IsDBLab reports whether this box serves the DBLab channel.
 func (c Config) IsDBLab() bool { return c.DBLabToken != "" }
 
+// IsJoe reports whether this box serves the Joe channel.
+func (c Config) IsJoe() bool { return c.JoeToken != "" }
+
 // Problem returns why this instance cannot poll yet, or "" when it can. The
 // text names what is wrong, never a value, and is safe to log and to put in the
 // health file.
 func (c Config) Problem() string {
-	var missing []string
-
-	// Named first, or a box carrying both would be reported as fully configured
-	// and would then serve whichever channel the code happened to prefer.
-	if c.InstanceID != "" && c.IsDBLab() {
-		return "instance_id and dblab_token are both set; one box serves one channel"
+	// Named first, or a box carrying two channels would be reported as fully
+	// configured and would then serve whichever the code happened to prefer.
+	if p := channelConflict(c); p != "" {
+		return p
 	}
 
-	if c.IsDBLab() {
+	var missing []string
+	switch {
+	case c.IsDBLab():
 		// No api_key: a DBLab box has none. Its credential IS dblab_token, which
 		// is set by definition here.
 		if c.DBLabVerifyToken == "" {
 			missing = append(missing, "dblab_verify_token")
 		}
-	} else {
+	case c.IsJoe():
+		// Same shape, and joe_verify_token is required for a sharper reason: Joe
+		// refuses an unsigned call with a 403, so a box without the key would
+		// fail every job with what looks like a permissions problem.
+		if c.JoeVerifyToken == "" {
+			missing = append(missing, "joe_verify_token")
+		}
+	default:
 		if c.APIToken == "" {
 			missing = append(missing, "api_key")
 		}
@@ -87,27 +112,60 @@ func (c Config) Problem() string {
 	if len(missing) > 0 {
 		return strings.Join(missing, ", ") + " missing"
 	}
-	if c.IsDBLab() {
-		if p := engineURLProblem(c.DBLabURL); p != "" {
+	switch {
+	case c.IsDBLab():
+		if p := localURLProblem("dblab_url", c.DBLabURL); p != "" {
+			return p
+		}
+	case c.IsJoe():
+		if p := localURLProblem("joe_url", c.JoeURL); p != "" {
 			return p
 		}
 	}
 	return baseURLProblem(c.APIBaseURL)
 }
 
-// engineURLProblem rejects a DBLab address this process cannot call. Plain http
-// is fine and is the norm: the engine runs BESIDE this process on the same box,
-// so the request does not leave it -- which is the point of the inversion. What
-// is rejected is a value that is not an address at all, because the alternative
-// is every job failing as a transport error rather than being reported here as
-// the configuration problem it is.
-func engineURLProblem(raw string) string {
+// channelConflict refuses a box that names more than one channel. The whole
+// point is that it is reported rather than resolved: two credentials on one box
+// mean the install wrote a key it should not have, and picking a winner here
+// would leave the other channel looking dead with nothing saying why.
+func channelConflict(c Config) string {
+	var named []string
+	if c.InstanceID != "" {
+		named = append(named, "instance_id")
+	}
+	if c.IsDBLab() {
+		named = append(named, "dblab_token")
+	}
+	if c.IsJoe() {
+		named = append(named, "joe_token")
+	}
+	if len(named) < 2 {
+		return ""
+	}
+	// "both" for two keeps the exact message the DBLab arm already emits, so
+	// adding a third channel does not reword an existing box's health file.
+	quantifier := "are both set"
+	if len(named) > 2 {
+		quantifier = "are all set"
+	}
+	return strings.Join(named[:len(named)-1], ", ") + " and " + named[len(named)-1] +
+		" " + quantifier + "; one box serves one channel"
+}
+
+// localURLProblem rejects an address on this box that this process cannot call,
+// naming the key it came from. Plain http is fine and is the norm: the engine and
+// Joe both run BESIDE this process, so the request does not leave the box --
+// which is the point of the inversion. What is rejected is a value that is not an
+// address at all, because the alternative is every job failing as a transport
+// error rather than being reported here as the configuration problem it is.
+func localURLProblem(key, raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return "dblab_url is not a url"
+		return key + " is not a url"
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "dblab_url scheme is not http(s)"
+		return key + " scheme is not http(s)"
 	}
 	return ""
 }
@@ -155,6 +213,7 @@ func Load() (Config, error) {
 		StoreUsername: os.Getenv("VM_AUTH_USERNAME"),
 		StorePassword: os.Getenv("VM_AUTH_PASSWORD"),
 		DBLabURL:      envOr("PGAI_DBLAB_URL", DefaultDBLabURL),
+		JoeURL:        envOr("PGAI_JOE_URL", DefaultJoeURL),
 	}
 
 	values, err := parseFile(cfg.Path)
@@ -184,6 +243,15 @@ func Load() (Config, error) {
 		os.Getenv("PGAI_DBLAB_VERIFY_TOKEN"))
 	if v := values["dblab_url"]; v != "" {
 		cfg.DBLabURL = v
+	}
+
+	// The Joe channel (#398), read exactly like the DBLab keys above. A box with
+	// none of these is a monitoring instance and nothing here changes for it.
+	cfg.JoeToken = firstNonEmpty(values["joe_token"], os.Getenv("PGAI_JOE_TOKEN"))
+	cfg.JoeVerifyToken = firstNonEmpty(values["joe_verify_token"],
+		os.Getenv("PGAI_JOE_VERIFY_TOKEN"))
+	if v := values["joe_url"]; v != "" {
+		cfg.JoeURL = v
 	}
 	return cfg, nil
 }
