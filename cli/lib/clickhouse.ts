@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dump } from "js-yaml";
 import { requestTimeoutSignal } from "./util";
@@ -87,7 +87,10 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
   return `Host metrics: ClickHouse Cloud Prometheus endpoint for service ${service.name} (scraped every 60s)`;
 }
 
-export function removeHostMetrics(projectDir: string, name: string): void {
+/** Deletes the target's host metrics files; returns whether any existed. */
+export function removeHostMetrics(projectDir: string, name: string): boolean {
   validateName(name);
-  for (const extension of ["yml", "secret", "secret.tmp"]) rmSync(join(projectDir, "host-metrics", `clickhouse-${name}.${extension}`), { force: true });
+  const files = ["yml", "secret", "secret.tmp"].map((ext) => join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)).filter((file) => existsSync(file));
+  for (const file of files) rmSync(file, { force: true });
+  return files.length > 0;
 }

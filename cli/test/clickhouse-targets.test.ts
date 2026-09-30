@@ -88,7 +88,7 @@ test("add recovers from a stale secret tmp file left by an interrupted run", asy
 test("remove deletes a stale secret tmp file", () => {
   mkdirSync(`${dir}/host-metrics`);
   writeFileSync(`${dir}/host-metrics/clickhouse-ch-test.secret.tmp`, "stale-secret");
-  removeHostMetrics(dir, "ch-test");
+  expect(removeHostMetrics(dir, "ch-test")).toBe(true);
   expect(readdirSync(`${dir}/host-metrics`)).toEqual([]);
 });
 test.each(["both", "config", "secret", "neither"])("remove cleans up optional host files (%s present)", async (present) => {
@@ -97,7 +97,7 @@ test.each(["both", "config", "secret", "neither"])("remove cleans up optional ho
     if (present === "both" || present === kind) writeFileSync(`${dir}/host-metrics/clickhouse-ch-test.${extension}`, "fixture");
   }
   writeFileSync(`${dir}/host-metrics/clickhouse-other.secret`, "keep");
-  removeHostMetrics(dir, "ch-test");
+  expect(removeHostMetrics(dir, "ch-test")).toBe(present !== "neither");
   expect(readdirSync(`${dir}/host-metrics`)).toEqual(["clickhouse-other.secret"]);
   expect(requests).toEqual([]);
 });

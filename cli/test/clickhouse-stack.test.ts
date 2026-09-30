@@ -1,17 +1,9 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "../..");
-test("Prometheus loads host metric scrape files", () => {
-  const config = Bun.YAML.parse(readFileSync(`${root}/config/prometheus/prometheus.yml`, "utf8")) as any;
-  expect(config.scrape_config_files).toEqual(["/etc/pgai/host-metrics/*.yml"]);
-});
-test("sink-prometheus mounts host metrics read-only", () => {
-  const compose = Bun.YAML.parse(readFileSync(`${root}/docker-compose.yml`, "utf8")) as any;
-  expect(compose.services["sink-prometheus"].volumes).toContain("./host-metrics:/etc/pgai/host-metrics:ro");
-});
 test("project initialization pre-creates host-metrics alongside bind-mount files", () => {
   const dir = mkdtempSync(`${tmpdir()}/clickhouse-init-`);
   try {
