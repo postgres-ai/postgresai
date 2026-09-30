@@ -10,7 +10,7 @@
   RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
   disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
   JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required).
-  Also `pgai init`, `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
+  Also `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
 
 - `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
