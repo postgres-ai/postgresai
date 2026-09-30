@@ -5376,12 +5376,8 @@ function defaultTargetName(connStr: string): string | null {
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
 }
 
-/**
- * A compose service's container state ("running", "exited", ...; "" when it has
- * no container), or null when it cannot be read. `ps --format` is v2-only, so
- * this takes the id from `ps -a -q` and the state from `docker inspect`.
- */
-async function composeServiceState(service: string): Promise<string | null> {
+/** Whether sink-prometheus has a running or paused container; null when that cannot be read. */
+async function sinkPrometheusUp(): Promise<boolean | null> {
   const cmd = getComposeCmd();
   if (!cmd) return null;
   let composeFile: string;
@@ -5390,18 +5386,8 @@ async function composeServiceState(service: string): Promise<string | null> {
   } catch {
     return null;
   }
-  const ids = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", service]);
-  if (ids.status !== 0) return null;
-  const list = ids.stdout.split(/\s+/).filter(Boolean);
-  if (list.length === 0) return "";
-  // v1 also lists one-off (`run`) containers: skip them, and report the
-  // service as running if any of its real containers is not stopped.
-  const inspected = spawnSync("docker", ["inspect", "-f", '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}}', ...list]);
-  if (inspected.status !== 0) return null;
-  const states = inspected.stdout.split("\n").map((line) => line.trim().split(/\s+/))
-    .filter(([oneoff, state]) => state && oneoff.toLowerCase() !== "true")
-    .map(([, state]) => state.toLowerCase());
-  return states.find((state) => !["created", "exited", "dead"].includes(state)) ?? states[0] ?? "";
+  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", "--status", "running", "--status", "paused", "sink-prometheus"]);
+  return ps.status === 0 ? ps.stdout.trim() !== "" : null;
 }
 
 // Stacks older than host metrics support lack the ./host-metrics mount or
@@ -5416,15 +5402,15 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
     return false;
   }
   // A stopped sink-prometheus cannot be reloaded, and it will not load the
-  // deleted file when it starts, so a removal needs nothing more. Anything
-  // else (running, paused, unknown) goes through reload and verification.
+  // deleted file when it starts, so a removal needs nothing more. A running or
+  // paused one goes through reload and verification.
   if (!revision) {
-    const state = await composeServiceState("sink-prometheus");
-    if (state === null) {
+    const up = await sinkPrometheusUp();
+    if (up === null) {
       console.error("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
       return false;
     }
-    if (["", "created", "exited", "dead"].includes(state)) {
+    if (!up) {
       console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
       return true;
     }
