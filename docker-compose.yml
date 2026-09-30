@@ -425,6 +425,37 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # RDS host stats polls AWS metrics and writes host_* series to VictoriaMetrics.
+  # AWS base credentials come from the VM instance profile.
+  rds-host-stats:
+    image: ${PGAI_REGISTRY:-postgresai}/rds-host-stats:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: rds-host-stats
+    profiles: ["rds"]
+    cpus: ${RDS_HOST_STATS_CPUS:-0.5}
+    mem_limit: ${RDS_HOST_STATS_MEM:-134217728}
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - RDS_DB_INSTANCE_IDENTIFIER=${RDS_DB_INSTANCE_IDENTIFIER:-}
+      - AWS_REGION=${AWS_REGION:-}
+      - RDS_ROLE_ARN=${RDS_ROLE_ARN:-}
+      - RDS_EXTERNAL_ID=${RDS_EXTERNAL_ID:-}
+      - RDS_POLL_INTERVAL_SECONDS=${RDS_POLL_INTERVAL_SECONDS:-60}
+      - PGAI_CLUSTER=${PGAI_CLUSTER:-}
+      - PGAI_NODE_NAME=${PGAI_NODE_NAME:-}
+      - PROMETHEUS_URL=http://sink-prometheus:9090
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+    depends_on:
+      sink-prometheus:
+        condition: service_started
+    restart: unless-stopped
+
   # Self-monitoring components (may have reduced functionality on macOS)
 
   # cAdvisor - Container metrics (self-monitoring)
