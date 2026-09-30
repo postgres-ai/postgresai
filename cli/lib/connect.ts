@@ -32,7 +32,6 @@ export interface Database {
   id: string;
   name: string;
   provider: string;
-  mode: string;
   status: string | null;
   dashboard_url: string | null;
   host_metrics: boolean;
@@ -150,7 +149,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
     });
     if (created.status === "failed") return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
-    row = { id: created.id, name: created.name, provider, mode: "cloud", status: created.status, dashboard_url: null, host_metrics: !!ch };
+    row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
   }
 
   for (const deadline = Date.now() + opts.waitMs; ;) {
