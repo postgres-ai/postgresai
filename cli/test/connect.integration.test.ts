@@ -84,10 +84,19 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     // The role already exists from the test above; its password is in that URL.
     const db2 = new URL(ADMIN!);
     db2.pathname = "/pgai_connect_db2";
+    const verifier = async () => { const a = await admin(); const r = (await a.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword; await a.end(); return r; };
+    const before = await verifier();
+    // A server that does not check passwords (trust, as for CI's localhost
+    // service) lets any password in; the stored one must still stay as it is.
+    const wrong = new URL(monUrlFromEarlierTest);
+    wrong.password = "not-the-password";
+    const w = new Client({ connectionString: wrong.toString() });
+    const checksPasswords = await w.connect().then(() => w.end().then(() => false), () => true);
     process.env.PGAI_MON_PASSWORD = "not-the-password";
     try {
       const refused = await prepareDatabase(db2.toString(), "self-managed");
-      expect(refused).toEqual({ next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)" });
+      if (!checksPasswords) expect(refused).toHaveProperty("monitoringUrl");
+      else expect(refused).toEqual({ next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)" });
     } finally {
       delete process.env.PGAI_MON_PASSWORD;
     }
@@ -95,8 +104,6 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await probe.connect();
     await probe.end();
 
-    const verifier = async () => { const a = await admin(); const r = (await a.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword; await a.end(); return r; };
-    const before = await verifier();
     process.env.PGAI_MON_PASSWORD = decodeURIComponent(new URL(monUrlFromEarlierTest).password);
     try {
       const second = await prepareDatabase(db2.toString(), "self-managed");
