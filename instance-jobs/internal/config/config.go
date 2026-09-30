@@ -38,13 +38,18 @@ const DefaultDBLabURL = "http://127.0.0.1:2345"
 // ambiguity to report rather than a preference to resolve silently
 // (platform-all#805).
 type Config struct {
-	Path          string
-	APIToken      string
-	InstanceID    string
-	APIBaseURL    string
-	StoreURL      string
-	StoreUsername string
-	StorePassword string
+	SupabaseHostMetrics   bool
+	SupabaseMetricsListen string
+	Path                  string
+	APIToken              string
+	InstanceID            string
+	// InstanceSecret is the instance's own secret that provisioning writes to
+	// .pgwatch-config (platform-all!884). File only, never the environment.
+	InstanceSecret string
+	APIBaseURL     string
+	StoreURL       string
+	StoreUsername  string
+	StorePassword  string
 	// DBLabToken is the engine's OWN per-instance platform token, issued by
 	// v1.dblab_instance_register on first registration. There is NO instance id
 	// here and there is not meant to be: the token identifies the engine, so the
@@ -149,12 +154,14 @@ func isLoopback(host string) bool {
 // the un-provisioned state, and the process idles through it.
 func Load() (Config, error) {
 	cfg := Config{
-		Path:          envOr("INSTANCE_JOBS_CONFIG_PATH", DefaultPath),
-		APIBaseURL:    envOr("PGAI_API_BASE_URL", DefaultAPIBaseURL),
-		StoreURL:      envOr("PROMETHEUS_URL", DefaultStoreURL),
-		StoreUsername: os.Getenv("VM_AUTH_USERNAME"),
-		StorePassword: os.Getenv("VM_AUTH_PASSWORD"),
-		DBLabURL:      envOr("PGAI_DBLAB_URL", DefaultDBLabURL),
+		SupabaseHostMetrics:   strings.EqualFold(strings.TrimSpace(os.Getenv("PGAI_SUPABASE_HOST_METRICS")), "true"),
+		SupabaseMetricsListen: envOr("PGAI_SUPABASE_METRICS_LISTEN", ":9188"),
+		Path:                  envOr("INSTANCE_JOBS_CONFIG_PATH", DefaultPath),
+		APIBaseURL:            envOr("PGAI_API_BASE_URL", DefaultAPIBaseURL),
+		StoreURL:              envOr("PROMETHEUS_URL", DefaultStoreURL),
+		StoreUsername:         os.Getenv("VM_AUTH_USERNAME"),
+		StorePassword:         os.Getenv("VM_AUTH_PASSWORD"),
+		DBLabURL:              envOr("PGAI_DBLAB_URL", DefaultDBLabURL),
 	}
 
 	values, err := parseFile(cfg.Path)
@@ -162,6 +169,7 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	cfg.APIToken = values["api_key"]
+	cfg.InstanceSecret = values["instance_secret"]
 	// The file is the source of truth once the install writes the id there. Until
 	// it does, the environment is the only place the id exists on a box:
 	// PGAI_INSTANCE_ID is what the provisioning flow already passes to the CLI,

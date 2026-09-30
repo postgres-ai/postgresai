@@ -4459,6 +4459,337 @@
       ],
       "title": "Host stats",
       "type": "row"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 143
+      },
+      "id": 64,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 144
+          },
+          "id": 65,
+          "options": {
+            "legend": {
+              "calcs": [
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "100 * (1 - avg by (supabase_project_ref, supabase_identifier) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} CPU busy",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "CPU busy %",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 144
+          },
+          "id": 66,
+          "options": {
+            "legend": {
+              "calcs": [
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "sortBy": "Last",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} Available",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Memory available",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 144
+          },
+          "id": 67,
+          "options": {
+            "legend": {
+              "calcs": [
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "sortBy": "Last",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} {{mountpoint}} ({{device}})",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Filesystem available",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 144
+          },
+          "id": 68,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} {{device}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Disk IOPS /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "binBps",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 144
+          },
+          "id": 69,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} {{device}} rx",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
+              "interval": "60s",
+              "legendFormat": "{{supabase_identifier}} {{device}} tx",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Network bytes /s",
+          "type": "timeseries"
+        }
+      ],
+      "title": "Host (Supabase)",
+      "type": "row"
     }
   ],
   "preload": false,
