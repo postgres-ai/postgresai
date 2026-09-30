@@ -14,7 +14,7 @@ function runCli(args: string[]) {
   return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
-const scope = "-- scope: role postgres_ai_mon gets: create/update role | create extension pg_stat_statements | connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path | execute on postgres_ai.table_describe (SECURITY DEFINER, owned by the admin user) | execute on rds_tools.pg_ls_multixactdir (RDS only) | execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file; this admin connection is used for this run only and is not stored";
+const scope = "-- scope: role postgres_ai_mon gets: create/update role | create extension pg_stat_statements | connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path | execute on postgres_ai.table_describe (SECURITY INVOKER, catalog only) | execute on rds_tools.pg_ls_multixactdir (RDS only) | execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file; this admin connection is used for this run only and is not stored";
 
 // The suite below skips without a database. In CI that must never happen silently:
 // the cli:clickhouse-like:tests job sets PGAI_TEST_CLICKHOUSE_LIKE_URL, so a missing
@@ -93,9 +93,10 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
     }
   });
 
-  // On ClickHouse the definer of table_describe is a real superuser, so any role that
-  // can create objects in public must not be able to get code run inside it.
-  test("table_describe cannot be hijacked through objects in public", async () => {
+  // table_describe runs as the caller and reads only the catalog, so the monitoring
+  // role needs no USAGE on application schemas, and objects it can create in public
+  // must not shadow the built-ins the function calls.
+  test("table_describe is SECURITY INVOKER and cannot be hijacked through public", async () => {
     const admin = new Client({ connectionString: adminUrl, connectionTimeoutMillis: 10000 });
     const mon = new Client({ connectionString: monUrl, connectionTimeoutMillis: 10000 });
     try {
@@ -105,6 +106,10 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
       await admin.query("create table td_app.orders (id int references public.td_probe (id))");
       await admin.query("grant create on schema public to postgres_ai_mon");
       await mon.connect();
+      const fn = await mon.query("select prosecdef, proconfig from pg_proc where oid = 'postgres_ai.table_describe(text)'::regprocedure");
+      expect(fn.rows).toEqual([{ prosecdef: false, proconfig: ["search_path=pg_catalog, pg_temp"] }]);
+      const usage = await mon.query("select has_schema_privilege('td_app', 'usage') as usage");
+      expect(usage.rows[0].usage).toBe(false);
       // An exact-type overload in public outranks pg_catalog's polymorphic array_append.
       await mon.query(`create function public.array_append(text[], text) returns text[]
         language plpgsql as $$ begin raise exception 'hijacked as %', current_user; end $$`);
