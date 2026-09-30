@@ -227,10 +227,10 @@ async function logsIn(url: string): Promise<boolean> {
     await (await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }))).client.end();
     return true;
   } catch (err) {
-    const code = (err as { code?: string }).code;
+    const { code, routine } = err as { code?: string; routine?: string };
     if (code === "28P01") return false;
-    // No CONNECT on the database yet: checked after the password was accepted.
-    if (code === "42501") return true;
+    // No CONNECT on the database yet: CheckMyDatabase runs after the password was accepted.
+    if (code === "42501" && routine === "CheckMyDatabase") return true;
     throw err;
   }
 }
