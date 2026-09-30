@@ -3625,7 +3625,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "CPU busy from CloudWatch and, with Enhanced Monitoring, from the OS, plus the share of time waiting on I/O.",
+          "description": "Share of CPU time busy and waiting on I/O. RDS: CloudWatch CPUUtilization, and the OS view from Enhanced Monitoring when enabled. Supabase and ClickHouse: derived from per-mode CPU seconds.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3679,7 +3679,7 @@
               },
               "editorMode": "code",
               "expr": "host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "CPU (CloudWatch)",
+              "legendFormat": "CPU busy",
               "range": true,
               "refId": "A"
             },
@@ -3690,7 +3690,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "CPU (OS)",
+              "legendFormat": "CPU busy (RDS Enhanced Monitoring)",
               "range": true,
               "refId": "B"
             },
@@ -3701,7 +3701,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "I/O wait (OS)",
+              "legendFormat": "I/O wait",
               "range": true,
               "refId": "C"
             }
@@ -3714,7 +3714,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Freeable memory from CloudWatch; total, free, cached, swap used and the largest process RSS from Enhanced Monitoring.",
+          "description": "Available memory (RDS FreeableMemory, Linux MemAvailable, or the ClickHouse limit minus used), with total, free, cached and swap used where the provider reports them. The largest process RSS comes from RDS Enhanced Monitoring.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3768,7 +3768,7 @@
               },
               "editorMode": "code",
               "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "freeable",
+              "legendFormat": "available",
               "range": true,
               "refId": "A"
             },
@@ -3779,7 +3779,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "total (OS)",
+              "legendFormat": "total",
               "range": true,
               "refId": "B"
             },
@@ -3790,7 +3790,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "free (OS)",
+              "legendFormat": "free",
               "range": true,
               "refId": "C"
             },
@@ -3801,7 +3801,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "cached (OS)",
+              "legendFormat": "cached",
               "range": true,
               "refId": "D"
             },
@@ -3812,7 +3812,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_swap_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "swap used (OS)",
+              "legendFormat": "swap used",
               "range": true,
               "refId": "E"
             },
@@ -3823,7 +3823,7 @@
               },
               "editorMode": "code",
               "expr": "host_os_process_max_rss_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "largest process RSS (OS)",
+              "legendFormat": "largest process RSS",
               "range": true,
               "refId": "F"
             }
@@ -3836,7 +3836,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "RDS free storage; for Aurora, free local storage and the cluster volume size.",
+          "description": "Free space on the database volume (RDS free storage, Supabase /data, ClickHouse storage limit minus used). Aurora has no free storage; it shows free local storage and the cluster volume size.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3925,7 +3925,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Read and write operations per second; Aurora cluster volume IOPS are 5-minute averages.",
+          "description": "Read and write operations per second, summed over the host's disks. Aurora cluster volume IOPS are 5-minute averages.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4025,152 +4025,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Average time per read and write operation.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisSoftMin": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": 180000,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                }
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 166
-          },
-          "id": 58,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Max",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_disk_read_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "read",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_disk_write_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "write",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Disk latency",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "description": "Outstanding I/O requests waiting for the disk.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisSoftMin": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": 180000,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                }
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 166
-          },
-          "id": 59,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Max",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_disk_queue_depth{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "queue depth",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Disk queue depth",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "description": "Network receive and transmit throughput.",
+          "description": "Network receive and transmit throughput, excluding loopback.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4196,7 +4051,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 174
+            "y": 166
           },
           "id": 60,
           "options": {
@@ -4242,553 +4097,9 @@
           ],
           "title": "Network /s",
           "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "description": "Average active sessions (db.load.avg) from Performance Insights.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisSoftMin": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": 180000,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                }
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 174
-          },
-          "id": 61,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_db_load{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "average active sessions",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "DB load (Performance Insights)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "description": "Delay of this replica behind its source: ReplicaLag on RDS, AuroraReplicaLag on Aurora. Empty on a primary.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisSoftMin": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": 180000,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                }
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 182
-          },
-          "id": 62,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Max",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_replica_lag_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "replica lag",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Replica lag",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "description": "Credits left for gp2 volume bursting (BurstBalance) and for EBS-optimized instance I/O (EBSIOBalance%). RDS only; gp3 volumes report no burst balance. A balance near zero throttles I/O.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisSoftMax": 100,
-                "axisSoftMin": 0,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": 180000,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                }
-              },
-              "unit": "percent"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 182
-          },
-          "id": 63,
-          "options": {
-            "legend": {
-              "calcs": [
-                "lastNotNull",
-                "min"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_burst_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "burst balance",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "host_ebs_io_balance_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "EBS I/O balance",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Burst and EBS I/O balance",
-          "type": "timeseries"
         }
       ],
-      "title": "Host stats",
-      "type": "row"
-    },
-    {
-      "collapsed": true,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 143
-      },
-      "id": 64,
-      "panels": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percent",
-              "min": 0,
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 10,
-                "showPoints": "never",
-                "spanNulls": false
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 0,
-            "y": 144
-          },
-          "id": 65,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "sortBy": "Max",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "100 * (1 - avg by (supabase_project_ref, supabase_identifier) (rate(node_cpu_seconds_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\", mode=\"idle\"}[$__rate_interval])))",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} CPU busy",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "CPU busy %",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "bytes",
-              "min": 0,
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 10,
-                "showPoints": "never",
-                "spanNulls": false
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 8,
-            "y": 144
-          },
-          "id": 66,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "node_memory_MemAvailable_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} Available",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Memory available",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "bytes",
-              "min": 0,
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 10,
-                "showPoints": "never",
-                "spanNulls": false
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 8,
-            "x": 16,
-            "y": 144
-          },
-          "id": 67,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "node_filesystem_avail_bytes{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} {{mountpoint}} ({{device}})",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Filesystem available",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "ops",
-              "min": 0,
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 10,
-                "showPoints": "never",
-                "spanNulls": false
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 12,
-            "x": 0,
-            "y": 144
-          },
-          "id": 68,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "rate(node_disk_reads_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} {{device}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Disk IOPS /s",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "P7A0D6631BB10B34F"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "binBps",
-              "min": 0,
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "lineWidth": 1,
-                "fillOpacity": 10,
-                "showPoints": "never",
-                "spanNulls": false
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 12,
-            "x": 12,
-            "y": 144
-          },
-          "id": 69,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "rate(node_network_receive_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} {{device}} rx",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "P7A0D6631BB10B34F"
-              },
-              "editorMode": "code",
-              "expr": "rate(node_network_transmit_bytes_total{job=\"supabase-host-metrics\", cluster=\"$cluster_name\", node_name=\"$node_name\", service_type=\"db\"}[$__rate_interval])",
-              "interval": "60s",
-              "legendFormat": "{{supabase_identifier}} {{device}} tx",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Network bytes /s",
-          "type": "timeseries"
-        }
-      ],
-      "title": "Host (Supabase)",
+      "title": "Host",
       "type": "row"
     }
   ],

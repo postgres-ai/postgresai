@@ -252,13 +252,13 @@ platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
 health. `not_supabase`, `consent_needed` and `no_key` are not faults: the relay
 answers an empty 200, so `up=1` with no series and the box carries no failing
 target. For `consent_needed`, the relay logs a warning; open the Supabase page
-in the PostgresAI console and click **Allow host metrics**. Dashboard 01 includes a collapsed
-**Host (Supabase)** row, labeled by `supabase_identifier` (the project ref for
-the primary, a distinct value per read replica). The scrape target carries the
-`cluster` and `node_name` tags of the one Supabase target in `instances.yml`
-(sources-generator writes it to `prometheus/supabase-host-metrics.json`), so the
-row follows the dashboard's cluster and node selectors. With no Supabase target,
-or more than one, the series carry no such labels and the row stays empty.
+in the PostgresAI console and click **Allow host metrics**. The scrape target
+carries the `cluster` and `node_name` tags of the one Supabase target in
+`instances.yml` (sources-generator writes it to
+`prometheus/supabase-host-metrics.json`). Recording rules map the primary's
+series to `host_*`, which the **Host** row of Dashboard 01 reads; see
+[docs/host-metrics.md](../docs/host-metrics.md). With no Supabase target, or more
+than one, the series carry no such labels and produce no `host_*`.
 
 Credential lifecycle: the key is cached for one hour, then fetched again. A
 `401`/`403` from Supabase discards it and triggers one immediate refetch; a
