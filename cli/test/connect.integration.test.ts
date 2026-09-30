@@ -95,12 +95,14 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     db2.pathname = "/pgai_connect_db2";
     const verifier = async () => { const a = await admin(); const r = (await a.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword; await a.end(); return r; };
     const before = await verifier();
-    // A server that does not check passwords (trust, as for CI's localhost
-    // service) lets any password in; the stored one must still stay as it is.
+    // A server that does not check passwords (trust) lets any password in;
+    // the stored one must still stay as it is.
     const wrong = new URL(monUrlFromEarlierTest);
     wrong.password = "not-the-password";
     const w = new Client({ connectionString: wrong.toString() });
     const checksPasswords = await w.connect().then(() => w.end().then(() => false), () => true);
+    // CI's server must check them (POSTGRES_HOST_AUTH_METHOD in .gitlab-ci.yml), or the refusal below is never asserted.
+    if (process.env.CI) expect(checksPasswords).toBe(true);
     process.env.PGAI_MON_PASSWORD = "not-the-password";
     try {
       const refused = await prepareDatabase(db2.toString(), "self-managed");
