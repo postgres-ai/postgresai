@@ -1033,7 +1033,7 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
  * can never escape projectDir or otherwise poison the backup path. Callers fall
  * back to a timestamp suffix when this returns null.
  *
- * Applied centrally to BOTH tag sources — the .env read (readDeployedTag) and
+ * Applied centrally to BOTH tag sources — the .env read (readEnvTag) and
  * the OLD tag passed in by callers that rewrite .env first (e.g. local-install)
  * — so neither path can bypass the validation.
  */
@@ -1044,15 +1044,57 @@ function sanitizeTagForBackup(tag: string | null | undefined): string | null {
 }
 
 /**
- * Read the deployed PGAI_TAG out of a project's .env (returns null if absent or
- * if the value fails {@link sanitizeTagForBackup}). Used only to compute the
- * compose backup file suffix; callers fall back to a timestamp when this is null.
+ * What `mon update` does with PGAI_TAG: move the stack to this CLI's version,
+ * like `mon local-install` does, so an upgrade needs no manual .env edit. It
+ * never downgrades a newer tag, and a non-release CLI build moves nothing.
  */
-function readDeployedTag(projectDir: string): string | null {
+export function planUpdateTag(current: string | null, cliVersion: string): { tag: string | null; note: string } {
+  const semver = (v: string) => {
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v);
+    return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] } : null;
+  };
+  const cli = semver(cliVersion);
+  if (!cli || cli.pre) {
+    return { tag: null, note: `PGAI_TAG stays ${current ?? "unset"}: this CLI (${cliVersion}) is not a release. To pick a stack version, set PGAI_TAG=<version> in .env and re-run 'postgresai mon update'` };
+  }
+  if (current === cliVersion) return { tag: null, note: `PGAI_TAG is ${cliVersion}, matching this CLI` };
+  const cur = current ? semver(current) : null;
+  if (cur) {
+    const i = cur.core.findIndex((part, j) => part !== cli.core[j]);
+    // Same x.y.z: only a prerelease can differ, and it is older than the release.
+    if (i >= 0 && cur.core[i] > cli.core[i]) {
+      return { tag: null, note: `PGAI_TAG stays ${current}: it is newer than this CLI (${cliVersion}). Upgrade the CLI to move the stack: npm install -g postgresai@latest` };
+    }
+  }
+  return { tag: cliVersion, note: `PGAI_TAG: ${current ?? "unset"} -> ${cliVersion}` };
+}
+
+// A PGAI_TAG assignment we can read and rewrite safely: optional export,
+// spaces around "=", a plain tag (optionally quoted), then only a " #" comment.
+// Anything else that assigns PGAI_TAG (interpolation, "KEY: value", a comment
+// glued to a quote) resolves in ways we do not model, so it is left alone.
+const ENV_TAG_LINE = /^([ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*=[ \t]*)(["']?)([A-Za-z0-9._-]*)\2((?:[ \t]+#[^\r\n]*)?[ \t]*\r?)$/gm;
+const ENV_TAG_ANY = /^[ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*[=:]/gm;
+
+/** The PGAI_TAG compose would use (last assignment, null if none), and whether every assignment is plain. */
+export function readEnvTag(projectDir: string): { tag: string | null; plain: boolean } {
   const envFile = path.resolve(projectDir, ".env");
-  if (!fs.existsSync(envFile)) return null;
-  const m = fs.readFileSync(envFile, "utf8").match(/^PGAI_TAG=(.+)$/m);
-  return m ? sanitizeTagForBackup(m[1]) : null;
+  if (!fs.existsSync(envFile)) return { tag: null, plain: true };
+  const content = fs.readFileSync(envFile, "utf8");
+  const plainLines = [...content.matchAll(ENV_TAG_LINE)];
+  if (plainLines.length !== [...content.matchAll(ENV_TAG_ANY)].length) return { tag: null, plain: false };
+  const last = plainLines.at(-1);
+  return { tag: last && last[3] ? last[3] : null, plain: true };
+}
+
+/** Set every PGAI_TAG assignment in .env to `tag` (compose reads the last one), or append one. */
+export function writeEnvTag(projectDir: string, tag: string): void {
+  const envFile = path.resolve(projectDir, ".env");
+  const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  const content = new RegExp(ENV_TAG_LINE.source, "m").test(existing)
+    ? existing.replace(ENV_TAG_LINE, (_match, prefix: string, quote: string, _value: string, rest: string) => `${prefix}${quote}${tag}${quote}${rest}`)
+    : `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}PGAI_TAG=${tag}\n`;
+  writeEnvFile(envFile, content);
 }
 
 /**
@@ -1198,7 +1240,7 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   // .env pass it in (raw); otherwise read it from .env. Sanitize centrally so the
   // caller-supplied oldTag (e.g. local-install's previousTag) cannot bypass the
   // filename validation — a hostile/malformed tag falls back to the timestamp.
-  const deployedTag = sanitizeTagForBackup(oldTag ?? readDeployedTag(projectDir));
+  const deployedTag = sanitizeTagForBackup(oldTag ?? readEnvTag(projectDir).tag);
   const tagPart = deployedTag ?? new Date().toISOString().replace(/[:.]/g, "-");
   // Uniquify with a short hash of the OLD content so repeated runs (e.g.
   // update-config, where PGAI_TAG never advances) cannot overwrite the first,
@@ -5029,6 +5071,18 @@ mon
       } else {
         console.log("✓ .env is up to date");
       }
+      const envTag = readEnvTag(projectDir);
+      const deployedTag = envTag.tag;
+      const tagPlan = envTag.plain
+        ? planUpdateTag(deployedTag, pkg.version)
+        : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
+      if (tagPlan.tag) {
+        writeEnvTag(projectDir, tagPlan.tag);
+        // Bun loads .env into process.env at startup, and compose prefers the
+        // environment over .env: carry the move over so `pull` gets the new tag.
+        if (process.env.PGAI_TAG === deployedTag) process.env.PGAI_TAG = tagPlan.tag;
+      }
+      console.log(`${tagPlan.tag ? "✓ " : ""}${tagPlan.note}`);
       console.log();
 
 
@@ -5056,7 +5110,7 @@ mon
         // The helper logs only when it actually refreshes/warns, so don't
         // pre-announce a refresh that may turn out to be a no-op.
         console.log("(not a git checkout — checking bundled docker-compose.yml)");
-        await refreshBundledComposeIfStale(projectDir);
+        await refreshBundledComposeIfStale(projectDir, deployedTag);
       }
 
       // Step 3: pull new images.
@@ -5082,8 +5136,11 @@ mon
           }
         }
         console.log("\n✓ Update completed successfully");
+        // `mon restart` keeps the old containers; stop/start recreates them on the
+        // pulled images and re-runs config-init. Always, since an earlier failed
+        // run may already have moved PGAI_TAG.
         console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon restart");
+        console.log("  postgres-ai mon stop && postgres-ai mon start");
       } else {
         console.error("\n✗ Docker image update failed");
         process.exitCode = 1;
@@ -7944,7 +8001,7 @@ if (import.meta.main) {
 
 // Exported for unit tests (the CLI surface above is unaffected; these are the
 // same functions used by the `mon` commands).
-export { refreshBundledComposeIfStale, readDeployedTag, isValidComposeYaml };
+export { refreshBundledComposeIfStale, isValidComposeYaml };
 export { buildLocalInstallEnv, LOCAL_INSTALL_MANAGED_ENV_KEYS };
 export { registerMonitoringInstance, resolveAdoptedProject, type MonitoringRegistration };
 export { planMonitoringRegistration, type MonRegistrationPlan };
