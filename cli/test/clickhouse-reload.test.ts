@@ -12,7 +12,8 @@ const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
 const execLine = `exec -T sink-prometheus sh -c grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1" sh /etc/pgai/host-metrics/clickhouse-ch.yml`;
 const killLine = "kill -s SIGHUP sink-prometheus";
-const probeLine = "ps -a --format {{.State}} sink-prometheus";
+const probeLine = "ps -a -q sink-prometheus";
+const inspectLine = "inspect -f {{.State.Status}} 0123abcd";
 const verifyRemoveLine = `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "scrapePool":"clickhouse-ch" absent`;
 const reloadError = "Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.";
 let dir: string, projectDir: string, log: string, workerUrl: string, server: Worker;
@@ -29,10 +30,11 @@ beforeEach(async () => {
   writeFileSync(`${fakeBin}/docker`, `#!/bin/sh
 if [ "$1" = info ]; then exit 0; fi
 if [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi
+if [ "$1" = inspect ]; then printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\n' "\${FAKE_PS_STATE-running}"; exit 0; fi
 shift 3
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
-  ps) [ -n "$FAKE_PS_CODE" ] && exit "$FAKE_PS_CODE"; printf '%s\n' "\${FAKE_PS_STATE-running}"; exit 0 ;;
+  ps) [ -n "$FAKE_PS_CODE" ] && exit "$FAKE_PS_CODE"; [ "$FAKE_PS_STATE" = none ] || echo 0123abcd; exit 0 ;;
   kill) exit \${FAKE_KILL_CODE:-0} ;;
   exec) case "$*" in *api/v1/targets*) exit \${FAKE_VERIFY_CODE:-0} ;; esac; exit \${FAKE_EXEC_CODE:-0} ;;
   *) exit 0 ;;
@@ -78,7 +80,7 @@ function verifyAddLine() {
   return `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "__pgai_rev":"${revision}" present`;
 }
 function reloadLog() {
-  return readFileSync(log, "utf8").split("\n").filter((line) => /^(kill|exec|ps)(?: |$)/.test(line));
+  return readFileSync(log, "utf8").split("\n").filter((line) => /^(kill|exec|ps|inspect)(?: |$)/.test(line));
 }
 
 test("targets add fails when the sink-prometheus reload fails", () => {
@@ -117,7 +119,7 @@ test("targets remove fails when the sink-prometheus reload fails", () => {
   const result = run(["remove", "ch"], { FAKE_KILL_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain(reloadError);
-  expect(reloadLog()).toEqual([probeLine, killLine]);
+  expect(reloadLog()).toEqual([probeLine, inspectLine, killLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(false);
 });
 
@@ -136,7 +138,7 @@ test("targets remove fails when sink-prometheus still scrapes the removed job", 
   const result = run(["remove", "ch"], { FAKE_VERIFY_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain("sink-prometheus still scrapes 'clickhouse-ch' after the reload. Check 'docker logs sink-prometheus' for the error.");
-  expect(reloadLog()).toEqual([probeLine, killLine, verifyRemoveLine]);
+  expect(reloadLog()).toEqual([probeLine, inspectLine, killLine, verifyRemoveLine]);
 });
 
 test("targets remove succeeds after a verified reload", () => {
@@ -146,7 +148,7 @@ test("targets remove succeeds after a verified reload", () => {
   const result = run(["remove", "ch"]);
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stderr).not.toContain("sink-prometheus");
-  expect(reloadLog()).toEqual([probeLine, killLine, verifyRemoveLine]);
+  expect(reloadLog()).toEqual([probeLine, inspectLine, killLine, verifyRemoveLine]);
 });
 
 test("targets remove on a stopped stack succeeds without a reload", () => {
@@ -157,7 +159,7 @@ test("targets remove on a stopped stack succeeds without a reload", () => {
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stderr).not.toContain("still scrapes");
   expect(result.stdout).toContain("sink-prometheus is not running; it will not load 'clickhouse-ch' when it starts.");
-  expect(reloadLog()).toEqual([probeLine]);
+  expect(reloadLog()).toEqual([probeLine, inspectLine]);
   expect(existsSync(`${projectDir}/host-metrics/clickhouse-ch.yml`)).toBe(false);
 });
 
@@ -205,5 +207,15 @@ test("targets remove fails when the sink-prometheus state is unknown", () => {
   const result = run(["remove", "ch"], { FAKE_PS_CODE: "1" });
   expect(result.exitCode, result.stderr).toBe(1);
   expect(result.stderr).toContain("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
+  expect(reloadLog()).toEqual([probeLine]);
+});
+
+test("targets remove without a sink-prometheus container succeeds without a reload", () => {
+  const added = run(["add", conn, "ch"]);
+  expect(added.exitCode, added.stderr).toBe(0);
+  writeFileSync(log, "");
+  const result = run(["remove", "ch"], { FAKE_PS_STATE: "none" });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toContain("sink-prometheus is not running; it will not load 'clickhouse-ch' when it starts.");
   expect(reloadLog()).toEqual([probeLine]);
 });

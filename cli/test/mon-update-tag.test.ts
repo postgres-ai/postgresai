@@ -46,22 +46,27 @@ test("mon update rewrites PGAI_TAG in .env before anything else", () => {
 });
 
 test.each([
-  ["PGAI_TAG=0.18.0 # pinned\n", "0.18.0"],
-  ['export PGAI_TAG = "0.18.0"\n', "0.18.0"],
-  ["PGAI_TAG='0.16.0'\r\nPGAI_TAG=0.18.0\r\n", "0.18.0"],
-  ["# PGAI_TAG=0.9.0\nOTHER=1\n", null],
-])("readEnvTag reads what compose reads: %p", (content, tag) => {
+  ["PGAI_TAG=0.18.0 # pinned\n", { tag: "0.18.0", plain: true }],
+  ['export PGAI_TAG = "0.18.0"\n', { tag: "0.18.0", plain: true }],
+  ["PGAI_TAG='0.16.0'\r\nPGAI_TAG=0.18.0\r\n", { tag: "0.18.0", plain: true }],
+  ["# PGAI_TAG=0.9.0\nOTHER=1\n", { tag: null, plain: true }],
+  // Values compose resolves in ways we do not: never rewritten.
+  ['PGAI_TAG="${STACK_VERSION:-0.18.0}"\n', { tag: null, plain: false }],
+  ["PGAI_TAG: 0.18.0\n", { tag: null, plain: false }],
+  ['PGAI_TAG="0.16.0"# pinned\n', { tag: null, plain: false }],
+  ["PGAI_TAG=0.16.0\nPGAI_TAG=$OTHER\n", { tag: null, plain: false }],
+])("readEnvTag reads what compose reads: %p", (content, expected) => {
   dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
   writeFileSync(`${dir}/.env`, content);
-  expect(readEnvTag(dir)).toBe(tag);
+  expect(readEnvTag(dir)).toEqual(expected);
 });
 
-test("writeEnvTag rewrites every assignment and keeps export, quotes-free value, comments and CRLF", () => {
+test("writeEnvTag rewrites every assignment and keeps export, quotes, comments and CRLF", () => {
   dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
   writeFileSync(`${dir}/.env`, "A=1\r\nexport PGAI_TAG = '0.16.0' # pin\r\nPGAI_TAG=0.16.0\r\n# PGAI_TAG=0.9.0\r\n");
   writeEnvTag(dir, "0.17.0");
-  expect(readFileSync(`${dir}/.env`, "utf8")).toBe("A=1\r\nexport PGAI_TAG = 0.17.0 # pin\r\nPGAI_TAG=0.17.0\r\n# PGAI_TAG=0.9.0\r\n");
-  expect(readEnvTag(dir)).toBe("0.17.0");
+  expect(readFileSync(`${dir}/.env`, "utf8")).toBe("A=1\r\nexport PGAI_TAG = '0.17.0' # pin\r\nPGAI_TAG=0.17.0\r\n# PGAI_TAG=0.9.0\r\n");
+  expect(readEnvTag(dir)).toEqual({ tag: "0.17.0", plain: true });
 });
 
 test("writeEnvTag appends when .env has no PGAI_TAG", () => {
@@ -69,4 +74,21 @@ test("writeEnvTag appends when .env has no PGAI_TAG", () => {
   writeFileSync(`${dir}/.env`, "A=1");
   writeEnvTag(dir, "0.17.0");
   expect(readFileSync(`${dir}/.env`, "utf8")).toBe("A=1\nPGAI_TAG=0.17.0\n");
+});
+
+test("mon update leaves a PGAI_TAG it cannot resolve alone", () => {
+  dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
+  const project = `${dir}/project`;
+  mkdirSync(project); mkdirSync(`${dir}/bin`); mkdirSync(`${project}/.git`);
+  writeFileSync(`${project}/docker-compose.yml`, "services: {}\n");
+  const content = 'PGAI_TAG="${STACK_VERSION:-0.18.0}"\n';
+  writeFileSync(`${project}/.env`, content);
+  writeFileSync(`${dir}/bin/docker`, "#!/bin/sh\nexit 1\n");
+  chmodSync(`${dir}/bin/docker`, 0o755);
+  const result = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "../bin/postgres-ai.ts"), "mon", "update"], {
+    cwd: dir, timeout: 30000,
+    env: { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: project, GIT_DIR: `${project}/.git` },
+  });
+  expect(result.stdout.toString()).toContain("PGAI_TAG in .env is not a plain value, so it is left as is.");
+  expect(readFileSync(`${project}/.env`, "utf8")).toBe(content);
 });
