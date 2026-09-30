@@ -121,7 +121,7 @@ test("targets add retries with the saved target labels and preserves instance da
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
   const [scrape] = Bun.YAML.parse(readFileSync(`${dir}/host-metrics/clickhouse-retry.yml`, "utf8")) as any[];
-  expect(scrape.static_configs[0].labels).toEqual({ cluster: "production-eu", node_name: "db-primary" });
+  expect(scrape.static_configs[0].labels).toEqual({ cluster: "production-eu", node_name: "db-primary", __pgai_rev: expect.stringMatching(/^r[0-9a-f]{16}$/) });
   expect(scrape.job_name).toBe("clickhouse-retry");
   expect(readFileSync(`${dir}/instances.yml`, "utf8")).toBe(saved);
   expect(loadInstances(`${dir}/instances.yml`)).toEqual([instance]);

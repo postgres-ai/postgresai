@@ -12,6 +12,7 @@
       labels:
         cluster: default
         node_name: my-postgres
+        __pgai_rev: rdf8fb208240b7778
   metric_relabel_configs:
     - source_labels:
         - __name__
