@@ -37,10 +37,13 @@ export interface Database {
   host_metrics: boolean;
 }
 
+/** The monitoring URL (with a note for the user, if any), or what to do first. */
+export type Prepared = { monitoringUrl: string; note?: string } | { next: string; sql?: string };
+
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
-  prepare(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { next: string; sql?: string }>;
+  prepare(url: string, provider: Provider): Promise<Prepared>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
@@ -57,10 +60,19 @@ export interface ConnectOptions {
 }
 
 // The reporter's first run is 30 minutes after the stack starts
-// (REPORTER_INITIAL_DELAY_SECONDS in docker-compose.yml).
+// (REPORTER_INITIAL_DELAY_SECONDS in config/scripts/postgres-reports.sh).
 const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
 const POLL_MS = 15_000;
 const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
+
+/** `new URL`, or undefined for text that is not a URL (URL.canParse needs Node 18.17). */
+export function parseUrl(url: string): URL | undefined {
+  try {
+    return new URL(url);
+  } catch {
+    return undefined;
+  }
+}
 
 export function detectCloudProvider(url: string): Provider {
   const host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
@@ -93,15 +105,19 @@ export function parseClickhouseKey(value: string | undefined, env: Record<string
 /** A disconnect in flight (not one that failed to launch, which can be retried). */
 export const disconnecting = (status: string | null) => /delet/.test(status ?? "") && !/fail/.test(status ?? "");
 
+const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams.get("password") || "";
+
+// What of the given URL's query string goes to the box: `options`, certificate
+// paths and the rest describe this machine's session, not the box's.
+const URL_PARAMS_KEPT = ["sslmode", "channel_binding", "application_name"];
+
 /** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
-function monitoringUrlFor(url: string, db: string, password?: string): string {
+function monitoringUrlFor(url: string, db: string, password: string): string {
   const u = new URL(url);
-  const pw = password ?? (decodeURIComponent(u.password) || u.searchParams.get("password") || "");
   u.username = DEFAULT_MONITORING_USER;
-  u.password = encodeURIComponent(pw);
+  u.password = encodeURIComponent(password);
   u.pathname = `/${encodeURIComponent(db)}`;
-  u.searchParams.delete("user");
-  u.searchParams.delete("password");
+  for (const name of [...u.searchParams.keys()]) if (!URL_PARAMS_KEPT.includes(name)) u.searchParams.delete(name);
   return u.toString();
 }
 
@@ -126,7 +142,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const provider = (opts.provider ?? detectCloudProvider(url)) as Provider;
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
   const name = databaseName(url);
-  const key = parseClickhouseKey(opts.clickhouseKey, process.env);
+  // The exported key pair is read for ClickHouse only; elsewhere only the flag is an error.
+  const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" ? process.env : {});
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
 
   if (!opts.selfHosted && (provider === "rds" || provider === "supabase")) {
@@ -139,10 +156,12 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
 
   let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name && !disconnecting(d.status));
   const fresh = !row;
+  let note = "";
   if (!row) {
     deps.progress(`Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider);
     if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
+    if (prepared.note) note = `; ${prepared.note}`;
     let ch: { orgId: string } | undefined;
     if (key) {
       const found = await deps.clickhouseOrg(new URL(url).hostname, key.keyId, key.keySecret);
@@ -155,7 +174,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       await deps.selfHosted(prepared.monitoringUrl, key && ch
         ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
         : {});
-      return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: "pgai mon health" };
+      return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
     }
     deps.progress(`Provisioning monitoring for ${name}`);
     const created = await deps.create({
@@ -173,66 +192,106 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (result.status === "connected" && provider === "clickhouse" && !row.host_metrics) {
         result.next += "; for CPU, memory and disk, disconnect and reconnect with --clickhouse-key <key-id>:<key-secret>";
       }
+      result.next += note;
       return result;
     }
     deps.progress(`Waiting for the monitoring box (${row.status ?? "starting"})`);
     await deps.sleep(POLL_MS);
-    row = (await deps.list()).find((d) => d.id === row!.id) ?? row;
+    // The box is already requested: a failed poll keeps the last known state.
+    row = (await deps.list().catch(() => [] as Database[])).find((d) => d.id === row!.id) ?? row;
   }
 }
 
+type PgClientClass = Parameters<typeof connectWithSslFallback>[0];
+
+export interface PrepareOptions {
+  /** The URL comes from an agent (the MCP tool): PGAI_MON_PASSWORD is not read and a TLS failure is not retried in plaintext. */
+  agent?: boolean;
+  /** The pg client class (tests). */
+  Client?: PgClientClass;
+}
+
 /** Creates (or checks) the monitoring role over the given URL. The admin URL is used for this run only. */
-export async function prepareDatabase(url: string, provider: Provider): Promise<{ monitoringUrl: string } | { next: string; sql?: string }> {
+export async function prepareDatabase(url: string, provider: Provider, opts: PrepareOptions = {}): Promise<Prepared> {
   const pgProvider = provider === "rds" ? "self-managed" : provider;
-  const { client } = await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }));
+  const open = (u: string) => {
+    const conn = resolveAdminConnection({ conn: u });
+    return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
+  };
+  // Whether `u` logs in; false only when the server rejects the password.
+  const logsIn = async (u: string): Promise<boolean> => {
+    try {
+      await (await open(u)).client.end();
+      return true;
+    } catch (err) {
+      const { code, routine } = err as { code?: string; routine?: string };
+      if (code === "28P01") return false;
+      // No CONNECT on the database yet: CheckMyDatabase runs after the password was accepted.
+      if (code === "42501" && routine === "CheckMyDatabase") return true;
+      throw err;
+    }
+  };
+  const { client } = await open(url).catch((err) => {
+    // pg's words for "the server asked for a password and there is none".
+    if (/client password must be a string/.test(String(err?.message))) throw new Error("The URL has no password (and PGPASSWORD is not set): pgai connect postgresql://user:password@host:5432/dbname");
+    throw err;
+  });
   try {
+    // Admin: a superuser, or CREATEROLE that can also grant pg_monitor (PG 16+ needs ADMIN OPTION for that).
     const me = (await client.query(
-      `select current_user as name, current_database() as db, rolsuper or rolcreaterole as admin,
+      `select session_user as name, current_database() as db,
+         rolsuper or (rolcreaterole and (current_setting('server_version_num')::int < 160000
+           or pg_has_role(current_user, 'pg_monitor', 'USAGE WITH ADMIN OPTION'))) as admin,
          exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists,
          current_setting('scram_iterations', true) as iterations
        from pg_roles where rolname = current_user`,
     )).rows[0];
     if (me.name === DEFAULT_MONITORING_USER) {
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
-      if (v.ok) return { monitoringUrl: monitoringUrlFor(url, me.db) };
+      if (v.ok) {
+        // A URL without a password (PGPASSWORD, say): the box gets the one this client logged in with.
+        const used = (client as { password?: unknown }).password;
+        const password = urlPassword(new URL(url)) || (typeof used === "string" ? used : "");
+        if (!password) return { next: `Put the password of ${DEFAULT_MONITORING_USER} in the URL: the monitoring box logs in with it` };
+        return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
+      }
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password,
       // so it is never changed, and only a password that logs in is used.
+      const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
+      if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
       const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)`;
-      const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
+      const { password } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
+      let note: string | undefined;
       if (me.mon_exists) {
-        const given = process.env.PGAI_MON_PASSWORD?.trim();
-        if (!given || !(await logsIn(monitoringUrlFor(url, me.db, password)))) {
-          return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. ${setPassword}` };
+        if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}` };
+        let accepted: boolean;
+        try {
+          accepted = await logsIn(monitoringUrlFor(url, me.db, password));
+        } catch (err) {
+          // pg_hba for this client, say: neither accepted nor rejected.
+          return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai connect from a host that ${DEFAULT_MONITORING_USER} may connect from` };
+        }
+        if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${setPassword}` };
+        // A server that does not check passwords for this client (trust) accepts a random one too.
+        const random = (await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER })).password;
+        if (await logsIn(monitoringUrlFor(url, me.db, random)).catch(() => false)) {
+          note = "this server accepts any password from this host, so PGAI_MON_PASSWORD was not checked; if no data arrives, disconnect and connect again with the right password";
         }
       }
       await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
       // Another session may have created the role meanwhile, with its own password.
       // Other login errors (pg_hba for this client, say) do not tell, so they pass.
       if (!(await logsIn(monitoringUrlFor(url, me.db, password)).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
-      return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
+      return { monitoringUrl: monitoringUrlFor(url, me.db, password), ...(note ? { note } : {}) };
     }
     const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
-      sql: plan.steps.map((s) => `-- ${s.name}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
-      next: `Run the SQL above as an admin (or re-run with an admin URL), then pgai connect again with the ${DEFAULT_MONITORING_USER} URL`,
+      sql: plan.steps.map((s) => `-- ${s.name}${s.optional ? " (optional: an error in this part can be ignored)" : ""}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
+      next: `Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai connect again with the ${DEFAULT_MONITORING_USER} URL`,
     };
   } finally {
     await client.end();
-  }
-}
-
-/** Whether `url` logs in; false only when the server rejects the password. */
-async function logsIn(url: string): Promise<boolean> {
-  try {
-    await (await connectWithSslFallback(Client, resolveAdminConnection({ conn: url }))).client.end();
-    return true;
-  } catch (err) {
-    const { code, routine } = err as { code?: string; routine?: string };
-    if (code === "28P01") return false;
-    // No CONNECT on the database yet: CheckMyDatabase runs after the password was accepted.
-    if (code === "42501" && routine === "CheckMyDatabase") return true;
-    throw err;
   }
 }
 
@@ -246,27 +305,32 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
   });
   if (response.status === 401) throw new Error("ClickHouse Cloud rejected the API key (401). Check the key id and secret.");
   if (!response.ok) throw new Error(`ClickHouse Cloud API request failed (${response.status}).`);
-  let lastError: unknown = new Error("The API key belongs to no ClickHouse Cloud organization.");
-  for (const org of ((await response.json()) as { result: { id: string }[] }).result) {
+  const orgs = ((await response.json()) as { result?: { id: string }[] }).result;
+  if (!Array.isArray(orgs)) throw new Error("ClickHouse Cloud API returned no organization list.");
+  // An organization the key cannot read (403) says more than "no such service" in the next one.
+  let notFound: unknown = new Error("The API key belongs to no ClickHouse Cloud organization.");
+  let failed: unknown;
+  for (const org of orgs) {
     try {
       const service = await findService({ apiUrl, orgId: org.id, keyId, keySecret, hostname: host });
       return { orgId: org.id, state: service.state };
     } catch (err) {
-      lastError = err;
+      if (/^No ClickHouse Managed Postgres service/.test(err instanceof Error ? err.message : "")) notFound = err;
+      else failed ??= err;
     }
   }
-  throw lastError;
+  throw failed ?? notFound;
 }
 
 /** The platform side of connect, for the CLI and the MCP server alike. */
-export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean }) {
+export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean; agent?: boolean }) {
   const rpc = <T>(fn: string, body: Record<string, unknown> = {}) =>
     callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope });
   return {
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: prepareDatabase,
+    prepare: (url: string, provider: Provider) => prepareDatabase(url, provider, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });

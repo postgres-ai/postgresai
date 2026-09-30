@@ -411,6 +411,9 @@ cli:clickhouse-like:tests:
   variables:
     GIT_STRATEGY: fetch
     POSTGRES_PASSWORD: "chlike"
+    # The service shares the job's localhost, which initdb trusts by default:
+    # check passwords there too, so the connect tests see a wrong one refused.
+    POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
   script:
     - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts test/connect.integration.test.ts
