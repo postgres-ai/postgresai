@@ -14,6 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
+import { connect, connectStatus, databaseName, detectCloudProvider, platformDeps, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4077,6 +4078,152 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
 // standard `error: unknown command '<x>'` on stderr and exits non-zero. The
 // bare-`pgai` nicety (show help, exit 0) is preserved explicitly at the parse
 // entrypoint below.
+// ---- pgai connect / init / databases / status / disconnect (postgres-ai/internal#354) ----
+// JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
+// Exit codes: 0 connected or provisioning, 1 failed, 3 action required.
+const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, action_required: 3, failed: 1 };
+
+function cloudApi(debug?: boolean) {
+  const rootOpts = program.opts<CliOptions>();
+  const { apiKey } = getConfig(rootOpts);
+  return { apiKey, ...platformDeps({ apiKey, ...resolveBaseUrls(rootOpts, config.readConfig()), orgScope: getActiveOrgScope(), debug }) };
+}
+
+function emitConnect(result: ConnectResult, json?: boolean): void {
+  printResult(result, json);
+  process.exitCode = CONNECT_EXIT[result.status];
+}
+
+/** Signs in through the browser when interactive; otherwise says how. */
+function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
+  if (cloudApi().apiKey) return true;
+  if (process.stdin.isTTY && process.stdout.isTTY && !opts.yes && !opts.json) {
+    childProcess.spawnSync(process.execPath, [process.argv[1]!, "auth", "login"], { stdio: "inherit" });
+  }
+  return !!cloudApi().apiKey;
+}
+
+async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; wait?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+  const name = (() => { try { return databaseName(url); } catch { return ""; } })();
+  if (!name || !/^postgres(ql)?:\/\//.test(url)) {
+    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
+  }
+  if (!opts.selfHosted && !signedIn(opts)) {
+    return emitConnect({ status: "action_required", provider: detectCloudProvider(url), name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+  }
+  const api = cloudApi(opts.debug);
+  try {
+    const result = await connect(url, { ...opts, waitMs: Number(opts.wait ?? 20) * 60_000 }, {
+      ...api,
+      selfHosted: async (monitoringUrl, env) => {
+        // In-process, so the monitoring password never lands in a process list;
+        // its output goes to stderr to keep stdout for the result.
+        const log = console.log;
+        Object.assign(process.env, env);
+        console.log = console.error;
+        try {
+          await program.parseAsync(["mon", "local-install", "--db-url", monitoringUrl, "-y", ...(api.apiKey ? ["--api-key", api.apiKey] : [])], { from: "user" });
+        } finally {
+          console.log = log;
+          for (const k of Object.keys(env)) delete process.env[k];
+        }
+        if (process.exitCode) throw new Error("mon local-install failed (see above)");
+      },
+      progress: (line) => console.error(line),
+    });
+    emitConnect(result, opts.json);
+  } catch (err) {
+    emitConnect({ status: "failed", provider: detectCloudProvider(url), name, next: err instanceof Error ? err.message : String(err) }, opts.json);
+  }
+}
+
+withOrgOptions(program.command("connect <database-url>"))
+  .description("put a database under PostgresAI's care: prepare it, provision monitoring, print the dashboard")
+  .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
+  .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
+  .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
+  .option("--wait <minutes>", "how long to wait for the monitoring box (0 = do not wait)", "20")
+  .option("-y, --yes", "never prompt")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .addHelpText("after", [
+    "",
+    "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
+    "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
+    "the monitoring box, wait, print the dashboard URL.",
+    "",
+    "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
+    "",
+    "Examples:",
+    "  pgai connect 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
+    "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai connect '<url>'",
+    "  pgai connect '<url>' --self-hosted",
+  ].join("\n"))
+  .action(runConnect);
+
+withOrgOptions(program.command("init"))
+  .description("first run: sign in, ask for a database URL, then pgai connect")
+  .action(async () => {
+    if (!process.stdin.isTTY) {
+      return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai connect <database-url>" });
+    }
+    if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai auth login" });
+    await runConnect((await question("Database URL (postgresql://...): ")).trim(), {});
+  });
+
+async function cloudDatabases(opts: { debug?: boolean }, name?: string): Promise<Database[]> {
+  const rows = await cloudApi(opts.debug).list();
+  return name ? rows.filter((d) => d.name === name || d.id === name) : rows;
+}
+
+withOrgOptions(program.command("databases"))
+  .description("list the databases under PostgresAI's care")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (opts: { json?: boolean; debug?: boolean }) => {
+    try {
+      printResult(await cloudDatabases(opts), opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+withOrgOptions(program.command("status [name]"))
+  .description("status of one database (or all), with the next action")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (name: string | undefined, opts: { json?: boolean; debug?: boolean }) => {
+    try {
+      const rows = await cloudDatabases(opts, name);
+      if (name && rows.length === 0) throw new Error(`No database named ${name}. See: pgai databases`);
+      printResult(rows.map((d) => connectStatus(d)), opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+withOrgOptions(program.command("disconnect <name>"))
+  .description("stop monitoring a database and delete its monitoring box")
+  .option("-y, --yes", "do not ask for confirmation")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (name: string, opts: { yes?: boolean; json?: boolean; debug?: boolean }) => {
+    try {
+      const [row] = await cloudDatabases(opts, name);
+      if (!row) throw new Error(`No database named ${name}. See: pgai databases`);
+      if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
+        return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
+      }
+      await cloudApi(opts.debug).disconnect(row.id);
+      printResult({ status: "disconnected", name: row.name, id: row.id, next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
 program.command("help").description("show help").action(() => {
   program.outputHelp();
 });
