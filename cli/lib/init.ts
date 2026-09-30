@@ -5,6 +5,7 @@ import type { Client as PgClient } from "pg";
 import * as fs from "fs";
 import * as path from "path";
 import { requireChannelBinding, splitChannelBinding } from "./instances";
+import { redactTextSecrets } from "./util";
 
 export const DEFAULT_MONITORING_USER = "postgres_ai_mon";
 
@@ -300,9 +301,7 @@ export function maskConnectionString(dbUrl: string): string {
     if (u.searchParams.has("password")) u.searchParams.set("password", "*****");
     return u.toString();
   } catch {
-    return dbUrl
-      .replace(/\/\/([^:/?#]+):([^@/?#]+)@/g, "//$1:*****@")
-      .replace(/([?&]password=)[^&#\s]*/gi, "$1*****");
+    return redactTextSecrets(dbUrl);
   }
 }
 
