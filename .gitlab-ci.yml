@@ -409,7 +409,7 @@ cli:clickhouse-like:tests:
     POSTGRES_PASSWORD: "chlike"
     PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
   script:
-    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts test/connect.integration.test.ts
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
