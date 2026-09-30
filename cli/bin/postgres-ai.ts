@@ -5506,7 +5506,9 @@ targets
 ClickHouse host metrics (non-interactive):
   export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<secret>'
   postgres-ai mon targets add 'postgresql://user:pass@host.pg.clickhouse.cloud:5432/db' my-db
-Writes instances.yml, host-metrics/clickhouse-my-db.yml and host-metrics/clickhouse-my-db.secret.
+Use an organization API key with the Basic Service API Reader role; an Admin key is not needed.
+Writes instances.yml, host-metrics/clickhouse-my-db.yml and
+host-metrics/clickhouse-my-db.secret (the key secret, mode 0600).
 Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
 `)
   .action(async (connStr?: string, name?: string) => {
