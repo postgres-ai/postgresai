@@ -89,7 +89,8 @@ export async function addHostMetrics({ projectDir, name, conn, env, cluster = "d
 
 /** Deletes the target's host metrics files; returns whether any existed. */
 export function removeHostMetrics(projectDir: string, name: string): boolean {
-  validateName(name);
+  // addHostMetrics refuses other names, so such a target has no files.
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return false;
   const files = ["yml", "secret", "secret.tmp"].map((ext) => join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)).filter((file) => existsSync(file));
   for (const file of files) rmSync(file, { force: true });
   return files.length > 0;
