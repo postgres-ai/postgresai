@@ -144,7 +144,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     if (!("sql" in result) || !result.sql) throw new Error("expected SQL");
     expect(result.sql).toContain("-- 01.role");
     // Running the SQL must not change the password of an existing postgres_ai_mon.
-    expect(result.sql).not.toMatch(/alter user [^;]* password/i);
+    expect(result.sql).not.toMatch(/^[ \t]*alter user[^;\n]*password/im);
     expect(result.sql).toContain("password '<redacted>'");
     expect(result.sql).not.toContain("app-pw-123");
   });

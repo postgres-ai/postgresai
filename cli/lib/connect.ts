@@ -98,7 +98,7 @@ function monitoringUrlFor(url: string, db: string, password?: string): string {
   const u = new URL(url);
   const pw = password ?? (decodeURIComponent(u.password) || u.searchParams.get("password") || "");
   u.username = DEFAULT_MONITORING_USER;
-  u.password = pw;
+  u.password = encodeURIComponent(pw);
   u.pathname = `/${encodeURIComponent(db)}`;
   u.searchParams.delete("user");
   u.searchParams.delete("password");
@@ -196,18 +196,18 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
       if (v.ok) return { monitoringUrl: monitoringUrlFor(url, me.db) };
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password,
-      // so only a password that logs in as it is accepted, and nothing changes.
+      // so it is never changed, and only a password that logs in is used.
+      const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       if (me.mon_exists) {
-        const given = process.env.PGAI_MON_PASSWORD?.trim() ? process.env.PGAI_MON_PASSWORD : undefined;
-        if (!given || !(await logsIn(monitoringUrlFor(url, me.db, given)))) {
+        const given = process.env.PGAI_MON_PASSWORD?.trim();
+        if (!given || !(await logsIn(monitoringUrlFor(url, me.db, password)))) {
           return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)` };
         }
       }
-      const { password } = await resolveMonitoringPassword({ passwordEnv: process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
-      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider }) });
+      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
       return { monitoringUrl: monitoringUrlFor(url, me.db, password) };
     }
-    const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider });
+    const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
       sql: plan.steps.map((s) => `-- ${s.name}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
       next: `Run the SQL above as an admin (or re-run with an admin URL), then pgai connect again with the ${DEFAULT_MONITORING_USER} URL`,
