@@ -198,6 +198,12 @@ function runCliInit(
 // (initdb cannot be run as root)
 const skipTests = !havePostgresBinaries() || isRunningAsRoot();
 
+// CI sets PGAI_TEST_REQUIRE_PG16=1: fail loudly instead of skipping the suite or
+// the SCRAM iteration test when the required binaries are missing.
+if (process.env.PGAI_TEST_REQUIRE_PG16 === "1" && (skipTests || !findPgBinDirAtLeast(16))) {
+  throw new Error("PGAI_TEST_REQUIRE_PG16=1 but the integration suite cannot run PostgreSQL >= 16 here");
+}
+
 describe.skipIf(skipTests)("integration: prepare-db", () => {
   let pg: TempPostgres;
 
