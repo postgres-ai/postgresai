@@ -122,7 +122,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'" };
   }
 
-  let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name);
+  let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name && !/delet/.test(d.status ?? ""));
   const fresh = !row;
   if (!row) {
     deps.progress(`Preparing ${maskConnectionString(url)}`);
