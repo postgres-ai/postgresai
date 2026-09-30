@@ -32,7 +32,7 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
 }
 
 const row = (status: string | null, extra: Partial<Database> = {}): Database => ({
-  id: "i-1", name: CH_NAME, provider: "clickhouse", mode: "cloud", status,
+  id: "i-1", name: CH_NAME, provider: "clickhouse", status,
   dashboard_url: status === "active" ? "https://abc.pgai.watch" : null, host_metrics: true, ...extra,
 });
 
