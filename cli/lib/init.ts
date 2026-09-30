@@ -230,7 +230,7 @@ const STEP_SCOPE: Record<string, string> = {
   "01.role": "create/update role",
   "02.extensions": "create extension pg_stat_statements",
   "03.permissions": "connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path",
-  "06.helpers": "execute on postgres_ai.table_describe (SECURITY DEFINER, owned by the admin user)",
+  "06.helpers": "execute on postgres_ai.table_describe (SECURITY INVOKER, catalog only)",
   "04.optional_rds": "execute on rds_tools.pg_ls_multixactdir (RDS only)",
   "05.optional_self_managed": "execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file",
 };
@@ -641,7 +641,7 @@ end $$;`;
     sql: permissionsSql,
   });
 
-  // Helper functions (SECURITY DEFINER) for plan analysis and table info
+  // Helper functions for table info
   steps.push({
     name: "06.helpers",
     sql: applyTemplate(loadSqlTemplate("06.helpers.sql"), vars),
