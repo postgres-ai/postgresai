@@ -4213,7 +4213,7 @@ withOrgOptions(program.command("disconnect <name>"))
   .option("--debug", "print HTTP requests (secrets masked)")
   .action(async (name: string, opts: { yes?: boolean; json?: boolean; debug?: boolean }) => {
     try {
-      const [row] = await cloudDatabases(opts, name);
+      const [row] = (await cloudDatabases(opts, name)).filter((d) => !/delet/.test(d.status ?? ""));
       if (!row) throw new Error(`No database named ${name}. See: pgai databases`);
       if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
