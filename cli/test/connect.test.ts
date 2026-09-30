@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
-import { clickhouseOrgFor, connect, databaseName, detectCloudProvider, parseClickhouseKey, type ConnectDeps, type Database } from "../lib/connect";
+import { clickhouseOrgFor, connect, connectStatus, databaseName, detectCloudProvider, parseClickhouseKey, type ConnectDeps, type Database } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -95,6 +95,12 @@ describe("connect", () => {
     const { deps, calls } = fake({ rows: [row("deleting_launched"), row("launch_requested")] });
     await connect(CH, { waitMs: 0 }, deps);
     expect(calls.slice(0, 2)).toEqual(["list", "prepare clickhouse"]);
+  });
+
+  test("pgai status shows a disconnect in flight as disconnecting, not provisioning", () => {
+    expect(connectStatus(row("deleting_launched"))).toEqual({
+      status: "disconnecting", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: true, next: "none",
+    });
   });
 
   test("RDS and Supabase hand off to the console flow, touching nothing", async () => {
