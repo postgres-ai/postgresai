@@ -146,3 +146,29 @@ def test_generator_leaves_supabase_target_unlabelled_unless_one_match(tmp_path: 
     assert targets == [{'targets': [TARGET], 'labels': {}}]
     assert '2 Supabase targets' in stderr
     assert 'secret' not in stderr and 'm:s@' not in stderr
+
+
+# instances.yml exactly as the CLI's js-yaml writes it: a conn_str longer than
+# 80 columns is a folded block scalar, and a plain scalar keeps backslashes and
+# quotes as they are.
+CLI_FIXTURE = ROOT / 'tests/fixtures/instances-supabase-cli.yml'
+CLI_EXPECTED = [{'targets': [TARGET], 'labels': {'cluster': 'prod \\ "east" \'1\'', 'node_name': 'supabase-main'}}]
+
+
+def test_generator_reads_cli_serialized_instances(tmp_path: Path) -> None:
+    assert _generate(tmp_path, CLI_FIXTURE.read_text())[0] == CLI_EXPECTED
+
+
+def test_generator_in_the_shipped_image(tmp_path: Path) -> None:
+    """sources-generator runs in bash:5.2, whose BusyBox awk escapes differently."""
+    import shutil, subprocess
+    import pytest
+    if not shutil.which('docker') or subprocess.run(['docker', 'info'], capture_output=True, timeout=30).returncode:
+        pytest.skip('docker unavailable')
+    compose = yaml.safe_load((ROOT / 'docker-compose.yml').read_text())
+    image = compose['services']['sources-generator']['image']
+    (tmp_path / 'instances.yml').write_text(CLI_FIXTURE.read_text())
+    subprocess.run(['docker', 'run', '--rm', '-v', f'{tmp_path}:/w', '-v', f'{GENERATOR.parent}:/s:ro',
+                    '-e', 'INSTANCES_PATH=/w/instances.yml', '-e', 'CONFIGS_DIR=/w/out', image, 'bash', '/s/generate-pgwatch-sources.sh'],
+                   check=True, capture_output=True, timeout=120)
+    assert json.loads((tmp_path / 'out/prometheus/supabase-host-metrics.json').read_text()) == CLI_EXPECTED
