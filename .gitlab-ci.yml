@@ -483,9 +483,11 @@ rds-host-stats:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - rds-host-stats/**/*
+        - docker-compose.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - rds-host-stats/**/*
+        - docker-compose.yml
 
 instance-jobs:tests:
   stage: test

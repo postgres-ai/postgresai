@@ -8,5 +8,7 @@ import { expect, test } from 'bun:test'
 test('compose gives the poller at least half a CPU by default', () => {
   const compose = Bun.YAML.parse(require('node:fs').readFileSync(`${import.meta.dir}/../../docker-compose.yml`, 'utf8')) as any
   const service = compose.services['rds-host-stats']
-  expect(service.cpus).toBe('${RDS_HOST_STATS_CPUS:-0.5}')
+  const match = /^\$\{RDS_HOST_STATS_CPUS:-([0-9.]+)\}$/.exec(service.cpus)
+  expect(match).not.toBeNull()
+  expect(Number(match![1])).toBeGreaterThanOrEqual(0.5)
 })

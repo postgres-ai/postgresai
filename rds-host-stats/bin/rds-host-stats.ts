@@ -20,12 +20,12 @@ function problem(): string | undefined {
   }
 }
 
-// Compose restarts the service on any exit and defaults every variable to
-// empty, so a configuration error idles with one log line instead of exiting
+// Compose restarts the service on any exit and defaults the required
+// variables to empty, so a configuration error idles with one log line instead of exiting
 // into a restart loop.
 const invalid = problem()
 if (invalid) {
-  console.error(`${invalid}; rds-host-stats will idle until the configuration is fixed and the container is restarted`)
+  console.error(`${invalid}; rds-host-stats will idle until the configuration is fixed and the container is recreated (docker compose --profile rds up -d rds-host-stats)`)
   await new Promise(() => setInterval(() => {}, 2 ** 31 - 1))
 }
 const target = { instanceId: env.RDS_DB_INSTANCE_IDENTIFIER!, cluster: env.PGAI_CLUSTER!, nodeName: env.PGAI_NODE_NAME! }

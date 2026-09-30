@@ -105,6 +105,9 @@ def test_host_row_is_collapsed_last_and_reads_only_host_series(path):
     row = _row(path)
     assert row["collapsed"] is True
     assert panels[-1] == row
+    # Grafana lays panels out by gridPos, not list order.
+    bottom = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in panels if p != row)
+    assert row["gridPos"]["y"] >= bottom
     for p in panels:
         for t in p.get("targets", []):
             assert "host_" not in t.get("expr", ""), p.get("title")
