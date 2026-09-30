@@ -10,13 +10,12 @@ export const DEFAULT_MONITORING_USER = "postgres_ai_mon";
 /**
  * Database provider type. Affects which prepare-db steps are executed.
  * Known providers have specific behavior adjustments; unknown providers use default behavior.
- * TODO: Consider auto-detecting provider from connection string or server version string.
  * TODO: Consider making this more flexible via a config that specifies which steps/checks to skip.
  */
 export type DbProvider = string;
 
 /** Known providers with special handling. Unknown providers are treated as self-managed. */
-export const KNOWN_PROVIDERS = ["self-managed", "supabase"] as const;
+export const KNOWN_PROVIDERS = ["self-managed", "supabase", "clickhouse"] as const;
 
 /** Providers where we skip role creation (users managed externally). */
 const SKIP_ROLE_CREATION_PROVIDERS = ["supabase"];
@@ -33,8 +32,35 @@ export function validateProvider(provider: string | undefined): string | null {
   return `Unknown provider "${provider}". Known providers: ${KNOWN_PROVIDERS.join(", ")}. Treating as self-managed.`;
 }
 
+/** Detect a provider from the host of a URI, a libpq conninfo string, or a bare hostname. */
+export function detectProvider(conn: string): "clickhouse" | null {
+  try {
+    const trimmed = conn.trim();
+    const host = isLikelyUri(trimmed)
+      ? new URL(trimmed).hostname
+      : trimmed.includes("=")
+        ? parseLibpqConninfo(trimmed).host
+        : trimmed;
+    const normalized = host?.toLowerCase().replace(/\.$/, "");
+    return normalized?.endsWith(".pg.clickhouse.cloud") ? "clickhouse" : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Explicit --provider wins; otherwise detect from the connection host. `detected` is true only when auto-detection fired. */
+export function resolveProvider(
+  explicit: string | undefined,
+  conn: string | undefined,
+): { provider: string; detected: boolean } {
+  if (explicit !== undefined) return { provider: explicit, detected: false };
+  const provider = conn === undefined ? null : detectProvider(conn);
+  return { provider: provider ?? "self-managed", detected: provider !== null };
+}
+
 export type PgClientConfig = {
   connectionString?: string;
+  enableChannelBinding?: boolean;
   host?: string;
   port?: number;
   user?: string;
@@ -118,6 +144,18 @@ function isSslNegotiationError(err: unknown): boolean {
 }
 
 /**
+ * channel_binding=require (libpq semantics) needs TLS: with sslmode=disable libpq refuses to
+ * connect, so do the same instead of silently sending SCRAM without channel binding.
+ * Note: node-postgres only *prefers* SCRAM-SHA-256-PLUS when the server offers it; the
+ * mechanism actually negotiated is not enforced here.
+ */
+function assertChannelBindingPossible(ssl: PgClientConfig["ssl"]): void {
+  if (ssl === false) {
+    throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
+  }
+}
+
+/**
  * Connect to PostgreSQL with sslmode=prefer-like behavior.
  * If sslFallbackEnabled is true, tries SSL first, then falls back to non-SSL on failure.
  */
@@ -186,6 +224,26 @@ export type InitPlan = {
   database: string;
   steps: InitStep[];
 };
+
+/** What each prepare-db step grants the monitoring role, keyed by step name. Keep in sync with cli/sql/*.sql. */
+const STEP_SCOPE: Record<string, string> = {
+  "01.role": "create/update role",
+  "02.extensions": "create extension pg_stat_statements",
+  "03.permissions": "connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path",
+  "06.helpers": "execute on postgres_ai.table_describe (SECURITY DEFINER, owned by the admin user)",
+  "04.optional_rds": "execute on rds_tools.pg_ls_multixactdir (RDS only)",
+  "05.optional_self_managed": "execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file",
+};
+
+/**
+ * One-line disclosure of what the plan about to run grants, derived from the steps actually
+ * in the plan so it stays honest under --skip-optional-permissions, --reset-password, and
+ * provider-specific step filtering.
+ */
+export function describeInitScope(plan: InitPlan): string {
+  const grants = plan.steps.map(step => STEP_SCOPE[step.name] ?? step.name);
+  return `-- scope: role ${plan.monitoringUser} gets: ${grants.join(" | ")}; this admin connection is used for this run only and is not stored`;
+}
 
 function sqlDir(): string {
   // Handle both development and production paths
@@ -340,6 +398,9 @@ export function parseLibpqConninfo(input: string): PgClientConfig {
       case "sslmode":
         sslmode = val;
         break;
+      case "channel_binding":
+        if (val === "require") cfg.enableChannelBinding = true;
+        break;
       // ignore everything else (options, application_name, etc.)
       default:
         break;
@@ -402,11 +463,24 @@ export function resolveAdminConnection(opts: {
         effectiveSslMode.toLowerCase() === "prefer" ||
         effectiveSslMode.toLowerCase() === "allow";
       // Strip sslmode from URI so pg uses our ssl config object instead
-      const cleanUri = stripSslModeFromUri(v);
+      let cleanUri = stripSslModeFromUri(v);
+      let enableChannelBinding = false;
+      try {
+        const uri = new URL(cleanUri);
+        enableChannelBinding = uri.searchParams.get("channel_binding") === "require";
+        uri.searchParams.delete("channel_binding");
+        cleanUri = uri.toString();
+      } catch {}
+      if (enableChannelBinding) assertChannelBindingPossible(sslConfig);
       return {
-        clientConfig: { connectionString: cleanUri, ssl: sslConfig },
+        clientConfig: {
+          connectionString: cleanUri,
+          ssl: sslConfig,
+          ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
+        },
         display: maskConnectionString(v),
-        sslFallbackEnabled: shouldFallback,
+        // channel_binding=require never falls back to a plaintext connection
+        sslFallbackEnabled: shouldFallback && !enableChannelBinding,
       };
     }
     // libpq conninfo (dbname=... host=...)
@@ -420,10 +494,11 @@ export function resolveAdminConnection(opts: {
     // Enable fallback for: no explicit mode OR explicit "prefer"/"allow"
     const shouldFallback = (!explicitSsl && !cfgHadSsl) ||
       (!!explicitSsl && (explicitSsl.toLowerCase() === "prefer" || explicitSsl.toLowerCase() === "allow"));
+    if (cfg.enableChannelBinding) assertChannelBindingPossible(cfg.ssl);
     return {
       clientConfig: cfg,
       display: describePgConfig(cfg),
-      sslFallbackEnabled: shouldFallback,
+      sslFallbackEnabled: shouldFallback && !cfg.enableChannelBinding,
     };
   }
 
