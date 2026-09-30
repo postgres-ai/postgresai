@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { planUpdateTag } from "../bin/postgres-ai";
+import { planUpdateTag, readEnvTag, writeEnvTag } from "../bin/postgres-ai";
 import pkg from "../package.json";
 
 // `mon update` used to keep PGAI_TAG, so an upgrade re-pulled the old images
@@ -13,6 +13,8 @@ test.each([
   ["fix-branch-abc123", "0.17.0", "0.17.0", "PGAI_TAG: fix-branch-abc123 -> 0.17.0"],
   ["0.17.0", "0.17.0", null, "PGAI_TAG is 0.17.0, matching this CLI"],
   ["0.18.0", "0.17.0", null, "PGAI_TAG stays 0.18.0: it is newer than this CLI (0.17.0). Upgrade the CLI to move the stack: npm install -g postgresai@latest"],
+  ["0.18.0-rc.1", "0.17.0", null, "PGAI_TAG stays 0.18.0-rc.1: it is newer than this CLI (0.17.0). Upgrade the CLI to move the stack: npm install -g postgresai@latest"],
+  ["0.17.0-rc.1", "0.17.0", "0.17.0", "PGAI_TAG: 0.17.0-rc.1 -> 0.17.0"],
   ["0.16.0", "0.0.0-dev.0", null, "PGAI_TAG stays 0.16.0: this CLI (0.0.0-dev.0) is not a release. To pick a stack version, set PGAI_TAG=<version> in .env and re-run 'postgresai mon update'"],
 ])("planUpdateTag(%p, %p)", (current, cli, tag, note) => {
   expect(planUpdateTag(current, cli)).toEqual({ tag, note });
@@ -41,4 +43,30 @@ test("mon update rewrites PGAI_TAG in .env before anything else", () => {
   expect(env).toContain("# keep me\n");
   expect(env).toContain(`export PGAI_TAG=${expected.tag ?? "0.16.0"}\n`);
   expect(env.match(/PGAI_TAG=/g)).toHaveLength(1);
+});
+
+test.each([
+  ["PGAI_TAG=0.18.0 # pinned\n", "0.18.0"],
+  ['export PGAI_TAG = "0.18.0"\n', "0.18.0"],
+  ["PGAI_TAG='0.16.0'\r\nPGAI_TAG=0.18.0\r\n", "0.18.0"],
+  ["# PGAI_TAG=0.9.0\nOTHER=1\n", null],
+])("readEnvTag reads what compose reads: %p", (content, tag) => {
+  dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
+  writeFileSync(`${dir}/.env`, content);
+  expect(readEnvTag(dir)).toBe(tag);
+});
+
+test("writeEnvTag rewrites every assignment and keeps export, quotes-free value, comments and CRLF", () => {
+  dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
+  writeFileSync(`${dir}/.env`, "A=1\r\nexport PGAI_TAG = '0.16.0' # pin\r\nPGAI_TAG=0.16.0\r\n# PGAI_TAG=0.9.0\r\n");
+  writeEnvTag(dir, "0.17.0");
+  expect(readFileSync(`${dir}/.env`, "utf8")).toBe("A=1\r\nexport PGAI_TAG = 0.17.0 # pin\r\nPGAI_TAG=0.17.0\r\n# PGAI_TAG=0.9.0\r\n");
+  expect(readEnvTag(dir)).toBe("0.17.0");
+});
+
+test("writeEnvTag appends when .env has no PGAI_TAG", () => {
+  dir = mkdtempSync(`${tmpdir()}/mon-update-tag-`);
+  writeFileSync(`${dir}/.env`, "A=1");
+  writeEnvTag(dir, "0.17.0");
+  expect(readFileSync(`${dir}/.env`, "utf8")).toBe("A=1\nPGAI_TAG=0.17.0\n");
 });

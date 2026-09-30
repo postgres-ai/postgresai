@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
@@ -53,6 +53,14 @@ test("add keeps the key file in a 0700 directory, also when the directory alread
   await add();
   expect(statSync(`${dir}/host-metrics`).mode & 0o777).toBe(0o700);
   expect(statSync(`${dir}/host-metrics/clickhouse-ch-test.secret`).mode & 0o777).toBe(0o600);
+});
+test("add refuses a host-metrics symlink and leaves its target alone", async () => {
+  mkdirSync(`${dir}/elsewhere`, { mode: 0o755 });
+  chmodSync(`${dir}/elsewhere`, 0o755);
+  symlinkSync(`${dir}/elsewhere`, `${dir}/host-metrics`);
+  await expect(add()).rejects.toThrow("host-metrics must be a directory, not a symlink");
+  expect(statSync(`${dir}/elsewhere`).mode & 0o777).toBe(0o755);
+  expect(readdirSync(`${dir}/elsewhere`)).toEqual([]);
 });
 test("add errors never carry the key secret", async () => {
   for (const code of [401, 403, 500]) {

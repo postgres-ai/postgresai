@@ -74,6 +74,12 @@ test("local-install --db-url keeps the Postgres target when host metrics fail", 
   expect(result.stdout + result.stderr).not.toContain("bad-secret");
 });
 
+test("local-install stops when the target is not saved", () => {
+  const result = localInstall("postgresql://monitor:password@[bad/postgres");
+  expect(result.stderr).toContain("Invalid connection string format");
+  expect(result.stdout).not.toContain("Step 3");
+});
+
 test("read-only commands work in a project directory they cannot write", () => {
   writeFileSync(`${projectDir}/instances.yml`, "- name: ro\n  conn_str: postgresql://u:p@h:5432/d\n  is_enabled: true\n");
   chmodSync(projectDir, 0o555);
