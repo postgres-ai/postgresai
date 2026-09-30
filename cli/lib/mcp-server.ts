@@ -119,6 +119,7 @@ export async function handleToolCall(
       }, {
         ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug }),
         selfHosted: async () => { throw new Error("A self-hosted stack is set up from the CLI: pgai connect <url> --self-hosted"); },
+        localStackRunning: () => false,
         progress: () => {},
       });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result.status === "failed" };
