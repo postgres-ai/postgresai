@@ -7,7 +7,8 @@ import { resolve } from "node:path";
 // host metrics collector reads, for Supabase and RDS as for ClickHouse.
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");
 const ref = "abcdefghijklmnopqrst";
-const supabase = (user = `postgres.${ref}`) => `postgresql://${user}:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres`;
+// A platform-provisioned box connects through the pooler as postgres_ai_mon.<ref>.
+const supabase = (user = `postgres_ai_mon.${ref}`) => `postgresql://${user}:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres`;
 const rds = "postgresql://u:pw@mydb.c9akciq32xyz.us-east-1.rds.amazonaws.com:5432/postgres";
 let dir: string, projectDir: string, log: string, env: Record<string, string>;
 
@@ -54,7 +55,7 @@ test("Supabase: the relay scrape job carries the target's cluster and node_name"
 
 test("Supabase: the relay serves one project, so a second target takes the job over", () => {
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
-  const second = run(["add", supabase("postgres.bbbbbbbbbbbbbbbbbbbb"), "sb2"], { PGAI_SUPABASE_HOST_METRICS: "true" });
+  const second = run(["add", supabase("postgres_ai_mon.bbbbbbbbbbbbbbbbbbbb"), "sb2"], { PGAI_SUPABASE_HOST_METRICS: "true" });
   expect(second.exitCode, second.out).toBe(0);
   expect(scrapeFiles()).toEqual(["supabase-sb2.yml"]);
 });
