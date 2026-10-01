@@ -69,7 +69,7 @@ async function runTty(args: string[], env: Record<string, string>, answers: [pro
 }
 
 const KEY_PROMPT = "ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ";
-const URL_PROMPT = "Database URL (postgresql://...): ";
+const URL_PROMPT = "Database URL (postgresql://...; not shown): ";
 const TO_CONNECT = { status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" };
 
 describe("pgai init", () => {
@@ -91,7 +91,7 @@ describe("pgai init", () => {
       const r = await runTty(["init"], env, [[URL_PROMPT, `${CH}\r`], [KEY_PROMPT, "\r"]]);
       expect(r.status).toBe(0);
       expect(r.screen).toBe([
-        `${URL_PROMPT}${CH}`,
+        URL_PROMPT,
         KEY_PROMPT,
         "provider: clickhouse",
         `name: ${NAME}`,
@@ -112,7 +112,9 @@ describe("pgai init", () => {
     await withApi(async (env) => {
       const r = await runTty(["init"], env, [[URL_PROMPT, `${url}\r`]]);
       expect(r.status).toBe(0);
-      expect(r.screen).toStartWith(`${URL_PROMPT}${url}\nprovider: self-managed\nname: db.example.com/app\n`);
+      expect(r.screen).toStartWith(`${URL_PROMPT}\nprovider: self-managed\nname: db.example.com/app\n`);
+      // The URL carries the admin password: it is not shown as typed.
+      expect(r.screen).not.toContain(":pw@");
       expect(r.screen).not.toContain("ClickHouse");
     }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed" }]);
   });
@@ -137,7 +139,7 @@ describe("pgai init", () => {
     await withApi(async (env) => {
       const r = await runTty(["init"], env, [[URL_PROMPT, `${CH}\r`], [KEY_PROMPT, "kid:Sec4b1dTestSecret\r"]]);
       expect(r.status).toBe(0);
-      expect(r.screen).toStartWith(`${URL_PROMPT}${CH}\n${KEY_PROMPT}\nprovider: clickhouse\n`);
+      expect(r.screen).toStartWith(`${URL_PROMPT}\n${KEY_PROMPT}\nprovider: clickhouse\n`);
       expect(r.screen).not.toContain("Sec4b1d");
     });
   });
@@ -183,7 +185,8 @@ describe("pgai connect / databases / status / disconnect", () => {
 
   test("databases and status", async () => {
     await withApi(async (env) => {
-      expect((await run(["databases"], env)).json()).toEqual([ROW]);
+      // The same words as status and connect: the platform's "active" is "connected".
+      expect((await run(["databases"], env)).json()).toEqual([{ ...ROW, status: "connected" }]);
       const s = await run(["status", NAME], env);
       expect(s.json()).toEqual([{ status: "connected", provider: "clickhouse", name: NAME, id: "i-1", dashboard_url: "https://abc.pgai.watch", host_metrics: true, next: "Open https://abc.pgai.watch" }]);
       const missing = await run(["status", "nope"], env);
@@ -199,6 +202,23 @@ describe("pgai connect / databases / status / disconnect", () => {
       expect(r.status).toBe(1);
       expect(r.json().status).toBe("failed");
       expect(r.json().next).not.toBe("");
+    }
+  });
+
+  test("a re-run with a wrong --clickhouse-key: action required, exit 3, not connected", async () => {
+    const ch = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("", { status: 401 }) });
+    try {
+      await withApi(async (env, calls) => {
+        const r = await run(["connect", CH, "--clickhouse-key", "kid:wrong"], { ...env, CLICKHOUSE_API_URL: `http://127.0.0.1:${ch.port}` });
+        expect(r.status).toBe(3);
+        expect(r.json()).toEqual({
+          status: "action_required", provider: "clickhouse", name: NAME, id: "i-1",
+          next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret. The database stays connected with the key it has; re-run with the right key, or without one",
+        });
+        expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}"]);
+      });
+    } finally {
+      ch.stop(true);
     }
   });
 
