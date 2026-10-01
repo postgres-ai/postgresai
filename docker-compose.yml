@@ -227,8 +227,10 @@ services:
   # Host metrics vocabulary: evaluates config/prometheus/host_rules.yml, which
   # maps Supabase node_* and ClickHouse PostgresServer_* series to the host_*
   # names rds-host-stats writes, and stores the results in sink-prometheus.
-  # See docs/host-metrics.md.
+  # `mon targets add` enables the profile while a ClickHouse or Supabase scrape
+  # file exists. See docs/host-metrics.md.
   vmalert:
+    profiles: ["host-metrics"]
     image: victoriametrics/vmalert:v1.140.0
     container_name: vmalert
     cpus: ${VMALERT_CPUS:-0.1}

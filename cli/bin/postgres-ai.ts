@@ -342,6 +342,7 @@ const INSTANCE_JOBS_PROFILE = "instance-jobs";
 export function composeProfilesValue(
   existing: string | null | undefined,
   want?: boolean,
+  profile = INSTANCE_JOBS_PROFILE,
 ): string | null {
   const profiles: string[] = [];
   for (const raw of (existing ?? "").split(",")) {
@@ -349,19 +350,19 @@ export function composeProfilesValue(
     if (token && !profiles.includes(token)) profiles.push(token);
   }
 
-  const at = profiles.indexOf(INSTANCE_JOBS_PROFILE);
-  if (want === true && at === -1) profiles.push(INSTANCE_JOBS_PROFILE);
+  const at = profiles.indexOf(profile);
+  if (want === true && at === -1) profiles.push(profile);
   if (want === false && at !== -1) profiles.splice(at, 1);
 
   return profiles.length > 0 ? profiles.join(",") : null;
 }
 
 /** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
-export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined): boolean {
+export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
   return (composeProfiles ?? "")
     .split(",")
     .map((p) => p.trim())
-    .includes(INSTANCE_JOBS_PROFILE);
+    .includes(profile);
 }
 
 /**
@@ -5420,6 +5421,24 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
   }
 }
 
+/**
+ * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
+ * itself. So its profile is in .env exactly while such a scrape file exists,
+ * and a change starts or removes it. Returns false when that failed.
+ */
+async function syncVmalert(projectDir: string, apply: boolean): Promise<boolean> {
+  const dir = path.join(projectDir, "host-metrics");
+  const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
+  const current = readEnvValue(projectDir, "COMPOSE_PROFILES");
+  if (instanceJobsProfileEnabled(current, "host-metrics") === want) return true;
+  setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
+  if (!apply) return true;
+  const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
+  if (await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) === 0) return true;
+  console.error(`Host metrics: run 'docker compose --profile host-metrics ${args.join(" ")}' in ${projectDir}.`);
+  return false;
+}
+
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
@@ -5452,7 +5471,7 @@ export async function addTarget(
       addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
     }
-    if (!(await setUpHostMetrics(projectDir, instance, connStr, env, apply))) {
+    if (!(await setUpHostMetrics(projectDir, instance, connStr, env, apply)) || !(await syncVmalert(projectDir, apply))) {
       process.exitCode = 1;
       // Applying runs `up -d pgwatch-*`, which would also start a stopped
       // sink-prometheus as a dependency: a failed add leaves the stack alone.
@@ -5569,6 +5588,7 @@ targets
         fs.rmSync(supabaseFile);
         if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
       }
+      if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
       const rds = rdsInstance(target?.conn_str?.match(/@([^:/?#]+)/)?.[1] ?? "");
       if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
         if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
