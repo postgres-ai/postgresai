@@ -3728,7 +3728,8 @@ async function runCompose(
       env: env,
       cwd: projectDir
     });
-    child.on("close", (code) => resolve(code || 0));
+    // A signal leaves code null: that is a failure, not success.
+    child.on("close", (code) => resolve(code ?? 1));
   });
 }
 
@@ -5448,24 +5449,27 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
 /**
  * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
  * itself. So its profile is in .env exactly while such a scrape file exists.
- * A change starts or removes vmalert first, and .env follows only on success,
- * so a failed start is retried by the next run. Returns false when that failed.
+ * With `apply`, vmalert is started (a no-op when it runs) or removed first,
+ * and .env follows only on success. Returns false when compose failed.
  */
 async function syncVmalert(projectDir: string, apply: boolean): Promise<boolean> {
   const dir = path.join(projectDir, "host-metrics");
   const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
-  const current = stripMatchingQuotes((readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "").replace(/[ \t]+#.*$/, ""));
-  const exported = process.env.COMPOSE_PROFILES?.trim();
-  if (want && exported && !instanceJobsProfileEnabled(exported, "host-metrics")) {
+  const raw = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
+  const current = raw.match(/^(["'])(.*?)\1/)?.[2] ?? raw.replace(/[ \t]+#.*$/, "");
+  const exported = process.env.COMPOSE_PROFILES;
+  if (want && exported !== undefined && !instanceJobsProfileEnabled(exported, "host-metrics")) {
     console.error(`COMPOSE_PROFILES=${exported} is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it`);
   }
-  if (instanceJobsProfileEnabled(current, "host-metrics") === want) return true;
-  const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
-  if (apply && await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) !== 0) {
-    console.error(`Host metrics: 'docker compose --profile host-metrics ${args.join(" ")}' failed.`);
-    return false;
+  const has = instanceJobsProfileEnabled(current, "host-metrics");
+  if (apply && (want || has)) {
+    const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
+    if (await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) !== 0) {
+      console.error(`Host metrics: 'docker compose --profile host-metrics ${args.join(" ")}' failed.`);
+      return false;
+    }
   }
-  setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
+  if (has !== want) setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
   return true;
 }
 
@@ -5501,7 +5505,9 @@ export async function addTarget(
       addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
     }
-    if (!(await setUpHostMetrics(projectDir, instance, connStr, env, apply)) || !(await syncVmalert(projectDir, apply))) {
+    const hostMetrics = await setUpHostMetrics(projectDir, instance, connStr, env, apply);
+    // A failed setup may have saved a scrape file for the next start: record the profile, start nothing.
+    if (!(await syncVmalert(projectDir, hostMetrics && apply)) || !hostMetrics) {
       process.exitCode = 1;
       // Applying runs `up -d pgwatch-*`, which would also start a stopped
       // sink-prometheus as a dependency: a failed add leaves the stack alone.
