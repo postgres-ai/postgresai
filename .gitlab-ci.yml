@@ -574,6 +574,11 @@ validate-helm-chart:
 cli:npm:publish:
   stage: publish
   interruptible: false  # Never cancel publish jobs
+  # The CLI pulls the images of its own version (mon local-install): publish it
+  # only once they are pushed. That job waits for the earlier stages itself.
+  needs:
+    - job: docker:publish:images
+      artifacts: false
   image: node:20-bookworm
   variables:
     GIT_STRATEGY: fetch
