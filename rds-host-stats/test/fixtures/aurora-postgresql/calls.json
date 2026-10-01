@@ -82,57 +82,6 @@
           }
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReadLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "WriteLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "DiskQueueDepth",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "MetricStat": {
             "Metric": {
@@ -172,23 +121,6 @@
             "Metric": {
               "Namespace": "AWS/RDS",
               "MetricName": "FreeLocalStorage",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-aur-473585-1"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_replica_lag_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "AuroraReplicaLag",
               "Dimensions": [
                 {
                   "Name": "DBInstanceIdentifier",
@@ -250,22 +182,6 @@
             "Period": 300,
             "Stat": "Average"
           }
-        }
-      ]
-    }
-  },
-  {
-    "client": "pi",
-    "command": "GetResourceMetricsCommand",
-    "input": {
-      "ServiceType": "RDS",
-      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
-      "StartTime": "2026-09-28T06:03:00.000Z",
-      "EndTime": "2026-09-28T06:18:00.000Z",
-      "PeriodInSeconds": 60,
-      "MetricQueries": [
-        {
-          "Metric": "db.load.avg"
         }
       ]
     }

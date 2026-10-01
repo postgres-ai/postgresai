@@ -9,12 +9,6 @@ host_disk_read_iops{cluster="ci",node_name="node-01"} 9.870779491454773 17905741
 host_disk_read_iops{cluster="ci",node_name="node-01"} 0.5833236112731455 1790574240000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 48.40350145894123 1790574180000
 host_disk_write_iops{cluster="ci",node_name="node-01"} 0.7833202779953667 1790574240000
-host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0.00042124542124542125 1790574180000
-host_disk_read_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574240000
-host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0.001414695945945946 1790574180000
-host_disk_write_latency_seconds{cluster="ci",node_name="node-01"} 0 1790574240000
-host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.06386170797979629 1790574180000
-host_disk_queue_depth{cluster="ci",node_name="node-01"} 0.00115 1790574240000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 120272.44685285536 1790574180000
 host_network_receive_bytes_per_second{cluster="ci",node_name="node-01"} 7005.317021134742 1790574240000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 27366.402667778242 1790574180000
@@ -22,5 +16,3 @@ host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 29264.3
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20710682624 1790574120000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609404928 1790574180000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609236992 1790574240000
-host_db_load{cluster="ci",node_name="node-01"} 0 1790574240000
-host_db_load{cluster="ci",node_name="node-01"} 0 1790574300000

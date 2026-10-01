@@ -82,57 +82,6 @@
           }
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReadLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "WriteLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "DiskQueueDepth",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "MetricStat": {
             "Metric": {
@@ -182,73 +131,6 @@
             "Period": 60,
             "Stat": "Average"
           }
-        },
-        {
-          "Id": "host_burst_balance_percent",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "BurstBalance",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_ebs_io_balance_percent",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "EBSIOBalance%",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_replica_lag_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReplicaLag",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "client": "pi",
-    "command": "GetResourceMetricsCommand",
-    "input": {
-      "ServiceType": "RDS",
-      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
-      "StartTime": "2026-09-28T05:39:00.000Z",
-      "EndTime": "2026-09-28T05:54:00.000Z",
-      "PeriodInSeconds": 60,
-      "MetricQueries": [
-        {
-          "Metric": "db.load.avg"
         }
       ]
     }

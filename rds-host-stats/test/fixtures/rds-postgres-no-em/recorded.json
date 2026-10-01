@@ -232,57 +232,6 @@
           }
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReadLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "WriteLatency",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "DiskQueueDepth",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "MetricStat": {
             "Metric": {
@@ -322,57 +271,6 @@
             "Metric": {
               "Namespace": "AWS/RDS",
               "MetricName": "FreeStorageSpace",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_burst_balance_percent",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "BurstBalance",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_ebs_io_balance_percent",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "EBSIOBalance%",
-              "Dimensions": [
-                {
-                  "Name": "DBInstanceIdentifier",
-                  "Value": "pgai-test-hoststats-b9e0be1f"
-                }
-              ]
-            },
-            "Period": 60,
-            "Stat": "Average"
-          }
-        },
-        {
-          "Id": "host_replica_lag_seconds",
-          "MetricStat": {
-            "Metric": {
-              "Namespace": "AWS/RDS",
-              "MetricName": "ReplicaLag",
               "Dimensions": [
                 {
                   "Name": "DBInstanceIdentifier",
@@ -453,51 +351,6 @@
           "StatusCode": "Complete"
         },
         {
-          "Id": "host_disk_read_latency_seconds",
-          "Label": "ReadLatency",
-          "Timestamps": [
-            "2026-09-28T05:45:00.000Z",
-            "2026-09-28T05:44:00.000Z",
-            "2026-09-28T05:43:00.000Z"
-          ],
-          "Values": [
-            0.0004123711340206186,
-            0,
-            0.00042124542124542125
-          ],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_disk_write_latency_seconds",
-          "Label": "WriteLatency",
-          "Timestamps": [
-            "2026-09-28T05:45:00.000Z",
-            "2026-09-28T05:44:00.000Z",
-            "2026-09-28T05:43:00.000Z"
-          ],
-          "Values": [
-            0,
-            0,
-            0.001414695945945946
-          ],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_disk_queue_depth",
-          "Label": "DiskQueueDepth",
-          "Timestamps": [
-            "2026-09-28T05:45:00.000Z",
-            "2026-09-28T05:44:00.000Z",
-            "2026-09-28T05:43:00.000Z"
-          ],
-          "Values": [
-            0.0012331072636683274,
-            0.00115,
-            0.06386170797979629
-          ],
-          "StatusCode": "Complete"
-        },
-        {
           "Id": "host_network_receive_bytes_per_second",
           "Label": "NetworkReceiveThroughput",
           "Timestamps": [
@@ -543,72 +396,9 @@
             20710682624
           ],
           "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_burst_balance_percent",
-          "Label": "BurstBalance",
-          "Timestamps": [],
-          "Values": [],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_ebs_io_balance_percent",
-          "Label": "EBSIOBalance%",
-          "Timestamps": [],
-          "Values": [],
-          "StatusCode": "Complete"
-        },
-        {
-          "Id": "host_replica_lag_seconds",
-          "Label": "ReplicaLag",
-          "Timestamps": [],
-          "Values": [],
-          "StatusCode": "Complete"
         }
       ],
       "Messages": []
-    }
-  },
-  {
-    "client": "pi",
-    "command": "GetResourceMetricsCommand",
-    "input": {
-      "ServiceType": "RDS",
-      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
-      "StartTime": "2026-09-28T05:31:00.000Z",
-      "EndTime": "2026-09-28T05:46:00.000Z",
-      "PeriodInSeconds": 60,
-      "MetricQueries": [
-        {
-          "Metric": "db.load.avg"
-        }
-      ]
-    },
-    "output": {
-      "AlignedStartTime": "2026-09-28T05:43:00.000Z",
-      "AlignedEndTime": "2026-09-28T05:46:00.000Z",
-      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
-      "MetricList": [
-        {
-          "Key": {
-            "Metric": "db.load.avg"
-          },
-          "DataPoints": [
-            {
-              "Timestamp": "2026-09-28T05:44:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T05:45:00.000Z",
-              "Value": 0
-            },
-            {
-              "Timestamp": "2026-09-28T05:46:00.000Z",
-              "Value": 0
-            }
-          ]
-        }
-      ]
     }
   }
 ]
