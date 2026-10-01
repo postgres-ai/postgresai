@@ -17,7 +17,7 @@ export type Provider = "clickhouse" | "rds" | "supabase" | "self-managed";
 export type Status = "connected" | "provisioning" | "disconnecting" | "disconnected" | "action_required" | "failed";
 
 /** The express checkup run while the box starts: what it found, or why it could not run. */
-export type CheckupResult = { checks: number; findings: { check_id: string; title: string; status: string; message: string }[] } | { error: string };
+export type CheckupResult = { checks: number; findings: { check_id: string; title: string; status: string; message: string }[]; failed?: string[] } | { error: string };
 
 export interface ConnectResult {
   status: Status;
@@ -229,6 +229,7 @@ export function checkupLines(c: CheckupResult): string[] {
     `Express checkup while the box starts (${c.checks} checks: ${warnings.length} warning${warnings.length === 1 ? "" : "s"}, ${ok.length} ok):`,
     ...warnings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
     ...(ok.length ? [`  ok: ${ok.map((f) => f.check_id).join(" ")}`] : []),
+    ...(c.failed?.length ? [`  could not run: ${c.failed.join(" ")}`] : []),
     "The full checkup (query analysis and trends) follows on the box.",
   ];
 }
@@ -244,6 +245,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
 
   if (!opts.selfHosted && (provider === "rds" || provider === "supabase")) {
     return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}` };
+  }
+
+  if (opts.selfHosted && opts.resetPassword) {
+    return { status: "action_required", provider, name, next: "--reset-password works with PostgresAI Cloud only (it checks what else monitors this server): connect without --self-hosted, or set PGAI_MON_PASSWORD" };
   }
 
   if (opts.selfHosted && deps.localStackRunning()) {
@@ -264,6 +269,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       throw err;
     }
   };
+  if (row && opts.resetPassword) {
+    return { status: "action_required", provider, name, id: row.id, next: `${name} is already connected, and its monitoring uses the current password: pgai disconnect ${name} --yes first` };
+  }
   if (row && key) {
     const found = await findOrg();
     if ("error" in found) return { status: "action_required", provider, name, id: row.id, next: `${found.error} Nothing was changed: re-run with the right key, or without one` };
@@ -480,12 +488,13 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
 export async function expressCheckup(url: string, opts: PrepareOptions = {}): Promise<CheckupResult> {
   const { client } = await openConnection(url, opts);
   try {
-    const reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, () => {});
+    const failed: string[] = [];
+    const reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, (f) => failed.push(f.checkId));
     const findings = Object.values(reports)
       .map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }))
       .filter((f) => f.status !== "info")
       .sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
-    return { checks: Object.keys(reports).length, findings };
+    return { checks: Object.keys(reports).length + failed.length, findings, ...(failed.length ? { failed } : {}) };
   } finally {
     await client.end();
   }
@@ -512,7 +521,8 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
       return { orgId: org.id, state: service.state };
     } catch (err) {
       if (/^No ClickHouse Managed Postgres service/.test(errorText(err))) notFound = new ClickhouseKeyError(errorText(err));
-      else failed ??= err;
+      // A key without the reader role (401/403 on the services) is the user's to fix, like a rejected one.
+      else failed ??= /\((401|403)\)/.test(errorText(err)) ? new ClickhouseKeyError(errorText(err)) : err;
     }
   }
   throw failed ?? notFound;
