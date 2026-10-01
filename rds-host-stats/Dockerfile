@@ -1,6 +1,6 @@
-# rds-host-stats: polls CloudWatch, Performance Insights and Enhanced
-# Monitoring for one RDS or Aurora instance and writes host_* series to
-# VictoriaMetrics. No inbound port -- see rds-host-stats/README.md.
+# rds-host-stats: polls CloudWatch and Enhanced Monitoring for one RDS or
+# Aurora instance and writes host_* series to VictoriaMetrics. No inbound
+# port -- see rds-host-stats/README.md.
 FROM oven/bun:1 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./

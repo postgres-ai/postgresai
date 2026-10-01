@@ -5419,8 +5419,8 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     }
     const projectRef = extractProjectRefFromUrl(connStr);
     if (projectRef) {
-      if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
       const on = /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+      if (on && !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
@@ -5450,9 +5450,10 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
  * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
  * itself. So its profile is in .env exactly while such a scrape file exists.
  * With `apply`, vmalert is started (a no-op when it runs) or removed first,
- * and .env follows only on success. Returns false when compose failed.
+ * and .env follows only on success. `addOnly` records a needed profile but
+ * never drops one. Returns false when compose failed.
  */
-async function syncVmalert(projectDir: string, apply: boolean): Promise<boolean> {
+async function syncVmalert(projectDir: string, apply: boolean, addOnly = false): Promise<boolean> {
   const dir = path.join(projectDir, "host-metrics");
   const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
   const raw = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
@@ -5469,7 +5470,7 @@ async function syncVmalert(projectDir: string, apply: boolean): Promise<boolean>
       return false;
     }
   }
-  if (has !== want) setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
+  if (has !== want && !(addOnly && has)) setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
   return true;
 }
 
@@ -5507,7 +5508,7 @@ export async function addTarget(
     }
     const hostMetrics = await setUpHostMetrics(projectDir, instance, connStr, env, apply);
     // A failed setup may have saved a scrape file for the next start: record the profile, start nothing.
-    if (!(await syncVmalert(projectDir, hostMetrics && apply)) || !hostMetrics) {
+    if (!(await syncVmalert(projectDir, hostMetrics && apply, !hostMetrics)) || !hostMetrics) {
       process.exitCode = 1;
       // Applying runs `up -d pgwatch-*`, which would also start a stopped
       // sink-prometheus as a dependency: a failed add leaves the stack alone.
