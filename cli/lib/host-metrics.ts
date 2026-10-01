@@ -49,15 +49,22 @@ export const HOST_METRICS_VERIFY_SCRIPT = `auth="Authorization: Basic $(printf '
 
 export const SUPABASE_JOB = "supabase-host-metrics";
 
-/** Scrape job for the instance-jobs relay. The relay serves one Supabase project, so a box has one. */
-export function renderSupabaseScrapeConfig({ cluster, nodeName, target = "instance-jobs:9188" }: { cluster: string; nodeName: string; target?: string }): string {
+/**
+ * Scrape job for the instance-jobs relay. The relay serves one Supabase project, so a
+ * box has one; series of any project other than the target's are dropped, not mislabelled.
+ */
+export function renderSupabaseScrapeConfig({ projectRef, cluster, nodeName, target = "instance-jobs:9188" }: { projectRef: string; cluster: string; nodeName: string; target?: string }): string {
+  if (!/^[a-z0-9]+$/.test(projectRef)) throw new Error("Invalid Supabase project ref.");
   return scrapeFileText({
     job_name: SUPABASE_JOB,
     metrics_path: "/supabase/metrics",
     scrape_interval: "60s", scrape_timeout: "20s",
     static_configs: [{ targets: [target], labels: { cluster, node_name: nodeName } }],
     // node_time_seconds is the host clock the host_* rates are divided by.
-    metric_relabel_configs: [{ source_labels: ["__name__"], regex: "node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*", action: "keep" }],
+    metric_relabel_configs: [
+      { source_labels: ["__name__"], regex: "node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*", action: "keep" },
+      { source_labels: ["supabase_project_ref"], regex: projectRef, action: "keep" },
+    ],
   });
 }
 
