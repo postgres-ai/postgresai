@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { load } from "js-yaml";
 
 // `mon targets add` copies the target's cluster/node_name into the file its
 // host metrics collector reads, for Supabase and RDS as for ClickHouse.
@@ -43,6 +44,8 @@ function run(args: string[], extra: Record<string, string> = {}) {
 }
 const scrapeFiles = () => existsSync(`${projectDir}/host-metrics`) ? readdirSync(`${projectDir}/host-metrics`).sort() : [];
 const reloads = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("kill "));
+const profiles = () => envFile().match(/^COMPOSE_PROFILES=.*$/m)?.[0];
+const vmalertCalls = () => readFileSync(log, "utf8").split("\n").filter((line) => line.endsWith(" vmalert"));
 const envFile = () => existsSync(`${projectDir}/.env`) ? readFileSync(`${projectDir}/.env`, "utf8") : "";
 
 test("Supabase: the relay scrape job carries the target's cluster and node_name", () => {
@@ -51,6 +54,26 @@ test("Supabase: the relay scrape job carries the target's cluster and node_name"
   expect(readFileSync(`${projectDir}/host-metrics/supabase-sb.yml`, "utf8")).toBe(readFileSync(`${import.meta.dir}/fixtures/supabase-scrape.golden.yml`, "utf8"));
   expect(added.out).toContain("Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)");
   expect(reloads()).toEqual(["kill -s SIGHUP sink-prometheus"]);
+  // vmalert maps the relayed series to host_*, so it runs from now on.
+  expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
+  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert"]);
+});
+
+test("vmalert: its profile is added to and removed from COMPOSE_PROFILES, other profiles kept", () => {
+  writeFileSync(`${projectDir}/.env`, "COMPOSE_PROFILES=instance-jobs\n");
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
+  expect(profiles()).toBe("COMPOSE_PROFILES=instance-jobs,host-metrics");
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
+  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert"]);
+  const removed = run(["remove", "sb"]);
+  expect(removed.exitCode, removed.out).toBe(0);
+  expect(profiles()).toBe("COMPOSE_PROFILES=instance-jobs");
+  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert", "rm -sf vmalert"]);
+});
+
+test("vmalert: compose starts it only under the host-metrics profile", () => {
+  const compose = load(readFileSync(resolve(import.meta.dir, "../../docker-compose.yml"), "utf8")) as { services: Record<string, { profiles?: string[] }> };
+  expect(compose.services.vmalert.profiles).toEqual(["host-metrics"]);
 });
 
 test("Supabase: the relay serves one project, so a second target takes the job over", () => {
@@ -73,6 +96,8 @@ test.each([["false"], [""]])("Supabase: with the flag %p the job is removed and 
   expect(off.exitCode, off.out).toBe(0);
   expect(scrapeFiles()).toEqual([]);
   expect(reloads()).toEqual(["kill -s SIGHUP sink-prometheus"]);
+  expect(profiles()).toBeUndefined();
+  expect(vmalertCalls()).toEqual(["rm -sf vmalert"]);
 });
 
 test("Supabase: targets remove drops the relay job", () => {

@@ -106,6 +106,8 @@ test("targets add reports host metrics after a verified reload", () => {
   expect(result.stdout).toContain("Host metrics: ClickHouse Cloud Prometheus endpoint for service");
   expect(result.stderr).not.toContain("sink-prometheus");
   expect(reloadLog()).toEqual([execLine, killLine, verifyAddLine()]);
+  expect(readFileSync(`${projectDir}/.env`, "utf8")).toMatch(/^COMPOSE_PROFILES=host-metrics$/m);
+  expect(readFileSync(log, "utf8").split("\n")).toContain("up -d --no-deps vmalert");
 });
 
 test("targets remove fails when the sink-prometheus reload fails", () => {
