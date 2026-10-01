@@ -451,7 +451,10 @@ function buildLocalInstallEnv(
     // Read the way compose does: tolerate `export `/indentation and take the
     // LAST assignment. A value that reduces to "" (including `KEY=""`) counts
     // as absent, so a blank admin key is minted rather than carried forward
-    // (#359) - `ensureRequiredEnvVars` treats it the same way.
+    // (#359) - `ensureRequiredEnvVars` treats it the same way. Not
+    // `parseEnvValue`: the value is written back to the new .env as it was
+    // (quotes and an inline comment included), so compose reads the new file
+    // as it read the old one.
     const re = new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`, "gm");
     let value: string | null = null;
     for (const m of existingEnv.matchAll(re)) {
