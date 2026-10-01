@@ -22,11 +22,15 @@ beforeEach(() => {
   writeFileSync(`${dir}/bin/docker`, `#!/bin/sh
 shift 3
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
-case "$*" in *rds-host-stats*) [ "$1" = --profile ] && [ "$3" = ps ] && [ -n "$FAKE_RDS_RUNNING" ] && echo 4567ef ;; ps*) echo 0123abcd ;; esac
+case "$*" in
+  *" ps "*rds-host-stats) [ -n "$FAKE_RDS_PS_FAILS" ] && exit 1; [ -n "$FAKE_RDS_RUNNING" ] && echo 4567ef ;;
+  *" up "*rds-host-stats) echo "$RDS_DB_INSTANCE_IDENTIFIER $AWS_REGION $PGAI_CLUSTER $PGAI_NODE_NAME" >> "$FAKE_DOCKER_LOG_DIR/rds-env.log" ;;
+  ps*) echo 0123abcd ;;
+esac
 exit 0
 `);
   chmodSync(`${dir}/bin/docker`, 0o755);
-  env = { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: projectDir, FAKE_DOCKER_LOG: log };
+  env = { PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: projectDir, FAKE_DOCKER_LOG: log, FAKE_DOCKER_LOG_DIR: dir };
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -96,6 +100,22 @@ test("RDS: a running rds-host-stats is recreated on add and remove", () => {
   expect(recreates()).toEqual([recreate, recreate]);
   expect(run(["add", rds, "rds1"]).exitCode).toBe(0);
   expect(recreates()).toEqual([recreate, recreate]);
+});
+
+// An exported variable would win over .env inside compose.
+test("RDS: the recreated rds-host-stats gets the new values, not exported ones", () => {
+  const add = run(["add", rds, "rds1"], { FAKE_RDS_RUNNING: "1", RDS_DB_INSTANCE_IDENTIFIER: "stale", AWS_REGION: "eu-west-1" });
+  expect(add.exitCode, add.out).toBe(0);
+  expect(readFileSync(`${dir}/rds-env.log`, "utf8")).toBe("mydb us-east-1 default rds1\n");
+  const removed = run(["remove", "rds1"], { FAKE_RDS_RUNNING: "1", RDS_DB_INSTANCE_IDENTIFIER: "stale" });
+  expect(removed.exitCode, removed.out).toBe(0);
+  expect(readFileSync(`${dir}/rds-env.log`, "utf8")).toBe("mydb us-east-1 default rds1\n   \n");
+});
+
+test("RDS: when compose cannot tell whether rds-host-stats runs, the user is told to recreate it", () => {
+  const add = run(["add", rds, "rds1"], { FAKE_RDS_PS_FAILS: "1" });
+  expect(add.exitCode, add.out).toBe(0);
+  expect(add.out).toContain("If rds-host-stats is running, recreate it: docker compose --profile rds up -d rds-host-stats");
 });
 
 test.each([
