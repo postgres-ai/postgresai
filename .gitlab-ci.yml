@@ -167,6 +167,15 @@ build:test:images:
         instance-jobs
       docker push "$CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
 
+      # Build and push rds-host-stats
+      docker build \
+        --build-arg "VERSION=$PGAI_TAG" \
+        --build-arg "BUILD_TS=$BUILD_TS" \
+        -f rds-host-stats/Dockerfile \
+        -t "$CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG" \
+        rds-host-stats
+      docker push "$CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG"
+
       # Build and push pgwatch (forked from cybertec-postgresql/pgwatch v3.7.0
       # with extension-version-0.0 patch — see pgwatch/Dockerfile)
       docker build \
@@ -181,6 +190,7 @@ build:test:images:
       echo "  $CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
+      echo "  $CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -455,6 +465,24 @@ telemetry:tests:
       changes:
         - telemetry/**/*
 
+rds-host-stats:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun install --frozen-lockfile
+  script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun audit --audit-level=high
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun test && bun run typecheck
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - rds-host-stats/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - rds-host-stats/**/*
+
 instance-jobs:tests:
   stage: test
   image: golang:1.24
@@ -728,6 +756,15 @@ cli:npm:publish:
 
   docker buildx build \
     --platform "$PLATFORMS" \
+    --build-arg "VERSION=$VERSION" \
+    --build-arg "BUILD_TS=$BUILD_TS" \
+    -f rds-host-stats/Dockerfile \
+    -t "postgresai/rds-host-stats:$VERSION" \
+    --push \
+    rds-host-stats
+
+  docker buildx build \
+    --platform "$PLATFORMS" \
     -f pgwatch/Dockerfile \
     -t "postgresai/pgwatch:$VERSION" \
     --push \
@@ -739,6 +776,7 @@ cli:npm:publish:
   echo "  postgresai/monitoring-flask-backend:$VERSION"
   echo "  postgresai/postgres-ai-configs:$VERSION"
   echo "  postgresai/instance-jobs:$VERSION"
+  echo "  postgresai/rds-host-stats:$VERSION"
   echo "  postgresai/pgwatch:$VERSION"
 
 docker:publish:images:

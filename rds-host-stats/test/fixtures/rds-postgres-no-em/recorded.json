@@ -1,0 +1,614 @@
+[
+  {
+    "client": "rds",
+    "command": "DescribeDBInstancesCommand",
+    "input": {
+      "DBInstanceIdentifier": "pgai-test-hoststats-b9e0be1f"
+    },
+    "output": {
+      "DBInstances": [
+        {
+          "DBInstanceIdentifier": "pgai-test-hoststats-b9e0be1f",
+          "DBInstanceClass": "db.t4g.micro",
+          "Engine": "postgres",
+          "DBInstanceStatus": "available",
+          "MasterUsername": "pgai",
+          "DBName": "postgres",
+          "Endpoint": {
+            "Address": "redacted",
+            "Port": 5432,
+            "HostedZoneId": "Z2R2ITUGPM61AM"
+          },
+          "AllocatedStorage": 20,
+          "InstanceCreateTime": "2026-09-28T05:43:18.375Z",
+          "PreferredBackupWindow": "09:37-10:07",
+          "BackupRetentionPeriod": 0,
+          "DBSecurityGroups": [],
+          "VpcSecurityGroups": [
+            {
+              "VpcSecurityGroupId": "sg-redacted",
+              "Status": "active"
+            }
+          ],
+          "DBParameterGroups": [
+            {
+              "DBParameterGroupName": "default.postgres18",
+              "ParameterApplyStatus": "in-sync"
+            }
+          ],
+          "AvailabilityZone": "us-east-1d",
+          "DBSubnetGroup": {
+            "DBSubnetGroupName": "default",
+            "DBSubnetGroupDescription": "default",
+            "VpcId": "vpc-redacted",
+            "SubnetGroupStatus": "Complete",
+            "Subnets": [
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1d"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1c"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1a"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1b"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1e"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              },
+              {
+                "SubnetIdentifier": "subnet-redacted",
+                "SubnetAvailabilityZone": {
+                  "Name": "us-east-1f"
+                },
+                "SubnetOutpost": {},
+                "SubnetStatus": "Active"
+              }
+            ]
+          },
+          "PreferredMaintenanceWindow": "fri:08:15-fri:08:45",
+          "UpgradeRolloutOrder": "second",
+          "PendingModifiedValues": {},
+          "MultiAZ": false,
+          "EngineVersion": "18.6",
+          "AutoMinorVersionUpgrade": true,
+          "ReadReplicaDBInstanceIdentifiers": [],
+          "LicenseModel": "postgresql-license",
+          "Iops": 3000,
+          "StorageThroughput": 125,
+          "OptionGroupMemberships": [
+            {
+              "OptionGroupName": "default:postgres-18",
+              "Status": "in-sync"
+            }
+          ],
+          "PubliclyAccessible": false,
+          "StorageType": "gp3",
+          "DbInstancePort": 0,
+          "StorageEncrypted": true,
+          "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/redacted",
+          "DbiResourceId": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+          "CACertificateIdentifier": "rds-ca-rsa2048-g1",
+          "DomainMemberships": [],
+          "CopyTagsToSnapshot": false,
+          "MonitoringInterval": 0,
+          "DBInstanceArn": "arn:aws:rds:us-east-1:123456789012:db:pgai-test-hoststats-b9e0be1f",
+          "IAMDatabaseAuthenticationEnabled": false,
+          "DatabaseInsightsMode": "standard",
+          "PerformanceInsightsEnabled": true,
+          "PerformanceInsightsKMSKeyId": "arn:aws:kms:us-east-1:123456789012:key/redacted",
+          "PerformanceInsightsRetentionPeriod": 7,
+          "DeletionProtection": false,
+          "AssociatedRoles": [],
+          "TagList": [
+            {
+              "Key": "expires-at",
+              "Value": "2026-09-28T07:39:08Z"
+            },
+            {
+              "Key": "owner",
+              "Value": "rds-hoststats"
+            },
+            {
+              "Key": "pgai-test",
+              "Value": "true"
+            }
+          ],
+          "CustomerOwnedIpEnabled": false,
+          "NetworkType": "IPV4",
+          "ActivityStreamStatus": "stopped",
+          "BackupTarget": "region",
+          "CertificateDetails": {
+            "CAIdentifier": "rds-ca-rsa2048-g1",
+            "ValidTill": "2027-09-28T05:41:51.000Z"
+          },
+          "DedicatedLogVolume": false,
+          "IsStorageConfigUpgradeAvailable": false,
+          "EngineLifecycleSupport": "open-source-rds-extended-support"
+        }
+      ]
+    }
+  },
+  {
+    "client": "cloudwatch",
+    "command": "GetMetricDataCommand",
+    "input": {
+      "StartTime": "2026-09-28T05:31:00.000Z",
+      "EndTime": "2026-09-28T05:46:00.000Z",
+      "MetricDataQueries": [
+        {
+          "Id": "host_cpu_utilization_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "CPUUtilization",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_memory_available_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeableMemory",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_queue_depth",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "DiskQueueDepth",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_receive_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkReceiveThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_transmit_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkTransmitThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_free_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeStorageSpace",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_burst_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "BurstBalance",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "EBSIOBalance%",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_replica_lag_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReplicaLag",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        }
+      ]
+    },
+    "output": {
+      "MetricDataResults": [
+        {
+          "Id": "host_cpu_utilization_percent",
+          "Label": "CPUUtilization",
+          "Timestamps": [
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z",
+            "2026-09-28T05:41:00.000Z"
+          ],
+          "Values": [
+            5.7,
+            8.1,
+            30.474999999999998,
+            39.22729319170933
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_memory_available_bytes",
+          "Label": "FreeableMemory",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z"
+          ],
+          "Values": [
+            185978880,
+            177762304,
+            194080768,
+            240934912
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_read_iops",
+          "Label": "ReadIOPS",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            1.2664344870107147,
+            0.5833236112731455,
+            9.870779491454773
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_write_iops",
+          "Label": "WriteIOPS",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.36659945676625955,
+            0.7833202779953667,
+            48.40350145894123
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_read_latency_seconds",
+          "Label": "ReadLatency",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.0004123711340206186,
+            0,
+            0.00042124542124542125
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_write_latency_seconds",
+          "Label": "WriteLatency",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0,
+            0,
+            0.001414695945945946
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_queue_depth",
+          "Label": "DiskQueueDepth",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            0.0012331072636683274,
+            0.00115,
+            0.06386170797979629
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_network_receive_bytes_per_second",
+          "Label": "NetworkReceiveThroughput",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            1436.1033810468082,
+            7005.317021134742,
+            120272.44685285536
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_network_transmit_bytes_per_second",
+          "Label": "NetworkTransmitThroughput",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z"
+          ],
+          "Values": [
+            11948.126176867574,
+            29264.38429228615,
+            27366.402667778242
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_disk_free_bytes",
+          "Label": "FreeStorageSpace",
+          "Timestamps": [
+            "2026-09-28T05:45:00.000Z",
+            "2026-09-28T05:44:00.000Z",
+            "2026-09-28T05:43:00.000Z",
+            "2026-09-28T05:42:00.000Z"
+          ],
+          "Values": [
+            20609228800,
+            20609236992,
+            20609404928,
+            20710682624
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_burst_balance_percent",
+          "Label": "BurstBalance",
+          "Timestamps": [],
+          "Values": [],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "Label": "EBSIOBalance%",
+          "Timestamps": [],
+          "Values": [],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "host_replica_lag_seconds",
+          "Label": "ReplicaLag",
+          "Timestamps": [],
+          "Values": [],
+          "StatusCode": "Complete"
+        }
+      ],
+      "Messages": []
+    }
+  },
+  {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "StartTime": "2026-09-28T05:31:00.000Z",
+      "EndTime": "2026-09-28T05:46:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    },
+    "output": {
+      "AlignedStartTime": "2026-09-28T05:43:00.000Z",
+      "AlignedEndTime": "2026-09-28T05:46:00.000Z",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "MetricList": [
+        {
+          "Key": {
+            "Metric": "db.load.avg"
+          },
+          "DataPoints": [
+            {
+              "Timestamp": "2026-09-28T05:44:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:45:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:46:00.000Z",
+              "Value": 0
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
