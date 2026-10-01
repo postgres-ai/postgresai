@@ -196,14 +196,15 @@ test.each([["paused", {}], ["running", { FAKE_EXEC_CODE: "1" }]])("targets remov
   expect(result.stdout).not.toContain("sink-prometheus is not running");
 });
 
-test("targets remove fails when the sink-prometheus state is unknown", () => {
+// docker-compose v1 has no `ps --status`: the state is unknown, so remove
+// reloads and verifies as for a running sink-prometheus.
+test("targets remove reloads when the sink-prometheus state is unknown", () => {
   const added = run(["add", conn, "ch"]);
   expect(added.exitCode, added.stderr).toBe(0);
   writeFileSync(log, "");
   const result = run(["remove", "ch"], { FAKE_PS_CODE: "1" });
-  expect(result.exitCode, result.stderr).toBe(1);
-  expect(result.stderr).toContain("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
-  expect(reloadLog()).toEqual([probeLine]);
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(reloadLog()).toEqual([probeLine, killLine, verifyRemoveLine]);
 });
 
 test("targets remove without a sink-prometheus container succeeds without a reload", () => {
