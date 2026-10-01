@@ -8,6 +8,8 @@
  * Endpoint: POST /v1/projects/{ref}/database/query
  */
 
+import { redactPasswordsInSql } from "./init";
+
 const SUPABASE_API_BASE = "https://api.supabase.com";
 
 /**
@@ -573,7 +575,7 @@ export async function applyInitPlanViaSupabase(params: {
       const msg = e instanceof Error ? e.message : String(e);
       const errAny = e as PgCompatibleError;
       const wrapped: PgCompatibleError = new Error(
-        `Failed at step "${step.name}": ${msg}`
+        `Failed at step "${step.name}": ${redactPasswordsInSql(msg)}`
       ) as PgCompatibleError;
 
       // Preserve PostgreSQL error fields for consistent error handling
@@ -599,12 +601,13 @@ export async function applyInitPlanViaSupabase(params: {
 
       for (const field of pgErrorFields) {
         if (errAny[field] !== undefined) {
-          (wrapped as unknown as Record<string, unknown>)[field] = errAny[field];
+          (wrapped as unknown as Record<string, unknown>)[field] = typeof errAny[field] === "string"
+            ? redactPasswordsInSql(errAny[field] as string) : errAny[field];
         }
       }
 
       if (e instanceof Error && e.stack) {
-        wrapped.stack = e.stack;
+        wrapped.stack = redactPasswordsInSql(e.stack);
       }
 
       throw wrapped;

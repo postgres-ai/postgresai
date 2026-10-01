@@ -188,7 +188,8 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
   try {
     const me = (await client.query(
       `select current_user as name, current_database() as db, rolsuper or rolcreaterole as admin,
-         exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists
+         exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists,
+         current_setting('scram_iterations', true) as iterations
        from pg_roles where rolname = current_user`,
     )).rows[0];
     if (me.name === DEFAULT_MONITORING_USER) {
@@ -205,7 +206,7 @@ export async function prepareDatabase(url: string, provider: Provider): Promise<
           return { next: `${DEFAULT_MONITORING_USER} already exists on this server${given ? " and PGAI_MON_PASSWORD is not its password" : ""}. ${setPassword}` };
         }
       }
-      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
+      await applyInitPlan({ client, plan: await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true }) });
       // Another session may have created the role meanwhile, with its own password.
       // Other login errors (pg_hba for this client, say) do not tell, so they pass.
       if (!(await logsIn(monitoringUrlFor(url, me.db, password)).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
