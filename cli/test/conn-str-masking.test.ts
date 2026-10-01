@@ -38,10 +38,17 @@ test.each([
   ["a '/' in the password", `postgresql://u:pa/${secret}@h:5432/db`],
   ["an '@' and a '/' in the password", `postgresql://u:p@${secret}/w@h:5432/db`],
   ["sslpassword", `postgresql://u:pw@h:5432/db?sslpassword=${secret}&sslmode=require`],
+  // Digits first: URL parsing reads them as a port and the rest as a fragment or query.
+  ["a '#' after digits in the password", `postgresql://u:5432#${secret}@h:5432/db`],
+  ["a '?' after digits in the password", `postgresql://u:1234?${secret}@h:5432/db`],
 ])("maskConnectionString hides %s", (_shape, url) => {
   const masked = maskConnectionString(url);
   expect(masked).not.toContain(secret);
   expect(masked).toContain("@h:5432/db");
+});
+
+test.each([["postgresql://h:5432/db@x"], ["postgresql://h/db@x"], ["postgresql://u@h:5432/db"]])("maskConnectionString leaves %s, which has no password, as it is", (url) => {
+  expect(maskConnectionString(url)).toBe(url);
 });
 
 test("local-install --db-url does not print the password", () => {

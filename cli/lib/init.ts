@@ -294,11 +294,15 @@ export function redactPasswordsInSql(sql: string): string {
 }
 
 export function maskConnectionString(dbUrl: string): string {
-  // Hide password if present (postgresql://user:pass@host/db). It runs to the
-  // last "@" before the query, so an unencoded "/" or "@" in it does not end it
-  // early. Password-like query parameters (password, sslpassword) are hidden too.
+  // Hide password if present (postgresql://user:pass@host/db). The password
+  // runs to the last "@" in the string, so an unencoded "/", "?", "#" or "@"
+  // in it does not end it early. The one shape read as no password is
+  // "host:port/..." followed by an "@" in the path, as in
+  // postgresql://h:5432/db@x (a password made of digits and then "/" would
+  // read the same way). Password-like query parameters (password,
+  // sslpassword) are hidden too.
   const masked = dbUrl
-    .replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/[^:@\/?#]*):[^?#]*@/i, "$1:*****@")
+    .replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/[^:@\/?#]*):(?![0-9]*\/)(.*)@/i, "$1:*****@")
     .replace(/([?&][^=&#]*pass[^=&#]*=)[^&#]*/gi, "$1*****");
   try {
     const u = new URL(masked);

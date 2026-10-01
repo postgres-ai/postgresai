@@ -5338,16 +5338,17 @@ function readEnvValue(projectDir: string, key: string): string | undefined {
   const last = [...fs.readFileSync(envFile, "utf8").matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
   if (!last) return undefined;
   const raw = last[1].trim();
-  return raw.match(/^(["'])(.*?)\1/)?.[2] ?? raw.replace(/[ \t]+#.*$/, "");
+  const quoted = raw.match(/^"((?:\\.|[^"\\])*)"/)?.[1]?.replace(/\\(["\\])/g, "$1") ?? raw.match(/^'([^']*)'/)?.[1];
+  return quoted ?? raw.replace(/[ \t]+#.*$/, "");
 }
 
-/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment or .env)? */
+/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment, else in .env)? An exported empty value counts as set, as compose reads it. */
 function supabaseHostMetricsOn(projectDir: string, env: NodeJS.ProcessEnv): boolean {
-  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS ?? readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") ?? "");
 }
 
 // A Supabase target's name is part of its scrape file's name.
-const SUPABASE_TARGET_NAME = /^[A-Za-z0-9_-]+$/;
+const SUPABASE_TARGET_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const SUPABASE_TARGET_NAME_ERROR = "Host metrics: a Supabase target name may use only letters, digits, '_' and '-' while PGAI_SUPABASE_HOST_METRICS is true. Choose another name.";
 
 /** Sets keys in the project's .env (null deletes them), keeping every other line. */
@@ -5407,7 +5408,7 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     const projectRef = extractProjectRefFromUrl(connStr);
     if (projectRef) {
       const on = supabaseHostMetricsOn(projectDir, env);
-      if (on && !SUPABASE_TARGET_NAME.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
+      if (on && !SUPABASE_TARGET_NAME_RE.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
@@ -5486,7 +5487,7 @@ export async function addTarget(
   }
   const instanceName = name && name.trim() ? name.trim() : defaultName;
   // Refused before the target is saved: the name cannot be changed by a re-run.
-  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME.test(instanceName)) {
+  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME_RE.test(instanceName)) {
     console.error(SUPABASE_TARGET_NAME_ERROR);
     process.exitCode = 1;
     return false;
@@ -5616,7 +5617,7 @@ targets
       console.log(`Monitoring target '${name}' removed`);
       if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
       const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
-      if (SUPABASE_TARGET_NAME.test(name) && fs.existsSync(supabaseFile)) {
+      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
         fs.rmSync(supabaseFile);
         if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
       }
