@@ -5652,7 +5652,11 @@ def main():
                         else:
                             report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
                             if report_id:
-                                generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                                try:
+                                    generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                                except Exception as e:
+                                    generator.finish_report(args.api_url, args.token, report_id, error=e)
+                                    raise
                                 generator.finish_report(args.api_url, args.token, report_id)
 
             # Free memory after processing each cluster
