@@ -207,6 +207,8 @@ class PostgresReportGenerator:
         self.postgres_sink_url = postgres_sink_url
         self.pg_conn = None
         self.use_current_time = use_current_time
+        # Files that failed to upload, per report id; finish_report reads it.
+        self.failed_uploads: Dict[int, List[str]] = {}
         self._build_metadata = self._load_build_metadata()
         # Combine default exclusions with user-provided exclusions
         self.excluded_databases = self.DEFAULT_EXCLUDED_DATABASES.copy()
@@ -5374,6 +5376,7 @@ class PostgresReportGenerator:
             if "message" in response:
                 raise Exception(response["message"])
             logger.info(f"Uploaded: {file_name}")
+            return
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if hasattr(e, 'response') else 'unknown'
             if status == 404:
@@ -5387,6 +5390,35 @@ class PostgresReportGenerator:
         except Exception as e:
             logger.error(f"Upload failed for {file_name}: {e}")
             logger.info(f"File saved locally: {path}")
+        self.failed_uploads.setdefault(report_id, []).append(file_name)
+
+    def finish_report(self, api_url, token, report_id, error=None):
+        """
+        Close a report created by create_report: `completed` when every
+        upload succeeded, `failed` when one did not or `error` is set.
+
+        checkup_report_create leaves a report `pending`; nothing else ever
+        changes that. The status RPC takes no reason, so the reason is logged.
+        A failure here is logged, never raised: the files are already up.
+        """
+        failed = self.failed_uploads.pop(report_id, [])
+        if error is not None:
+            status, reason = "failed", f"the reporter raised: {error}"
+        elif failed:
+            status, reason = "failed", f"{len(failed)} file(s) failed to upload: {', '.join(failed)}"
+        else:
+            status, reason = "completed", None
+
+        request_data = {"access_token": token, "report_id": report_id, "status": status}
+        try:
+            make_request(api_url, "/rpc/checkup_report_status_update", request_data)
+        except Exception as e:
+            logger.error(f"Could not mark report {report_id} {status}: {e}")
+            return
+        if reason:
+            logger.warning(f"Report {report_id} marked failed: {reason}")
+        else:
+            logger.info(f"Report {report_id} marked completed")
 
 
 def make_request(api_url, endpoint, request_data):
@@ -5486,43 +5518,50 @@ def main():
                         if report_id is None:
                             logger.info(f"Skipping API uploads for cluster {cluster}")
 
-                reports = generator.generate_all_reports(cluster, args.node_name, combine_nodes)
+                try:
+                    reports = generator.generate_all_reports(cluster, args.node_name, combine_nodes)
 
-                # Generate per-query JSON files BEFORE deleting reports (needs queryids from reports)
-                # Use write_immediately=True to avoid accumulating all data in memory
-                logger.info("Generating per-query JSON files (streaming mode to reduce memory usage)...")
-                query_files = generator.generate_per_query_jsons(
-                    reports, cluster, node_name=args.node_name,
-                    # 640 KB should be enough for anybody
-                    query_text_limit=66560, hours=24,
-                    write_immediately=True,
-                    include_cluster_prefix=(len(clusters_to_process) > 1),
-                    api_url=args.api_url if (not args.no_upload and report_id) else None,
-                    token=args.token if (not args.no_upload and report_id) else None,
-                    report_id=report_id if (not args.no_upload and report_id) else None
-                )
+                    # Generate per-query JSON files BEFORE deleting reports (needs queryids from reports)
+                    # Use write_immediately=True to avoid accumulating all data in memory
+                    logger.info("Generating per-query JSON files (streaming mode to reduce memory usage)...")
+                    query_files = generator.generate_per_query_jsons(
+                        reports, cluster, node_name=args.node_name,
+                        # 640 KB should be enough for anybody
+                        query_text_limit=66560, hours=24,
+                        write_immediately=True,
+                        include_cluster_prefix=(len(clusters_to_process) > 1),
+                        api_url=args.api_url if (not args.no_upload and report_id) else None,
+                        token=args.token if (not args.no_upload and report_id) else None,
+                        report_id=report_id if (not args.no_upload and report_id) else None
+                    )
 
-                # Clean up query files list
-                del query_files
-                gc.collect()
+                    # Clean up query files list
+                    del query_files
+                    gc.collect()
 
-                # Save reports with cluster name prefix
-                for report_key in list(reports.keys()):  # Use list() to avoid dict modification during iteration
-                    output_filename = f"{cluster}_{report_key}.json" if len(clusters_to_process) > 1 else f"{report_key}.json"
-                    with open(output_filename, "w") as f:
-                        json.dump(reports[report_key], f, indent=2)
-                    logger.info(f"Generated report: {output_filename}")
-                    if not args.no_upload and report_id:
-                        generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                    # Save reports with cluster name prefix
+                    for report_key in list(reports.keys()):  # Use list() to avoid dict modification during iteration
+                        output_filename = f"{cluster}_{report_key}.json" if len(clusters_to_process) > 1 else f"{report_key}.json"
+                        with open(output_filename, "w") as f:
+                            json.dump(reports[report_key], f, indent=2)
+                        logger.info(f"Generated report: {output_filename}")
+                        if not args.no_upload and report_id:
+                            generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
 
-                    # Free memory immediately after writing each report
-                    del reports[report_key]
-                    if len(reports) > 0 and len(reports) % 5 == 0:
-                        gc.collect()
+                        # Free memory immediately after writing each report
+                        del reports[report_key]
+                        if len(reports) > 0 and len(reports) % 5 == 0:
+                            gc.collect()
 
-                # Free memory after writing all reports to disk
-                del reports
-                gc.collect()
+                    # Free memory after writing all reports to disk
+                    del reports
+                    gc.collect()
+                except Exception as e:
+                    if report_id:
+                        generator.finish_report(args.api_url, args.token, report_id, error=e)
+                    raise
+                if report_id:
+                    generator.finish_report(args.api_url, args.token, report_id)
             else:
                 # Generate specific report - use node_name or default
                 if args.node_name is None:
@@ -5615,6 +5654,7 @@ def main():
                             report_id = generator.create_report(args.api_url, args.token, project_name, args.epoch)
                             if report_id:
                                 generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                                generator.finish_report(args.api_url, args.token, report_id)
 
             # Free memory after processing each cluster
             logger.info(f"Freeing memory after processing cluster {cluster}...")
