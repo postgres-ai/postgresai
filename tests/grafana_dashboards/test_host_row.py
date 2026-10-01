@@ -5,6 +5,11 @@ all write host_* series labelled {cluster, node_name}, so one row serves every
 provider. Each panel must show data for every provider: a panel only one
 provider can fill is an empty panel on every other box. The vocabulary table in
 docs/host-metrics.md must list exactly the names the providers write.
+
+RDS DB load (Performance Insights) has no Supabase or ClickHouse equivalent,
+so it gets its own collapsed row after Host, named for RDS. Grafana 12.3 has
+no way to hide a row without data: a row repeated over an empty variable is
+still rendered once, so on other providers this row stays closed and empty.
 """
 from __future__ import annotations
 
@@ -89,6 +94,16 @@ def _row(path):
     return rows[0]
 
 
+DB_LOAD_ROW = "RDS DB load (Performance Insights)"
+SELECTOR = '{cluster="$cluster_name", node_name="$node_name"}'
+
+
+def _db_load_row(path):
+    rows = [p for p in _panels(path) if p.get("type") == "row" and p["title"] == DB_LOAD_ROW]
+    assert len(rows) == 1
+    return rows[0]
+
+
 def _host_panels(path):
     return {p["title"]: p for p in _row(path)["panels"]}
 
@@ -104,10 +119,11 @@ def test_host_row_is_collapsed_last_and_reads_only_host_series(path):
     panels = _panels(path)
     row = _row(path)
     assert row["collapsed"] is True
-    assert panels[-1] == row
+    assert panels[-2:] == [row, _db_load_row(path)]
     # Grafana lays panels out by gridPos, not list order.
-    bottom = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in panels if p != row)
+    bottom = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in panels[:-2])
     assert row["gridPos"]["y"] >= bottom
+    assert panels[-1]["gridPos"]["y"] > row["gridPos"]["y"]
     for p in panels:
         for t in p.get("targets", []):
             assert "host_" not in t.get("expr", ""), p.get("title")
@@ -178,3 +194,20 @@ def test_host_percent_panels_use_soft_axis_limits(path):
             continue
         assert "min" not in defaults and "max" not in defaults, title
         assert defaults["custom"]["axisSoftMin"] == 0, title
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
+def test_rds_db_load_row_is_collapsed_last_and_charts_pi_db_load(path):
+    # Last and collapsed, like Host: a node without PI data sees one closed row.
+    row = _db_load_row(path)
+    assert _panels(path)[-1] == row
+    assert row["collapsed"] is True
+    assert "repeat" not in row
+    [panel] = row["panels"]
+    assert panel["title"] == "DB load (average active sessions)"
+    assert [t["expr"] for t in panel["targets"]] == [f"host_db_load{SELECTOR}"]
+    assert panel["fieldConfig"]["defaults"]["unit"] == "short"
+    assert panel["options"]["legend"]["sortBy"] == "Max"
+    span = panel["fieldConfig"]["defaults"]["custom"]["spanNulls"]
+    assert isinstance(span, int) and span <= 180000
+    assert "host_db_load" in _written_by_rds()
