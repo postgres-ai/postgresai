@@ -8,9 +8,13 @@
       labels:
         cluster: default
         node_name: sb
-        __pgai_rev: r74d1ac4dc94d24dc
+        __pgai_rev: r55af63516e7615b5
   metric_relabel_configs:
     - source_labels:
         - __name__
       regex: node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*
+      action: keep
+    - source_labels:
+        - supabase_project_ref
+      regex: abcdefghijklmnopqrst
       action: keep
