@@ -94,7 +94,7 @@ func setup(t *testing.T) *rig {
 	}
 	x.relay.client.Transport = transport
 	x.relay.now = func() time.Time { return x.now }
-	x.handler = x.relay.Handler(true)
+	x.handler = x.relay.Handler()
 	t.Cleanup(func() {
 		if strings.Contains(x.logs.String(), fakeKey) {
 			t.Error("key leaked into logs")
@@ -423,16 +423,14 @@ func TestUpstreamErrorsAndRedirect(t *testing.T) {
 	}
 }
 
-func TestDisabledAndMethod(t *testing.T) {
+func TestOnlyGetMetrics(t *testing.T) {
 	x := setup(t)
-	for _, path := range []string{"/supabase/metrics", "/supabase/targets"} {
-		w := httptest.NewRecorder()
-		x.relay.Handler(false).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		if w.Code != 404 {
-			t.Fatal("disabled handler exists")
-		}
-	}
 	w := httptest.NewRecorder()
+	x.handler.ServeHTTP(w, httptest.NewRequest("GET", "/supabase/targets", nil))
+	if w.Code != 404 {
+		t.Fatal("unknown path served")
+	}
+	w = httptest.NewRecorder()
 	x.handler.ServeHTTP(w, httptest.NewRequest("POST", "/supabase/metrics", nil))
 	if w.Code != 405 || x.calls != 0 {
 		t.Fatal("method allowed")

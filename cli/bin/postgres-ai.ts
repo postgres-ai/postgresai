@@ -50,7 +50,8 @@ import {
 } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { addHostMetrics, HOST_METRICS_VERIFY_SCRIPT, removeHostMetrics, scrapeRevision } from "../lib/clickhouse";
+import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
+import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
@@ -5289,10 +5290,12 @@ async function sinkPrometheusUp(): Promise<boolean | null> {
 // Stacks older than host metrics support lack the ./host-metrics mount or
 // scrape_config_files, so check that the running sink-prometheus can see the
 // new scrape file before reporting success.
-async function reloadHostMetrics(projectDir: string, name: string, revision?: string): Promise<boolean> {
+// `file` is the scrape file just written for `job`; without it, the job's file was removed.
+async function reloadHostMetrics(projectDir: string, job: string, file?: string): Promise<boolean> {
+  const revision = file && scrapeRevision(projectDir, file);
   if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
     `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
-    "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
+    "sh", `/etc/pgai/host-metrics/${file}`]) !== 0) {
     // stop/start re-runs config-init, which a restart does not.
     console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
     return false;
@@ -5307,7 +5310,7 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
       return false;
     }
     if (!up) {
-      console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
+      console.log(`sink-prometheus is not running; it will not load '${job}' when it starts.`);
       return true;
     }
   }
@@ -5315,7 +5318,6 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
     console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
     return false;
   }
-  const job = `clickhouse-${name}`;
   const needle = revision ? `"__pgai_rev":"${revision}"` : `"scrapePool":"${job}"`;
   if (await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, revision ? "present" : "absent"]) !== 0) {
     console.error(revision
@@ -5335,6 +5337,73 @@ function defaultTargetName(connStr: string): string | null {
   }
   const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/([^?]+)/);
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+}
+
+/** The last assignment of `key` in the project's .env, unquoted. */
+function readEnvValue(projectDir: string, key: string): string | undefined {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return undefined;
+  const last = [...fs.readFileSync(envFile, "utf8").matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
+  return last && stripMatchingQuotes(last[1].trim());
+}
+
+/** Sets keys in the project's .env (null deletes them), keeping every other line. */
+function setEnvValues(projectDir: string, values: Record<string, string | null>): void {
+  const envFile = path.resolve(projectDir, ".env");
+  let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  for (const [key, value] of Object.entries(values)) {
+    const line = `^[ \\t]*(?:export[ \\t]+)?${key}=.*(?:\\n|$)`;
+    if (value === null) content = content.replace(new RegExp(line, "gm"), "");
+    else if (new RegExp(line, "m").test(content)) content = content.replace(new RegExp(line, "gm"), `${key}=${value}\n`);
+    else content += `${content && !content.endsWith("\n") ? "\n" : ""}${key}=${value}\n`;
+  }
+  writeEnvFile(envFile, content);
+}
+
+/**
+ * Copies the target's cluster/node_name into what its host metrics collector
+ * reads: the ClickHouse and Supabase scrape files in host-metrics/, and .env for
+ * rds-host-stats (it pushes past samples, so nothing scrapes it). Returns false
+ * when host metrics failed.
+ */
+async function setUpHostMetrics(projectDir: string, instance: Instance, connStr: string, env: NodeJS.ProcessEnv, apply: boolean): Promise<boolean> {
+  const name = instance.name;
+  const cluster = instance.custom_tags?.cluster ?? "default";
+  const nodeName = instance.custom_tags?.node_name ?? name;
+  try {
+    if (detectProvider(connStr) === "clickhouse") {
+      const message = await addHostMetrics({ projectDir, name, conn: connStr, env, cluster, nodeName });
+      const file = `clickhouse-${name}.yml`;
+      if (apply && message.startsWith("Host metrics: ClickHouse Cloud") && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`, file))) return false;
+      console.log(message);
+      return true;
+    }
+    if (extractProjectRefFromUrl(connStr)) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
+      const on = /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+      const dir = hostMetricsDir(projectDir);
+      const file = `supabase-${name}.yml`;
+      const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
+      for (const f of stale) fs.rmSync(path.join(dir, f), { force: true });
+      if (on) writeScrapeFile(dir, file, renderSupabaseScrapeConfig({ cluster, nodeName }));
+      else if (stale.length === 0) return true;
+      if (apply && !(await reloadHostMetrics(projectDir, SUPABASE_JOB, on ? file : undefined))) return false;
+      console.log(on ? "Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)" : "Host metrics: Supabase relay job removed (PGAI_SUPABASE_HOST_METRICS is not true)");
+      return true;
+    }
+    const rds = rdsInstance(new URL(connStr).hostname);
+    if (rds === null) {
+      console.log("Host metrics: add the RDS instance endpoint (<instance>.<id>.<region>.rds.amazonaws.com) to collect them; a cluster, reader or proxy endpoint names no instance");
+    } else if (rds) {
+      if (![cluster, nodeName].every((v) => /^[\w.@:\/-]+$/.test(v))) throw new Error(`Host metrics: cluster '${cluster}' or node_name '${nodeName}' cannot be written to .env; set PGAI_CLUSTER and PGAI_NODE_NAME there yourself.`);
+      setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName });
+      console.log(`Host metrics: rds-host-stats polls RDS instance ${rds.id} (${rds.region}). Start it with: docker compose --profile rds up -d rds-host-stats`);
+    }
+    return true;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return false;
+  }
 }
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
@@ -5369,30 +5438,14 @@ export async function addTarget(
       addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
     }
-    if (detectProvider(connStr) === "clickhouse") {
-      let hostMetricsOk = true;
-      try {
-        const message = await addHostMetrics({
-          projectDir, name: instanceName, conn: connStr, env,
-          cluster: instance.custom_tags?.cluster ?? "default",
-          nodeName: instance.custom_tags?.node_name ?? instanceName,
-        });
-        if (!apply || !message.startsWith("Host metrics: ClickHouse Cloud")) console.log(message);
-        else if (await reloadHostMetrics(projectDir, instanceName, scrapeRevision(projectDir, instanceName))) console.log(message);
-        else hostMetricsOk = false;
-      } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        hostMetricsOk = false;
-      }
-      if (!hostMetricsOk) {
-        process.exitCode = 1;
-        // Applying runs `up -d pgwatch-*`, which would also start a stopped
-        // sink-prometheus as a dependency: a failed add leaves the stack alone.
-        console.error(apply
-          ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
-          : "The Postgres target was added; host metrics were not.");
-        return true;
-      }
+    if (!(await setUpHostMetrics(projectDir, instance, connStr, env, apply))) {
+      process.exitCode = 1;
+      // Applying runs `up -d pgwatch-*`, which would also start a stopped
+      // sink-prometheus as a dependency: a failed add leaves the stack alone.
+      console.error(apply
+        ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
+        : "The Postgres target was added; host metrics were not.");
+      return true;
     }
 
     if (!apply) return true;
@@ -5468,6 +5521,9 @@ Use an organization API key with the Basic Service API Reader role; an Admin key
 Writes instances.yml, host-metrics/clickhouse-my-db.yml and
 host-metrics/clickhouse-my-db.secret (the key secret, mode 0600).
 Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
+
+Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes host-metrics/supabase-<name>.yml.
+RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
@@ -5485,6 +5541,7 @@ targets
     }
 
     try {
+      const target = loadInstances(file).find((instance) => instance.name === name);
       const removed = removeInstanceFromFile(file, name);
       if (!removed) {
         console.error(`Monitoring target '${name}' not found`);
@@ -5492,8 +5549,16 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
-      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, name))) {
-        process.exitCode = 1;
+      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
+      const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
+      if (/^[A-Za-z0-9_-]+$/.test(name) && fs.existsSync(supabaseFile)) {
+        fs.rmSync(supabaseFile);
+        if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
+      }
+      const rds = rdsInstance(target?.conn_str?.match(/@([^:/?#]+)/)?.[1] ?? "");
+      if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
+        setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null });
+        console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
       }
 
       const applyCode = await applyMonitoringTargetsConfig();

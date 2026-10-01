@@ -60,12 +60,10 @@ func New(load func() (config.Config, error), logger *slog.Logger) *Relay {
 	}
 }
 
-// Handler registers no routes when the feature is disabled.
-func (r *Relay) Handler(enabled bool) http.Handler {
+// Handler serves GET /supabase/metrics; main starts it only when the feature is on.
+func (r *Relay) Handler() http.Handler {
 	mux := http.NewServeMux()
-	if enabled {
-		mux.HandleFunc("GET /supabase/metrics", r.metrics)
-	}
+	mux.HandleFunc("GET /supabase/metrics", r.metrics)
 	return mux
 }
 

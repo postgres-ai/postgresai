@@ -15,6 +15,8 @@
   VictoriaMetrics scrape job for the service's Prometheus endpoint when `CLICKHOUSE_ORG_ID`,
   `CLICKHOUSE_KEY_ID` and `CLICKHOUSE_KEY_SECRET` are set. The key secret is kept in
   `host-metrics/clickhouse-<name>.secret` (0600, directory 0700); a Basic Service API Reader key is enough.
+  For a Supabase target, while `PGAI_SUPABASE_HOST_METRICS` is true, they write the relay's scrape
+  job; for an RDS instance endpoint, the instance, region and labels `rds-host-stats` reads from `.env`.
 
 ### Changed
 

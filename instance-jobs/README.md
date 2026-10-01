@@ -338,7 +338,8 @@ The token is never passed on argv, never put in a URL, and never logged.
 ## Supabase host metrics
 
 Enable the `instance-jobs` profile and set `PGAI_SUPABASE_HOST_METRICS=true` in
-`.env`, then recreate the service. The internal relay defaults to `:9188`
+`.env`, then recreate the service and re-run `postgresai mon targets add` for the
+Supabase target. The internal relay defaults to `:9188`
 (`PGAI_SUPABASE_METRICS_LISTEN`; pinned in compose, no published port). It fetches
 the Supabase key using the existing org token and instance id, at most once per
 five minutes, keeping it only in memory. No customer key entry is needed.
@@ -349,13 +350,13 @@ platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
 health. `not_supabase`, `consent_needed` and `no_key` are not faults: the relay
 answers an empty 200, so `up=1` with no series and the box carries no failing
 target. For `consent_needed`, the relay logs a warning; open the Supabase page
-in the PostgresAI console and click **Allow host metrics**. The scrape target
-carries the `cluster` and `node_name` tags of the one Supabase target in
-`instances.yml` (sources-generator writes it to
-`prometheus/supabase-host-metrics.json`). Recording rules map the primary's
-series to `host_*`, which the **Host** row of Dashboard 01 reads; see
-[docs/host-metrics.md](../docs/host-metrics.md). With no Supabase target, or more
-than one, the series carry no such labels and produce no `host_*`.
+in the PostgresAI console and click **Allow host metrics**. While the flag is
+true, `mon targets add` (and `mon local-install --db-url`) writes the scrape job,
+`host-metrics/supabase-<target>.yml`, with the target's `cluster` and `node_name`
+tags; with the flag off it removes it. A box has one such job: the relay serves
+one project, so the last Supabase target added owns it. Recording rules map the
+primary's series to `host_*`, which the **Host** row of Dashboard 01 reads; see
+[docs/host-metrics.md](../docs/host-metrics.md).
 
 Credential lifecycle: the key is cached for one hour, then fetched again. A
 `401`/`403` from Supabase discards it and triggers one immediate refetch; a
