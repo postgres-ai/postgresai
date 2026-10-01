@@ -5358,6 +5358,17 @@ function setEnvValues(projectDir: string, values: Record<string, string | null>)
   writeEnvFile(envFile, content);
 }
 
+/** A running rds-host-stats keeps the environment it started with: recreate it from .env. */
+async function recreateRdsHostStatsIfRunning(): Promise<void> {
+  const cmd = getComposeCmd();
+  if (!cmd) return;
+  const { composeFile } = await resolveOrInitPaths();
+  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "--profile", "rds", "ps", "-q", "--status", "running", "rds-host-stats"]);
+  if (ps.status === 0 && ps.stdout.trim() && await runCompose(["--profile", "rds", "up", "-d", "--no-deps", "rds-host-stats"]) !== 0) {
+    throw new Error("Recreating rds-host-stats failed. Run: docker compose --profile rds up -d rds-host-stats");
+  }
+}
+
 /**
  * Copies the target's cluster/node_name into what its host metrics collector
  * reads: the ClickHouse and Supabase scrape files in host-metrics/, and .env for
@@ -5376,14 +5387,15 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
       console.log(message);
       return true;
     }
-    if (extractProjectRefFromUrl(connStr)) {
+    const projectRef = extractProjectRefFromUrl(connStr);
+    if (projectRef) {
       if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
       const on = /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
       for (const f of stale) fs.rmSync(path.join(dir, f), { force: true });
-      if (on) writeScrapeFile(dir, file, renderSupabaseScrapeConfig({ cluster, nodeName }));
+      if (on) writeScrapeFile(dir, file, renderSupabaseScrapeConfig({ projectRef: projectRef.toLowerCase(), cluster, nodeName }));
       else if (stale.length === 0) return true;
       if (apply && !(await reloadHostMetrics(projectDir, SUPABASE_JOB, on ? file : undefined))) return false;
       console.log(on ? "Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)" : "Host metrics: Supabase relay job removed (PGAI_SUPABASE_HOST_METRICS is not true)");
@@ -5395,6 +5407,7 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     } else if (rds) {
       if (![cluster, nodeName].every((v) => /^[\w.@:\/-]+$/.test(v))) throw new Error(`Host metrics: cluster '${cluster}' or node_name '${nodeName}' cannot be written to .env; set PGAI_CLUSTER and PGAI_NODE_NAME there yourself.`);
       setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName });
+      if (apply) await recreateRdsHostStatsIfRunning();
       console.log(`Host metrics: rds-host-stats polls RDS instance ${rds.id} (${rds.region}). Start it with: docker compose --profile rds up -d rds-host-stats`);
     }
     return true;
@@ -5556,6 +5569,7 @@ targets
       const rds = rdsInstance(target?.conn_str?.match(/@([^:/?#]+)/)?.[1] ?? "");
       if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
         setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null });
+        await recreateRdsHostStatsIfRunning();
         console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
       }
 
