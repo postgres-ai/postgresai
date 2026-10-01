@@ -69,7 +69,7 @@ import {
   InstancesParseError,
   loadInstances,
   buildInstance,
-  collectorConnStr,
+  splitChannelBinding,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -1052,60 +1052,6 @@ function sanitizeTagForBackup(tag: string | null | undefined): string | null {
  * if the value fails {@link sanitizeTagForBackup}). Used only to compute the
  * compose backup file suffix; callers fall back to a timestamp when this is null.
  */
-/**
- * What `mon update` does with PGAI_TAG: move the stack to this CLI's version,
- * like `mon local-install` does, so an upgrade needs no manual .env edit. It
- * never downgrades a newer tag, and a non-release CLI build moves nothing.
- */
-export function planUpdateTag(current: string | null, cliVersion: string): { tag: string | null; note: string } {
-  const semver = (v: string) => {
-    const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v);
-    return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] } : null;
-  };
-  const cli = semver(cliVersion);
-  if (!cli || cli.pre) {
-    return { tag: null, note: `PGAI_TAG stays ${current ?? "unset"}: this CLI (${cliVersion}) is not a release. To pick a stack version, set PGAI_TAG=<version> in .env and re-run 'postgresai mon update'` };
-  }
-  if (current === cliVersion) return { tag: null, note: `PGAI_TAG is ${cliVersion}, matching this CLI` };
-  const cur = current ? semver(current) : null;
-  if (cur) {
-    const i = cur.core.findIndex((part, j) => part !== cli.core[j]);
-    // Same x.y.z: only a prerelease can differ, and it is older than the release.
-    if (i >= 0 && cur.core[i] > cli.core[i]) {
-      return { tag: null, note: `PGAI_TAG stays ${current}: it is newer than this CLI (${cliVersion}). Upgrade the CLI to move the stack: npm install -g postgresai@latest` };
-    }
-  }
-  return { tag: cliVersion, note: `PGAI_TAG: ${current ?? "unset"} -> ${cliVersion}` };
-}
-
-// A PGAI_TAG assignment we can read and rewrite safely: optional export,
-// spaces around "=", a plain tag (optionally quoted), then only a " #" comment.
-// Anything else that assigns PGAI_TAG (interpolation, "KEY: value", a comment
-// glued to a quote) resolves in ways we do not model, so it is left alone.
-const ENV_TAG_LINE = /^([ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*=[ \t]*)(["']?)([A-Za-z0-9._-]*)\2((?:[ \t]+#[^\r\n]*)?[ \t]*\r?)$/gm;
-const ENV_TAG_ANY = /^[ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*[=:]/gm;
-
-/** The PGAI_TAG compose would use (last assignment, null if none), and whether every assignment is plain. */
-export function readEnvTag(projectDir: string): { tag: string | null; plain: boolean } {
-  const envFile = path.resolve(projectDir, ".env");
-  if (!fs.existsSync(envFile)) return { tag: null, plain: true };
-  const content = fs.readFileSync(envFile, "utf8");
-  const plainLines = [...content.matchAll(ENV_TAG_LINE)];
-  if (plainLines.length !== [...content.matchAll(ENV_TAG_ANY)].length) return { tag: null, plain: false };
-  const last = plainLines.at(-1);
-  return { tag: last && last[3] ? last[3] : null, plain: true };
-}
-
-/** Set every PGAI_TAG assignment in .env to `tag` (compose reads the last one), or append one. */
-export function writeEnvTag(projectDir: string, tag: string): void {
-  const envFile = path.resolve(projectDir, ".env");
-  const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
-  const content = new RegExp(ENV_TAG_LINE.source, "m").test(existing)
-    ? existing.replace(ENV_TAG_LINE, (_match, prefix: string, quote: string, _value: string, rest: string) => `${prefix}${quote}${tag}${quote}${rest}`)
-    : `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}PGAI_TAG=${tag}\n`;
-  writeEnvFile(envFile, content);
-}
-
 function readDeployedTag(projectDir: string): string | null {
   const envFile = path.resolve(projectDir, ".env");
   if (!fs.existsSync(envFile)) return null;
@@ -4359,25 +4305,10 @@ mon
         console.log("Using database URL provided via --db-url parameter");
         console.log(`Adding PostgreSQL instance from: ${maskConnectionString(opts.dbUrl)}\n`);
 
-        const match = opts.dbUrl.match(/^postgresql:\/\/[^@]+@([^:/]+)/);
-        const autoInstanceName = match ? match[1] : "db-instance";
-
-        const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-
-        if (!m) {
-          console.error("✗ Invalid connection string format");
-          process.exitCode = 1;
-          return;
-        }
-
-        const host = m[3];
-        const db = m[5].split("?")[0];
-        const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
         // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
         // the stack is started below, so nothing is applied here.
-        if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+        const connStr = opts.dbUrl;
+        if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
           console.error("✗ The monitoring target was not saved");
           process.exitCode = 1;
           return;
@@ -4421,40 +4352,30 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-            if (!m) {
-              console.error("✗ Invalid connection string format");
-              console.error("⚠ Continuing without adding instance\n");
-            } else {
-              const host = m[3];
-              const db = m[5].split("?")[0];
-              const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+            if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
+              console.error("✗ The monitoring target was not saved");
+              process.exitCode = 1;
+              return;
+            }
+            console.log();
 
-              if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
-                console.error("✗ The monitoring target was not saved");
-                process.exitCode = 1;
-                return;
-              }
-              console.log();
-
-              // Test connection
-              console.log("Testing connection to the added instance...");
-              {
-                let testClient: InstanceType<typeof Client> | null = null;
-                try {
-                  warnIfLaxSslmode(connStr);
-                  warnIfTransactionPoolerPort(connStr);
-                  testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
-                  await testClient.connect();
-                  const result = await testClient.query("select version();");
-                  console.log("✓ Connection successful");
-                  console.log(`${result.rows[0].version}\n`);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  console.error(`✗ Connection failed: ${message}\n`);
-                } finally {
-                  if (testClient) await testClient.end();
-                }
+            // Test connection
+            console.log("Testing connection to the added instance...");
+            {
+              let testClient: InstanceType<typeof Client> | null = null;
+              try {
+                warnIfLaxSslmode(connStr);
+                warnIfTransactionPoolerPort(connStr);
+                testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                await testClient.connect();
+                const result = await testClient.query("select version();");
+                console.log("✓ Connection successful");
+                console.log(`${result.rows[0].version}\n`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`✗ Connection failed: ${message}\n`);
+              } finally {
+                if (testClient) await testClient.end();
               }
             }
           } else {
@@ -5139,18 +5060,6 @@ mon
       } else {
         console.log("✓ .env is up to date");
       }
-      const envTag = readEnvTag(projectDir);
-      const deployedTag = envTag.tag;
-      const tagPlan = envTag.plain
-        ? planUpdateTag(deployedTag, pkg.version)
-        : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
-      if (tagPlan.tag) {
-        writeEnvTag(projectDir, tagPlan.tag);
-        // Bun loads .env into process.env at startup, and compose prefers the
-        // environment over .env: carry the move over so `pull` gets the new tag.
-        if (process.env.PGAI_TAG === deployedTag) process.env.PGAI_TAG = tagPlan.tag;
-      }
-      console.log(`${tagPlan.tag ? "✓ " : ""}${tagPlan.note}`);
       console.log();
 
 
@@ -5178,7 +5087,7 @@ mon
         // The helper logs only when it actually refreshes/warns, so don't
         // pre-announce a refresh that may turn out to be a no-op.
         console.log("(not a git checkout — checking bundled docker-compose.yml)");
-        await refreshBundledComposeIfStale(projectDir, deployedTag);
+        await refreshBundledComposeIfStale(projectDir);
       }
 
       // Step 3: pull new images.
@@ -5204,11 +5113,8 @@ mon
           }
         }
         console.log("\n✓ Update completed successfully");
-        // `mon restart` keeps the old containers; stop/start recreates them on the
-        // pulled images and re-runs config-init. Always, since an earlier failed
-        // run may already have moved PGAI_TAG.
         console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon stop && postgres-ai mon start");
+        console.log("  postgres-ai mon restart");
       } else {
         console.error("\n✗ Docker image update failed");
         process.exitCode = 1;
@@ -5366,12 +5272,8 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
-/**
- * A compose service's container state ("running", "exited", ...; "" when it has
- * no container), or null when it cannot be read. `ps --format` is v2-only, so
- * this takes the id from `ps -a -q` and the state from `docker inspect`.
- */
-async function composeServiceState(service: string): Promise<string | null> {
+/** Whether sink-prometheus has a running or paused container; null when that cannot be read. */
+async function sinkPrometheusUp(): Promise<boolean | null> {
   const cmd = getComposeCmd();
   if (!cmd) return null;
   let composeFile: string;
@@ -5380,18 +5282,8 @@ async function composeServiceState(service: string): Promise<string | null> {
   } catch {
     return null;
   }
-  const ids = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", service]);
-  if (ids.status !== 0) return null;
-  const list = ids.stdout.split(/\s+/).filter(Boolean);
-  if (list.length === 0) return "";
-  // v1 also lists one-off (`run`) containers: skip them, and report the
-  // service as running if any of its real containers is not stopped.
-  const inspected = spawnSync("docker", ["inspect", "-f", '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}}', ...list]);
-  if (inspected.status !== 0) return null;
-  const states = inspected.stdout.split("\n").map((line) => line.trim().split(/\s+/))
-    .filter(([oneoff, state]) => state && oneoff.toLowerCase() !== "true")
-    .map(([, state]) => state.toLowerCase());
-  return states.find((state) => !["created", "exited", "dead"].includes(state)) ?? states[0] ?? "";
+  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", "--status", "running", "--status", "paused", "sink-prometheus"]);
+  return ps.status === 0 ? ps.stdout.trim() !== "" : null;
 }
 
 // Stacks older than host metrics support lack the ./host-metrics mount or
@@ -5401,20 +5293,20 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
   if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
     `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
     "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
-    // `mon update` moves PGAI_TAG to this CLI's version; stop/start re-runs config-init.
-    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+    // stop/start re-runs config-init, which a restart does not.
+    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
     return false;
   }
   // A stopped sink-prometheus cannot be reloaded, and it will not load the
-  // deleted file when it starts, so a removal needs nothing more. Anything
-  // else (running, paused, unknown) goes through reload and verification.
+  // deleted file when it starts, so a removal needs nothing more. A running or
+  // paused one goes through reload and verification.
   if (!revision) {
-    const state = await composeServiceState("sink-prometheus");
-    if (state === null) {
+    const up = await sinkPrometheusUp();
+    if (up === null) {
       console.error("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
       return false;
     }
-    if (["", "created", "exited", "dead"].includes(state)) {
+    if (!up) {
       console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
       return true;
     }
@@ -5434,6 +5326,17 @@ async function reloadHostMetrics(projectDir: string, name: string, revision?: st
   return true;
 }
 
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
+function defaultTargetName(connStr: string): string | null {
+  try {
+    new URL(connStr);
+  } catch {
+    return null;
+  }
+  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/([^?]+)/);
+  return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+}
+
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
@@ -5444,24 +5347,18 @@ export async function addTarget(
     process.exitCode = 1;
     return false;
   }
-  const collector = collectorConnStr(connStr);
-  connStr = collector.connStr;
-  let m: RegExpMatchArray | null = null;
-  try {
-    new URL(connStr);
-    m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-  } catch {}
-  if (!m) {
+  const channelBinding = splitChannelBinding(connStr);
+  connStr = channelBinding.uri;
+  const defaultName = defaultTargetName(connStr);
+  if (!defaultName) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
     return false;
   }
-  if (collector.droppedChannelBinding) {
+  if (channelBinding.value !== null) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
-  const host = m[3];
-  const db = m[5].split("?")[0];
-  const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  const instanceName = name && name.trim() ? name.trim() : defaultName;
 
   try {
     const existing = loadInstances(file).find((instance) => instance.name === instanceName);
@@ -5595,10 +5492,8 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
-      const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
-      if (hadHostMetrics) {
-        removeHostMetrics(projectDir, name);
-        if (!(await reloadHostMetrics(projectDir, name))) process.exitCode = 1;
+      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, name))) {
+        process.exitCode = 1;
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
