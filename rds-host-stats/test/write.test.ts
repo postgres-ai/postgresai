@@ -1,7 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
 import { CloudWatchClient, ListMetricsCommand } from '@aws-sdk/client-cloudwatch'
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs'
-import { PIClient } from '@aws-sdk/client-pi'
 import { RDSClient } from '@aws-sdk/client-rds'
 import { pollOnce, requestHandler, writeSamples } from '../lib/poll'
 
@@ -82,7 +81,7 @@ test('a poll whose AWS response body stalls fails instead of hanging', async () 
     requestHandler,
     maxAttempts: 1,
   }
-  const clients = { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), pi: new PIClient(config), logs: new CloudWatchLogsClient(config) }
+  const clients = { rds: new RDSClient(config), cloudwatch: new CloudWatchClient(config), logs: new CloudWatchLogsClient(config) }
   const error = await pollOnce(clients, { instanceId: 'db', cluster: 'c', nodeName: 'n' }, new Date(), new Map()).catch((e: Error) => e)
   void stalling.stop(true)
   expect(error).toBeInstanceOf(Error)
