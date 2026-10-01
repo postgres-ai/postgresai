@@ -10,6 +10,7 @@
 
 import * as fs from "fs";
 import * as yaml from "js-yaml";
+import { redactTextSecrets } from "./util";
 import { parse as parseConnString } from "pg-connection-string";
 import type { ClientConfig } from "pg";
 
@@ -25,8 +26,14 @@ export interface Instance {
 
 export class InstancesParseError extends Error {
   constructor(file: string, cause: unknown) {
-    const causeMsg = cause instanceof Error ? cause.message : String(cause);
-    super(`Failed to parse ${file}: ${causeMsg}`);
+    // A YAML error's message embeds a snippet of the file, i.e. of conn_str
+    // values with their passwords (truncated, so a text scrub cannot find
+    // them). Keep only the reason and position.
+    const yamlErr = cause as { reason?: unknown; mark?: { line: number; column: number } };
+    const causeMsg = typeof yamlErr?.reason === "string" && yamlErr.mark
+      ? `${yamlErr.reason} (${yamlErr.mark.line + 1}:${yamlErr.mark.column + 1})`
+      : cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to parse ${file}: ${redactTextSecrets(causeMsg)}`);
     this.name = "InstancesParseError";
   }
 }

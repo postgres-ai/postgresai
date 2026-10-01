@@ -308,9 +308,12 @@ export function maskConnectionString(dbUrl: string): string {
   try {
     const u = new URL(dbUrl);
     if (u.password) u.password = "*****";
+    if (u.searchParams.has("password")) u.searchParams.set("password", "*****");
     return u.toString();
   } catch {
-    return dbUrl.replace(/\/\/([^:/?#]+):([^@/?#]+)@/g, "//$1:*****@");
+    return dbUrl
+      .replace(/\/\/([^:/?#]+):([^@/?#]+)@/g, "//$1:*****@")
+      .replace(/([?&]password=)[^&#\s]*/gi, "$1*****");
   }
 }
 
