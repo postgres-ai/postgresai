@@ -1577,8 +1577,9 @@ program
     }
 
     // Automation passes the admin URL (and its password) here, not in argv,
-    // where `ps` and the sudo log would show it. Any connection flag wins.
-    if (!conn && !opts.dbUrl && !opts.host && !opts.port && !opts.username && !opts.dbname && !opts.supabase) {
+    // where `ps` and the sudo log would show it. Any connection flag wins;
+    // --print-sql stays the offline plan.
+    if (!conn && !opts.dbUrl && !opts.host && !opts.port && !opts.username && !opts.dbname && !opts.supabase && !opts.printSql) {
       conn = process.env.PGAI_DB_URL || undefined;
     }
 
