@@ -5382,15 +5382,27 @@ function setEnvValues(projectDir: string, values: Record<string, string | null>)
   writeEnvFile(envFile, content);
 }
 
-/** A running rds-host-stats keeps the environment it started with: recreate it from .env. */
-async function recreateRdsHostStatsIfRunning(): Promise<void> {
+/**
+ * Writes rds-host-stats' settings to .env (null clears them). A running
+ * rds-host-stats keeps the environment it started with, so it is recreated with
+ * these values, passed explicitly because an exported variable would win over
+ * .env. Returns false when that failed.
+ */
+async function setRdsHostStats(projectDir: string, values: Record<"RDS_DB_INSTANCE_IDENTIFIER" | "AWS_REGION" | "PGAI_CLUSTER" | "PGAI_NODE_NAME", string | null>): Promise<boolean> {
+  setEnvValues(projectDir, values);
   const cmd = getComposeCmd();
-  if (!cmd) return;
+  if (!cmd) return true;
   const { composeFile } = await resolveOrInitPaths();
   const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "--profile", "rds", "ps", "-q", "--status", "running", "rds-host-stats"]);
-  if (ps.status === 0 && ps.stdout.trim() && await runCompose(["--profile", "rds", "up", "-d", "--no-deps", "rds-host-stats"]) !== 0) {
-    throw new Error("Recreating rds-host-stats failed. Run: docker compose --profile rds up -d rds-host-stats");
+  if (ps.status !== 0) {
+    console.error("If rds-host-stats is running, recreate it: docker compose --profile rds up -d rds-host-stats");
+    return true;
   }
+  if (!ps.stdout.trim()) return true;
+  const env = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value ?? ""]));
+  if (await runCompose(["--profile", "rds", "up", "-d", "--no-deps", "rds-host-stats"], undefined, env) === 0) return true;
+  console.error("Recreating rds-host-stats failed. Run: docker compose --profile rds up -d rds-host-stats");
+  return false;
 }
 
 /**
@@ -5430,8 +5442,7 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
       console.log("Host metrics: add the RDS instance endpoint (<instance>.<id>.<region>.rds.amazonaws.com) to collect them; a cluster, reader or proxy endpoint names no instance");
     } else if (rds) {
       if (![cluster, nodeName].every((v) => /^[\w.@:\/-]+$/.test(v))) throw new Error(`Host metrics: cluster '${cluster}' or node_name '${nodeName}' cannot be written to .env; set PGAI_CLUSTER and PGAI_NODE_NAME there yourself.`);
-      setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName });
-      if (apply) await recreateRdsHostStatsIfRunning();
+      if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName }))) return false;
       console.log(`Host metrics: rds-host-stats polls RDS instance ${rds.id} (${rds.region}). Start it with: docker compose --profile rds up -d rds-host-stats`);
     }
     return true;
@@ -5592,8 +5603,7 @@ targets
       }
       const rds = rdsInstance(target?.conn_str?.match(/@([^:/?#]+)/)?.[1] ?? "");
       if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
-        setEnvValues(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null });
-        await recreateRdsHostStatsIfRunning();
+        if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
         console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
       }
 

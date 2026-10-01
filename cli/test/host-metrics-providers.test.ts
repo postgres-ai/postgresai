@@ -20,6 +20,8 @@ beforeEach(() => {
   writeFileSync(log, "");
   // Every compose call succeeds; sink-prometheus is running.
   writeFileSync(`${dir}/bin/docker`, `#!/bin/sh
+if [ "$1" = info ]; then exit 0; fi
+if [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi
 shift 3
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$*" in
