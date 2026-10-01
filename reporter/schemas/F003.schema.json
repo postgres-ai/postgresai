@@ -249,6 +249,8 @@
       "additionalProperties": false,
       "required": ["data"],
       "properties": {
+        "available": { "type": "boolean" },
+        "reason": { "type": "string" },
         "data": { "$ref": "#/$defs/data" },
         "postgres_version": { "$ref": "#/$defs/postgresVersion" }
       }

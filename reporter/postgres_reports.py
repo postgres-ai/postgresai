@@ -74,6 +74,25 @@ _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
 _SYSTEM_TEMP_SCHEMA_RE = re.compile(r"^pg_(toast_)?temp_")
 
 
+# Why a report has no data, in words for its reader (UAT 2026-10-01: an empty
+# `data: {}` said nothing). An empty node result gets `available: false` and this.
+_QUERY_STATS_REASON = (
+    "No query statistics in the window. The monitoring records a query from pg_stat_statements once it has "
+    "run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet."
+)
+_FOUND_NONE = "No {} in the collected metrics: {}, or {} not been collected yet."
+EMPTY_REPORT_REASONS = {
+    **{check_id: _QUERY_STATS_REASON for check_id in ("K001", "K003", "K004", "K005", "K006", "K007", "K008", "M001", "M002", "M003")},
+    "N001": "No wait events sampled in the window: no session was waiting when sampled, as on an idle database.",
+    "F004": _FOUND_NONE.format("table bloat estimates", "no table was bloated", "the estimate has"),
+    "F005": _FOUND_NONE.format("index bloat estimates", "no index was bloated", "the estimate has"),
+    "H001": _FOUND_NONE.format("invalid indexes", "none was found", "index metrics have"),
+    "H002": _FOUND_NONE.format("unused indexes", "none was found", "index statistics have"),
+    "H004": _FOUND_NONE.format("redundant indexes", "none was found", "index metrics have"),
+}
+_DEFAULT_EMPTY_REASON = "No data for this check in the collected metrics yet."
+
+
 def is_system_schema(name: Any) -> bool:
     """True for a PostgreSQL-owned schema (#345).
 
@@ -4055,6 +4074,11 @@ class PostgresReportGenerator:
             if postgres_version:
                 node_result["postgres_version"] = postgres_version
             results = {host: node_result}
+
+        for node_result in results.values():
+            if isinstance(node_result, dict) and not node_result.get("data"):
+                node_result["available"] = False
+                node_result["reason"] = EMPTY_REPORT_REASONS.get(check_id, _DEFAULT_EMPTY_REASON)
 
         template_data = {
             "contract_version": CONTRACT_VERSION,
