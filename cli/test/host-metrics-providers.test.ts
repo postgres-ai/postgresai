@@ -22,7 +22,7 @@ beforeEach(() => {
   writeFileSync(`${dir}/bin/docker`, `#!/bin/sh
 shift 3
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
-case "$1" in ps) echo 0123abcd ;; esac
+case "$*" in *rds-host-stats*) [ "$1" = --profile ] && [ "$3" = ps ] && [ -n "$FAKE_RDS_RUNNING" ] && echo 4567ef ;; ps*) echo 0123abcd ;; esac
 exit 0
 `);
   chmodSync(`${dir}/bin/docker`, 0o755);
@@ -84,6 +84,18 @@ test("RDS: rds-host-stats gets the instance, region and the target's labels in .
   const removed = run(["remove", "rds1"]);
   expect(removed.exitCode, removed.out).toBe(0);
   expect(envFile()).toBe("PGAI_TAG=0.17.0\n");
+});
+
+// A running rds-host-stats keeps the environment it started with.
+test("RDS: a running rds-host-stats is recreated on add and remove", () => {
+  const recreate = "--profile rds up -d --no-deps rds-host-stats";
+  const recreates = () => readFileSync(log, "utf8").split("\n").filter((line) => line === recreate);
+  expect(run(["add", rds, "rds1"], { FAKE_RDS_RUNNING: "1" }).exitCode).toBe(0);
+  expect(recreates()).toEqual([recreate]);
+  expect(run(["remove", "rds1"], { FAKE_RDS_RUNNING: "1" }).exitCode).toBe(0);
+  expect(recreates()).toEqual([recreate, recreate]);
+  expect(run(["add", rds, "rds1"]).exitCode).toBe(0);
+  expect(recreates()).toEqual([recreate, recreate]);
 });
 
 test.each([
