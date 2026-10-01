@@ -1,0 +1,78 @@
+# Host metrics vocabulary: every provider's host series as host_*, labelled
+# {cluster, node_name} like pgwatch, in the units RDS uses. Evaluated by the
+# vmalert service against sink-prometheus and written back to it. RDS writes
+# host_* directly (rds-host-stats); these rules map Supabase (node_exporter,
+# relayed by instance-jobs) and ClickHouse Managed Postgres (PostgresServer_*).
+# The full name/unit/source table is in docs/host-metrics.md.
+#
+# Windows are 3m because both scrapes run every 60s. Aggregating by
+# (cluster, node_name) drops the provider's own labels, so a host_* series has
+# the same label set whichever provider wrote it.
+groups:
+  # Supabase: the relay serves the project's primary and read replicas. Only
+  # the primary (supabase_identifier = supabase_project_ref) carries the
+  # cluster/node_name of the Supabase target in instances.yml.
+  - name: host-supabase
+    interval: 60s
+    rules:
+      - record: host_cpu_utilization_percent
+        expr: 100 * (1 - avg by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", service_type="db", mode="idle"}[3m]), "supabase_identifier", "supabase_project_ref")))
+      - record: host_os_cpu_iowait_percent
+        expr: 100 * avg by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", service_type="db", mode="iowait"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_load1
+        expr: max by (cluster, node_name) (labels_equal(node_load1{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_memory_available_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_MemAvailable_bytes{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_memory_total_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_MemTotal_bytes{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_memory_free_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_MemFree_bytes{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_memory_cached_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_Cached_bytes{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_swap_used_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_SwapTotal_bytes{job="supabase-host-metrics", service_type="db"} - node_memory_SwapFree_bytes{job="supabase-host-metrics", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      # Postgres data lives on the /data volume.
+      - record: host_disk_free_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_filesystem_avail_bytes{job="supabase-host-metrics", service_type="db", mountpoint="/data"}, "supabase_identifier", "supabase_project_ref"))
+      # Summed over the host's block devices, like the RDS instance totals.
+      - record: host_disk_read_iops
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_reads_completed_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_disk_write_iops
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_writes_completed_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      # An idle disk reads as 0 s, as CloudWatch reports it, not as 0/0.
+      - record: host_disk_read_latency_seconds
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_read_time_seconds_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / clamp_min(sum by (cluster, node_name) (labels_equal(rate(node_disk_reads_completed_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")), 1e-9)
+      - record: host_disk_write_latency_seconds
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_write_time_seconds_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / clamp_min(sum by (cluster, node_name) (labels_equal(rate(node_disk_writes_completed_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")), 1e-9)
+      - record: host_disk_queue_depth
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_io_time_weighted_seconds_total{job="supabase-host-metrics", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_network_receive_bytes_per_second
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_network_receive_bytes_total{job="supabase-host-metrics", service_type="db", device!="lo"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_network_transmit_bytes_per_second
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_network_transmit_bytes_total{job="supabase-host-metrics", service_type="db", device!="lo"}[3m]), "supabase_identifier", "supabase_project_ref"))
+
+  # ClickHouse Managed Postgres: one service per scrape job (clickhouse-<name>),
+  # labelled with the target's cluster/node_name by `mon targets add`.
+  - name: host-clickhouse
+    interval: 60s
+    rules:
+      - record: host_cpu_utilization_percent
+        expr: 100 * (1 - sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", mode="idle"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+"}[3m])))
+      - record: host_os_cpu_iowait_percent
+        expr: 100 * sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", mode="iowait"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+"}[3m]))
+      - record: host_os_memory_total_bytes
+        expr: max by (cluster, node_name) (PostgresServer_MemoryLimitBytes{job=~"clickhouse-.+"})
+      - record: host_memory_available_bytes
+        expr: max by (cluster, node_name) (PostgresServer_MemoryLimitBytes{job=~"clickhouse-.+"}) * (1 - max by (cluster, node_name) (PostgresServer_MemoryUsedPercent{job=~"clickhouse-.+"}) / 100)
+      - record: host_os_memory_cached_bytes
+        expr: max by (cluster, node_name) (PostgresServer_MemoryLimitBytes{job=~"clickhouse-.+"}) * max by (cluster, node_name) (PostgresServer_MemoryCachePercent{job=~"clickhouse-.+"}) / 100
+      - record: host_disk_free_bytes
+        expr: max by (cluster, node_name) (PostgresServer_StorageLimitBytes{job=~"clickhouse-.+"}) * (1 - max by (cluster, node_name) (PostgresServer_FilesystemUsedPercent{job=~"clickhouse-.+"}) / 100)
+      - record: host_disk_read_iops
+        expr: sum by (cluster, node_name) (rate(PostgresServer_DiskReads_Total{job=~"clickhouse-.+"}[3m]))
+      - record: host_disk_write_iops
+        expr: sum by (cluster, node_name) (rate(PostgresServer_DiskWrites_Total{job=~"clickhouse-.+"}[3m]))
+      - record: host_network_receive_bytes_per_second
+        expr: sum by (cluster, node_name) (rate(PostgresServer_NetworkReceiveBytes_Total{job=~"clickhouse-.+"}[3m]))
+      - record: host_network_transmit_bytes_per_second
+        expr: sum by (cluster, node_name) (rate(PostgresServer_NetworkTransmitBytes_Total{job=~"clickhouse-.+"}[3m]))

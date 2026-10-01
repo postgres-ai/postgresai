@@ -32,6 +32,22 @@ quality:grafana-dashboards-lint:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# --- Host metrics recording rules ---
+# Evaluates config/prometheus/host_rules.yml against the golden inputs in
+# tests/host_rules/ with the vmalert-tool of the stack's VictoriaMetrics release.
+quality:host-rules:
+  stage: test
+  image:
+    name: victoriametrics/vmalert-tool:v1.140.0
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - cd tests/host_rules && /vmalert-tool-prod unittest --files=host_rules.test.yml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 # --- Schema Validation ---
 # Ensures all health check JSON schemas are valid and consistent
 quality:schema-validation:
