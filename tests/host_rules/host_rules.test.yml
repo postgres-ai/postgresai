@@ -67,8 +67,8 @@ tests:
       - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
         values: '15017418+12000x10'
     metricsql_expr_test:
-      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 10}]}
-      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="prod",node_name="main-db"}', value: 1}]}
       - {expr: host_os_load1, eval_time: 10m, exp_samples: [{labels: 'host_os_load1{cluster="prod",node_name="main-db"}', value: 0.05}]}
       - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="prod",node_name="main-db"}', value: 206561280}]}
       - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="prod",node_name="main-db"}', value: 453922816}]}
@@ -76,13 +76,13 @@ tests:
       - {expr: host_os_memory_cached_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_cached_bytes{cluster="prod",node_name="main-db"}', value: 150000000}]}
       - {expr: host_os_swap_used_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_swap_used_bytes{cluster="prod",node_name="main-db"}', value: 73741824}]}
       - {expr: host_disk_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_free_bytes{cluster="prod",node_name="main-db"}', value: 1808470016}]}
-      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 3}]}
-      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 2}]}
-      - {expr: 'round(host_disk_read_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.001}]}
-      - {expr: 'round(host_disk_write_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.002}]}
-      - {expr: 'round(host_disk_queue_depth, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.1}]}
-      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 100}]}
-      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 200}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_iops{cluster="prod",node_name="main-db"}', value: 3}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_iops{cluster="prod",node_name="main-db"}', value: 2}]}
+      - {expr: 'round(host_disk_read_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_latency_seconds{cluster="prod",node_name="main-db"}', value: 0.001}]}
+      - {expr: 'round(host_disk_write_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_latency_seconds{cluster="prod",node_name="main-db"}', value: 0.002}]}
+      - {expr: 'round(host_disk_queue_depth, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_queue_depth{cluster="prod",node_name="main-db"}', value: 0.1}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="prod",node_name="main-db"}', value: 100}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="prod",node_name="main-db"}', value: 200}]}
 
   - name: an idle Supabase disk has 0 s latency, not 0/0
     interval: 1m
@@ -125,16 +125,16 @@ tests:
       - series: 'PostgresServer_NetworkTransmitBytes_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
         values: '234567890+120000x10'
     metricsql_expr_test:
-      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 20}]}
-      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 5}]}
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="default",node_name="ch1"}', value: 20}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="default",node_name="ch1"}', value: 5}]}
       - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="default",node_name="ch1"}', value: 17179869184}]}
       - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="default",node_name="ch1"}', value: 10737418240}]}
       - {expr: host_os_memory_cached_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_cached_bytes{cluster="default",node_name="ch1"}', value: 4294967296}]}
       - {expr: host_disk_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_free_bytes{cluster="default",node_name="ch1"}', value: 80530636800}]}
-      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 10}]}
-      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 20}]}
-      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 1000}]}
-      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 2000}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_iops{cluster="default",node_name="ch1"}', value: 10}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_iops{cluster="default",node_name="ch1"}', value: 20}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="default",node_name="ch1"}', value: 1000}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="default",node_name="ch1"}', value: 2000}]}
 
   - name: a self-managed node gets no host_* series
     interval: 1m

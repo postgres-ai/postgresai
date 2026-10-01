@@ -3,6 +3,8 @@ global:
   evaluation_interval: 15s    # Default evaluation interval
   scrape_timeout: 10s         # Global scrape timeout
 
+# VictoriaMetrics single-node ignores rule_files; the vmalert service
+# evaluates host_rules.yml (host_* vocabulary, docs/host-metrics.md).
 rule_files:
   # - "first_rules.yml"
   # - "second_rules.yml"
