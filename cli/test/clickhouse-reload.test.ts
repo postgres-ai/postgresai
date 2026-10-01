@@ -110,6 +110,14 @@ test("targets add reports host metrics after a verified reload", () => {
   expect(readFileSync(log, "utf8").split("\n")).toContain("up -d --no-deps vmalert");
 });
 
+test("targets remove takes vmalert and its profile away with the last scrape file", () => {
+  expect(run(["add", conn, "ch"]).exitCode).toBe(0);
+  const removed = run(["remove", "ch"]);
+  expect(removed.exitCode, removed.stderr).toBe(0);
+  expect(readFileSync(`${projectDir}/.env`, "utf8")).not.toContain("COMPOSE_PROFILES");
+  expect(readFileSync(log, "utf8").split("\n").filter((line) => line.endsWith(" vmalert"))).toEqual(["up -d --no-deps vmalert", "rm -sf vmalert"]);
+});
+
 test("targets remove fails when the sink-prometheus reload fails", () => {
   const added = run(["add", conn, "ch"]);
   expect(added.exitCode, added.stderr).toBe(0);
