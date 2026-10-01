@@ -136,6 +136,20 @@ tests:
       - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="default",node_name="ch1"}', value: 1000}]}
       - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="default",node_name="ch1"}', value: 2000}]}
 
+  - name: provider series without cluster/node_name produce no host_*
+    interval: 1m
+    input_series:
+      # No or several Supabase targets in instances.yml: the scrape target is
+      # unlabelled, so nothing may land in an unlabelled host_* series.
+      - series: 'node_memory_MemAvailable_bytes{job="supabase-host-metrics",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '206561280x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
+        values: '0+54x10'
+      - series: 'PostgresServer_MemoryLimitBytes{job="clickhouse-ch1",clickhouse_org="o",postgres_service="s"}'
+        values: '17179869184x10'
+    metricsql_expr_test:
+      - {expr: '{__name__=~"host_.+"}', eval_time: 10m, exp_samples: []}
+
   - name: a self-managed node gets no host_* series
     interval: 1m
     input_series:
