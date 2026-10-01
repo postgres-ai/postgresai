@@ -31,6 +31,7 @@ case "$*" in
   "up -d --no-deps vmalert") [ "$FAKE_VMALERT_FAILS" = signal ] && kill -TERM $$; [ -n "$FAKE_VMALERT_FAILS" ] && exit 1 ;;
   *" up "*rds-host-stats) echo "$RDS_DB_INSTANCE_IDENTIFIER $AWS_REGION $PGAI_CLUSTER $PGAI_NODE_NAME" >> "$FAKE_DOCKER_LOG_DIR/rds-env.log" ;;
   exec*) [ -n "$FAKE_EXEC_FAILS" ] && exit 1 ;;
+  kill*) [ -n "$FAKE_KILL_FAILS" ] && exit 1 ;;
   ps*) echo 0123abcd ;;
 esac
 exit 0
@@ -108,6 +109,16 @@ test("vmalert: a failed add still records the profile, and starts nothing", () =
   expect(failed.exitCode).toBe(1);
   expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
   expect(vmalertCalls()).toEqual([]);
+});
+
+test("vmalert: a failed removal keeps the profile, so the retry removes vmalert", () => {
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
+  const failed = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "false", FAKE_KILL_FAILS: "1" });
+  expect(failed.exitCode).toBe(1);
+  expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "false" }).exitCode).toBe(0);
+  expect(vmalertCalls().at(-1)).toBe("rm -sf vmalert");
+  expect(profiles()).toBeUndefined();
 });
 
 test("vmalert: compose starts it only under the host-metrics profile", () => {
