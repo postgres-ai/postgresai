@@ -72,6 +72,16 @@ host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574540000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574600000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574660000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20541997056 1790574720000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574240000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574300000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574360000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574420000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574480000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574540000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574600000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574660000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574720000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574780000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 25.8 1790574398000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 11.8 1790574413000
 host_os_cpu_percent{cluster="ci",node_name="node-01"} 5.8 1790574428000

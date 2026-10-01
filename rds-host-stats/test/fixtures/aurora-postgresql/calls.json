@@ -187,6 +187,22 @@
     }
   },
   {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
+      "StartTime": "2026-09-28T06:03:00.000Z",
+      "EndTime": "2026-09-28T06:18:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    }
+  },
+  {
     "client": "logs",
     "command": "GetLogEventsCommand",
     "input": {
