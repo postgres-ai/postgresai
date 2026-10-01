@@ -4,6 +4,8 @@
 
 ### Changed
 
+- JSON contract 1.1.0: a checkup node result without data carries `available` (false: not
+  collected; true: checked, nothing found) and a plain `reason`. Additive; the schemas accept both.
 - `issues list` now shows **open issues only** by default. Closed issues need
   an explicit `--status closed` (or `--status all` for both); an unknown
   `--status` value is rejected instead of silently listing everything.

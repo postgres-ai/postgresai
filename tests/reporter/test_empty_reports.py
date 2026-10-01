@@ -21,18 +21,21 @@ def fixture_generator() -> PostgresReportGenerator:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("check_id", "reason"),
+    ("check_id", "available", "reason"),
     [
-        ("K001", QUERY_REASON),
-        ("M003", QUERY_REASON),
-        ("N001", "No wait events sampled in the window: no session was waiting when sampled, as on an idle database."),
-        ("H002", "No unused indexes in the collected metrics: none was found, or index statistics have not been collected yet."),
-        ("F004", "No table bloat estimates in the collected metrics: no table was bloated, or the estimate has not been collected yet."),
+        # Not collected: the report cannot say anything yet.
+        ("K001", False, QUERY_REASON),
+        ("M003", False, QUERY_REASON),
+        ("N001", False, "No active-session samples in the window: no session was active when sampled, or the collection has not run yet."),
+        # Collected, and nothing found: an answer, said plainly.
+        ("A007", True, "No setting differs from its default."),
+        ("H002", True, "No unused indexes found in the collected metrics."),
+        ("F004", True, "No table bloat estimate in the collected metrics (tables of 1 MiB or more are estimated)."),
     ],
 )
-def test_empty_report_is_unavailable_with_a_reason(generator: PostgresReportGenerator, check_id: str, reason: str) -> None:
+def test_empty_report_says_why(generator: PostgresReportGenerator, check_id: str, available: bool, reason: str) -> None:
     report = generator.format_report_data(check_id, {}, "node-1", postgres_version=PG)
-    assert report["results"] == {"node-1": {"data": {}, "available": False, "reason": reason, "postgres_version": PG}}
+    assert report["results"] == {"node-1": {"data": {}, "available": available, "reason": reason, "postgres_version": PG}}
     validate_report(report)
 
 
@@ -42,7 +45,7 @@ def test_every_check_has_a_reason(generator: PostgresReportGenerator) -> None:
                      "H001", "H002", "H004", "I001", "K001", "K003", "K004", "K005", "K006", "K007",
                      "K008", "M001", "M002", "M003", "N001"]:
         node = generator.format_report_data(check_id, {}, "node-1")["results"]["node-1"]
-        assert node["available"] is False
+        assert isinstance(node["available"], bool)
         assert node["reason"].startswith("No "), check_id
 
 
