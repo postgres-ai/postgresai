@@ -4,7 +4,7 @@ Every managed-Postgres provider we collect host metrics from lands in VictoriaMe
 
 | Provider | Raw source | How it becomes `host_*` | Labels from |
 | --- | --- | --- | --- |
-| RDS / Aurora | CloudWatch, Enhanced Monitoring | `rds-host-stats` writes `host_*` directly ([README](../rds-host-stats/README.md)) | `.env`: `PGAI_CLUSTER`, `PGAI_NODE_NAME` (with `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`) |
+| RDS / Aurora | CloudWatch, Enhanced Monitoring, Performance Insights | `rds-host-stats` writes `host_*` directly ([README](../rds-host-stats/README.md)) | `.env`: `PGAI_CLUSTER`, `PGAI_NODE_NAME` (with `RDS_DB_INSTANCE_IDENTIFIER`, `AWS_REGION`) |
 | Supabase | node_exporter families from `/customer/v1/privileged/metrics`, relayed by `instance-jobs` (job `supabase-host-metrics`) | recording rules, group `host-supabase` | the scrape file `host-metrics/supabase-<name>.yml`, while `PGAI_SUPABASE_HOST_METRICS` is true |
 | ClickHouse Managed Postgres | `PostgresServer_*` from the ClickHouse Cloud `/prometheus` endpoint (jobs `clickhouse-<name>`) | recording rules, group `host-clickhouse` | the scrape file `host-metrics/clickhouse-<name>.yml` |
 
@@ -14,7 +14,7 @@ The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` se
 
 ## Names
 
-A dash means the provider does not expose the value. RDS sources are CloudWatch `AWS/RDS` metrics unless marked EM (Enhanced Monitoring). Supabase sources are node_exporter metrics without the `node_` prefix.
+A dash means the provider does not expose the value. RDS sources are CloudWatch `AWS/RDS` metrics unless marked EM (Enhanced Monitoring) or PI (Performance Insights). Supabase sources are node_exporter metrics without the `node_` prefix.
 
 | Name | Unit | RDS / Aurora | Supabase | ClickHouse |
 | --- | --- | --- | --- | --- |
@@ -37,12 +37,15 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_volume_write_iops` | operations/s | VolumeWriteIOPs / 300 (Aurora cluster) | – | – |
 | `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkReceiveBytes_Total` |
 | `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkTransmitBytes_Total` |
+| `host_db_load` | average active sessions | PI `db.load.avg`, 60 s | – | – |
 
 `tests/grafana_dashboards/test_host_row.py` fails if this table and the names the providers write drift apart.
 
 ## Dashboard
 
 Dashboard 1 has one collapsed **Host** row, the last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. `rds-host-stats` requests no CloudWatch metric that no panel reads: GetMetricData bills per metric.
+
+DB load (`host_db_load`, RDS and Aurora with Performance Insights on) has no Supabase or ClickHouse equivalent, so it is not in the Host row. It has its own collapsed row after Host, **RDS DB load (Performance Insights)**. Grafana 12.3 cannot hide a row that has no data (a row repeated over an empty variable is still rendered once), so on Supabase, ClickHouse, self-managed nodes and RDS without Performance Insights this row stays closed and empty.
 
 ## Limits
 

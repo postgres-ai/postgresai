@@ -4101,6 +4101,87 @@
       ],
       "title": "Host",
       "type": "row"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 143
+      },
+      "id": 61,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "RDS and Aurora with Performance Insights on (db.load.avg): the average number of sessions active per minute, on CPU or waiting. Above the instance's vCPU count, sessions queue. Empty for other providers.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 144
+          },
+          "id": 62,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_db_load{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "DB load",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "DB load (average active sessions)",
+          "type": "timeseries"
+        }
+      ],
+      "title": "RDS DB load (Performance Insights)",
+      "type": "row"
     }
   ],
   "preload": false,
