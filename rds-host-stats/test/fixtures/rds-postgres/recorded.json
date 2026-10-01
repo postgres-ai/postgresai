@@ -518,6 +518,80 @@
     }
   },
   {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "StartTime": "2026-09-28T05:39:00.000Z",
+      "EndTime": "2026-09-28T05:54:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    },
+    "output": {
+      "AlignedStartTime": "2026-09-28T05:43:00.000Z",
+      "AlignedEndTime": "2026-09-28T05:54:00.000Z",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "MetricList": [
+        {
+          "Key": {
+            "Metric": "db.load.avg"
+          },
+          "DataPoints": [
+            {
+              "Timestamp": "2026-09-28T05:44:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:45:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:46:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:47:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:48:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:49:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:50:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:51:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:52:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:53:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T05:54:00.000Z",
+              "Value": 0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "client": "logs",
     "command": "GetLogEventsCommand",
     "input": {

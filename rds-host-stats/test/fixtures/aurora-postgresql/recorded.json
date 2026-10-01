@@ -605,6 +605,96 @@
     }
   },
   {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
+      "StartTime": "2026-09-28T06:03:00.000Z",
+      "EndTime": "2026-09-28T06:18:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    },
+    "output": {
+      "AlignedStartTime": "2026-09-28T06:03:00.000Z",
+      "AlignedEndTime": "2026-09-28T06:18:00.000Z",
+      "Identifier": "db-UX43K353IWKL6YTTXX5U2AA4N4",
+      "MetricList": [
+        {
+          "Key": {
+            "Metric": "db.load.avg"
+          },
+          "DataPoints": [
+            {
+              "Timestamp": "2026-09-28T06:04:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:05:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:06:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:07:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:08:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:09:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:10:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:11:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:12:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:13:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:14:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:15:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:16:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:17:00.000Z",
+              "Value": 0
+            },
+            {
+              "Timestamp": "2026-09-28T06:18:00.000Z",
+              "Value": 0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "client": "logs",
     "command": "GetLogEventsCommand",
     "input": {
