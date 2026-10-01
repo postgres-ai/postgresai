@@ -45,6 +45,7 @@ function run(args: string[], extra: Record<string, string> = {}) {
   const result = Bun.spawnSync([process.execPath, cli, "mon", "targets", ...args], { cwd: dir, env: { ...env, ...extra }, timeout: 20000 });
   return { exitCode: result.exitCode, out: result.stdout.toString() + result.stderr.toString() };
 }
+const relayOff = "Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.";
 const scrapeFiles = () => existsSync(`${projectDir}/host-metrics`) ? readdirSync(`${projectDir}/host-metrics`).sort() : [];
 const reloads = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("kill "));
 const profiles = () => envFile().match(/^COMPOSE_PROFILES=.*$/m)?.[0];
@@ -139,15 +140,55 @@ test("Supabase: the flag is read from .env when the environment does not set it"
   expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
 });
 
-// Compose drops an inline comment from an unquoted value, so the relay is on.
-test.each([["PGAI_SUPABASE_HOST_METRICS=true  # relay"], ['PGAI_SUPABASE_HOST_METRICS="true" # relay']])("Supabase: %p in .env turns the job on", (line) => {
+// The flag is read as compose 5.0.2 reads it (checked with `docker compose
+// config`): an inline comment needs a space before "#" (a tab is part of the
+// value), quotes are dropped, a double-quoted value may escape '"' and '\\',
+// text after the closing quote is dropped, an unterminated quote is not true
+// (compose refuses the file).
+test.each([
+  ["PGAI_SUPABASE_HOST_METRICS=true  # relay", true],
+  ["PGAI_SUPABASE_HOST_METRICS=true\t# relay", false],
+  ['PGAI_SUPABASE_HOST_METRICS="true" # relay', true],
+  ["PGAI_SUPABASE_HOST_METRICS='true'", true],
+  ['PGAI_SUPABASE_HOST_METRICS="tru\\"e"', false],
+  ['PGAI_SUPABASE_HOST_METRICS="true\\\\"', false],
+  ['PGAI_SUPABASE_HOST_METRICS="true"x', true],
+  ['PGAI_SUPABASE_HOST_METRICS="true', false],
+  ["export PGAI_SUPABASE_HOST_METRICS=true", true],
+  ["PGAI_SUPABASE_HOST_METRICS=true#relay", false],
+  ["PGAI_SUPABASE_HOST_METRICS=", false],
+  ["PGAI_SUPABASE_HOST_METRICS=false\nPGAI_SUPABASE_HOST_METRICS=true", true],
+])("Supabase: %p in .env → relay job on: %p", (line, on) => {
   writeFileSync(`${projectDir}/.env`, `${line}\n`);
   const added = run(["add", supabase(), "sb"]);
   expect(added.exitCode, added.out).toBe(0);
-  expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
+  expect(scrapeFiles()).toEqual(on ? ["supabase-sb.yml"] : []);
 });
 
-const relayOff = "Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.";
+test.each([
+  ["COMPOSE_PROFILES='instance-jobs'", true],
+  ['COMPOSE_PROFILES="a,instance-jobs"', true],
+  ["COMPOSE_PROFILES=a#x,instance-jobs", true],
+  ["COMPOSE_PROFILES=instance-jobs # pinned", true],
+  ["COMPOSE_PROFILES='other'", false],
+  ["COMPOSE_PROFILES=instance-jobs\t# pinned", false],
+])("Supabase: %p in .env enables the relay profile: %p", (line, enabled) => {
+  writeFileSync(`${projectDir}/.env`, `${line}\n`);
+  const added = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" });
+  expect(added.exitCode, added.out).toBe(0);
+  expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
+  expect(added.out.includes(relayOff)).toBe(!enabled);
+});
+
+test("Supabase: an exported empty flag overrides .env, as it does for compose", () => {
+  writeFileSync(`${projectDir}/.env`, "PGAI_SUPABASE_HOST_METRICS=true\n");
+  expect(run(["add", supabase(), "sb"]).exitCode).toBe(0);
+  expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
+  const off = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "" });
+  expect(off.exitCode, off.out).toBe(0);
+  expect(scrapeFiles()).toEqual([]);
+});
+
 test("Supabase: a relay job without the instance-jobs profile is reported", () => {
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).out).toContain(relayOff);
   writeFileSync(`${projectDir}/.env`, "COMPOSE_PROFILES=instance-jobs # pinned\n");
@@ -223,6 +264,19 @@ test("RDS: targets remove clears .env when the password has an '@'", () => {
   const removed = run(["remove", "rds1"]);
   expect(removed.exitCode, removed.out).toBe(0);
   expect(envFile()).not.toMatch(/RDS_DB_INSTANCE_IDENTIFIER|AWS_REGION|PGAI_CLUSTER|PGAI_NODE_NAME/);
+});
+
+// `targets add` writes the RDS keys only for a conn_str it can parse as a URL,
+// so keys next to a target it cannot parse were put there by hand: remove keeps them.
+test("RDS: targets remove keeps .env for a target whose conn_str is not a URL", () => {
+  writeFileSync(`${projectDir}/instances.yml`, "- name: rds1\n  conn_str: host=mydb.c9akciq32xyz.us-east-1.rds.amazonaws.com user=u password=pw dbname=postgres\n");
+  const keys = "AWS_REGION=us-east-1\nRDS_DB_INSTANCE_IDENTIFIER=mydb\nPGAI_CLUSTER=default\nPGAI_NODE_NAME=rds1\n";
+  writeFileSync(`${projectDir}/.env`, keys);
+  const removed = run(["remove", "rds1"]);
+  expect(removed.exitCode, removed.out).toBe(0);
+  expect(removed.out).toContain("Monitoring target 'rds1' removed");
+  expect(removed.out).not.toContain("rds-host-stats no longer has an instance to poll");
+  expect(envFile()).toBe(keys);
 });
 
 // A running rds-host-stats keeps the environment it started with.

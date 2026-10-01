@@ -451,7 +451,10 @@ function buildLocalInstallEnv(
     // Read the way compose does: tolerate `export `/indentation and take the
     // LAST assignment. A value that reduces to "" (including `KEY=""`) counts
     // as absent, so a blank admin key is minted rather than carried forward
-    // (#359) - `ensureRequiredEnvVars` treats it the same way.
+    // (#359) - `ensureRequiredEnvVars` treats it the same way. Not
+    // `parseEnvValue`: the value is written back to the new .env as it was
+    // (quotes and an inline comment included), so compose reads the new file
+    // as it read the old one.
     const re = new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`, "gm");
     let value: string | null = null;
     for (const m of existingEnv.matchAll(re)) {
@@ -3845,12 +3848,9 @@ export function readComposeProfiles(knownProjectDir?: string): string | null {
     return null;
   }
 
-  // Last assignment wins, as compose does; tolerate `export `/indentation.
-  let value: string | null = null;
-  for (const m of content.matchAll(/^[ \t]*(?:export[ \t]+)?COMPOSE_PROFILES=(.*)$/gm)) {
-    value = stripMatchingQuotes(m[1].trim());
-  }
-  return value;
+  // Last assignment wins, as compose does; tolerate `export `/indentation,
+  // quotes and an inline comment, with the one parser `targets add` uses.
+  return parseEnvValue(content, "COMPOSE_PROFILES") ?? null;
 }
 
 /**
@@ -5355,23 +5355,29 @@ function defaultTargetName(connStr: string): string | null {
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
 }
 
-/** The last assignment of `key` in the project's .env, as compose reads it: unquoted, without an inline comment. */
+/** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
+function parseEnvValue(content: string, key: string): string | undefined {
+  const last = [...content.matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
+  if (!last) return undefined;
+  const raw = last[1].trim();
+  const quoted = raw.match(/^"((?:\\.|[^"\\])*)"/)?.[1]?.replace(/\\(["\\])/g, "$1") ?? raw.match(/^'([^']*)'/)?.[1];
+  return quoted ?? raw.replace(/ #.*$/, "").trimEnd();
+}
+
+/** The last assignment of `key` in the project's .env, as compose reads it. */
 function readEnvValue(projectDir: string, key: string): string | undefined {
   const envFile = path.resolve(projectDir, ".env");
   if (!fs.existsSync(envFile)) return undefined;
-  const last = [...fs.readFileSync(envFile, "utf8").matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
-  if (!last) return undefined;
-  const raw = last[1].trim();
-  return raw.match(/^(["'])(.*?)\1/)?.[2] ?? raw.replace(/[ \t]+#.*$/, "");
+  return parseEnvValue(fs.readFileSync(envFile, "utf8"), key);
 }
 
-/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment or .env)? */
+/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment, else in .env)? An exported empty value counts as set, as compose reads it. */
 function supabaseHostMetricsOn(projectDir: string, env: NodeJS.ProcessEnv): boolean {
-  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS ?? readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") ?? "");
 }
 
 // A Supabase target's name is part of its scrape file's name.
-const SUPABASE_TARGET_NAME = /^[A-Za-z0-9_-]+$/;
+const SUPABASE_TARGET_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const SUPABASE_TARGET_NAME_ERROR = "Host metrics: a Supabase target name may use only letters, digits, '_' and '-' while PGAI_SUPABASE_HOST_METRICS is true. Choose another name.";
 
 /** Sets keys in the project's .env (null deletes them), keeping every other line. */
@@ -5431,7 +5437,7 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     const projectRef = extractProjectRefFromUrl(connStr);
     if (projectRef) {
       const on = supabaseHostMetricsOn(projectDir, env);
-      if (on && !SUPABASE_TARGET_NAME.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
+      if (on && !SUPABASE_TARGET_NAME_RE.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
@@ -5510,7 +5516,7 @@ export async function addTarget(
   }
   const instanceName = name && name.trim() ? name.trim() : defaultName;
   // Refused before the target is saved: the name cannot be changed by a re-run.
-  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME.test(instanceName)) {
+  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME_RE.test(instanceName)) {
     console.error(SUPABASE_TARGET_NAME_ERROR);
     process.exitCode = 1;
     return false;
@@ -5640,7 +5646,7 @@ targets
       console.log(`Monitoring target '${name}' removed`);
       if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
       const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
-      if (SUPABASE_TARGET_NAME.test(name) && fs.existsSync(supabaseFile)) {
+      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
         fs.rmSync(supabaseFile);
         if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
       }

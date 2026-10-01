@@ -38,10 +38,64 @@ test.each([
   ["a '/' in the password", `postgresql://u:pa/${secret}@h:5432/db`],
   ["an '@' and a '/' in the password", `postgresql://u:p@${secret}/w@h:5432/db`],
   ["sslpassword", `postgresql://u:pw@h:5432/db?sslpassword=${secret}&sslmode=require`],
+  // Digits first: URL parsing reads them as a port and the rest as a fragment or query.
+  ["a '#' after digits in the password", `postgresql://u:5432#${secret}@h:5432/db`],
+  ["a '?' after digits in the password", `postgresql://u:1234?${secret}@h:5432/db`],
+  ["a '/' first in the password", `postgresql://u:/${secret}@h:5432/db`],
+  ["digits and a '/' first in the password", `postgresql://u:1234/${secret}@h:5432/db`],
+  ["an '@' in sslpassword", `postgresql://u:pw@h:5432/db?sslpassword=ab@${secret}&sslmode=require`],
+  ["an '@' in sslpassword and a '/' after it", `postgresql://u:pw@h:5432/db?sslpassword=ab@${secret}/x&sslmode=require`],
 ])("maskConnectionString hides %s", (_shape, url) => {
   const masked = maskConnectionString(url);
   expect(masked).not.toContain(secret);
   expect(masked).toContain("@h:5432/db");
+});
+
+test.each([
+  ["postgresql://h:5432/db@x"],
+  ["postgresql://h/db@x"],
+  ["postgresql://u@h:5432/db"],
+  ["postgresql://h:5432?application_name=me@corp"],
+  ["postgresql://[::1]:5432/db?application_name=me@corp"],
+  ["postgresql://host:5432,host2:5433/db?x=a@b"],
+])("maskConnectionString leaves %s, which has no password, as it is", (url) => {
+  expect(maskConnectionString(url)).toBe(url);
+});
+
+test.each([
+  ["a '/' in the password", `postgresql://u:pa/${secret}@h`],
+  ["a '/' in the password and an '@' in the query", `postgresql://u:pa/${secret}@h?application_name=me@corp`],
+  ["a '?' in the password", `postgresql://u:pw?${secret}@h`],
+  ["a '#' first in the password", `postgresql://u:#${secret}@h`],
+  ["a '?' first in the password", `postgresql://u:?${secret}@h`],
+  ["a '/' and then a '#' in the password", `postgresql://u:Ab/${secret}#x@h`],
+  ["a '#' and then a '/' in the password", `postgresql://u:Ab#${secret}/x@h`],
+  ["a '?' and an '@' in the password", `postgresql://u:a?b@${secret}@h`],
+  ["a '#' and a '/' first in the password", `postgresql://u:#/${secret}@h`],
+  ["a '?password=' in the password", `postgresql://u:${secret}?password=@h`],
+  ["an '@' in sslpassword", `postgresql://u:pw@h?sslpassword=ab@${secret}`],
+])("maskConnectionString hides %s in a URL with no database path", (_shape, url) => {
+  const masked = maskConnectionString(url);
+  expect(masked).not.toContain(secret);
+  expect(masked).toContain("@h");
+});
+
+test.each([
+  ["a '?password=' in the password", `postgresql://u:a?password=${secret}@h/db`, "postgresql://u:*****@h/db"],
+  ["a '#' after a query password", `postgresql://u:pw@h/db?PassWord=a#${secret}`, "postgresql://u:*****@h/db?PassWord=*****"],
+  ["pwd", `postgresql://u@h/db?pwd=${secret}&sslmode=require`, "postgresql://u@h/db?pwd=*****&sslmode=require"],
+])("maskConnectionString hides %s and keeps the host", (_shape, url, expected) => {
+  expect(maskConnectionString(url)).toBe(expected);
+});
+
+test("maskConnectionString scans a long query key with no '=' once", () => {
+  const started = performance.now();
+  maskConnectionString(`postgresql://u@h/db?${"pass".repeat(25000)}`);
+  expect(performance.now() - started).toBeLessThan(200);
+});
+
+test("maskConnectionString keeps host, db and a query '@' next to a hidden password", () => {
+  expect(maskConnectionString(`postgresql://u:${secret}@h:5432/db?application_name=me@corp`)).toBe("postgresql://u:*****@h:5432/db?application_name=me@corp");
 });
 
 test("local-install --db-url does not print the password", () => {

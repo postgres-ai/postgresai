@@ -294,12 +294,29 @@ export function redactPasswordsInSql(sql: string): string {
 }
 
 export function maskConnectionString(dbUrl: string): string {
-  // Hide password if present (postgresql://user:pass@host/db). It runs to the
-  // last "@" before the query, so an unencoded "/" or "@" in it does not end it
-  // early. Password-like query parameters (password, sslpassword) are hidden too.
-  const masked = dbUrl
-    .replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/[^:@\/?#]*):[^?#]*@/i, "$1:*****@")
-    .replace(/([?&][^=&#]*pass[^=&#]*=)[^&#]*/gi, "$1*****");
+  // Hide the password of postgresql://user:pass@host/db, then password-like
+  // query parameters (password, sslpassword, pwd). An unencoded "/", "?",
+  // "#" or "@" in the password makes the string ambiguous, and the rule
+  // prefers hiding too much to printing a password: the password runs to the
+  // last "@" that a "/" follows before the next "@" ("@host/db"); without one
+  // (no "/db" path), to the first "@" when no "?" or "#" precedes it, else to
+  // the last "@". Read as host:port with no password, and printed as given: a
+  // "[" first (an IPv6 host), or digits and then "/", ",", "?" or "#"
+  // (postgresql://h:5432/db@x, h:5432?application_name=me@corp): a password
+  // of that shape in a URL with no "/db" path is the residual.
+  let masked = dbUrl;
+  const head = dbUrl.match(/^(\s*[a-z][a-z0-9+.-]*:\/\/)([^:@\/?#]*):([\s\S]*)$/i);
+  if (head && !head[2].startsWith("[")) {
+    // The end is found on a copy with query values blanked ("@" kept, length
+    // kept), so a "/" in one (?sslpassword=ab@S3cret/x) is not read as "/db".
+    const probe = head[3].replace(/([?&][^=&#?]*=)([^&]*)/g, (_m, key, value) => key + value.replace(/[^@]/g, "*"));
+    const end = passwordEnd(probe);
+    if (end >= 0) masked = `${head[1]}${head[2]}:*****@${head[3].slice(end + 1)}`;
+  }
+  // A key and its value run to "&" ("#" included: a fragment after a password
+  // is hidden with it). The key is tested in a callback, so a long key with no
+  // "=" is scanned once.
+  masked = masked.replace(/([?&])([^=&#?]*)=([^&]*)/g, (m, sep, key) => (/pass|pwd/i.test(key) ? `${sep}${key}=*****` : m));
   try {
     const u = new URL(masked);
     if (u.password) u.password = "*****";
@@ -307,6 +324,17 @@ export function maskConnectionString(dbUrl: string): string {
   } catch {
     return redactTextSecrets(masked);
   }
+}
+
+/** Index in `rest` (the text after "user:") of the "@" that ends the password, or -1 when there is none. */
+function passwordEnd(rest: string): number {
+  const first = rest.indexOf("@");
+  if (first < 0) return -1;
+  const atSlash = rest.match(/^([\s\S]*)@(?=[^@]*\/)/);
+  if (atSlash) return atSlash[1].length;
+  const candidate = rest.slice(0, first);
+  if (/^[0-9]+[\/,?#]/.test(candidate)) return -1;
+  return /[?#]/.test(candidate) ? rest.lastIndexOf("@") : first;
 }
 
 function isLikelyUri(value: string): boolean {
