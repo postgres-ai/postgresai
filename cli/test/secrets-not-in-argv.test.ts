@@ -8,21 +8,23 @@ import { resolve } from "node:path";
 // `ps` and in the sudo log. Given as PGAI_DB_URL / PGAI_API_KEY, they must not
 // reach argv: not the CLI's own, not any process it starts.
 //
-// Each test parks the CLI on a TCP server that accepts and never answers (the
-// CLI is then connecting to the URL it was given, so it did read it), takes a
-// `ps` snapshot of every process, and looks for the secrets in it.
+// Each test parks the CLI on a TCP server that accepts and does not answer (so
+// the CLI is connecting to the URL it was given), takes a `ps` snapshot of every
+// process, then drops the connection and lets the CLI run to its exit. The
+// docker stub logs every call it gets, and the CLI's output is checked too.
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");
-const DB_PASSWORD = "Pw4argvCheck9x";
-const API_KEY = "key4argvCheck7q";
 let dir: string, env: Record<string, string>, server: Bun.TCPSocketListener<undefined> | undefined;
-let connected: Promise<void>, onConnect: () => void;
+let connected: Promise<void>, onConnect: () => void, sockets: Bun.Socket<undefined>[];
+let dbPassword: string, apiKey: string;
 
 beforeEach(() => {
+  // Unique per test: `ps` sees every process, including other test files'.
+  const tag = Math.random().toString(36).slice(2, 10);
+  dbPassword = `Pw4argv${tag}`;
+  apiKey = `key4argv${tag}`;
   dir = mkdtempSync(`${tmpdir()}/secrets-argv-`);
   for (const p of ["project", "project/.git", "bin", "home", "xdg"]) mkdirSync(`${dir}/${p}`);
   writeFileSync(`${dir}/project/docker-compose.yml`, "services: {}\n");
-  // No Docker. The stub logs every call, so a secret passed to a child that has
-  // already exited is caught too.
   writeFileSync(`${dir}/bin/docker`, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${dir}/docker.log"\nexit 1\n`);
   chmodSync(`${dir}/bin/docker`, 0o755);
   writeFileSync(`${dir}/docker.log`, "");
@@ -30,56 +32,75 @@ beforeEach(() => {
     PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`,
     PGAI_PROJECT_DIR: `${dir}/project`, PGAI_API_BASE_URL: "http://127.0.0.1:9", PGSSLMODE: "disable",
   };
+  sockets = [];
   connected = new Promise((r) => (onConnect = r));
-  server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: () => onConnect(), data() {} } });
+  server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: (s) => { sockets.push(s); onConnect(); }, data() {} } });
 });
 afterEach(() => {
   server?.stop(true);
   rmSync(dir, { recursive: true, force: true });
 });
 
-const dbUrl = () => `postgresql://admin:${DB_PASSWORD}@127.0.0.1:${server!.port}/postgres`;
+const dbUrl = () => `postgresql://admin:${dbPassword}@127.0.0.1:${server!.port}/postgres`;
 
-/** Start the CLI, wait until it connects to the parked server, return every process's args. */
-async function argvWhileConnecting(args: string[], extra: Record<string, string>): Promise<string> {
+/** Run the CLI; return every process's args while it connects, and its output and docker calls after it exits. */
+async function run(args: string[], extra: Record<string, string>) {
   const child = Bun.spawn([process.execPath, cli, ...args], { cwd: dir, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
+  const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]).then((o) => o.join(""));
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const exitedFirst = child.exited.then(async () => {
-      throw new Error(`the CLI exited without connecting to the database URL: ${await new Response(child.stdout).text()}${await new Response(child.stderr).text()}`);
+      throw new Error(`the CLI exited without connecting to the database URL: ${await output}`);
     });
-    exitedFirst.catch(() => {}); // the kill below settles it after the race
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    exitedFirst.catch(() => {}); // settles again after the race
     const timeout = new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error("the CLI never connected to the database URL")), 30000)));
-    await Promise.race([connected, exitedFirst, timeout]).finally(() => clearTimeout(timer));
-    return Bun.spawnSync(["ps", "-A", "-o", "args="]).stdout.toString();
+    await Promise.race([connected, exitedFirst, timeout]);
+    clearTimeout(timer);
+    const ps = Bun.spawnSync(["ps", "-A", "-o", "args="]).stdout.toString();
+    for (const s of sockets) s.end();
+    await Promise.race([child.exited, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error("the CLI did not exit")), 30000)))]);
+    return { ps, output: await output, docker: readFileSync(`${dir}/docker.log`, "utf8") };
   } finally {
+    clearTimeout(timer);
     child.kill();
     await child.exited;
   }
 }
 
 test("the ps check sees a password passed in argv (control)", async () => {
-  const ps = await argvWhileConnecting(["prepare-db", dbUrl(), "--json"], {});
-  expect(ps).toContain(DB_PASSWORD);
-}, 40000);
+  const { ps } = await run(["prepare-db", dbUrl(), "--json"], {});
+  expect(ps).toContain(dbPassword);
+}, 70000);
 
 test("prepare-db reads PGAI_DB_URL and keeps it out of argv", async () => {
-  const ps = await argvWhileConnecting(["prepare-db", "--json"], { PGAI_DB_URL: dbUrl() });
+  const { ps, output, docker } = await run(["prepare-db", "--json"], { PGAI_DB_URL: dbUrl() });
   expect(ps).toContain("prepare-db");
-  expect(ps).not.toContain(DB_PASSWORD);
-  expect(readFileSync(`${dir}/docker.log`, "utf8")).not.toContain(DB_PASSWORD);
-}, 40000);
+  for (const seen of [ps, output, docker]) expect(seen).not.toContain(dbPassword);
+}, 70000);
 
 test("mon local-install reads PGAI_DB_URL and PGAI_API_KEY and keeps both out of argv", async () => {
-  const ps = await argvWhileConnecting(["mon", "local-install", "-y"], { PGAI_DB_URL: dbUrl(), PGAI_API_KEY: API_KEY });
+  const { ps, output, docker } = await run(["mon", "local-install", "-y"], { PGAI_DB_URL: dbUrl(), PGAI_API_KEY: apiKey });
   expect(ps).toContain("local-install");
-  for (const secret of [DB_PASSWORD, API_KEY]) {
-    expect(ps).not.toContain(secret);
-    expect(readFileSync(`${dir}/docker.log`, "utf8")).not.toContain(secret);
+  expect(output).toContain("Connection failed"); // it ran on past the connection test
+  expect(output).toContain("Step 3");
+  for (const seen of [ps, output, docker]) {
+    expect(seen).not.toContain(dbPassword);
+    expect(seen).not.toContain(apiKey);
   }
-}, 40000);
+  expect(JSON.parse(readFileSync(`${dir}/xdg/postgresai/config.json`, "utf8")).apiKey).toBe(apiKey);
+}, 70000);
 
 test("an explicit prepare-db connection wins over PGAI_DB_URL", async () => {
-  const ps = await argvWhileConnecting(["prepare-db", dbUrl(), "--json"], { PGAI_DB_URL: "postgresql://other:x@127.0.0.1:1/postgres" });
-  expect(ps).toContain(DB_PASSWORD);
+  // Only the positional URL points at the parked server; run() fails if it is not dialled.
+  await run(["prepare-db", dbUrl(), "--json"], { PGAI_DB_URL: "postgresql://other:x@127.0.0.1:1/postgres" });
+}, 70000);
+
+test("prepare-db --print-sql stays offline with PGAI_DB_URL set", () => {
+  const r = Bun.spawnSync([process.execPath, cli, "prepare-db", "--print-sql"], {
+    cwd: dir, env: { ...env, PGAI_DB_URL: dbUrl() }, timeout: 30000,
+  });
+  const out = r.stdout.toString() + r.stderr.toString();
+  expect(out).toContain("SQL plan");
+  expect(out).not.toContain(dbPassword);
+  expect(sockets.length).toBe(0);
 }, 40000);
