@@ -12,6 +12,11 @@ export interface CheckSummary {
   message: string;
 }
 
+/** Worth a line in a short summary: a warning, an ok, or an info with concrete data (a number, the version). */
+export function isSignificantSummary(s: CheckSummary): boolean {
+  return s.status !== 'info' || /\d/.test(s.message) || s.message.includes('PostgreSQL') || s.message.includes('Version');
+}
+
 /**
  * Extract summary information from a checkup report.
  * Parses the JSON structure to extract key metrics for CLI display.

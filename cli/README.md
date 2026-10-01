@@ -186,14 +186,16 @@ pgai connect 'postgresql://postgres:<password>@<host>:5432/postgres'
 ```
 
 It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
-prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints the dashboard URL.
-Safe to re-run. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
+prints the SQL), provisions monitoring in PostgresAI Cloud, runs the express checkup (the checks
+of `pgai checkup`, as `postgres_ai_mon`) while the box starts and prints its findings (in JSON:
+`checkup`), waits, and prints the dashboard URL. Safe to re-run; a `--clickhouse-key` given on a
+re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
 (a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
 machine instead. When stdout is not a terminal the result is JSON with `status`, `dashboard_url`
 and `next`. Then: `pgai databases`, `pgai status <name>`, `pgai disconnect <name>`.
 
 `pgai init` is the same for a person at a terminal: it signs in, asks for the database URL (and,
-for ClickHouse, the API key, which is not shown as typed), then runs `pgai connect`. Without a
+for ClickHouse, the API key; neither is shown as typed), then runs `pgai connect`. Without a
 terminal, or with `--json`, it only points to `pgai connect`.
 
 | Option | |
@@ -201,6 +203,7 @@ terminal, or with `--json`, it only points to `pgai connect`.
 | `--provider <provider>` | `clickhouse`, `rds`, `supabase` or `self-managed`; default: detected from the host |
 | `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
+| `--reset-password` | `postgres_ai_mon` exists and its password is lost: set a new one (see below) |
 | `--wait <minutes>` | how long to wait for the monitoring box; `0` does not wait (default 20) |
 | `-y, --yes` | never prompt (`connect` does not start the browser sign-in; `disconnect` does not ask) |
 | `--json` | JSON output, also on a terminal |
@@ -214,10 +217,10 @@ terminal, or with `--json`, it only points to `pgai connect`.
 | `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` | instead of `--clickhouse-key`; read for ClickHouse hosts only |
 
 `postgres_ai_mon` is one role for the whole server, so `connect` never changes the password of an
-existing one. If the role exists and you do not have its password, change it explicitly and
-update every monitoring box that uses it:
-`pgai prepare-db <admin-url> --reset-password --password <new-password>`, then
-`PGAI_MON_PASSWORD=<new-password> pgai connect <admin-url>`.
+existing one. If the role exists and you do not have its password (a reconnect after
+`pgai disconnect`, say), `pgai connect <admin-url> --reset-password` sets a new one
+(`PGAI_MON_PASSWORD`, else generated). It is refused while another database on the same server is
+monitored with the role; anything else that logs in as `postgres_ai_mon` needs the new password.
 
 When the role exists (an admin URL with `PGAI_MON_PASSWORD`, or the role's own URL), `connect`
 also logs in once as `postgres_ai_mon` with a random password, to learn whether the server checks
@@ -246,6 +249,8 @@ timeout, the role stays: a monitoring box may be starting with it.)
 
 An admin URL without a database connects to `PGDATABASE`, or else to the database named like the
 user; the name of the connected database (`<host>[:<port>]/<database>`) uses that database.
+
+`pgai connect`, `pgai status` and `pgai databases` use the same words:
 
 | `status` | Meaning | Exit code |
 |---|---|---|
