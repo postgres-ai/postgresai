@@ -10,7 +10,7 @@ Every managed-Postgres provider we collect host metrics from lands in VictoriaMe
 
 `mon targets add` (and `mon local-install --db-url`, which goes through it) copies the target's tags into the last column, so they are set in one place. A scrape file is reloaded into `sink-prometheus`; `rds-host-stats` pushes past samples and is not scraped, so it reads `.env`; it starts with `docker compose --profile rds up -d rds-host-stats`, and `mon targets add`/`remove` recreate it when it is running. It polls one instance: the last RDS instance endpoint added. A cluster, reader or proxy endpoint names no instance and sets nothing. After editing a target's tags in `instances.yml`, re-run `mon targets add` for it.
 
-The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` service evaluates them every 60 s over 3-minute rate windows and writes the results back to `sink-prometheus`. It runs under the `host-metrics` compose profile, which `mon targets add` puts in `COMPOSE_PROFILES` while a ClickHouse or Supabase scrape file exists. Their golden evaluation is `tests/host_rules/host_rules.test.yml`, and CI runs it (`quality:host-rules`).
+The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` service evaluates them every 60 s over 3-minute rate windows and writes the results back to `sink-prometheus`. It runs under the `host-metrics` compose profile, which `mon targets add` puts in `COMPOSE_PROFILES` in `.env` while a ClickHouse or Supabase scrape file exists. `mon targets remove` of the last such target removes the `vmalert` container and takes the profile out again. A stack with no such target, or with RDS only, runs no `vmalert`: `rds-host-stats` writes `host_*` itself. An exported `COMPOSE_PROFILES` wins over `.env` in compose, so it must list `host-metrics` too (or be unset); `mon targets add` says so when it does not. Their golden evaluation is `tests/host_rules/host_rules.test.yml`, and CI runs it (`quality:host-rules`).
 
 ## Names
 
@@ -42,7 +42,7 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 
 ## Dashboard
 
-Dashboard 1 has one collapsed **Host** row, the last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. Series no panel reads are not collected: GetMetricData bills per metric.
+Dashboard 1 has one collapsed **Host** row, the last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. `rds-host-stats` requests no CloudWatch metric that no panel reads: GetMetricData bills per metric.
 
 ## Limits
 
