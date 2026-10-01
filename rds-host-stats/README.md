@@ -8,34 +8,7 @@ CloudWatch and Performance Insights are queried up to the last minute boundary, 
 
 CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `RDSOSMetrics`. We collect PI and OS metrics only when enabled on the instance. Each poll reads the newest GetLogEvents page (up to 1 MB); at Enhanced Monitoring intervals of 1–5 s, OS samples missed while the service was down are not backfilled.
 
-| Series | Source | Unit |
-| --- | --- | --- |
-| host_cpu_utilization_percent | CPUUtilization | percent |
-| host_memory_available_bytes | FreeableMemory | bytes |
-| host_disk_read_iops | ReadIOPS | operations/s |
-| host_disk_write_iops | WriteIOPS | operations/s |
-| host_disk_read_latency_seconds | ReadLatency | seconds |
-| host_disk_write_latency_seconds | WriteLatency | seconds |
-| host_disk_queue_depth | DiskQueueDepth | requests |
-| host_network_receive_bytes_per_second | NetworkReceiveThroughput | bytes/s |
-| host_network_transmit_bytes_per_second | NetworkTransmitThroughput | bytes/s |
-| host_disk_free_bytes | FreeStorageSpace (RDS) | bytes |
-| host_burst_balance_percent | BurstBalance (RDS) | percent |
-| host_ebs_io_balance_percent | EBSIOBalance% (RDS) | percent |
-| host_replica_lag_seconds | ReplicaLag (RDS), AuroraReplicaLag × 0.001 (Aurora) | seconds |
-| host_local_storage_free_bytes | FreeLocalStorage (Aurora) | bytes |
-| host_volume_used_bytes | VolumeBytesUsed (Aurora cluster) | bytes |
-| host_volume_read_iops | VolumeReadIOPs / 300 (Aurora cluster) | operations/s |
-| host_volume_write_iops | VolumeWriteIOPs / 300 (Aurora cluster) | operations/s |
-| host_db_load | PI db.load.avg | average active sessions |
-| host_os_cpu_percent | OS cpuUtilization.total | percent |
-| host_os_cpu_iowait_percent | OS cpuUtilization.wait | percent |
-| host_os_load1 | OS loadAverageMinute.one | load |
-| host_os_memory_total_bytes | OS memory.total × 1024 | bytes |
-| host_os_memory_free_bytes | OS memory.free × 1024 | bytes |
-| host_os_memory_cached_bytes | OS memory.cached × 1024 | bytes |
-| host_os_swap_used_bytes | OS (swap.total − swap.free) × 1024 | bytes |
-| host_os_process_max_rss_bytes | OS max(processList.rss), excluding id 0, × 1024 | bytes |
+The series, their sources and units are listed with the other providers' in [docs/host-metrics.md](../docs/host-metrics.md).
 
 ## Run
 
