@@ -1446,7 +1446,7 @@ program
 program
   .command("prepare-db [conn]")
   .description("prepare database for monitoring: create monitoring user, required view(s), and grant permissions (idempotent)")
-  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg)")
+  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg, or PGAI_DB_URL)")
   .option("-h, --host <host>", "PostgreSQL host (psql-like)")
   .option("-p, --port <port>", "PostgreSQL port (psql-like)")
   .option("-U, --username <username>", "PostgreSQL user (psql-like)")
@@ -1490,6 +1490,7 @@ program
       "Environment variables (libpq standard):",
       "  PGHOST, PGPORT, PGUSER, PGDATABASE  — connection defaults",
       "  PGPASSWORD                          — admin password",
+      "  PGAI_DB_URL                         — admin connection URL, when none is given (keeps it out of argv)",
       "  PGSSLMODE                           — SSL mode (disable, require, verify-full)",
       "  PGAI_MON_PASSWORD                   — monitoring password",
       "",
@@ -1573,6 +1574,12 @@ program
     if (opts.verify && opts.printSql) {
       outputError({ message: "--verify cannot be combined with --print-sql" });
       return;
+    }
+
+    // Automation passes the admin URL (and its password) here, not in argv,
+    // where `ps` and the sudo log would show it. Any connection flag wins.
+    if (!conn && !opts.dbUrl && !opts.host && !opts.port && !opts.username && !opts.dbname && !opts.supabase) {
+      conn = process.env.PGAI_DB_URL || undefined;
     }
 
     const shouldPrintSql = !!opts.printSql;
