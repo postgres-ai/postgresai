@@ -10,7 +10,7 @@ Every managed-Postgres provider we collect host metrics from lands in VictoriaMe
 
 `mon targets add` (and `mon local-install --db-url`, which goes through it) copies the target's tags into the last column, so they are set in one place. A scrape file is reloaded into `sink-prometheus`; `rds-host-stats` pushes past samples and is not scraped, so it reads `.env`; it starts with `docker compose --profile rds up -d rds-host-stats`, and `mon targets add`/`remove` recreate it when it is running. It polls one instance: the last RDS instance endpoint added. A cluster, reader or proxy endpoint names no instance and sets nothing. After editing a target's tags in `instances.yml`, re-run `mon targets add` for it.
 
-The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` service evaluates them every 60 s over 3-minute rate windows and writes the results back to `sink-prometheus`. Their golden evaluation is `tests/host_rules/host_rules.test.yml`, and CI runs it (`quality:host-rules`).
+The recording rules live in `config/prometheus/host_rules.yml`. The `vmalert` service evaluates them every 60 s over 3-minute rate windows and writes the results back to `sink-prometheus`. It runs under the `host-metrics` compose profile, which `mon targets add` puts in `COMPOSE_PROFILES` while a ClickHouse or Supabase scrape file exists. Their golden evaluation is `tests/host_rules/host_rules.test.yml`, and CI runs it (`quality:host-rules`).
 
 ## Names
 

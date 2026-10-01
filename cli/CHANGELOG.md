@@ -6,7 +6,7 @@
 
 - `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
   from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
-  Before the admin connection is used, a `-- scope:` line lists what the run grants the monitoring
+  Before any grant runs, a `-- scope:` line lists what the run grants the monitoring
   role, derived from the plan steps about to run (stderr under `--json`, omitted on `--reset-password`).
   `channel_binding=require` in a URI or conninfo string is honoured: SCRAM-SHA-256-PLUS is
   preferred, the plaintext retry is disabled, and `sslmode=disable` is rejected.
