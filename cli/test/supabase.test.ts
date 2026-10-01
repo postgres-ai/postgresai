@@ -44,6 +44,12 @@ describe("Supabase module", () => {
       expect(extractProjectRefFromUrl(url)).toBe("abcdefghij");
     });
 
+    test("returns undefined for a host that only contains the pooler domain", () => {
+      const url =
+        "postgresql://postgres_ai_mon.abcdefghij:password@aws-0-us-east-1.pooler.supabase.com.attacker.test:6543/postgres";
+      expect(extractProjectRefFromUrl(url)).toBeUndefined();
+    });
+
     test("returns undefined for non-Supabase URL", () => {
       const url = "postgresql://postgres:password@localhost:5432/postgres";
       expect(extractProjectRefFromUrl(url)).toBeUndefined();
