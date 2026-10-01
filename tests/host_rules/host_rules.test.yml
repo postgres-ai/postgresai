@@ -116,6 +116,46 @@ tests:
       - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="prod",node_name="main-db"}', value: 100}]}
       - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="prod",node_name="main-db"}', value: 200}]}
 
+  # Per-second rates are divided by the rate of the primary's node_time_seconds.
+  # Without a moving clock of the primary there is no rate to report: the
+  # series is absent, not a plain rate() and not a division by zero.
+  - name: supabase rates need the primary's moving clock
+    interval: 1m
+    input_series:
+      # no-clock: the exposition has no node_time_seconds.
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="no-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407+120x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="no-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1851+60x10'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="no-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '72629422+6000x10'
+      - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="no-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '15017418+12000x10'
+      # flat-clock: the clock does not advance.
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="flat-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407+120x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="flat-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1851+60x10'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="flat-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '72629422+6000x10'
+      - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="flat-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '15017418+12000x10'
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="flat-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1790731200x10'
+      # replica-clock: only a read replica reports a clock.
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="replica-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407+120x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="replica-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1851+60x10'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="replica-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '72629422+6000x10'
+      - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="replica-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '15017418+12000x10'
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="replica-clock",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst-rr-us-east-1-abcde",service_type="db"}'
+        values: '1790731200+60x10'
+    metricsql_expr_test:
+      - {expr: '{__name__=~"host_disk_(read|write)_iops|host_network_(receive|transmit)_bytes_per_second"}', eval_time: 10m, exp_samples: []}
+
   - name: clickhouse PostgresServer_* maps to host_*
     interval: 1m
     input_series:

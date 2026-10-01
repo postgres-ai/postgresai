@@ -20,6 +20,9 @@ test.skipIf(!vmBin)("VictoriaMetrics scrapes the Supabase relay with the target'
   const { renderSupabaseScrapeConfig } = await import("../lib/host-metrics");
   const exposition = readFileSync(`${import.meta.dir}/../../instance-jobs/internal/supabase/testdata/supabase_metrics.prom`, "utf8")
     + "go_goroutines 7\n"
+    // The host clock the host_* disk and network rates are divided by.
+    + 'node_time_seconds{supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"} 1.7907312e+09\n'
+    + 'node_time_seconds{supabase_project_ref="zzzzzzzzzzzzzzzzzzzz",supabase_identifier="zzzzzzzzzzzzzzzzzzzz",service_type="db"} 1.7907312e+09\n'
     // A project the target is not: the relay's credential can name another one.
     + 'node_load1{supabase_project_ref="zzzzzzzzzzzzzzzzzzzz",supabase_identifier="zzzzzzzzzzzzzzzzzzzz",service_type="db"} 9\n';
   relay = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
@@ -52,6 +55,9 @@ test.skipIf(!vmBin)("VictoriaMetrics scrapes the Supabase relay with the target'
   expect(load).toHaveLength(1);
   expect(load[0].metric).toMatchObject({ job: "supabase-host-metrics", cluster: "prod", node_name: "main-db", supabase_project_ref: "abcdefghijklmnopqrst" });
   expect(load[0].metric).not.toHaveProperty("__pgai_rev");
+  const clock = await query("node_time_seconds");
+  expect(clock).toHaveLength(1);
+  expect(clock[0].metric).toMatchObject({ cluster: "prod", node_name: "main-db", supabase_project_ref: "abcdefghijklmnopqrst" });
   expect((await query('{__name__=~"node_.*", node_name!="main-db"}'))).toEqual([]);
   expect(await query("go_goroutines")).toEqual([]);
 }, 120_000);
