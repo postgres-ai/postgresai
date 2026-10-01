@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
@@ -47,6 +47,29 @@ test("add discovers the service and writes config 0644 and secret 0600 without a
   expect(config.static_configs[0].targets).toEqual([server.url.host]);
   expect(config.static_configs[0].labels.node_name).toBe("ch-test");
 });
+test("add keeps the key file in a 0700 directory, also when the directory already exists", async () => {
+  mkdirSync(`${dir}/host-metrics`, { mode: 0o755 });
+  chmodSync(`${dir}/host-metrics`, 0o755);
+  await add();
+  expect(statSync(`${dir}/host-metrics`).mode & 0o777).toBe(0o700);
+  expect(statSync(`${dir}/host-metrics/clickhouse-ch-test.secret`).mode & 0o777).toBe(0o600);
+});
+test("add refuses a host-metrics symlink and leaves its target alone", async () => {
+  mkdirSync(`${dir}/elsewhere`, { mode: 0o755 });
+  chmodSync(`${dir}/elsewhere`, 0o755);
+  symlinkSync(`${dir}/elsewhere`, `${dir}/host-metrics`);
+  await expect(add()).rejects.toThrow("host-metrics must be a directory, not a symlink");
+  expect(statSync(`${dir}/elsewhere`).mode & 0o777).toBe(0o755);
+  expect(readdirSync(`${dir}/elsewhere`)).toEqual([]);
+});
+test("add errors never carry the key secret", async () => {
+  for (const code of [401, 403, 500]) {
+    status = code;
+    const error = await add().catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect(String((error as Error).message)).not.toContain(keySecret);
+  }
+});
 for (const missing of ["all", "CLICKHOUSE_ORG_ID", "CLICKHOUSE_KEY_ID", "CLICKHOUSE_KEY_SECRET"]) {
   test(`add without ${missing} returns guidance without requests or writes`, async () => {
     const credentials: Record<string, string> = { CLICKHOUSE_ORG_ID: orgId, CLICKHOUSE_KEY_ID: keyId, CLICKHOUSE_KEY_SECRET: keySecret };
@@ -62,7 +85,7 @@ for (const denied of [401, 403]) {
     status = denied;
     await expect(add()).rejects.toEqual(new Error(denied === 401
       ? "ClickHouse Cloud rejected the API key (401). Check the key id and secret."
-      : `The API key cannot read Postgres services in organization ${orgId} (403). Give it read access to this organization.`));
+      : `The API key cannot read Postgres services in organization ${orgId} (403). Use a key with the Basic Service API Reader role, or one that includes it.`));
     expectNothingWritten();
   });
 }

@@ -50,7 +50,7 @@ import {
 } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
+import { addHostMetrics, HOST_METRICS_VERIFY_SCRIPT, removeHostMetrics, scrapeRevision } from "../lib/clickhouse";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
@@ -998,7 +998,7 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     }
   }
 
-  fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true });
+  ensureHostMetricsDir(projectDir);
 
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
@@ -1052,6 +1052,60 @@ function sanitizeTagForBackup(tag: string | null | undefined): string | null {
  * if the value fails {@link sanitizeTagForBackup}). Used only to compute the
  * compose backup file suffix; callers fall back to a timestamp when this is null.
  */
+/**
+ * What `mon update` does with PGAI_TAG: move the stack to this CLI's version,
+ * like `mon local-install` does, so an upgrade needs no manual .env edit. It
+ * never downgrades a newer tag, and a non-release CLI build moves nothing.
+ */
+export function planUpdateTag(current: string | null, cliVersion: string): { tag: string | null; note: string } {
+  const semver = (v: string) => {
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v);
+    return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] } : null;
+  };
+  const cli = semver(cliVersion);
+  if (!cli || cli.pre) {
+    return { tag: null, note: `PGAI_TAG stays ${current ?? "unset"}: this CLI (${cliVersion}) is not a release. To pick a stack version, set PGAI_TAG=<version> in .env and re-run 'postgresai mon update'` };
+  }
+  if (current === cliVersion) return { tag: null, note: `PGAI_TAG is ${cliVersion}, matching this CLI` };
+  const cur = current ? semver(current) : null;
+  if (cur) {
+    const i = cur.core.findIndex((part, j) => part !== cli.core[j]);
+    // Same x.y.z: only a prerelease can differ, and it is older than the release.
+    if (i >= 0 && cur.core[i] > cli.core[i]) {
+      return { tag: null, note: `PGAI_TAG stays ${current}: it is newer than this CLI (${cliVersion}). Upgrade the CLI to move the stack: npm install -g postgresai@latest` };
+    }
+  }
+  return { tag: cliVersion, note: `PGAI_TAG: ${current ?? "unset"} -> ${cliVersion}` };
+}
+
+// A PGAI_TAG assignment we can read and rewrite safely: optional export,
+// spaces around "=", a plain tag (optionally quoted), then only a " #" comment.
+// Anything else that assigns PGAI_TAG (interpolation, "KEY: value", a comment
+// glued to a quote) resolves in ways we do not model, so it is left alone.
+const ENV_TAG_LINE = /^([ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*=[ \t]*)(["']?)([A-Za-z0-9._-]*)\2((?:[ \t]+#[^\r\n]*)?[ \t]*\r?)$/gm;
+const ENV_TAG_ANY = /^[ \t]*(?:export[ \t]+)?PGAI_TAG[ \t]*[=:]/gm;
+
+/** The PGAI_TAG compose would use (last assignment, null if none), and whether every assignment is plain. */
+export function readEnvTag(projectDir: string): { tag: string | null; plain: boolean } {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return { tag: null, plain: true };
+  const content = fs.readFileSync(envFile, "utf8");
+  const plainLines = [...content.matchAll(ENV_TAG_LINE)];
+  if (plainLines.length !== [...content.matchAll(ENV_TAG_ANY)].length) return { tag: null, plain: false };
+  const last = plainLines.at(-1);
+  return { tag: last && last[3] ? last[3] : null, plain: true };
+}
+
+/** Set every PGAI_TAG assignment in .env to `tag` (compose reads the last one), or append one. */
+export function writeEnvTag(projectDir: string, tag: string): void {
+  const envFile = path.resolve(projectDir, ".env");
+  const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  const content = new RegExp(ENV_TAG_LINE.source, "m").test(existing)
+    ? existing.replace(ENV_TAG_LINE, (_match, prefix: string, quote: string, _value: string, rest: string) => `${prefix}${quote}${tag}${quote}${rest}`)
+    : `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}PGAI_TAG=${tag}\n`;
+  writeEnvFile(envFile, content);
+}
+
 function readDeployedTag(projectDir: string): string | null {
   const envFile = path.resolve(projectDir, ".env");
   if (!fs.existsSync(envFile)) return null;
@@ -2971,8 +3025,20 @@ async function resolveOrInitPaths(): Promise<PathResolution> {
   } catch {
     return ensureDefaultMonitoringProject();
   }
-  fs.mkdirSync(path.join(paths.projectDir, "host-metrics"), { recursive: true });
+  ensureHostMetricsDir(paths.projectDir);
   return paths;
+}
+
+// Created before any `docker compose up`, which would otherwise create the
+// bind-mount source itself, owned by root. Best effort: every command resolves
+// paths, and a read-only one must work in a directory it cannot write.
+// addHostMetrics creates it for real (0700: it holds the ClickHouse API key).
+function ensureHostMetricsDir(projectDir: string): void {
+  try {
+    fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true, mode: 0o700 });
+  } catch {
+    // ignored, see above
+  }
 }
 
 /**
@@ -4306,12 +4372,17 @@ mon
         }
 
         const host = m[3];
-        const db = m[5];
+        const db = m[5].split("?")[0];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
-        addInstanceToFile(instancesPath, instance);
-        console.log(`✓ Monitoring target '${instanceName}' added\n`);
+        // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
+        // the stack is started below, so nothing is applied here.
+        if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+          console.error("✗ The monitoring target was not saved");
+          process.exitCode = 1;
+          return;
+        }
+        console.log();
 
         // Test connection
         console.log("Testing connection to the added instance...");
@@ -4356,12 +4427,15 @@ mon
               console.error("⚠ Continuing without adding instance\n");
             } else {
               const host = m[3];
-              const db = m[5];
+              const db = m[5].split("?")[0];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
-              addInstanceToFile(instancesPath, instance);
-              console.log(`✓ Monitoring target '${instanceName}' added\n`);
+              if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+                console.error("✗ The monitoring target was not saved");
+                process.exitCode = 1;
+                return;
+              }
+              console.log();
 
               // Test connection
               console.log("Testing connection to the added instance...");
@@ -5063,6 +5137,18 @@ mon
       } else {
         console.log("✓ .env is up to date");
       }
+      const envTag = readEnvTag(projectDir);
+      const deployedTag = envTag.tag;
+      const tagPlan = envTag.plain
+        ? planUpdateTag(deployedTag, pkg.version)
+        : { tag: null, note: `PGAI_TAG in .env is not a plain value, so it is left as is. To move the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env and re-run 'postgresai mon update'` };
+      if (tagPlan.tag) {
+        writeEnvTag(projectDir, tagPlan.tag);
+        // Bun loads .env into process.env at startup, and compose prefers the
+        // environment over .env: carry the move over so `pull` gets the new tag.
+        if (process.env.PGAI_TAG === deployedTag) process.env.PGAI_TAG = tagPlan.tag;
+      }
+      console.log(`${tagPlan.tag ? "✓ " : ""}${tagPlan.note}`);
       console.log();
 
 
@@ -5090,7 +5176,7 @@ mon
         // The helper logs only when it actually refreshes/warns, so don't
         // pre-announce a refresh that may turn out to be a no-op.
         console.log("(not a git checkout — checking bundled docker-compose.yml)");
-        await refreshBundledComposeIfStale(projectDir);
+        await refreshBundledComposeIfStale(projectDir, deployedTag);
       }
 
       // Step 3: pull new images.
@@ -5116,8 +5202,11 @@ mon
           }
         }
         console.log("\n✓ Update completed successfully");
+        // `mon restart` keeps the old containers; stop/start recreates them on the
+        // pulled images and re-runs config-init. Always, since an earlier failed
+        // run may already have moved PGAI_TAG.
         console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon restart");
+        console.log("  postgres-ai mon stop && postgres-ai mon start");
       } else {
         console.error("\n✗ Docker image update failed");
         process.exitCode = 1;
@@ -5275,14 +5364,83 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+/**
+ * A compose service's container state ("running", "exited", ...; "" when it has
+ * no container), or null when it cannot be read. `ps --format` is v2-only, so
+ * this takes the id from `ps -a -q` and the state from `docker inspect`.
+ */
+async function composeServiceState(service: string): Promise<string | null> {
+  const cmd = getComposeCmd();
+  if (!cmd) return null;
+  let composeFile: string;
+  try {
+    ({ composeFile } = await resolveOrInitPaths());
+  } catch {
+    return null;
+  }
+  const ids = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", service]);
+  if (ids.status !== 0) return null;
+  const list = ids.stdout.split(/\s+/).filter(Boolean);
+  if (list.length === 0) return "";
+  // v1 also lists one-off (`run`) containers: skip them, and report the
+  // service as running if any of its real containers is not stopped.
+  const inspected = spawnSync("docker", ["inspect", "-f", '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}}', ...list]);
+  if (inspected.status !== 0) return null;
+  const states = inspected.stdout.split("\n").map((line) => line.trim().split(/\s+/))
+    .filter(([oneoff, state]) => state && oneoff.toLowerCase() !== "true")
+    .map(([, state]) => state.toLowerCase());
+  return states.find((state) => !["created", "exited", "dead"].includes(state)) ?? states[0] ?? "";
+}
+
+// Stacks older than host metrics support lack the ./host-metrics mount or
+// scrape_config_files, so check that the running sink-prometheus can see the
+// new scrape file before reporting success.
+async function reloadHostMetrics(projectDir: string, name: string, revision?: string): Promise<boolean> {
+  if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
+    `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
+    "sh", `/etc/pgai/host-metrics/clickhouse-${name}.yml`]) !== 0) {
+    // `mon update` moves PGAI_TAG to this CLI's version; stop/start re-runs config-init.
+    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+    return false;
+  }
+  // A stopped sink-prometheus cannot be reloaded, and it will not load the
+  // deleted file when it starts, so a removal needs nothing more. Anything
+  // else (running, paused, unknown) goes through reload and verification.
+  if (!revision) {
+    const state = await composeServiceState("sink-prometheus");
+    if (state === null) {
+      console.error("Could not read the sink-prometheus state. Run 'postgresai mon restart' to drop the host metrics job.");
+      return false;
+    }
+    if (["", "created", "exited", "dead"].includes(state)) {
+      console.log(`sink-prometheus is not running; it will not load 'clickhouse-${name}' when it starts.`);
+      return true;
+    }
+  }
+  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+    console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
+    return false;
+  }
+  const job = `clickhouse-${name}`;
+  const needle = revision ? `"__pgai_rev":"${revision}"` : `"scrapePool":"${job}"`;
+  if (await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, revision ? "present" : "absent"]) !== 0) {
+    console.error(revision
+      ? `sink-prometheus did not load the scrape job '${job}' after the reload. Check 'docker logs sink-prometheus' for the error. The scrape files are saved.`
+      : `sink-prometheus still scrapes '${job}' after the reload. Check 'docker logs sink-prometheus' for the error.`);
+    return false;
+  }
+  return true;
+}
+
+/** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
   env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   if (!connStr) {
     console.error("Connection string required: postgresql://user:pass@host:port/db");
     process.exitCode = 1;
-    return;
+    return false;
   }
   const collector = collectorConnStr(connStr);
   connStr = collector.connStr;
@@ -5294,7 +5452,7 @@ export async function addTarget(
   if (!m) {
     console.error("Invalid connection string format");
     process.exitCode = 1;
-    return;
+    return false;
   }
   if (collector.droppedChannelBinding) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
@@ -5313,31 +5471,40 @@ export async function addTarget(
       console.log(`Monitoring target '${instanceName}' added`);
     }
     if (detectProvider(connStr) === "clickhouse") {
+      let hostMetricsOk = true;
       try {
         const message = await addHostMetrics({
           projectDir, name: instanceName, conn: connStr, env,
           cluster: instance.custom_tags?.cluster ?? "default",
           nodeName: instance.custom_tags?.node_name ?? instanceName,
         });
-        console.log(message);
-        if (apply && message.startsWith("Host metrics: ClickHouse Cloud")) {
-          await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
-        }
+        if (!apply || !message.startsWith("Host metrics: ClickHouse Cloud")) console.log(message);
+        else if (await reloadHostMetrics(projectDir, instanceName, scrapeRevision(projectDir, instanceName))) console.log(message);
+        else hostMetricsOk = false;
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
-        console.error("The Postgres target was added; host metrics were not.");
+        hostMetricsOk = false;
+      }
+      if (!hostMetricsOk) {
         process.exitCode = 1;
+        // Applying runs `up -d pgwatch-*`, which would also start a stopped
+        // sink-prometheus as a dependency: a failed add leaves the stack alone.
+        console.error(apply
+          ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
+          : "The Postgres target was added; host metrics were not.");
+        return true;
       }
     }
 
-    if (!apply) return;
+    if (!apply) return true;
     const applyCode = await applyMonitoringTargetsConfig();
     if (applyCode !== 0) {
       console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
       process.exitCode = 1;
-      return;
+      return true;
     }
     console.log("✓ Monitoring target configuration applied");
+    return true;
   } catch (err) {
     // Surface InstancesParseError as-is so we don't silently overwrite a
     // corrupted file (which could discard several targets, including the
@@ -5345,6 +5512,7 @@ export async function addTarget(
     const message = err instanceof Error ? err.message : String(err);
     console.error(message);
     process.exitCode = 1;
+    return false;
   }
 }
 
@@ -5397,7 +5565,9 @@ targets
 ClickHouse host metrics (non-interactive):
   export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<secret>'
   postgres-ai mon targets add 'postgresql://user:pass@host.pg.clickhouse.cloud:5432/db' my-db
-Writes instances.yml, host-metrics/clickhouse-my-db.yml and host-metrics/clickhouse-my-db.secret.
+Use an organization API key with the Basic Service API Reader role; an Admin key is not needed.
+Writes instances.yml, host-metrics/clickhouse-my-db.yml and
+host-metrics/clickhouse-my-db.secret (the key secret, mode 0600).
 Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
 `)
   .action(async (connStr?: string, name?: string) => {
@@ -5426,7 +5596,7 @@ targets
       const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
       if (hadHostMetrics) {
         removeHostMetrics(projectDir, name);
-        await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
+        if (!(await reloadHostMetrics(projectDir, name))) process.exitCode = 1;
       }
 
       const applyCode = await applyMonitoringTargetsConfig();
