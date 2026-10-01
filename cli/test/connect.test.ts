@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
+import { checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, type ConnectDeps, type Database, type PrepareOptions } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -256,7 +256,7 @@ describe("connect", () => {
   test("the express checkup's findings are shown while the box starts", async () => {
     const lines: string[] = [];
     const { deps } = fake({ rows: [undefined, row("launch_requested")], progress: (l) => lines.push(l) });
-    await connect(CH, { waitMs: 60_000, ...{} }, { ...deps, sleep: async () => { throw new Error("stop"); } }).catch(() => {});
+    await connect(CH, { waitMs: 60_000 }, { ...deps, sleep: async () => { throw new Error("stop"); } }).catch(() => {});
     expect(lines).toEqual([
       "Preparing postgresql://postgres:*****@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require",
       `Provisioning monitoring for ${CH_NAME}`,
@@ -264,6 +264,15 @@ describe("connect", () => {
       "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
       "The full checkup (query analysis and trends) follows on the box.",
       "Waiting for the monitoring box (launch_requested)",
+    ]);
+  });
+
+  test("checks that could not run are named, so a partial checkup does not look complete", () => {
+    expect(checkupLines({ ...CHECKUP, failed: ["F004", "I001"] })).toEqual([
+      "Express checkup while the box starts (19 checks: 1 warning, 0 ok):",
+      "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
+      "  could not run: F004 I001",
+      "The full checkup (query analysis and trends) follows on the box.",
     ]);
   });
 
@@ -398,6 +407,24 @@ describe("connect", () => {
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
       next: "A new password for postgres_ai_mon would cut off the monitoring of abc123.us-east-1.aws.pg.clickhouse.cloud/orders on this server: set PGAI_MON_PASSWORD to its password instead",
+    });
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("--reset-password with --self-hosted: refused, the org's cloud monitoring of this server is not checked there", async () => {
+    const { deps, calls } = fake();
+    expect(await connect(CH, { resetPassword: true, selfHosted: true, waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME,
+      next: "--reset-password works with PostgresAI Cloud only (it checks what else monitors this server): connect without --self-hosted, or set PGAI_MON_PASSWORD",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("--reset-password for a database already connected: nothing reset, disconnect first", async () => {
+    const { deps, calls } = fake({ rows: [row("active")] });
+    expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1",
+      next: `${CH_NAME} is already connected, and its monitoring uses the current password: pgai disconnect ${CH_NAME} --yes first`,
     });
     expect(calls).toEqual(["list"]);
   });
@@ -691,6 +718,12 @@ describe("clickhouseOrgFor (a fake ClickHouse Cloud API)", () => {
       await expect(clickhouseOrgFor("nope.pg.clickhouse.cloud", "kid", "secret")).rejects.toThrow("has hostname nope.pg.clickhouse.cloud");
       await expect(clickhouseOrgFor("nope.pg.clickhouse.cloud", "kid", "secret")).rejects.toBeInstanceOf(ClickhouseKeyError);
     });
+  });
+
+  test("a key that cannot read the services (403) is the user's to fix too, not an outage", async () => {
+    await withApi(200, async () => {
+      await expect(clickhouseOrgFor("nope.pg.clickhouse.cloud", "kid", "secret")).rejects.toBeInstanceOf(ClickhouseKeyError);
+    }, 403);
   });
 
   test("an organization the key cannot read is reported, not the next one's missing service", async () => {

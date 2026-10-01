@@ -516,6 +516,19 @@ describe("Report generators with mock client", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
+  test("a failed pg_stat_io query is reported on stderr, never stdout (pgai connect's JSON, the MCP stream)", async () => {
+    const client = { query: async () => { throw new Error("permission denied for view pg_stat_io"); } };
+    const logged: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { logged.push(args.join(" ")); };
+    try {
+      expect(await checkup.getIOStatistics(client as any, 17)).toEqual([]);
+    } finally {
+      console.log = original;
+    }
+    expect(logged).toEqual([]);
+  });
+
   test("getIOStatistics skips placeholder SQL without querying", async () => {
     const mockClient = createI001MockClient({ ioRows: i001Rows });
 
