@@ -139,6 +139,23 @@ test("Supabase: the flag is read from .env when the environment does not set it"
   expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
 });
 
+// Compose drops an inline comment from an unquoted value, so the relay is on.
+test.each([["PGAI_SUPABASE_HOST_METRICS=true  # relay"], ['PGAI_SUPABASE_HOST_METRICS="true" # relay']])("Supabase: %p in .env turns the job on", (line) => {
+  writeFileSync(`${projectDir}/.env`, `${line}\n`);
+  const added = run(["add", supabase(), "sb"]);
+  expect(added.exitCode, added.out).toBe(0);
+  expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
+});
+
+const relayOff = "Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.";
+test("Supabase: a relay job without the instance-jobs profile is reported", () => {
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).out).toContain(relayOff);
+  writeFileSync(`${projectDir}/.env`, "COMPOSE_PROFILES=instance-jobs # pinned\n");
+  const added = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" });
+  expect(added.exitCode, added.out).toBe(0);
+  expect(added.out).not.toContain(relayOff);
+});
+
 test.each([["false"], [""]])("Supabase: with the flag %p the job is removed and nothing scrapes the relay", (flag) => {
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
   writeFileSync(log, "");
@@ -158,11 +175,25 @@ test("Supabase: with host metrics off, a dotted target name is still added and p
   expect(readFileSync(log, "utf8")).toBe("run --rm sources-generator\nup -d --force-recreate pgwatch-prometheus pgwatch-postgres\n");
 });
 
-test("Supabase: with host metrics on, a dotted target name is refused", () => {
+test("Supabase: host metrics turned off in .env, a dotted name is added and the other target's job removed", () => {
+  expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
+  writeFileSync(`${projectDir}/.env`, `${envFile()}PGAI_SUPABASE_HOST_METRICS=false\n`);
+  const added = run(["add", supabase(), "prod.main"]);
+  expect(added.exitCode, added.out).toBe(0);
+  expect(readFileSync(`${projectDir}/instances.yml`, "utf8")).toContain("- name: prod.main\n");
+  expect(scrapeFiles()).toEqual([]);
+  expect(profiles()).toBeUndefined();
+});
+
+// Refused before anything is saved: a re-run cannot change the name.
+test("Supabase: with host metrics on, a dotted target name is refused and nothing is saved", () => {
   const added = run(["add", supabase(), "prod.main"], { PGAI_SUPABASE_HOST_METRICS: "true" });
   expect(added.exitCode).toBe(1);
-  expect(added.out).toContain("a Supabase target name may use only letters, digits, '_' and '-'");
+  expect(added.out).toContain("a Supabase target name may use only letters, digits, '_' and '-' while PGAI_SUPABASE_HOST_METRICS is true. Choose another name.");
+  expect(added.out).not.toContain("re-run this command");
+  expect(run(["list"]).out).toContain("No monitoring targets configured");
   expect(scrapeFiles()).toEqual([]);
+  expect(readFileSync(log, "utf8")).toBe("");
 });
 
 test("Supabase: targets remove drops the relay job", () => {
@@ -181,6 +212,17 @@ test("RDS: rds-host-stats gets the instance, region and the target's labels in .
   const removed = run(["remove", "rds1"]);
   expect(removed.exitCode, removed.out).toBe(0);
   expect(envFile()).toBe("PGAI_TAG=0.17.0\n");
+});
+
+// The host is what follows the last "@", as `targets add` reads it.
+test("RDS: targets remove clears .env when the password has an '@'", () => {
+  const conn = rds.replace("u:pw@", "u:p@ss@");
+  const added = run(["add", conn, "rds1"]);
+  expect(added.exitCode, added.out).toBe(0);
+  expect(envFile()).toContain("RDS_DB_INSTANCE_IDENTIFIER=mydb\n");
+  const removed = run(["remove", "rds1"]);
+  expect(removed.exitCode, removed.out).toBe(0);
+  expect(envFile()).not.toMatch(/RDS_DB_INSTANCE_IDENTIFIER|AWS_REGION|PGAI_CLUSTER|PGAI_NODE_NAME/);
 });
 
 // A running rds-host-stats keeps the environment it started with.

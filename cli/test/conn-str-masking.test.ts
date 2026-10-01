@@ -34,6 +34,16 @@ test("maskConnectionString hides a password given as a query parameter", () => {
   expect(masked).toContain("sslmode=disable");
 });
 
+test.each([
+  ["a '/' in the password", `postgresql://u:pa/${secret}@h:5432/db`],
+  ["an '@' and a '/' in the password", `postgresql://u:p@${secret}/w@h:5432/db`],
+  ["sslpassword", `postgresql://u:pw@h:5432/db?sslpassword=${secret}&sslmode=require`],
+])("maskConnectionString hides %s", (_shape, url) => {
+  const masked = maskConnectionString(url);
+  expect(masked).not.toContain(secret);
+  expect(masked).toContain("@h:5432/db");
+});
+
 test("local-install --db-url does not print the password", () => {
   const dbUrl = `postgresql://monitor:${secret}@127.0.0.1:1/postgres?sslmode=disable`;
   const { out } = run(["mon", "local-install", "--db-url", dbUrl, "-y"]);

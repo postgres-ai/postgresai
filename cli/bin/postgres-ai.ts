@@ -5355,13 +5355,24 @@ function defaultTargetName(connStr: string): string | null {
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
 }
 
-/** The last assignment of `key` in the project's .env, unquoted. */
+/** The last assignment of `key` in the project's .env, as compose reads it: unquoted, without an inline comment. */
 function readEnvValue(projectDir: string, key: string): string | undefined {
   const envFile = path.resolve(projectDir, ".env");
   if (!fs.existsSync(envFile)) return undefined;
   const last = [...fs.readFileSync(envFile, "utf8").matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
-  return last && stripMatchingQuotes(last[1].trim());
+  if (!last) return undefined;
+  const raw = last[1].trim();
+  return raw.match(/^(["'])(.*?)\1/)?.[2] ?? raw.replace(/[ \t]+#.*$/, "");
 }
+
+/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment or .env)? */
+function supabaseHostMetricsOn(projectDir: string, env: NodeJS.ProcessEnv): boolean {
+  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
+}
+
+// A Supabase target's name is part of its scrape file's name.
+const SUPABASE_TARGET_NAME = /^[A-Za-z0-9_-]+$/;
+const SUPABASE_TARGET_NAME_ERROR = "Host metrics: a Supabase target name may use only letters, digits, '_' and '-' while PGAI_SUPABASE_HOST_METRICS is true. Choose another name.";
 
 /** Sets keys in the project's .env (null deletes them), keeping every other line. */
 function setEnvValues(projectDir: string, values: Record<string, string | null>): void {
@@ -5419,8 +5430,8 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     }
     const projectRef = extractProjectRefFromUrl(connStr);
     if (projectRef) {
-      const on = /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS || readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") || "");
-      if (on && !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Host metrics: a Supabase target name may use only letters, digits, '_' and '-'.");
+      const on = supabaseHostMetricsOn(projectDir, env);
+      if (on && !SUPABASE_TARGET_NAME.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
       const dir = hostMetricsDir(projectDir);
       const file = `supabase-${name}.yml`;
       const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
@@ -5429,6 +5440,9 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
       else if (stale.length === 0) return true;
       if (apply && !(await reloadHostMetrics(projectDir, SUPABASE_JOB, on ? file : undefined))) return false;
       console.log(on ? "Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)" : "Host metrics: Supabase relay job removed (PGAI_SUPABASE_HOST_METRICS is not true)");
+      if (on && !instanceJobsProfileEnabled(env.COMPOSE_PROFILES ?? readEnvValue(projectDir, "COMPOSE_PROFILES"))) {
+        console.error("Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.");
+      }
       return true;
     }
     const rds = rdsInstance(new URL(connStr).hostname);
@@ -5456,8 +5470,7 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
 async function syncVmalert(projectDir: string, apply: boolean, addOnly = false): Promise<boolean> {
   const dir = path.join(projectDir, "host-metrics");
   const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
-  const raw = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
-  const current = raw.match(/^(["'])(.*?)\1/)?.[2] ?? raw.replace(/[ \t]+#.*$/, "");
+  const current = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
   const exported = process.env.COMPOSE_PROFILES;
   if (want && exported !== undefined && !instanceJobsProfileEnabled(exported, "host-metrics")) {
     console.error(`COMPOSE_PROFILES=${exported} is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it`);
@@ -5496,6 +5509,12 @@ export async function addTarget(
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
   const instanceName = name && name.trim() ? name.trim() : defaultName;
+  // Refused before the target is saved: the name cannot be changed by a re-run.
+  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME.test(instanceName)) {
+    console.error(SUPABASE_TARGET_NAME_ERROR);
+    process.exitCode = 1;
+    return false;
+  }
 
   try {
     const existing = loadInstances(file).find((instance) => instance.name === instanceName);
@@ -5621,12 +5640,17 @@ targets
       console.log(`Monitoring target '${name}' removed`);
       if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
       const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
-      if (/^[A-Za-z0-9_-]+$/.test(name) && fs.existsSync(supabaseFile)) {
+      if (SUPABASE_TARGET_NAME.test(name) && fs.existsSync(supabaseFile)) {
         fs.rmSync(supabaseFile);
         if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
       }
       if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
-      const rds = rdsInstance(target?.conn_str?.match(/@([^:/?#]+)/)?.[1] ?? "");
+      let rds: ReturnType<typeof rdsInstance>;
+      try {
+        rds = rdsInstance(new URL(target?.conn_str ?? "").hostname);
+      } catch {
+        // Not a URL: no RDS endpoint to look for.
+      }
       if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
         if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
         console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
