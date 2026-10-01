@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 const cli = resolve(import.meta.dir, "../bin/postgres-ai.ts");
 const DB_PASSWORD = "Pw4argvCheck9x";
 const API_KEY = "key4argvCheck7q";
-let dir: string, env: Record<string, string>, server: ReturnType<typeof Bun.listen> | undefined;
+let dir: string, env: Record<string, string>, server: Bun.TCPSocketListener<undefined> | undefined;
 let connected: Promise<void>, onConnect: () => void;
 
 beforeEach(() => {
