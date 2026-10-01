@@ -1,0 +1,147 @@
+# Golden evaluation of config/prometheus/host_rules.yml with vmalert-tool:
+#   docker run --rm -v "$PWD:/repo:ro" -w /repo/tests/host_rules victoriametrics/vmalert-tool:v1.140.0 unittest --files=host_rules.test.yml
+# Input label sets are copied from the recorded Supabase exposition
+# (instance-jobs/internal/supabase/testdata) and the ClickHouse fixture
+# (cli/test/fixtures/clickhouse-prometheus.txt), plus the target labels the
+# scrape adds. Rates are chosen so every expected value is exact.
+rule_files:
+  - ../../config/prometheus/host_rules.yml
+evaluation_interval: 1m
+tests:
+  - name: supabase primary maps to host_*; replica and lo are ignored
+    interval: 1m
+    input_series:
+      # 2 CPUs, each 54 s idle and 0.6 s iowait per minute: 10 % busy, 1 % iowait.
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
+        values: '1000+54x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="idle"}'
+        values: '1000+54x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="iowait"}'
+        values: '10+0.6x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="iowait"}'
+        values: '10+0.6x10'
+      # A read replica of the same project: fully busy, must not be averaged in.
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst-rr-us-east-1-abcde",service_type="db",cpu="0",mode="idle"}'
+        values: '1000+0x10'
+      - series: 'node_load1{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '0.05x10'
+      - series: 'node_memory_MemAvailable_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '206561280x10'
+      - series: 'node_memory_MemTotal_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '453922816x10'
+      - series: 'node_memory_MemFree_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '40000000x10'
+      - series: 'node_memory_Cached_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '150000000x10'
+      - series: 'node_memory_SwapTotal_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1073741824x10'
+      - series: 'node_memory_SwapFree_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1000000000x10'
+      - series: 'node_filesystem_avail_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme0n1p2",device_error="",fstype="ext4",mountpoint="/"}'
+        values: '3171229696x10'
+      - series: 'node_filesystem_avail_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme1n1",device_error="",fstype="ext4",mountpoint="/data"}'
+        values: '1808470016x10'
+      # 1 + 2 reads/s, 0.5 + 1.5 writes/s; 1 ms per read, 2 ms per write.
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '342696+60x10'
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407+120x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '69326+30x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1851+90x10'
+      - series: 'node_disk_read_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '100+0.06x10'
+      - series: 'node_disk_read_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '100+0.12x10'
+      - series: 'node_disk_write_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '100+0.06x10'
+      - series: 'node_disk_write_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '100+0.18x10'
+      - series: 'node_disk_io_time_weighted_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '500+6x10'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '72629422+6000x10'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="lo"}'
+        values: '0+600000x10'
+      - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '15017418+12000x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: host_os_load1, eval_time: 10m, exp_samples: [{labels: 'host_os_load1{cluster="prod",node_name="main-db"}', value: 0.05}]}
+      - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="prod",node_name="main-db"}', value: 206561280}]}
+      - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="prod",node_name="main-db"}', value: 453922816}]}
+      - {expr: host_os_memory_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_free_bytes{cluster="prod",node_name="main-db"}', value: 40000000}]}
+      - {expr: host_os_memory_cached_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_cached_bytes{cluster="prod",node_name="main-db"}', value: 150000000}]}
+      - {expr: host_os_swap_used_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_swap_used_bytes{cluster="prod",node_name="main-db"}', value: 73741824}]}
+      - {expr: host_disk_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_free_bytes{cluster="prod",node_name="main-db"}', value: 1808470016}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 3}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 2}]}
+      - {expr: 'round(host_disk_read_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.001}]}
+      - {expr: 'round(host_disk_write_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.002}]}
+      - {expr: 'round(host_disk_queue_depth, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 0.1}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 100}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="prod",node_name="main-db"}', value: 200}]}
+
+  - name: an idle Supabase disk has 0 s latency, not 0/0
+    interval: 1m
+    input_series:
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407x10'
+      - series: 'node_disk_read_time_seconds_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '100x10'
+    metricsql_expr_test:
+      - {expr: host_disk_read_latency_seconds, eval_time: 10m, exp_samples: [{labels: 'host_disk_read_latency_seconds{cluster="prod",node_name="main-db"}', value: 0}]}
+
+  - name: clickhouse PostgresServer_* maps to host_*
+    interval: 1m
+    input_series:
+      # 300 CPU-seconds per minute: 240 idle, 15 iowait: 20 % busy, 5 % iowait.
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="idle"}'
+        values: '12000+240x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="user"}'
+        values: '1200+40x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="system"}'
+        values: '300+5x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="iowait"}'
+        values: '25+15x10'
+      - series: 'PostgresServer_MemoryLimitBytes{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '17179869184x10'
+      - series: 'PostgresServer_MemoryUsedPercent{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '37.5x10'
+      - series: 'PostgresServer_MemoryCachePercent{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '25x10'
+      - series: 'PostgresServer_StorageLimitBytes{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '107374182400x10'
+      - series: 'PostgresServer_FilesystemUsedPercent{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '25x10'
+      - series: 'PostgresServer_DiskReads_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '10000+600x10'
+      - series: 'PostgresServer_DiskWrites_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '20000+1200x10'
+      - series: 'PostgresServer_NetworkReceiveBytes_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '123456789+60000x10'
+      - series: 'PostgresServer_NetworkTransmitBytes_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '234567890+120000x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 20}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 5}]}
+      - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="default",node_name="ch1"}', value: 17179869184}]}
+      - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="default",node_name="ch1"}', value: 10737418240}]}
+      - {expr: host_os_memory_cached_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_cached_bytes{cluster="default",node_name="ch1"}', value: 4294967296}]}
+      - {expr: host_disk_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_free_bytes{cluster="default",node_name="ch1"}', value: 80530636800}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 10}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 20}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 1000}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: '{cluster="default",node_name="ch1"}', value: 2000}]}
+
+  - name: a self-managed node gets no host_* series
+    interval: 1m
+    input_series:
+      - series: 'pgwatch_db_size_size_b{job="pgwatch-prometheus",cluster="local",node_name="node-01",datname="postgres"}'
+        values: '8388608x10'
+      - series: 'node_cpu_seconds_total{job="self-node-exporter",cpu="0",mode="idle"}'
+        values: '0+60x10'
+    metricsql_expr_test:
+      - {expr: '{__name__=~"host_.+"}', eval_time: 10m, exp_samples: []}
