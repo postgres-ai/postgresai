@@ -5,7 +5,6 @@
 // VPC/subnet/security-group IDs and KMS key IDs are redacted (test/redact.ts).
 import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch'
 import { CloudWatchLogsClient, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs'
-import { GetResourceMetricsCommand, PIClient } from '@aws-sdk/client-pi'
 import { DescribeDBInstancesCommand, RDSClient } from '@aws-sdk/client-rds'
 import { redact } from './redact'
 
@@ -15,10 +14,9 @@ const region = process.env.AWS_REGION ?? 'us-east-1'
 const clients = {
   rds: new RDSClient({ region }),
   cloudwatch: new CloudWatchClient({ region }),
-  pi: new PIClient({ region }),
   logs: new CloudWatchLogsClient({ region }),
 }
-const commands = { DescribeDBInstancesCommand, GetMetricDataCommand, GetResourceMetricsCommand, GetLogEventsCommand }
+const commands = { DescribeDBInstancesCommand, GetMetricDataCommand, GetLogEventsCommand }
 type Call = { client: keyof typeof clients; command: keyof typeof commands; input: Record<string, unknown> }
 
 const calls: Call[] = await Bun.file(`${dir}/calls.json`).json()
