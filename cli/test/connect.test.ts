@@ -260,7 +260,7 @@ describe("connect", () => {
     expect(lines).toEqual([
       "Preparing postgresql://postgres:*****@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require",
       `Provisioning monitoring for ${CH_NAME}`,
-      "Express checkup while the box starts (19 checks, 1 finding):",
+      "Express checkup while the box starts (19 checks: 1 warning, 0 ok):",
       "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
       "The full checkup (query analysis and trends) follows on the box.",
       "Waiting for the monitoring box (launch_requested)",
