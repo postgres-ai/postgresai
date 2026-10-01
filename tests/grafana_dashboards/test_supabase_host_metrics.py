@@ -1,43 +1,10 @@
-"""Supabase host panels and the internal scrape contract."""
+"""The Supabase host metrics scrape contract. The Host row is in test_host_row.py."""
 import json
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def test_supabase_host_panels() -> None:
-    dashboard = json.loads((ROOT / 'config/grafana/dashboards/Dashboard_1_Node_performance_overview.json').read_text())
-    row = next(p for p in dashboard['panels'] if p['title'] == 'Host (Supabase)')
-    assert row['collapsed'] is True
-    assert len(row['panels']) == 5
-    assert [p['fieldConfig']['defaults']['unit'] for p in row['panels']] == ['percent', 'bytes', 'bytes', 'ops', 'binBps']
-    for panel in row['panels']:
-        assert panel['datasource']['uid'] == 'P7A0D6631BB10B34F'
-        for target in panel['targets']:
-            assert target.get('interval') == '60s'
-            # The scrape carries the pgwatch labels of the Supabase target, so
-            # the row follows the dashboard's cluster and node selectors.
-            assert 'cluster="$cluster_name"' in target['expr']
-            assert 'node_name="$node_name"' in target['expr']
-            assert 'service_type="db"' in target['expr']
-            # Read replicas share supabase_project_ref; supabase_identifier is
-            # unique per host, so series and legends key on it.
-            assert '{{supabase_identifier}}' in target['legendFormat']
-            assert 'job="supabase-host-metrics"' in target['expr']
-
-    cpu, memory, filesystem, disk, network = row['panels']
-    assert 'avg by (supabase_project_ref, supabase_identifier)' in cpu['targets'][0]['expr']
-    assert filesystem['title'] == 'Filesystem available'
-    assert 'node_filesystem_avail_bytes{' in filesystem['targets'][0]['expr']
-
-    # The collapsed row is the last top-level panel. Grafana folds every
-    # top-level panel between a row header and the next row into that row when
-    # the row is collapsed from the UI, which would swallow the footer.
-    assert dashboard['panels'][-1] is row
-    footer = next(p for p in dashboard['panels'] if p['type'] == 'text' and 'Brought to you by' in p['options']['content'])
-    assert footer['gridPos']['y'] + footer['gridPos']['h'] <= row['gridPos']['y']
 
 
 def test_supabase_scrape_is_internal() -> None:
