@@ -5423,20 +5423,26 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
 
 /**
  * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
- * itself. So its profile is in .env exactly while such a scrape file exists,
- * and a change starts or removes it. Returns false when that failed.
+ * itself. So its profile is in .env exactly while such a scrape file exists.
+ * A change starts or removes vmalert first, and .env follows only on success,
+ * so a failed start is retried by the next run. Returns false when that failed.
  */
 async function syncVmalert(projectDir: string, apply: boolean): Promise<boolean> {
   const dir = path.join(projectDir, "host-metrics");
   const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
-  const current = readEnvValue(projectDir, "COMPOSE_PROFILES");
+  const current = stripMatchingQuotes((readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "").replace(/[ \t]+#.*$/, ""));
+  const exported = process.env.COMPOSE_PROFILES?.trim();
+  if (want && exported && !instanceJobsProfileEnabled(exported, "host-metrics")) {
+    console.error(`COMPOSE_PROFILES=${exported} is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it`);
+  }
   if (instanceJobsProfileEnabled(current, "host-metrics") === want) return true;
-  setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
-  if (!apply) return true;
   const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
-  if (await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) === 0) return true;
-  console.error(`Host metrics: run 'docker compose --profile host-metrics ${args.join(" ")}' in ${projectDir}.`);
-  return false;
+  if (apply && await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) !== 0) {
+    console.error(`Host metrics: 'docker compose --profile host-metrics ${args.join(" ")}' failed.`);
+    return false;
+  }
+  setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
+  return true;
 }
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
