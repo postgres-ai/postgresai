@@ -28,8 +28,9 @@ shift 3
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$*" in
   *" ps "*rds-host-stats) [ -n "$FAKE_RDS_PS_FAILS" ] && exit 1; [ -n "$FAKE_RDS_RUNNING" ] && echo 4567ef ;;
-  "up -d --no-deps vmalert") [ -n "$FAKE_VMALERT_FAILS" ] && exit 1 ;;
+  "up -d --no-deps vmalert") [ "$FAKE_VMALERT_FAILS" = signal ] && kill -TERM $$; [ -n "$FAKE_VMALERT_FAILS" ] && exit 1 ;;
   *" up "*rds-host-stats) echo "$RDS_DB_INSTANCE_IDENTIFIER $AWS_REGION $PGAI_CLUSTER $PGAI_NODE_NAME" >> "$FAKE_DOCKER_LOG_DIR/rds-env.log" ;;
+  exec*) [ -n "$FAKE_EXEC_FAILS" ] && exit 1 ;;
   ps*) echo 0123abcd ;;
 esac
 exit 0
@@ -65,25 +66,25 @@ test("vmalert: its profile is added to and removed from COMPOSE_PROFILES, other 
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
   expect(profiles()).toBe("COMPOSE_PROFILES=instance-jobs,host-metrics");
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
-  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert"]);
+  // Every add makes sure vmalert runs; up -d is a no-op when it does.
+  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert", "up -d --no-deps vmalert"]);
   const removed = run(["remove", "sb"]);
   expect(removed.exitCode, removed.out).toBe(0);
   expect(profiles()).toBe("COMPOSE_PROFILES=instance-jobs");
-  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert", "rm -sf vmalert"]);
+  expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert", "up -d --no-deps vmalert", "rm -sf vmalert"]);
 });
 
-test("vmalert: a failed start is retried by the next targets add", () => {
-  const failed = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true", FAKE_VMALERT_FAILS: "1" });
+test.each([["1"], ["signal"]])("vmalert: a failed start (%p) is retried by the next targets add", (how) => {
+  const failed = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true", FAKE_VMALERT_FAILS: how });
   expect(failed.exitCode).toBe(1);
   expect(failed.out).toContain("Host metrics: 'docker compose --profile host-metrics up -d --no-deps vmalert' failed.");
-  expect(profiles()).toBeUndefined();
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
   expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert", "up -d --no-deps vmalert"]);
   expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
 });
 
-test("vmalert: a comment after COMPOSE_PROFILES does not swallow the profile", () => {
-  writeFileSync(`${projectDir}/.env`, "COMPOSE_PROFILES=instance-jobs # pinned\n");
+test.each([["COMPOSE_PROFILES=instance-jobs # pinned"], ['COMPOSE_PROFILES="instance-jobs"# pinned'], ["COMPOSE_PROFILES='instance-jobs'"]])("vmalert: %p keeps its profile and gains host-metrics", (line) => {
+  writeFileSync(`${projectDir}/.env`, `${line}\n`);
   expect(run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" }).exitCode).toBe(0);
   expect(profiles()).toBe("COMPOSE_PROFILES=instance-jobs,host-metrics");
 });
@@ -93,6 +94,20 @@ test("vmalert: an exported COMPOSE_PROFILES without the profile is reported", ()
   const added = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true", COMPOSE_PROFILES: "instance-jobs" });
   expect(added.exitCode, added.out).toBe(0);
   expect(added.out).toContain("COMPOSE_PROFILES=instance-jobs is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it");
+});
+
+test("vmalert: an exported empty COMPOSE_PROFILES is reported too", () => {
+  const added = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true", COMPOSE_PROFILES: "" });
+  expect(added.out).toContain("COMPOSE_PROFILES= is exported and has no host-metrics");
+});
+
+// An older stack cannot load the scrape file; after the upgrade the user
+// runs mon stop/start, which must bring vmalert up without another add.
+test("vmalert: a failed add still records the profile, and starts nothing", () => {
+  const failed = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true", FAKE_EXEC_FAILS: "1" });
+  expect(failed.exitCode).toBe(1);
+  expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
+  expect(vmalertCalls()).toEqual([]);
 });
 
 test("vmalert: compose starts it only under the host-metrics profile", () => {
