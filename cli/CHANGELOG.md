@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
+  from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
+  Before the admin connection is used, a `-- scope:` line lists what the run grants the monitoring
+  role, derived from the plan steps about to run (stderr under `--json`, omitted on `--reset-password`).
+  `channel_binding=require` in a URI or conninfo string is honoured: SCRAM-SHA-256-PLUS is
+  preferred, the plaintext retry is disabled, and `sslmode=disable` is rejected.
+
 ### Changed
+
+- `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
+  as before; it is no longer filled with `self-managed`.
 
 - `issues list` now shows **open issues only** by default. Closed issues need
   an explicit `--status closed` (or `--status all` for both); an unknown
