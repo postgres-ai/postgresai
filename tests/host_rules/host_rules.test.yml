@@ -84,6 +84,51 @@ tests:
       - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="prod",node_name="main-db"}', value: 100}]}
       - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="prod",node_name="main-db"}', value: 200}]}
 
+  # Recorded 2026-09-30 on a live Free-plan project: the endpoint serves an
+  # exposition sampled up to a minute earlier (node_time_seconds says when), and
+  # with one 60 s scraper it refreshes only every other scrape. Counters then
+  # step every 120 s, and a plain rate() over 3m swings between 2/3x and 4/3x of
+  # the truth; 1 - idle rate went to -92 %. Busy share and per-second rates must
+  # come out exact at every evaluation.
+  - name: supabase counters that refresh every other scrape still give exact values
+    interval: 1m
+    input_series:
+      # 1 CPU; per 120 s: 108 s idle, 10.8 s user, 1.2 s iowait (10 % busy, 1 % iowait).
+      # Per second: 2 reads, 1 write, 0.1 queue, 100 B in, 200 B out.
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1790731200 1790731200 1790731320 1790731320 1790731440 1790731440 1790731560 1790731560 1790731680 1790731680 1790731800'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
+        values: '150000 150000 150108 150108 150216 150216 150324 150324 150432 150432 150540'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="user"}'
+        values: '1000.0 1000.0 1010.8 1010.8 1021.6 1021.6 1032.4 1032.4 1043.2 1043.2 1054.0'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="iowait"}'
+        values: '900.0 900.0 901.2 901.2 902.4 902.4 903.6 903.6 904.8 904.8 906.0'
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '5407 5407 5647 5647 5887 5887 6127 6127 6367 6367 6607'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1851 1851 1971 1971 2091 2091 2211 2211 2331 2331 2451'
+      - series: 'node_disk_io_time_weighted_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '500 500 512 512 524 524 536 536 548 548 560'
+      - series: 'node_network_receive_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '72629422 72629422 72641422 72641422 72653422 72653422 72665422 72665422 72677422 72677422 72689422'
+      - series: 'node_network_transmit_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="ens5"}'
+        values: '15017418 15017418 15041418 15041418 15065418 15065418 15089418 15089418 15113418 15113418 15137418'
+    metricsql_expr_test:
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_disk_read_iops{cluster="prod",node_name="main-db"}', value: 2}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_disk_write_iops{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_disk_queue_depth, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_disk_queue_depth{cluster="prod",node_name="main-db"}', value: 0.1}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="prod",node_name="main-db"}', value: 100}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 9m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="prod",node_name="main-db"}', value: 200}]}
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_iops{cluster="prod",node_name="main-db"}', value: 2}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_iops{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_disk_queue_depth, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_queue_depth{cluster="prod",node_name="main-db"}', value: 0.1}]}
+      - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="prod",node_name="main-db"}', value: 100}]}
+      - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="prod",node_name="main-db"}', value: 200}]}
+
   - name: an idle Supabase disk has 0 s latency, not 0/0
     interval: 1m
     input_series:
