@@ -136,3 +136,15 @@ def test_status_update_failure_does_not_fail_the_run(run_main) -> None:
     """An API without the status RPC (404) must not turn a good run into a crash."""
     calls = run_main(ARGS_ALL, status_error=_http_error(404))
     assert calls == [CREATE, file_post("A002.json"), status("completed")]
+
+
+@pytest.mark.unit
+def test_single_check_upload_crash_marks_report_failed_and_still_raises(run_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreadable(self, *_a, **_k):
+        raise PermissionError("out.json is not readable")
+
+    monkeypatch.setattr(PostgresReportGenerator, "upload_report_file", unreadable)
+    argv = ARGS_ALL + ["--check-id", "A002", "--output", "out.json"]
+    with pytest.raises(PermissionError):
+        run_main(argv)
+    assert run_main.calls == [CREATE, status("failed")]
