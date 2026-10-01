@@ -1,0 +1,16 @@
+- job_name: supabase-host-metrics
+  metrics_path: /supabase/metrics
+  scrape_interval: 60s
+  scrape_timeout: 20s
+  static_configs:
+    - targets:
+        - instance-jobs:9188
+      labels:
+        cluster: default
+        node_name: sb
+        __pgai_rev: r74d1ac4dc94d24dc
+  metric_relabel_configs:
+    - source_labels:
+        - __name__
+      regex: node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*
+      action: keep
