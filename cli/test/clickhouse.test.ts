@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { findService, renderScrapeConfig, scrapeRevision } from "../lib/clickhouse";
+import { findService, renderScrapeConfig } from "../lib/clickhouse";
+import { scrapeRevision } from "../lib/host-metrics";
 
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
@@ -82,7 +83,7 @@ describe("ClickHouse scrape config", () => {
       const text = renderScrapeConfig({ ...renderOptions, cluster: "x\n__pgai_rev: r0000000000000000" });
       mkdirSync(`${dir}/host-metrics`);
       writeFileSync(`${dir}/host-metrics/clickhouse-my-postgres.yml`, text);
-      expect(scrapeRevision(dir, "my-postgres")).toBe((Bun.YAML.parse(text) as any[])[0].static_configs[0].labels.__pgai_rev);
+      expect(scrapeRevision(dir, "clickhouse-my-postgres.yml")).toBe((Bun.YAML.parse(text) as any[])[0].static_configs[0].labels.__pgai_rev);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

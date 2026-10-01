@@ -113,7 +113,7 @@ func TestSupabaseLive(t *testing.T) {
 		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer relay.client.CloseIdleConnections()
 	w := httptest.NewRecorder()
-	relay.Handler(true).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/supabase/metrics", nil))
+	relay.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/supabase/metrics", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("relay returned HTTP %d", w.Code)
 	}
