@@ -3,7 +3,7 @@
 Collection runs **on the monitoring instance** and the results are posted out.
 The platform opens no connection to the instance to collect anything.
 
-Every connection this process makes is outbound: it asks the platform for work
+Collection connections are outbound: it asks the platform for work
 (`v1.instance_job_poll`), runs it against the metric store on its own compose
 network, and posts the answer back (`v1.instance_job_submit`).
 
@@ -260,12 +260,13 @@ action is relayed verbatim or stores `NULL` as before.
 ## Configuration
 
 Everything comes from `.pgwatch-config`, the file the reporter container already
-mounts. There is no new credential and no new file.
+mounts. There is no new file.
 
 | key | what |
 |---|---|
 | `api_key` | the org API token, the same one the reporter uploads with |
 | `instance_id` | this monitoring instance's id; falls back to `PGAI_INSTANCE_ID`, which `mon local-install` writes into `.env` and compose passes through, then to `PGAI_MONITORING_INSTANCE_ID`, which nothing on the box writes (it is the name the telemetry service uses, accepted here so the two agree) |
+| `instance_secret` | Supabase host metrics only: this instance's own secret, minted by `supabase_monitoring_provision` and written here by provisioning. The relay sends it in the `instance-secret` header of `rpc/supabase_host_metrics_credential` (platform-all!884) and never logs it. File only, no environment fallback. Without it the relay makes no call and answers 503 `instance_secret_missing`; an instance provisioned before !884 needs re-provisioning |
 | `api_base_url` | the platform that provisioned this instance (optional; else `PGAI_API_BASE_URL`, else production). Must be `https`, or a loopback `http` for a local rig: the token goes on the wire either way |
 
 On a **DBLab** box, three keys replace `api_key` and `instance_id`:
@@ -333,6 +334,48 @@ command that enables the profile (see **Enabling the profile on a machine**
 below), so the two cannot come apart.
 
 The token is never passed on argv, never put in a URL, and never logged.
+
+## Supabase host metrics
+
+Enable the `instance-jobs` profile and set `PGAI_SUPABASE_HOST_METRICS=true` in
+`.env`, then recreate the service. The internal relay defaults to `:9188`
+(`PGAI_SUPABASE_METRICS_LISTEN`; pinned in compose, no published port). It fetches
+the Supabase key using the existing org token and instance id, at most once per
+five minutes, keeping it only in memory. No customer key entry is needed.
+Each monitoring instance serves exactly one Supabase project, selected by the
+platform RPC. The scraper calls `/supabase/metrics` every 60 seconds
+(20-second timeout); the relay answers 503 (no usable credential) or 502
+(upstream scrape failed) and either one means `up=0`, independently of runner
+health. `not_supabase`, `consent_needed` and `no_key` are not faults: the relay
+answers an empty 200, so `up=1` with no series and the box carries no failing
+target. For `consent_needed`, the relay logs a warning; open the Supabase page
+in the PostgresAI console and click **Allow host metrics**. Dashboard 01 includes a collapsed
+**Host (Supabase)** row, labeled by `supabase_identifier` (the project ref for
+the primary, a distinct value per read replica). The scrape target carries the
+`cluster` and `node_name` tags of the one Supabase target in `instances.yml`
+(sources-generator writes it to `prometheus/supabase-host-metrics.json`), so the
+row follows the dashboard's cluster and node selectors. With no Supabase target,
+or more than one, the series carry no such labels and the row stays empty.
+
+Credential lifecycle: the key is cached for one hour, then fetched again. A
+`401`/`403` from Supabase discards it and triggers one immediate refetch; a
+second rejection answers 502 and the next fetch waits for the five-minute
+cooldown. Nothing re-checks the platform inside the hour, so a connection or
+consent revoked in the console keeps working for up to one hour. The credential
+RPC runs detached from the scrape request (10-second timeout), so a scraper
+that gives up does not consume the cooldown.
+
+The listener has no authentication: every service on the compose network can
+read `/supabase/metrics`. Reads inside a 30-second window are answered from
+the last exposition held in memory, so a peer cannot turn the relay into a loop
+of upstream scrapes against Supabase. Neither the key nor the org token is ever
+sent to a client; error bodies are fixed status strings. A relay that cannot
+bind its address is logged and disabled; the runner keeps going.
+
+The opt-in live test requires `SUPABASE_TEST_ACCESS_TOKEN` and
+`SUPABASE_TEST_PROJECT_REF`. From `instance-jobs`, run
+`go test -tags supabase_live ./internal/supabase -run TestSupabaseLive`.
+It fetches the project secret key only in memory.
 
 ## What this is not
 

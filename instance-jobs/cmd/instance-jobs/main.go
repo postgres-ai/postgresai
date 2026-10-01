@@ -1,5 +1,5 @@
 // Command instance-jobs runs collection jobs on a monitoring instance and posts
-// the results to the platform. Every connection it makes is outbound.
+// the results to the platform, with an optional internal Supabase metrics relay.
 //
 // Subcommands:
 //
@@ -13,13 +13,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/config"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/runner"
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/supabase"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=$PGAI_TAG".
@@ -64,12 +69,41 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Load returns the environment settings even if the credential file cannot
+	// yet be read. The relay re-reads platform credentials when it needs them.
+	cfg, _ := config.Load()
+	if cfg.SupabaseHostMetrics {
+		// The relay is optional: a listener failure disables it and is logged,
+		// it never takes the runner down. net.Listen errors carry no secrets.
+		if closeRelay, err := serveRelay(cfg.SupabaseMetricsListen, supabase.New(config.Load, slog.Default()).Handler(true)); err != nil {
+			log.Printf("Supabase metrics relay disabled: %v", err)
+		} else {
+			defer closeRelay()
+		}
+	}
+
 	log.Printf("starting (version %s)", version)
 	err := runner.New(healthPath, clientVersion()).Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 	log.Print("stopped")
+}
+
+// serveRelay binds addr and serves handler until the returned function is
+// called. A failure after the bind is logged and leaves the runner running.
+func serveRelay(addr string, handler http.Handler) (func(), error) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Supabase metrics relay stopped: %v", err)
+		}
+	}()
+	return func() { server.Close() }, nil
 }
 
 func clientVersion() string {
