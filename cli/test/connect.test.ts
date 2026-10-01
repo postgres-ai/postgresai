@@ -175,7 +175,7 @@ describe("connect", () => {
     const { deps, calls } = fake({ rows: [row("active")], clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); throw new ClickhouseKeyError(REJECTED); } });
     expect(await connect(CH, { clickhouseKey: KEY, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1",
-      next: `${REJECTED} The database stays connected with the key it has; re-run with the right key, or without one`,
+      next: `${REJECTED} Nothing was changed: re-run with the right key, or without one`,
     });
     expect(calls).toEqual(["list", "clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa"]);
   });

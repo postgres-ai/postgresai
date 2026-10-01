@@ -1,4 +1,6 @@
 import { Client } from "pg";
+import { generateAllReports } from "./checkup";
+import { isSignificantSummary } from "./checkup-summary";
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
@@ -13,7 +15,10 @@ import { HttpStatusError, requestTimeoutSignal } from "./util";
 // re-run is safe; every outcome carries the exact next action.
 
 export type Provider = "clickhouse" | "rds" | "supabase" | "self-managed";
-export type Status = "connected" | "provisioning" | "disconnecting" | "action_required" | "failed";
+export type Status = "connected" | "provisioning" | "disconnecting" | "disconnected" | "action_required" | "failed";
+
+/** The express checkup run while the box starts: what it found, or why it could not run. */
+export type CheckupResult = { checks: number; findings: { check_id: string; title: string; status: string; message: string }[] } | { error: string };
 
 export interface ConnectResult {
   status: Status;
@@ -23,6 +28,7 @@ export interface ConnectResult {
   dashboard_url?: string | null;
   host_metrics?: boolean;
   first_checkup_eta?: string;
+  checkup?: CheckupResult;
   next: string;
   sql?: string;
 }
@@ -47,11 +53,13 @@ export type Prepared = { monitoringUrl: string; note?: string; generated?: true 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
-  prepare(url: string, provider: Provider): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
+  /** The express checkup over the monitoring role's URL. */
+  checkup(url: string): Promise<CheckupResult>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
   sleep(ms: number): Promise<void>;
@@ -62,6 +70,8 @@ export interface ConnectOptions {
   provider?: string;
   clickhouseKey?: string;
   selfHosted?: boolean;
+  /** An existing postgres_ai_mon gets a new password (its old one is not needed). */
+  resetPassword?: boolean;
   waitMs: number;
   /** The URL comes from an agent (the MCP tool): nothing of this process's environment or files goes to the host it names. */
   agent?: boolean;
@@ -124,6 +134,23 @@ export function parseClickhouseKey(value: string | undefined, env: Record<string
 /** A disconnect in flight (not one that failed to launch, which can be retried). */
 export const disconnecting = (status: string | null) => /delet/.test(status ?? "") && !/fail/.test(status ?? "");
 
+/** The platform's instance state in the words connect, status and databases all use. */
+export function stateOf(raw: string | null): Status {
+  if (raw === "active") return "connected";
+  if (raw === "deleted") return "disconnected";
+  if (disconnecting(raw)) return "disconnecting";
+  if (/fail|error/.test(raw ?? "")) return "failed";
+  return "provisioning";
+}
+
+/** A rejected ClickHouse Cloud key, or one that cannot see the service: the user's to fix (exit 3). */
+export class ClickhouseKeyError extends Error {}
+
+/** host[:port] of a name (host[:port]/db). */
+const serverOf = (name: string) => name.split("/")[0];
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams.get("password") || "";
 
 // What of the given URL's query string goes to the box: `options`, certificate
@@ -174,18 +201,35 @@ function caNote(url: string): string | undefined {
 /** A platform row as a result with its next action; `fresh` (provisioned just now) adds the first-checkup ETA. */
 export function connectStatus(row: Database, provider = row.provider as Provider, fresh = false): ConnectResult {
   const base = { provider, name: row.name, id: row.id, dashboard_url: row.dashboard_url, host_metrics: row.host_metrics };
-  if (row.status === "active") {
+  const status = stateOf(row.status);
+  if (status === "connected") {
     return {
-      ...base, status: "connected",
+      ...base, status,
       ...(fresh ? { first_checkup_eta: new Date(Date.now() + FIRST_CHECKUP_DELAY_MS).toISOString() } : {}),
       next: row.dashboard_url ? `Open ${row.dashboard_url}` : `pgai status ${row.name}`,
     };
   }
-  if (disconnecting(row.status)) return { ...base, status: "disconnecting", next: "none" };
-  if (/fail|error/.test(row.status ?? "")) {
-    return { ...base, status: "failed", next: `pgai disconnect ${row.name} --yes, then pgai connect again` };
-  }
-  return { ...base, status: "provisioning", next: `pgai status ${row.name}` };
+  if (status === "disconnecting" || status === "disconnected") return { ...base, status, next: "none" };
+  if (status === "failed") return { ...base, status, next: `pgai disconnect ${row.name} --yes, then pgai connect again` };
+  return { ...base, status, next: `pgai status ${row.name}` };
+}
+
+/** The monitoring URL with the admin URL's TLS files: for a login from this machine, never for the box. */
+function withLocalTls(monitoringUrl: string, url: string): string {
+  const u = new URL(monitoringUrl);
+  for (const [k, v] of new URL(url).searchParams) if (URL_PARAMS_TLS.includes(k)) u.searchParams.set(k, v);
+  return u.toString();
+}
+
+/** The express checkup for a person: one line per finding. */
+export function checkupLines(c: CheckupResult): string[] {
+  if ("error" in c) return [`Express checkup could not run: ${c.error}`];
+  const n = c.findings.length;
+  return [
+    `Express checkup while the box starts (${c.checks} checks, ${n} finding${n === 1 ? "" : "s"}):`,
+    ...c.findings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
+    "The full checkup (query analysis and trends) follows on the box.",
+  ];
 }
 
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
@@ -205,21 +249,43 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'" };
   }
 
-  let row = opts.selfHosted ? undefined : (await deps.list()).find((d) => d.name === name && !disconnecting(d.status));
+  const rows = opts.selfHosted ? [] : await deps.list();
+  let row = rows.find((d) => d.name === name && !disconnecting(d.status));
   const fresh = !row;
   let note = "";
+  let checkup: CheckupResult | undefined;
+  // The key is checked first, on a re-run too: a rejected key or a stopped service changes nothing.
+  const findOrg = async () => {
+    try {
+      return await deps.clickhouseOrg(new URL(url).hostname, key!.keyId, key!.keySecret);
+    } catch (err) {
+      if (err instanceof ClickhouseKeyError) return { error: err.message };
+      throw err;
+    }
+  };
+  if (row && key) {
+    const found = await findOrg();
+    if ("error" in found) return { status: "action_required", provider, name, id: row.id, next: `${found.error} Nothing was changed: re-run with the right key, or without one` };
+  }
   if (!row) {
-    // The key is checked before the database is touched: a rejected key or a stopped service changes nothing.
     let ch: { orgId: string } | undefined;
     if (key) {
-      const found = await deps.clickhouseOrg(new URL(url).hostname, key.keyId, key.keySecret);
+      const found = await findOrg();
+      if ("error" in found) return { status: "action_required", provider, name, next: `${found.error} Then re-run` };
       if (found.state !== "running") {
         return { status: "action_required", provider, name, next: `Start the service in the ClickHouse Cloud console (it is ${found.state}), then re-run` };
       }
       ch = found;
     }
+    if (opts.resetPassword) {
+      // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
+      const others = rows.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name));
+      if (others.length) {
+        return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` };
+      }
+    }
     deps.progress(`Preparing ${maskConnectionString(url)}`);
-    const prepared = await deps.prepare(url, provider);
+    const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
     if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
     if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
@@ -246,6 +312,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
+    // First value while the box starts (minutes): the express checkup, as the monitoring role.
+    checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url)).catch((err) => ({ error: errorText(err) }));
+    for (const line of checkupLines(checkup)) deps.progress(line);
   }
 
   for (const deadline = Date.now() + opts.waitMs; ;) {
@@ -254,8 +323,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (result.status === "connected" && provider === "clickhouse" && !row.host_metrics) {
         result.next += "; for CPU, memory and disk, disconnect and reconnect with --clickhouse-key <key-id>:<key-secret>";
       }
-      result.next += note;
-      return result;
+      const { next, ...rest } = result;
+      return { ...rest, ...(checkup ? { checkup } : {}), next: next + note };
     }
     deps.progress(`Waiting for the monitoring box (${row.status ?? "starting"})`);
     await deps.sleep(POLL_MS);
@@ -270,6 +339,8 @@ type PgClient = Awaited<ReturnType<typeof connectWithSslFallback>>["client"];
 export interface PrepareOptions {
   /** The URL comes from an agent (the MCP tool): PGAI_MON_PASSWORD is not read and a TLS failure is not retried in plaintext. */
   agent?: boolean;
+  /** An existing postgres_ai_mon gets a new password (PGAI_MON_PASSWORD, else a generated one). */
+  resetPassword?: boolean;
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
@@ -363,9 +434,10 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       // so it is never changed, and only a password that logs in is used.
       const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
-      const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)`;
+      const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new password)`;
       const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
-      if (me.mon_exists) {
+      const reset = !!opts.resetPassword && me.mon_exists;
+      if (me.mon_exists && !reset) {
         if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}` };
         let accepted: boolean;
         try {
@@ -379,7 +451,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       }
       const monitoringUrl = monitoringUrlFor(url, me.db, password);
       const loginUrl = loginUrlFor(url, me.db, password);
-      const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+      const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: !reset });
       try {
         await applyInitPlan({ client, plan });
       } catch (err) {
@@ -403,6 +475,21 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
   }
 }
 
+/** The express checkup (pgai checkup's checks) over `url`: the findings worth a line, warnings first. */
+export async function expressCheckup(url: string, opts: PrepareOptions = {}): Promise<CheckupResult> {
+  const { client } = await openConnection(url, opts);
+  try {
+    const reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, () => {});
+    const findings = Object.values(reports)
+      .map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }))
+      .filter(isSignificantSummary)
+      .sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
+    return { checks: Object.keys(reports).length, findings };
+  } finally {
+    await client.end();
+  }
+}
+
 /** The ClickHouse Cloud organization that runs the service at `host`, found with the key itself. */
 export async function clickhouseOrgFor(host: string, keyId: string, keySecret: string) {
   const apiUrl = process.env.CLICKHOUSE_API_URL || "https://api.clickhouse.cloud";
@@ -411,19 +498,19 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
     signal: requestTimeoutSignal().signal,
     redirect: "error",
   });
-  if (response.status === 401) throw new Error("ClickHouse Cloud rejected the API key (401). Check the key id and secret.");
+  if (response.status === 401) throw new ClickhouseKeyError("ClickHouse Cloud rejected the API key (401). Check the key id and secret.");
   if (!response.ok) throw new Error(`ClickHouse Cloud API request failed (${response.status}).`);
   const orgs = ((await response.json()) as { result?: { id: string }[] }).result;
   if (!Array.isArray(orgs)) throw new Error("ClickHouse Cloud API returned no organization list.");
   // An organization the key cannot read (403) says more than "no such service" in the next one.
-  let notFound: unknown = new Error("The API key belongs to no ClickHouse Cloud organization.");
+  let notFound: unknown = new ClickhouseKeyError("The API key belongs to no ClickHouse Cloud organization.");
   let failed: unknown;
   for (const org of orgs) {
     try {
       const service = await findService({ apiUrl, orgId: org.id, keyId, keySecret, hostname: host });
       return { orgId: org.id, state: service.state };
     } catch (err) {
-      if (/^No ClickHouse Managed Postgres service/.test(err instanceof Error ? err.message : "")) notFound = err;
+      if (/^No ClickHouse Managed Postgres service/.test(errorText(err))) notFound = new ClickhouseKeyError(errorText(err));
       else failed ??= err;
     }
   }
@@ -438,9 +525,10 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: (url: string, provider: Provider) => prepareDatabase(url, provider, { agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
+    checkup: (url: string) => expressCheckup(url, { agent: p.agent }),
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);

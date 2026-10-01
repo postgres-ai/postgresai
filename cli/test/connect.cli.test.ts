@@ -135,13 +135,18 @@ describe("pgai init", () => {
     }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", status: "launch_requested", dashboard_url: null }]);
   });
 
-  test("the ClickHouse key is not shown as it is typed", async () => {
-    await withApi(async (env) => {
-      const r = await runTty(["init"], env, [[URL_PROMPT, `${CH}\r`], [KEY_PROMPT, "kid:Sec4b1dTestSecret\r"]]);
-      expect(r.status).toBe(0);
-      expect(r.screen).toStartWith(`${URL_PROMPT}\n${KEY_PROMPT}\nprovider: clickhouse\n`);
-      expect(r.screen).not.toContain("Sec4b1d");
-    });
+  test("the ClickHouse key is not shown as it is typed (and is checked: ClickHouse rejects this one)", async () => {
+    const ch = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("", { status: 401 }) });
+    try {
+      await withApi(async (env) => {
+        const r = await runTty(["init"], { ...env, CLICKHOUSE_API_URL: `http://127.0.0.1:${ch.port}` }, [[URL_PROMPT, `${CH}\r`], [KEY_PROMPT, "kid:Sec4b1dTestSecret\r"]]);
+        expect(r.status).toBe(3);
+        expect(r.screen).toStartWith(`${URL_PROMPT}\n${KEY_PROMPT}\nstatus: action_required\nprovider: clickhouse\n`);
+        expect(r.screen).not.toContain("Sec4b1d");
+      });
+    } finally {
+      ch.stop(true);
+    }
   });
 
   test("--json with a global token and no org: still points to pgai connect", async () => {
@@ -213,7 +218,7 @@ describe("pgai connect / databases / status / disconnect", () => {
         expect(r.status).toBe(3);
         expect(r.json()).toEqual({
           status: "action_required", provider: "clickhouse", name: NAME, id: "i-1",
-          next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret. The database stays connected with the key it has; re-run with the right key, or without one",
+          next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret. Nothing was changed: re-run with the right key, or without one",
         });
         expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}"]);
       });

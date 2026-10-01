@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, PROVIDERS, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -66,7 +66,7 @@ import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
-import { generateCheckSummary } from "../lib/checkup-summary";
+import { generateCheckSummary, isSignificantSummary } from "../lib/checkup-summary";
 import {
   type Instance,
   InstancesParseError,
@@ -615,8 +615,9 @@ async function question(prompt: string): Promise<string> {
 /** question() for a secret: what is typed is not echoed. */
 async function questionHidden(prompt: string): Promise<string> {
   closeReadline();
-  process.stdout.write(prompt);
+  // The reader owns the terminal (no echo) before the prompt invites typing.
   const hidden = createInterface({ input: process.stdin, output: new Writable({ write: (_chunk, _encoding, done) => done() }), terminal: true });
+  process.stdout.write(prompt);
   return new Promise((resolve) => {
     hidden.question("", (answer) => {
       hidden.close();
@@ -897,7 +898,7 @@ function printUploadSummary(
       const title = report.checkTitle || item.checkId;
 
       // Show if: warning/ok status, or info with concrete data (contains numbers or version info)
-      const isSignificant = status !== 'info' || /\d/.test(message) || message.includes('PostgreSQL') || message.includes('Version');
+      const isSignificant = isSignificantSummary({ status, message });
 
       if (isSignificant) {
         summaries.push({ checkId: item.checkId, title, status, message });
@@ -2895,7 +2896,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
           const title = report.checkTitle || checkId;
 
           // Show if: warning/ok status, or info with concrete data (contains numbers or version info)
-          const isSignificant = status !== 'info' || /\d/.test(message) || message.includes('PostgreSQL') || message.includes('Version');
+          const isSignificant = isSignificantSummary({ status, message });
 
           if (isSignificant) {
             summaries.push({ checkId, title, status, message });
@@ -4097,7 +4098,7 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
 // JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
 // Exit codes: 0 connected or provisioning, 1 failed, 3 action required
 // (pgai init: 130 when cancelled at a prompt).
-const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, action_required: 3, failed: 1 };
+const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, disconnected: 0, action_required: 3, failed: 1 };
 
 function cloudApi(debug?: boolean) {
   const rootOpts = program.opts<CliOptions>();
@@ -4107,10 +4108,11 @@ function cloudApi(debug?: boolean) {
 }
 
 function emitConnect(result: ConnectResult, json?: boolean): void {
-  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql).
-  if (result.sql && process.stdout.isTTY && !json) {
-    const { sql, ...rest } = result;
-    console.log(`${sql}\n`);
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
+  // the express checkup was shown as it finished.
+  if (process.stdout.isTTY && !json) {
+    const { sql, checkup, ...rest } = result;
+    if (sql) console.log(`${sql}\n`);
     printResult(rest);
   } else {
     printResult(result, json);
@@ -4133,7 +4135,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
   return !!cloudApi().apiKey;
 }
 
-async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; wait?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
@@ -4178,6 +4180,7 @@ withOrgOptions(program.command("connect <database-url>"))
   .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
+  .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
   .option("--wait <minutes>", "how long to wait for the monitoring box (0 = do not wait)", "20")
   .option("-y, --yes", "never prompt")
   .option("--json", "JSON output (default when stdout is not a TTY)")
@@ -4186,7 +4189,7 @@ withOrgOptions(program.command("connect <database-url>"))
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
-    "the monitoring box, wait, print the dashboard URL.",
+    "the monitoring box, run the express checkup while it starts, wait, print the dashboard URL.",
     "",
     "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
     "",
@@ -4213,7 +4216,8 @@ withOrgOptions(program.command("init"))
     }
     if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
     process.exitCode = 130; // Ctrl-C / Ctrl-D at a prompt; runConnect sets the real code
-    const url = (await question("Database URL (postgresql://...): ")).trim();
+    // The URL carries the admin password: not shown, as the key (connect prints it masked).
+    const url = (await questionHidden("Database URL (postgresql://...; not shown): ")).trim();
     const needsKey = !!parseUrl(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
     const clickhouseKey = needsKey ? (await questionHidden("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ")).trim() : "";
     // An open prompt would take the first Ctrl-C while connect waits for the box.
@@ -4232,7 +4236,7 @@ withOrgOptions(program.command("databases"))
   .option("--debug", "print HTTP requests (secrets masked)")
   .action(async (opts: { json?: boolean; debug?: boolean }) => {
     try {
-      printResult(await cloudDatabases(opts), opts.json);
+      printResult((await cloudDatabases(opts)).map((d) => ({ ...d, status: stateOf(d.status) })), opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }
