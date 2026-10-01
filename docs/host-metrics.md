@@ -29,15 +29,15 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_disk_free_bytes` | bytes | FreeStorageSpace (RDS) | `filesystem_avail_bytes` on `/data` | StorageLimitBytes × (1 − FilesystemUsedPercent / 100) |
 | `host_local_storage_free_bytes` | bytes | FreeLocalStorage (Aurora) | – | – |
 | `host_volume_used_bytes` | bytes | VolumeBytesUsed (Aurora cluster) | – | – |
-| `host_disk_read_iops` | operations/s | ReadIOPS | rate of `disk_reads_completed_total`, all disks | rate of `DiskReads_Total` |
-| `host_disk_write_iops` | operations/s | WriteIOPS | rate of `disk_writes_completed_total`, all disks | rate of `DiskWrites_Total` |
+| `host_disk_read_iops` | operations/s | ReadIOPS | rate of `disk_reads_completed_total`, all disks, per second of `time_seconds` | rate of `DiskReads_Total` |
+| `host_disk_write_iops` | operations/s | WriteIOPS | rate of `disk_writes_completed_total`, all disks, per second of `time_seconds` | rate of `DiskWrites_Total` |
 | `host_volume_read_iops` | operations/s | VolumeReadIOPs / 300 (Aurora cluster) | – | – |
 | `host_volume_write_iops` | operations/s | VolumeWriteIOPs / 300 (Aurora cluster) | – | – |
 | `host_disk_read_latency_seconds` | seconds | ReadLatency | read time / reads completed (0 when idle) | – |
 | `host_disk_write_latency_seconds` | seconds | WriteLatency | write time / writes completed (0 when idle) | – |
-| `host_disk_queue_depth` | requests | DiskQueueDepth | rate of `disk_io_time_weighted_seconds_total` | – |
-| `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo` | rate of `NetworkReceiveBytes_Total` |
-| `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo` | rate of `NetworkTransmitBytes_Total` |
+| `host_disk_queue_depth` | requests | DiskQueueDepth | rate of `disk_io_time_weighted_seconds_total`, per second of `time_seconds` | – |
+| `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkReceiveBytes_Total` |
+| `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkTransmitBytes_Total` |
 | `host_db_load` | average active sessions | PI db.load.avg | – | – |
 | `host_replica_lag_seconds` | seconds | ReplicaLag (RDS), AuroraReplicaLag × 0.001 (Aurora) | – | – |
 | `host_burst_balance_percent` | percent | BurstBalance (RDS) | – | – |
@@ -53,5 +53,6 @@ Dashboard 1 has one collapsed **Host** row, the last on the page. It has five pa
 
 - Supabase: only the primary (`supabase_identifier` = `supabase_project_ref`) is mapped. Read replicas are relayed but get no `host_*`. With no Supabase target in `instances.yml`, or more than one, the series carry no `cluster`/`node_name` and produce no `host_*`.
 - Supabase disk IOPS and latency are summed over all block devices, including the root disk.
+- Supabase serves an exposition sampled up to a minute before the scrape, and with one 60 s scraper it refreshes only every other scrape. So the CPU shares are ratios of the CPU counters, and the per-second rates are divided by the rate of the host's own `node_time_seconds`. A plain `rate()` swings between 2/3 and 4/3 of the true value, and `1 − idle rate` went negative on a live project.
 - ClickHouse: the raw names and units come from a fixture built from ClickHouse's documentation, not from a recorded response. `DiskReads_Total` and `DiskWrites_Total` are taken to be operation counts.
 - The Helm chart ships the same dashboard but has no `vmalert` and no host collectors, so its Host row is empty.
