@@ -1,6 +1,5 @@
 import { Client } from "pg";
 import { generateAllReports } from "./checkup";
-import { isSignificantSummary } from "./checkup-summary";
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
@@ -221,13 +220,15 @@ function withLocalTls(monitoringUrl: string, url: string): string {
   return u.toString();
 }
 
-/** The express checkup for a person: one line per finding. */
+/** The express checkup for a person: a line per warning, one for the checks that passed. */
 export function checkupLines(c: CheckupResult): string[] {
   if ("error" in c) return [`Express checkup could not run: ${c.error}`];
-  const n = c.findings.length;
+  const warnings = c.findings.filter((f) => f.status === "warning");
+  const ok = c.findings.filter((f) => f.status === "ok");
   return [
-    `Express checkup while the box starts (${c.checks} checks, ${n} finding${n === 1 ? "" : "s"}):`,
-    ...c.findings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
+    `Express checkup while the box starts (${c.checks} checks: ${warnings.length} warning${warnings.length === 1 ? "" : "s"}, ${ok.length} ok):`,
+    ...warnings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
+    ...(ok.length ? [`  ok: ${ok.map((f) => f.check_id).join(" ")}`] : []),
     "The full checkup (query analysis and trends) follows on the box.",
   ];
 }
@@ -475,14 +476,14 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
   }
 }
 
-/** The express checkup (pgai checkup's checks) over `url`: the findings worth a line, warnings first. */
+/** The express checkup (pgai checkup's checks) over `url`: the warnings, then what passed (not the plain inventories). */
 export async function expressCheckup(url: string, opts: PrepareOptions = {}): Promise<CheckupResult> {
   const { client } = await openConnection(url, opts);
   try {
     const reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, () => {});
     const findings = Object.values(reports)
       .map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }))
-      .filter(isSignificantSummary)
+      .filter((f) => f.status !== "info")
       .sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
     return { checks: Object.keys(reports).length, findings };
   } finally {

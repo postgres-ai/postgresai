@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
-import { prepareDatabase, unprepareDatabase } from "../lib/connect";
+import { expressCheckup, prepareDatabase, unprepareDatabase } from "../lib/connect";
 
 // `pgai connect`'s prepare step against a real Postgres, with a superuser URL
 // like the one ClickHouse Managed Postgres hands out. CI: the
@@ -107,7 +107,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     try {
       const refused = await prepareDatabase(db2.toString(), "self-managed");
       if (!checksPasswords) expect(refused).toHaveProperty("monitoringUrl");
-      else expect(refused).toEqual({ next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or change it explicitly with: pgai prepare-db <admin-url> --reset-password --password <new-password> (then update every monitoring box that uses it)" });
+      else expect(refused).toEqual({ next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as postgres_ai_mon then needs the new password)" });
     } finally {
       delete process.env.PGAI_MON_PASSWORD;
     }
@@ -355,6 +355,44 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
+  test("a reconnect after disconnect: --reset-password gives postgres_ai_mon a new password, no old one needed", async () => {
+    const c = await admin();
+    try {
+      await prepareDatabase(ADMIN!, "self-managed");
+      // The role exists and nobody has its password (the run that made it is gone).
+      await c.query("alter role postgres_ai_mon password 'lost-and-gone'");
+      expect("monitoringUrl" in await prepareDatabase(ADMIN!, "self-managed")).toBe(false);
+      const reset = await prepareDatabase(ADMIN!, "self-managed", { resetPassword: true });
+      if (!("monitoringUrl" in reset)) throw new Error(`expected a URL, got: ${JSON.stringify(reset)}`);
+      expect(reset.generated).toBeUndefined();
+      const m = new Client({ connectionString: reset.monitoringUrl });
+      await m.connect();
+      expect((await m.query("select pg_has_role('postgres_ai_mon', 'pg_read_all_stats', 'member') as ok")).rows[0].ok).toBe(true);
+      await m.end();
+      const old = new URL(reset.monitoringUrl);
+      old.password = "lost-and-gone";
+      await expect(new Client({ connectionString: old.toString() }).connect()).rejects.toThrow(/password authentication failed/);
+    } finally {
+      await c.end();
+    }
+  });
+
+  test("the express checkup runs as postgres_ai_mon on the prepared database", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    await c.end();
+    const prepared = await prepareDatabase(ADMIN!, "self-managed");
+    if (!("monitoringUrl" in prepared)) throw new Error(`expected a URL, got: ${JSON.stringify(prepared)}`);
+    const result = await expressCheckup(prepared.monitoringUrl);
+    if ("error" in result) throw new Error(result.error);
+    expect(result.checks).toBeGreaterThan(15);
+    expect(result.findings.find((f) => f.check_id === "A002")).toMatchObject({ status: "ok", message: expect.stringMatching(/^PostgreSQL \d+$/) });
+    // Inventories ("382 settings collected") are not findings.
+    expect(result.findings.every((f) => f.status !== "info")).toBe(true);
+  });
+
   // A run that fails after (or before) the prepare step must not block the
   // re-run: the same command again, against a platform and a ClickHouse Cloud
   // API that answer differently each time.
@@ -409,7 +447,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       };
       try {
         // The key is checked first: the database is not touched.
-        expect(await run()).toEqual({ exit: 1, status: "failed", provider: "clickhouse", name, next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret." });
+        expect(await run()).toEqual({ exit: 3, status: "action_required", provider: "clickhouse", name, next: "ClickHouse Cloud rejected the API key (401). Check the key id and secret. Then re-run" });
         expect(await roles()).toBe(0);
 
         // A refused launch: the role this run created is dropped again.
@@ -418,13 +456,22 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(await roles()).toBe(0);
 
         launch = "accept";
-        expect(await run()).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
+        // While the box starts, the express checkup ran as postgres_ai_mon against this server.
+        const { checkup, ...launched } = await run();
+        expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
+        expect(checkup.checks).toBe(19);
+        expect(checkup.findings.find((f: { check_id: string }) => f.check_id === "A002").status).toBe("ok");
         expect(await roles()).toBe(1);
 
-        // The re-run finds its row by name: nothing is prepared or provisioned again.
+        // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
         const before = calls.length;
         expect((await run()).exit).toBe(0);
-        expect(calls.slice(before)).toEqual(["/rpc/cloud_monitoring_list"]);
+        expect(calls.slice(before)).toEqual([
+          "/rpc/cloud_monitoring_list",
+          "/v1/organizations",
+          "/v1/organizations/11111111-2222-3333-4444-555555555555/postgres",
+          "/v1/organizations/11111111-2222-3333-4444-555555555555/postgres/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        ]);
       } finally {
         api.stop(true);
         await c.end();

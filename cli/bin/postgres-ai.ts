@@ -66,7 +66,7 @@ import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
-import { generateCheckSummary, isSignificantSummary } from "../lib/checkup-summary";
+import { generateCheckSummary } from "../lib/checkup-summary";
 import {
   type Instance,
   InstancesParseError,
@@ -898,7 +898,7 @@ function printUploadSummary(
       const title = report.checkTitle || item.checkId;
 
       // Show if: warning/ok status, or info with concrete data (contains numbers or version info)
-      const isSignificant = isSignificantSummary({ status, message });
+      const isSignificant = status !== 'info' || /\d/.test(message) || message.includes('PostgreSQL') || message.includes('Version');
 
       if (isSignificant) {
         summaries.push({ checkId: item.checkId, title, status, message });
@@ -2896,7 +2896,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
           const title = report.checkTitle || checkId;
 
           // Show if: warning/ok status, or info with concrete data (contains numbers or version info)
-          const isSignificant = isSignificantSummary({ status, message });
+          const isSignificant = status !== 'info' || /\d/.test(message) || message.includes('PostgreSQL') || message.includes('Version');
 
           if (isSignificant) {
             summaries.push({ checkId, title, status, message });
