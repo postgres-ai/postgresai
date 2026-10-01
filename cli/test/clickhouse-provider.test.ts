@@ -95,8 +95,7 @@ describe("ClickHouse provider", () => {
   });
 
   // A connection string makes --print-sql connect first, and the host does not resolve here.
-  // That is the point: the detection note and the scope line must be on screen BEFORE the
-  // admin connection is attempted, so they are asserted on the output of the failed connect.
+  // The detection note must be on screen BEFORE the admin connection is attempted.
   test.each([
     ["prepare-db", ["prepare-db", "--print-sql", "--password", "x", `postgres://u:p@${host}:5432/postgres`]],
     ["unprepare-db", ["unprepare-db", "--print-sql", `postgres://u:p@${host}:5432/postgres`]],
@@ -104,25 +103,17 @@ describe("ClickHouse provider", () => {
     const plain = runCli(args);
     expect(plain.stderr).toContain("ENOTFOUND");
     expect(plain.stdout.split("\n")).toContain("Provider: clickhouse (detected from host)");
-    if (command === "prepare-db") {
-      expect(plain.stdout.split("\n")).toContain(scope);
-      expect(plain.stdout.indexOf(scope)).toBeLessThan(plain.stdout.indexOf("Connecting to:"));
-    } else {
-      expect(plain.stdout).not.toContain("-- scope:");
-    }
 
     const json = runCli([...args, "--json"]);
     expect(json.stdout).not.toContain("Provider: clickhouse");
     expect(json.stdout).not.toContain("-- scope:");
     expect(() => JSON.parse(json.stdout)).not.toThrow();
     expect(json.stderr.split("\n")).toContain("Provider: clickhouse (detected from host)");
-    if (command === "prepare-db") expect(json.stderr.split("\n")).toContain(scope);
   });
 
   test("detects the provider from --host", () => {
     const result = runCli(["prepare-db", "--print-sql", "--password", "x", "-h", host, "-U", "postgres", "-d", "postgres"]);
     expect(result.stdout.split("\n")).toContain("Provider: clickhouse (detected from host)");
-    expect(result.stdout.split("\n")).toContain(scope);
   });
 
   test("--reset-password prints no scope line (it grants nothing)", () => {

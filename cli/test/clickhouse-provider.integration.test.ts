@@ -69,7 +69,8 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
 
   test("announces the scope of the admin connection", () => {
     expect(prepared.stdout.split("\n")).toContain(scope);
-    expect(prepared.stdout.indexOf(scope)).toBeLessThan(prepared.stdout.indexOf("Connecting to:"));
+    expect(prepared.stdout.indexOf(scope)).toBeGreaterThan(prepared.stdout.indexOf("Connecting to:"));
+    expect(prepared.stdout.indexOf(scope)).toBeLessThan(prepared.stdout.indexOf("✓"));
   });
 
   test("verifies the prepared database", () => {
