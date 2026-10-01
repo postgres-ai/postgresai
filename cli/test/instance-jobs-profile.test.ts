@@ -274,6 +274,13 @@ describe("readComposeProfiles never answers 'off' by accident", () => {
     expect(withoutProcessEnv(() => readComposeProfiles(d))).toBe("debug,instance-jobs");
   });
 
+  test("an inline comment is dropped, as `targets add` and compose read it", () => {
+    // `mon health` and `targets add` must agree on whether the profile is on.
+    const d = mkdir();
+    fs.writeFileSync(path.join(d, ".env"), "COMPOSE_PROFILES=instance-jobs # pinned\n");
+    expect(withoutProcessEnv(() => readComposeProfiles(d))).toBe("instance-jobs");
+  });
+
   test("no .env at all is a real answer, and stays quiet", () => {
     const d = mkdir();
     const errs: unknown[][] = [];

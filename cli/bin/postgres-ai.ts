@@ -3845,12 +3845,9 @@ export function readComposeProfiles(knownProjectDir?: string): string | null {
     return null;
   }
 
-  // Last assignment wins, as compose does; tolerate `export `/indentation.
-  let value: string | null = null;
-  for (const m of content.matchAll(/^[ \t]*(?:export[ \t]+)?COMPOSE_PROFILES=(.*)$/gm)) {
-    value = stripMatchingQuotes(m[1].trim());
-  }
-  return value;
+  // Last assignment wins, as compose does; tolerate `export `/indentation,
+  // quotes and an inline comment, with the one parser `targets add` uses.
+  return parseEnvValue(content, "COMPOSE_PROFILES") ?? null;
 }
 
 /**
@@ -5331,15 +5328,20 @@ function defaultTargetName(connStr: string): string | null {
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
 }
 
-/** The last assignment of `key` in the project's .env, as compose reads it: unquoted, without an inline comment. */
-function readEnvValue(projectDir: string, key: string): string | undefined {
-  const envFile = path.resolve(projectDir, ".env");
-  if (!fs.existsSync(envFile)) return undefined;
-  const last = [...fs.readFileSync(envFile, "utf8").matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
+/** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
+function parseEnvValue(content: string, key: string): string | undefined {
+  const last = [...content.matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
   if (!last) return undefined;
   const raw = last[1].trim();
   const quoted = raw.match(/^"((?:\\.|[^"\\])*)"/)?.[1]?.replace(/\\(["\\])/g, "$1") ?? raw.match(/^'([^']*)'/)?.[1];
-  return quoted ?? raw.replace(/[ \t]+#.*$/, "");
+  return quoted ?? raw.replace(/ #.*$/, "").trimEnd();
+}
+
+/** The last assignment of `key` in the project's .env, as compose reads it. */
+function readEnvValue(projectDir: string, key: string): string | undefined {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return undefined;
+  return parseEnvValue(fs.readFileSync(envFile, "utf8"), key);
 }
 
 /** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment, else in .env)? An exported empty value counts as set, as compose reads it. */

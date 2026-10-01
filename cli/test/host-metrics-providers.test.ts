@@ -140,28 +140,44 @@ test("Supabase: the flag is read from .env when the environment does not set it"
   expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
 });
 
-// The flag is read as compose reads it: an inline comment needs whitespace
-// before "#", quotes are dropped, a double-quoted value may escape '"'.
+// The flag is read as compose 5.0.2 reads it (checked with `docker compose
+// config`): an inline comment needs a space before "#" (a tab is part of the
+// value), quotes are dropped, a double-quoted value may escape '"' and '\\',
+// text after the closing quote is dropped, an unterminated quote is not true
+// (compose refuses the file).
 test.each([
   ["PGAI_SUPABASE_HOST_METRICS=true  # relay", true],
+  ["PGAI_SUPABASE_HOST_METRICS=true\t# relay", false],
   ['PGAI_SUPABASE_HOST_METRICS="true" # relay', true],
   ["PGAI_SUPABASE_HOST_METRICS='true'", true],
+  ['PGAI_SUPABASE_HOST_METRICS="tru\\"e"', false],
+  ['PGAI_SUPABASE_HOST_METRICS="true\\\\"', false],
+  ['PGAI_SUPABASE_HOST_METRICS="true"x', true],
+  ['PGAI_SUPABASE_HOST_METRICS="true', false],
   ["export PGAI_SUPABASE_HOST_METRICS=true", true],
   ["PGAI_SUPABASE_HOST_METRICS=true#relay", false],
   ["PGAI_SUPABASE_HOST_METRICS=", false],
   ["PGAI_SUPABASE_HOST_METRICS=false\nPGAI_SUPABASE_HOST_METRICS=true", true],
-])("Supabase: %p in .env turns the job on: %p", (line, on) => {
+])("Supabase: %p in .env → relay job on: %p", (line, on) => {
   writeFileSync(`${projectDir}/.env`, `${line}\n`);
   const added = run(["add", supabase(), "sb"]);
   expect(added.exitCode, added.out).toBe(0);
   expect(scrapeFiles()).toEqual(on ? ["supabase-sb.yml"] : []);
 });
 
-test.each([["COMPOSE_PROFILES='instance-jobs'"], ['COMPOSE_PROFILES="a,instance-jobs"'], ["COMPOSE_PROFILES=instance-jobs#x,instance-jobs"]])("Supabase: %p in .env enables the relay profile", (line) => {
+test.each([
+  ["COMPOSE_PROFILES='instance-jobs'", true],
+  ['COMPOSE_PROFILES="a,instance-jobs"', true],
+  ["COMPOSE_PROFILES=a#x,instance-jobs", true],
+  ["COMPOSE_PROFILES=instance-jobs # pinned", true],
+  ["COMPOSE_PROFILES='other'", false],
+  ["COMPOSE_PROFILES=instance-jobs\t# pinned", false],
+])("Supabase: %p in .env enables the relay profile: %p", (line, enabled) => {
   writeFileSync(`${projectDir}/.env`, `${line}\n`);
   const added = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: "true" });
   expect(added.exitCode, added.out).toBe(0);
-  expect(added.out).not.toContain(relayOff);
+  expect(scrapeFiles()).toEqual(["supabase-sb.yml"]);
+  expect(added.out.includes(relayOff)).toBe(!enabled);
 });
 
 test("Supabase: an exported empty flag overrides .env, as it does for compose", () => {

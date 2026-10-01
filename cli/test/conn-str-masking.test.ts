@@ -41,14 +41,39 @@ test.each([
   // Digits first: URL parsing reads them as a port and the rest as a fragment or query.
   ["a '#' after digits in the password", `postgresql://u:5432#${secret}@h:5432/db`],
   ["a '?' after digits in the password", `postgresql://u:1234?${secret}@h:5432/db`],
+  ["a '/' first in the password", `postgresql://u:/${secret}@h:5432/db`],
+  ["digits and a '/' first in the password", `postgresql://u:1234/${secret}@h:5432/db`],
+  ["an '@' in sslpassword", `postgresql://u:pw@h:5432/db?sslpassword=ab@${secret}&sslmode=require`],
+  ["an '@' in sslpassword and a '/' after it", `postgresql://u:pw@h:5432/db?sslpassword=ab@${secret}/x&sslmode=require`],
 ])("maskConnectionString hides %s", (_shape, url) => {
   const masked = maskConnectionString(url);
   expect(masked).not.toContain(secret);
   expect(masked).toContain("@h:5432/db");
 });
 
-test.each([["postgresql://h:5432/db@x"], ["postgresql://h/db@x"], ["postgresql://u@h:5432/db"]])("maskConnectionString leaves %s, which has no password, as it is", (url) => {
+test.each([
+  ["postgresql://h:5432/db@x"],
+  ["postgresql://h/db@x"],
+  ["postgresql://u@h:5432/db"],
+  ["postgresql://h:5432?application_name=me@corp"],
+  ["postgresql://[::1]:5432/db?application_name=me@corp"],
+  ["postgresql://host:5432,host2:5433/db?x=a@b"],
+])("maskConnectionString leaves %s, which has no password, as it is", (url) => {
   expect(maskConnectionString(url)).toBe(url);
+});
+
+test.each([
+  ["a '/' in the password", `postgresql://u:pa/${secret}@h`],
+  ["a '/' in the password and an '@' in the query", `postgresql://u:pa/${secret}@h?application_name=me@corp`],
+  ["a '?' in the password", `postgresql://u:pw?${secret}@h`],
+])("maskConnectionString hides %s in a URL with no database path", (_shape, url) => {
+  const masked = maskConnectionString(url);
+  expect(masked).not.toContain(secret);
+  expect(masked).toContain("@h");
+});
+
+test("maskConnectionString keeps host, db and a query '@' next to a hidden password", () => {
+  expect(maskConnectionString(`postgresql://u:${secret}@h:5432/db?application_name=me@corp`)).toBe("postgresql://u:*****@h:5432/db?application_name=me@corp");
 });
 
 test("local-install --db-url does not print the password", () => {
