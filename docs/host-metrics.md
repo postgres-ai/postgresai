@@ -21,7 +21,7 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_cpu_utilization_percent` | percent | CPUUtilization | 100 × (1 − idle share of `cpu_seconds_total`) | 100 × (1 − idle share of `CPUSeconds_Total`) |
 | `host_os_cpu_percent` | percent | EM cpuUtilization.total | – | – |
 | `host_os_cpu_iowait_percent` | percent | EM cpuUtilization.wait | iowait share of `cpu_seconds_total` | iowait share of `CPUSeconds_Total` |
-| `host_os_load1` | load | EM loadAverageMinute.one | `load1` | – |
+| `host_os_load1` | load | EM loadAverageMinute.one | – | – |
 | `host_memory_available_bytes` | bytes | FreeableMemory | `memory_MemAvailable_bytes` | MemoryLimitBytes × (1 − MemoryUsedPercent / 100) |
 | `host_os_memory_total_bytes` | bytes | EM memory.total | `memory_MemTotal_bytes` | MemoryLimitBytes |
 | `host_os_memory_free_bytes` | bytes | EM memory.free | `memory_MemFree_bytes` | – |

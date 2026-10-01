@@ -52,7 +52,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1567,16 +1567,8 @@ program
     // ClickHouse Managed Postgres hands us a superuser connection; say exactly what this run
     // grants before using it. Derived from the plan steps that will actually run, so it is
     // accurate under --skip-optional-permissions and silent on --reset-password (grants nothing).
-    const announceScope = async (includeOptionalPermissions: boolean) => {
-      if (provider !== "clickhouse" || opts.verify || opts.resetPassword) return;
-      const preview = await buildInitPlan({
-        database: (opts.dbname ?? process.env.PGDATABASE ?? "postgres").trim(),
-        monitoringUser: opts.monitoringUser,
-        monitoringPassword: "<redacted>",
-        includeOptionalPermissions,
-        provider,
-      });
-      note(describeInitScope(preview));
+    const announceScope = (plan: InitPlan) => {
+      if (provider === "clickhouse" && !opts.verify && !opts.resetPassword) note(describeInitScope(plan));
     };
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
@@ -1599,7 +1591,7 @@ program
           provider,
         });
 
-        await announceScope(includeOptionalPermissions);
+        announceScope(plan);
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
@@ -1958,7 +1950,6 @@ program
 
     const includeOptionalPermissions = !opts.skipOptionalPermissions;
 
-    await announceScope(includeOptionalPermissions);
     if (!jsonOutput) {
       console.log(`Connecting to: ${adminConn.display}`);
       console.log(`Monitoring user: ${opts.monitoringUser}`);
@@ -2094,6 +2085,7 @@ program
         process.exitCode = 1;
         return;
       }
+      announceScope(effectivePlan);
 
       if (shouldPrintSql) {
         console.log("\n--- SQL plan ---");

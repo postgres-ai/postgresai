@@ -26,8 +26,6 @@ groups:
         expr: 100 * (1 - sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="idle"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")))
       - record: host_os_cpu_iowait_percent
         expr: 100 * sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="iowait"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
-      - record: host_os_load1
-        expr: max by (cluster, node_name) (labels_equal(node_load1{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
       - record: host_memory_available_bytes
         expr: max by (cluster, node_name) (labels_equal(node_memory_MemAvailable_bytes{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
       - record: host_os_memory_total_bytes
