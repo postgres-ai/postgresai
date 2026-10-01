@@ -7,6 +7,8 @@ rule_files:
   # - "first_rules.yml"
   # - "second_rules.yml"
 
+scrape_config_files: ['/etc/pgai/host-metrics/*.yml']
+
 scrape_configs:
   # Main monitoring target: pgwatch metrics
   - job_name: 'pgwatch-prometheus'

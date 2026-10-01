@@ -50,7 +50,8 @@ import {
 } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, describeInitScope, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -68,6 +69,7 @@ import {
   InstancesParseError,
   loadInstances,
   buildInstance,
+  collectorConnStr,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -995,6 +997,8 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
       throw new Error(`Failed to bootstrap docker-compose.yml: ${msg}`);
     }
   }
+
+  fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true });
 
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
@@ -2961,11 +2965,14 @@ function resolvePaths(): PathResolution {
 }
 
 async function resolveOrInitPaths(): Promise<PathResolution> {
+  let paths: PathResolution;
   try {
-    return resolvePaths();
+    paths = resolvePaths();
   } catch {
     return ensureDefaultMonitoringProject();
   }
+  fs.mkdirSync(path.join(paths.projectDir, "host-metrics"), { recursive: true });
+  return paths;
 }
 
 /**
@@ -4290,7 +4297,7 @@ mon
         const autoInstanceName = match ? match[1] : "db-instance";
 
         const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+        const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
 
         if (!m) {
           console.error("✗ Invalid connection string format");
@@ -4302,7 +4309,8 @@ mon
         const db = m[5];
         const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-        addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
+        const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
+        addInstanceToFile(instancesPath, instance);
         console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
         // Test connection
@@ -4342,7 +4350,7 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+            const m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
             if (!m) {
               console.error("✗ Invalid connection string format");
               console.error("⚠ Continuing without adding instance\n");
@@ -4351,7 +4359,8 @@ mon
               const db = m[5];
               const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 
-              addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
+              const instance = buildInstance(instanceName, collectorConnStr(connStr).connStr);
+              addInstanceToFile(instancesPath, instance);
               console.log(`✓ Monitoring target '${instanceName}' added\n`);
 
               // Test connection
@@ -4361,7 +4370,7 @@ mon
                 try {
                   warnIfLaxSslmode(connStr);
                   warnIfTransactionPoolerPort(connStr);
-            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                  testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
                   await testClient.connect();
                   const result = await testClient.query("select version();");
                   console.log("✓ Connection successful");
@@ -5266,6 +5275,79 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+export async function addTarget(
+  file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
+  env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
+): Promise<void> {
+  if (!connStr) {
+    console.error("Connection string required: postgresql://user:pass@host:port/db");
+    process.exitCode = 1;
+    return;
+  }
+  const collector = collectorConnStr(connStr);
+  connStr = collector.connStr;
+  let m: RegExpMatchArray | null = null;
+  try {
+    new URL(connStr);
+    m = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
+  } catch {}
+  if (!m) {
+    console.error("Invalid connection string format");
+    process.exitCode = 1;
+    return;
+  }
+  if (collector.droppedChannelBinding) {
+    console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
+  }
+  const host = m[3];
+  const db = m[5];
+  const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+
+  try {
+    const existing = loadInstances(file).find((instance) => instance.name === instanceName);
+    const instance = existing?.conn_str === connStr ? existing : buildInstance(instanceName, connStr);
+    if (existing && existing.conn_str === connStr) {
+      console.log(`Monitoring target '${instanceName}' already exists`);
+    } else {
+      addInstanceToFile(file, instance);
+      console.log(`Monitoring target '${instanceName}' added`);
+    }
+    if (detectProvider(connStr) === "clickhouse") {
+      try {
+        const message = await addHostMetrics({
+          projectDir, name: instanceName, conn: connStr, env,
+          cluster: instance.custom_tags?.cluster ?? "default",
+          nodeName: instance.custom_tags?.node_name ?? instanceName,
+        });
+        console.log(message);
+        if (apply && message.startsWith("Host metrics: ClickHouse Cloud")) {
+          await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error("The Postgres target was added; host metrics were not.");
+        process.exitCode = 1;
+      }
+    }
+
+    if (!apply) return;
+    const applyCode = await applyMonitoringTargetsConfig();
+    if (applyCode !== 0) {
+      console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("✓ Monitoring target configuration applied");
+  } catch (err) {
+    // Surface InstancesParseError as-is so we don't silently overwrite a
+    // corrupted file (which could discard several targets, including the
+    // credentials in their conn_str values).
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    process.exitCode = 1;
+  }
+}
+
 // Monitoring targets (databases to monitor)
 const targets = mon.command("targets").description("manage databases to monitor");
 
@@ -5311,48 +5393,22 @@ targets
 targets
   .command("add [connStr] [name]")
   .description("add monitoring target database")
+  .addHelpText("after", `
+ClickHouse host metrics (non-interactive):
+  export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<secret>'
+  postgres-ai mon targets add 'postgresql://user:pass@host.pg.clickhouse.cloud:5432/db' my-db
+Writes instances.yml, host-metrics/clickhouse-my-db.yml and host-metrics/clickhouse-my-db.secret.
+Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
+`)
   .action(async (connStr?: string, name?: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
-    if (!connStr) {
-      console.error("Connection string required: postgresql://user:pass@host:port/db");
-      process.exitCode = 1;
-      return;
-    }
-    const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-    if (!m) {
-      console.error("Invalid connection string format");
-      process.exitCode = 1;
-      return;
-    }
-    const host = m[3];
-    const db = m[5];
-    const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
-    try {
-      addInstanceToFile(file, buildInstance(instanceName, connStr));
-      console.log(`Monitoring target '${instanceName}' added`);
-
-      const applyCode = await applyMonitoringTargetsConfig();
-      if (applyCode !== 0) {
-        console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
-        process.exitCode = 1;
-        return;
-      }
-      console.log("✓ Monitoring target configuration applied");
-    } catch (err) {
-      // Surface InstancesParseError as-is so we don't silently overwrite a
-      // corrupted file (which could discard several targets, including the
-      // credentials in their conn_str values).
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(message);
-      process.exitCode = 1;
-    }
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
+    await addTarget(file, projectDir, connStr, name, process.env);
   });
 targets
   .command("remove <name>")
   .description("remove monitoring target database")
   .action(async (name: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     if (!fs.existsSync(file) || fs.lstatSync(file).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
@@ -5367,6 +5423,11 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
+      const hadHostMetrics = ["yml", "secret", "secret.tmp"].some((ext) => fs.existsSync(path.join(projectDir, "host-metrics", `clickhouse-${name}.${ext}`)));
+      if (hadHostMetrics) {
+        removeHostMetrics(projectDir, name);
+        await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]);
+      }
 
       const applyCode = await applyMonitoringTargetsConfig();
       if (applyCode !== 0) {
