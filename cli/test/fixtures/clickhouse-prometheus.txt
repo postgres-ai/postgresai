@@ -1,56 +1,98 @@
-# Built from ClickHouse docs 2026-09-27; replace with a recorded response on the first real-cloud run.
+# Recorded 2026-09-30 from a live ClickHouse Managed Postgres service (r6gd.medium, Postgres 17), org, service id and name replaced.
+# HELP PostgresServiceInfo Information about PostgreSQL service, including status and version.
 # TYPE PostgresServiceInfo gauge
-PostgresServiceInfo{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",postgres_status="running",postgres_version="18"} 1
-# TYPE PostgresServer_CPUCores gauge
-PostgresServer_CPUCores{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 4
-# TYPE PostgresServer_MemoryLimitBytes gauge
-PostgresServer_MemoryLimitBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 17179869184
-# TYPE PostgresServer_StorageLimitBytes gauge
-PostgresServer_StorageLimitBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 107374182400
-# TYPE PostgresServer_MemoryUsedPercent gauge
-PostgresServer_MemoryUsedPercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 42.5
-# TYPE PostgresServer_MemoryCachePercent gauge
-PostgresServer_MemoryCachePercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 25
-# TYPE PostgresServer_FilesystemUsedPercent gauge
-PostgresServer_FilesystemUsedPercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 31
-# TYPE PostgresServer_CacheHitRatio gauge
-PostgresServer_CacheHitRatio{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 99.7
-# TYPE PostgresServer_ActiveConnections gauge
-PostgresServer_ActiveConnections{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",state="active"} 5
-PostgresServer_ActiveConnections{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",state="idle"} 12
-# TYPE PostgresServer_DatabaseSizeBytes gauge
-PostgresServer_DatabaseSizeBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",database="postgres"} 8388608
-PostgresServer_DatabaseSizeBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",database="app"} 1073741824
+PostgresServiceInfo{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",postgres_status="running",postgres_version="17"} 1
+
+# HELP PostgresServer_CPUSeconds_Total CPU time in seconds by mode.
 # TYPE PostgresServer_CPUSeconds_Total counter
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="user"} 1200
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="system"} 300
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="iowait"} 25
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="softirq"} 12
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="steal"} 2
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="irq"} 3
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="nice"} 4
-PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="idle"} 12000
-# TYPE PostgresServer_DiskReads_Total counter
-PostgresServer_DiskReads_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 10000
-# TYPE PostgresServer_DiskWrites_Total counter
-PostgresServer_DiskWrites_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 20000
-# TYPE PostgresServer_NetworkReceiveBytes_Total counter
-PostgresServer_NetworkReceiveBytes_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 123456789
-# TYPE PostgresServer_NetworkTransmitBytes_Total counter
-PostgresServer_NetworkTransmitBytes_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 234567890
-# TYPE PostgresServer_TuplesFetched_Total counter
-PostgresServer_TuplesFetched_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 100000
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="iowait",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 4.75
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="nice",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="irq",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="user",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 45.52000000000001
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="idle",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 679.21
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="steal",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="system",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 16.71
+PostgresServer_CPUSeconds_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",mode="softirq",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0.54
+
+# HELP PostgresServer_TuplesInserted_Total Rows inserted.
 # TYPE PostgresServer_TuplesInserted_Total counter
-PostgresServer_TuplesInserted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 5000
-# TYPE PostgresServer_TuplesUpdated_Total counter
-PostgresServer_TuplesUpdated_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 1000
-# TYPE PostgresServer_TuplesDeleted_Total counter
-PostgresServer_TuplesDeleted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 50
-# TYPE PostgresServer_TransactionsCommitted_Total counter
-PostgresServer_TransactionsCommitted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 30000
+PostgresServer_TuplesInserted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 502300
+
+# HELP PostgresServer_DiskWrites_Total Disk write operations completed.
+# TYPE PostgresServer_DiskWrites_Total counter
+PostgresServer_DiskWrites_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 13765
+
+# HELP PostgresServer_NetworkReceiveBytes_Total Network bytes received.
+# TYPE PostgresServer_NetworkReceiveBytes_Total counter
+PostgresServer_NetworkReceiveBytes_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 25507874
+
+# HELP PostgresServer_TransactionsRolledBack_Total Transactions rolled back.
 # TYPE PostgresServer_TransactionsRolledBack_Total counter
-PostgresServer_TransactionsRolledBack_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 20
+PostgresServer_TransactionsRolledBack_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 50
+
+# HELP PostgresServer_TuplesDeleted_Total Rows deleted.
+# TYPE PostgresServer_TuplesDeleted_Total counter
+PostgresServer_TuplesDeleted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0
+
+# HELP PostgresServer_NetworkTransmitBytes_Total Network bytes transmitted.
+# TYPE PostgresServer_NetworkTransmitBytes_Total counter
+PostgresServer_NetworkTransmitBytes_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 31801441
+
+# HELP PostgresServer_Deadlocks_Total Deadlocks detected.
 # TYPE PostgresServer_Deadlocks_Total counter
 PostgresServer_Deadlocks_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 0
-# TYPE go_goroutines gauge
-go_goroutines{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 17
+
+# HELP PostgresServer_TuplesFetched_Total Rows fetched by queries.
+# TYPE PostgresServer_TuplesFetched_Total counter
+PostgresServer_TuplesFetched_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 156053
+
+# HELP PostgresServer_TransactionsCommitted_Total Transactions committed.
+# TYPE PostgresServer_TransactionsCommitted_Total counter
+PostgresServer_TransactionsCommitted_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 5697
+
+# HELP PostgresServer_TuplesUpdated_Total Rows updated.
+# TYPE PostgresServer_TuplesUpdated_Total counter
+PostgresServer_TuplesUpdated_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 6617
+
+# HELP PostgresServer_DiskReads_Total Disk read operations completed.
+# TYPE PostgresServer_DiskReads_Total counter
+PostgresServer_DiskReads_Total{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 2202
+
+# HELP PostgresServer_DatabaseSizeBytes Database size in bytes.
+# TYPE PostgresServer_DatabaseSizeBytes gauge
+PostgresServer_DatabaseSizeBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",database="postgres",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 86628019
+PostgresServer_DatabaseSizeBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",database="ubi_admin",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 7788211
+
+# HELP PostgresServer_ActiveConnections Number of active connections by state.
+# TYPE PostgresServer_ActiveConnections gauge
+PostgresServer_ActiveConnections{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",state="idle"} 8
+PostgresServer_ActiveConnections{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",state="idle in transaction"} 1.5
+
+# HELP PostgresServer_MemoryUsedPercent Used memory percentage.
+# TYPE PostgresServer_MemoryUsedPercent gauge
+PostgresServer_MemoryUsedPercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 34.24644959447163
+
+# HELP PostgresServer_MemoryCachePercent Memory used by cache and buffers as a percentage of total memory.
+# TYPE PostgresServer_MemoryCachePercent gauge
+PostgresServer_MemoryCachePercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 11.399016606828324
+
+# HELP PostgresServer_FilesystemUsedPercent Filesystem space used as a percentage of total size.
+# TYPE PostgresServer_FilesystemUsedPercent gauge
+PostgresServer_FilesystemUsedPercent{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 7.021909920460644
+
+# HELP PostgresServer_CacheHitRatio Buffer cache hit ratio: blocks served from cache vs. total blocks accessed (%).
+# TYPE PostgresServer_CacheHitRatio gauge
+PostgresServer_CacheHitRatio{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 99.68261572549254
+
+# HELP PostgresServer_CPUCores Number of CPU cores allocated to the PostgreSQL service.
+# TYPE PostgresServer_CPUCores gauge
+PostgresServer_CPUCores{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 1
+
+# HELP PostgresServer_MemoryLimitBytes Memory allocated to the PostgreSQL service in bytes.
+# TYPE PostgresServer_MemoryLimitBytes gauge
+PostgresServer_MemoryLimitBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 8589934592
+
+# HELP PostgresServer_StorageLimitBytes Storage allocated to the PostgreSQL service in bytes.
+# TYPE PostgresServer_StorageLimitBytes gauge
+PostgresServer_StorageLimitBytes{clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"} 63350767616
+

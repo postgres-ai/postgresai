@@ -91,5 +91,5 @@ scrape_configs:
         action: keep
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: 'node_cpu_seconds_total|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*'
+        regex: 'node_cpu_seconds_total|node_time_seconds|node_memory_.*|node_disk_.*|node_network_.*_bytes_total|node_filesystem_.*|node_load.*'
         action: keep

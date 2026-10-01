@@ -11,7 +11,14 @@ tests:
   - name: supabase primary maps to host_*; replica and lo are ignored
     interval: 1m
     input_series:
-      # 2 CPUs, each 54 s idle and 0.6 s iowait per minute: 10 % busy, 1 % iowait.
+      # 2 CPUs, each 54 s idle, 0.6 s iowait and 5.4 s user per minute: 10 % busy, 1 % iowait.
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="user"}'
+        values: '500+5.4x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="user"}'
+        values: '500+5.4x10'
+      # The host's clock, which per-second rates are divided by.
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1790731200+60x10'
       - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
         values: '1000+54x10'
       - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="1",mode="idle"}'
