@@ -165,7 +165,7 @@ describe("connect", () => {
   test("a URL that cannot create the role: the SQL and the next step, nothing provisioned", async () => {
     const { deps, calls } = fake({ prepare: async () => ({ sql: "-- 01.role\ncreate role ...", next: "Run the SQL" }) });
     expect(await connect(CH, { waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME, sql: "-- 01.role\ncreate role ...", next: "Run the SQL",
+      status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE, sql: "-- 01.role\ncreate role ...", next: "Run the SQL",
     });
     expect(calls).toEqual(["list"]);
   });

@@ -122,7 +122,7 @@ export async function handleToolCall(
       const result = await connect(url, {
         provider: args.provider ? String(args.provider) : undefined,
         clickhouseKey: args.clickhouse_key ? String(args.clickhouse_key) : undefined,
-        coupon: args.coupon ? String(args.coupon) : undefined,
+        coupon: args.coupon === undefined || args.coupon === null ? undefined : String(args.coupon),
         yes: args.yes === true,
         waitMs: 0,
         agent: true,

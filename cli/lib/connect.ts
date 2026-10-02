@@ -69,7 +69,7 @@ export interface Quote {
   price: { amount: number; currency: string; interval: string };
   has_payment_method: boolean;
   requires_payment_method: boolean;
-  promo?: { code: string; valid: boolean; error?: string; discount_description?: string };
+  promo?: { code: string; valid: boolean; error?: string; discount_description?: string; duration?: string; duration_in_months?: number };
   amount_after_promo?: number;
 }
 
@@ -139,7 +139,11 @@ export function priceText(q: Quote): string {
   const { amount, currency, interval } = q.price;
   const base = `${money(amount, currency)}/${interval} per box (${q.plan} plan)${q.subscription ? `, box ${q.quantity + 1} on the subscription` : ""}`;
   if (q.promo?.valid && q.amount_after_promo !== undefined && q.amount_after_promo !== null) {
-    return `${money(q.amount_after_promo, currency)} the first ${interval} with ${q.promo.code} (${q.promo.discount_description}), then ${base}`;
+    const after = `${money(q.amount_after_promo, currency)}`;
+    const how = `with ${q.promo.code} (${q.promo.discount_description})`;
+    if (q.promo.duration === "forever") return `${after}/${interval} ${how}, instead of ${base}`;
+    if (q.promo.duration === "repeating") return `${after}/${interval} for ${q.promo.duration_in_months} months ${how}, then ${base}`;
+    return `${after} the first ${interval} ${how}, then ${base}`;
   }
   return base;
 }
@@ -411,6 +415,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     // What the box costs, before anything is touched: a billed box is accepted
     // (--yes, or at the prompt), and needs the org's payment method.
+    if (opts.coupon !== undefined && !opts.coupon.trim()) {
+      return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
+    }
     if (!opts.selfHosted) {
       const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps);
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
@@ -419,7 +426,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
-    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
+    if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
     if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
       await deps.selfHosted(prepared.monitoringUrl, key && ch
