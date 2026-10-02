@@ -174,7 +174,8 @@ export function stateOf(raw: string | null): Status {
 export class ClickhouseKeyError extends Error {}
 
 /** host[:port] of a name (host[:port]/db). */
-const serverOf = (name: string) => name.split("/")[0];
+/** The server of a database name: one lock and one comparison for each, whatever the host's case or a trailing dot. */
+const serverOf = (name: string) => name.split("/")[0].toLowerCase().replace(/\.(?=$|:)/, "");
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -361,7 +362,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     try {
       // What another run connected on this server before this one got the lock.
       if (lockId) {
-        const others = othersOnServer(await deps.list());
+        const now = await deps.list();
+        const same = now.find((d) => d.name === name && !disconnecting(d.status));
+        if (same) return { status: "action_required", provider, name, id: same.id, next: `${name} is already connected, and its monitoring uses the current password: pgai disconnect ${name} --yes first` };
+        const others = othersOnServer(now);
         if (others.length) return cutOff(others);
       }
       progress("preparing", `Preparing ${maskConnectionString(url)}`);
@@ -384,13 +388,14 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo(prepared);
         throw err;
       });
+      // Before the lock goes: the next run may be creating the role this drops.
+      if (created.status === "failed") {
+        await undo(prepared);
+        return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
+      }
     } finally {
       // The box has its URL (or none was requested): the next run may go.
       if (lockId) await deps.resetUnlock(lockId).catch(() => {});
-    }
-    if (created.status === "failed") {
-      await undo(prepared);
-      return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
