@@ -560,7 +560,7 @@ export async function expressCheckup(url: string, opts: PrepareOptions & { save?
  * Saves checkup reports as one report of `project`, the way the box's reporter does: created
  * pending, a file per check, then completed (failed when a file did not upload).
  */
-async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
+export async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
   const { report_id } = await rpc<{ report_id: number }>("checkup_report_create", { access_token: accessToken, project });
   let status = "failed";
   try {

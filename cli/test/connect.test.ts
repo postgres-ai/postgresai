@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -876,4 +876,37 @@ test("sslmode in the URL wins over PGSSLMODE, as in libpq; PGSSLMODE applies to 
   } finally {
     delete process.env.PGSSLMODE;
   }
+});
+
+describe("saving the express checkup", () => {
+  const reports = { A002: { checkId: "A002" }, H002: { checkId: "H002" } };
+  const fakeRpc = (answer: (fn: string, body: Record<string, unknown>) => unknown) => {
+    const calls: string[] = [];
+    const rpc = async <T>(fn: string, body: Record<string, unknown>): Promise<T> => {
+      calls.push(`${fn}${body.status ? ` ${body.status}` : ""}${body.filename ? ` ${body.filename}` : ""}`);
+      const a = answer(fn, body);
+      if (a instanceof Error) throw a;
+      return a as T;
+    };
+    return { rpc, calls };
+  };
+  const ok = (fn: string) => (fn === "checkup_report_create" ? { report_id: 9 } : fn === "checkup_report_file_post" ? { report_chunck_id: 1 } : { status: "completed" });
+
+  test("created pending, a file per check, then completed", async () => {
+    const { rpc, calls } = fakeRpc(ok);
+    expect(await saveCheckupReport(rpc, "tok", "db/app", reports)).toBe(9);
+    expect(calls).toEqual(["checkup_report_create", "checkup_report_file_post A002.json", "checkup_report_file_post H002.json", "checkup_report_status_update completed"]);
+  });
+
+  test("a report not marked completed is not called saved", async () => {
+    const { rpc } = fakeRpc((fn) => (fn === "checkup_report_status_update" ? new Error("HTTP 500") : ok(fn)));
+    await expect(saveCheckupReport(rpc, "tok", "db/app", reports)).rejects.toThrow("HTTP 500");
+  });
+
+  test("an answer without an id is a failed upload, and the report is marked failed", async () => {
+    const { rpc, calls } = fakeRpc((fn) => (fn === "checkup_report_file_post" ? { message: "Upload rejected" } : ok(fn)));
+    await expect(saveCheckupReport(rpc, "tok", "db/app", reports)).rejects.toThrow("Upload rejected");
+    expect(calls.at(-1)).toBe("checkup_report_status_update failed");
+    await expect(saveCheckupReport(fakeRpc(() => ({})).rpc, "tok", "db/app", reports)).rejects.toThrow("checkup_report_create");
+  });
 });
