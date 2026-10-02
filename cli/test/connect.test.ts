@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { disconnectBilling, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -37,7 +37,8 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
   const deps: ConnectDeps = {
     list: async () => { calls.push("list"); const r = rows[Math.min(listed++, rows.length - 1)]; return r ? [r] : []; },
     create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); return { id: "i-1", name: CH_NAME, status: "launch_requested" }; },
-    prepare: async (url, provider) => { calls.push(`prepare ${provider}`); return { monitoringUrl: MON }; },
+    // The check before the price (nothing changed) is recorded apart from the prepare.
+    prepare: async (url, provider, o) => { calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: MON }; },
     unprepare: async () => { calls.push("unprepare"); return true; },
     localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
@@ -103,6 +104,7 @@ describe("connect", () => {
     expect(calls).toEqual([
       "list",
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
+      "check clickhouse",
       "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`,
       // First value while the box starts: the express checkup, over the monitoring role.
@@ -132,7 +134,7 @@ describe("connect", () => {
   test("a row still being deleted (a disconnect in flight) is not reused", async () => {
     const { deps, calls } = fake({ rows: [row("deleting_launched"), row("launch_requested")] });
     await connect(CH, { waitMs: 0 }, deps);
-    expect(calls.slice(0, 2)).toEqual(["list", "prepare clickhouse"]);
+    expect(calls.slice(0, 3)).toEqual(["list", "check clickhouse", "prepare clickhouse"]);
   });
 
   test("a disconnect that failed to launch is failed (and can be retried), not disconnecting", () => {
@@ -165,7 +167,7 @@ describe("connect", () => {
   test("a URL that cannot create the role: the SQL and the next step, nothing provisioned", async () => {
     const { deps, calls } = fake({ prepare: async () => ({ sql: "-- 01.role\ncreate role ...", next: "Run the SQL" }) });
     expect(await connect(CH, { waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE, sql: "-- 01.role\ncreate role ...", next: "Run the SQL",
+      status: "action_required", provider: "clickhouse", name: CH_NAME, sql: "-- 01.role\ncreate role ...", next: "Run the SQL",
     });
     expect(calls).toEqual(["list"]);
   });
@@ -219,7 +221,7 @@ describe("connect", () => {
       next: "The monitoring box could not be launched (HTTP 422). Nothing is billed; try again later. Re-run pgai connect later.",
     });
     // The role was there before, or has the user's PGAI_MON_PASSWORD: it stays.
-    expect(calls).toEqual(["list", "prepare clickhouse"]);
+    expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse"]);
   });
 
   // The role this run created with a generated password: nobody has the
@@ -395,11 +397,11 @@ describe("connect", () => {
     try {
       const { deps, calls } = fake();
       expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("provisioning");
-      expect(calls).toEqual(["list", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`, `checkup ${MON} as ${CH_NAME}`]);
+      expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`, `checkup ${MON} as ${CH_NAME}`]);
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
-      expect(calls.at(-4)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
+      expect(calls.at(-5)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
     } finally {
       delete process.env.CLICKHOUSE_KEY_ID;
       delete process.env.CLICKHOUSE_KEY_SECRET;
@@ -456,7 +458,7 @@ describe("connect", () => {
     process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
     try {
       expect((await connect(CH, { waitMs: 0, agent: true }, deps)).host_metrics).toBe(false);
-      expect(calls).toEqual(["list", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, `checkup ${MON} as ${CH_NAME}`]);
+      expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, `checkup ${MON} as ${CH_NAME}`]);
       // The key the agent passes is used.
       await connect(CH, { clickhouseKey: KEY, waitMs: 0, agent: true }, deps);
       expect(calls).toContain("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa");
@@ -537,7 +539,7 @@ describe("connect on the paid path: the price before the box", () => {
       price: "$512.00/month per box (scale plan)", requires_payment_method: false,
       next: "Re-run with --yes to accept $512.00/month per box (scale plan)",
     });
-    expect(calls).toEqual(["list", "quote"]);
+    expect(calls).toEqual(["list", "check self-managed", "quote"]);
   });
 
   test("a billed box, confirmed at the prompt (which names the price): provisioned, the price in the result", async () => {
@@ -545,10 +547,10 @@ describe("connect on the paid path: the price before the box", () => {
     const asked: string[] = [];
     deps.confirm = async (q) => { asked.push(q); return true; };
     const result = await connect(SH, { waitMs: 60_000 }, deps);
-    expect(asked).toEqual([`${SH_NAME} is billed: $512.00/month per box (scale plan). Provision it? (y/N): `]);
-    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(asked).toEqual([`Provision ${SH_NAME}? (y/N): `]);
+    expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
     // The price was accepted: the platform creates a billed box only with accept_price.
-    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, accept_price: true })}`);
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, accept_price: true })}`);
     expect(result).toMatchObject({ status: "connected", price: "$512.00/month per box (scale plan)", requires_payment_method: false });
   });
 
@@ -556,7 +558,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make({ subscription: true, quantity: 1 });
     deps.confirm = async () => { throw new Error("asked"); };
     const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
-    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
     expect(result.price).toBe("$512.00/month per box (scale plan), box 2 on the subscription");
   });
 
@@ -564,7 +566,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make();
     deps.confirm = async () => false;
     expect((await connect(SH, { waitMs: 0 }, deps)).status).toBe("action_required");
-    expect(calls).toEqual(["list", "quote"]);
+    expect(calls).toEqual(["list", "check self-managed", "quote"]);
   });
 
   test("no payment method: stop before the database is touched, with the billing page (exit 3)", async () => {
@@ -574,14 +576,14 @@ describe("connect on the paid path: the price before the box", () => {
       price: "$512.00/month per box (scale plan)", requires_payment_method: true,
       next: "Add a payment method at https://console.example/acme/billing, then re-run",
     });
-    expect(calls).toEqual(["list", "quote"]);
+    expect(calls).toEqual(["list", "check self-managed", "quote"]);
   });
 
   test("a free slot: no prompt, the result says free (N of M free slots)", async () => {
     const { deps, calls } = make({ billed: false, free_slots: { remaining: 1, total: 2 } });
     deps.confirm = async () => { throw new Error("asked"); };
     const result = await connect(SH, { waitMs: 60_000 }, deps);
-    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
     expect(result).toMatchObject({ status: "connected", price: "free (1 of 2 free slots)", requires_payment_method: false });
   });
 
@@ -589,8 +591,8 @@ describe("connect on the paid path: the price before the box", () => {
     const promo = { code: "LAUNCH100", valid: true, discount_description: "100% off (first billing period)", percent_off: 100, duration: "once", promotion_code_id: "promo_1" };
     const { deps, calls } = make({ promo, amount_after_promo: 0 });
     const result = await connect(SH, { waitMs: 60_000, yes: true, coupon: "LAUNCH100" }, deps);
-    expect(calls[1]).toBe("quote LAUNCH100");
-    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100", accept_price: true })}`);
+    expect(calls[2]).toBe("quote LAUNCH100");
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100", accept_price: true })}`);
     expect(result).toMatchObject({
       status: "connected",
       price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per box (scale plan)",
@@ -606,7 +608,7 @@ describe("connect on the paid path: the price before the box", () => {
       coupon: { code: "OLD", valid: false, error: "Promo code is expired" },
       next: "Promo code OLD: Promo code is expired. Nothing was changed: re-run with a valid code, or without --coupon",
     });
-    expect(calls).toEqual(["list", "quote OLD"]);
+    expect(calls).toEqual(["list", "check self-managed", "quote OLD"]);
   });
 
   test("the platform refusing for payment (402, a card removed meanwhile): the billing page, not a failure", async () => {
@@ -631,7 +633,7 @@ describe("connect on the paid path: the price before the box", () => {
       price: "free (1 of 1 free slots)", requires_payment_method: false,
       next: "The price changed since it was shown: re-run pgai connect to see it",
     });
-    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
   });
 
   test("--coupon '' (an empty variable): refused, not dropped; nothing prepared", async () => {
@@ -650,13 +652,42 @@ describe("connect on the paid path: the price before the box", () => {
     expect(q(promo("forever"))).toBe("$256.00/month with C (x), instead of $512.00/month per box (scale plan)");
   });
 
-  test("a URL that cannot create the role on a billed box: the SQL, with the price still in the result", async () => {
-    const { deps } = make({}, { prepare: async () => ({ next: "Run the SQL as an admin", sql: "create role ..." }) });
-    expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
+  test("a URL that cannot work (not an admin): the SQL before any price is asked, and nothing quoted", async () => {
+    const { deps, calls } = make({}, {});
+    deps.prepare = async (_u, provider, o) => { calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return { next: "Run the SQL as an admin", sql: "create role ..." }; };
+    deps.confirm = async () => { throw new Error("asked"); };
+    expect(await connect(SH, { waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
       next: "Run the SQL as an admin", sql: "create role ...",
     });
+    expect(calls).toEqual(["list", "check self-managed"]);
+  });
+
+  test("the price is shown on its own line before the prompt asks", async () => {
+    const { deps } = make();
+    const seen: string[] = [];
+    deps.progress = (e) => seen.push(progressText(e));
+    deps.confirm = async (q) => { seen.push(`ask ${q}`); return false; };
+    await connect(SH, { waitMs: 0 }, deps);
+    expect(seen).toEqual(["Billing: $512.00/month per box (scale plan) (+0s)", `ask Provision ${SH_NAME}? (y/N): `]);
+  });
+
+  test("the billing page is the platform's own (a preview's console, not production's)", async () => {
+    const { deps } = make({ has_payment_method: false, requires_payment_method: true, billing_url: "https://console-pr.pgai.green/acme/billing" });
+    expect((await connect(SH, { waitMs: 0, yes: true }, deps)).next).toBe("Add a payment method at https://console-pr.pgai.green/acme/billing, then re-run");
+  });
+
+  test("an agent: the price, and to call again with yes; a coupon is checked first", async () => {
+    const { deps, calls } = make();
+    expect(await connect(SH, { waitMs: 0, agent: true }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      next: "Call connect_database again with yes: true to accept $512.00/month per box (scale plan)",
+    });
+    const again = make({ promo: { code: "NOPE", valid: false, error: "Promo code not found or expired" } });
+    expect((await connect(SH, { waitMs: 0, agent: true, yes: true, coupon: "NOPE" }, again.deps)).next)
+      .toBe("Promo code NOPE: Promo code not found or expired. Nothing was changed: re-run with a valid code, or without coupon");
+    expect([...calls, ...again.calls].filter((c) => c.startsWith("quote"))).toEqual(["quote", "quote NOPE"]);
   });
 
   test("a re-run of a connected database asks no price", async () => {
@@ -1012,37 +1043,22 @@ describe("MCP connect_database", () => {
     }
   });
 
-  test("a billed box: the agent gets the price and must call again with yes; a coupon is checked first", async () => {
+  test("a database that cannot be reached: the agent is told so, and no price is quoted first", async () => {
     const quotes: unknown[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
       async fetch(req) {
         const path = new URL(req.url).pathname;
         if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
-        if (path.endsWith("/rpc/cloud_monitoring_quote")) {
-          const body = await req.json() as { promo_code?: string };
-          quotes.push(body);
-          return Response.json({
-            plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0,
-            price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
-            ...(body.promo_code ? { promo: { code: body.promo_code, valid: false, error: "Promo code not found or expired" } } : {}),
-          });
-        }
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) { quotes.push(await req.json()); return Response.json({}); }
         return new Response("not found", { status: 404 });
       },
     });
     const opts = { apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}`, uiBaseUrl: "https://console.example" };
-    const call = async (args: Record<string, unknown>) =>
-      JSON.parse((await handleToolCall({ params: { name: "connect_database", arguments: args } }, opts)).content[0].text);
     try {
-      expect(await call({ database_url: "postgresql://postgres:pw@db.example.com:5432/app" })).toEqual({
-        status: "action_required", provider: "self-managed", name: "db.example.com/app",
-        price: "$512.00/month per box (scale plan)", requires_payment_method: false,
-        next: "Call connect_database again with yes: true to accept $512.00/month per box (scale plan)",
-      });
-      expect((await call({ database_url: "postgresql://postgres:pw@db.example.com:5432/app", yes: true, coupon: "NOPE" })).next)
-        .toBe("Promo code NOPE: Promo code not found or expired. Nothing was changed: re-run with a valid code, or without coupon");
-      expect(quotes).toEqual([{}, { promo_code: "NOPE" }]);
+      const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url: "postgresql://postgres:pw@db.example.invalid:5432/app", yes: true } } }, opts);
+      expect(result.isError).toBe(true);
+      expect(quotes).toEqual([]);
     } finally {
       server.stop(true);
     }
@@ -1113,5 +1129,17 @@ describe("saving the express checkup", () => {
     await expect(saveCheckupReport(rpc, "tok", "db/app", reports)).rejects.toThrow("Upload rejected");
     expect(calls.at(-1)).toBe("checkup_report_status_update failed");
     await expect(saveCheckupReport(fakeRpc(() => ({})).rpc, "tok", "db/app", reports)).rejects.toThrow("checkup_report_create");
+  });
+});
+
+describe("disconnect: what happened to the billing", () => {
+  test("the last box: the subscription is canceled; another box left: how many remain; a failure is said; nothing released: nothing", () => {
+    expect(disconnectBilling({ billing: { subscription: "canceled", quantity: 0 } })).toBe("subscription canceled: no further charges (the current period is not refunded)");
+    expect(disconnectBilling({ billing: { subscription: "canceled" } })).toBe("subscription canceled: no further charges (the current period is not refunded)");
+    expect(disconnectBilling({ billing: { subscription: "active", quantity: 2 } })).toBe("2 boxes left on the subscription");
+    expect(disconnectBilling({ billing: { subscription: "active", quantity: 1 } })).toBe("1 box left on the subscription");
+    expect(disconnectBilling({ billing_warning: "Failed to cancel org subscription: stripe down" })).toBe("not released (Failed to cancel org subscription: stripe down): contact support");
+    expect(disconnectBilling({})).toBeUndefined();
+    expect(disconnectBilling(null)).toBeUndefined();
   });
 });

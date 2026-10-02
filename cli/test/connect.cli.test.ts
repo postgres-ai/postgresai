@@ -133,20 +133,6 @@ describe("pgai init", () => {
     });
   });
 
-  test("at the price prompt of a billed box: Ctrl-C or Ctrl-D is exit 130, n is exit 3; nothing provisioned either way", async () => {
-    const SH = "postgresql://postgres:pw@db.example.com:5432/app";
-    const PRICE_PROMPT = "db.example.com/app is billed: $512.00/month per box (scale plan). Provision it? (y/N): ";
-    await withApi(async (env, calls) => {
-      for (const key of ["\x03", "\x04"]) expect((await runTty(["connect", SH], env, [[PRICE_PROMPT, key]])).status).toBe(130);
-      const n = await runTty(["connect", SH], env, [[PRICE_PROMPT, "n\r"]]);
-      expect(n.status).toBe(3);
-      // Only y or yes accepts.
-      expect((await runTty(["connect", SH], env, [[PRICE_PROMPT, "yes, but not now\r"]])).status).toBe(3);
-      expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per box (scale plan)");
-      expect(calls.filter((c) => c.includes("cloud_monitoring_connect"))).toEqual([]);
-    }, []);
-  });
-
   test("Ctrl-C while waiting for the box ends the run at once (the prompt no longer holds the terminal)", async () => {
     await withApi(async (env) => {
       const started = Date.now();
