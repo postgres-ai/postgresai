@@ -407,6 +407,83 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
     }
   }, { timeout: TEST_TIMEOUT });
 
+  test("prepare-db removes legacy explain_generic idempotently", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+
+    try {
+      await c.connect();
+      // A harmless stub models the signature left by older installations.
+      await c.query(`
+        create schema postgres_ai;
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+      `);
+      const signature = "postgres_ai.explain_generic(text,text,text)";
+      const legacy = await c.query("select to_regprocedure($1) as helper", [signature]);
+      expect(legacy.rows[0].helper).not.toBeNull();
+
+      for (let run = 0; run < 2; run++) {
+        const r = runCliInit([pg.adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+        expect(r.status).toBe(0);
+        const result = await c.query("select to_regprocedure($1) as helper", [signature]);
+        expect(result.rows[0].helper).toBeNull();
+      }
+
+      const verified = runCliInit([pg.adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(verified.status).toBe(0);
+      expect(verified.stdout).toMatch(/prepare-db verify: OK/i);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  test("prepare-db warns and continues when legacy explain_generic has another owner", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+
+    try {
+      await c.connect();
+      // Another admin created the schema and the legacy helper; this admin is a
+      // CREATEROLE non-superuser that owns neither, so it cannot drop the function.
+      await c.query(`
+        create extension if not exists pg_stat_statements;
+        create role legacy_owner nologin;
+        create role second_admin login createrole password 'adminpw';
+        grant pg_monitor, pg_read_all_stats to second_admin with admin option;
+        grant create on database testdb to second_admin;
+        create schema postgres_ai authorization legacy_owner;
+        grant usage, create on schema postgres_ai to second_admin with grant option;
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+        alter function postgres_ai.explain_generic(text, text, text) owner to legacy_owner;
+      `);
+      const adminUri = pg.adminUri.replace("postgres:postgrespw@", "second_admin:adminpw@");
+
+      const stillInstalled = /explain_generic\(text, text, text\) is still installed/;
+      const r = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(r.status).toBe(0);
+      expect(r.stderr).toMatch(stillInstalled);
+
+      const json = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions", "--json"]);
+      expect(json.status).toBe(0);
+      expect(JSON.parse(json.stdout).warnings.some((w: string) => stillInstalled.test(w))).toBe(true);
+
+      const verified = runCliInit([adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(verified.status).toBe(0);
+      expect(verified.stderr).toMatch(stillInstalled);
+      const helpers = await c.query(
+        "select to_regprocedure('postgres_ai.explain_generic(text,text,text)') as legacy, to_regprocedure('postgres_ai.table_describe(text)') as describe"
+      );
+      expect(helpers.rows[0].legacy).not.toBeNull();
+      expect(helpers.rows[0].describe).not.toBeNull();
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   // Security regression for #387: explain_generic was a SECURITY DEFINER helper that
   // ran caller-supplied SQL through EXPLAIN. The planner folds IMMUTABLE/STABLE functions
   // at plan time in the definer's (superuser) context, making it an RCE/data-exfil vector.

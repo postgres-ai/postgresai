@@ -887,6 +887,21 @@ export async function applyUninitPlan(params: {
   return { applied, errors };
 }
 
+/**
+ * Security #387: step 06.helpers drops the retired SECURITY DEFINER helper, but only
+ * its owner (or a superuser) can. Report it when it survived, for any transport.
+ */
+export async function legacyHelperWarnings(client: {
+  query: (sql: string) => Promise<{ rows?: Array<Record<string, unknown>> }>;
+}): Promise<string[]> {
+  const r = await client.query(
+    "select to_regprocedure('postgres_ai.explain_generic(text,text,text)') is not null as present"
+  );
+  return r.rows?.[0]?.present
+    ? ["legacy SECURITY DEFINER helper postgres_ai.explain_generic(text, text, text) is still installed; its owner or a superuser must drop it"]
+    : [];
+}
+
 export async function verifyInitSetup(params: {
   client: PgClient;
   database: string;
