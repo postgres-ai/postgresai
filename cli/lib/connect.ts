@@ -119,6 +119,9 @@ export interface ConnectDeps {
   billingUrl(orgAlias: string): string;
   /** Asks a person; false when nobody can be asked. */
   confirm(question: string): Promise<boolean>;
+  /** The platform's per-server lock for --reset-password: one run at a time may reset postgres_ai_mon. */
+  resetLock(server: string): Promise<{ lock_id: string }>;
+  resetUnlock(lockId: string): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   now(): number;
   progress(event: ProgressEvent): void;
@@ -430,11 +433,27 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       }
       ch = found;
     }
+    // A refused launch starts no box, so a role with a generated password is
+    // dropped again: nobody has that password, and the re-run would stop at it.
+    const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url).catch(() => false); };
+    let lockId: string | undefined;
+    // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
+    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name));
+    const cutOff = (others: Database[]): ConnectResult => ({ status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` });
     if (opts.resetPassword) {
-      // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
-      const others = rows.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name));
-      if (others.length) {
-        return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` };
+      if (othersOnServer(rows).length) return cutOff(othersOnServer(rows));
+      // Another run at once for a database on this server would reset the
+      // password too: the platform lets one run at a time hold the server.
+      try {
+        lockId = (await deps.resetLock(serverOf(name))).lock_id;
+      } catch (err) {
+        if (err instanceof HttpStatusError && err.status === 409) {
+          return { status: "action_required", provider, name, next: `Another pgai connect --reset-password for ${serverOf(name)} is running: wait for it to finish, then re-run` };
+        }
+        if (err instanceof HttpStatusError && err.status === 404) {
+          return { status: "action_required", provider, name, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${DEFAULT_MONITORING_USER}'s password instead` };
+        }
+        throw err;
       }
     }
     // What the box costs, before anything is touched: a billed box is accepted
@@ -450,51 +469,59 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, billingUrl, accepted } = b);
     }
-    progress("preparing", `Preparing ${maskConnectionString(url)}`);
-    const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
-    if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
-    if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
-    if (prepared.note) note = `; ${prepared.note}`;
-    if (opts.selfHosted) {
-      await deps.selfHosted(prepared.monitoringUrl, key && ch
-        ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
-        : {});
-      return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
+    let prepared: Prepared;
+    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "declined" | "payment" | "price";
+    try {
+      // What another run connected on this server before this one got the lock.
+      if (lockId) {
+        const others = othersOnServer(await deps.list());
+        if (others.length) return cutOff(others);
+      }
+      progress("preparing", `Preparing ${maskConnectionString(url)}`);
+      prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
+      if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
+      if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
+      if (prepared.note) note = `; ${prepared.note}`;
+      if (opts.selfHosted) {
+        await deps.selfHosted(prepared.monitoringUrl, key && ch
+          ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
+          : {});
+        return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
+      }
+      progress("provisioning", `Provisioning monitoring for ${name}`);
+      created = await deps.create({
+        db_url: prepared.monitoringUrl,
+        ...(provider === "clickhouse" ? { provider } : {}),
+        ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
+        ...(opts.coupon ? { promo_code: opts.coupon } : {}),
+        // The price shown was accepted: without it the platform creates no billed box.
+        ...(accepted ? { accept_price: true } : {}),
+      }).catch(async (err) => {
+        // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
+        if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo(prepared);
+        // 402: the payment method went away since the quote; nothing was created.
+        if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
+        // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
+        if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
+        throw err;
+      });
+      if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
+      // A card on file that Stripe declined is not a missing one.
+      if (created === "declined") {
+        return { status: "action_required", provider, name, ...billingPage!, next: billingPage!.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
+      }
+      if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
+    } finally {
+      if (lockId) await deps.resetUnlock(lockId).catch(() => {});
     }
-    progress("provisioning", `Provisioning monitoring for ${name}`);
-    // A refused launch starts no box, so a role with a generated password is
-    // dropped again: nobody has that password, and the re-run would stop at it.
-    const undo = async () => { if (prepared.generated) await deps.unprepare(url).catch(() => false); };
-    const created = await deps.create({
-      db_url: prepared.monitoringUrl,
-      ...(provider === "clickhouse" ? { provider } : {}),
-      ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
-      ...(opts.coupon ? { promo_code: opts.coupon } : {}),
-      // The price shown was accepted: without it the platform creates no billed box.
-      ...(accepted ? { accept_price: true } : {}),
-    }).catch(async (err) => {
-      // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
-      if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
-      // 402: the payment method went away since the quote; nothing was created.
-      if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
-      // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
-      if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
-      throw err;
-    });
-    if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
-    // A card on file that Stripe declined is not a missing one.
-    if (created === "declined") {
-      return { status: "action_required", provider, name, ...billingPage!, next: billingPage!.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
-    }
-    if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
     if (created.status === "failed") {
-      await undo();
+      await undo(prepared);
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
-    undoRole = undo;
+    undoRole = () => undo(prepared);
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
-    checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
+    checkup = await deps.checkup(withLocalTls((prepared as { monitoringUrl: string }).monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
     progress("checkup", checkupLines(checkup).join("\n"), { checkup });
   }
 
@@ -772,6 +799,8 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
+    resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),
+    resetUnlock: (lockId: string) => rpc("cloud_monitoring_reset_unlock", { lock_id: lockId }),
     prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
