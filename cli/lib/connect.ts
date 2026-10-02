@@ -94,7 +94,7 @@ export type Prepared = { monitoringUrl: string; note?: string; generated?: true 
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
-  create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
+  create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
   prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
@@ -325,7 +325,7 @@ type Billing = Pick<ConnectResult, "price" | "requires_payment_method" | "coupon
  * missing payment method, and `stop` when something comes first (a coupon
  * that does not apply, no payment method, a billed box not accepted).
  */
-async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps): Promise<{ billing: Billing; billingPage: Billing & { next: string }; stop?: Billing & { next: string } }> {
+async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps): Promise<{ billing: Billing; billingPage: Billing & { next: string }; accepted: boolean; stop?: Billing & { next: string } }> {
   const billing: Billing = { price: priceText(q), requires_payment_method: q.requires_payment_method };
   if (opts.coupon) {
     billing.coupon = q.promo?.valid
@@ -333,15 +333,15 @@ async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: Co
       : { code: opts.coupon, valid: false, error: q.promo?.error ?? "not valid" };
   }
   const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${deps.billingUrl(q.org_alias)}, then re-run` };
-  const stop = (next: string) => ({ billing, billingPage, stop: { ...billing, next } });
+  const stop = (next: string) => ({ billing, billingPage, accepted: false, stop: { ...billing, next } });
   if (billing.coupon && !billing.coupon.valid) {
     return stop(`Promo code ${opts.coupon}: ${billing.coupon.error}. Nothing was changed: re-run with a valid code, or without ${opts.agent ? "coupon" : "--coupon"}`);
   }
-  if (q.requires_payment_method) return { billing, billingPage, stop: billingPage };
+  if (q.requires_payment_method) return { billing, billingPage, accepted: false, stop: billingPage };
   if (q.billed && !opts.yes && !(await deps.confirm(`${name} is billed: ${billing.price}. Provision it? (y/N): `))) {
     return stop(opts.agent ? `Call connect_database again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
   }
-  return { billing, billingPage };
+  return { billing, billingPage, accepted: q.billed };
 }
 
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
@@ -375,6 +375,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   let checkup: CheckupResult | undefined;
   let billing: Billing = {};
   let billingPage: Billing & { next: string } | undefined;
+  let accepted = false;
   // The key is checked first, on a re-run too: a rejected key or a stopped service changes nothing.
   const findOrg = async () => {
     try {
@@ -413,7 +414,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (!opts.selfHosted) {
       const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps);
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
-      ({ billing, billingPage } = b);
+      ({ billing, billingPage, accepted } = b);
       progress("billing", `Billing: ${billing.price}`);
     }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
@@ -435,14 +436,19 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       ...(provider === "clickhouse" ? { provider } : {}),
       ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
       ...(opts.coupon ? { promo_code: opts.coupon } : {}),
+      // The price shown was accepted: without it the platform creates no billed box.
+      ...(accepted ? { accept_price: true } : {}),
     }).catch(async (err) => {
       // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
       if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
       // 402: the payment method went away since the quote; nothing was created.
       if (err instanceof HttpStatusError && err.status === 402) return "payment" as const;
+      // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
+      if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
       throw err;
     });
     if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
+    if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
     if (created.status === "failed") {
       await undo();
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
@@ -703,7 +709,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope });
   return {
     list: () => rpc<Database[]>("cloud_monitoring_list"),
-    create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
+    create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
     prepare: (url: string, provider: Provider, o: { resetPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
