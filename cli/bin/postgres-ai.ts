@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4212,7 +4212,7 @@ withOrgOptions(program.command("connect <database-url>"))
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, run the express checkup while it starts, wait, print the dashboard URL.",
     "",
-    "Billing: before a new box, connect shows its price (or \"free (N of M free slots)\"). A billed",
+    "Billing: once the URL is checked, before a new box, connect shows its price (or \"free (N of M free slots)\"). A billed",
     "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
     "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
@@ -4293,8 +4293,8 @@ withOrgOptions(program.command("disconnect <name>"))
       if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
       }
-      await cloudApi(opts.debug).disconnect(row.id);
-      printResult({ status: "disconnected", name: row.name, id: row.id, next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
+      const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
+      printResult({ status: "disconnected", name: row.name, id: row.id, ...(billing ? { billing } : {}), next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }

@@ -71,6 +71,8 @@ export interface Quote {
   requires_payment_method: boolean;
   promo?: { code: string; valid: boolean; error?: string; discount_description?: string; duration?: string; duration_in_months?: number };
   amount_after_promo?: number;
+  /** The org's billing page on this platform's console (a preview's, on a preview). */
+  billing_url?: string;
 }
 
 /** A row of v1.cloud_monitoring_list. */
@@ -90,12 +92,13 @@ export interface Database {
  * `generated`: this run created the role with a password generated here, which
  * nobody has once the run ends.
  */
-export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string };
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string } | { checked: true };
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean }): Promise<Prepared>;
+  /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
@@ -106,7 +109,7 @@ export interface ConnectDeps {
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
   /** What the next box costs, with the coupon checked. */
   quote(coupon?: string): Promise<Quote>;
-  /** The console page where the org adds a payment method. */
+  /** The console page where the org adds a payment method, when the quote names none. */
   billingUrl(orgAlias: string): string;
   /** Asks a person; false when nobody can be asked. */
   confirm(question: string): Promise<boolean>;
@@ -329,20 +332,22 @@ type Billing = Pick<ConnectResult, "price" | "requires_payment_method" | "coupon
  * missing payment method, and `stop` when something comes first (a coupon
  * that does not apply, no payment method, a billed box not accepted).
  */
-async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps): Promise<{ billing: Billing; billingPage: Billing & { next: string }; accepted: boolean; stop?: Billing & { next: string } }> {
+async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void): Promise<{ billing: Billing; billingPage: Billing & { next: string }; accepted: boolean; stop?: Billing & { next: string } }> {
   const billing: Billing = { price: priceText(q), requires_payment_method: q.requires_payment_method };
   if (opts.coupon) {
     billing.coupon = q.promo?.valid
       ? { code: q.promo.code, valid: true, description: q.promo.discount_description }
       : { code: opts.coupon, valid: false, error: q.promo?.error ?? "not valid" };
   }
-  const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${deps.billingUrl(q.org_alias)}, then re-run` };
+  const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${q.billing_url ?? deps.billingUrl(q.org_alias)}, then re-run` };
   const stop = (next: string) => ({ billing, billingPage, accepted: false, stop: { ...billing, next } });
   if (billing.coupon && !billing.coupon.valid) {
     return stop(`Promo code ${opts.coupon}: ${billing.coupon.error}. Nothing was changed: re-run with a valid code, or without ${opts.agent ? "coupon" : "--coupon"}`);
   }
   if (q.requires_payment_method) return { billing, billingPage, accepted: false, stop: billingPage };
-  if (q.billed && !opts.yes && !(await deps.confirm(`${name} is billed: ${billing.price}. Provision it? (y/N): `))) {
+  // The price on its own line first: a prompt may wrap or be cut where it is shown.
+  show(billing.price!);
+  if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${name}? (y/N): `))) {
     return stop(opts.agent ? `Call connect_database again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
   }
   return { billing, billingPage, accepted: q.billed };
@@ -419,14 +424,17 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
     if (!opts.selfHosted) {
-      const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps);
+      // A URL that cannot work is told so before any price is asked (nothing is changed here).
+      const probe = await deps.prepare(url, provider, { resetPassword: opts.resetPassword, check: true });
+      if ("next" in probe) return { status: "action_required", provider, name, ...probe };
+      const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, accepted } = b);
-      progress("billing", `Billing: ${billing.price}`);
     }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
     if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
+    if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
     if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
       await deps.selfHosted(prepared.monitoringUrl, key && ch
@@ -498,6 +506,8 @@ export interface PrepareOptions {
   agent?: boolean;
   /** An existing postgres_ai_mon gets a new password (PGAI_MON_PASSWORD, else a generated one). */
   resetPassword?: boolean;
+  /** Only whether the URL can work: every refusal, nothing created or changed. */
+  check?: boolean;
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
@@ -606,6 +616,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
         if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${setPassword}` };
         if (await acceptsAnyPassword()) notes.push(unchecked("PGAI_MON_PASSWORD"));
       }
+      if (opts.check) return { checked: true };
       const monitoringUrl = monitoringUrlFor(url, me.db, password);
       const loginUrl = loginUrlFor(url, me.db, password);
       const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: !reset });
@@ -714,6 +725,17 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
   throw failed ?? notFound;
 }
 
+/** What a disconnect did to the billing (monitoring_instance_delete's reply), for a person; undefined when nothing was released. */
+export function disconnectBilling(reply: unknown): string | undefined {
+  const r = (reply ?? {}) as { billing?: { subscription?: string; quantity?: number }; billing_warning?: string };
+  if (r.billing_warning) return `not released (${r.billing_warning}): contact support`;
+  if (r.billing?.subscription === "canceled") return "subscription canceled: no further charges (the current period is not refunded)";
+  if (r.billing?.subscription === "active" && typeof r.billing.quantity === "number") {
+    return `${r.billing.quantity} ${r.billing.quantity === 1 ? "box" : "boxes"} left on the subscription`;
+  }
+  return undefined;
+}
+
 /** The platform side of connect, for the CLI and the MCP server alike. */
 export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean; agent?: boolean }) {
   const rpc = <T>(fn: string, body: Record<string, unknown> = {}) =>
@@ -722,7 +744,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>
