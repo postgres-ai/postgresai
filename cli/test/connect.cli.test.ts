@@ -140,6 +140,8 @@ describe("pgai init", () => {
       for (const key of ["\x03", "\x04"]) expect((await runTty(["connect", SH], env, [[PRICE_PROMPT, key]])).status).toBe(130);
       const n = await runTty(["connect", SH], env, [[PRICE_PROMPT, "n\r"]]);
       expect(n.status).toBe(3);
+      // Only y or yes accepts.
+      expect((await runTty(["connect", SH], env, [[PRICE_PROMPT, "yes, but not now\r"]])).status).toBe(3);
       expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per box (scale plan)");
       expect(calls.filter((c) => c.includes("cloud_monitoring_connect"))).toEqual([]);
     }, []);
