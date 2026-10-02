@@ -24,6 +24,12 @@ const CHECKUP = {
   report_id: 7,
 };
 
+const FREE_QUOTE = {
+  plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0,
+  price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false,
+};
+const FREE = { price: "free (1 of 1 free slots)", requires_payment_method: false };
+
 function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } = {}) {
   const calls: string[] = [];
   const rows = over.rows ?? [];
@@ -38,6 +44,10 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     checkup: async (url, project) => { calls.push(`checkup ${url} as ${project}`); return CHECKUP; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
     handoffUrl: async (provider) => `https://console.postgres.ai/acme/monitoring/scale/create/${provider}`,
+    // The billing step is its own describe below; here a box is on a free slot.
+    quote: async () => FREE_QUOTE,
+    billingUrl: (alias) => `https://console.postgres.ai/${alias}/billing`,
+    confirm: async () => false,
     sleep: async () => { calls.push("sleep"); },
     now: () => Date.now(),
     progress: () => {},
@@ -102,7 +112,7 @@ describe("connect", () => {
     const { first_checkup_eta, ...rest } = result;
     expect(rest).toEqual({
       status: "connected", provider: "clickhouse", name: CH_NAME, id: "i-1",
-      dashboard_url: "https://abc.pgai.watch", host_metrics: true, checkup: CHECKUP, next: "Open https://abc.pgai.watch",
+      dashboard_url: "https://abc.pgai.watch", host_metrics: true, checkup: CHECKUP, ...FREE, next: "Open https://abc.pgai.watch",
     });
     expect(Date.parse(first_checkup_eta!) - Date.now()).toBeGreaterThan(29 * 60_000);
     expect(JSON.stringify(result)).not.toContain("adminpw");
@@ -222,8 +232,8 @@ describe("connect", () => {
       expect((await connect(CH, { waitMs: 0 }, inReply.deps)).status).toBe("failed");
       expect(inReply.calls).toEqual(["list", "unprepare"]);
 
-      const http = fake({ ...generated, create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect: HTTP 402", 402); } });
-      await expect(connect(CH, { waitMs: 0 }, http.deps)).rejects.toThrow("HTTP 402");
+      const http = fake({ ...generated, create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect: HTTP 403", 403); } });
+      await expect(connect(CH, { waitMs: 0 }, http.deps)).rejects.toThrow("HTTP 403");
       expect(http.calls).toEqual(["list", "unprepare"]);
     });
 
@@ -257,7 +267,7 @@ describe("connect", () => {
     const result = await connect(CH, { waitMs: 0 }, deps);
     expect(result).toEqual({
       status: "provisioning", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null,
-      host_metrics: false, checkup: CHECKUP, next: `pgai status ${CH_NAME}`,
+      host_metrics: false, checkup: CHECKUP, ...FREE, next: `pgai status ${CH_NAME}`,
     });
     expect(calls).not.toContain("sleep");
   });
@@ -276,6 +286,7 @@ describe("connect", () => {
     });
     expect((await connect(CH, { waitMs: 20 * 60_000 }, deps)).status).toBe("connected");
     expect(events.map(progressText)).toEqual([
+      "Billing: free (1 of 1 free slots) (+0s)",
       "Preparing postgresql://postgres:*****@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require (+0s)",
       `Provisioning monitoring for ${CH_NAME} (+0s)`,
       [
@@ -292,6 +303,7 @@ describe("connect", () => {
     ]);
     // For an agent the same steps, as events.
     expect(events.map(({ message, checkup, ...e }) => e)).toEqual([
+      { event: "billing", elapsed_s: 0 },
       { event: "preparing", elapsed_s: 0 },
       { event: "provisioning", elapsed_s: 0 },
       { event: "checkup", elapsed_s: 14 },
@@ -299,7 +311,7 @@ describe("connect", () => {
       { event: "box", elapsed_s: 224, state: "registered" },
       { event: "box", elapsed_s: 254, state: "active" },
     ]);
-    expect(events[2].checkup).toEqual(CHECKUP);
+    expect(events[3].checkup).toEqual(CHECKUP);
   });
 
   test("a re-run of a connected database shows no progress", async () => {
@@ -416,7 +428,7 @@ describe("connect", () => {
       sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
     });
     expect(await connect(CH, { waitMs: 100 }, deps)).toEqual({
-      status: "provisioning", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, checkup: CHECKUP, next: `pgai status ${CH_NAME}`,
+      status: "provisioning", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, checkup: CHECKUP, ...FREE, next: `pgai status ${CH_NAME}`,
     });
     expect(polls).toBeGreaterThan(2);
   });
