@@ -125,6 +125,42 @@ Notes:
 - All standard options work with Supabase mode (`--verify`, `--print-sql`, `--skip-optional-permissions`, etc.)
 - When using `--verify`, the tool checks if all required setup is in place
 
+### ClickHouse Managed Postgres
+
+Hosts ending in `.pg.clickhouse.cloud` are auto-detected; `--provider clickhouse` forces it.
+The plan is the same superuser plan as self-managed Postgres (`--print-sql` shows it).
+
+```bash
+npx postgresai prepare-db 'postgres://postgres:...@xxx.pg.clickhouse.cloud:5432/postgres?channel_binding=require'
+```
+
+Before any grant runs, one `-- scope:` line lists exactly what the run grants the
+monitoring role, derived from the steps about to run (so it shrinks under `--skip-optional-permissions`
+and is not printed on `--reset-password`, which grants nothing). With `--json` it goes to stderr.
+
+`channel_binding=require` in a URI or conninfo string enables SCRAM-SHA-256-PLUS when the server
+offers it, disables the plaintext retry that `sslmode=prefer` would otherwise do, and is rejected
+together with `sslmode=disable`. The mechanism actually negotiated is not enforced by the driver.
+
+### ClickHouse Cloud host metrics
+
+For a ClickHouse Managed Postgres target, `mon local-install --db-url` and `mon targets add` also set up
+host metrics (CPU, memory, disk, I/O) from the ClickHouse Cloud Prometheus endpoint when these are set:
+
+```bash
+export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<key-secret>'
+npx postgresai mon local-install --db-url 'postgres://postgres_ai_mon:...@xxx.pg.clickhouse.cloud:5432/postgres?sslmode=require'
+```
+
+Use an organization API key with the **Basic Service API Reader** role: it is the least privilege that
+works (it can list Postgres services and read `/prometheus`, and cannot change anything or create keys).
+The CLI does not need an Admin key.
+
+The key secret is stored in plaintext in `host-metrics/clickhouse-<name>.secret` in the monitoring
+project directory (file 0600, directory 0700), because VictoriaMetrics reads it from a file for basic
+auth. It is never printed or logged. `mon targets remove <name>` deletes it. To rotate the key, re-run
+`mon targets add` with the new key.
+
 ### Verify and password reset
 
 Verify that everything is configured as expected (no changes):

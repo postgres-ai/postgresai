@@ -4,19 +4,20 @@ import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import type { Client as PgClient } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { requireChannelBinding, splitChannelBinding } from "./instances";
+import { redactTextSecrets } from "./util";
 
 export const DEFAULT_MONITORING_USER = "postgres_ai_mon";
 
 /**
  * Database provider type. Affects which prepare-db steps are executed.
  * Known providers have specific behavior adjustments; unknown providers use default behavior.
- * TODO: Consider auto-detecting provider from connection string or server version string.
  * TODO: Consider making this more flexible via a config that specifies which steps/checks to skip.
  */
 export type DbProvider = string;
 
 /** Known providers with special handling. Unknown providers are treated as self-managed. */
-export const KNOWN_PROVIDERS = ["self-managed", "supabase"] as const;
+export const KNOWN_PROVIDERS = ["self-managed", "supabase", "clickhouse"] as const;
 
 /** Providers where we skip role creation (users managed externally). */
 const SKIP_ROLE_CREATION_PROVIDERS = ["supabase"];
@@ -33,8 +34,35 @@ export function validateProvider(provider: string | undefined): string | null {
   return `Unknown provider "${provider}". Known providers: ${KNOWN_PROVIDERS.join(", ")}. Treating as self-managed.`;
 }
 
+/** Detect a provider from the host of a URI, a libpq conninfo string, or a bare hostname. */
+export function detectProvider(conn: string): "clickhouse" | null {
+  try {
+    const trimmed = conn.trim();
+    const host = isLikelyUri(trimmed)
+      ? new URL(trimmed).hostname
+      : trimmed.includes("=")
+        ? parseLibpqConninfo(trimmed).host
+        : trimmed;
+    const normalized = host?.toLowerCase().replace(/\.$/, "");
+    return normalized?.endsWith(".pg.clickhouse.cloud") ? "clickhouse" : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Explicit --provider wins; otherwise detect from the connection host. `detected` is true only when auto-detection fired. */
+export function resolveProvider(
+  explicit: string | undefined,
+  conn: string | undefined,
+): { provider: string; detected: boolean } {
+  if (explicit !== undefined) return { provider: explicit, detected: false };
+  const provider = conn === undefined ? null : detectProvider(conn);
+  return { provider: provider ?? "self-managed", detected: provider !== null };
+}
+
 export type PgClientConfig = {
   connectionString?: string;
+  enableChannelBinding?: boolean;
   host?: string;
   port?: number;
   user?: string;
@@ -187,6 +215,26 @@ export type InitPlan = {
   steps: InitStep[];
 };
 
+/** What each prepare-db step grants the monitoring role, keyed by step name. Keep in sync with cli/sql/*.sql. */
+const STEP_SCOPE: Record<string, string> = {
+  "01.role": "create/update role",
+  "02.extensions": "create extension pg_stat_statements",
+  "03.permissions": "connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path",
+  "06.helpers": "execute on postgres_ai.table_describe (SECURITY INVOKER, catalog only)",
+  "04.optional_rds": "execute on rds_tools.pg_ls_multixactdir (RDS only)",
+  "05.optional_self_managed": "execute on pg_catalog.pg_ls_dir, pg_catalog.pg_stat_file",
+};
+
+/**
+ * One-line disclosure of what the plan about to run grants, derived from the steps actually
+ * in the plan so it stays honest under --skip-optional-permissions, --reset-password, and
+ * provider-specific step filtering.
+ */
+export function describeInitScope(plan: InitPlan): string {
+  const grants = plan.steps.map(step => STEP_SCOPE[step.name] ?? step.name);
+  return `-- scope: role ${plan.monitoringUser} gets: ${grants.join(" | ")}; this admin connection is used for this run only and is not stored`;
+}
+
 function sqlDir(): string {
   // Handle both development and production paths
   // Development: lib/init.ts -> ../sql
@@ -246,14 +294,47 @@ export function redactPasswordsInSql(sql: string): string {
 }
 
 export function maskConnectionString(dbUrl: string): string {
-  // Hide password if present (postgresql://user:pass@host/db).
+  // Hide the password of postgresql://user:pass@host/db, then password-like
+  // query parameters (password, sslpassword, pwd). An unencoded "/", "?",
+  // "#" or "@" in the password makes the string ambiguous, and the rule
+  // prefers hiding too much to printing a password: the password runs to the
+  // last "@" that a "/" follows before the next "@" ("@host/db"); without one
+  // (no "/db" path), to the first "@" when no "?" or "#" precedes it, else to
+  // the last "@". Read as host:port with no password, and printed as given: a
+  // "[" first (an IPv6 host), or digits and then "/", ",", "?" or "#"
+  // (postgresql://h:5432/db@x, h:5432?application_name=me@corp): a password
+  // of that shape in a URL with no "/db" path is the residual.
+  let masked = dbUrl;
+  const head = dbUrl.match(/^(\s*[a-z][a-z0-9+.-]*:\/\/)([^:@\/?#]*):([\s\S]*)$/i);
+  if (head && !head[2].startsWith("[")) {
+    // The end is found on a copy with query values blanked ("@" kept, length
+    // kept), so a "/" in one (?sslpassword=ab@S3cret/x) is not read as "/db".
+    const probe = head[3].replace(/([?&][^=&#?]*=)([^&]*)/g, (_m, key, value) => key + value.replace(/[^@]/g, "*"));
+    const end = passwordEnd(probe);
+    if (end >= 0) masked = `${head[1]}${head[2]}:*****@${head[3].slice(end + 1)}`;
+  }
+  // A key and its value run to "&" ("#" included: a fragment after a password
+  // is hidden with it). The key is tested in a callback, so a long key with no
+  // "=" is scanned once.
+  masked = masked.replace(/([?&])([^=&#?]*)=([^&]*)/g, (m, sep, key) => (/pass|pwd/i.test(key) ? `${sep}${key}=*****` : m));
   try {
-    const u = new URL(dbUrl);
+    const u = new URL(masked);
     if (u.password) u.password = "*****";
     return u.toString();
   } catch {
-    return dbUrl.replace(/\/\/([^:/?#]+):([^@/?#]+)@/g, "//$1:*****@");
+    return redactTextSecrets(masked);
   }
+}
+
+/** Index in `rest` (the text after "user:") of the "@" that ends the password, or -1 when there is none. */
+function passwordEnd(rest: string): number {
+  const first = rest.indexOf("@");
+  if (first < 0) return -1;
+  const atSlash = rest.match(/^([\s\S]*)@(?=[^@]*\/)/);
+  if (atSlash) return atSlash[1].length;
+  const candidate = rest.slice(0, first);
+  if (/^[0-9]+[\/,?#]/.test(candidate)) return -1;
+  return /[?#]/.test(candidate) ? rest.lastIndexOf("@") : first;
 }
 
 function isLikelyUri(value: string): boolean {
@@ -340,6 +421,9 @@ export function parseLibpqConninfo(input: string): PgClientConfig {
       case "sslmode":
         sslmode = val;
         break;
+      case "channel_binding":
+        if (val === "require") cfg.enableChannelBinding = true;
+        break;
       // ignore everything else (options, application_name, etc.)
       default:
         break;
@@ -402,11 +486,17 @@ export function resolveAdminConnection(opts: {
         effectiveSslMode.toLowerCase() === "prefer" ||
         effectiveSslMode.toLowerCase() === "allow";
       // Strip sslmode from URI so pg uses our ssl config object instead
-      const cleanUri = stripSslModeFromUri(v);
+      const { uri: cleanUri, value: channelBinding } = splitChannelBinding(stripSslModeFromUri(v));
+      const enableChannelBinding = requireChannelBinding(channelBinding, sslConfig === false);
       return {
-        clientConfig: { connectionString: cleanUri, ssl: sslConfig },
+        clientConfig: {
+          connectionString: cleanUri,
+          ssl: sslConfig,
+          ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
+        },
         display: maskConnectionString(v),
-        sslFallbackEnabled: shouldFallback,
+        // channel_binding=require never falls back to a plaintext connection
+        sslFallbackEnabled: shouldFallback && !enableChannelBinding,
       };
     }
     // libpq conninfo (dbname=... host=...)
@@ -420,10 +510,11 @@ export function resolveAdminConnection(opts: {
     // Enable fallback for: no explicit mode OR explicit "prefer"/"allow"
     const shouldFallback = (!explicitSsl && !cfgHadSsl) ||
       (!!explicitSsl && (explicitSsl.toLowerCase() === "prefer" || explicitSsl.toLowerCase() === "allow"));
+    if (cfg.enableChannelBinding) requireChannelBinding("require", cfg.ssl === false);
     return {
       clientConfig: cfg,
       display: describePgConfig(cfg),
-      sslFallbackEnabled: shouldFallback,
+      sslFallbackEnabled: shouldFallback && !cfg.enableChannelBinding,
     };
   }
 
@@ -563,7 +654,7 @@ end $$;`;
     sql: permissionsSql,
   });
 
-  // Helper functions (SECURITY DEFINER) for plan analysis and table info
+  // Helper functions for table info
   steps.push({
     name: "06.helpers",
     sql: applyTemplate(loadSqlTemplate("06.helpers.sql"), vars),

@@ -488,7 +488,7 @@ export function resolveSupabaseConfig(opts: {
  * Extract project reference from a Supabase database URL.
  * Supabase database URLs typically look like:
  *   - Direct: postgresql://postgres:[PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres
- *   - Pooler (modern): postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+ *   - Pooler (modern): postgresql://[USER].[PROJECT_REF]:[PASSWORD]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
  *   - Pooler (legacy): postgresql://postgres:[PASSWORD]@[PROJECT_REF].pooler.supabase.com:6543/postgres
  *
  * @param dbUrl PostgreSQL connection URL
@@ -505,11 +505,11 @@ export function extractProjectRefFromUrl(dbUrl: string): string | undefined {
       return match[1];
     }
 
-    // Modern pooler URLs: project ref is in the username as postgres.<ref>
-    // Example: postgresql://postgres.abcdefghij:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-    if (host.includes("pooler.supabase.com")) {
-      const username = url.username;
-      const userMatch = username.match(/^postgres\.([a-z0-9]+)$/i);
+    // Modern pooler URLs: project ref is in the username as <user>.<ref>
+    // Example: postgresql://postgres_ai_mon.abcdefghij:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+    if (host.endsWith(".pooler.supabase.com")) {
+      const username = decodeURIComponent(url.username);
+      const userMatch = username.match(/^[^.]+\.([a-z0-9]+)$/i);
       if (userMatch && userMatch[1]) {
         return userMatch[1];
       }

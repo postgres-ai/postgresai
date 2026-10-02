@@ -12,7 +12,7 @@ describe("mon targets configuration apply", () => {
       'runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"])'
     );
 
-    const saveIndex = cliSource.indexOf("addInstanceToFile(file, buildInstance(instanceName, connStr))");
+    const saveIndex = cliSource.indexOf("addInstanceToFile(file, instance)");
     const applyIndex = cliSource.indexOf("await applyMonitoringTargetsConfig()", saveIndex);
     expect(saveIndex).toBeGreaterThan(-1);
     expect(applyIndex).toBeGreaterThan(saveIndex);

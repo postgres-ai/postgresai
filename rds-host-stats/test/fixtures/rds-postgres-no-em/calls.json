@@ -1,0 +1,154 @@
+[
+  {
+    "client": "rds",
+    "command": "DescribeDBInstancesCommand",
+    "input": {
+      "DBInstanceIdentifier": "pgai-test-hoststats-b9e0be1f"
+    }
+  },
+  {
+    "client": "cloudwatch",
+    "command": "GetMetricDataCommand",
+    "input": {
+      "StartTime": "2026-09-28T05:31:00.000Z",
+      "EndTime": "2026-09-28T05:46:00.000Z",
+      "MetricDataQueries": [
+        {
+          "Id": "host_cpu_utilization_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "CPUUtilization",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_memory_available_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeableMemory",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_iops",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteIOPS",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_receive_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkReceiveThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_network_transmit_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "NetworkTransmitThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_free_bytes",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "FreeStorageSpace",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "client": "pi",
+    "command": "GetResourceMetricsCommand",
+    "input": {
+      "ServiceType": "RDS",
+      "Identifier": "db-VPCWK4FHJJIK26W66NYKPKIK4U",
+      "StartTime": "2026-09-28T05:31:00.000Z",
+      "EndTime": "2026-09-28T05:46:00.000Z",
+      "PeriodInSeconds": 60,
+      "MetricQueries": [
+        {
+          "Metric": "db.load.avg"
+        }
+      ]
+    }
+  }
+]
