@@ -5687,8 +5687,8 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
 }
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
-// A postgres:// URL or a libpq "key=value" string; a target name is neither.
-const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value) || value.includes("=");
+// targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
+const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
 
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
