@@ -1155,7 +1155,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
   }, { timeout: TEST_TIMEOUT });
 
   test("backup falls back to a timestamp suffix when .env has no PGAI_TAG line", () => {
-    // When readDeployedTag() returns null (no PGAI_TAG to label the backup with),
+    // When readEnvTag() returns null (no PGAI_TAG to label the backup with),
     // the backup name falls back to an ISO-8601 timestamp suffix
     // (`bak-<YYYY-MM-DDTHH-MM-SS-mmmZ>-<hash8>`). Every other test seeds
     // PGAI_TAG=0.14.0, so this branch was previously unexercised.
@@ -1182,7 +1182,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
   }, { timeout: TEST_TIMEOUT });
 
   test("a malformed/hostile PGAI_TAG is rejected and the backup falls back to a timestamp suffix (no path traversal)", () => {
-    // readDeployedTag() validates the tag against a conservative charset before
+    // readEnvTag() validates the tag against a conservative charset before
     // it flows into the backup filename, so a path-traversal-shaped value cannot
     // escape projectDir; it falls back to the timestamp suffix instead.
     const testDir = resolve(tempDir, "hostile-tag-rejected");
@@ -1209,7 +1209,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
 
   test("local-install sanitizes the OLD tag it passes in: a hostile PGAI_TAG falls back to a timestamp suffix", () => {
     // local-install captures the OLD .env PGAI_TAG and passes it to the refresh as
-    // `oldTag`, BYPASSING readDeployedTag. Sanitization must therefore happen
+    // `oldTag`, BYPASSING readEnvTag. Sanitization must therefore happen
     // centrally inside the helper so a hostile tag on THIS path also cannot escape
     // projectDir or land literal `/`/quote chars in the backup filename.
     const testDir = resolve(tempDir, "local-install-hostile-old-tag");
