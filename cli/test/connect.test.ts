@@ -618,6 +618,12 @@ describe("connect on the paid path: the price before the box", () => {
     });
   });
 
+  test("a 402 although the org has a card (it was declined): says so, with the billing page", async () => {
+    const { deps } = make({}, { create: async () => { throw new HttpStatusError("Your card was declined.", 402); } });
+    expect((await connect(SH, { waitMs: 0, yes: true }, deps)).next)
+      .toBe("The payment method on file was declined: update it at https://console.example/acme/billing, then re-run");
+  });
+
   test("a free slot sends no accept_price; the platform billing it after all (412, the slot went meanwhile) is: re-run to see the price", async () => {
     const { deps, calls } = make({ billed: false, free_slots: { remaining: 1, total: 1 } }, { create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); throw new HttpStatusError("Precondition Failed", 412); } });
     expect(await connect(SH, { waitMs: 0 }, deps)).toEqual({
