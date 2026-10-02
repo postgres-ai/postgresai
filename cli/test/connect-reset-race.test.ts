@@ -50,6 +50,8 @@ describe.skipIf(!ADMIN)("two pgai connect --reset-password at once (real Postgre
         const path = new URL(req.url).pathname;
         const body = await req.json().catch(() => ({})) as Record<string, string>;
         if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        // The paid path (!443) quotes first; a free slot keeps this test about the lock.
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
         if (path.endsWith("/rpc/cloud_monitoring_reset_lock")) {
           if (held) return Response.json({ message: "Conflict", details: `Another pgai connect --reset-password for ${body.server} is running` }, { status: 409 });
           held = true;
