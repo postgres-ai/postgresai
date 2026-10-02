@@ -316,7 +316,13 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     url.username = "pgai_connect_app";
     url.password = "app-pw-123";
     const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-tty-"));
-    const api = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json([]) });
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      // A free slot: no price to accept before the SQL.
+      fetch: (req) => Response.json(new URL(req.url).pathname.endsWith("/rpc/cloud_monitoring_quote")
+        ? { plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false }
+        : []),
+    });
     let out = "";
     const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), "connect", url.toString()], {
       cwd: home,
@@ -428,6 +434,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           if (path.endsWith("/postgres")) return Response.json({ result: [{ id: SERVICE, name: "svc", state: "running" }] });
           if (path.endsWith(`/postgres/${SERVICE}`)) return Response.json({ result: { id: SERVICE, name: "svc", state: "running", hostname: url.hostname } });
           if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+          // A free slot: no price to accept.
+          if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
           if (path.endsWith("/rpc/cloud_monitoring_connect")) {
             const dbUrl = new URL(JSON.parse(await req.text()).db_url);
             const row = { id: "i-1", name: `${dbUrl.hostname}${dbUrl.port && dbUrl.port !== "5432" ? `:${dbUrl.port}` : ""}${dbUrl.pathname}`, provider: "clickhouse", status: "launch_requested", dashboard_url: null, host_metrics: true };
@@ -467,7 +475,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         launch = "accept";
         // While the box starts, the express checkup ran as postgres_ai_mon against this server.
         const { checkup, ...launched } = await run();
-        expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
+        expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, price: "free (1 of 1 free slots)", requires_payment_method: false, next: `pgai status ${name}` });
         expect(checkup.checks).toBe(19);
         expect([...checkup.findings.map((f: { check_id: string }) => f.check_id), ...checkup.info]).toContain("A002");
         // Every check is counted once: warning, ok, info, or could not run.
@@ -478,7 +486,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(uploads.filter((u) => u.file).length).toBe(19 - (checkup.failed?.length ?? 0));
         expect(uploads.at(-1)).toEqual({ status: "41 completed" });
         // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
-        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["preparing", "provisioning", "checkup", "box"]);
+        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["billing", "preparing", "provisioning", "checkup", "box"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
