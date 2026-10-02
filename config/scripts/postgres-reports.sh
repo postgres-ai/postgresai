@@ -72,14 +72,19 @@ fi
 echo "postgres-reports: initial_delay_seconds=${initial_delay_seconds}, interval_seconds=${interval_seconds}"
 sleep_seconds "$initial_delay_seconds"
 
+# The first run comes half an hour after the stack starts: a window floored to
+# the hour would end before the first sample, and the query reports be empty.
+first_run=true
+
 while true; do
   output_path="$(date -u +"${output_template}")"
 
   # Build optional args
   use_current_time_arg=""
-  if [[ "${use_current_time}" == "true" ]]; then
+  if [[ "${use_current_time}" == "true" || "${first_run}" == "true" ]]; then
     use_current_time_arg="--use-current-time"
   fi
+  first_run=false
 
   if api_key="$(read_api_key)"; then
     if [[ -z "${project_name}" ]]; then
