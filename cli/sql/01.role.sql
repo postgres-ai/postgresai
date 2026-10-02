@@ -1,6 +1,7 @@
 -- Role creation / password update (template-filled by cli/lib/init.ts)
 --
--- Always uses a race-safe pattern (create if missing, then always alter to set the password):
+-- A race-safe pattern: create if missing, then alter to set the password.
+-- `pgai connect` omits the alter, so an existing role keeps its password:
 --   do $$ begin
 --     if not exists (select 1 from pg_catalog.pg_roles where rolname = '...') then
 --       begin

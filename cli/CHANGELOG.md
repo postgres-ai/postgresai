@@ -4,6 +4,29 @@
 
 ### Added
 
+- `pgai connect <database-url>`: put a database under PostgresAI Cloud monitoring in one command.
+  Signs in if needed, prepares the database (an admin URL creates `postgres_ai_mon`; otherwise the
+  SQL is printed), provisions the monitoring box, waits, and prints the dashboard URL. ClickHouse,
+  RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
+  disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
+  JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required),
+  and 130 for a `pgai init` cancelled at a prompt.
+  An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
+  A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
+  created with a generated password is dropped again when the launch is refused.
+  A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole preparation;
+  `host` / `port` in the URL's query string is refused; certificate files in the URL are used from
+  this machine only (the monitoring box does not get them).
+  `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
+  Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
+  tool `connect_database`.
+  While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings
+  (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`). Each step and
+  each change of the box's state is shown once, with the time since the start (JSON: one event a line
+  on stderr). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
+  `connected`. `pgai databases` uses the `status` words of `connect` and `status`. `pgai init` does not
+  echo the URL. `--reset-password` gives an existing `postgres_ai_mon` a new password.
+
 - `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
   from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
   Before any grant runs, a `-- scope:` line lists what the run grants the monitoring
@@ -19,6 +42,10 @@
   job; for an RDS instance endpoint, the instance, region and labels `rds-host-stats` reads from `.env`.
 
 ### Changed
+
+- `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
+  `checkup`, `connect`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
+  a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.
 
 - `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
   as before; it is no longer filled with `self-managed`.

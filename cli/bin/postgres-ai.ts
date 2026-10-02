@@ -14,6 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -60,6 +61,7 @@ import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgSco
 import { maskSecret } from "../lib/util";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
+import { Writable } from "stream";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
@@ -605,6 +607,21 @@ function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore
 async function question(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     getReadline().question(prompt, (answer) => {
+      resolve(answer);
+    });
+  });
+}
+
+/** question() for a secret: what is typed is not echoed. */
+async function questionHidden(prompt: string): Promise<string> {
+  closeReadline();
+  // The reader owns the terminal (no echo) before the prompt invites typing.
+  const hidden = createInterface({ input: process.stdin, output: new Writable({ write: (_chunk, _encoding, done) => done() }), terminal: true });
+  process.stdout.write(prompt);
+  return new Promise((resolve) => {
+    hidden.question("", (answer) => {
+      hidden.close();
+      process.stdout.write("\n");
       resolve(answer);
     });
   });
@@ -1388,7 +1405,9 @@ function withOrgOptions(command: Command): Command {
 // remembered to wire. Emitting the header is the lib layer's job (see
 // lib/org-scope.ts); both halves must hold for the org to reach the wire.
 program.hook("preAction", (_thisCommand, actionCommand) => {
-  if (!ORG_SCOPED_COMMANDS.has(actionCommand)) {
+  // Not at a terminal, pgai init only points to pgai connect: no org needed for that.
+  const initPointsToConnect = actionCommand.parent === program && actionCommand.name() === "init" && !interactive(actionCommand.opts().json);
+  if (!ORG_SCOPED_COMMANDS.has(actionCommand) || initPointsToConnect) {
     setActiveOrgScope(undefined);
     return;
   }
@@ -1469,7 +1488,7 @@ program
 program
   .command("prepare-db [conn]")
   .description("prepare database for monitoring: create monitoring user, required view(s), and grant permissions (idempotent)")
-  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg)")
+  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg, or PGAI_DB_URL)")
   .option("-h, --host <host>", "PostgreSQL host (psql-like)")
   .option("-p, --port <port>", "PostgreSQL port (psql-like)")
   .option("-U, --username <username>", "PostgreSQL user (psql-like)")
@@ -1508,10 +1527,12 @@ program
       "  Tries SSL first, falls back to non-SSL if server doesn't support it.",
       "  To force SSL: PGSSLMODE=require or ?sslmode=require in URL",
       "  To disable SSL: PGSSLMODE=disable or ?sslmode=disable in URL",
+      "  sslmode in the URL wins over PGSSLMODE (as in libpq)",
       "",
       "Environment variables (libpq standard):",
       "  PGHOST, PGPORT, PGUSER, PGDATABASE  — connection defaults",
       "  PGPASSWORD                          — admin password",
+      "  PGAI_DB_URL                         — admin connection URL, when none is given (keeps it out of argv)",
       "  PGSSLMODE                           — SSL mode (disable, require, verify-full)",
       "  PGAI_MON_PASSWORD                   — monitoring password",
       "",
@@ -1595,6 +1616,13 @@ program
     if (opts.verify && opts.printSql) {
       outputError({ message: "--verify cannot be combined with --print-sql" });
       return;
+    }
+
+    // Automation passes the admin URL (and its password) here, not in argv,
+    // where `ps` and the sudo log would show it. Any connection flag wins;
+    // --print-sql stays the offline plan.
+    if (!conn && !opts.dbUrl && !opts.host && !opts.port && !opts.username && !opts.dbname && !opts.supabase && !opts.printSql) {
+      conn = process.env.PGAI_DB_URL || undefined;
     }
 
     const shouldPrintSql = !!opts.printSql;
@@ -1801,10 +1829,12 @@ program
           return;
         }
 
+        const scramSetting = await supabaseClient.query("select current_setting('scram_iterations', true) as iterations");
         const plan = await buildInitPlan({
           database,
           monitoringUser: opts.monitoringUser,
           monitoringPassword: monPassword,
+          iterations: Number(scramSetting.rows[0]?.iterations),
           includeOptionalPermissions,
         });
 
@@ -2119,10 +2149,12 @@ program
         return;
       }
 
+      const scramSetting = await client.query("select current_setting('scram_iterations', true) as iterations");
       const plan = await buildInitPlan({
         database,
         monitoringUser: opts.monitoringUser,
         monitoringPassword: monPassword,
+        iterations: Number(scramSetting.rows[0]?.iterations),
         includeOptionalPermissions,
         provider,
       });
@@ -4124,6 +4156,204 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
   }
 }
 
+// ---- pgai connect / databases / status / disconnect (postgres-ai/internal#354) ----
+// JSON when stdout is not a TTY (or --json): status, dashboard_url, next.
+// Exit codes: 0 connected or provisioning, 1 failed, 3 action required
+// (pgai init: 130 when cancelled at a prompt).
+const CONNECT_EXIT: Record<Status, number> = { connected: 0, provisioning: 0, disconnecting: 0, disconnected: 0, action_required: 3, failed: 1 };
+
+function cloudApi(debug?: boolean) {
+  const rootOpts = program.opts<CliOptions>();
+  const { apiKey } = getConfig(rootOpts);
+  const urls = resolveBaseUrls(rootOpts, config.readConfig());
+  return { apiKey, apiBaseUrl: urls.apiBaseUrl, ...platformDeps({ apiKey, ...urls, orgScope: getActiveOrgScope(), debug }) };
+}
+
+function emitConnect(result: ConnectResult, json?: boolean): void {
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
+  // the express checkup was shown as it finished.
+  if (process.stdout.isTTY && !json) {
+    const { sql, checkup, ...rest } = result;
+    if (sql) console.log(`${sql}\n`);
+    printResult(rest);
+  } else {
+    printResult(result, json);
+  }
+  process.exitCode = CONNECT_EXIT[result.status];
+}
+
+/** An error of databases / status / disconnect, in the same shape as a connect result. */
+function failCloud(err: unknown, json?: boolean): void {
+  printResult({ status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
+  process.exitCode = 1;
+}
+
+/** Signs in through the browser when interactive; otherwise says how. */
+function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
+  if (cloudApi().apiKey) return true;
+  if (process.stdin.isTTY && process.stdout.isTTY && !opts.yes && !opts.json) {
+    childProcess.spawnSync(process.execPath, [process.argv[1]!, "auth", "login"], { stdio: "inherit" });
+  }
+  return !!cloudApi().apiKey;
+}
+
+async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+  const name = (() => { try { return databaseName(url); } catch { return ""; } })();
+  if (!name || !/^postgres(ql)?:\/\//.test(url)) {
+    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
+  }
+  // What --provider names, when it is one; else the host's.
+  const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
+  const waitMinutes = Number(opts.wait ?? 20);
+  if (!Number.isFinite(waitMinutes) || waitMinutes < 0) {
+    return emitConnect({ status: "failed", provider, name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
+  }
+  if (!opts.selfHosted && !signedIn(opts)) {
+    return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+  }
+  const api = cloudApi(opts.debug);
+  try {
+    const result = await connect(url, { ...opts, waitMs: waitMinutes * 60_000 }, {
+      ...api,
+      selfHosted: async (monitoringUrl, env) => {
+        // A child `mon local-install`: the URL, API key and ClickHouse key ride in its
+        // environment (never argv), and its output goes to stderr, so stdout is the result.
+        const scope = getActiveOrgScope();
+        const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
+        // Registering the stack needs a project name: the database's name, as a token.
+        const project = name.replace(/[^A-Za-z0-9._-]+/g, "-");
+        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project], {
+          stdio: ["ignore", 2, 2],
+          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
+        });
+        if (r.status !== 0) throw new Error("mon local-install failed (see above)");
+      },
+      localStackRunning: () => checkRunningContainers().running,
+      // A billed box: asked only of a person at a terminal (else --yes).
+      confirm: async (q) => {
+        if (!interactive(opts.json)) return false;
+        // Ctrl-C / Ctrl-D at the prompt ends the process: cancelled, as at init's prompts.
+        process.exitCode = 130;
+        const answer = await question(q);
+        process.exitCode = undefined;
+        // An open prompt would take the first Ctrl-C while connect waits for the box.
+        closeReadline();
+        return /^(y|yes)$/i.test(answer.trim());
+      },
+      // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
+      progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
+    });
+    emitConnect(result, opts.json);
+  } catch (err) {
+    emitConnect({ status: "failed", provider, name, next: err instanceof Error ? err.message : String(err) }, opts.json);
+  }
+}
+
+withOrgOptions(program.command("connect <database-url>"))
+  .description("put a database under PostgresAI's care: prepare it, provision monitoring, print the dashboard")
+  .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
+  .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
+  .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
+  .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--wait <minutes>", "how long to wait for the monitoring box (0 = do not wait)", "20")
+  .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
+  .option("-y, --yes", "never prompt: accept the price of a billed box")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .addHelpText("after", [
+    "",
+    "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
+    "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
+    "the monitoring box, run the express checkup while it starts, wait, print the dashboard URL.",
+    "",
+    "Billing: before a new box, connect shows its price (or \"free (N of M free slots)\"). A billed",
+    "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
+    "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
+    "",
+    "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
+    "",
+    "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
+    "postgres_ai_mon when the role already exists; it is checked, never changed),",
+    "PGPASSWORD (the password for a URL without one),",
+    "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
+    "",
+    "Examples:",
+    "  pgai connect 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
+    "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai connect '<url>'",
+    "  pgai connect '<url>' --self-hosted",
+  ].join("\n"))
+  .action(runConnect);
+
+const interactive = (json?: boolean) => !!process.stdin.isTTY && !!process.stdout.isTTY && !json;
+
+withOrgOptions(program.command("init"))
+  .description("first run for a person at a terminal: sign in, ask for the database URL, then pgai connect")
+  .option("--json", "JSON output (init is interactive: prints the pgai connect command to use instead)")
+  .action(async (opts: { json?: boolean }) => {
+    if (!interactive(opts.json)) {
+      return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai connect <database-url>" }, opts.json);
+    }
+    if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
+    process.exitCode = 130; // Ctrl-C / Ctrl-D at a prompt; runConnect sets the real code
+    // The URL carries the admin password: not shown, as the key (connect prints it masked).
+    const url = (await questionHidden("Database URL (postgresql://...; not shown): ")).trim();
+    const needsKey = !!parseUrl(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
+    const clickhouseKey = needsKey ? (await questionHidden("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ")).trim() : "";
+    // An open prompt would take the first Ctrl-C while connect waits for the box.
+    closeReadline();
+    await runConnect(url, { clickhouseKey: clickhouseKey || undefined });
+  });
+
+async function cloudDatabases(opts: { debug?: boolean }, name?: string): Promise<Database[]> {
+  const rows = await cloudApi(opts.debug).list();
+  return name ? rows.filter((d) => d.name === name || d.id === name) : rows;
+}
+
+withOrgOptions(program.command("databases"))
+  .description("list the databases under PostgresAI's care")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (opts: { json?: boolean; debug?: boolean }) => {
+    try {
+      printResult((await cloudDatabases(opts)).map((d) => ({ ...d, status: stateOf(d.status) })), opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
+withOrgOptions(program.command("status [name]"))
+  .description("status of one database (or all), with the next action")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (name: string | undefined, opts: { json?: boolean; debug?: boolean }) => {
+    try {
+      const rows = await cloudDatabases(opts, name);
+      if (name && rows.length === 0) throw new Error(`No database named ${name}. See: pgai databases`);
+      printResult(rows.map((d) => connectStatus(d)), opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
+withOrgOptions(program.command("disconnect <name>"))
+  .description("stop monitoring a database and delete its monitoring box")
+  .option("-y, --yes", "do not ask for confirmation")
+  .option("--json", "JSON output (default when stdout is not a TTY)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (name: string, opts: { yes?: boolean; json?: boolean; debug?: boolean }) => {
+    try {
+      const [row] = (await cloudDatabases(opts, name)).filter((d) => !disconnecting(d.status));
+      if (!row) throw new Error(`No database named ${name}. See: pgai databases`);
+      if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
+        return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
+      }
+      await cloudApi(opts.debug).disconnect(row.id);
+      printResult({ status: "disconnected", name: row.name, id: row.id, next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
 // `help` is intentionally NOT the default command: making it default causes
 // Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
 // as an excess positional argument, producing a misleading "too many arguments
@@ -4160,7 +4390,7 @@ mon
   // anything. The requirement is enforced where registration actually happens.
   .option("--org <alias>", `organization alias (or ${ORG_ENV}); required to register with a global token`)
   .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`)
-  .option("--db-url <url>", "PostgreSQL connection URL to monitor")
+  .option("--db-url <url>", "PostgreSQL connection URL to monitor (or PGAI_DB_URL)")
   .option("--tag <tag>", "Docker image tag to use (e.g., 0.14.0, 0.14.0-dev.33)")
   .option("--project <name>", "Docker Compose project name (default: postgres_ai)")
   .option(
@@ -4185,7 +4415,10 @@ mon
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
-    let apiKey = opts.apiKey || globalOpts.apiKey;
+    // `pgai connect --self-hosted` passes the monitoring URL and key here, never
+    // in argv. PGAI_API_KEY alone (agents export it) must not reach --demo.
+    let apiKey = opts.apiKey || globalOpts.apiKey || (process.env.PGAI_DB_URL ? process.env.PGAI_API_KEY : undefined);
+    opts.dbUrl ??= process.env.PGAI_DB_URL;
 
     console.log("\n=================================");
     console.log("  PostgresAI monitoring local install");

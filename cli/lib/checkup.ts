@@ -4016,7 +4016,7 @@ export async function getIOStatistics(
     });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.log(`[I001] Error fetching I/O statistics: ${errorMsg}`);
+    console.error(`[I001] Error fetching I/O statistics: ${errorMsg}`);
     return [];
   }
 }

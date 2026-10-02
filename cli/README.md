@@ -76,6 +76,8 @@ Password input options (in priority order):
 - `PGAI_MON_PASSWORD` environment variable
 - if not provided: a strong password is generated automatically
 
+Monitoring passwords must use printable ASCII characters; non-ASCII passwords are rejected until SASLprep normalization is supported. Role creation and password resets send a SCRAM-SHA-256 verifier instead of the cleartext password, including when the server uses `password_encryption=md5`. Printed SQL redacts the verifier as well. Server statement logging can still record the verifier; treat it as sensitive.
+
 By default, the generated password is printed **only in interactive (TTY) mode**. In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
 - `--print-password` (dangerous in CI logs)
 
@@ -176,6 +178,97 @@ npx postgresai prepare-db postgresql://admin@host:5432/dbname --reset-password -
 ```
 
 ## Quick start
+
+### One command: `pgai connect`
+
+```bash
+pgai connect 'postgresql://postgres:<password>@<host>:5432/postgres'
+```
+
+It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
+prints the SQL), provisions monitoring in PostgresAI Cloud, runs the express checkup (the checks
+of `pgai checkup`, as `postgres_ai_mon`) while the box starts and prints its findings (in JSON:
+`checkup`), waits, and prints the dashboard URL. Safe to re-run; a `--clickhouse-key` given on a
+re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
+(a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
+machine instead. When stdout is not a terminal the result is JSON with `status`, `dashboard_url`
+and `next`. Then: `pgai databases`, `pgai status <name>`, `pgai disconnect <name>`.
+
+`pgai init` is the same for a person at a terminal: it signs in, asks for the database URL (and,
+for ClickHouse, the API key; neither is shown as typed), then runs `pgai connect`. Without a
+terminal, or with `--json`, it only points to `pgai connect`.
+
+| Option | |
+|---|---|
+| `--provider <provider>` | `clickhouse`, `rds`, `supabase` or `self-managed`; default: detected from the host |
+| `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
+| `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
+| `--reset-password` | `postgres_ai_mon` exists and its password is lost: set a new one (see below) |
+| `--wait <minutes>` | how long to wait for the monitoring box; `0` does not wait (default 20) |
+| `-y, --yes` | never prompt (`connect` does not start the browser sign-in; `disconnect` does not ask) |
+| `--json` | JSON output, also on a terminal |
+
+| Environment | |
+|---|---|
+| `PGAI_API_KEY` | the API key, instead of signing in (agents, CI) |
+| `PGAI_MON_PASSWORD` | the password of `postgres_ai_mon`. For a new role it is set; for an existing role it is checked by logging in, and never changed. Without it a new role gets a generated password |
+| `PGPASSWORD` | the password for a URL without one. With a `postgres_ai_mon` URL it is the password the monitoring box gets, once the server has checked it |
+| `PGSSLMODE` | the `sslmode` for a URL without one (`sslmode` in the URL wins, as in libpq) |
+| `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` | instead of `--clickhouse-key`; read for ClickHouse hosts only |
+
+`postgres_ai_mon` is one role for the whole server, so `connect` never changes the password of an
+existing one. If the role exists and you do not have its password (a reconnect after
+`pgai disconnect`, say), `pgai connect <admin-url> --reset-password` sets a new one
+(`PGAI_MON_PASSWORD`, else generated). It is refused while another database on the same server (the same host name, in this
+organization) is monitored with the role, with `--self-hosted`, and for a database already
+connected. Anything else that logs in as `postgres_ai_mon` (another organization, another host
+name for the same server, a connect running at the same time) needs the new password.
+
+When the role exists (an admin URL with `PGAI_MON_PASSWORD`, or the role's own URL), `connect`
+also logs in once as `postgres_ai_mon` with a random password, to learn whether the server checks
+passwords for this host at all. On a server that does, this is one
+`password authentication failed for user "postgres_ai_mon"` line in the server log per run, and it
+counts toward failed-login policies (credcheck, fail2ban). On a server that does not (`trust`),
+`next` says that the password was not checked; a password from `PGPASSWORD` is then not used:
+put it in the URL.
+
+A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole
+preparation: `CREATEROLE`, `CREATE` on the database, `pg_stat_statements` already installed, and
+on PostgreSQL 16+ `ADMIN OPTION` on `pg_monitor` and `pg_read_all_stats`. Otherwise the SQL is
+printed and nothing is created.
+
+The host and the port are the ones in the URL: `host` or `port` in the query string is refused.
+Of the query string, the monitoring box gets `sslmode`, `channel_binding` and `application_name`.
+Certificate files (`sslrootcert`, `sslcert`, `sslkey`) are used for the connections from this
+machine only; with `sslmode=verify-ca` or `verify-full` and a private CA in `sslrootcert`, `next`
+says that the box has no copy of that CA.
+
+A run that fails does not leave such a role behind. The ClickHouse key and the service state are
+checked before the database is touched. If the platform refuses the launch, or a later step of the
+preparation fails, a role that this run created with a generated password is dropped again, so the
+same command can be run again. (After a platform error that is not a refusal, such as a 5xx or a
+timeout, the role stays: a monitoring box may be starting with it.)
+
+An admin URL without a database connects to `PGDATABASE`, or else to the database named like the
+user; the name of the connected database (`<host>[:<port>]/<database>`) uses that database.
+
+`pgai connect`, `pgai status` and `pgai databases` use the same words:
+
+| `status` | Meaning | Exit code |
+|---|---|---|
+| `connected` | monitoring works; `dashboard_url` is set | 0 |
+| `provisioning` | the monitoring box is being set up; check with `pgai status <name>` | 0 |
+| `disconnecting` | a disconnect is in progress (`pgai status`) | 0 |
+| `disconnected` | the result of `pgai disconnect` | 0 |
+| `action_required` | do what `next` says, then re-run | 3 |
+| `failed` | `next` has the reason | 1 |
+
+`pgai init` exits with 130 when cancelled at a prompt (Ctrl-C, Ctrl-D).
+
+`--self-hosted` starts `mon local-install` with the monitoring URL, the API key and the ClickHouse
+key in its environment (`PGAI_DB_URL`, `PGAI_API_KEY`, `CLICKHOUSE_*`), not in its arguments.
+`mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with
+`PGAI_DB_URL`: an exported `PGAI_API_KEY` alone does not change a plain or `--demo` install.
 
 ### Authentication
 
@@ -372,6 +465,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
+- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only.
 
 #### `attachments` parameter (issue/comment tools)
 

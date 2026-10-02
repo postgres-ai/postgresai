@@ -19,6 +19,7 @@ import {
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "./storage";
 import { resolveBaseUrls } from "./util";
+import { connect, parseUrl, platformDeps } from "./connect";
 
 // MCP SDK imports - Bun handles these directly
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -89,7 +90,7 @@ export async function handleToolCall(
 
   const cfg = config.readConfig();
   const apiKey = (rootOpts?.apiKey || process.env.PGAI_API_KEY || cfg.apiKey || "").toString();
-  const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+  const { apiBaseUrl, uiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
   const debug = Boolean(args.debug ?? extra?.debug);
 
@@ -106,6 +107,36 @@ export async function handleToolCall(
   }
 
   try {
+    // `pgai connect`, same steps and JSON; it does not wait for the box (a tool
+    // call must return), so it answers provisioning with the next step.
+    if (toolName === "connect_database") {
+      const scope = resolveMcpOrgScope(args, apiKey, cfg);
+      if (scope.error) return scope.error;
+      const url = String(args.database_url ?? "");
+      // The URL comes from an agent: it must carry its own password, so that
+      // PGPASSWORD (or a password file) of this process is never sent to its host.
+      const u = parseUrl(url);
+      if (!u || !/^postgres(ql)?:$/.test(u.protocol) || !(u.password || u.searchParams.get("password"))) {
+        throw new Error("database_url must be postgresql://user:password@host:5432/dbname, with the password in it");
+      }
+      const result = await connect(url, {
+        provider: args.provider ? String(args.provider) : undefined,
+        clickhouseKey: args.clickhouse_key ? String(args.clickhouse_key) : undefined,
+        coupon: args.coupon === undefined || args.coupon === null ? undefined : String(args.coupon),
+        yes: args.yes === true,
+        waitMs: 0,
+        agent: true,
+      }, {
+        ...platformDeps({ apiKey, apiBaseUrl, uiBaseUrl, orgScope: scope.orgScope, debug, agent: true }),
+        selfHosted: async () => { throw new Error("A self-hosted stack is set up from the CLI: pgai connect <url> --self-hosted"); },
+        localStackRunning: () => false,
+        // An agent accepts a billed box with yes: true, never at a prompt.
+        confirm: async () => false,
+        progress: () => {},
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result.status === "failed" };
+    }
+
     if (toolName === "list_issues") {
       // Under a global token org_id is REQUIRED with no silent cfg fallback
       // (issue #250): a default that spans every org the user can reach is
@@ -702,6 +733,24 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["action_item_id"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "connect_database",
+          description: "Put a Postgres database under PostgresAI Cloud monitoring (same as `pgai connect`): prepares the monitoring role (an admin URL creates it; otherwise returns the SQL), provisions the monitoring box, and returns JSON with status (connected | provisioning | disconnecting | action_required | failed), dashboard_url and next (the exact next action). A billed box is provisioned only with yes: true: without it the result is action_required with the price (and requires_payment_method), so show the price to the user first. It does not wait for the box: call it again to see the status. Safe to call again. ClickHouse Managed Postgres, RDS and Supabase are detected from the host. The URL must carry its password, and only these query parameters: sslmode, channel_binding, application_name. PGAI_MON_PASSWORD, PGPASSWORD and CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET of the server process are not used (pass clickhouse_key), and a TLS failure is not retried in plaintext (say sslmode=disable for a server without TLS).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              ...ORG_ID_TOOL_PROPERTY,
+              database_url: { type: "string", description: "postgresql:// URL with the password in it (admin, or the postgres_ai_mon role)" },
+              provider: { type: "string", description: "clickhouse | rds | supabase | self-managed (default: detected from the host)" },
+              clickhouse_key: { type: "string", description: "ClickHouse Cloud API key as <key-id>:<key-secret> (Basic Service API Reader), for CPU, memory and disk" },
+              yes: { type: "boolean", description: "Accept the price of a billed box. Without it, a billed box is not provisioned: the result has status action_required and the price; ask the user, then call again with yes: true" },
+              coupon: { type: "string", description: "Stripe promotion code for the organization's monitoring subscription (applies when it is first created)" },
+              debug: { type: "boolean", description: "Enable verbose debug logs" },
+            },
+            required: ["database_url"],
             additionalProperties: false,
           },
         },

@@ -516,6 +516,19 @@ describe("Report generators with mock client", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
+  test("a failed pg_stat_io query is reported on stderr, never stdout (pgai connect's JSON, the MCP stream)", async () => {
+    const client = { query: async () => { throw new Error("permission denied for view pg_stat_io"); } };
+    const logged: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { logged.push(args.join(" ")); };
+    try {
+      expect(await checkup.getIOStatistics(client as any, 17)).toEqual([]);
+    } finally {
+      console.log = original;
+    }
+    expect(logged).toEqual([]);
+  });
+
   test("getIOStatistics skips placeholder SQL without querying", async () => {
     const mockClient = createI001MockClient({ ioRows: i001Rows });
 
@@ -3503,6 +3516,14 @@ describe("checkup-api", () => {
 // Tests for checkup-summary module
 describe("checkup-summary", () => {
   const summary = require("../lib/checkup-summary");
+
+  test("generateCheckSummary for an F001 warning says what the warning is (UAT 2026-10-02: a count alone)", () => {
+    const rule = (id: string, severity: string, conclusion: string) => ({ id, severity, conclusion, recommendation: "r" });
+    expect(summary.generateCheckSummary("F001", { results: { node1: { data: { autovacuum: {} }, settings_analysis: {
+      severity: "WARNING",
+      rules_fired: [rule("n", "NOTICE", "Advisory first."), rule("w", "WARNING", "Autovacuum cost limit is low.")],
+    } } } })).toEqual({ status: "warning", message: "Autovacuum config: 1 warning, 1 advisory findings. Autovacuum cost limit is low." });
+  });
 
   test("generateCheckSummary for F002 handles healthy, risky, and unavailable reports", () => {
     const base = { databases: [{ database_name: "db1" }], tables: [], settings_available: true };

@@ -14,7 +14,7 @@ import {
   positiveSeconds,
   asyncPollDelayMs,
 } from "./util";
-import { buildAuthHeaders } from "./org-scope";
+import { buildAuthHeaders, type OrgScope } from "./org-scope";
 
 /**
  * Joe API v2 client (`postgres-ai` CLI surface) — synchronous contract.
@@ -136,9 +136,10 @@ interface RpcCallParams {
    * Nothing ran, so this is not a re-send of the command.
    */
   fallbackBody?: Record<string, unknown>;
+  orgScope?: OrgScope;
 }
 
-async function callRpc<T>(params: RpcCallParams): Promise<T> {
+export async function callRpc<T>(params: RpcCallParams): Promise<T> {
   return (await callRpcRaw<T>(params)).data;
 }
 
@@ -155,7 +156,7 @@ async function callRpcRaw<T>(params: RpcCallParams): Promise<{ data: T; status: 
   // The org selector rides along via buildAuthHeaders' activeOrgScope fallback:
   // the CLI resolves it once in its preAction hook, so every joe rpc (run,
   // output, projects_list) carries x-pgai-org under a global token.
-  const headers: Record<string, string> = buildAuthHeaders(apiKey);
+  const headers: Record<string, string> = buildAuthHeaders(apiKey, params.orgScope);
 
   const send = async (bodyObj: Record<string, unknown>): Promise<{ response: Response; text: string }> => {
     const payload = JSON.stringify(bodyObj);

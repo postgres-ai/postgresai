@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import { SCRAM_DEFAULT_ITERATIONS, scramSha256Verifier } from "./scram";
 import { URL, fileURLToPath } from "url";
 import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import type { Client as PgClient } from "pg";
@@ -476,8 +477,8 @@ export function resolveAdminConnection(opts: {
     const v = conn || dbUrlFlag;
     if (isLikelyUri(v)) {
       const urlSslMode = extractSslModeFromUri(v);
-      const effectiveSslMode = explicitSsl || urlSslMode;
-      // SSL priority: PGSSLMODE env > URL param > auto (sslmode=prefer behavior)
+      const effectiveSslMode = urlSslMode || explicitSsl;
+      // SSL priority, as in libpq: URL param > PGSSLMODE env > auto (sslmode=prefer behavior)
       const sslConfig = effectiveSslMode
         ? sslModeToConfig(effectiveSslMode)
         : { rejectUnauthorized: false }; // Default: try SSL (with fallback)
@@ -586,9 +587,13 @@ export async function buildInitPlan(params: {
   database: string;
   monitoringUser?: string;
   monitoringPassword: string;
+  /** Server SCRAM iteration count; never use fewer than the default 4096. */
+  iterations?: number;
   includeOptionalPermissions: boolean;
   /** Provider type. Affects which steps are included. Defaults to "self-managed". */
   provider?: DbProvider;
+  /** Create the role if missing, but never change an existing role's password. */
+  keepExistingPassword?: boolean;
 }): Promise<InitPlan> {
   // NOTE: kept async for API stability / potential future async template loading.
   const monitoringUser = params.monitoringUser || DEFAULT_MONITORING_USER;
@@ -597,7 +602,16 @@ export async function buildInitPlan(params: {
 
   const qRole = quoteIdent(monitoringUser);
   const qDb = quoteIdent(database);
-  const qPw = quoteLiteral(params.monitoringPassword);
+  // Ship a pre-computed SCRAM-SHA-256 verifier instead of the cleartext password
+  // so the secret never reaches the server — keeping it out of pg_stat_activity,
+  // the server log, and pg_stat_statements. Postgres stores the verifier verbatim.
+  // Reject null bytes up front (they cannot appear in a password or a SQL literal).
+  if (params.monitoringPassword.includes("\0")) {
+    throw new Error("Password cannot contain null bytes");
+  }
+  const serverIterations = Number.isFinite(params.iterations) ? params.iterations! : 0;
+  const iterations = Math.max(SCRAM_DEFAULT_ITERATIONS, serverIterations);
+  const qPwVerifier = quoteLiteral(scramSha256Verifier(params.monitoringPassword, { iterations }));
   const qRoleNameLit = quoteLiteral(monitoringUser);
 
   const steps: InitStep[] = [];
@@ -618,12 +632,12 @@ export async function buildInitPlan(params: {
     const roleStmt = `do $$ begin
   if not exists (select 1 from pg_catalog.pg_roles where rolname = ${qRoleNameLit}) then
     begin
-      create user ${qRole} with password ${qPw};
+      create user ${qRole} with password ${qPwVerifier};
     exception when duplicate_object then
       null;
     end;
-  end if;
-  alter user ${qRole} with password ${qPw};
+  end if;${params.keepExistingPassword ? "" : `
+  alter user ${qRole} with password ${qPwVerifier};`}
 end $$;`;
 
     const roleSql = applyTemplate(loadSqlTemplate("01.role.sql"), { ...vars, ROLE_STMT: roleStmt });
@@ -711,7 +725,7 @@ export async function applyInitPlan(params: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const errAny = e as any;
-      const wrapped: any = new Error(`Failed at step "${step.name}": ${msg}`);
+      const wrapped: any = new Error(`Failed at step "${step.name}": ${redactPasswordsInSql(msg)}`);
       // Preserve useful Postgres error fields so callers can provide better hints / diagnostics.
       const pgErrorFields = [
         "code",
@@ -732,11 +746,14 @@ export async function applyInitPlan(params: {
       ] as const;
       if (errAny && typeof errAny === "object") {
         for (const field of pgErrorFields) {
-          if (errAny[field] !== undefined) wrapped[field] = errAny[field];
+          if (errAny[field] !== undefined) {
+            wrapped[field] = typeof errAny[field] === "string"
+              ? redactPasswordsInSql(errAny[field]) : errAny[field];
+          }
         }
       }
       if (e instanceof Error && e.stack) {
-        wrapped.stack = e.stack;
+        wrapped.stack = redactPasswordsInSql(e.stack);
       }
       throw wrapped;
     }

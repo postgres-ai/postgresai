@@ -367,7 +367,11 @@ cli:node:tests:
   before_script:
     - corepack enable || true
     - apt-get update
-    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip && rm -rf /var/lib/apt/lists/*
+    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip
+    # PostgreSQL 17 from PGDG for tests that need scram_iterations (PG >= 16); the
+    # default binaries found by the tests stay at bookworm's PostgreSQL 15.
+    - /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+    - apt-get install -y --no-install-recommends postgresql-17 && rm -rf /var/lib/apt/lists/*
     # Install Bun
     - curl -fsSL https://bun.sh/install | bash
     - export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
@@ -380,7 +384,7 @@ cli:node:tests:
   script:
     # Use 'bun run test' (not 'bun test') to invoke the npm script which generates metrics-embedded.ts first
     # Coverage is enabled via bunfig.toml and outputs text + lcov reports
-    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" && bun run test"
+    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" PGAI_TEST_REQUIRE_PG16=1 && bun run test"
     # Fix ownership of coverage directory for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/cli/coverage" || true
   # Regex matches Bun coverage table: "All files | % Funcs | % Lines |" - captures % Lines
@@ -407,9 +411,14 @@ cli:clickhouse-like:tests:
   variables:
     GIT_STRATEGY: fetch
     POSTGRES_PASSWORD: "chlike"
+    # components/index_pilot/.gitlab-ci.yml sets POSTGRES_HOST_AUTH_METHOD: trust
+    # for every job, and the service's pg_hba.conf then trusts the job container.
+    # Check passwords instead, so the connect tests see a wrong one refused.
+    POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+    POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
   script:
-    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts test/connect.integration.test.ts
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
