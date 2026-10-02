@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -626,6 +626,31 @@ describe("connect on the paid path: the price before the box", () => {
       next: "The price changed since it was shown: re-run pgai connect to see it",
     });
     expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
+  });
+
+  test("--coupon '' (an empty variable): refused, not dropped; nothing prepared", async () => {
+    const { deps, calls } = make();
+    expect(await connect(SH, { waitMs: 0, yes: true, coupon: " " }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      next: "--coupon is empty: pass a promotion code, or leave --coupon out",
+    });
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("a repeating or permanent discount is not described as the first month only", async () => {
+    const promo = (duration: string, extra: Record<string, unknown> = {}) => ({ code: "C", valid: true, discount_description: "x", duration, ...extra });
+    const q = (p: Record<string, unknown>) => priceText({ ...PAID, promo: p, amount_after_promo: 25600 } as never);
+    expect(q(promo("repeating", { duration_in_months: 3 }))).toBe("$256.00/month for 3 months with C (x), then $512.00/month per box (scale plan)");
+    expect(q(promo("forever"))).toBe("$256.00/month with C (x), instead of $512.00/month per box (scale plan)");
+  });
+
+  test("a URL that cannot create the role on a billed box: the SQL, with the price still in the result", async () => {
+    const { deps } = make({}, { prepare: async () => ({ next: "Run the SQL as an admin", sql: "create role ..." }) });
+    expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      next: "Run the SQL as an admin", sql: "create role ...",
+    });
   });
 
   test("a re-run of a connected database asks no price", async () => {
