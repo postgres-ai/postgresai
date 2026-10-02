@@ -547,7 +547,8 @@ describe("connect on the paid path: the price before the box", () => {
     const result = await connect(SH, { waitMs: 60_000 }, deps);
     expect(asked).toEqual([`${SH_NAME} is billed: $512.00/month per box (scale plan). Provision it? (y/N): `]);
     expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
-    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
+    // The price was accepted: the platform creates a billed box only with accept_price.
+    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, accept_price: true })}`);
     expect(result).toMatchObject({ status: "connected", price: "$512.00/month per box (scale plan)", requires_payment_method: false });
   });
 
@@ -589,7 +590,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make({ promo, amount_after_promo: 0 });
     const result = await connect(SH, { waitMs: 60_000, yes: true, coupon: "LAUNCH100" }, deps);
     expect(calls[1]).toBe("quote LAUNCH100");
-    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100" })}`);
+    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100", accept_price: true })}`);
     expect(result).toMatchObject({
       status: "connected",
       price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per box (scale plan)",
@@ -615,6 +616,16 @@ describe("connect on the paid path: the price before the box", () => {
       price: "$512.00/month per box (scale plan)", requires_payment_method: true,
       next: "Add a payment method at https://console.example/acme/billing, then re-run",
     });
+  });
+
+  test("a free slot sends no accept_price; the platform billing it after all (412, the slot went meanwhile) is: re-run to see the price", async () => {
+    const { deps, calls } = make({ billed: false, free_slots: { remaining: 1, total: 1 } }, { create: async (body) => { calls.push(`create ${JSON.stringify(body)}`); throw new HttpStatusError("Precondition Failed", 412); } });
+    expect(await connect(SH, { waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "free (1 of 1 free slots)", requires_payment_method: false,
+      next: "The price changed since it was shown: re-run pgai connect to see it",
+    });
+    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
   });
 
   test("a re-run of a connected database asks no price", async () => {
