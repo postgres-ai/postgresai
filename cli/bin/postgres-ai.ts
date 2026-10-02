@@ -5687,6 +5687,9 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
 }
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
+// A postgres:// URL or a libpq "key=value" string; a target name is neither.
+const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value) || value.includes("=");
+
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
   env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
@@ -5812,9 +5815,20 @@ Re-running with the same name and connection string is safe; retry after fixing 
 
 Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes host-metrics/supabase-<name>.yml.
 RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
+
+Environment:
+  PGAI_DB_URL  the connection string, when none is given (keeps the password out of argv);
+               the only argument is then the name: PGAI_DB_URL=... postgres-ai mon targets add my-db
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
+    // Automation passes the URL here, not in argv, where `ps` and the sudo
+    // log would show the password. A connection string in argv still wins.
+    const envUrl = process.env.PGAI_DB_URL || undefined;
+    if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
+      name = connStr;
+      connStr = envUrl;
+    }
     await addTarget(file, projectDir, connStr, name, process.env);
   });
 targets
