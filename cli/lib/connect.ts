@@ -16,8 +16,30 @@ import { HttpStatusError, requestTimeoutSignal } from "./util";
 export type Provider = "clickhouse" | "rds" | "supabase" | "self-managed";
 export type Status = "connected" | "provisioning" | "disconnecting" | "disconnected" | "action_required" | "failed";
 
-/** The express checkup run while the box starts: what it found, or why it could not run. */
-export type CheckupResult = { checks: number; findings: { check_id: string; title: string; status: string; message: string }[]; failed?: string[] } | { error: string };
+/**
+ * The express checkup run while the box starts: what it found, or why it could not run.
+ * Every check is in one of findings (warning, ok), info (an inventory, no verdict) or failed.
+ * report_id: saved as that report (pgai reports files <id>); upload_error: why it was not.
+ */
+export type CheckupResult = {
+  checks: number;
+  findings: { check_id: string; title: string; status: string; message: string }[];
+  info: string[];
+  failed?: string[];
+  report_id?: number;
+  upload_error?: string;
+} | { error: string };
+
+/** A step of connect, once each: a line for a person, a JSON event for an agent. */
+export interface ProgressEvent {
+  event: "preparing" | "provisioning" | "checkup" | "box";
+  /** Seconds since connect started. */
+  elapsed_s: number;
+  message: string;
+  /** event box: the box's state (launch_requested, registered, active, ...). */
+  state?: string;
+  checkup?: CheckupResult;
+}
 
 export interface ConnectResult {
   status: Status;
@@ -40,6 +62,8 @@ export interface Database {
   status: string | null;
   dashboard_url: string | null;
   host_metrics: boolean;
+  /** When the box registered with the platform (it then sets up the monitoring). */
+  registered_at?: string | null;
 }
 
 /**
@@ -57,12 +81,13 @@ export interface ConnectDeps {
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
-  /** The express checkup over the monitoring role's URL. */
-  checkup(url: string): Promise<CheckupResult>;
+  /** The express checkup over the monitoring role's URL, saved as a report of `project`. */
+  checkup(url: string, project: string): Promise<CheckupResult>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
   sleep(ms: number): Promise<void>;
-  progress(line: string): void;
+  now(): number;
+  progress(event: ProgressEvent): void;
 }
 
 export interface ConnectOptions {
@@ -220,21 +245,40 @@ function withLocalTls(monitoringUrl: string, url: string): string {
   return u.toString();
 }
 
-/** The express checkup for a person: a line per warning, one for the checks that passed. */
+/** The express checkup for a person: a line per warning, then the other checks by id, and where it was saved. */
 export function checkupLines(c: CheckupResult): string[] {
   if ("error" in c) return [`Express checkup could not run: ${c.error}`];
   const warnings = c.findings.filter((f) => f.status === "warning");
   const ok = c.findings.filter((f) => f.status === "ok");
+  const failed = c.failed ?? [];
+  const counts = [`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`, `${ok.length} ok`, `${c.info.length} info`, ...(failed.length ? [`${failed.length} could not run`] : [])];
   return [
-    `Express checkup while the box starts (${c.checks} checks: ${warnings.length} warning${warnings.length === 1 ? "" : "s"}, ${ok.length} ok):`,
+    `Express checkup while the box starts (${c.checks} checks: ${counts.join(", ")}):`,
     ...warnings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
     ...(ok.length ? [`  ok: ${ok.map((f) => f.check_id).join(" ")}`] : []),
-    ...(c.failed?.length ? [`  could not run: ${c.failed.join(" ")}`] : []),
+    ...(c.info.length ? [`  info: ${c.info.join(" ")}`] : []),
+    ...(failed.length ? [`  could not run: ${failed.join(" ")}`] : []),
+    c.report_id ? `Saved as report ${c.report_id}: pgai reports files ${c.report_id}` : `Not saved to PostgresAI: ${c.upload_error}`,
     "The full checkup (query analysis and trends) follows on the box.",
   ];
 }
 
+/** A progress event as a person reads it: the time since the start ends its first line (before a colon). */
+export function progressText(e: ProgressEvent): string {
+  const s = Math.round(e.elapsed_s);
+  const elapsed = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+  const [first, ...rest] = e.message.split("\n");
+  const colon = first.endsWith(":") ? ":" : "";
+  return [`${first.slice(0, first.length - colon.length)} (+${elapsed})${colon}`, ...rest].join("\n");
+}
+
+/** The box's state as connect shows it: registered between the launch and active. */
+const boxState = (row: Database) => (row.status === "launch_requested" && row.registered_at ? "registered" : row.status ?? "starting");
+
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
+  const started = deps.now();
+  const progress = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}) =>
+    deps.progress({ event, elapsed_s: Math.round((deps.now() - started) / 1000), message, ...more });
   const provider = (opts.provider ?? detectCloudProvider(url)) as Provider;
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
   checkUrlParams(url, opts.agent);
@@ -293,7 +337,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` };
       }
     }
-    deps.progress(`Preparing ${maskConnectionString(url)}`);
+    progress("preparing", `Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
     if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
     if (prepared.note) note = `; ${prepared.note}`;
@@ -303,7 +347,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         : {});
       return { status: "connected", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
     }
-    deps.progress(`Provisioning monitoring for ${name}`);
+    progress("provisioning", `Provisioning monitoring for ${name}`);
     // A refused launch starts no box, so a role with a generated password is
     // dropped again: nobody has that password, and the re-run would stop at it.
     const undo = async () => { if (prepared.generated) await deps.unprepare(url).catch(() => false); };
@@ -322,20 +366,24 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
-    checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url)).catch((err) => ({ error: errorText(err) }));
-    for (const line of checkupLines(checkup)) deps.progress(line);
+    checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
+    progress("checkup", checkupLines(checkup).join("\n"), { checkup });
   }
 
-  for (const deadline = Date.now() + opts.waitMs; ;) {
+  // The box's state, each time it changes while connect waits for it (not on a re-run of a connected database).
+  let shown: string | undefined;
+  for (const deadline = deps.now() + opts.waitMs; ;) {
     const result = connectStatus(row, provider, fresh);
-    if (result.status !== "provisioning" || Date.now() >= deadline) {
+    const state = boxState(row);
+    if (state !== shown && (shown !== undefined || result.status === "provisioning")) progress("box", `Monitoring box: ${state}`, { state });
+    shown = state;
+    if (result.status !== "provisioning" || deps.now() >= deadline) {
       if (result.status === "connected" && provider === "clickhouse" && !row.host_metrics) {
         result.next += "; for CPU, memory and disk, disconnect and reconnect with --clickhouse-key <key-id>:<key-secret>";
       }
       const { next, ...rest } = result;
       return { ...rest, ...(checkup ? { checkup } : {}), next: next + note };
     }
-    deps.progress(`Waiting for the monitoring box (${row.status ?? "starting"})`);
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
     row = (await deps.list().catch(() => [] as Database[])).find((d) => d.id === row!.id) ?? row;
@@ -484,20 +532,49 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
   }
 }
 
-/** The express checkup (pgai checkup's checks) over `url`: the warnings, then what passed (not the plain inventories). */
-export async function expressCheckup(url: string, opts: PrepareOptions = {}): Promise<CheckupResult> {
+/**
+ * The express checkup (pgai checkup's checks) over `url`: the warnings, then what passed; the plain
+ * inventories by id. `save` stores the reports and returns the report id; its error is in the result.
+ */
+export async function expressCheckup(url: string, opts: PrepareOptions & { save?: (reports: Record<string, unknown>) => Promise<number> } = {}): Promise<CheckupResult> {
   const { client } = await openConnection(url, opts);
+  let reports: Awaited<ReturnType<typeof generateAllReports>>;
+  const failed: string[] = [];
   try {
-    const failed: string[] = [];
-    const reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, (f) => failed.push(f.checkId));
-    const findings = Object.values(reports)
-      .map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }))
-      .filter((f) => f.status !== "info")
-      .sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
-    return { checks: Object.keys(reports).length + failed.length, findings, ...(failed.length ? { failed } : {}) };
+    reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, (f) => failed.push(f.checkId));
   } finally {
     await client.end();
   }
+  const all = Object.values(reports).map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }));
+  const findings = all.filter((f) => f.status !== "info").sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
+  const result = { checks: all.length + failed.length, findings, info: all.filter((f) => f.status === "info").map((f) => f.check_id), ...(failed.length ? { failed } : {}) };
+  if (!opts.save) return result;
+  try {
+    return { ...result, report_id: await opts.save(reports) };
+  } catch (err) {
+    return { ...result, upload_error: errorText(err) };
+  }
+}
+
+/**
+ * Saves checkup reports as one report of `project`, the way the box's reporter does: created
+ * pending, a file per check, then completed (failed when a file did not upload).
+ */
+async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
+  const { report_id } = await rpc<{ report_id: number }>("checkup_report_create", { access_token: accessToken, project });
+  let status = "failed";
+  try {
+    for (const [checkId, report] of Object.entries(reports)) {
+      await rpc("checkup_report_file_post", {
+        access_token: accessToken, checkup_report_id: report_id, filename: `${checkId}.json`, check_id: checkId,
+        data: JSON.stringify(report, null, 2), type: "json", generate_issue: true,
+      });
+    }
+    status = "completed";
+  } finally {
+    await rpc("checkup_report_status_update", { access_token: accessToken, report_id, status }).catch(() => {});
+  }
+  return report_id;
 }
 
 /** The ClickHouse Cloud organization that runs the service at `host`, found with the key itself. */
@@ -539,12 +616,14 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     prepare: (url: string, provider: Provider, o: { resetPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
-    checkup: (url: string) => expressCheckup(url, { agent: p.agent }),
+    checkup: (url: string, project: string) =>
+      expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);
       return `${p.uiBaseUrl}/${org?.alias ?? "<org>"}/monitoring/scale/create/${provider}`;
     },
     sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
   };
 }

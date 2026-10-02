@@ -20,8 +20,10 @@
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
-  While the box starts, `connect` runs the express checkup as `postgres_ai_mon` and prints its findings
-  (JSON: `checkup`). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
+  While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings
+  (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`). Each step and
+  each change of the box's state is shown once, with the time since the start (JSON: one event a line
+  on stderr). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
   `connected`. `pgai databases` uses the `status` words of `connect` and `status`. `pgai init` does not
   echo the URL. `--reset-password` gives an existing `postgres_ai_mon` a new password.
 

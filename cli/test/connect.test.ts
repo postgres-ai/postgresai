@@ -279,7 +279,7 @@ describe("connect", () => {
       "Preparing postgresql://postgres:*****@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require (+0s)",
       `Provisioning monitoring for ${CH_NAME} (+0s)`,
       [
-        "Express checkup while the box starts (4 checks: 1 warning, 1 ok, 2 info) (+14s)",
+        "Express checkup while the box starts (4 checks: 1 warning, 1 ok, 2 info) (+14s):",
         "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
         "  ok: A002",
         "  info: A003 A004",
@@ -341,7 +341,7 @@ describe("connect", () => {
     await connect(tls, { waitMs: 0 }, deps);
     expect(calls.filter((c) => /^(create|checkup)/.test(c))).toEqual([
       `create ${JSON.stringify({ db_url: box })}`,
-      `checkup ${box}&sslrootcert=%2Ftmp%2Fca.pem as db.example.com/app`,
+      `checkup ${box}&sslrootcert=%2Ftmp%2Fca.pem as ${CH_NAME}`,
     ]);
   });
 
@@ -383,7 +383,7 @@ describe("connect", () => {
     try {
       const { deps, calls } = fake();
       expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("provisioning");
-      expect(calls).toEqual(["list", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`, `checkup ${MON}`]);
+      expect(calls).toEqual(["list", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`, `checkup ${MON} as ${CH_NAME}`]);
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
@@ -444,7 +444,7 @@ describe("connect", () => {
     process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
     try {
       expect((await connect(CH, { waitMs: 0, agent: true }, deps)).host_metrics).toBe(false);
-      expect(calls).toEqual(["list", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, `checkup ${MON}`]);
+      expect(calls).toEqual(["list", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, `checkup ${MON} as ${CH_NAME}`]);
       // The key the agent passes is used.
       await connect(CH, { clickhouseKey: KEY, waitMs: 0, agent: true }, deps);
       expect(calls).toContain("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa");

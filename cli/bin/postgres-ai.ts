@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4175,7 +4175,8 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         if (r.status !== 0) throw new Error("mon local-install failed (see above)");
       },
       localStackRunning: () => checkRunningContainers().running,
-      progress: (line) => console.error(line),
+      // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
+      progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
     });
     emitConnect(result, opts.json);
   } catch (err) {
