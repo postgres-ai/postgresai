@@ -39,9 +39,12 @@ def file_post(name: str) -> tuple[str, dict[str, Any]]:
     return ("/rpc/checkup_report_file_post", {"checkup_report_id": REPORT_ID, "filename": name})
 
 
-def status(value: str) -> tuple[str, dict[str, Any]]:
-    return ("/rpc/checkup_report_status_update",
-            {"access_token": TOKEN, "report_id": REPORT_ID, "status": value})
+def status(value: str, reason: str | None = None) -> tuple[str, dict[str, Any]]:
+    """The status call; a failed report says why (platform-all !960)."""
+    data: dict[str, Any] = {"access_token": TOKEN, "report_id": REPORT_ID, "status": value}
+    if reason is not None:
+        data["reason"] = reason
+    return ("/rpc/checkup_report_status_update", data)
 
 
 def _http_error(code: int) -> requests.exceptions.HTTPError:
@@ -58,7 +61,8 @@ def run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
 
     def run(argv: list[str], *, reports=None, fail_upload_of: str | None = None,
             generation_error: Exception | None = None,
-            status_error: Exception | None = None) -> list[tuple[str, dict[str, Any]]]:
+            status_error: Exception | None = None,
+            reason_unsupported: bool = False) -> list[tuple[str, dict[str, Any]]]:
         def fake_make_request(api_url: str, endpoint: str, data: dict[str, Any]) -> dict[str, Any]:
             assert api_url == API
             if endpoint == "/rpc/checkup_report_file_post":
@@ -72,6 +76,8 @@ def run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
                 return {"report_id": REPORT_ID}
             if status_error is not None:
                 raise status_error
+            if reason_unsupported and "reason" in data:
+                raise _http_error(404)
             return {"report_id": REPORT_ID, "status": data.get("status")}
 
         def fake_generate_all(self, *_a, **_k):
@@ -113,7 +119,7 @@ def test_failed_upload_marks_report_failed(run_main) -> None:
         CREATE,
         file_post("A002.json"),
         file_post("H001.json"),
-        status("failed"),
+        status("failed", "1 file(s) failed to upload: A002.json"),
     ]
 
 
@@ -121,7 +127,7 @@ def test_failed_upload_marks_report_failed(run_main) -> None:
 def test_generation_error_marks_report_failed_and_still_raises(run_main) -> None:
     with pytest.raises(RuntimeError, match="prometheus went away"):
         run_main(ARGS_ALL, generation_error=RuntimeError("prometheus went away"))
-    assert run_main.calls == [CREATE, status("failed")]
+    assert run_main.calls == [CREATE, status("failed", "the reporter raised: prometheus went away")]
 
 
 @pytest.mark.unit
@@ -147,4 +153,17 @@ def test_single_check_upload_crash_marks_report_failed_and_still_raises(run_main
     argv = ARGS_ALL + ["--check-id", "A002", "--output", "out.json"]
     with pytest.raises(PermissionError):
         run_main(argv)
-    assert run_main.calls == [CREATE, status("failed")]
+    assert run_main.calls == [CREATE, status("failed", "the reporter raised: out.json is not readable")]
+
+
+@pytest.mark.unit
+def test_platform_without_reason_still_gets_the_status(run_main) -> None:
+    """An API older than the reason parameter (404 for that call) still gets `failed`."""
+    calls = run_main(ARGS_ALL, reports={"A002": {"checkId": "A002"}}, fail_upload_of="A002.json",
+                     reason_unsupported=True)
+    assert calls == [
+        CREATE,
+        file_post("A002.json"),
+        status("failed", "1 file(s) failed to upload: A002.json"),
+        status("failed"),
+    ]
