@@ -67,6 +67,7 @@ import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } f
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
+import { withJsonStderr, writeEvent } from "../lib/json-stderr";
 import {
   type Instance,
   InstancesParseError,
@@ -4143,7 +4144,24 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
   return !!cloudApi().apiKey;
 }
 
-async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+type ConnectOpts = { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean };
+
+/** With JSON output, stderr is the event stream: every line of it is a JSON event. */
+function runConnect(url: string, opts: ConnectOpts) {
+  return opts.json || !process.stdout.isTTY ? withJsonStderr(() => connectCommand(url, opts, true)) : connectCommand(url, opts, false);
+}
+
+/** `mon local-install` for --self-hosted; with JSON output each line it prints is a log event. */
+function runLocalInstall(args: string[], env: NodeJS.ProcessEnv, json: boolean): Promise<number | null> {
+  if (!json) return Promise.resolve(childProcess.spawnSync(process.execPath, args, { stdio: ["ignore", 2, 2], env }).status);
+  const child = childProcess.spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], env });
+  for (const stream of [child.stdout!, child.stderr!]) {
+    createInterface({ input: stream }).on("line", (line) => writeEvent({ event: "log", level: "info", source: "mon local-install", message: line }));
+  }
+  return new Promise((resolve) => child.on("close", (code) => resolve(code)));
+}
+
+async function connectCommand(url: string, opts: ConnectOpts, json: boolean) {
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
@@ -4168,11 +4186,9 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
         // Registering the stack needs a project name: the database's name, as a token.
         const project = name.replace(/[^A-Za-z0-9._-]+/g, "-");
-        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project], {
-          stdio: ["ignore", 2, 2],
-          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
-        });
-        if (r.status !== 0) throw new Error("mon local-install failed (see above)");
+        const status = await runLocalInstall([process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project],
+          { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) }, json);
+        if (status !== 0) throw new Error("mon local-install failed (see above)");
       },
       localStackRunning: () => checkRunningContainers().running,
       // A billed box: asked only of a person at a terminal (else --yes).
@@ -4187,7 +4203,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         return /^(y|yes)$/i.test(answer.trim());
       },
       // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
-      progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
+      progress: (e) => (json ? writeEvent(e) : console.error(progressText(e))),
     });
     emitConnect(result, opts.json);
   } catch (err) {
