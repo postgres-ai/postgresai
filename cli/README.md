@@ -710,8 +710,8 @@ PGPASSWORD=... postgresai checkup \
 
   ```json
   {
-    "H002": { "contract_version": "1.0.0", "checkId": "H002", "...": "..." },
-    "F003": { "contract_version": "1.0.0", "checkId": "F003", "...": "..." }
+    "H002": { "contract_version": "1.1.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.1.0", "checkId": "F003", "...": "..." }
   }
   ```
 
@@ -822,7 +822,7 @@ A consumer should accept any report whose `contract_version` shares its **major*
 and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
 additive minors, and treat a major bump as a required review.
 
-The current contract version is **`1.0.0`**.
+The current contract version is **`1.1.0`** (1.1.0: a node result without data carries `available` and `reason`).
 
 ### Envelope fields
 

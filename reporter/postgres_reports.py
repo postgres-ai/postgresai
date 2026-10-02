@@ -37,7 +37,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"
 
 import requests
 import json
@@ -72,6 +72,26 @@ except ImportError:  # pragma: no cover
 # dropped, so H001/H002/H004 must never recommend removing them (#345).
 _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
 _SYSTEM_TEMP_SCHEMA_RE = re.compile(r"^pg_(toast_)?temp_")
+
+
+# Why a report has no data, in words for its reader (UAT 2026-10-01: an empty
+# `data: {}` said nothing). An empty node result gets `available` and `reason`:
+# false where the data was not collected, true where the check ran and found nothing.
+_QUERY_STATS_REASON = (
+    "No query statistics in the window. The monitoring records a query from pg_stat_statements once it has "
+    "run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet."
+)
+EMPTY_REPORT_REASONS = {
+    **{check_id: (False, _QUERY_STATS_REASON) for check_id in ("K001", "K003", "K004", "K005", "K006", "K007", "K008", "M001", "M002", "M003")},
+    "N001": (False, "No active-session samples in the window: no session was active when sampled, or the collection has not run yet."),
+    "A007": (True, "No setting differs from its default."),
+    "F004": (True, "No table bloat estimate in the collected metrics (tables of 1 MiB or more are estimated)."),
+    "F005": (True, "No index bloat estimate in the collected metrics (indexes of 1 MiB or more are estimated)."),
+    "H001": (True, "No invalid indexes found in the collected metrics."),
+    "H002": (True, "No unused indexes found in the collected metrics."),
+    "H004": (True, "No redundant indexes found in the collected metrics."),
+}
+_DEFAULT_EMPTY_REASON = (False, "No data for this check in the collected metrics yet.")
 
 
 def is_system_schema(name: Any) -> bool:
@@ -4055,6 +4075,10 @@ class PostgresReportGenerator:
             if postgres_version:
                 node_result["postgres_version"] = postgres_version
             results = {host: node_result}
+
+        for node_result in results.values():
+            if isinstance(node_result, dict) and not node_result.get("data"):
+                node_result["available"], node_result["reason"] = EMPTY_REPORT_REASONS.get(check_id, _DEFAULT_EMPTY_REASON)
 
         template_data = {
             "contract_version": CONTRACT_VERSION,

@@ -146,3 +146,41 @@ def test_no_api_key_generates_local_reports(tmp_path):
     assert "--no-upload" in args
     assert "--token" not in args
     assert "generating reports (no upload)" in proc.stdout
+
+
+@pytest.mark.unit
+def test_first_report_ends_now_later_ones_on_the_hour(tmp_path):
+    """The first report runs half an hour after the stack starts. A window
+    floored to the hour ends before the first sample there, so K/M/N came out
+    empty on every new box (UAT 2026-10-02, real reporter against real
+    pgwatch data: floored K001 `data: {}`, --use-current-time 1 query). The
+    first cycle ends its window now; later ones keep the hour-aligned window.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    stub = stub_dir / "python"
+    # One line per invocation; the third one stops the loop.
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "$*" >> "$CALLS"\n'
+        '[ "$(wc -l < "$CALLS")" -ge 3 ] && exit 7\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    env = os.environ.copy()
+    env.pop("USE_CURRENT_TIME", None)
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "CALLS": str(calls),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(tmp_path / "missing"),
+            "REPORTER_INITIAL_DELAY_SECONDS": "0",
+            "REPORTER_INTERVAL_SECONDS": "0",
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "r_%H%M%S.json"),
+        }
+    )
+    proc = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert ["--use-current-time" in line.split() for line in calls.read_text().splitlines()] == [True, False, False]
