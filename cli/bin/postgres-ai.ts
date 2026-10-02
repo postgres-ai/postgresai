@@ -1363,6 +1363,11 @@ function withOrgOptions(command: Command): Command {
 // guard holds for every org-scoped command rather than only the ones somebody
 // remembered to wire. Emitting the header is the lib layer's job (see
 // lib/org-scope.ts); both halves must hold for the org to reach the wire.
+/** `pgai connect` with JSON output: stderr is its event stream (JSON lines only). */
+function jsonConnect(command: Command): boolean {
+  return command.parent === program && command.name() === "connect" && (!!command.opts().json || !process.stdout.isTTY);
+}
+
 program.hook("preAction", (_thisCommand, actionCommand) => {
   // Not at a terminal, pgai init only points to pgai connect: no org needed for that.
   const initPointsToConnect = actionCommand.parent === program && actionCommand.name() === "init" && !interactive(actionCommand.opts().json);
@@ -1378,7 +1383,8 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
     setActiveOrgScope(requireOrgScope(opts, apiKey));
   } catch (err) {
     if (err instanceof OrgScopeError) {
-      console.error(err.message);
+      if (jsonConnect(actionCommand)) writeEvent({ event: "log", level: "error", message: err.message });
+      else console.error(err.message);
       process.exit(1);
     }
     throw err;
@@ -4158,7 +4164,10 @@ function runLocalInstall(args: string[], env: NodeJS.ProcessEnv, json: boolean):
   for (const stream of [child.stdout!, child.stderr!]) {
     createInterface({ input: stream }).on("line", (line) => writeEvent({ event: "log", level: "info", source: "mon local-install", message: line }));
   }
-  return new Promise((resolve) => child.on("close", (code) => resolve(code)));
+  return new Promise((resolve) => {
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code));
+  });
 }
 
 async function connectCommand(url: string, opts: ConnectOpts, json: boolean) {
@@ -4172,11 +4181,11 @@ async function connectCommand(url: string, opts: ConnectOpts, json: boolean) {
   if (!Number.isFinite(waitMinutes) || waitMinutes < 0) {
     return emitConnect({ status: "failed", provider, name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
   }
-  if (!opts.selfHosted && !signedIn(opts)) {
-    return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
-  }
-  const api = cloudApi(opts.debug);
   try {
+    if (!opts.selfHosted && !signedIn(opts)) {
+      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+    }
+    const api = cloudApi(opts.debug);
     const result = await connect(url, { ...opts, waitMs: waitMinutes * 60_000 }, {
       ...api,
       selfHosted: async (monitoringUrl, env) => {
@@ -4212,6 +4221,13 @@ async function connectCommand(url: string, opts: ConnectOpts, json: boolean) {
 }
 
 withOrgOptions(program.command("connect <database-url>"))
+  // Commander's own errors (a missing URL, an unknown option) are JSON events too.
+  .configureOutput({
+    writeErr: (text) => {
+      if (!(process.argv.includes("--json") || !process.stdout.isTTY)) return void process.stderr.write(text);
+      for (const line of text.split("\n").filter((l) => l.trim() !== "")) writeEvent({ event: "log", level: "error", message: line });
+    },
+  })
   .description("put a database under PostgresAI's care: prepare it, provision monitoring, print the dashboard")
   .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
