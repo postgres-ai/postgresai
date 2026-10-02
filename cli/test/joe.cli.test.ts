@@ -48,9 +48,11 @@ interface RecordedRequest {
 }
 
 /**
- * Fake PostgREST server for the sync Joe rpcs. Instance 55 ("cold-db") never
- * posts a result (stays `pending`, exercising the resume path); instance 66
- * ("no-role") returns the Joe-API-v2 role-gate PT403; instance 3 completes.
+ * Fake PostgREST server for the Joe rpcs. Instance 55 ("cold-db") never posts a
+ * result (stays `pending`, exercising the resume path); instance 66 ("no-role")
+ * returns the Joe-API-v2 role-gate PT403; instance 22 ("inverted-db") is reached
+ * over the job channel and answers PT426 unless the caller opted in, then 202
+ * with a handle; instance 3 completes.
  * Command ids are ABOVE 2^53 so any parseInt round-trip in the CLI corrupts
  * them and the string-preservation assertions fail.
  */
@@ -60,6 +62,7 @@ function startFakeApi() {
   const FORBIDDEN_INSTANCE = 66;
   const ERROR_INSTANCE = 33;
   const FLAKY_INSTANCE = 44;
+  const INVERTED_INSTANCE = 22;
   let nextId = 9007199254740993000n; // > Number.MAX_SAFE_INTEGER
   const commands = new Map<string, { command: string; instanceId: number }>();
 
@@ -88,6 +91,7 @@ function startFakeApi() {
           { project_id: 14, alias: "no-joe", name: "No Joe", joe_ready: false, tunnel: false, instance_id: null },
           { project_id: 15, alias: "err-db", name: "Err DB", joe_ready: true, tunnel: true, instance_id: ERROR_INSTANCE },
           { project_id: 16, alias: "flaky-db", name: "Flaky DB", joe_ready: true, tunnel: true, instance_id: FLAKY_INSTANCE },
+          { project_id: 18, alias: "inverted-db", name: "Inverted DB", joe_ready: true, tunnel: false, instance_id: INVERTED_INSTANCE },
         ]);
       }
 
@@ -101,7 +105,39 @@ function startFakeApi() {
         }
         const commandId = String(nextId++);
         commands.set(commandId, { command: String(body.command), instanceId });
-        // The rpc returns the id as a bare JSON string.
+        if (instanceId === INVERTED_INSTANCE) {
+          // The job channel: the real rpc refuses a caller that has not declared
+          // it understands a handle, and writes NO row when it does.
+          if (body.accept_async !== true) {
+            commands.delete(commandId);
+            return respond(
+              {
+                code: "PT426",
+                message: "Upgrade Required",
+                details:
+                  "This Joe instance answers over the job channel, so the command cannot be " +
+                  "delivered synchronously. Re-send it with accept_async = true and poll " +
+                  "v1.joe_command_output with the returned command_id.",
+              },
+              426
+            );
+          }
+          return respond(
+            {
+              pgai_async: "joe_call",
+              status: "accepted",
+              command_id: commandId,
+              job_id: "9001",
+              poll_rpc: "joe_command_output",
+              retry_safe: false,
+              first_answer_estimate_s: 2,
+              expires_in_s: 3600,
+              message: "Accepted over the Joe job channel. Poll v1.joe_command_output with this command_id.",
+            },
+            202
+          );
+        }
+        // The dial path's rpc returns the id as a bare JSON string.
         return respond(commandId);
       }
 
@@ -268,6 +304,7 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
       expect(run?.body).toEqual({
         instance_id: 3,
         command: "plan select * from users where email = 'x@acme.io'",
+        accept_async: true,
       });
       // A numeric project still needs the listing — the instance id lives there.
       expect(api.requests.some((x) => x.pathname.endsWith("/rpc/projects_list"))).toBe(true);
@@ -348,6 +385,35 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
     }
   });
 
+  test("pgai joe plan against an INVERTED instance never sees the 426 (#402)", async () => {
+    // The whole of #402 end to end: the platform refuses a caller that has not
+    // opted in, so a run that reaches the 202 handle and prints Joe's answer is
+    // the proof the opt-in went on the wire and the handle was followed.
+    const api = startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["joe", "plan", "select 1", "--project", "inverted-db"],
+        isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).not.toContain("426");
+      expect(r.stdout).toContain("Seq Scan on users");
+      const runs = api.requests.filter((x) => x.pathname.endsWith("/rpc/joe_command_run"));
+      // ONE run: an enqueued command is never re-sent (retry_safe is false).
+      expect(runs.length).toBe(1);
+      expect(runs[0].body.accept_async).toBe(true);
+      // The handle's command_id is what was polled, not its job_id.
+      const polls = api.requests.filter((x) => x.pathname.endsWith("/rpc/joe_command_output"));
+      expect(polls.length).toBeGreaterThan(0);
+      for (const poll of polls) {
+        expect(poll.body.command_id).not.toBe("9001");
+        expect(String(poll.body.command_id)).toMatch(/^[0-9]{19}$/);
+      }
+    } finally {
+      api.stop();
+    }
+  });
+
   test("pgai joe explain --instance-id targets the instance directly (no projects_list)", async () => {
     // The direct path: --instance-id makes the joe verbs fully usable with a
     // manual instance id — project resolution is skipped entirely and the id
@@ -360,7 +426,7 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
       );
       expect(r.status).toBe(0);
       const run = api.requests.find((x) => x.pathname.endsWith("/rpc/joe_command_run"));
-      expect(run?.body).toEqual({ instance_id: "1", command: "explain select 1" });
+      expect(run?.body).toEqual({ instance_id: "1", command: "explain select 1", accept_async: true });
       expect(api.requests.some((x) => x.pathname.endsWith("/rpc/projects_list"))).toBe(false);
     } finally {
       api.stop();
