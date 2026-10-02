@@ -528,6 +528,34 @@ describe("connect", () => {
     expect(calls).toEqual(["list"]);
   });
 
+  test("--reset-password: the same database connected by the run that held the lock is seen under it", async () => {
+    const { deps, calls } = fake({ rows: [undefined, row("launch_requested")] });
+    expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1",
+      next: `${CH_NAME} is already connected, and its monitoring uses the current password: pgai disconnect ${CH_NAME} --yes first`,
+    });
+    expect(calls).toEqual(["list", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+  });
+
+  test("--reset-password: the server is one lock and one name whatever its case or trailing dot", async () => {
+    const other = row("active", { id: "i-7", name: `${SERVER.toUpperCase()}./orders` });
+    const { deps, calls } = fake({ rows: [other] });
+    expect((await connect(CH.replace(SERVER, `${SERVER.replace("abc123", "ABC123")}.`), { resetPassword: true, waitMs: 0 }, deps)).status).toBe("action_required");
+    expect(calls).toEqual(["list"]);
+    const second = fake();
+    await connect(CH.replace(SERVER, SERVER.toUpperCase()), { resetPassword: true, waitMs: 0 }, second.deps);
+    expect(second.calls[1]).toBe(`resetLock ${SERVER}`);
+  });
+
+  test("--reset-password: a refused launch drops the generated role before the lock is released", async () => {
+    const { deps, calls } = fake({
+      prepare: async () => { calls.push("prepare"); return { monitoringUrl: MON, generated: true }; },
+      create: async () => { calls.push("create"); return { id: "i-1", name: CH_NAME, status: "failed", error: "No." }; },
+    });
+    await connect(CH, { resetPassword: true, waitMs: 0 }, deps);
+    expect(calls.slice(-2)).toEqual(["unprepare", "resetUnlock l-1"]);
+  });
+
   test("--reset-password releases the lock when the box request fails", async () => {
     const { deps, calls } = fake({ create: async () => { throw new HttpStatusError("boom", 500); } });
     await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow("boom");
