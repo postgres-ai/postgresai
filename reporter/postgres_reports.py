@@ -5397,7 +5397,8 @@ class PostgresReportGenerator:
         upload succeeded, `failed` when one did not or `error` is set.
 
         checkup_report_create leaves a report `pending`; nothing else ever
-        changes that. The status RPC takes no reason, so the reason is logged.
+        changes that. A failed report carries its reason (platform-all !960);
+        an API older than that answers 404 to it, and gets the status alone.
         A failure here is logged, never raised: the files are already up.
         """
         failed = self.failed_uploads.pop(report_id, [])
@@ -5410,7 +5411,15 @@ class PostgresReportGenerator:
 
         request_data = {"access_token": token, "report_id": report_id, "status": status}
         try:
-            make_request(api_url, "/rpc/checkup_report_status_update", request_data)
+            if reason:
+                try:
+                    make_request(api_url, "/rpc/checkup_report_status_update", {**request_data, "reason": reason})
+                except requests.exceptions.HTTPError as e:
+                    if getattr(e.response, "status_code", None) != 404:
+                        raise
+                    make_request(api_url, "/rpc/checkup_report_status_update", request_data)
+            else:
+                make_request(api_url, "/rpc/checkup_report_status_update", request_data)
         except Exception as e:
             logger.error(f"Could not mark report {report_id} {status}: {e}")
             return
