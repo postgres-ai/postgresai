@@ -561,20 +561,29 @@ export async function expressCheckup(url: string, opts: PrepareOptions & { save?
  * pending, a file per check, then completed (failed when a file did not upload).
  */
 export async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
-  const { report_id } = await rpc<{ report_id: number }>("checkup_report_create", { access_token: accessToken, project });
-  let status = "failed";
+  // An answer without the id (a message instead, say) is a refusal, as the other uploaders treat it.
+  const idOf = (fn: string, answer: unknown, ...keys: string[]) => {
+    const a = (answer ?? {}) as Record<string, unknown>;
+    const id = Number(keys.map((k) => a[k]).find((v) => v !== undefined));
+    if (!(id > 0)) throw new Error(typeof a.message === "string" ? a.message : `Unexpected ${fn} answer: ${JSON.stringify(answer)}`);
+    return id;
+  };
+  const reportId = idOf("checkup_report_create", await rpc("checkup_report_create", { access_token: accessToken, project }), "report_id");
+  const setStatus = (status: string) => rpc("checkup_report_status_update", { access_token: accessToken, report_id: reportId, status });
   try {
     for (const [checkId, report] of Object.entries(reports)) {
-      await rpc("checkup_report_file_post", {
-        access_token: accessToken, checkup_report_id: report_id, filename: `${checkId}.json`, check_id: checkId,
+      // The platform spells it report_chunck_id.
+      idOf("checkup_report_file_post", await rpc("checkup_report_file_post", {
+        access_token: accessToken, checkup_report_id: reportId, filename: `${checkId}.json`, check_id: checkId,
         data: JSON.stringify(report, null, 2), type: "json", generate_issue: true,
-      });
+      }), "report_chunck_id", "report_chunk_id");
     }
-    status = "completed";
-  } finally {
-    await rpc("checkup_report_status_update", { access_token: accessToken, report_id, status }).catch(() => {});
+  } catch (err) {
+    await setStatus("failed").catch(() => {});
+    throw err;
   }
-  return report_id;
+  await setStatus("completed");
+  return reportId;
 }
 
 /** The ClickHouse Cloud organization that runs the service at `host`, found with the key itself. */
