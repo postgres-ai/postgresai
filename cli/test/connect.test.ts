@@ -498,6 +498,121 @@ describe("connect", () => {
 
 // The prepare step with a faked pg client: what the server answers to each
 // login is scripted, and every statement run over the admin connection is recorded.
+describe("connect on the paid path: the price before the box", () => {
+  const PAID = {
+    plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 },
+    subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" },
+    has_payment_method: true, requires_payment_method: false,
+  };
+  const quoted = (q: Record<string, unknown>, calls: string[]) => async (coupon?: string) => {
+    calls.push(`quote${coupon ? ` ${coupon}` : ""}`);
+    return { ...PAID, ...q } as never;
+  };
+  const SH = "postgresql://postgres:adminpw@db.example.com:5432/app";
+  const SH_NAME = "db.example.com/app";
+  const make = (q: Record<string, unknown> = {}, over: Partial<ConnectDeps> = {}) => {
+    const f = fake({ rows: [undefined, row("active", { name: SH_NAME, provider: "self-managed", host_metrics: false })], ...over });
+    f.deps.quote = quoted(q, f.calls);
+    f.deps.billingUrl = (alias: string) => `https://console.example/${alias}/billing`;
+    return f;
+  };
+
+  test("a billed box without --yes, where nobody can be asked: the price and how to accept, nothing prepared", async () => {
+    const { deps, calls } = make();
+    deps.confirm = async () => false;
+    expect(await connect(SH, { waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      next: "Re-run with --yes to accept $512.00/month per box (scale plan)",
+    });
+    expect(calls).toEqual(["list", "quote"]);
+  });
+
+  test("a billed box, confirmed at the prompt (which names the price): provisioned, the price in the result", async () => {
+    const { deps, calls } = make();
+    const asked: string[] = [];
+    deps.confirm = async (q) => { asked.push(q); return true; };
+    const result = await connect(SH, { waitMs: 60_000 }, deps);
+    expect(asked).toEqual([`${SH_NAME} is billed: $512.00/month per box (scale plan). Provision it? (y/N): `]);
+    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
+    expect(result).toMatchObject({ status: "connected", price: "$512.00/month per box (scale plan)", requires_payment_method: false });
+  });
+
+  test("--yes: no prompt; a box added to the subscription says which box it is", async () => {
+    const { deps, calls } = make({ subscription: true, quantity: 1 });
+    deps.confirm = async () => { throw new Error("asked"); };
+    const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
+    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(result.price).toBe("$512.00/month per box (scale plan), box 2 on the subscription");
+  });
+
+  test("declined at the prompt: nothing prepared", async () => {
+    const { deps, calls } = make();
+    deps.confirm = async () => false;
+    expect((await connect(SH, { waitMs: 0 }, deps)).status).toBe("action_required");
+    expect(calls).toEqual(["list", "quote"]);
+  });
+
+  test("no payment method: stop before the database is touched, with the billing page (exit 3)", async () => {
+    const { deps, calls } = make({ has_payment_method: false, requires_payment_method: true });
+    expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: true,
+      next: "Add a payment method at https://console.example/acme/billing, then re-run",
+    });
+    expect(calls).toEqual(["list", "quote"]);
+  });
+
+  test("a free slot: no prompt, the result says free (N of M free slots)", async () => {
+    const { deps, calls } = make({ billed: false, free_slots: { remaining: 1, total: 2 } });
+    deps.confirm = async () => { throw new Error("asked"); };
+    const result = await connect(SH, { waitMs: 60_000 }, deps);
+    expect(calls.slice(0, 3)).toEqual(["list", "quote", "prepare self-managed"]);
+    expect(result).toMatchObject({ status: "connected", price: "free (1 of 2 free slots)", requires_payment_method: false });
+  });
+
+  test("--coupon: the discounted price is shown, and the code goes with the box", async () => {
+    const promo = { code: "LAUNCH100", valid: true, discount_description: "100% off (first billing period)", percent_off: 100, duration: "once", promotion_code_id: "promo_1" };
+    const { deps, calls } = make({ promo, amount_after_promo: 0 });
+    const result = await connect(SH, { waitMs: 60_000, yes: true, coupon: "LAUNCH100" }, deps);
+    expect(calls[1]).toBe("quote LAUNCH100");
+    expect(calls[3]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100" })}`);
+    expect(result).toMatchObject({
+      status: "connected",
+      price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per box (scale plan)",
+      coupon: { code: "LAUNCH100", valid: true, description: "100% off (first billing period)" },
+    });
+  });
+
+  test("an invalid or expired coupon: a clear error (exit 3), nothing prepared or provisioned", async () => {
+    const { deps, calls } = make({ promo: { code: "OLD", valid: false, error: "Promo code is expired" } });
+    expect(await connect(SH, { waitMs: 0, yes: true, coupon: "OLD" }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      coupon: { code: "OLD", valid: false, error: "Promo code is expired" },
+      next: "Promo code OLD: Promo code is expired. Nothing was changed: re-run with a valid code, or without --coupon",
+    });
+    expect(calls).toEqual(["list", "quote OLD"]);
+  });
+
+  test("the platform refusing for payment (402, a card removed meanwhile): the billing page, not a failure", async () => {
+    const { deps } = make({}, { create: async () => { throw new HttpStatusError("Payment Required", 402); } });
+    expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      price: "$512.00/month per box (scale plan)", requires_payment_method: true,
+      next: "Add a payment method at https://console.example/acme/billing, then re-run",
+    });
+  });
+
+  test("a re-run of a connected database asks no price", async () => {
+    const f = fake({ rows: [row("active")] });
+    f.deps.quote = quoted({}, f.calls);
+    await connect(CH, { waitMs: 0 }, f.deps);
+    expect(f.calls).toEqual(["list"]);
+  });
+});
+
 describe("prepareDatabase (a fake pg client)", () => {
   const ADMIN = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&options=-c%20role%3Dx&sslrootcert=%2Ftmp%2Fca.pem&application_name=pgai";
   const SET_PASSWORD = "Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as postgres_ai_mon then needs the new password)";
@@ -838,6 +953,42 @@ describe("MCP connect_database", () => {
       const failed = await call();
       expect(failed.isError).toBe(true);
       expect(JSON.parse(failed.content[0].text).status).toBe("failed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a billed box: the agent gets the price and must call again with yes; a coupon is checked first", async () => {
+    const quotes: unknown[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) {
+          const body = await req.json() as { promo_code?: string };
+          quotes.push(body);
+          return Response.json({
+            plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0,
+            price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
+            ...(body.promo_code ? { promo: { code: body.promo_code, valid: false, error: "Promo code not found or expired" } } : {}),
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const opts = { apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}`, uiBaseUrl: "https://console.example" };
+    const call = async (args: Record<string, unknown>) =>
+      JSON.parse((await handleToolCall({ params: { name: "connect_database", arguments: args } }, opts)).content[0].text);
+    try {
+      expect(await call({ database_url: "postgresql://postgres:pw@db.example.com:5432/app" })).toEqual({
+        status: "action_required", provider: "self-managed", name: "db.example.com/app",
+        price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+        next: "Call connect_database again with yes: true to accept $512.00/month per box (scale plan)",
+      });
+      expect((await call({ database_url: "postgresql://postgres:pw@db.example.com:5432/app", yes: true, coupon: "NOPE" })).next)
+        .toBe("Promo code NOPE: Promo code not found or expired. Nothing was changed: re-run with a valid code, or without coupon");
+      expect(quotes).toEqual([{}, { promo_code: "NOPE" }]);
     } finally {
       server.stop(true);
     }
