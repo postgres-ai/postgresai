@@ -449,12 +449,16 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
       if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
       // 402: the payment method went away since the quote; nothing was created.
-      if (err instanceof HttpStatusError && err.status === 402) return "payment" as const;
+      if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
       // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
       if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
       throw err;
     });
     if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
+    // A card on file that Stripe declined is not a missing one.
+    if (created === "declined") {
+      return { status: "action_required", provider, name, ...billingPage!, next: billingPage!.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
+    }
     if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
     if (created.status === "failed") {
       await undo();
