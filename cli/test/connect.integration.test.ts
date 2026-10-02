@@ -415,6 +415,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       let launch: "refuse" | "accept" = "refuse";
       const rows: unknown[] = [];
       const calls: string[] = [];
+      const uploads: Record<string, string>[] = [];
+      let stderr = "";
       const api = Bun.serve({
         hostname: "127.0.0.1", port: 0,
         async fetch(req) {
@@ -431,6 +433,10 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
             rows.push(row);
             return Response.json(row);
           }
+          // The express checkup, saved as a report of the database's project.
+          if (path.endsWith("/rpc/checkup_report_create")) { uploads.push({ create: JSON.parse(await req.text()).project }); return Response.json({ report_id: 41 }); }
+          if (path.endsWith("/rpc/checkup_report_file_post")) { const b = JSON.parse(await req.text()); uploads.push({ file: `${b.checkup_report_id}/${b.filename}` }); return Response.json({ report_chunck_id: uploads.length }); }
+          if (path.endsWith("/rpc/checkup_report_status_update")) { const b = JSON.parse(await req.text()); uploads.push({ status: `${b.report_id} ${b.status}` }); return Response.json({ report_id: b.report_id, status: b.status }); }
           return new Response("not found", { status: 404 });
         },
       });
@@ -442,8 +448,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
             PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`, CLICKHOUSE_API_URL: `http://127.0.0.1:${api.port}`,
           },
         });
-        const [stdout, exit] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-        return { exit, ...JSON.parse(stdout) };
+        let stdout: string;
+        [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        return { exit: proc.exitCode, ...JSON.parse(stdout) };
       };
       try {
         // The key is checked first: the database is not touched.
@@ -461,6 +468,15 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
         expect(checkup.checks).toBe(19);
         expect(checkup.findings.find((f: { check_id: string }) => f.check_id === "A002").status).toBe("ok");
+        // Every check is counted once: warning, ok, info, or could not run.
+        expect(checkup.findings.length + checkup.info.length + (checkup.failed?.length ?? 0)).toBe(19);
+        // Saved right away: pgai reports list shows it while the box starts.
+        expect(checkup.report_id).toBe(41);
+        expect(uploads[0]).toEqual({ create: name });
+        expect(uploads.filter((u) => u.file).length).toBe(19 - (checkup.failed?.length ?? 0));
+        expect(uploads.at(-1)).toEqual({ status: "41 completed" });
+        // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
+        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["preparing", "provisioning", "checkup", "box"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
