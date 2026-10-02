@@ -25,6 +25,11 @@ async function run(args: string[], env: Record<string, string>, stdin?: string) 
   return { status, stdout, stderr, json: () => JSON.parse(stdout) };
 }
 
+const BILLED = {
+  plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0,
+  price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
+};
+
 async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] = [ROW]) {
   const calls: string[] = [];
   const server = Bun.serve({
@@ -33,6 +38,7 @@ async function withApi(fn: (env: Record<string, string>, calls: string[]) => Pro
       const path = new URL(req.url).pathname;
       calls.push(`${path} ${req.headers.get("access-token")} ${await req.text()}`);
       if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+      if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json(BILLED);
       if (path.endsWith("/rpc/cloud_monitoring_disconnect")) return Response.json({ id: "i-1", status: "deleting_launched" });
       return new Response("not found", { status: 404 });
     },
@@ -125,6 +131,18 @@ describe("pgai init", () => {
       for (const key of ["\x03", "\x04"]) expect((await runTty(["init"], env, [[URL_PROMPT, key]])).status).toBe(130);
       expect(calls).toEqual([]);
     });
+  });
+
+  test("at the price prompt of a billed box: Ctrl-C or Ctrl-D is exit 130, n is exit 3; nothing provisioned either way", async () => {
+    const SH = "postgresql://postgres:pw@db.example.com:5432/app";
+    const PRICE_PROMPT = "db.example.com/app is billed: $512.00/month per box (scale plan). Provision it? (y/N): ";
+    await withApi(async (env, calls) => {
+      for (const key of ["\x03", "\x04"]) expect((await runTty(["connect", SH], env, [[PRICE_PROMPT, key]])).status).toBe(130);
+      const n = await runTty(["connect", SH], env, [[PRICE_PROMPT, "n\r"]]);
+      expect(n.status).toBe(3);
+      expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per box (scale plan)");
+      expect(calls.filter((c) => c.includes("cloud_monitoring_connect"))).toEqual([]);
+    }, []);
   });
 
   test("Ctrl-C while waiting for the box ends the run at once (the prompt no longer holds the terminal)", async () => {
