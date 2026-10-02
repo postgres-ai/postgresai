@@ -4184,7 +4184,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         process.exitCode = undefined;
         // An open prompt would take the first Ctrl-C while connect waits for the box.
         closeReadline();
-        return /^y/i.test(answer.trim());
+        return /^(y|yes)$/i.test(answer.trim());
       },
       // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
       progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
