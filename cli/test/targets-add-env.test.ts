@@ -43,6 +43,12 @@ test("targets add reads PGAI_DB_URL with no argument and uses the default name",
   expect(instances()).toContain(`conn_str: ${url}`);
 });
 
+test("a name with '=' in it is a name", () => {
+  run(["add", "region=west"], { PGAI_DB_URL: url });
+  expect(instances()).toContain("name: region=west");
+  expect(instances()).toContain(`conn_str: ${url}`);
+});
+
 test("a URL in argv still wins over PGAI_DB_URL", () => {
   const other = "postgresql://monitor:pw@other.example:5432/app";
   run(["add", other, "app"], { PGAI_DB_URL: url });
