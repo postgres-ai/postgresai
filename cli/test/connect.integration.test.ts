@@ -133,6 +133,38 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await still.end();
   });
 
+  test("a second database with the password PostgresAI keeps for the server: over TLS, no PGAI_MON_PASSWORD and the role's password stays; without TLS, refused before anything runs", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("create database pgai_connect_db2");
+    await c.query("revoke connect on database pgai_connect_db2 from public");
+    const verifier = async () => (await c.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword;
+    const before = await verifier();
+    const tls = (await c.query("show ssl")).rows[0].ssl === "on";
+    const db2 = new URL(ADMIN!);
+    db2.pathname = "/pgai_connect_db2";
+    if (tls) db2.searchParams.set("sslmode", "require");
+    // The first database's password, on the second database, as the box will log in.
+    const m = new URL(monUrlFromEarlierTest);
+    m.pathname = "/pgai_connect_db2";
+    const monLogsIn = () => { const mon = new Client({ connectionString: m.toString() }); return mon.connect().then(() => mon.end().then(() => true), () => false); };
+    try {
+      const second = await prepareDatabase(db2.toString(), "self-managed", { storedPassword: true });
+      if (tls) {
+        if (!("monitoringUrl" in second)) throw new Error(`expected a URL, got: ${JSON.stringify(second)}`);
+        expect(second.storedPassword).toBe(true);
+        expect(new URL(second.monitoringUrl).password).toBe("");
+        expect(await monLogsIn()).toBe(true);
+      } else {
+        expect((second as { next: string }).next).toEndWith("(the password PostgresAI keeps for this server is sent only with sslmode=require or verify-*)");
+        expect(await monLogsIn()).toBe(false);
+      }
+      expect(await verifier()).toBe(before);
+    } finally {
+      await c.end();
+    }
+  });
+
   test("a new role's password with '%' and spaces survives into the monitoring URL", async () => {
     const c = await admin();
     await c.query("drop database if exists pgai_connect_db2");

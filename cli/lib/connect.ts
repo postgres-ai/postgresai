@@ -85,6 +85,8 @@ export interface Database {
   host_metrics: boolean;
   /** When the box registered with the platform (it then sets up the monitoring). */
   registered_at?: string | null;
+  /** The platform keeps postgres_ai_mon's password for this database's server (another database there connects without it). */
+  monitoring_password_stored?: boolean;
 }
 
 /**
@@ -92,13 +94,13 @@ export interface Database {
  * `generated`: this run created the role with a password generated here, which
  * nobody has once the run ends.
  */
-export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string } | { checked: true };
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true; storedPassword?: true } | { next: string; sql?: string } | { checked: true };
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean }): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
@@ -423,16 +425,19 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
+    // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org.
+    const storedPassword = rows.some((d) => d.monitoring_password_stored && !disconnecting(d.status) && serverOf(d.name) === serverOf(name)) || undefined;
+    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword } : {}) };
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
-      const probe = await deps.prepare(url, provider, { resetPassword: opts.resetPassword, check: true });
+      const probe = await deps.prepare(url, provider, { ...prepOpts, check: true });
       if ("next" in probe) return { status: "action_required", provider, name, ...probe };
       const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, accepted } = b);
     }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
-    const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
+    const prepared = await deps.prepare(url, provider, prepOpts);
     if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
     if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
     if (prepared.note) note = `; ${prepared.note}`;
@@ -460,6 +465,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
       // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
       if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
+      // 409 for a URL without a password: the platform no longer keeps the server's (its last box went meanwhile).
+      if (err instanceof HttpStatusError && err.status === 409 && prepared.storedPassword) return "stored" as const;
       throw err;
     });
     if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
@@ -468,13 +475,15 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "action_required", provider, name, ...billingPage!, next: billingPage!.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
     }
     if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
+    if (created === "stored") return { status: "action_required", provider, name, ...billing, next: `PostgresAI no longer keeps the password of ${DEFAULT_MONITORING_USER} for this server: set PGAI_MON_PASSWORD to it, then re-run` };
     if (created.status === "failed") {
       await undo();
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
-    checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
+    // Without the monitoring password here (the platform fills it in for the box), the checkup runs as the admin, this once.
+    checkup = await deps.checkup(prepared.storedPassword ? url : withLocalTls(prepared.monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
     progress("checkup", checkupLines(checkup).join("\n"), { checkup });
   }
 
@@ -508,6 +517,8 @@ export interface PrepareOptions {
   resetPassword?: boolean;
   /** Only whether the URL can work: every refusal, nothing created or changed. */
   check?: boolean;
+  /** The platform keeps postgres_ai_mon's password for this server: an existing role needs no PGAI_MON_PASSWORD, and the box's URL carries none. */
+  storedPassword?: boolean;
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
@@ -600,6 +611,18 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       // The role is cluster-wide: another database here may use its password,
       // so it is never changed, and only a password that logs in is used.
       const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
+      // The platform fills in the password it keeps for the box (it never sends it here), over TLS only.
+      const reuse = me.mon_exists && !opts.resetPassword && !!opts.storedPassword && !(opts.agent ? "" : process.env.PGAI_MON_PASSWORD?.trim());
+      if (reuse && !/^(require|verify-ca|verify-full)$/.test(new URL(url).searchParams.get("sslmode") ?? "")) {
+        return { next: `${exists}. Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new password) (the password PostgresAI keeps for this server is sent only with sslmode=require or verify-*)` };
+      }
+      if (reuse) {
+        if (opts.check) return { checked: true };
+        // The role is there: the plan grants this database and keeps its password (the one generated here is never set).
+        const plan = await buildInitPlan({ database: me.db, monitoringPassword: (await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER })).password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+        await applyInitPlan({ client, plan });
+        return { monitoringUrl: monitoringUrlFor(url, me.db, ""), storedPassword: true as const, ...noted() };
+      }
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
       const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new password)`;
       const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
@@ -744,7 +767,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>
