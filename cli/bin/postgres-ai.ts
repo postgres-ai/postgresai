@@ -4178,7 +4178,10 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
       // A billed box: asked only of a person at a terminal (else --yes).
       confirm: async (q) => {
         if (!interactive(opts.json)) return false;
+        // Ctrl-C / Ctrl-D at the prompt ends the process: cancelled, as at init's prompts.
+        process.exitCode = 130;
         const answer = await question(q);
+        process.exitCode = undefined;
         // An open prompt would take the first Ctrl-C while connect waits for the box.
         closeReadline();
         return /^y/i.test(answer.trim());
