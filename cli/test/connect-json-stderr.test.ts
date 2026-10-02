@@ -73,6 +73,16 @@ test.each([[["--json"]], [[]]])("--debug request lines are JSON events on stderr
   }
 });
 
+test.each([
+  ["no database URL", ["connect", "--json"], {}],
+  ["a bad --org-id", ["connect", "postgresql://u:p@127.0.0.1:1/d", "--json", "--org-id", "abc"], { PGAI_API_KEY: "test-key" }],
+  ["a bad API base URL", ["connect", "postgresql://u:p@127.0.0.1:1/d", "--json"], { PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: "not-a-url" }],
+])("%s: the error is a JSON event too", async (_case, args, env) => {
+  const r = await run(args as string[], env as Record<string, string>);
+  expect(r.status).not.toBe(0);
+  for (const line of r.lines) expect(() => JSON.parse(line), line).not.toThrow();
+});
+
 // CI: the cli:clickhouse-like:tests job.
 const ADMIN = process.env.PGAI_TEST_CLICKHOUSE_LIKE_URL;
 describe.skipIf(!ADMIN)("real Postgres", () => {
