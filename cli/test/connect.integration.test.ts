@@ -388,7 +388,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     const result = await expressCheckup(prepared.monitoringUrl);
     if ("error" in result) throw new Error(result.error);
     expect(result.checks).toBeGreaterThan(15);
-    expect(result.findings.find((f) => f.check_id === "A002")).toMatchObject({ status: "ok", message: expect.stringMatching(/^PostgreSQL \d+$/) });
+    // A002 is ok on PG 17+, info (no verdict) on PG 15-16: either way it is counted once.
+    if (!result.info.includes("A002")) expect(result.findings.find((f) => f.check_id === "A002")).toMatchObject({ status: "ok", message: expect.stringMatching(/^PostgreSQL \d+$/) });
+    expect([...result.findings.map((f) => f.check_id), ...result.info].filter((id) => id === "A002")).toEqual(["A002"]);
     // Inventories ("382 settings collected") are not findings.
     expect(result.findings.every((f) => f.status !== "info")).toBe(true);
   });
@@ -467,7 +469,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         const { checkup, ...launched } = await run();
         expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
         expect(checkup.checks).toBe(19);
-        expect(checkup.findings.find((f: { check_id: string }) => f.check_id === "A002").status).toBe("ok");
+        expect([...checkup.findings.map((f: { check_id: string }) => f.check_id), ...checkup.info]).toContain("A002");
         // Every check is counted once: warning, ok, info, or could not run.
         expect(checkup.findings.length + checkup.info.length + (checkup.failed?.length ?? 0)).toBe(19);
         // Saved right away: pgai reports list shows it while the box starts.
