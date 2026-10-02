@@ -48,7 +48,7 @@ async function withApi(fn: (env: Record<string, string>, calls: string[]) => Pro
 const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
 
 /** Runs in a terminal, typing each answer (keys as sent, so end a line with \\r) when its prompt appears; returns the screen text. */
-async function runTty(args: string[], env: Record<string, string>, answers: [prompt: string, answer: string][]) {
+async function runTty(args: string[], env: Record<string, string>, answers: [prompt: string | RegExp, answer: string][]) {
   let out = "";
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
     env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", ...env }),
@@ -57,7 +57,8 @@ async function runTty(args: string[], env: Record<string, string>, answers: [pro
       data(term, bytes) {
         out += new TextDecoder().decode(bytes);
         // Typed a moment after the prompt, once readline owns the terminal (input sent earlier can be flushed).
-        if (answers[0] && clean(out).endsWith(answers[0][0])) {
+        const prompt = answers[0]?.[0];
+        if (prompt !== undefined && (typeof prompt === "string" ? clean(out).endsWith(prompt) : prompt.test(clean(out)))) {
           const answer = answers.shift()![1];
           setTimeout(() => term.write(answer), 100);
         }
@@ -129,7 +130,7 @@ describe("pgai init", () => {
   test("Ctrl-C while waiting for the box ends the run at once (the prompt no longer holds the terminal)", async () => {
     await withApi(async (env) => {
       const started = Date.now();
-      const r = await runTty(["init"], env, [[URL_PROMPT, "postgresql://postgres:pw@db.example.com:5432/app\r"], ["Waiting for the monitoring box (launch_requested)\n", "\x03"]]);
+      const r = await runTty(["init"], env, [[URL_PROMPT, "postgresql://postgres:pw@db.example.com:5432/app\r"], [/Monitoring box: launch_requested \(\+\d+s\)\n$/, "\x03"]]);
       expect(Date.now() - started).toBeLessThan(4000);
       expect(r.status).not.toBe(0);
     }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", status: "launch_requested", dashboard_url: null }]);

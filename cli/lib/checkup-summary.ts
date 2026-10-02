@@ -256,7 +256,9 @@ function summarizeF001(nodeData: any): CheckSummary {
     };
 
     if (severity === 'CRITICAL' || severity === 'WARNING') {
-      return { status: 'warning', message: summarize() };
+      // The count alone does not say what is wrong: add the most severe finding's conclusion.
+      const top = fired.find((r: any) => r.severity === 'CRITICAL') ?? fired.find((r: any) => r.severity === 'WARNING');
+      return { status: 'warning', message: top?.conclusion ? `${summarize()}. ${top.conclusion}` : summarize() };
     }
     return { status: 'info', message: summarize() };
   }
