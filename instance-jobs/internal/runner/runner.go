@@ -1260,6 +1260,18 @@ var errJoeCall = errors.New("joe call")
 // monitoring channel can be answered in this one's vocabulary.
 var errDBLabCall = errors.New("dblab call")
 
+// classWithStatus appends the upstream HTTP status to a failure class, so a
+// client can tell a deleted clone's 404 from a broken engine's 500 without
+// regexing the English text (#402: the Console spun forever on exactly that).
+// The platform caps failure_class at 64 bytes and enumerates nothing. A status
+// outside the HTTP range means there was none: keep the flat class.
+func classWithStatus(class string, status int) string {
+	if status < 100 || status > 599 {
+		return class
+	}
+	return fmt.Sprintf("%s_%d", class, status)
+}
+
 // describeFailure turns an error into the short (error, failure_class) pair the
 // submit takes. The raw error is deliberately NOT forwarded: a transport error
 // carries the request URL, and that URL carries the PromQL built from the job's
@@ -1357,10 +1369,11 @@ func classifyFailure(err error) (string, string) {
 			// diagnostic, and whatever text there is joins it. Controls are stripped
 			// and the length capped by truncate(): the text is rendered on a terminal
 			// and reaches it from outside this process.
+			class := classWithStatus("joe_error", joeErr.StatusCode)
 			if msg := collect.StripControls(joeErr.Message); msg != "" {
-				return fmt.Sprintf("joe returned %d: %s", joeErr.StatusCode, msg), "joe_error"
+				return fmt.Sprintf("joe returned %d: %s", joeErr.StatusCode, msg), class
 			}
-			return fmt.Sprintf("joe returned %d", joeErr.StatusCode), "joe_error"
+			return fmt.Sprintf("joe returned %d", joeErr.StatusCode), class
 		}
 		var engineErr *dblab.EngineError
 		if errors.As(err, &engineErr) {
@@ -1368,10 +1381,11 @@ func classifyFailure(err error) (string, string) {
 			// call, which is the whole diagnostic to whoever made it. Controls are
 			// stripped and the length capped by truncate(): the text is rendered on
 			// a terminal and reaches it from outside this process.
+			class := classWithStatus("engine_error", engineErr.StatusCode)
 			if msg := collect.StripControls(engineErr.Message); msg != "" {
-				return fmt.Sprintf("dblab engine returned %d: %s", engineErr.StatusCode, msg), "engine_error"
+				return fmt.Sprintf("dblab engine returned %d: %s", engineErr.StatusCode, msg), class
 			}
-			return fmt.Sprintf("dblab engine returned %d", engineErr.StatusCode), "engine_error"
+			return fmt.Sprintf("dblab engine returned %d", engineErr.StatusCode), class
 		}
 		return "metric store unreachable", "store_unreachable"
 	}

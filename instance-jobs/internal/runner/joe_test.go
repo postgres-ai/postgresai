@@ -317,8 +317,8 @@ func TestAJoeWriteIsAttemptedOnceAndAnsweredAsFailed(t *testing.T) {
 	if len(subs) != 1 || subs[0]["outcome"] != "error" {
 		t.Fatalf("submitted %+v, want one error answer", subs)
 	}
-	if subs[0]["failure_class"] != "joe_error" {
-		t.Errorf("failure_class = %v, want joe_error", subs[0]["failure_class"])
+	if subs[0]["failure_class"] != "joe_error_500" {
+		t.Errorf("failure_class = %v, want joe_error_500", subs[0]["failure_class"])
 	}
 	if msg, _ := subs[0]["error"].(string); !strings.Contains(msg, "500") {
 		t.Errorf("error = %q, want it to name the status", msg)
@@ -607,8 +607,8 @@ func TestAJoeSignatureRefusalIsNotRetriedPastTheSecondScheme(t *testing.T) {
 		t.Fatalf("Joe was called %d times, want 2 (one per signature scheme)", n)
 	}
 	subs := h.snapshotSubmits()
-	if len(subs) != 1 || subs[0]["failure_class"] != "joe_error" {
-		t.Fatalf("submitted %+v, want one joe_error answer", subs)
+	if len(subs) != 1 || subs[0]["failure_class"] != "joe_error_403" {
+		t.Fatalf("submitted %+v, want one joe_error_403 answer", subs)
 	}
 }
 
