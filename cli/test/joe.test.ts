@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, afterEach, spyOn } from "bun:test";
+import { describe, test, expect, mock, afterEach, beforeEach, spyOn } from "bun:test";
 import {
   startCommand,
   getCommandOutput,
@@ -11,6 +11,7 @@ import {
   clientSidePlanFlags,
   formatProjectsTable,
   formatJoeOutput,
+  DEFAULT_BUDGET_MS,
   JOE_COMMANDS,
   DESCRIBE_VARIANTS,
   type JoeCommand,
@@ -77,7 +78,9 @@ describe("startCommand (joe_command_run)", () => {
     expect(captured[0].url).toBe(`${BASE}/rpc/joe_command_run`);
     expect(captured[0].headers["access-token"]).toBe("k");
     // The RAW command text goes on the wire — no structured body, no prefixing.
-    expect(captured[0].body).toEqual({ instance_id: 3, command: "plan select 1" });
+    // `accept_async` rides along on EVERY run: without it the platform refuses a
+    // job-channel instance with PT426 instead of handing back a handle (#402).
+    expect(captured[0].body).toEqual({ instance_id: 3, command: "plan select 1", accept_async: true });
     expect(id).toBe("4711");
   });
 
@@ -164,6 +167,440 @@ describe("startCommand (joe_command_run)", () => {
     expect(thrown?.message).toContain("failed to parse response");
     expect(thrown?.message).not.toContain("hunter2");
     expect(thrown?.message).not.toContain("pw-abc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The job-channel route (platform-all#840, CLI side #402)
+//
+// An instance whose agent polls the job channel has no URL to dial, so the rpc
+// ENQUEUES the command and answers HTTP 202 with a handle. The handle's
+// `command_id` is the SAME id the dial path returns as a bare string, so the
+// poll surface does not move — only this reply does.
+// ---------------------------------------------------------------------------
+
+/** The 202 envelope v1.joe_command_run returns on the job channel. */
+const JOE_ASYNC_HANDLE = {
+  pgai_async: "joe_call",
+  status: "accepted",
+  command_id: "4711",
+  job_id: "9001",
+  poll_rpc: "joe_command_output",
+  retry_safe: false,
+  first_answer_estimate_s: 12,
+  expires_in_s: 3600,
+  message: "Accepted over the Joe job channel.",
+};
+
+/** PostgREST's schema-cache miss for the three-argument form. */
+const JOE_RUN_SIGNATURE_MISS = {
+  hint: "If a new function was created in the database with this name and arguments, try reloading the schema cache.",
+  message:
+    "Could not find the v1.joe_command_run(accept_async, command, instance_id) function in the schema cache",
+};
+
+describe("startCommand — the job-channel route (HTTP 202 handle)", () => {
+  test("follows the handle's command_id, NOT the job id", async () => {
+    // job_id correlates with instance_jobs and has no poll surface of its own;
+    // polling it would be PT400 forever with the real id already gone.
+    installFetch({ joe_command_run: () => json(JOE_ASYNC_HANDLE, 202) });
+    const id = await startCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+    });
+    expect(id).toBe("4711");
+  });
+
+  test("a 202 without a usable command_id is an ERROR, never a pending state", async () => {
+    const captured = installFetch({
+      joe_command_run: () => json({ pgai_async: "joe_call", status: "accepted", job_id: "9001" }, 202),
+    });
+    await expect(
+      startCommand({ apiKey: "k", apiBaseUrl: BASE, instanceId: 2, command: "explain select 1" })
+    ).rejects.toThrow(/returned no command id/);
+    // And nothing was polled on a guess.
+    expect(captured.filter((c) => c.url.endsWith("/rpc/joe_command_output")).length).toBe(0);
+  });
+
+  test("a bare-number command_id in the handle is rejected (same precision guard)", async () => {
+    // The rpc returns message.id::text. A JSON number has ALREADY been rounded
+    // by JSON.parse, so it must never be String()ed back into a poll key.
+    installFetch({
+      joe_command_run: () => json({ ...JOE_ASYNC_HANDLE, command_id: 9007199254740993 }, 202),
+    });
+    await expect(
+      startCommand({ apiKey: "k", apiBaseUrl: BASE, instanceId: 2, command: "explain select 1" })
+    ).rejects.toThrow(/returned no command id/);
+  });
+
+  test("a 200 reply is still read as the dial path's bare string, handle or not", async () => {
+    // The two routes are told apart by the STATUS, not by the shape: an object
+    // at 200 is a contract violation on the dial path and stays one.
+    installFetch({ joe_command_run: () => json(JOE_ASYNC_HANDLE, 200) });
+    await expect(
+      startCommand({ apiKey: "k", apiBaseUrl: BASE, instanceId: 2, command: "explain select 1" })
+    ).rejects.toThrow(/expected a command id string/);
+  });
+
+  test("a platform predating accept_async is retried once WITHOUT it", async () => {
+    // PostgREST resolves an rpc by the exact set of body keys, so the extra
+    // argument makes the call unresolvable rather than wrong: nothing ran, no
+    // row was written, and the re-send is not a re-send of the command.
+    const captured = installFetch({
+      joe_command_run: (body) =>
+        body.accept_async === undefined ? json("4242") : json(JOE_RUN_SIGNATURE_MISS, 404),
+    });
+    const id = await startCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 3,
+      command: "plan select 1",
+    });
+    expect(id).toBe("4242");
+    expect(captured.length).toBe(2);
+    expect(captured[0].body).toEqual({ instance_id: 3, command: "plan select 1", accept_async: true });
+    expect(captured[1].body).toEqual({ instance_id: 3, command: "plan select 1" });
+  });
+
+  test("a 404 raised INSIDE the rpc is NOT retried", async () => {
+    // The fallback must never swallow a PT404 from the function body: that one
+    // DID run, and re-sending it could deliver the command a second time.
+    const captured = installFetch({
+      joe_command_run: () => json({ message: "Forbidden", details: "no such instance" }, 404),
+    });
+    await expect(
+      startCommand({ apiKey: "k", apiBaseUrl: BASE, instanceId: 3, command: "plan select 1" })
+    ).rejects.toThrow(/HTTP 404/);
+    expect(captured.length).toBe(1);
+  });
+});
+
+describe("runCommand — the job-channel route end to end", () => {
+  test("polls the handle's command_id and STOPS at the first terminal status", async () => {
+    let outputCalls = 0;
+    // Ten seconds of fake time per poll. The budget on this route is the handle's
+    // HOUR, and `sleep` is a no-op here, so on the real clock a build that polls
+    // past a terminal status spins for that whole hour while the mock below
+    // accumulates every call -- it OOMs the runner instead of failing. The clock
+    // makes it run out of budget and fail on the assertions.
+    let clock = 0;
+    const captured = installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => {
+        outputCalls += 1;
+        clock += 10_000;
+        return json({ command_id: "4711", status: "error", error: "ERROR: syntax error" });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      pollIntervalMs: 0,
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.commandId).toBe("4711");
+    expect(outcome.output?.error).toContain("syntax error");
+    // A terminal status ends the loop: one poll, not two.
+    expect(outputCalls).toBe(1);
+    expect(captured[1].body).toEqual({ command_id: "4711" });
+  });
+
+  // The announcement goes to stderr on every async run; silence it here so the
+  // assertions below are the only output, and assert it in its own test.
+  let quiet: ReturnType<typeof spyOn> | null = null;
+  beforeEach(() => {
+    quiet = spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    quiet?.mockRestore();
+    quiet = null;
+  });
+
+  test("the wait is sized from the handle, NOT from the 25s one-shot", async () => {
+    // An enqueued command waits for its box to poll the job channel, so the
+    // platform's own window is the only honest budget — with the one-shot the
+    // run almost always ends in a resume hint instead of Joe's answer.
+    let outputCalls = 0;
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json({ ...JOE_ASYNC_HANDLE, expires_in_s: 300 }, 202),
+      joe_command_output: () => {
+        outputCalls += 1;
+        clock += 10_000; // ten seconds of fake time per poll
+        return json({ command_id: "4711", status: "pending" });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outcome.budgetMs).toBe(300_000);
+    expect(outcome.budgetExpired).toBe(true);
+    // The 25s default would have stopped after the third poll.
+    expect(outputCalls).toBeGreaterThan(20);
+  });
+
+  test("an explicit budget WINS over the handle", async () => {
+    installFetch({
+      joe_command_run: () => json({ ...JOE_ASYNC_HANDLE, expires_in_s: 300 }, 202),
+      joe_command_output: () => json({ command_id: "4711", status: "pending" }),
+    });
+    let clock = 1000;
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      budgetMs: 5,
+      pollIntervalMs: 0,
+      now: () => (clock += 10),
+      sleep: async () => {},
+    });
+    expect(outcome.budgetMs).toBe(5);
+    expect(outcome.budgetExpired).toBe(true);
+  });
+
+  test("the handle's window is clamped at both ends", async () => {
+    // Derived from public.joe_call_enqueue_job: it clamps expires_in_s to
+    // [10 minutes, 1 hour], so nothing outside that can be honoured — a hostile
+    // or buggy value must not become an unkillable wait.
+    for (const [expires, want] of [
+      [86_400, 3_600_000], // a day → the 1h ceiling
+      [3_600, 3_600_000], // exactly the ceiling
+      [300, 300_000], // inside the window → as asked
+      [0, 600_000], // not a duration → the 10min floor
+      [-5, 600_000],
+      [undefined, 600_000], // an older platform that omits the field
+      ["later", 600_000], // not even a number
+    ] as [unknown, number][]) {
+      installFetch({
+        joe_command_run: () => json({ ...JOE_ASYNC_HANDLE, expires_in_s: expires }, 202),
+        joe_command_output: () => json({ command_id: "4711", status: "pending" }),
+      });
+      let clock = 0;
+      const outcome = await runCommand({
+        apiKey: "k",
+        apiBaseUrl: BASE,
+        instanceId: 2,
+        command: "explain select 1",
+        pollIntervalMs: 0,
+        // One hour of fake time per poll, so every case expires on the first one.
+        now: () => (clock += 3_600_000),
+        sleep: async () => {},
+      });
+      expect(outcome.budgetMs).toBe(want);
+    }
+  });
+
+  test("the DIAL path keeps the 25s one-shot and its 800ms pacing", async () => {
+    const delays: number[] = [];
+    let outputCalls = 0;
+    installFetch({
+      joe_command_run: () => json("4242"),
+      joe_command_output: () => {
+        outputCalls += 1;
+        return outputCalls < 3
+          ? json({ command_id: "4242", status: "pending" })
+          : json({ command_id: "4242", status: "ok", plan_text: "Index Scan" });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 3,
+      command: "plan select 1",
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    expect(outcome.budgetMs).toBe(DEFAULT_BUDGET_MS);
+    expect(outcome.status).toBe("ok");
+    expect(delays).toEqual([800, 800]);
+    // ...and no "queued" line: nothing was queued.
+    expect(quiet?.mock.calls.length ?? 0).toBe(0);
+  });
+
+  test("the job channel is paced by the backoff ladder, not every 800ms", async () => {
+    // Each poll is a full api_token_check (a bcrypt per candidate token in the
+    // org). At 800ms a ten-minute window would be 750 of them.
+    const delays: number[] = [];
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => {
+        clock += 60_000;
+        return json({ command_id: "4711", status: "pending" });
+      },
+    });
+    await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      now: () => clock,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    expect(delays.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 15000]);
+  });
+
+  test("a queued command says so once, on stderr", async () => {
+    let outputCalls = 0;
+    // Same reason as the terminal-status test above: the budget here is the
+    // handle's hour, so the clock has to advance or a build that never reaches a
+    // terminal status spins through it instead of failing an assertion.
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => {
+        outputCalls += 1;
+        clock += 10_000;
+        return outputCalls < 3
+          ? json({ command_id: "4711", status: "pending" })
+          : json({ command_id: "4711", status: "ok", plan_text: "Index Scan" });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      pollIntervalMs: 0,
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outcome.status).toBe("ok");
+    const lines = (quiet?.mock.calls ?? []).map((c) => String(c[0]));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("Queued on the Joe job channel (command 4711");
+    expect(lines[0]).toContain("reaches Joe in about 12s");
+  });
+
+  test("a platform that 502s every poll is abandoned in seconds, not in an hour", async () => {
+    // The consequence of the longer window: before it, the 25s budget bounded a
+    // dead output endpoint. The id is still handed back, never thrown away.
+    let outputCalls = 0;
+    // A minute of fake time per poll, so a build WITHOUT the bound still ends
+    // (at the hour) and this fails on the count rather than by hanging.
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => {
+        outputCalls += 1;
+        clock += 60_000;
+        return new Response("Bad Gateway", { status: 502 });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      pollIntervalMs: 0,
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outputCalls).toBe(5);
+    expect(outcome.budgetExpired).toBe(true);
+    expect(outcome.commandId).toBe("4711");
+    expect(outcome.budgetMs).toBe(3_600_000);
+  });
+
+  test("the five-failure bound is the job channel's: the DIAL path still polls out its budget", async () => {
+    // The dial path's 25s already bounds a dead output endpoint, and cutting it
+    // off after five polls would lose answers a slow proxy still had time for.
+    let outputCalls = 0;
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json("4242"),
+      joe_command_output: () => {
+        outputCalls += 1;
+        clock += 2_000;
+        return new Response("Bad Gateway", { status: 502 });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 3,
+      command: "plan select 1",
+      pollIntervalMs: 0,
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outcome.budgetMs).toBe(DEFAULT_BUDGET_MS);
+    expect(outcome.budgetExpired).toBe(true);
+    expect(outcome.commandId).toBe("4242");
+    // 25s at 2s a poll — well past five.
+    expect(outputCalls).toBeGreaterThan(5);
+  });
+
+  test("the bound counts CONSECUTIVE failures: a poll that gets through resets it", async () => {
+    // Four 502s, a poll that answers, four more: a job channel that flaps must
+    // not be abandoned, only one that has stopped answering altogether.
+    let polls = 0;
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => {
+        polls += 1;
+        clock += 10_000;
+        if (polls === 5) return json({ command_id: "4711", status: "pending" });
+        if (polls === 10) return json({ command_id: "4711", status: "ok", plan_text: "Index Scan" });
+        return new Response("Bad Gateway", { status: 502 });
+      },
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      pollIntervalMs: 0,
+      now: () => clock,
+      sleep: async () => {},
+    });
+    expect(outcome.status).toBe("ok");
+    expect(outcome.output?.plan_text).toBe("Index Scan");
+    expect(polls).toBe(10);
+  });
+
+  test("an enqueued command is NEVER re-sent when the budget expires", async () => {
+    // retry_safe is false on this handle: a delivery whose answer was lost may
+    // still have reached Joe, so the only recovery is `pgai joe result <id>`.
+    let runCalls = 0;
+    installFetch({
+      joe_command_run: () => {
+        runCalls += 1;
+        return json(JOE_ASYNC_HANDLE, 202);
+      },
+      joe_command_output: () => json({ command_id: "4711", status: "pending" }),
+    });
+    let clock = 1000;
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      budgetMs: 5,
+      pollIntervalMs: 0,
+      now: () => (clock += 10),
+      sleep: async () => {},
+    });
+    expect(outcome.budgetExpired).toBe(true);
+    expect(outcome.status).toBe("pending");
+    expect(outcome.commandId).toBe("4711");
+    expect(runCalls).toBe(1);
   });
 });
 
@@ -459,9 +896,16 @@ describe("runCommand — run-then-poll", () => {
   });
 
   test("a terminal error output is returned in full", async () => {
+    // The clock advances for the same reason as on the job-channel tests: this is
+    // the only other test whose output is terminal-by-ERROR, so a build that
+    // stops recognising that status spins out the budget here instead of failing.
+    let clock = 0;
     installFetch({
       joe_command_run: () => json("5"),
-      joe_command_output: () => json({ command_id: "5", status: "error", error: "ERROR: relation \"nope\" does not exist" }),
+      joe_command_output: () => {
+        clock += 10_000;
+        return json({ command_id: "5", status: "error", error: "ERROR: relation \"nope\" does not exist" });
+      },
     });
     const outcome = await runCommand({
       apiKey: "k",
@@ -469,6 +913,7 @@ describe("runCommand — run-then-poll", () => {
       instanceId: 3,
       command: "explain select * from nope",
       pollIntervalMs: 0,
+      now: () => clock,
       sleep: async () => {},
     });
     expect(outcome.status).toBe("error");
@@ -621,7 +1066,7 @@ describe("executeJoeCommand — target → build → run", () => {
     expect(outcome.commandText).toBe("plan select 1");
     expect(outcome.status).toBe("ok");
     const run = captured.find((c) => c.url.endsWith("/rpc/joe_command_run"));
-    expect(run?.body).toEqual({ instance_id: 3, command: "plan select 1" });
+    expect(run?.body).toEqual({ instance_id: 3, command: "plan select 1", accept_async: true });
   });
 
   test("a bad verb argument fails BEFORE any network call", async () => {
@@ -662,7 +1107,11 @@ describe("executeJoeCommand — target → build → run", () => {
     expect(outcome.instanceId).toBe("9007199254740994001");
     expect(captured.some((c) => c.url.endsWith("/rpc/projects_list"))).toBe(false);
     const run = captured.find((c) => c.url.endsWith("/rpc/joe_command_run"));
-    expect(run?.body).toEqual({ instance_id: "9007199254740994001", command: "explain select 1" });
+    expect(run?.body).toEqual({
+      instance_id: "9007199254740994001",
+      command: "explain select 1",
+      accept_async: true,
+    });
   });
 
   test("instanceId wins over project when both are given (no projects_list call)", async () => {
