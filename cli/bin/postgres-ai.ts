@@ -7723,10 +7723,15 @@ interface JoeCliOpts {
 }
 
 function printJoeOutcome(outcome: ExecuteJoeOutcome, json: boolean, budgetMs?: number): void {
-  // The expiry hint reports the ACTUAL effective budget (--budget when given,
-  // the default otherwise) — not a hardcoded DEFAULT_BUDGET_MS.
-  const effectiveBudgetMs =
-    typeof budgetMs === "number" && Number.isFinite(budgetMs) ? budgetMs : DEFAULT_BUDGET_MS;
+  // The expiry hint reports the ACTUAL effective budget, which the run reports
+  // because it is not always the caller's: an enqueued command gets the window
+  // the platform holds its slot for. `budgetMs` is the fallback for a caller
+  // that built an outcome without it.
+  const effectiveBudgetMs = Number.isFinite(outcome.budgetMs)
+    ? outcome.budgetMs
+    : typeof budgetMs === "number" && Number.isFinite(budgetMs)
+      ? budgetMs
+      : DEFAULT_BUDGET_MS;
   const budgetSeconds = Math.round(effectiveBudgetMs / 1000);
   // One-shot budget reached before a terminal state — hand back a resume handle.
   // This is expected (a cold clone), NOT a failure: exit 0.

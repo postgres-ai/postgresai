@@ -1,6 +1,6 @@
 // Real end-to-end run against a live RDS instance and a real VictoriaMetrics:
 //   RDS_HOST_STATS_E2E_INSTANCE=<db instance id> RDS_HOST_STATS_E2E_VM_URL=http://127.0.0.1:8428 bun test test/e2e.test.ts
-// Needs AWS credentials for an account where the instance has Enhanced Monitoring on.
+// Needs AWS credentials for an account where the instance has Enhanced Monitoring and PI on.
 import { expect, test } from 'bun:test'
 import { createClients, pollOnce, writeSamples } from '../lib/poll'
 
@@ -15,6 +15,7 @@ const families = [
   'host_disk_write_iops',
   'host_network_receive_bytes_per_second',
   'host_network_transmit_bytes_per_second',
+  'host_db_load',
   'host_os_cpu_percent',
   'host_os_cpu_iowait_percent',
   'host_os_load1',
