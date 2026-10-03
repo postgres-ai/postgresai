@@ -1,3 +1,5 @@
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import { format } from "node:util";
 
 /** One JSON event a line on stderr: what `pgai connect` writes there with JSON output. */
@@ -6,18 +8,40 @@ export function writeEvent(event: object): void {
 }
 
 /**
- * Runs `fn` with console.error and console.warn writing JSON events
+ * Makes console.error and console.warn write JSON events
  * ({"event":"log","level":...,"message":...}) instead of text, so a check's
  * error or the --debug request log does not break a stream an agent parses.
+ * Returns the function that puts them back.
  */
-export async function withJsonStderr<T>(fn: () => Promise<T>): Promise<T> {
+export function jsonConsole(): () => void {
   const { error, warn } = console;
   console.error = (...args: unknown[]) => writeEvent({ event: "log", level: "error", message: format(...args) });
   console.warn = (...args: unknown[]) => writeEvent({ event: "log", level: "warn", message: format(...args) });
-  try {
-    return await fn();
-  } finally {
+  return () => {
     console.error = error;
     console.warn = warn;
-  }
+  };
+}
+
+/**
+ * Runs a child with stdin closed and resolves to its exit code (null when it
+ * cannot start or is killed by a signal). Without JSON output, what it prints
+ * goes to stderr as it is. With JSON output, each line is a log event naming
+ * `source`: `info` from its stdout, `error` from its stderr; blank lines are dropped.
+ */
+export function runChild(command: string, args: string[], env: NodeJS.ProcessEnv, json: boolean, source: string): Promise<number | null> {
+  if (!json) return Promise.resolve(spawnSync(command, args, { stdio: ["ignore", 2, 2], env }).status);
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
+    for (const [stream, level] of [[child.stdout!, "info"], [child.stderr!, "error"]] as const) {
+      createInterface({ input: stream }).on("line", (line) => {
+        if (line.trim() !== "") writeEvent({ event: "log", level, source, message: line });
+      });
+    }
+    child.on("error", (err) => {
+      writeEvent({ event: "log", level: "error", source, message: err.message });
+      resolve(null);
+    });
+    child.on("close", (code) => resolve(code));
+  });
 }
