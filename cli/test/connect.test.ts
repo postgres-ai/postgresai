@@ -883,28 +883,84 @@ describe("connect on the paid path: the price before the box", () => {
       expect(f.calls).toEqual(["list", "check self-managed", "quote", "resetLock db.example.com", "list", "prepare self-managed", "unprepare", "resetUnlock l-1"]);
     });
   }
-  test("a second database on a server the platform keeps the password of: no PGAI_MON_PASSWORD needed, the box's URL has none, the express checkup runs as the admin", async () => {
-    const first = row("active", { id: "i-0", name: "db.example.com/first", provider: "self-managed", host_metrics: false, monitoring_password_stored: true });
-    const NO_PW = "postgresql://postgres_ai_mon@db.example.com:5432/app";
+  // Another database on the same server, whose password the platform keeps.
+  const FIRST = { id: "i-0", name: "db.example.com/first", provider: "self-managed", host_metrics: false, monitoring_password_stored: true };
+  const NO_PW = "postgresql://postgres_ai_mon@db.example.com:5432/app";
+  const storedPrepare = (seen: (boolean | undefined)[] = []): ConnectDeps["prepare"] => async (_u, _p, o) => {
+    seen.push(o?.storedPassword);
+    return o?.check ? { checked: true } : { monitoringUrl: NO_PW, storedPassword: true };
+  };
+
+  test("a second database on a server the platform keeps the password of: no PGAI_MON_PASSWORD needed, the box's URL has none, no express checkup as the admin", async () => {
     const { deps, calls } = make();
-    const seen: unknown[] = [];
-    deps.list = async () => { calls.push("list"); return calls.filter((c) => c === "list").length === 1 ? [first] : [first, row("active", { name: SH_NAME, provider: "self-managed", host_metrics: false })]; };
-    deps.prepare = async (_u, provider, o) => { seen.push(o); calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: NO_PW, storedPassword: true }; };
-    expect((await connect(SH, { waitMs: 60_000, yes: true }, deps)).status).toBe("connected");
-    expect(seen).toEqual([{ resetPassword: undefined, check: true, storedPassword: true }, { resetPassword: undefined, storedPassword: true }]);
+    const seen: (boolean | undefined)[] = [];
+    const events: ProgressEvent[] = [];
+    deps.list = async () => { calls.push("list"); return calls.filter((c) => c === "list").length === 1 ? [row("active", FIRST)] : [row("active", FIRST), row("active", { name: SH_NAME, provider: "self-managed", host_metrics: false })]; };
+    deps.prepare = storedPrepare(seen);
+    deps.progress = (e) => events.push(e);
+    const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
+    expect(result.status).toBe("connected");
+    expect(seen).toEqual([true, true]);
     expect(calls).toContain(`create ${JSON.stringify({ db_url: NO_PW, accept_price: true })}`);
-    expect(calls).toContain(`checkup ${SH} as ${CH_NAME}`);
+    // The checkup runs only as postgres_ai_mon: not over the admin URL, and not at all without its password.
+    expect(calls.filter((c) => c.startsWith("checkup"))).toEqual([]);
+    expect(result).not.toHaveProperty("checkup");
+    expect(events.filter((e) => e.event === "checkup").map((e) => e.message)).toEqual([
+      "Express checkup skipped: it runs only as postgres_ai_mon, whose password PostgresAI keeps for this server. The full checkup follows on the box.",
+    ]);
   });
 
-  test("the platform has no password for the server after all (409): what to set, not a failure", async () => {
-    const first = row("active", { id: "i-0", name: "db.example.com/first", provider: "self-managed", host_metrics: false, monitoring_password_stored: true });
-    const { deps } = make({}, { list: async () => [first], create: async () => { throw new HttpStatusError("The URL has no password, and none is stored", 409); } });
-    deps.prepare = async (_u, _p, o) => (o?.check ? { checked: true } : { monitoringUrl: "postgresql://postgres_ai_mon@db.example.com:5432/app", storedPassword: true });
-    expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
+  test.each([
+    ["kept, the box starting", {}, true],
+    ["kept, the host in another case", { name: "DB.Example.COM/first" }, true],
+    ["not kept", { monitoring_password_stored: false }, undefined],
+    ["kept for another server", { name: "db2.example.com/first" }, undefined],
+    ["kept for another port", { name: "db.example.com:6432/first" }, undefined],
+    ["kept, its box being deleted", { status: "deleting_launched" }, undefined],
+    ["kept, its box's delete failed", { status: "deleting_failed_to_launch" }, undefined],
+  ] as const)("the platform's password is counted on only where it fills it in: %s", async (_, over, expected) => {
+    const { deps } = make();
+    const seen: (boolean | undefined)[] = [];
+    deps.list = async () => [{ ...row("launch_requested", FIRST), ...over }];
+    deps.prepare = storedPrepare(seen);
+    await connect(SH, { waitMs: 0, yes: true }, deps);
+    expect(seen).toEqual([expected, expected]);
+  });
+
+  test("--reset-password where the platform keeps the password: connect without it", async () => {
+    const { deps, calls } = make({}, { list: async () => [row("active", FIRST)] });
+    expect(await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME,
+      next: "A new password for postgres_ai_mon would cut off the monitoring of db.example.com/first on this server: connect without --reset-password (PostgresAI keeps its password for this server)",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  const NONE_STORED = "Failed to cloud monitoring connect: Conflict\nThe URL has no password, and none is stored for postgres_ai_mon on db.example.com:5432 in this organization.";
+  const NAME_TAKEN = 'Failed to cloud monitoring connect: Conflict\nA monitoring instance named "db.example.com/app" already exists';
+
+  test("the platform has no password for the server after all (409): --reset-password now cuts nothing off, not a failure", async () => {
+    const create = async () => { throw new HttpStatusError(NONE_STORED, 409); };
+    const cli = make({}, { list: async () => [row("active", FIRST)], create });
+    cli.deps.prepare = storedPrepare();
+    expect(await connect(SH, { waitMs: 0, yes: true }, cli.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
       price: "$512.00/month per box (scale plan)", requires_payment_method: false,
-      next: "PostgresAI no longer keeps the password of postgres_ai_mon for this server: set PGAI_MON_PASSWORD to it, then re-run",
+      next: "PostgresAI no longer keeps the password of postgres_ai_mon for this server (no box there uses it now): re-run with --reset-password, or set PGAI_MON_PASSWORD to its password",
     });
+    const agent = make({}, { list: async () => [row("active", FIRST)], create });
+    agent.deps.prepare = storedPrepare();
+    expect((await connect(SH, { waitMs: 0, yes: true, agent: true }, agent.deps)).next).toBe(
+      "PostgresAI no longer keeps the password of postgres_ai_mon for this server (no box there uses it now): pass its URL as database_url, or run pgai connect <admin-url> --reset-password in a terminal",
+    );
+  });
+
+  test("a 409 for anything else (the name taken by a parallel connect), or for a URL with a password: the platform's own error", async () => {
+    const stored = make({}, { list: async () => [row("active", FIRST)], create: async () => { throw new HttpStatusError(NAME_TAKEN, 409); } });
+    stored.deps.prepare = storedPrepare();
+    await expect(connect(SH, { waitMs: 0, yes: true }, stored.deps)).rejects.toThrow(NAME_TAKEN);
+    const withPassword = make({}, { create: async () => { throw new HttpStatusError(NONE_STORED, 409); } });
+    await expect(connect(SH, { waitMs: 0, yes: true }, withPassword.deps)).rejects.toThrow(NONE_STORED);
   });
 
   test("a re-run of a connected database asks no price", async () => {
@@ -1005,13 +1061,77 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(c.ran).toEqual([]);
   });
 
-  test("the platform's stored password goes only over TLS: without sslmode=require or verify-*, PGAI_MON_PASSWORD is still asked for", async () => {
+  const TLS_ONLY = "postgres_ai_mon already exists on this server. Put sslmode=require (or verify-full) in the URL, once: the password PostgresAI keeps for this server is sent only over TLS";
+
+  test.each(["sslmode=require", "sslmode=verify-ca", "sslmode=verify-full", "application_name=pgai&sslmode=require&channel_binding=require", "sslmode=require&options=-c%20role%3Dx&options=x"])(
+    "the platform's stored password, with %s: the box's URL carries none",
+    async (query) => {
+      const s = server({ mon_exists: true });
+      const result = await withMonPassword(undefined, () => s.prepare({ storedPassword: true }, `postgresql://postgres:adminpw@db.example.com:5432/app?${query}`));
+      expect(result).toMatchObject({ storedPassword: true });
+      expect(new URL((result as { monitoringUrl: string }).monitoringUrl).password).toBe("");
+    },
+  );
+
+  test.each(["", "?sslmode=prefer", "?sslmode=allow", "?sslmode=disable", "?sslmode=require&sslmode=require", "?sslmode=require&sslmode=disable", "?sslmode=require&", "?application_name=a&application_name=b&sslmode=require"])(
+    "the platform's stored password goes only over TLS, as the platform checks the URL: %p is refused before anything runs",
+    async (query) => {
+      const s = server({ mon_exists: true });
+      const url = `postgresql://postgres:adminpw@db.example.com:5432/app${query}`;
+      expect(await withMonPassword(undefined, () => s.prepare({ storedPassword: true }, url))).toEqual({ next: TLS_ONLY });
+      expect(await withMonPassword(undefined, () => s.prepare({ storedPassword: true, check: true }, url))).toEqual({ next: TLS_ONLY });
+      expect(s.ran).toEqual([]);
+    },
+  );
+
+  test("an agent's URL: the platform's stored password is used (PGAI_MON_PASSWORD is not read), over TLS only", async () => {
     const s = server({ mon_exists: true });
-    const plain = "postgresql://postgres:adminpw@db.example.com:5432/app";
-    expect(await withMonPassword(undefined, () => s.prepare({ storedPassword: true }, plain))).toEqual({
-      next: `postgres_ai_mon already exists on this server. ${SET_PASSWORD} (the password PostgresAI keeps for this server is sent only with sslmode=require or verify-*)`,
+    expect(await withMonPassword("from-the-environment", () => s.prepare({ storedPassword: true, agent: true }))).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon@db.example.com:5432/app?sslmode=require&application_name=pgai", storedPassword: true,
     });
-    expect(s.ran).toEqual([]);
+    expect(s.monLogins).toEqual([]);
+    const plain = server({ mon_exists: true });
+    expect(await plain.prepare({ storedPassword: true, agent: true }, "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=disable")).toEqual({
+      next: "postgres_ai_mon already exists on this server. Pass database_url with sslmode=require (or verify-full), once: the password PostgresAI keeps for this server is sent only over TLS",
+    });
+    expect(plain.ran).toEqual([]);
+  });
+
+  test("the platform keeps the password, and PGAI_MON_PASSWORD is set: it is checked and used, as without the platform's", async () => {
+    const s = server({ mon_exists: true }, ["ok", pgError("28P01", "password authentication failed"), "ok"]);
+    expect(await withMonPassword("right", () => s.prepare({ storedPassword: true }))).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:right@db.example.com:5432/app?sslmode=require&application_name=pgai",
+    });
+    expect(s.monLogins[0]).toBe("right");
+  });
+
+  test("the platform keeps the password, and PGAI_MON_PASSWORD is not it: unset it (and use TLS)", async () => {
+    const s = server({ mon_exists: true }, [pgError("28P01", "password authentication failed")]);
+    expect(await withMonPassword("stale", () => s.prepare({ storedPassword: true }))).toEqual({
+      next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Unset PGAI_MON_PASSWORD: PostgresAI keeps the password of postgres_ai_mon for this server",
+    });
+    const plain = server({ mon_exists: true }, [pgError("28P01", "password authentication failed")]);
+    expect(await withMonPassword("stale", () => plain.prepare({ storedPassword: true }, "postgresql://postgres:adminpw@db.example.com:5432/app"))).toEqual({
+      next: "postgres_ai_mon already exists on this server and PGAI_MON_PASSWORD is not its password. Unset PGAI_MON_PASSWORD and put sslmode=require (or verify-full) in the URL, once: PostgresAI keeps the password of postgres_ai_mon for this server, and sends it only over TLS",
+    });
+    expect([...s.ran, ...plain.ran]).toEqual([]);
+  });
+
+  test("the platform keeps the password, and --reset-password: a new password, and the box's URL carries it", async () => {
+    const s = server({ mon_exists: true });
+    const result = await withMonPassword(undefined, () => s.prepare({ storedPassword: true, resetPassword: true }));
+    const password = new URL((result as { monitoringUrl: string }).monitoringUrl).password;
+    expect(password.length).toBeGreaterThan(20);
+    expect(result).toEqual({ monitoringUrl: `postgresql://postgres_ai_mon:${password}@db.example.com:5432/app?sslmode=require&application_name=pgai` });
+    expect(s.sqls.some((q) => /alter user "?postgres_ai_mon"? with password 'SCRAM-SHA-256\$/.test(q))).toBe(true);
+  });
+
+  test("the platform keeps a password, but the role is not on the server: it is created, and the box's URL carries the new password", async () => {
+    const s = server({ mon_exists: false });
+    const result = await withMonPassword(undefined, () => s.prepare({ storedPassword: true }));
+    const password = new URL((result as { monitoringUrl: string }).monitoringUrl).password;
+    expect(password.length).toBeGreaterThan(20);
+    expect(result).toEqual({ monitoringUrl: `postgresql://postgres_ai_mon:${password}@db.example.com:5432/app?sslmode=require&application_name=pgai`, generated: true });
   });
 
   test("an existing role and no PGAI_MON_PASSWORD: refused, no login tried", async () => {

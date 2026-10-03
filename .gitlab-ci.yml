@@ -407,7 +407,8 @@ cli:clickhouse-like:tests:
   services:
     - name: postgres:${PG_VERSION}
       alias: pg
-      command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+      # TLS with the image's snakeoil pair: pgai connect sends a kept password only over TLS.
+      command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem", "-c", "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key", "-c", "shared_preload_libraries=pg_stat_statements"]
   variables:
     GIT_STRATEGY: fetch
     POSTGRES_PASSWORD: "chlike"
