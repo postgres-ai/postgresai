@@ -508,7 +508,7 @@ describe("connect", () => {
   // Two runs at once for databases on one server would each set a new
   // password: the platform's per-server lock lets one through.
   const SERVER = "abc123.us-east-1.aws.pg.clickhouse.cloud";
-  test("--reset-password takes the server's lock, checks the server again under it, and releases it once the box is requested", async () => {
+  test("--reset-password takes the server's lock after the price, checks the server again under it, and releases it once the box is requested", async () => {
     const { deps, calls } = fake({ rows: [undefined, undefined, row("launch_requested")] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).status).toBe("provisioning");
     expect(calls.slice(0, 4)).toEqual(["list", `resetLock ${SERVER}`, "list", "prepare clickhouse"]);
@@ -516,11 +516,11 @@ describe("connect", () => {
     expect(calls[5]).toBe("resetUnlock l-1");
   });
 
-  test("--reset-password while another run holds the server's lock: nothing reset, try again later", async () => {
+  test("--reset-password while another run holds the server's lock: nothing reset, try again later, or after 15 minutes if that run stopped", async () => {
     const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 409): Another pgai connect --reset-password for ... is running", 409); } });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME,
-      next: `Another pgai connect --reset-password for ${SERVER} is running: wait for it to finish, then re-run`,
+      status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE,
+      next: `Another pgai connect --reset-password for ${SERVER} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)`,
     });
     expect(calls).toEqual(["list", `resetLock ${SERVER}`]);
   });
@@ -542,6 +542,22 @@ describe("connect", () => {
     expect(calls).toEqual(["list"]);
   });
 
+  // Only a held lock (409) or no lock at all (404) is an answer: on anything
+  // else nothing is known to hold the server, and nothing is reset.
+  for (const [what, err] of [["a 500", new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 500)", 500)], ["no answer", new Error("fetch failed")]] as const) {
+    test(`--reset-password when the lock request gets ${what}: the error, nothing prepared or requested`, async () => {
+      const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); throw err; } });
+      await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow(err.message);
+      expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
+    });
+  }
+
+  test("--reset-password when the platform answers the lock without a lock id: the error, nothing prepared or requested", async () => {
+    const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); return {} as never; } });
+    await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow("cloud_monitoring_reset_lock returned no lock_id: nothing was changed");
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
+  });
+
   test("--reset-password: the same database connected by the run that held the lock is seen under it", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested")] });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
@@ -551,14 +567,17 @@ describe("connect", () => {
     expect(calls).toEqual(["list", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
-  test("--reset-password: the server is one lock and one name whatever its case or trailing dot", async () => {
+  test("--reset-password: the server is one lock and one name whatever its case or trailing dot, with a port too", async () => {
     const other = row("active", { id: "i-7", name: `${SERVER.toUpperCase()}./orders` });
     const { deps, calls } = fake({ rows: [other] });
     expect((await connect(CH.replace(SERVER, `${SERVER.replace("abc123", "ABC123")}.`), { resetPassword: true, waitMs: 0 }, deps)).status).toBe("action_required");
     expect(calls).toEqual(["list"]);
     const second = fake();
     await connect(CH.replace(SERVER, SERVER.toUpperCase()), { resetPassword: true, waitMs: 0 }, second.deps);
-    expect(second.calls[1]).toBe(`resetLock ${SERVER}`);
+    expect(second.calls[2]).toBe(`resetLock ${SERVER}`);
+    const port = fake();
+    await connect(CH.replace(`${SERVER}:5432`, `${SERVER.toUpperCase()}.:6432`), { resetPassword: true, waitMs: 0 }, port.deps);
+    expect(port.calls[2]).toBe(`resetLock ${SERVER}:6432`);
   });
 
   test("--reset-password: a refused launch drops the generated role before the lock is released", async () => {
@@ -570,10 +589,27 @@ describe("connect", () => {
     expect(calls.slice(-2)).toEqual(["unprepare", "resetUnlock l-1"]);
   });
 
-  test("--reset-password releases the lock when the box request fails", async () => {
-    const { deps, calls } = fake({ create: async () => { throw new HttpStatusError("boom", 500); } });
-    await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow("boom");
+  test("--reset-password releases the lock when the platform refuses the box (4xx: nothing was created)", async () => {
+    const { deps, calls } = fake({ create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect (HTTP 400)", 400); } });
+    await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow("HTTP 400");
     expect(calls.at(-1)).toBe("resetUnlock l-1");
+  });
+
+  // A box request without an answer may still create the box with this URL:
+  // a run that took the lock now would not see it, and would reset its password.
+  for (const err of [new HttpStatusError("Failed to cloud monitoring connect (HTTP 502)", 502), new Error("timed out")]) {
+    test(`--reset-password keeps the lock when the box request fails with ${err.message}: the lease frees the server`, async () => {
+      const { deps, calls } = fake({ create: async () => { calls.push("create"); throw err; } });
+      await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow(err.message);
+      expect(calls.slice(-2)).toEqual(["prepare clickhouse", "create"]);
+    });
+  }
+
+  test("--reset-password: a lock that cannot be released changes nothing of the result, and hides no error", async () => {
+    const unlockFails = { resetUnlock: async () => { throw new Error("unlock failed"); } };
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, fake({ rows: [undefined, undefined, row("launch_requested")], ...unlockFails }).deps)).status).toBe("provisioning");
+    const refused = fake({ ...unlockFails, create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect (HTTP 403)", 403); } });
+    await expect(connect(CH, { resetPassword: true, waitMs: 0 }, refused.deps)).rejects.toThrow("HTTP 403");
   });
 
   test("a note from the prepare step ends the next action", async () => {
@@ -597,7 +633,7 @@ describe("connect on the paid path: the price before the box", () => {
   };
   const SH = "postgresql://postgres:adminpw@db.example.com:5432/app";
   const SH_NAME = "db.example.com/app";
-  const make = (q: Record<string, unknown> = {}, over: Partial<ConnectDeps> = {}) => {
+  const make = (q: Record<string, unknown> = {}, over: Parameters<typeof fake>[0] = {}) => {
     const f = fake({ rows: [undefined, row("active", { name: SH_NAME, provider: "self-managed", host_metrics: false })], ...over });
     f.deps.quote = quoted(q, f.calls);
     f.deps.billingUrl = (alias: string) => `https://console.example/${alias}/billing`;
@@ -802,6 +838,33 @@ describe("connect on the paid path: the price before the box", () => {
       .toBe("Promo code NOPE: Promo code not found or expired. Nothing was changed: re-run with a valid code, or without coupon");
     expect([...calls, ...again.calls].filter((c) => c.startsWith("quote"))).toEqual(["quote", "quote NOPE"]);
   });
+
+  // --reset-password takes the server's lock once the price is accepted: a
+  // stop before that leaves the server free for the next run.
+  test("--reset-password: no payment method, the price declined, a bad coupon, or a URL that cannot work: the lock is never taken", async () => {
+    const noCard = make({ has_payment_method: false, requires_payment_method: true }, { rows: [undefined] });
+    expect((await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, noCard.deps)).requires_payment_method).toBe(true);
+    expect(noCard.calls).toEqual(["list", "check self-managed", "quote"]);
+    const declined = make({}, { rows: [undefined], confirm: async () => false });
+    expect((await connect(SH, { waitMs: 0, resetPassword: true }, declined.deps)).next).toStartWith("Re-run with --yes");
+    expect(declined.calls).toEqual(["list", "check self-managed", "quote"]);
+    const coupon = make({ promo: { code: "OLD", valid: false, error: "Promo code is expired" } }, { rows: [undefined] });
+    expect((await connect(SH, { waitMs: 0, yes: true, coupon: "OLD", resetPassword: true }, coupon.deps)).next).toStartWith("Promo code OLD");
+    expect(coupon.calls).toEqual(["list", "check self-managed", "quote OLD"]);
+    const sql = make({}, { rows: [undefined] });
+    sql.deps.prepare = async (_u, provider, o) => { sql.calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return { next: "Run the SQL as an admin", sql: "create role ..." }; };
+    expect((await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, sql.deps)).next).toBe("Run the SQL as an admin");
+    expect(sql.calls).toEqual(["list", "check self-managed"]);
+  });
+
+  for (const [what, err] of [["402", new HttpStatusError("Payment Required", 402)], ["402, declined", new HttpStatusError("Your card was declined.", 402)], ["412", new HttpStatusError("Precondition Failed", 412)]] as const) {
+    test(`--reset-password: the platform refusing the box (${what}): the generated role is dropped before the lock is released`, async () => {
+      const f = make({}, { rows: [undefined], create: async () => { throw err; } });
+      f.deps.prepare = async (_u, provider, o) => { f.calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }; };
+      expect((await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, f.deps)).status).toBe("action_required");
+      expect(f.calls).toEqual(["list", "check self-managed", "quote", "resetLock db.example.com", "list", "prepare self-managed", "unprepare", "resetUnlock l-1"]);
+    });
+  }
 
   test("a re-run of a connected database asks no price", async () => {
     const f = fake({ rows: [row("active")] });

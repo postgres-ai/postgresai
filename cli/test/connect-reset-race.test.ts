@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
+import type { Quote } from "../lib/connect";
 
 // Two `pgai connect --reset-password` processes at once, for two databases on
 // one server. postgres_ai_mon is one role for the whole server, so without a
@@ -43,6 +44,7 @@ describe.skipIf(!ADMIN)("two pgai connect --reset-password at once (real Postgre
 
   test("one run resets and requests its box; the other is refused, and the first box's URL still works", async () => {
     let held = false;
+    const locks: string[] = [];
     const created: string[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
@@ -51,8 +53,9 @@ describe.skipIf(!ADMIN)("two pgai connect --reset-password at once (real Postgre
         const body = await req.json().catch(() => ({})) as Record<string, string>;
         if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
         // The paid path (!443) quotes first; a free slot keeps this test about the lock.
-        if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false } satisfies Quote);
         if (path.endsWith("/rpc/cloud_monitoring_reset_lock")) {
+          locks.push(body.server);
           if (held) return Response.json({ message: "Conflict", details: `Another pgai connect --reset-password for ${body.server} is running` }, { status: 409 });
           held = true;
           return Response.json({ lock_id: "l-1", server: body.server });
@@ -79,11 +82,13 @@ describe.skipIf(!ADMIN)("two pgai connect --reset-password at once (real Postgre
         return Promise.all([proc.exited, new Response(proc.stdout).text()]).then(([status, stdout]) => ({ status, result: JSON.parse(stdout) as { status: string; next: string } }));
       };
       const runs = await Promise.all([run(ADMIN!), run(otherDb())]);
+      // Both runs got past the quote to the lock: a refusal below is the lock's.
+      expect(locks.length).toBe(2);
       const through = runs.filter((r) => r.status === 0);
       const refused = runs.filter((r) => r.status === 3);
       expect(through.length).toBe(1);
       expect(refused.length).toBe(1);
-      expect(refused[0].result.next).toMatch(/^Another pgai connect --reset-password for \S+ is running: wait for it to finish, then re-run$/);
+      expect(refused[0].result.next).toMatch(/^Another pgai connect --reset-password for \S+ is running: wait for it to finish, then re-run \(a run that stopped frees the server 15 minutes after it started\)$/);
       expect(created.length).toBe(1);
 
       // The box's URL works: nobody changed the password after it was sent.
