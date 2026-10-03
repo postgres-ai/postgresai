@@ -438,24 +438,16 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url).catch(() => false); };
     let lockId: string | undefined;
     // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
-    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name));
-    const cutOff = (others: Database[]): ConnectResult => ({ status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` });
-    if (opts.resetPassword) {
-      if (othersOnServer(rows).length) return cutOff(othersOnServer(rows));
-      // Another run at once for a database on this server would reset the
-      // password too: the platform lets one run at a time hold the server.
-      try {
-        lockId = (await deps.resetLock(serverOf(name))).lock_id;
-      } catch (err) {
-        if (err instanceof HttpStatusError && err.status === 409) {
-          return { status: "action_required", provider, name, next: `Another pgai connect --reset-password for ${serverOf(name)} is running: wait for it to finish, then re-run` };
-        }
-        if (err instanceof HttpStatusError && err.status === 404) {
-          return { status: "action_required", provider, name, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${DEFAULT_MONITORING_USER}'s password instead` };
-        }
-        throw err;
-      }
-    }
+    // A box whose URL the platform could not read is named "Monitoring <6 hex>": its server is not known, so it may be this one.
+    const unread = (d: Database) => /^Monitoring [0-9a-f]{6}$/.test(d.name);
+    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && (unread(d) || serverOf(d.name) === serverOf(name)));
+    const cutOff = (others: Database[]): ConnectResult => {
+      const on = others.filter((d) => !unread(d)).map((d) => d.name).join(", ");
+      const maybe = others.filter(unread).map((d) => d.name).join(", ");
+      const what = [on && `would cut off the monitoring of ${on} on this server`, maybe && `may cut off the monitoring of ${maybe} (the platform could not read its URL, so its server is not known)`].filter(Boolean).join(", and ");
+      return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} ${what}: set PGAI_MON_PASSWORD to its password instead` };
+    };
+    if (opts.resetPassword && othersOnServer(rows).length) return cutOff(othersOnServer(rows));
     // What the box costs, before anything is touched: a billed box is accepted
     // (--yes, or at the prompt), and needs the org's payment method.
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
@@ -550,7 +542,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (lockId && !unanswered) await deps.resetUnlock(lockId).catch(() => {});
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
-    undoRole = () => undo(prepared);
+    const made = prepared;
+    undoRole = () => undo(made);
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
     checkup = await deps.checkup(withLocalTls((prepared as { monitoringUrl: string }).monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
     progress("checkup", checkupLines(checkup).join("\n"), { checkup });
