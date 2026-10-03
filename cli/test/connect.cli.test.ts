@@ -25,6 +25,11 @@ async function run(args: string[], env: Record<string, string>, stdin?: string) 
   return { status, stdout, stderr, json: () => JSON.parse(stdout) };
 }
 
+const BILLED = {
+  plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0,
+  price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
+};
+
 async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] = [ROW]) {
   const calls: string[] = [];
   const server = Bun.serve({
@@ -33,6 +38,7 @@ async function withApi(fn: (env: Record<string, string>, calls: string[]) => Pro
       const path = new URL(req.url).pathname;
       calls.push(`${path} ${req.headers.get("access-token")} ${await req.text()}`);
       if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+      if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json(BILLED);
       if (path.endsWith("/rpc/cloud_monitoring_disconnect")) return Response.json({ id: "i-1", status: "deleting_launched" });
       return new Response("not found", { status: 404 });
     },

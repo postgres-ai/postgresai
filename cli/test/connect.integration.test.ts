@@ -316,7 +316,13 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     url.username = "pgai_connect_app";
     url.password = "app-pw-123";
     const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-tty-"));
-    const api = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json([]) });
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      // A free slot: no price to accept before the SQL.
+      fetch: (req) => Response.json(new URL(req.url).pathname.endsWith("/rpc/cloud_monitoring_quote")
+        ? { plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false }
+        : []),
+    });
     let out = "";
     const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), "connect", url.toString()], {
       cwd: home,
@@ -428,6 +434,8 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           if (path.endsWith("/postgres")) return Response.json({ result: [{ id: SERVICE, name: "svc", state: "running" }] });
           if (path.endsWith(`/postgres/${SERVICE}`)) return Response.json({ result: { id: SERVICE, name: "svc", state: "running", hostname: url.hostname } });
           if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+          // A free slot: no price to accept.
+          if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
           if (path.endsWith("/rpc/cloud_monitoring_connect")) {
             const dbUrl = new URL(JSON.parse(await req.text()).db_url);
             const row = { id: "i-1", name: `${dbUrl.hostname}${dbUrl.port && dbUrl.port !== "5432" ? `:${dbUrl.port}` : ""}${dbUrl.pathname}`, provider: "clickhouse", status: "launch_requested", dashboard_url: null, host_metrics: true };
@@ -467,7 +475,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         launch = "accept";
         // While the box starts, the express checkup ran as postgres_ai_mon against this server.
         const { checkup, ...launched } = await run();
-        expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, next: `pgai status ${name}` });
+        expect(launched).toEqual({ exit: 0, status: "provisioning", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, price: "free (1 of 1 free slots)", requires_payment_method: false, next: `pgai status ${name}` });
         expect(checkup.checks).toBe(19);
         expect([...checkup.findings.map((f: { check_id: string }) => f.check_id), ...checkup.info]).toContain("A002");
         // Every check is counted once: warning, ok, info, or could not run.
@@ -478,7 +486,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(uploads.filter((u) => u.file).length).toBe(19 - (checkup.failed?.length ?? 0));
         expect(uploads.at(-1)).toEqual({ status: "41 completed" });
         // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
-        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["preparing", "provisioning", "checkup", "box"]);
+        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["billing", "preparing", "provisioning", "checkup", "box"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
@@ -494,6 +502,68 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         api.stop(true);
         await c.end();
         rmSync(home, { recursive: true, force: true });
+      }
+    }, 120_000);
+  });
+
+  // The price prompt needs a URL that can work: connect checks it first.
+  describe("pgai connect at the price prompt (the real CLI in a terminal, a fake platform)", () => {
+    const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+    const PROMPT = /Provision [^\n]+\? \(y\/N\): $/;
+
+    async function atPrompt(answer: string) {
+      const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-prompt-"));
+      const calls: string[] = [];
+      const api = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch(req) {
+          const path = new URL(req.url).pathname;
+          calls.push(path);
+          if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+          if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
+          return new Response("not found", { status: 404 });
+        },
+      });
+      let out = "";
+      let typed = false;
+      try {
+        const proc = Bun.spawn([process.execPath, CLI, "connect", ADMIN!], {
+          cwd: home,
+          env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`, PGAI_NO_FEEDBACK_TIP: "1" },
+          terminal: {
+            cols: 400, rows: 50,
+            data(term, bytes) {
+              out += new TextDecoder().decode(bytes);
+              if (!typed && PROMPT.test(out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, ""))) {
+                typed = true;
+                setTimeout(() => term.write(answer), 100);
+              }
+            },
+          },
+        });
+        return { status: await proc.exited, screen: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, ""), calls };
+      } finally {
+        api.stop(true);
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+
+    test("Ctrl-C or Ctrl-D is exit 130, n (or anything but y/yes) is exit 3; the price is shown first; nothing created", async () => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      try {
+        for (const key of ["\x03", "\x04"]) expect((await atPrompt(key)).status).toBe(130);
+        const n = await atPrompt("n\r");
+        expect(n.status).toBe(3);
+        expect(n.screen).toMatch(/Billing: \$512\.00\/month per box \(scale plan\) \(\+\d+s\)\nProvision /);
+        expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per box (scale plan)");
+        expect((await atPrompt("yes, but not now\r")).status).toBe(3);
+        expect(n.calls.filter((p) => p.includes("cloud_monitoring_connect"))).toEqual([]);
+        expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
+      } finally {
+        await c.end();
       }
     }, 120_000);
   });

@@ -32,7 +32,7 @@ export type CheckupResult = {
 
 /** A step of connect, once each: a line for a person, a JSON event for an agent. */
 export interface ProgressEvent {
-  event: "preparing" | "provisioning" | "checkup" | "box";
+  event: "billing" | "preparing" | "provisioning" | "checkup" | "box";
   /** Seconds since connect started. */
   elapsed_s: number;
   message: string;
@@ -50,8 +50,29 @@ export interface ConnectResult {
   host_metrics?: boolean;
   first_checkup_eta?: string;
   checkup?: CheckupResult;
+  /** A new box: what it costs ("$512.00/month per box (scale plan)", "free (1 of 2 free slots)"). */
+  price?: string;
+  requires_payment_method?: boolean;
+  coupon?: { code: string; valid: boolean; description?: string; error?: string };
   next: string;
   sql?: string;
+}
+
+/** v1.cloud_monitoring_quote: what the next box costs the org. Amounts in cents. */
+export interface Quote {
+  plan: string;
+  org_alias: string;
+  billed: boolean;
+  free_slots: { remaining: number; total: number; until?: string };
+  subscription: boolean;
+  quantity: number;
+  price: { amount: number; currency: string; interval: string };
+  has_payment_method: boolean;
+  requires_payment_method: boolean;
+  promo?: { code: string; valid: boolean; error?: string; discount_description?: string; duration?: string; duration_in_months?: number };
+  amount_after_promo?: number;
+  /** The org's billing page on this platform's console (a preview's, on a preview). */
+  billing_url?: string;
 }
 
 /** A row of v1.cloud_monitoring_list. */
@@ -71,12 +92,13 @@ export interface Database {
  * `generated`: this run created the role with a password generated here, which
  * nobody has once the run ends.
  */
-export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string };
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true } | { next: string; sql?: string } | { checked: true };
 
 export interface ConnectDeps {
   list(): Promise<Database[]>;
-  create(body: Record<string, string>): Promise<{ id: string; name: string; status: string; error?: string }>;
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean }): Promise<Prepared>;
+  create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
+  /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
@@ -85,6 +107,12 @@ export interface ConnectDeps {
   checkup(url: string, project: string): Promise<CheckupResult>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
+  /** What the next box costs, with the coupon checked. */
+  quote(coupon?: string): Promise<Quote>;
+  /** The console page where the org adds a payment method, when the quote names none. */
+  billingUrl(orgAlias: string): string;
+  /** Asks a person; false when nobody can be asked. */
+  confirm(question: string): Promise<boolean>;
   sleep(ms: number): Promise<void>;
   now(): number;
   progress(event: ProgressEvent): void;
@@ -99,6 +127,28 @@ export interface ConnectOptions {
   waitMs: number;
   /** The URL comes from an agent (the MCP tool): nothing of this process's environment or files goes to the host it names. */
   agent?: boolean;
+  /** A billed box is accepted without asking. */
+  yes?: boolean;
+  /** A Stripe promotion code for the org's subscription. */
+  coupon?: string;
+}
+
+const money = (cents: number, currency: string) =>
+  currency.toLowerCase() === "usd" ? `$${(cents / 100).toFixed(2)}` : `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
+
+/** The quote as one line: free, the price per box, or the price after the coupon. */
+export function priceText(q: Quote): string {
+  if (!q.billed) return q.free_slots.total ? `free (${q.free_slots.remaining} of ${q.free_slots.total} free slots)` : "free";
+  const { amount, currency, interval } = q.price;
+  const base = `${money(amount, currency)}/${interval} per box (${q.plan} plan)${q.subscription ? `, box ${q.quantity + 1} on the subscription` : ""}`;
+  if (q.promo?.valid && q.amount_after_promo !== undefined && q.amount_after_promo !== null) {
+    const after = `${money(q.amount_after_promo, currency)}`;
+    const how = `with ${q.promo.code} (${q.promo.discount_description})`;
+    if (q.promo.duration === "forever") return `${after}/${interval} ${how}, instead of ${base}`;
+    if (q.promo.duration === "repeating") return `${after}/${interval} for ${q.promo.duration_in_months} months ${how}, then ${base}`;
+    return `${after} the first ${interval} ${how}, then ${base}`;
+  }
+  return base;
 }
 
 // The reporter's first run is 30 minutes after the stack starts
@@ -275,6 +325,34 @@ export function progressText(e: ProgressEvent): string {
 /** The box's state as connect shows it: registered between the launch and active. */
 const boxState = (row: Database) => (row.status === "launch_requested" && row.registered_at ? "registered" : row.status ?? "starting");
 
+type Billing = Pick<ConnectResult, "price" | "requires_payment_method" | "coupon">;
+
+/**
+ * A new box's billing: its fields for the result, the billing page for a
+ * missing payment method, and `stop` when something comes first (a coupon
+ * that does not apply, no payment method, a billed box not accepted).
+ */
+async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void): Promise<{ billing: Billing; billingPage: Billing & { next: string }; accepted: boolean; stop?: Billing & { next: string } }> {
+  const billing: Billing = { price: priceText(q), requires_payment_method: q.requires_payment_method };
+  if (opts.coupon) {
+    billing.coupon = q.promo?.valid
+      ? { code: q.promo.code, valid: true, description: q.promo.discount_description }
+      : { code: opts.coupon, valid: false, error: q.promo?.error ?? "not valid" };
+  }
+  const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${q.billing_url ?? deps.billingUrl(q.org_alias)}, then re-run` };
+  const stop = (next: string) => ({ billing, billingPage, accepted: false, stop: { ...billing, next } });
+  if (billing.coupon && !billing.coupon.valid) {
+    return stop(`Promo code ${opts.coupon}: ${billing.coupon.error}. Nothing was changed: re-run with a valid code, or without ${opts.agent ? "coupon" : "--coupon"}`);
+  }
+  if (q.requires_payment_method) return { billing, billingPage, accepted: false, stop: billingPage };
+  // The price on its own line first: a prompt may wrap or be cut where it is shown.
+  show(billing.price!);
+  if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${name}? (y/N): `))) {
+    return stop(opts.agent ? `Call connect_database again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
+  }
+  return { billing, billingPage, accepted: q.billed };
+}
+
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
   const started = deps.now();
   const progress = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}) =>
@@ -304,6 +382,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const fresh = !row;
   let note = "";
   let checkup: CheckupResult | undefined;
+  let billing: Billing = {};
+  let billingPage: Billing & { next: string } | undefined;
+  let accepted = false;
   // The key is checked first, on a re-run too: a rejected key or a stopped service changes nothing.
   const findOrg = async () => {
     try {
@@ -337,9 +418,23 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: set PGAI_MON_PASSWORD to its password instead` };
       }
     }
+    // What the box costs, before anything is touched: a billed box is accepted
+    // (--yes, or at the prompt), and needs the org's payment method.
+    if (opts.coupon !== undefined && !opts.coupon.trim()) {
+      return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
+    }
+    if (!opts.selfHosted) {
+      // A URL that cannot work is told so before any price is asked (nothing is changed here).
+      const probe = await deps.prepare(url, provider, { resetPassword: opts.resetPassword, check: true });
+      if ("next" in probe) return { status: "action_required", provider, name, ...probe };
+      const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
+      if (b.stop) return { status: "action_required", provider, name, ...b.stop };
+      ({ billing, billingPage, accepted } = b);
+    }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
-    if ("next" in prepared) return { status: "action_required", provider, name, ...prepared };
+    if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
+    if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
     if (prepared.note) note = `; ${prepared.note}`;
     if (opts.selfHosted) {
       await deps.selfHosted(prepared.monitoringUrl, key && ch
@@ -355,11 +450,24 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       db_url: prepared.monitoringUrl,
       ...(provider === "clickhouse" ? { provider } : {}),
       ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
+      ...(opts.coupon ? { promo_code: opts.coupon } : {}),
+      // The price shown was accepted: without it the platform creates no billed box.
+      ...(accepted ? { accept_price: true } : {}),
     }).catch(async (err) => {
       // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
       if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo();
+      // 402: the payment method went away since the quote; nothing was created.
+      if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
+      // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
+      if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
       throw err;
     });
+    if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
+    // A card on file that Stripe declined is not a missing one.
+    if (created === "declined") {
+      return { status: "action_required", provider, name, ...billingPage!, next: billingPage!.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
+    }
+    if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
     if (created.status === "failed") {
       await undo();
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
@@ -382,7 +490,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         result.next += "; for CPU, memory and disk, disconnect and reconnect with --clickhouse-key <key-id>:<key-secret>";
       }
       const { next, ...rest } = result;
-      return { ...rest, ...(checkup ? { checkup } : {}), next: next + note };
+      return { ...rest, ...billing, ...(checkup ? { checkup } : {}), next: next + note };
     }
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
@@ -398,6 +506,8 @@ export interface PrepareOptions {
   agent?: boolean;
   /** An existing postgres_ai_mon gets a new password (PGAI_MON_PASSWORD, else a generated one). */
   resetPassword?: boolean;
+  /** Only whether the URL can work: every refusal, nothing created or changed. */
+  check?: boolean;
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
@@ -506,6 +616,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
         if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${setPassword}` };
         if (await acceptsAnyPassword()) notes.push(unchecked("PGAI_MON_PASSWORD"));
       }
+      if (opts.check) return { checked: true };
       const monitoringUrl = monitoringUrlFor(url, me.db, password);
       const loginUrl = loginUrlFor(url, me.db, password);
       const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: !reset });
@@ -614,19 +725,32 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
   throw failed ?? notFound;
 }
 
+/** What a disconnect did to the billing (monitoring_instance_delete's reply), for a person; undefined when nothing was released. */
+export function disconnectBilling(reply: unknown): string | undefined {
+  const r = (reply ?? {}) as { billing?: { subscription?: string; quantity?: number }; billing_warning?: string };
+  if (r.billing_warning) return `not released (${r.billing_warning}): contact support`;
+  if (r.billing?.subscription === "canceled") return "subscription canceled: no further charges (the current period is not refunded)";
+  if (r.billing?.subscription === "active" && typeof r.billing.quantity === "number") {
+    return `${r.billing.quantity} ${r.billing.quantity === 1 ? "box" : "boxes"} left on the subscription`;
+  }
+  return undefined;
+}
+
 /** The platform side of connect, for the CLI and the MCP server alike. */
 export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean; agent?: boolean }) {
   const rpc = <T>(fn: string, body: Record<string, unknown> = {}) =>
     callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope });
   return {
     list: () => rpc<Database[]>("cloud_monitoring_list"),
-    create: (body: Record<string, string>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
+    create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>
       expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),
+    quote: (coupon?: string) => rpc<Quote>("cloud_monitoring_quote", coupon ? { promo_code: coupon } : {}),
+    billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);
