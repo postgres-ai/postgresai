@@ -12,6 +12,9 @@
   JSON (`status`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required),
   and 130 for a `pgai init` cancelled at a prompt.
   An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
+  Another database on a server PostgresAI already monitors for the organization needs no
+  `PGAI_MON_PASSWORD`: with `sslmode=require` or `verify-*` in the URL, PostgresAI fills in the
+  password it keeps for that server, and the express checkup is skipped (it never runs as the admin).
   A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
   created with a generated password is dropped again when the launch is refused.
   A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole preparation;
@@ -20,7 +23,7 @@
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
-  While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings
+  While the box starts, `connect` runs the express checkup as `postgres_ai_mon` (only then), prints its findings
   (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`). Each step and
   each change of the box's state is shown once, with the time since the start (JSON: one event a line
   on stderr). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
