@@ -998,11 +998,14 @@ describe("prepareDatabase (a fake pg client)", () => {
     );
   });
 
-  test("a TLS session to a server whose ssl setting is off (a pooler that ends TLS, say): the stored password is used", async () => {
+  test("a TLS session to a server whose ssl setting is off (a pooler that ends TLS, say): the stored password is used, and a URL that lacks something is told what", async () => {
     const s = server({ mon_exists: true, ssl: "off" });
     expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=require`))).toEqual({
       monitoringUrl: "postgresql://postgres_ai_mon@db.example.com:5432/app?sslmode=require", storedPassword: true,
     });
+    expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=require&`))).toEqual({ next: TLS_ONLY("no stray &") });
+    // sslmode=prefer: the session took TLS.
+    expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=prefer`))).toEqual({ next: TLS_ONLY(SSLMODE) });
   });
 
   test("a server without TLS and a PGAI_MON_PASSWORD this host may not check (pg_hba): not told to unset it", async () => {

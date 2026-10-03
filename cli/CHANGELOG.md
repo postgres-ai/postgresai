@@ -16,7 +16,8 @@
   `PGAI_MON_PASSWORD`: with `sslmode=require` or `verify-*` in the URL, PostgresAI fills in the
   password it keeps for that server, and the express checkup is skipped (it never runs as the admin).
   On a server without TLS, `connect` says the kept password cannot be used there and names the way
-  out (`PGAI_MON_PASSWORD`, TLS, or the databases to disconnect before `--reset-password`).
+  out, to an agent too (`PGAI_MON_PASSWORD`, TLS, or the databases to disconnect before
+  `--reset-password`, quoted for the shell).
   A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
   created with a generated password is dropped again when the launch is refused.
   A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole preparation;

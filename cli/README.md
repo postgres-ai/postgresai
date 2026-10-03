@@ -228,7 +228,7 @@ name for the same server, a connect running at the same time) needs the new pass
 Another database on a server PostgresAI already monitors for the organization needs neither: with
 `sslmode=require` or `verify-*` in the URL, the role keeps its password, the box's URL carries
 none, and PostgresAI fills in the one it kept from the first `connect` (only over TLS, each query
-parameter once, and only while no box on that server is deleted, being deleted, or failed to
+parameter once, and only while a box on that server is not deleted, being deleted, or failed to
 delete). The express checkup is skipped then: it runs only as `postgres_ai_mon`, never as the
 admin. The full checkup follows on the box. On a server without TLS the kept password cannot be
 used: set `PGAI_MON_PASSWORD`, or turn TLS on; if nobody has the password, disconnect the server's
