@@ -220,7 +220,7 @@ terminal, or with `--json`, it only points to `pgai connect`.
 | Environment | |
 |---|---|
 | `PGAI_API_KEY` | the API key, instead of signing in (agents, CI) |
-| `PGAI_MON_PASSWORD` | the password of `postgres_ai_mon`. For a new role it is set; for an existing role it is checked by logging in, and never changed. Without it a new role gets a generated password |
+| `PGAI_MON_PASSWORD` | the password of `postgres_ai_mon`. For a new role it is set; for an existing role it is checked by logging in, and never changed. Without it a new role gets a generated password. Not needed for another database on a server PostgresAI already monitors for the organization, with `sslmode=require` or `verify-*` in the URL (see below) |
 | `PGPASSWORD` | the password for a URL without one. With a `postgres_ai_mon` URL it is the password the monitoring box gets, once the server has checked it |
 | `PGSSLMODE` | the `sslmode` for a URL without one (`sslmode` in the URL wins, as in libpq) |
 | `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` | instead of `--clickhouse-key`; read for ClickHouse hosts only |
@@ -238,6 +238,12 @@ server 15 minutes after it took the lock. A platform without the lock answers "s
 `PGAI_MON_PASSWORD`" instead. Anything else that logs in as `postgres_ai_mon` (another organization,
 another host name for the same server, a connect without `--reset-password` running at the same
 time) needs the new password.
+
+Another database on a server PostgresAI already monitors for the organization needs neither: with
+`sslmode=require` or `verify-*` in the URL, the role keeps its password, the box's URL carries
+none, and PostgresAI fills in the one it kept from the first `connect` (only over TLS, and only
+while a box on that server is not being disconnected). The express checkup is skipped then: it runs
+only as `postgres_ai_mon`, never as the admin. The full checkup follows on the box.
 
 When the role exists (an admin URL with `PGAI_MON_PASSWORD`, or the role's own URL), `connect`
 also logs in once as `postgres_ai_mon` with a random password, to learn whether the server checks
@@ -495,7 +501,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only.
+- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
 
 #### `attachments` parameter (issue/comment tools)
 
