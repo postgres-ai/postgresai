@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4143,7 +4143,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
   return !!cloudApi().apiKey;
 }
 
-async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
@@ -4175,6 +4175,17 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         if (r.status !== 0) throw new Error("mon local-install failed (see above)");
       },
       localStackRunning: () => checkRunningContainers().running,
+      // A billed box: asked only of a person at a terminal (else --yes).
+      confirm: async (q) => {
+        if (!interactive(opts.json)) return false;
+        // Ctrl-C / Ctrl-D at the prompt ends the process: cancelled, as at init's prompts.
+        process.exitCode = 130;
+        const answer = await question(q);
+        process.exitCode = undefined;
+        // An open prompt would take the first Ctrl-C while connect waits for the box.
+        closeReadline();
+        return /^(y|yes)$/i.test(answer.trim());
+      },
       // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
       progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
     });
@@ -4191,7 +4202,8 @@ withOrgOptions(program.command("connect <database-url>"))
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
   .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
   .option("--wait <minutes>", "how long to wait for the monitoring box (0 = do not wait)", "20")
-  .option("-y, --yes", "never prompt")
+  .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
+  .option("-y, --yes", "never prompt: accept the price of a billed box")
   .option("--json", "JSON output (default when stdout is not a TTY)")
   .option("--debug", "print HTTP requests (secrets masked)")
   .addHelpText("after", [
@@ -4199,6 +4211,10 @@ withOrgOptions(program.command("connect <database-url>"))
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, run the express checkup while it starts, wait, print the dashboard URL.",
+    "",
+    "Billing: once the URL is checked, before a new box, connect shows its price (or \"free (N of M free slots)\"). A billed",
+    "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
+    "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
     "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
     "",
@@ -4277,8 +4293,8 @@ withOrgOptions(program.command("disconnect <name>"))
       if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
       }
-      await cloudApi(opts.debug).disconnect(row.id);
-      printResult({ status: "disconnected", name: row.name, id: row.id, next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
+      const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
+      printResult({ status: "disconnected", name: row.name, id: row.id, ...(billing ? { billing } : {}), next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" }, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }
