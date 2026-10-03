@@ -520,7 +520,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (prepared.storedPassword) {
       // The password stays with the platform, and the checkup never runs as the admin: its SQL resolves
       // names with the database's search_path, where the database's owner can put functions. (The
-      // prepare step's plan runs as the admin with that search_path too: postgres-ai/internal#354.)
+      // prepare step's plan runs as the admin with that search_path too: postgres-ai/internal#384.)
       progress("checkup", `Express checkup skipped: it runs only as ${DEFAULT_MONITORING_USER}, whose password PostgresAI keeps for this server. The full checkup follows on the box.`);
     } else {
       // First value while the box starts (minutes): the express checkup, as the monitoring role.
