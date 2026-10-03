@@ -485,8 +485,10 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(uploads[0]).toEqual({ create: name });
         expect(uploads.filter((u) => u.file).length).toBe(19 - (checkup.failed?.length ?? 0));
         expect(uploads.at(-1)).toEqual({ status: "41 completed" });
-        // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
-        expect(stderr.trim().split("\n").map((l) => JSON.parse(l).event)).toEqual(["billing", "preparing", "provisioning", "checkup", "box"]);
+        // JSON on stdout, so the steps go to stderr as events, one JSON object a line
+        // (and a check that cannot run, D004 without pg_stat_statements preloaded, a log event).
+        const events = stderr.trim().split("\n").map((l) => JSON.parse(l).event);
+        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "checkup", "box"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
