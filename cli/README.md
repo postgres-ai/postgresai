@@ -194,6 +194,12 @@ re-run is checked, and a rejected one is `action_required`. For ClickHouse Manag
 machine instead. When stdout is not a terminal the result is JSON with `status`, `dashboard_url`
 and `next`. Then: `pgai databases`, `pgai status <name>`, `pgai disconnect <name>`.
 
+With JSON output (`--json`, or stdout not a terminal) stderr is the progress stream: one JSON
+object a line, each with `event`. Besides the steps, any other text is
+`{"event":"log","level":"error"|"warn"|"info","message":...}`: an error (also a missing argument or
+a bad option), a warning, the `--debug` request log, and with `--self-hosted` each line of
+`mon local-install` (`"source":"mon local-install"`; `info` from its stdout, `error` from its stderr).
+
 `pgai init` is the same for a person at a terminal: it signs in, asks for the database URL (and,
 for ClickHouse, the API key; neither is shown as typed), then runs `pgai connect`. Without a
 terminal, or with `--json`, it only points to `pgai connect`.
@@ -722,7 +728,7 @@ PGPASSWORD=... postgresai checkup \
   `postgresai checkup <ID> <conn>`); stdout is then a one-key object.
 - **stderr** carries only human-readable diagnostics (progress, warnings,
   errors). It never contains report JSON — machine consumers should read stdout
-  only. Do not parse stderr as JSON.
+  only. Do not parse stderr of `checkup` as JSON (that of `pgai connect` is JSON lines, see above).
 - **Exit codes**: `0` on success; non-zero when the run fails (connection
   failure, insufficient permissions, an unknown/unavailable check ID, or a
   failing check). On a non-zero exit, no JSON report object is written to
