@@ -133,7 +133,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await still.end();
   });
 
-  test("a second database with the password PostgresAI keeps for the server: over TLS, no PGAI_MON_PASSWORD and the role's password stays; without TLS, refused before anything runs", async () => {
+  test("a second database with the password PostgresAI keeps for the server: over TLS, no PGAI_MON_PASSWORD and the role's password stays; without TLS, refused before anything runs, with the way out", async () => {
     const c = await admin();
     await c.query("drop database if exists pgai_connect_db2");
     await c.query("create database pgai_connect_db2");
@@ -149,9 +149,18 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     m.pathname = "/pgai_connect_db2";
     const monLogsIn = () => { const mon = new Client({ connectionString: m.toString() }); return mon.connect().then(() => mon.end().then(() => true), () => false); };
     try {
-      expect(await prepareDatabase(db2("disable"), "self-managed", { storedPassword: true })).toEqual({
-        next: "postgres_ai_mon already exists on this server. Put sslmode=require (or verify-full) in the URL, once: the password PostgresAI keeps for this server is sent only over TLS",
+      // sslmode=disable: on a server with TLS, the URL needs sslmode=require; on one without (ssl off), there is no TLS to ask for.
+      expect(await prepareDatabase(db2("disable"), "self-managed", { storedPassword: true, others: ["db.example.com/first"] })).toEqual({
+        next: tls
+          ? "postgres_ai_mon already exists on this server. The URL needs sslmode=require (or verify-full): the password PostgresAI keeps for this server is sent only over TLS, to a URL with each parameter once"
+          : "postgres_ai_mon already exists on this server, but this server takes no TLS, and PostgresAI sends the password it keeps for postgres_ai_mon only over TLS. Set PGAI_MON_PASSWORD to its password, or turn on TLS on the server (ssl = on) and put sslmode=require in the URL. If nobody has the password: pgai disconnect db.example.com/first --yes, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and connect db.example.com/first again with it)",
       });
+      if (!tls) {
+        // No sslmode: the session falls back to plaintext, which says the same.
+        const prefer = new URL(db2("disable"));
+        prefer.searchParams.delete("sslmode");
+        expect(await prepareDatabase(prefer.toString(), "self-managed", { storedPassword: true })).toHaveProperty("next", expect.stringContaining("but this server takes no TLS"));
+      }
       expect(await monLogsIn()).toBe(false);
       if (tls) {
         const second = await prepareDatabase(db2("require"), "self-managed", { storedPassword: true });
