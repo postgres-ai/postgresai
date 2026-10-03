@@ -533,6 +533,24 @@ describe("connect", () => {
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
+  // A box whose URL the platform could not read is named "Monitoring <6 hex>":
+  // the name does not give its server, so it may be on this one.
+  test("--reset-password: a box named Monitoring <hash> may be on this server, before and under the lock", async () => {
+    const unread = row("active", { id: "i-8", name: "Monitoring 16bb1d", provider: "self-managed" });
+    const other = row("active", { id: "i-7", name: `${SERVER}/orders` });
+    const both = fake();
+    both.deps.list = async () => { both.calls.push("list"); return [other, unread]; };
+    expect(await connect(CH, { resetPassword: true, waitMs: 0 }, both.deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME,
+      next: `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server, and may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead`,
+    });
+    expect(both.calls).toEqual(["list"]);
+    const { deps, calls } = fake({ rows: [undefined, unread] });
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead");
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+  });
+
   test("--reset-password against a platform without the lock: nothing reset, PGAI_MON_PASSWORD instead", async () => {
     const { deps, calls } = fake({ resetLock: async () => { throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 404)", 404); } });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
