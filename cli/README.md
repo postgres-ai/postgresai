@@ -220,8 +220,9 @@ terminal, or with `--json`, it only points to `pgai connect`.
 existing one. If the role exists and you do not have its password (a reconnect after
 `pgai disconnect`, say), `pgai connect <admin-url> --reset-password` sets a new one
 (`PGAI_MON_PASSWORD`, else generated). It is refused while another database on the same server (the same host name, in this
-organization) is monitored with the role, with `--self-hosted`, and for a database already
-connected. After the price is accepted, the run takes the platform's lock on the server (its host
+organization) is monitored with the role, while a box is named `Monitoring <hash>` (the platform
+could not read its URL, so its server is not known), with `--self-hosted`, and for a database
+already connected. After the price is accepted, the run takes the platform's lock on the server (its host
 name and port, in this organization) until the box is requested. A second `--reset-password` for
 the same server exits 3 meanwhile. A run that stopped, or whose box request got no answer, frees the
 server 15 minutes after it took the lock. A platform without the lock answers "set
