@@ -230,7 +230,6 @@ export function stateOf(raw: string | null): Status {
 /** A rejected ClickHouse Cloud key, or one that cannot see the service: the user's to fix (exit 3). */
 export class ClickhouseKeyError extends Error {}
 
-/** host[:port] of a name (host[:port]/db). */
 /** The server of a database name: one lock and one comparison for each, whatever the host's case or a trailing dot. */
 const serverOf = (name: string) => name.split("/")[0].toLowerCase().replace(/\.(?=$|:)/, "");
 
@@ -470,8 +469,31 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, billingUrl, accepted } = b);
     }
+    if (opts.resetPassword) {
+      // Another run at once for a database on this server would reset the
+      // password too: the platform lets one run at a time hold the server.
+      // Taken after the price is accepted: a stop above leaves the server free,
+      // and the 15-minute lease does not run while a person decides.
+      let lock: { lock_id?: unknown };
+      try {
+        lock = await deps.resetLock(serverOf(name));
+      } catch (err) {
+        if (err instanceof HttpStatusError && err.status === 409) {
+          return { status: "action_required", provider, name, ...billing, next: `Another pgai connect --reset-password for ${serverOf(name)} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)` };
+        }
+        if (err instanceof HttpStatusError && err.status === 404) {
+          return { status: "action_required", provider, name, ...billing, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${DEFAULT_MONITORING_USER}'s password instead` };
+        }
+        throw err;
+      }
+      // Without a lock id nothing holds the server: no reset.
+      if (typeof lock.lock_id !== "string" || !lock.lock_id) throw new Error("cloud_monitoring_reset_lock returned no lock_id: nothing was changed");
+      lockId = lock.lock_id;
+    }
     let prepared: Prepared;
-    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "declined" | "payment" | "price";
+    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "payment" | "declined" | "price";
+    // No answer to the box request: it may still be created with this URL.
+    let unanswered = false;
     try {
       // What another run connected on this server before this one got the lock.
       if (lockId) {
@@ -503,6 +525,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       }).catch(async (err) => {
         // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
         if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo(prepared);
+        else unanswered = true;
         // 402: the payment method went away since the quote; nothing was created.
         if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
         // 412: billed although quoted free (the last free slot went meanwhile); nothing was created.
@@ -521,7 +544,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
       }
     } finally {
-      if (lockId) await deps.resetUnlock(lockId).catch(() => {});
+      // The box has its URL (or none was requested): the next run may go. A box
+      // that may still be starting keeps the server until the lease ends: a run
+      // that did not see it would reset the password its URL carries.
+      if (lockId && !unanswered) await deps.resetUnlock(lockId).catch(() => {});
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
     undoRole = () => undo(prepared);
