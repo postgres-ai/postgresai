@@ -511,9 +511,9 @@ describe("connect", () => {
   test("--reset-password takes the server's lock after the price, checks the server again under it, and releases it once the box is requested", async () => {
     const { deps, calls } = fake({ rows: [undefined, undefined, row("launch_requested")] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).status).toBe("provisioning");
-    expect(calls.slice(0, 4)).toEqual(["list", `resetLock ${SERVER}`, "list", "prepare clickhouse"]);
-    expect(calls[4]).toStartWith("create ");
-    expect(calls[5]).toBe("resetUnlock l-1");
+    expect(calls.slice(0, 5)).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "prepare clickhouse"]);
+    expect(calls[5]).toStartWith("create ");
+    expect(calls[6]).toBe("resetUnlock l-1");
   });
 
   test("--reset-password while another run holds the server's lock: nothing reset, try again later, or after 15 minutes if that run stopped", async () => {
@@ -522,15 +522,15 @@ describe("connect", () => {
       status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE,
       next: `Another pgai connect --reset-password for ${SERVER} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)`,
     });
-    expect(calls).toEqual(["list", `resetLock ${SERVER}`]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
   });
 
   test("--reset-password: a database on the server connected while this run waited is seen under the lock", async () => {
     const other = row("launch_requested", { id: "i-7", name: `${SERVER}/orders` });
     const { deps, calls } = fake({ rows: [undefined, other] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
-      `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead`);
-    expect(calls).toEqual(["list", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+      `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead, or pgai disconnect ${SERVER}/orders --yes first`);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
   // A box whose URL the platform could not read is named "Monitoring <6 hex>":
@@ -542,22 +542,22 @@ describe("connect", () => {
     both.deps.list = async () => { both.calls.push("list"); return [other, unread]; };
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, both.deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
-      next: `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server, and may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead`,
+      next: `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server, and may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai disconnect ${SERVER}/orders --yes and pgai disconnect 'Monitoring 16bb1d' --yes first`,
     });
     expect(both.calls).toEqual(["list"]);
     const { deps, calls } = fake({ rows: [undefined, unread] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
-      "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead");
+      "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai disconnect 'Monitoring 16bb1d' --yes first");
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
   test("--reset-password against a platform without the lock: nothing reset, PGAI_MON_PASSWORD instead", async () => {
     const { deps, calls } = fake({ resetLock: async () => { throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 404)", 404); } });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME,
+      status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE,
       next: "This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to postgres_ai_mon's password instead",
     });
-    expect(calls).toEqual(["list"]);
+    expect(calls).toEqual(["list", "check clickhouse"]);
   });
 
   // Only a held lock (409) or no lock at all (404) is an answer: on anything
@@ -579,10 +579,10 @@ describe("connect", () => {
   test("--reset-password: the same database connected by the run that held the lock is seen under it", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested")] });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
-      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1",
+      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1", ...FREE,
       next: `${CH_NAME} is already connected, and its monitoring uses the current password: pgai disconnect ${CH_NAME} --yes first`,
     });
-    expect(calls).toEqual(["list", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
   test("--reset-password: the server is one lock and one name whatever its case or trailing dot, with a port too", async () => {
@@ -600,7 +600,7 @@ describe("connect", () => {
 
   test("--reset-password: a refused launch drops the generated role before the lock is released", async () => {
     const { deps, calls } = fake({
-      prepare: async () => { calls.push("prepare"); return { monitoringUrl: MON, generated: true }; },
+      prepare: async (_u, _p, o) => { calls.push(o?.check ? "check" : "prepare"); return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }; },
       create: async () => { calls.push("create"); return { id: "i-1", name: CH_NAME, status: "failed", error: "No." }; },
     });
     await connect(CH, { resetPassword: true, waitMs: 0 }, deps);
@@ -883,6 +883,7 @@ describe("connect on the paid path: the price before the box", () => {
       expect(f.calls).toEqual(["list", "check self-managed", "quote", "resetLock db.example.com", "list", "prepare self-managed", "unprepare", "resetUnlock l-1"]);
     });
   }
+
   // Another database on the same server, whose password the platform keeps.
   const FIRST = { id: "i-0", name: "db.example.com/first", provider: "self-managed", host_metrics: false, monitoring_password_stored: true };
   const NO_PW = "postgresql://postgres_ai_mon@db.example.com:5432/app";
@@ -983,7 +984,7 @@ describe("connect on the paid path: the price before the box", () => {
     cli.deps.prepare = storedPrepare();
     expect(await connect(SH, { waitMs: 0, yes: true }, cli.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
       next: "PostgresAI no longer keeps the password of postgres_ai_mon for this server: re-run with --reset-password (anything else that logs in as postgres_ai_mon then needs the new one), or set PGAI_MON_PASSWORD to its password",
     });
     const agent = make({}, { list: async () => [row("active", FIRST)], create });
@@ -1191,11 +1192,14 @@ describe("prepareDatabase (a fake pg client)", () => {
     );
   });
 
-  test("a TLS session to a server whose ssl setting is off (a pooler that ends TLS, say): the stored password is used", async () => {
+  test("a TLS session to a server whose ssl setting is off (a pooler that ends TLS, say): the stored password is used, and a URL that lacks something is told what", async () => {
     const s = server({ mon_exists: true, ssl: "off" });
     expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=require`))).toEqual({
       monitoringUrl: "postgresql://postgres_ai_mon@db.example.com:5432/app?sslmode=require", storedPassword: true,
     });
+    expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=require&`))).toEqual({ next: TLS_ONLY("no stray &") });
+    // sslmode=prefer: the session took TLS.
+    expect(await withMonPassword(undefined, () => s.prepare(OTHERS, `${PLAIN}?sslmode=prefer`))).toEqual({ next: TLS_ONLY(SSLMODE) });
   });
 
   test("a server without TLS and a PGAI_MON_PASSWORD this host may not check (pg_hba): not told to unset it", async () => {

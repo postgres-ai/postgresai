@@ -290,8 +290,11 @@ function storedPasswordNeeds(monitoringUrl: string): string | undefined {
   return needs.length ? needs.join(" and ") : undefined;
 }
 
+/** A word for the user's shell: quoted unless plain (a name made in the console is free text). */
+const shellWord = (s: string) => (/^[\w./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
 /** `pgai disconnect` for each database named. */
-const disconnectEach = (names: string[]) => names.map((n) => `pgai disconnect ${n} --yes`).join(" and ");
+const disconnectEach = (names: string[]) => names.map((n) => `pgai disconnect ${shellWord(n)} --yes`).join(" and ");
 
 /** postgres_ai_mon's URL for the prepared database, with the query parameters in `kept`. */
 function roleUrlFor(url: string, db: string, password: string, kept: string[]): string {
@@ -751,9 +754,12 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       const noTls = refusedTls || (!usedSsl && me.ssl === "off");
       const tlsOnly = `PostgresAI sends the password it keeps for ${DEFAULT_MONITORING_USER} only over TLS`;
       const others = opts.others?.length ? opts.others : undefined;
+      // Nobody has the password (the first connect generated it): only a new one, once nothing uses the old one.
+      const disconnectOthers = others ? disconnectEach(others) : "pgai disconnect the server's other databases (pgai databases)";
+      const reconnectOthers = `(and connect ${others ? others.join(", ") : "them"} again with it)`;
       const noTlsWayOut = opts.agent
-        ? "Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password"
-        : `Set PGAI_MON_PASSWORD to its password, or turn on TLS on the server (ssl = on) and put sslmode=require in the URL. If nobody has the password: ${others ? disconnectEach(others) : "pgai disconnect the server's other databases (pgai databases)"}, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and connect ${others ? others.join(", ") : "them"} again with it)`;
+        ? `Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password. If nobody has it, in a terminal: ${disconnectOthers}, then pgai connect <admin-url> --reset-password with PGAI_MON_PASSWORD set to a new one ${reconnectOthers}`
+        : `Set PGAI_MON_PASSWORD to its password, or turn on TLS on the server (ssl = on) and put sslmode=require in the URL. If nobody has the password: ${disconnectOthers}, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one ${reconnectOthers}`;
       const reuse = me.mon_exists && !opts.resetPassword && !!opts.storedPassword && !(opts.agent ? "" : process.env.PGAI_MON_PASSWORD?.trim());
       if (reuse && needs) {
         if (noTls) return { next: `${exists}, but this server takes no TLS, and ${tlsOnly}. ${noTlsWayOut}` };
