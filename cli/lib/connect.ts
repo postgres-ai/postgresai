@@ -100,7 +100,7 @@ export interface ConnectDeps {
   list(): Promise<Database[]>;
   create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean }): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[] }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string): Promise<boolean>;
   localStackRunning(): boolean;
@@ -252,15 +252,28 @@ export function checkUrlParams(url: string, agent?: boolean): void {
 }
 
 /**
- * Whether the platform fills in the password it keeps for a box URL without one: its query string
- * has sslmode=require or verify-*, each kept parameter once, and no empty part (cloud_monitoring_connect).
+ * What a box URL without a password lacks before the platform fills in the one it keeps
+ * (cloud_monitoring_connect): sslmode=require or verify-*, each kept parameter once, no empty
+ * part. Undefined when it lacks nothing.
  */
-function storedPasswordGoesTo(monitoringUrl: string): boolean {
+function storedPasswordNeeds(monitoringUrl: string): string | undefined {
   const query = new URL(monitoringUrl).search.replace(/^\?/, "");
   const parts = query ? query.split("&") : [];
   const keys = parts.map((p) => p.split("=")[0]);
-  return keys.every((k) => URL_PARAMS_KEPT.includes(k)) && new Set(keys).size === keys.length && parts.some((p) => /^sslmode=(require|verify-ca|verify-full)$/.test(p));
+  const twice = URL_PARAMS_KEPT.filter((k) => keys.indexOf(k) !== keys.lastIndexOf(k));
+  const tls = !twice.includes("sslmode") && parts.some((p) => /^sslmode=(require|verify-ca|verify-full)$/.test(p));
+  const needs = [
+    ...(tls ? [] : [`sslmode=require (or verify-full)${twice.includes("sslmode") ? ", once" : ""}`]),
+    ...twice.filter((k) => k !== "sslmode").map((k) => `${k} once`),
+    ...(parts.some((p) => !p) ? ["no stray &"] : []),
+    // A kept key spelled with %-escapes: the platform reads the query string as written.
+    ...(keys.some((k) => k && !URL_PARAMS_KEPT.includes(k)) ? ["the parameter names without %-escapes"] : []),
+  ];
+  return needs.length ? needs.join(" and ") : undefined;
 }
+
+/** `pgai disconnect` for each database named. */
+const disconnectEach = (names: string[]) => names.map((n) => `pgai disconnect ${n} --yes`).join(" and ");
 
 /** postgres_ai_mon's URL for the prepared database, with the query parameters in `kept`. */
 function roleUrlFor(url: string, db: string, password: string, kept: string[]): string {
@@ -427,20 +440,23 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
     const storedPassword = rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && serverOf(d.name) === serverOf(name)) || undefined;
-    if (opts.resetPassword) {
-      // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
-      const others = rows.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name));
-      if (others.length) {
-        const instead = storedPassword ? "connect without --reset-password (PostgresAI keeps its password for this server)" : "set PGAI_MON_PASSWORD to its password instead";
-        return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.map((d) => d.name).join(", ")} on this server: ${instead}` };
-      }
+    // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one
+    // (a box whose delete failed may still run).
+    const others = rows.filter((d) => d.name !== name && !disconnecting(d.status) && serverOf(d.name) === serverOf(name)).map((d) => d.name);
+    if (opts.resetPassword && others.length) {
+      const instead = [
+        ...(storedPassword ? ["connect without --reset-password (PostgresAI keeps its password for this server, and sends it only over TLS)"] : []),
+        "set PGAI_MON_PASSWORD to its password instead",
+        `${disconnectEach(others)} first`,
+      ];
+      return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} would cut off the monitoring of ${others.join(", ")} on this server: ${instead.join(", or ")}` };
     }
     // What the box costs, before anything is touched: a billed box is accepted
     // (--yes, or at the prompt), and needs the org's payment method.
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
-    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword } : {}) };
+    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword, others } : {}) };
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true });
@@ -490,11 +506,11 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     if (created === "price") return { status: "action_required", provider, name, ...billing, next: "The price changed since it was shown: re-run pgai connect to see it" };
     if (created === "stored") {
-      // No box on the server uses the old password now, so a new one cuts nothing off.
-      const gone = `PostgresAI no longer keeps the password of ${DEFAULT_MONITORING_USER} for this server (no box there uses it now)`;
+      // No box of this org on the server keeps it now; what else logs in as the role is not known here.
+      const gone = `PostgresAI no longer keeps the password of ${DEFAULT_MONITORING_USER} for this server`;
       return { status: "action_required", provider, name, ...billing, next: opts.agent
         ? `${gone}: pass its URL as database_url, or run pgai connect <admin-url> --reset-password in a terminal`
-        : `${gone}: re-run with --reset-password, or set PGAI_MON_PASSWORD to its password` };
+        : `${gone}: re-run with --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new one), or set PGAI_MON_PASSWORD to its password` };
     }
     if (created.status === "failed") {
       await undo();
@@ -502,8 +518,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
     if (prepared.storedPassword) {
-      // The password stays with the platform, and the checkup never runs as the admin: its SQL
-      // resolves names with the database's search_path, where the database's owner can put functions.
+      // The password stays with the platform, and the checkup never runs as the admin: its SQL resolves
+      // names with the database's search_path, where the database's owner can put functions. (The
+      // prepare step's plan runs as the admin with that search_path too: postgres-ai/internal#354.)
       progress("checkup", `Express checkup skipped: it runs only as ${DEFAULT_MONITORING_USER}, whose password PostgresAI keeps for this server. The full checkup follows on the box.`);
     } else {
       // First value while the box starts (minutes): the express checkup, as the monitoring role.
@@ -544,13 +561,18 @@ export interface PrepareOptions {
   check?: boolean;
   /** The platform keeps postgres_ai_mon's password for this server: an existing role needs no PGAI_MON_PASSWORD, and the box's URL carries none. */
   storedPassword?: boolean;
+  /** The org's other databases on this server (named where they must be disconnected first). */
+  others?: string[];
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
 
-function openConnection(url: string, opts: PrepareOptions) {
+/** A session over `url`; `refusedTls`: the server refused TLS, and the session fell back to plaintext. */
+async function openConnection(url: string, opts: PrepareOptions) {
   const conn = resolveAdminConnection({ conn: url });
-  return connectWithSslFallback(opts.Client ?? Client, opts.agent ? { ...conn, sslFallbackEnabled: false } : conn);
+  const fallback = !opts.agent && !!conn.sslFallbackEnabled;
+  const { client, usedSsl } = await connectWithSslFallback(opts.Client ?? Client, { ...conn, sslFallbackEnabled: fallback });
+  return { client, usedSsl, refusedTls: fallback && !usedSsl };
 }
 
 /** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
@@ -589,7 +611,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       throw err;
     }
   };
-  const { client } = await open(url).catch((err) => {
+  const { client, usedSsl, refusedTls } = await open(url).catch((err) => {
     // pg's words for "the server asked for a password and there is none".
     if (/client password must be a string/.test(String(err?.message))) throw new Error("The URL has no password (and PGPASSWORD is not set): pgai connect postgresql://user:password@host:5432/dbname");
     throw err;
@@ -607,7 +629,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
            and has_database_privilege(current_user, current_database(), 'CREATE')
            and exists (select 1 from pg_extension where extname = 'pg_stat_statements')) as admin,
          exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists,
-         current_setting('scram_iterations', true) as iterations
+         current_setting('scram_iterations', true) as iterations, current_setting('ssl') as ssl
        from pg_roles where rolname = current_user`,
     )).rows[0];
     const notes = [caNote(url)].filter((n): n is string => !!n);
@@ -637,12 +659,19 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       // so it is never changed, and only a password that logs in is used.
       const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
       const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new password)`;
-      // The platform fills in the password it keeps for the box (it never sends it here), over TLS only.
-      const overTls = storedPasswordGoesTo(monitoringUrlFor(url, me.db, ""));
+      // The platform fills in the password it keeps for the box (it never sends it here), over TLS only:
+      // what the URL lacks for that, and whether the server takes TLS at all (it refused it, or has ssl off).
+      const needs = storedPasswordNeeds(monitoringUrlFor(url, me.db, ""));
+      const noTls = refusedTls || (!usedSsl && me.ssl === "off");
+      const tlsOnly = `PostgresAI sends the password it keeps for ${DEFAULT_MONITORING_USER} only over TLS`;
+      const others = opts.others?.length ? opts.others : undefined;
+      const noTlsWayOut = opts.agent
+        ? "Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password"
+        : `Set PGAI_MON_PASSWORD to its password, or turn on TLS on the server (ssl = on) and put sslmode=require in the URL. If nobody has the password: ${others ? disconnectEach(others) : "pgai disconnect the server's other databases (pgai databases)"}, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and connect ${others ? others.join(", ") : "them"} again with it)`;
       const reuse = me.mon_exists && !opts.resetPassword && !!opts.storedPassword && !(opts.agent ? "" : process.env.PGAI_MON_PASSWORD?.trim());
-      if (reuse && !overTls) {
-        const addTls = opts.agent ? "Pass database_url with sslmode=require (or verify-full)" : "Put sslmode=require (or verify-full) in the URL";
-        return { next: `${exists}. ${addTls}, once: the password PostgresAI keeps for this server is sent only over TLS` };
+      if (reuse && needs) {
+        if (noTls) return { next: `${exists}, but this server takes no TLS, and ${tlsOnly}. ${noTlsWayOut}` };
+        return { next: `${exists}. ${opts.agent ? "database_url" : "The URL"} needs ${needs}: the password PostgresAI keeps for this server is sent only over TLS, to a URL with each parameter once` };
       }
       if (reuse) {
         if (opts.check) return { checked: true };
@@ -653,10 +682,12 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
         return { monitoringUrl: monitoringUrlFor(url, me.db, ""), storedPassword: true as const, ...noted() };
       }
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password` };
-      // A PGAI_MON_PASSWORD that does not log in, where the platform keeps the password: without it, that one is used.
-      const unset = !opts.storedPassword ? setPassword : overTls
-        ? `Unset PGAI_MON_PASSWORD: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server`
-        : `Unset PGAI_MON_PASSWORD and put sslmode=require (or verify-full) in the URL, once: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server, and sends it only over TLS`;
+      // A PGAI_MON_PASSWORD that does not log in, where the platform keeps the password: without it, that one
+      // is used (over TLS only).
+      const unset = !opts.storedPassword ? setPassword
+        : noTls ? `This server takes no TLS, and ${tlsOnly}. ${noTlsWayOut}`
+        : !needs ? `Unset PGAI_MON_PASSWORD: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server`
+        : `Unset PGAI_MON_PASSWORD, and the URL needs ${needs}: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server, and sends it only over TLS, to a URL with each parameter once`;
       const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       const reset = !!opts.resetPassword && me.mon_exists;
       if (me.mon_exists && !reset) {
@@ -665,8 +696,9 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
         try {
           accepted = await logsIn(loginUrlFor(url, me.db, password));
         } catch (err) {
-          // pg_hba for this client, say: neither accepted nor rejected.
-          return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai connect from a host that ${DEFAULT_MONITORING_USER} may connect from` };
+          // pg_hba for this client, say: neither accepted nor rejected. With the platform's password, no login is needed.
+          const orUnset = opts.storedPassword && !noTls ? ", or unset PGAI_MON_PASSWORD: PostgresAI keeps its password for this server" : "";
+          return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai connect from a host that ${DEFAULT_MONITORING_USER} may connect from${orUnset}` };
         }
         if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${unset}` };
         if (await acceptsAnyPassword()) notes.push(unchecked("PGAI_MON_PASSWORD"));
@@ -799,7 +831,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[] } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>

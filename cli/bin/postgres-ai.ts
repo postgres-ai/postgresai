@@ -4221,7 +4221,7 @@ withOrgOptions(program.command("connect <database-url>"))
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed; not needed",
     "for another database on a server PostgresAI already monitors for the org, with",
-    "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps, and",
+    "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps (over TLS only), and",
     "the express checkup is skipped, as it runs only as postgres_ai_mon),",
     "PGPASSWORD (the password for a URL without one),",
     "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",

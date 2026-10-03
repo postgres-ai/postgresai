@@ -738,7 +738,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make({}, { list: async () => [row("active", FIRST)] });
     expect(await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      next: "A new password for postgres_ai_mon would cut off the monitoring of db.example.com/first on this server: connect without --reset-password (PostgresAI keeps its password for this server, and sends it over TLS), or set PGAI_MON_PASSWORD to its password instead, or pgai disconnect db.example.com/first --yes first",
+      next: "A new password for postgres_ai_mon would cut off the monitoring of db.example.com/first on this server: connect without --reset-password (PostgresAI keeps its password for this server, and sends it only over TLS), or set PGAI_MON_PASSWORD to its password instead, or pgai disconnect db.example.com/first --yes first",
     });
     expect(calls).toEqual([]);
   });
