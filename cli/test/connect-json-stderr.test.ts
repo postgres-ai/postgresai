@@ -73,14 +73,41 @@ test.each([[["--json"]], [[]]])("--debug request lines are JSON events on stderr
   }
 });
 
-test.each([
-  ["no database URL", ["connect", "--json"], {}],
-  ["a bad --org-id", ["connect", "postgresql://u:p@127.0.0.1:1/d", "--json", "--org-id", "abc"], { PGAI_API_KEY: "test-key" }],
-  ["a bad API base URL", ["connect", "postgresql://u:p@127.0.0.1:1/d", "--json"], { PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: "not-a-url" }],
-])("%s: the error is a JSON event too", async (_case, args, env) => {
-  const r = await run(args as string[], env as Record<string, string>);
-  expect(r.status).not.toBe(0);
+// Commander's own errors (a missing URL, an option without its value, an
+// unknown option, at the root too) and the org check come before connect
+// runs: each is one error event that names the cause, without the help after
+// it. With --json, and with no flag when stdout is a pipe.
+const URL_ = "postgresql://u:p@127.0.0.1:1/d";
+const EARLY: [string, string[], Record<string, string>, RegExp][] = [
+  ["no database URL", ["connect"], {}, /missing required argument 'database-url'/],
+  ["a bad --org-id", ["connect", URL_, "--org-id", "abc"], { PGAI_API_KEY: "test-key" }, /--org-id must be a numeric organization id/],
+  ["--api-key without its value", ["connect", URL_, "--api-key"], {}, /option '--api-key <key>' argument missing/],
+  ["an unknown root option", ["--bogus", "connect", URL_], {}, /unknown option '--bogus'/],
+];
+describe.each([[["--json"]], [[]]])("with %p (stdout is a pipe)", (flags) => {
+  test.each(EARLY)("%s: one error event names the cause", async (_case, args, env, cause) => {
+    // The flags right after `connect`: after `--api-key`, --json would be the key.
+    const r = await run(args.flatMap((a) => (a === "connect" ? [a, ...flags] : [a])), env);
+    expect(r.status).toBe(1);
+    expect(expectJsonLines(r.lines)).toEqual([{ event: "log", level: "error", message: expect.stringMatching(cause) }]);
+  });
+});
+
+test("a bad API base URL: stdout says why, stderr is JSON only", async () => {
+  const r = await run(["connect", URL_, "--json"], { PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: "not-a-url" });
+  expect(r.status).toBe(1);
+  expect(JSON.parse(r.stdout)).toMatchObject({ status: "failed", next: "Invalid base URL: not-a-url" });
   for (const line of r.lines) expect(() => JSON.parse(line), line).not.toThrow();
+});
+
+test("a config file that cannot be read: its warning is a JSON event, from the first line", async () => {
+  const xdg = mkdtempSync(resolve(dir, "xdg-"));
+  mkdirSync(resolve(xdg, "postgresai"));
+  writeFileSync(resolve(xdg, "postgresai", "config.json"), "{bad");
+  const r = await run(["connect", URL_], { XDG_CONFIG_HOME: xdg });
+  const events = expectJsonLines(r.lines);
+  expect(events[0]).toMatchObject({ event: "log", message: expect.stringContaining("Failed to read config") });
+  expect(JSON.parse(r.stdout).status).toBe("action_required");
 });
 
 // CI: the cli:clickhouse-like:tests job.
@@ -100,7 +127,11 @@ describe.skipIf(!ADMIN)("real Postgres", () => {
   test("--self-hosted: the output of mon local-install comes as JSON events", async () => {
     const r = await run(["connect", ADMIN!, "--self-hosted", "--json"]);
     const events = expectJsonLines(r.lines);
-    expect(events.some((e) => e.event === "log" && e.source === "mon local-install")).toBe(true);
+    const child = events.filter((e) => e.event === "log" && e.source === "mon local-install");
+    expect(child.length).toBeGreaterThan(0);
+    expect(child.every((e) => e.message!.trim() !== "")).toBe(true);
+    // Its stderr is where it says why it stopped: an error an agent can find.
+    expect(child.some((e) => e.level === "error" && /docker/i.test(e.message!))).toBe(true);
     expect(JSON.parse(r.stdout).status).toBe("failed");
     expect(r.stderr).not.toContain(new URL(ADMIN!).password);
   });
