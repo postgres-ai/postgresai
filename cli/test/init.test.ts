@@ -110,7 +110,8 @@ describe("init module", () => {
     expect(roleStep!.sql).toMatch(/password 'SCRAM-SHA-256\$\d+:[^']*'/);
   });
 
-  for (const [iterations, expected] of [[10000, 10000], [1000, 4096], [undefined, 4096], [Number.NaN, 4096]]) {
+  const iterationCases: Array<[number | undefined, number]> = [[10000, 10000], [1000, 4096], [undefined, 4096], [Number.NaN, 4096]];
+  for (const [iterations, expected] of iterationCases) {
     test(`buildInitPlan uses SCRAM iterations ${expected} when given ${iterations}`, async () => {
       const plan = await init.buildInitPlan({
         database: "mydb",
