@@ -26,7 +26,7 @@ export function createCliSandbox() {
   fs.writeFileSync(path.join(projectDir, "docker-compose.yml"), "services: {}\n");
   // Support detection only; any compose work fails before starting services.
   fs.writeFileSync(path.join(binDir, "docker"),
-    '#!/bin/sh\ncase "$*" in\n  "info"|"compose version") exit 0 ;;\n  ps\ *) exit 0 ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
+    '#!/bin/sh\ncase "$*" in\n  "info"|"compose version") exit 0 ;;\n  ps*) exit 0 ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
   fs.writeFileSync(path.join(binDir, "docker-compose"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
 
   return {

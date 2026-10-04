@@ -4,6 +4,22 @@ import * as path from "node:path";
 import { createCliSandbox } from "./cli-sandbox";
 
 describe("CLI smoke isolation", () => {
+  test("fake Docker parses, supports inspection, and refuses service work", () => {
+    const sandbox = createCliSandbox();
+    try {
+      const docker = path.join(sandbox.binDir, "docker");
+      const env = { ...process.env, HOME: sandbox.home, XDG_CONFIG_HOME: sandbox.configHome };
+      const probe = (command: string[]) => Bun.spawnSync(command, { env, timeout: 5000 });
+      expect(probe(["/bin/sh", "-n", docker]).exitCode).toBe(0);
+      expect(probe([docker, "info"]).exitCode).toBe(0);
+      expect(probe([docker, "compose", "version"]).exitCode).toBe(0);
+      expect(probe([docker, "ps", "--format", "{{.Names}}"]).exitCode).toBe(0);
+      expect(probe([docker, "compose", "up", "-d"]).exitCode).toBe(1);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
   for (const useXdg of [true, false]) {
     test(`local-install preserves a dummy parent config (XDG=${useXdg})`, () => {
       const sandbox = createCliSandbox();
