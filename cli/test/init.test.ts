@@ -1,38 +1,27 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
 import path, { resolve } from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { createCliSandbox } from "./cli-sandbox";
 
 // Import from source directly since we're using Bun
 import * as init from "../lib/init";
 const DEFAULT_MONITORING_USER = init.DEFAULT_MONITORING_USER;
 
-function runCli(args: string[], env: Record<string, string> = {}) {
-  const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-  const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-  const result = Bun.spawnSync([bunBin, cliPath, ...args], {
-    env: { ...process.env, ...env },
-  });
-  return {
-    status: result.exitCode,
-    stdout: new TextDecoder().decode(result.stdout),
-    stderr: new TextDecoder().decode(result.stderr),
-  };
+let cliSandbox: ReturnType<typeof createCliSandbox> | null = null;
+function getCliSandbox() {
+  return cliSandbox ??= createCliSandbox();
+}
+afterEach(() => { cliSandbox?.cleanup(); cliSandbox = null; });
+
+function runCli(args: string[], env: NodeJS.ProcessEnv = {}, options: { cwd?: string } = {}) {
+  return getCliSandbox().run(args, env, options);
 }
 
-function runPgai(args: string[], env: Record<string, string> = {}) {
+function runPgai(args: string[], env: NodeJS.ProcessEnv = {}) {
   // For testing, run the CLI directly since pgai is just a thin wrapper
   // In production, pgai wrapper will properly resolve and spawn the postgresai CLI
-  const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-  const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-  const result = Bun.spawnSync([bunBin, cliPath, ...args], {
-    env: { ...process.env, ...env },
-  });
-  return {
-    status: result.exitCode,
-    stdout: new TextDecoder().decode(result.stdout),
-    stderr: new TextDecoder().decode(result.stderr),
-  };
+  return runCli(args, env);
 }
 
 describe("init module", () => {
@@ -110,7 +99,8 @@ describe("init module", () => {
     expect(roleStep!.sql).toMatch(/password 'SCRAM-SHA-256\$\d+:[^']*'/);
   });
 
-  for (const [iterations, expected] of [[10000, 10000], [1000, 4096], [undefined, 4096], [Number.NaN, 4096]]) {
+  const iterationCases: Array<[number | undefined, number]> = [[10000, 10000], [1000, 4096], [undefined, 4096], [Number.NaN, 4096]];
+  for (const [iterations, expected] of iterationCases) {
     test(`buildInitPlan uses SCRAM iterations ${expected} when given ${iterations}`, async () => {
       const plan = await init.buildInitPlan({
         database: "mydb",
@@ -1125,10 +1115,8 @@ describe("CLI commands", () => {
   test("cli: mon local-install --demo configures demo monitoring target", () => {
     // --demo should copy instances.demo.yml to instances.yml and print confirmation.
     // The command will fail later (no Docker), but we verify the demo target step succeeded.
-    // resolvePaths() walks cwd() up to find docker-compose.yml, so instances.yml
-    // is written next to docker-compose.yml in the repo root.
-    const repoRoot = resolve(import.meta.dir, "..", "..");
-    const instancesPath = path.join(repoRoot, "instances.yml");
+    // The sandbox compose project receives instances.yml without touching the checkout.
+    const instancesPath = path.join(getCliSandbox().projectDir, "instances.yml");
     // Remove instances.yml if it exists — use rmSync to handle both files and
     // directories (the EISDIR test may have left a directory here if it failed).
     if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
@@ -1150,8 +1138,7 @@ describe("CLI commands", () => {
   test("cli: mon local-install --demo exits with code 1 when instances.demo.yml is missing", () => {
     // Regression: if instances.demo.yml cannot be found in any candidate path, the CLI
     // must exit with a non-zero code and a descriptive error (not silently create empty dashboards).
-    const repoRoot = resolve(import.meta.dir, "..", "..");
-    const demoFile = path.join(repoRoot, "instances.demo.yml");
+    const demoFile = getCliSandbox().demoPath;
     const tempBackup = path.join(os.tmpdir(), `instances.demo.yml.test-backup-${Date.now()}`);
     // Temporarily move instances.demo.yml so neither candidate path resolves
     fs.copyFileSync(demoFile, tempBackup);
@@ -1169,8 +1156,7 @@ describe("CLI commands", () => {
 
   test("cli: mon local-install --demo with EISDIR recovers instances.yml", () => {
     // Docker bind-mounts create missing paths as directories; the CLI must handle this.
-    const repoRoot = resolve(import.meta.dir, "..", "..");
-    const instancesPath = path.join(repoRoot, "instances.yml");
+    const instancesPath = path.join(getCliSandbox().projectDir, "instances.yml");
     // Create instances.yml as a directory (simulating Docker artifact)
     if (fs.existsSync(instancesPath)) fs.rmSync(instancesPath, { recursive: true, force: true });
     fs.mkdirSync(instancesPath);
@@ -1243,22 +1229,10 @@ describe("CLI commands", () => {
   });
 });
 
-// Check if Docker is available for imageTag tests
-function isDockerAvailable(): boolean {
-  try {
-    const result = Bun.spawnSync(["docker", "info"], { timeout: 5000 });
-    return result.exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
-const dockerAvailable = isDockerAvailable();
-
-describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
+describe("imageTag priority behavior", () => {
   // Tests for the imageTag priority: --tag flag > PGAI_TAG env var > pkg.version
   // This verifies the fix that prevents stale .env PGAI_TAG from being used
-  // These tests require Docker and spawn subprocesses so need longer timeout
+  // The same offline Docker fixture exercises config generation without a daemon.
 
   let tempDir: string;
 
@@ -1281,14 +1255,7 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
     // Run from the test directory (so resolvePaths finds docker-compose.yml)
-    // Note: Command may hang on Docker check in CI without Docker, so we use a timeout
-    const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-    const result = Bun.spawnSync([bunBin, cliPath, "mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], {
-      env: { ...process.env, PGAI_TAG: undefined },
-      cwd: testDir,
-      timeout: 30000, // Kill subprocess after 30s if it hangs on Docker
-    });
+    const result = runCli(["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], { PGAI_TAG: undefined }, { cwd: testDir });
 
     // Read the .env that was written
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
@@ -1304,19 +1271,13 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     fs.mkdirSync(testDir, { recursive: true });
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
-    const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-    const result = Bun.spawnSync([bunBin, cliPath, "mon", "local-install", "--tag", "v1.2.3-custom", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], {
-      env: { ...process.env, PGAI_TAG: undefined },
-      cwd: testDir,
-      timeout: 30000,
-    });
+    const result = runCli(["mon", "local-install", "--tag", "v1.2.3-custom", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], { PGAI_TAG: undefined }, { cwd: testDir });
 
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     expect(envContent).toMatch(/PGAI_TAG=v1\.2\.3-custom/);
 
     // Verify stdout confirms the tag being used
-    const stdout = new TextDecoder().decode(result.stdout);
+    const stdout = result.stdout;
     expect(stdout).toMatch(/Using image tag: v1\.2\.3-custom/);
   }, 60000);
 
@@ -1328,13 +1289,7 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
     fs.mkdirSync(testDir, { recursive: true });
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
-    const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-    const result = Bun.spawnSync([bunBin, cliPath, "mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], {
-      env: { ...process.env, PGAI_TAG: "v2.0.0-from-env" },
-      cwd: testDir,
-      timeout: 30000,
-    });
+    const result = runCli(["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], { PGAI_TAG: "v2.0.0-from-env" }, { cwd: testDir });
 
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     // PGAI_TAG env var should be IGNORED - uses pkg.version instead
@@ -1350,13 +1305,7 @@ describe.skipIf(!dockerAvailable)("imageTag priority behavior", () => {
       "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\nVM_AUTH_USERNAME=existing-vm-user\nVM_AUTH_PASSWORD=existing-vm-pass\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
-    const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-    const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
-    const result = Bun.spawnSync([bunBin, cliPath, "mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], {
-      env: { ...process.env, PGAI_TAG: undefined },
-      cwd: testDir,
-      timeout: 30000,
-    });
+    const result = runCli(["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], { PGAI_TAG: undefined }, { cwd: testDir });
 
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
 

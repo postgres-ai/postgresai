@@ -313,7 +313,7 @@ describe("runCommand — the job-channel route end to end", () => {
 
   // The announcement goes to stderr on every async run; silence it here so the
   // assertions below are the only output, and assert it in its own test.
-  let quiet: ReturnType<typeof spyOn> | null = null;
+  let quiet: ReturnType<typeof spyOn<typeof console, "error">> | null = null;
   beforeEach(() => {
     quiet = spyOn(console, "error").mockImplementation(() => {});
   });
