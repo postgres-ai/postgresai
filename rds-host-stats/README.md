@@ -36,4 +36,6 @@ We enable Enhanced Monitoring with `aws rds modify-db-instance --db-instance-ide
 
 From `rds-host-stats/`, run `bun install --frozen-lockfile`, `bun test`, and `bunx tsc --noEmit`. Fixture tests run offline; the live e2e is skipped unless its environment variables are set.
 
+The recorder projects requests in order from each case's `recorded.json`; responses are replaced, so there is one source for the request envelopes. For a new case, seed `recorded.json` with an array of `{ "client": "rds", "command": "DescribeDBInstancesCommand", "input": { "DBInstanceIdentifier": "<instance>" } }` entries for the desired calls (outputs are optional before recording).
+
 To re-record against AWS, run `bun test/record.ts test/fixtures/<case>` with authorized AWS credentials; the recorder redacts endpoint addresses, the account ID in ARNs, VPC/subnet/security-group IDs and KMS key IDs. For the live e2e, see the command and prerequisites in the header of `test/e2e.test.ts`; it needs a real instance with PI and Enhanced Monitoring, plus VictoriaMetrics.

@@ -2,6 +2,7 @@ import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
 import { normalizeBaseUrl } from "./util";
+import * as upload from "./checkup-upload";
 import { getActiveOrgScope, orgScopeHeaders } from "./org-scope";
 
 /**
@@ -448,24 +449,9 @@ export async function createCheckupReport(params: {
   project: string;
   status?: string;
 }): Promise<{ reportId: number }> {
-  const { apiKey, apiBaseUrl, project, status } = params;
-  const bodyObj: Record<string, unknown> = {
-    access_token: apiKey,
-    project,
-  };
-  if (status) bodyObj.status = status;
-
-  const resp = await postRpc<any>({
-    apiKey,
-    apiBaseUrl,
-    rpcName: "checkup_report_create",
-    bodyObj,
-  });
-  const reportId = Number(resp?.report_id);
-  if (!Number.isFinite(reportId) || reportId <= 0) {
-    throw new Error(`Unexpected checkup_report_create response: ${JSON.stringify(resp)}`);
-  }
-  return { reportId };
+  return upload.createCheckupReport(
+    (rpcName, bodyObj) => postRpc({ ...params, rpcName, bodyObj }), params
+  );
 }
 
 /**
@@ -491,29 +477,9 @@ export async function uploadCheckupReportJson(params: {
   checkId: string;
   jsonText: string;
 }): Promise<{ reportChunkId: number }> {
-  const { apiKey, apiBaseUrl, reportId, filename, checkId, jsonText } = params;
-  const bodyObj: Record<string, unknown> = {
-    access_token: apiKey,
-    checkup_report_id: reportId,
-    filename,
-    check_id: checkId,
-    data: jsonText,
-    type: "json",
-    generate_issue: true,
-  };
-
-  const resp = await postRpc<any>({
-    apiKey,
-    apiBaseUrl,
-    rpcName: "checkup_report_file_post",
-    bodyObj,
-  });
-  // Backend has a typo: "report_chunck_id" (with 'ck') - handle both spellings for compatibility
-  const chunkId = Number(resp?.report_chunck_id ?? resp?.report_chunk_id);
-  if (!Number.isFinite(chunkId) || chunkId <= 0) {
-    throw new Error(`Unexpected checkup_report_file_post response: ${JSON.stringify(resp)}`);
-  }
-  return { reportChunkId: chunkId };
+  return upload.uploadCheckupReportJson(
+    (rpcName, bodyObj) => postRpc({ ...params, rpcName, bodyObj }), params
+  );
 }
 
 /**
