@@ -5686,10 +5686,13 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
   return true;
 }
 
-/** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 // targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
 const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
+// A name never has these; a mistyped connection string (and its password) may.
+const looksLikeMistypedConnStr = (value: string): boolean =>
+  /:\/|@|(^|\s)(host|hostaddr|port|user|password|dbname|sslmode)\s*=/.test(value);
 
+/** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
   env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
@@ -5817,17 +5820,32 @@ Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes hos
 RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
 
 Environment:
-  PGAI_DB_URL  the connection string, when none is given (keeps the password out of argv);
-               the only argument is then the name: PGAI_DB_URL=... postgres-ai mon targets add my-db
+  PGAI_DB_URL  the connection string, unless a postgresql:// URL is given (keeps the password
+               out of argv). The only argument is then the name; one that looks like a
+               connection string is refused:
+                 export PGAI_DB_URL='postgresql://user:pass@host:5432/db'
+                 sudo --preserve-env=PGAI_DB_URL postgres-ai mon targets add my-db
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     // Automation passes the URL here, not in argv, where `ps` and the sudo
     // log would show the password. A connection string in argv still wins.
     const envUrl = process.env.PGAI_DB_URL || undefined;
+    delete process.env.PGAI_DB_URL; // not for docker and compose
     if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
+      if (connStr !== undefined && looksLikeMistypedConnStr(connStr)) {
+        console.error("PGAI_DB_URL is set: pass only the target name");
+        process.exitCode = 1;
+        return;
+      }
       name = connStr;
       connStr = envUrl;
+      let user = "";
+      try {
+        if (looksLikeConnStr(envUrl)) user = decodeURIComponent(new URL(envUrl).username);
+      } catch {}
+      // PGAI_DB_URL is the admin URL for prepare-db: show whose URL is saved.
+      console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
     }
     await addTarget(file, projectDir, connStr, name, process.env);
   });
