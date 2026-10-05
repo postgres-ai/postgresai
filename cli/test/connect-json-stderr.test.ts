@@ -69,6 +69,8 @@ test.each([[["--json"]], [[]]])("--debug request lines are JSON events on stderr
     });
     const events = expectJsonLines(r.lines);
     expect(events.some((e) => e.event === "log" && /Debug: POST URL: .*cloud_monitoring_list/.test(e.message ?? ""))).toBe(true);
+    // Not errors: an agent counting level "error" events finds none here.
+    expect(events.filter((e) => /^\s*Debug:/.test(e.message ?? "")).every((e) => e.level === "debug")).toBe(true);
     expect(JSON.parse(r.stdout).status).toBe("failed");
     expect(r.stderr).not.toContain("test-key");
   } finally {
@@ -86,6 +88,14 @@ const EARLY: [string, string[], Record<string, string>, RegExp][] = [
   ["a bad --org-id", ["connect", URL_, "--org-id", "abc"], { PGAI_API_KEY: "test-key" }, /--org-id must be a numeric organization id/],
   ["--api-key without its value", ["connect", URL_, "--api-key"], {}, /option '--api-key <key>' argument missing/],
   ["an unknown root option", ["--bogus", "connect", URL_], {}, /unknown option '--bogus'/],
+  // Its value is not the command: connect is.
+  ["an unknown root option with its value (--org before connect)", ["--org", "acme", "connect", URL_], {}, /unknown option '--org'/],
+  // The value of a root option is not the command either.
+  ["a root option with its value, no database URL", ["--api-key", "k", "connect"], {}, /missing required argument 'database-url'/],
+  ["a root option with its value, an unknown option after the URL", ["--api-key", "k", "connect", URL_, "--bogus"], {}, /unknown option '--bogus'/],
+  // A log collector keeps the event: the password in the echoed option is masked.
+  ["an unknown option holding a URL", ["connect", "--url=postgresql://postgres:s3cret-pw@db.example.com/app"], {},
+    /^error: unknown option '--url=postgresql:\/\/postgres:\*\*\*\*\*@db\.example\.com\/app'$/],
 ];
 describe.each([[["--json"]], [[]]])("with %p (stdout is a pipe)", (flags) => {
   test.each(EARLY)("%s: one error event names the cause", async (_case, args, env, cause) => {
@@ -109,8 +119,28 @@ test("a config file that cannot be read: its warning is a JSON event, from the f
   writeFileSync(resolve(xdg, "postgresai", "config.json"), "{bad");
   const r = await run(["connect", URL_], { XDG_CONFIG_HOME: xdg });
   const events = expectJsonLines(r.lines);
-  expect(events[0]).toMatchObject({ event: "log", message: expect.stringContaining("Failed to read config") });
+  expect(events[0]).toMatchObject({ event: "log", level: "warn", message: expect.stringContaining("Failed to read config") });
   expect(JSON.parse(r.stdout).status).toBe("action_required");
+});
+
+// A person at a terminal: Commander's errors are text, with the help after them,
+// as before. --json given as the value of --wait does not ask for JSON.
+const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+async function runTty(args: string[]) {
+  let out = "";
+  const proc = Bun.spawn([process.execPath, CLI, ...args], {
+    cwd: resolve(dir, "project"),
+    env: { ...process.env, HOME: resolve(dir, "home"), XDG_CONFIG_HOME: resolve(dir, "home"), PGAI_API_KEY: "", PGAI_NO_FEEDBACK_TIP: "1" },
+    terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (out += new TextDecoder().decode(bytes)) },
+  });
+  return { status: await proc.exited, screen: clean(out) };
+}
+test.each([[["connect"]], [["connect", "--wait", "--json"]]])("at a terminal, %p: the error is text, the help follows", async (args) => {
+  const r = await runTty(args);
+  expect(r.status).toBe(1);
+  expect(r.screen).toStartWith("error: missing required argument 'database-url'\n");
+  expect(r.screen).toContain("Usage: postgres-ai connect [options] <database-url>");
+  expect(r.screen).not.toMatch(/^\{"event"/m);
 });
 
 // CI: the cli:clickhouse-like:tests job.
@@ -151,8 +181,8 @@ describe.skipIf(!ADMIN)("real Postgres", () => {
     expect(JSON.parse(r.stdout).status).toBe("connected");
     const logins = expectJsonLines(r.lines).filter((e) => e.source === "mon local-install" && /Login:|Auth:/.test(e.message!));
     expect(logins.map((e) => e.message!.trim())).toEqual([
-      "Login: monitor / ***** (pgai mon show-grafana-credentials)",
-      "VictoriaMetrics Auth: vmauth / ***** (pgai mon show-grafana-credentials)",
+      "Login: ***** (pgai mon show-grafana-credentials)",
+      "VictoriaMetrics Auth: ***** (pgai mon show-grafana-credentials)",
     ]);
     const grafana = readFileSync(resolve(project, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m)![1]!;
     const vm = readFileSync(resolve(project, ".env"), "utf8").match(/^VM_AUTH_PASSWORD=(.+)$/m)![1]!;
