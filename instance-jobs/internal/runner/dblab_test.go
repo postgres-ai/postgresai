@@ -371,8 +371,11 @@ func TestAnEngineRefusalIsReportedOnceWithItsOwnMessage(t *testing.T) {
 	if len(h.submits) != 1 {
 		t.Fatalf("submits = %v, want one", h.submits)
 	}
-	if h.submits[0]["failure_class"] != "engine_error" {
-		t.Fatalf("failure_class = %v, want engine_error", h.submits[0]["failure_class"])
+	// The STATUS rides in the class (#402). Without it the Console cannot tell a
+	// deleted clone's 404 from a broken engine's 500 -- both arrive as
+	// `status: failed` inside an HTTP 200 -- and spun forever on the 404.
+	if h.submits[0]["failure_class"] != "engine_error_404" {
+		t.Fatalf("failure_class = %v, want engine_error_404", h.submits[0]["failure_class"])
 	}
 	errText, _ := h.submits[0]["error"].(string)
 	if !strings.Contains(errText, "clone not found") {
