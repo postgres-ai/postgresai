@@ -275,6 +275,16 @@ user; the name of the connected database (`<host>[:<port>]/<database>`) uses tha
 key in its environment (`PGAI_DB_URL`, `PGAI_API_KEY`, `CLICKHOUSE_*`), not in its arguments.
 `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with
 `PGAI_DB_URL`: an exported `PGAI_API_KEY` alone does not change a plain or `--demo` install.
+`mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL
+(a URL in argv wins); with it set, a lone argument other than a plain name (ASCII letters,
+digits, `.`, `_`, `=`, `-`, with no `password=` / `pwd=`) is refused. Its default name is
+`<host>-<database>`. Percent-encode the user name and the password one at a time (all but ASCII
+letters, digits, `-`, `.`, `_` and `~`), and an `@` in the database name or the query. A user name
+or password that pgx would misread or refuse is refused; an `@` after the host is refused, since it
+cannot be told apart from one in a password; so is a control character anywhere in the URL.
+Under sudo, pass `PGAI_DB_URL` on stdin, not with `--preserve-env`: sudo logs the variables it keeps.
+Where sudoers enables I/O logging (`log_input`), sudo records stdin too: read the URL from a file
+of mode 0600 inside the root shell instead.
 
 ### Authentication
 
@@ -391,6 +401,11 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 ```bash
 postgresai mon targets list                       # List databases to monitor
 postgresai mon targets add <conn-string> <name>   # Add database to monitor
+# Same, URL kept out of argv and out of the sudo log (read from stdin, not exported),
+# unless sudoers enables I/O logging (log_input), which records stdin:
+printf '%s\n' "$URL" | sudo sh -c 'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgresai mon targets add <name>'
+# With log_input, read it from a file of mode 0600 inside the root shell:
+sudo sh -c 'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgresai mon targets add <name>'
 postgresai mon targets remove <name>              # Remove monitoring target
 postgresai mon targets test <name>                # Test target connectivity
 ```

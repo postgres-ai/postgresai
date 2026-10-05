@@ -804,6 +804,26 @@ describe("buildClientConfig — actual node-postgres Client gets the intended ss
   });
 });
 
+// pg-connection-string reads the database with decodeURI, which keeps %40 and
+// the like encoded; libpq and pgx (pgwatch) decode them, as `targets add` advises.
+describe("buildClientConfig — the database name is percent-decoded in full", () => {
+  test.each([
+    ["postgresql://u:p@h:5432/my%40db", "my@db"],
+    ["postgresql://u:p@h:5432/a%2Fb%3Fc%23d", "a/b?c#d"],
+    ["postgresql://u:p@h:5432/my%2540db?sslmode=require", "my%40db"],
+    ["postgresql://u:p@h:5432/%D0%B1%D0%B0%D0%B7%D0%B0", "база"],
+    ["postgresql://u:p@h:5432/my%zzdb", "my%zzdb"],
+    ["postgresql://u:p@h:5432/app", "app"],
+    ["postgresql://u:p@h:5432/", undefined],
+    // libpq takes the host from the query, the database from the path.
+    ["postgresql://u:p@%2Fvar%2Frun%2Fpostgresql/db?host=/tmp", "db"],
+    ["socket:/var/run/postgresql?db=app", "app"],
+  ])("%p → %p", (connStr, database) => {
+    expect(buildClientConfig(connStr).database).toBe(database);
+    expect((new Client(buildClientConfig(connStr)) as any).connectionParameters.database).toBe(database ?? "u");
+  });
+});
+
 describe("warnIfLaxSslmode — UX warning for lax sslmode", () => {
   let stderrSpy: ReturnType<typeof spyOn>;
 

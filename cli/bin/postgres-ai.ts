@@ -5553,15 +5553,40 @@ async function reloadHostMetrics(projectDir: string, job: string, file?: string)
   return true;
 }
 
-/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
-function defaultTargetName(connStr: string): string | null {
-  try {
-    new URL(connStr);
-  } catch {
-    return null;
+const CONN_STR_FORMAT = "Invalid connection string format: use postgresql://user:password@host[:port]/database";
+
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else why it is refused. */
+function defaultTargetName(connStr: string): { name: string } | { error: string } {
+  if (!/^postgres(ql)?:\/\//.test(connStr)) return { error: CONN_STR_FORMAT };
+  // WHATWG drops a tab, a newline and a trailing CR; pgx refuses the URL.
+  if (/[\x00-\x1f\x7f]/.test(connStr)) return { error: "Invalid connection string format: remove the control character (such as a CR from a CRLF file), or percent-encode it" };
+  // The user info ends at the last '@', for WHATWG and pgx (Go's net/url) alike,
+  // if no '/', '?' or '#' comes before it. A raw one in the password ends the
+  // host early, and part of the password would be read as the host; an '@' in
+  // the database name or the query moves the last '@' past one. Both are
+  // refused, as is any other character pgx refuses, or a '%' without two hex
+  // digits: no part of the password ends up in the name.
+  const at = connStr.lastIndexOf("@");
+  if (at < 0) return { error: CONN_STR_FORMAT };
+  if (!/^(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})*$/.test(connStr.slice(connStr.indexOf("//") + 2, at))) {
+    return { error: "Invalid connection string format: percent-encode the user name and the password (all but ASCII letters, digits, '-', '.', '_' and '~'), and an '@' in the database name or the query" };
   }
-  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/([^?]+)/);
-  return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+  let url: URL;
+  try {
+    url = new URL(connStr);
+  } catch {
+    return { error: CONN_STR_FORMAT };
+  }
+  if (!url.username) return { error: CONN_STR_FORMAT };
+  // user:password encoded as one unit is all user name to WHATWG and pgx, and
+  // decodes to user:password: it would be printed as the user.
+  if (/%3a/i.test(url.username)) return { error: "Invalid connection string format: percent-encode the user name and the password one at a time, with a raw ':' between them" };
+  if (!url.password) return { error: "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database" };
+  // An IPv6 host has no name form.
+  if (url.hostname.includes(":")) return { error: "Invalid connection string format: an IPv6 address is not supported as the host; use a host name" };
+  const db = url.pathname.slice(1);
+  if (!db) return { error: CONN_STR_FORMAT };
+  return { name: `${url.hostname}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-") };
 }
 
 /** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
@@ -5702,6 +5727,12 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
   return true;
 }
 
+// targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
+const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
+// With PGAI_DB_URL set, the lone argument is a name only if it is plain: any
+// other string may be a mistyped connection string, and would print its password.
+const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(value) && !/(password|pwd)\s*=/i.test(value);
+
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
@@ -5715,15 +5746,15 @@ export async function addTarget(
   const channelBinding = splitChannelBinding(connStr);
   connStr = channelBinding.uri;
   const defaultName = defaultTargetName(connStr);
-  if (!defaultName) {
-    console.error("Invalid connection string format");
+  if ("error" in defaultName) {
+    console.error(defaultName.error);
     process.exitCode = 1;
     return false;
   }
   if (channelBinding.value !== null) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
-  const instanceName = name && name.trim() ? name.trim() : defaultName;
+  const instanceName = name && name.trim() ? name.trim() : defaultName.name;
   // Refused before the target is saved: the name cannot be changed by a re-run.
   if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME_RE.test(instanceName)) {
     console.error(SUPABASE_TARGET_NAME_ERROR);
@@ -5828,9 +5859,49 @@ Re-running with the same name and connection string is safe; retry after fixing 
 
 Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes host-metrics/supabase-<name>.yml.
 RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
+
+Environment:
+  PGAI_DB_URL  the connection string, unless a postgres:// or postgresql:// URL is given
+               (keeps the password out of argv). The only argument is then the name, of
+               ASCII letters, digits, '.', '_', '=' and '-', with no password= or pwd=;
+               anything else is refused. Set it for this command only:
+                 PGAI_DB_URL='postgresql://user:pass@host:5432/db' postgres-ai mon targets add my-db
+               Under sudo, pass it on stdin: sudo logs a variable kept with --preserve-env.
+                 printf '%s\\n' "$URL" | sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
+               sudo I/O logging (log_input in sudoers) records stdin: then read it from a
+               file of mode 0600 in the root shell.
+                 sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
+    // Automation passes the URL here, not in argv, where `ps` and the sudo
+    // log would show the password. A connection string in argv still wins.
+    const envUrl = process.env.PGAI_DB_URL || undefined;
+    delete process.env.PGAI_DB_URL; // not for docker and compose
+    if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
+      // Trimmed, and a blank argument is no name, as in `targets add <url> <name>`.
+      const arg = connStr?.trim();
+      if (arg && !isPlainTargetName(arg)) {
+        console.error("PGAI_DB_URL is set: pass only the target name (ASCII letters, digits, '.', '_', '=', '-'; no password= or pwd=)");
+        process.exitCode = 1;
+        return;
+      }
+      name = arg;
+      connStr = envUrl;
+      // PGAI_DB_URL is the admin URL for prepare-db: show whose URL is saved,
+      // once it is accepted (a refused one may hold the password in the user).
+      let user = "";
+      if (!("error" in defaultTargetName(splitChannelBinding(envUrl).uri))) {
+        try {
+          user = decodeURIComponent(new URL(envUrl).username);
+        } catch {
+          user = new URL(envUrl).username;
+        }
+      }
+      console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
+    }
     await addTarget(file, projectDir, connStr, name, process.env);
   });
 targets

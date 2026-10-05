@@ -55,7 +55,7 @@ test("targets add resolves with a format error for a malformed channel_binding U
   await expect(run(credentials, "postgres://u:p@[bad/db?channel_binding=require")).resolves.toEqual({
     code: 1,
     stdout: "",
-    stderr: "Invalid connection string format",
+    stderr: "Invalid connection string format: use postgresql://user:password@host[:port]/database",
   });
   expect(requests).toEqual([]);
   expect(readdirSync(dir)).toEqual([]);

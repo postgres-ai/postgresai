@@ -260,6 +260,8 @@ function roleUrlFor(url: string, db: string, password: string, kept: string[]): 
   u.password = encodeURIComponent(password);
   u.pathname = `/${encodeURIComponent(db)}`;
   for (const name of [...u.searchParams.keys()]) if (!kept.includes(name)) u.searchParams.delete(name);
+  // `mon targets add` refuses a raw '@' after the host (a delete above already encoded it).
+  u.search = u.search.replace(/@/g, "%40");
   return u.toString();
 }
 
@@ -378,7 +380,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   }
 
   if (opts.selfHosted && deps.localStackRunning()) {
-    return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'" };
+    return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add" };
   }
 
   const rows = opts.selfHosted ? [] : await deps.list();

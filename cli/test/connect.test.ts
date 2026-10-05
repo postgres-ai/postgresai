@@ -382,7 +382,7 @@ describe("connect", () => {
     const { deps, calls } = fake({ localStackRunning: () => true });
     expect(await connect(CH, { selfHosted: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
-      next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'",
+      next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add",
     });
     expect(calls).toEqual([]);
   });
@@ -956,6 +956,20 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(await withMonPassword("ours", () => s.prepare())).toEqual({
       monitoringUrl: "postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=pgai",
     });
+  });
+
+  // `mon targets add` refuses a raw '@' after the host: it may be a raw '@' in a password.
+  test.each([
+    ["ops@team", "ops%40team"],
+    ["a@b@c", "a%40b%40c"],
+  ])("an '@' in the query reaches the box and the login percent-encoded, when no parameter is dropped: %p", async (raw, encoded) => {
+    const s = server({ mon_exists: false }, [pgError("28000", "no pg_hba.conf entry for host")]);
+    const url = `postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=${raw}`;
+    expect(await withMonPassword("ours", () => s.prepare({}, url))).toEqual({
+      monitoringUrl: `postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=${encoded}`,
+    });
+    expect(s.monUrls.length).toBeGreaterThan(0);
+    for (const monUrl of s.monUrls) expect(new URL(monUrl).search).toEndWith(`application_name=${encoded}`);
   });
 
   test("a server that accepts any password from this host: prepared, with a note that the password was not checked", async () => {
