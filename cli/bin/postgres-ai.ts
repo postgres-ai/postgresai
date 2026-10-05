@@ -5539,14 +5539,21 @@ async function reloadHostMetrics(projectDir: string, job: string, file?: string)
 
 /** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
 function defaultTargetName(connStr: string): string | null {
+  if (!/^postgres(ql)?:\/\//.test(connStr)) return null;
+  let url: URL;
   try {
-    new URL(connStr);
+    url = new URL(connStr);
   } catch {
     return null;
   }
-  // The user info ends at the last '@' before the path, as pgx and WHATWG read it.
-  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^\/?#]+@([^:\/@]+)(?::\d+)?\/([^?]+)/);
-  return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
+  // An IPv6 host has no name form.
+  const db = url.pathname.slice(1);
+  if (!url.username || !url.password || url.hostname.includes(":") || !db) return null;
+  // Host and database as WHATWG and pgx read them. A raw '/', '?' or '#' in the
+  // password ends the host early: part of the password is then read as the
+  // host, and the real '@host' comes after it. Refused, not put into the name.
+  if (/@/.test(url.pathname + url.search + url.hash)) return null;
+  return `${url.hostname}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
 }
 
 /** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
@@ -5691,7 +5698,7 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
 const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
 // With PGAI_DB_URL set, the lone argument is a name only if it is plain: any
 // other string may be a mistyped connection string, and would print its password.
-const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(value) && !/(password|pwd)=/i.test(value);
+const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(value) && !/(password|pwd)\s*=/i.test(value);
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
@@ -5707,7 +5714,7 @@ export async function addTarget(
   connStr = channelBinding.uri;
   const defaultName = defaultTargetName(connStr);
   if (!defaultName) {
-    console.error("Invalid connection string format");
+    console.error("Invalid connection string format: use postgresql://user:password@host[:port]/database, and percent-encode '@', '/', '?' and '#' in the password");
     process.exitCode = 1;
     return false;
   }
@@ -5823,9 +5830,10 @@ RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUST
 Environment:
   PGAI_DB_URL  the connection string, unless a postgres:// or postgresql:// URL is given
                (keeps the password out of argv). The only argument is then the name, of
-               letters, digits, '.', '_', '=' and '-'; anything else is refused:
-                 export PGAI_DB_URL='postgresql://user:pass@host:5432/db'
-                 sudo --preserve-env=PGAI_DB_URL postgres-ai mon targets add my-db
+               ASCII letters, digits, '.', '_', '=' and '-', with no password= or pwd=;
+               anything else is refused. Set it for this command only:
+                 PGAI_DB_URL='postgresql://user:pass@host:5432/db' \\
+                   sudo --preserve-env=PGAI_DB_URL postgres-ai mon targets add my-db
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
@@ -5834,8 +5842,9 @@ Environment:
     const envUrl = process.env.PGAI_DB_URL || undefined;
     delete process.env.PGAI_DB_URL; // not for docker and compose
     if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
-      if (connStr !== undefined && !isPlainTargetName(connStr)) {
-        console.error("PGAI_DB_URL is set: pass only the target name (letters, digits, '.', '_', '=', '-')");
+      // An empty argument is no name, as in `targets add <url> ""`.
+      if (connStr && !isPlainTargetName(connStr)) {
+        console.error("PGAI_DB_URL is set: pass only the target name (ASCII letters, digits, '.', '_', '=', '-'; no password= or pwd=)");
         process.exitCode = 1;
         return;
       }

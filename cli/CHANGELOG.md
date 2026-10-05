@@ -19,8 +19,10 @@
   this machine only (the monitoring box does not get them).
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL;
-  with it set, a lone argument other than a plain name (letters, digits, `.`, `_`, `=`, `-`) is
-  refused, not saved as the name.
+  with it set, a lone argument other than a plain name (ASCII letters, digits, `.`, `_`, `=`, `-`,
+  with no `password=` / `pwd=`) is refused, not saved as the name. The default name takes the host
+  and database as WHATWG and pgx read them; a URL whose password has a raw `/`, `?` or `#` after an
+  `@` is refused, so no part of the password ends up in the name.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
   While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings

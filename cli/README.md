@@ -270,8 +270,9 @@ key in its environment (`PGAI_DB_URL`, `PGAI_API_KEY`, `CLICKHOUSE_*`), not in i
 `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with
 `PGAI_DB_URL`: an exported `PGAI_API_KEY` alone does not change a plain or `--demo` install.
 `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL
-(a URL in argv wins); with it set, a lone argument other than a plain name (letters, digits, `.`,
-`_`, `=`, `-`) is refused.
+(a URL in argv wins); with it set, a lone argument other than a plain name (ASCII letters,
+digits, `.`, `_`, `=`, `-`, with no `password=` / `pwd=`) is refused. Its default name is
+`<host>-<database>`; a password with a raw `@`, `/`, `?` or `#` must be percent-encoded.
 
 ### Authentication
 
@@ -388,8 +389,8 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 ```bash
 postgresai mon targets list                       # List databases to monitor
 postgresai mon targets add <conn-string> <name>   # Add database to monitor
-export PGAI_DB_URL=<conn-string>                  # Same, URL kept out of argv:
-sudo --preserve-env=PGAI_DB_URL postgresai mon targets add <name>
+# Same, URL kept out of argv and set for this command only:
+PGAI_DB_URL=<conn-string> sudo --preserve-env=PGAI_DB_URL postgresai mon targets add <name>
 postgresai mon targets remove <name>              # Remove monitoring target
 postgresai mon targets test <name>                # Test target connectivity
 ```
