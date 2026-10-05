@@ -815,9 +815,12 @@ describe("buildClientConfig — the database name is percent-decoded in full", (
     ["postgresql://u:p@h:5432/my%zzdb", "my%zzdb"],
     ["postgresql://u:p@h:5432/app", "app"],
     ["postgresql://u:p@h:5432/", undefined],
+    // libpq takes the host from the query, the database from the path.
+    ["postgresql://u:p@%2Fvar%2Frun%2Fpostgresql/db?host=/tmp", "db"],
+    ["socket:/var/run/postgresql?db=app", "app"],
   ])("%p → %p", (connStr, database) => {
     expect(buildClientConfig(connStr).database).toBe(database);
-    expect(new Client(buildClientConfig(connStr)).connectionParameters.database).toBe(database ?? "u");
+    expect((new Client(buildClientConfig(connStr)) as any).connectionParameters.database).toBe(database ?? "u");
   });
 });
 

@@ -48,6 +48,13 @@ test("targets add reads the DB URL from PGAI_DB_URL, with the name as the only a
   expect(docker()).not.toContain("PGAI_DB_URL");
 });
 
+test("the user of an accepted PGAI_DB_URL is shown decoded", () => {
+  const { exitCode, out } = run(["add", "app"], { PGAI_DB_URL: url.replace("monitor:", "ops%2Bmon:") });
+  expect(exitCode).toBe(0);
+  expect(out).toContain("Using PGAI_DB_URL (user ops+mon)");
+  expect(out).not.toContain(secret);
+});
+
 test("targets add reads PGAI_DB_URL with no argument and uses the default name", () => {
   const { exitCode, out } = run(["add"], { PGAI_DB_URL: url });
   expect(exitCode).toBe(0);
