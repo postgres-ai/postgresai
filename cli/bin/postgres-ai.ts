@@ -1323,24 +1323,37 @@ program.showHelpAfterError();
 // `pgai connect` with JSON output: stderr is its event stream, one JSON event a
 // line (lib/json-stderr.ts). Commander's own errors (a missing URL, an option
 // without its value, an unknown option, at the root too) come before any
-// action, so the run is told from argv. The error is one event; the help after
-// it is for a person. Set before any subcommand: they all share this.
+// action, so the run is told from argv. The error is one event (a URL in it,
+// as in an unknown --url=postgresql://..., with its password masked); the help
+// after it is for a person. Set before any subcommand: they all share this.
 program.configureOutput({
-  outputError: (text, write) => (jsonConnectArgv() ? writeEvent({ event: "log", level: "error", message: text.trim() }) : write(text)),
+  outputError: (text, write) => (jsonConnectArgv()
+    ? writeEvent({ event: "log", level: "error", message: text.trim().replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, (url) => maskConnectionString(url)) })
+    : write(text)),
   writeErr: (text) => void (jsonConnectArgv() || process.stderr.write(text)),
 });
 
-/** The command argv names: its first operand past the root options and their values. */
-function argvCommand(argv = process.argv.slice(2)): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    if (!argv[i]!.startsWith("-")) return argv[i];
-    if (program.options.find((o) => o.long === argv[i] || o.short === argv[i])?.required) i++;
+/**
+ * What argv asks for, as Commander reads it. The command is the first token
+ * that names one: an unknown option's value before it (`--org acme connect`)
+ * does not. --json counts as an option only, not as another option's value
+ * (`--wait --json`). The values of the root's options and of the command's are skipped.
+ */
+function argvRun(argv = process.argv.slice(2)): { command?: string; json: boolean } {
+  let command: Command | undefined;
+  let json = false;
+  for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+    const option = [...program.options, ...(command?.options ?? [])].find((o) => o.long === argv[i] || o.short === argv[i]);
+    if (option?.required) i++;
+    else if (argv[i] === "--json") json = true;
+    else command ??= program.commands.find((c) => c.name() === argv[i]);
   }
-  return undefined;
+  return { command: command?.name(), json };
 }
 
 function jsonConnectArgv(): boolean {
-  return argvCommand() === "connect" && jsonOutput(process.argv.includes("--json"));
+  const run = argvRun();
+  return run.command === "connect" && jsonOutput(run.json);
 }
 
 // Subtle, discoverable feedback line at the bottom of the top-level `--help`
@@ -4262,9 +4275,9 @@ withOrgOptions(program.command("connect <database-url>"))
     "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
     "",
     "JSON output (--json, or stdout not a TTY): stdout is the result; stderr is one JSON event a",
-    "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\",\"message\":...} for any",
-    "other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that child's lines",
-    "(the passwords it prints are masked: pgai mon show-grafana-credentials shows them).",
+    "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\"|\"debug\",\"message\":...}",
+    "for any other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that",
+    "child's lines (the logins it prints are masked: pgai mon show-grafana-credentials shows them).",
     "",
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed),",
