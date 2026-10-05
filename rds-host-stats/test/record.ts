@@ -1,6 +1,6 @@
 // Re-records a fixture case against the real AWS APIs:
 //   bun test/record.ts test/fixtures/<case>
-// Reads <case>/calls.json, sends each call with the default credential chain,
+// Reads requests from <case>/recorded.json with the default credential chain,
 // and writes <case>/recorded.json. Endpoint addresses, the account ID in ARNs,
 // VPC/subnet/security-group IDs and KMS key IDs are redacted (test/redact.ts).
 import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch'
@@ -21,7 +21,7 @@ const clients = {
 const commands = { DescribeDBInstancesCommand, GetMetricDataCommand, GetResourceMetricsCommand, GetLogEventsCommand }
 type Call = { client: keyof typeof clients; command: keyof typeof commands; input: Record<string, unknown> }
 
-const calls: Call[] = await Bun.file(`${dir}/calls.json`).json()
+const calls: Call[] = (await Bun.file(`${dir}/recorded.json`).json()).map(({ client, command, input }: Call) => ({ client, command, input }))
 const recorded = []
 for (const call of calls) {
   const input = { ...call.input }
