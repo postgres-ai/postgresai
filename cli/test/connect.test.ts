@@ -382,7 +382,7 @@ describe("connect", () => {
     const { deps, calls } = fake({ localStackRunning: () => true });
     expect(await connect(CH, { selfHosted: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
-      next: "A monitoring stack already runs on this machine: add the database with pgai mon targets add '<postgres_ai_mon URL>'",
+      next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add <name>",
     });
     expect(calls).toEqual([]);
   });
