@@ -93,9 +93,17 @@ const EARLY: [string, string[], Record<string, string>, RegExp][] = [
   // The value of a root option is not the command either.
   ["a root option with its value, no database URL", ["--api-key", "k", "connect"], {}, /missing required argument 'database-url'/],
   ["a root option with its value, an unknown option after the URL", ["--api-key", "k", "connect", URL_, "--bogus"], {}, /unknown option '--bogus'/],
-  // A log collector keeps the event: the password in the echoed option is masked.
-  ["an unknown option holding a URL", ["connect", "--url=postgresql://postgres:s3cret-pw@db.example.com/app"], {},
-    /^error: unknown option '--url=postgresql:\/\/postgres:\*\*\*\*\*@db\.example\.com\/app'$/],
+  // Its value is not the command either: Commander fails at the root, the run is connect.
+  ["an unknown option before connect whose value names a command", ["--org", "status", "connect", URL_], {}, /unknown option '--org'/],
+  // The first command named is the command: "status" is one argument too many.
+  ["a command name after the database URL", ["connect", URL_, "status"], {}, /too many arguments for 'connect'/],
+  // A log collector keeps the event: an unknown option is named without its value.
+  ["an unknown option holding a URL", ["connect", "--url=postgresql://postgres:s3cret-pw@db.example.com/app"], {}, /^error: unknown option '--url'$/],
+  ["an unknown option holding a password", ["connect", URL_, "--password=MonPw-S3cret"], {}, /^error: unknown option '--password'$/],
+  ["an unknown short option with its value", ["connect", URL_, "-pS3cret"], {}, /^error: unknown option '-p'$/],
+  // Commander's suggestion after it names a known option: kept.
+  ["an unknown option with its value, close to a known one", ["connect", URL_, "--debugs=1"], {}, /^error: unknown option '--debugs'\n\(Did you mean --debug\?\)$/],
+  ["an unknown option holding a URL with a space", ["connect", "--url=postgresql://postgres:hunter two@db.example.com/app"], {}, /^error: unknown option '--url'$/],
 ];
 describe.each([[["--json"]], [[]]])("with %p (stdout is a pipe)", (flags) => {
   test.each(EARLY)("%s: one error event names the cause", async (_case, args, env, cause) => {
@@ -104,6 +112,18 @@ describe.each([[["--json"]], [[]]])("with %p (stdout is a pipe)", (flags) => {
     expect(r.status).toBe(1);
     expect(expectJsonLines(r.lines)).toEqual([{ event: "log", level: "error", message: expect.stringMatching(cause) }]);
   });
+});
+
+// Not a connect run: Commander's text and help, as before. Another command,
+// even one given "connect" as its argument; "connect" after "--".
+test.each([
+  [["--api-key=k", "status", "connect", "x", "--json"], "error: too many arguments for 'status'", "Usage: postgres-ai status [options] [name]"],
+  [["--bogus", "--", "connect", URL_, "--json"], "error: unknown option '--bogus'", "Usage: postgres-ai [options] [command]"],
+])("%p: the error is text, the help follows", async (args, error, usage) => {
+  const r = await run(args);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toStartWith(error);
+  expect(r.stderr).toContain(usage);
 });
 
 test("a bad API base URL: stdout says why, stderr is JSON only", async () => {
@@ -136,12 +156,32 @@ async function runTty(args: string[]) {
   });
   return { status: await proc.exited, screen: clean(out) };
 }
-test.each([[["connect"]], [["connect", "--wait", "--json"]], [["connect", "--api-key", "--json"]]])("at a terminal, %p: the error is text, the help follows", async (args) => {
+const NO_URL = "error: missing required argument 'database-url'";
+const TTY_TEXT: [string[], string][] = [
+  [["connect"], NO_URL],
+  [["connect", "--wait", "--json"], NO_URL],
+  [["connect", "--api-key", "--json"], NO_URL],
+  // Commander takes the root's options first, wherever they are: --json is the value of --api-key, --coupon has none.
+  [["connect", URL_, "--coupon", "--api-key", "--json"], "error: option '--coupon <code>' argument missing"],
+  // After "--", --json is an argument: one too many.
+  [["connect", URL_, "--", "--json"], "error: too many arguments for 'connect'. Expected 1 argument but got 2."],
+];
+test.each(TTY_TEXT)("at a terminal, %p: the error is text, the help follows", async (args, error) => {
   const r = await runTty(args);
   expect(r.status).toBe(1);
-  expect(r.screen).toStartWith("error: missing required argument 'database-url'\n");
+  expect(r.screen).toStartWith(`${error}\n`);
   expect(r.screen).toContain("Usage: postgres-ai connect [options] <database-url>");
   expect(r.screen).not.toMatch(/^\{"event"/m);
+});
+
+// With --json, at a terminal too: one error event, no help.
+test.each([[["connect", "--json"]], [["--bogus", "connect", "--json"]]])("at a terminal, %p: one error event, no help", async (args) => {
+  const r = await runTty(args);
+  expect(r.status).toBe(1);
+  expect(expectJsonLines(r.screen.split("\n").filter((l) => l !== ""))).toEqual([
+    { event: "log", level: "error", message: expect.stringMatching(/^error: (missing required argument 'database-url'|unknown option '--bogus')$/) },
+  ]);
+  expect(r.screen).not.toContain("Usage:");
 });
 
 // CI: the cli:clickhouse-like:tests job.
