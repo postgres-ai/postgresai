@@ -12,14 +12,15 @@ export function writeEvent(event: object): void {
  * ({"event":"log","level":...,"message":...}) instead of text, so a check's
  * error or the --debug request log does not break a stream an agent parses.
  * The level is the console method's, unless the line names its own: `debug`
- * for "Debug: ..." (the --debug log), `warn` for "Warning: ...".
+ * for "Debug: ..." (the --debug log), `warn` for "Warning: ..." (also after a
+ * "[F001] " prefix: the express checkup's warnings).
  * Returns the function that puts them back.
  */
 export function jsonConsole(): () => void {
   const { error, warn } = console;
   const log = (level: string) => (...args: unknown[]) => {
     const message = format(...args);
-    writeEvent({ event: "log", level: /^\s*Debug:/.test(message) ? "debug" : /^\s*Warning:/.test(message) ? "warn" : level, message });
+    writeEvent({ event: "log", level: /^\s*Debug:/.test(message) ? "debug" : /^\s*(?:\[[^\]]+\]\s*)?Warning:/.test(message) ? "warn" : level, message });
   };
   console.error = log("error");
   console.warn = log("warn");

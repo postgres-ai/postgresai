@@ -1323,37 +1323,76 @@ program.showHelpAfterError();
 // `pgai connect` with JSON output: stderr is its event stream, one JSON event a
 // line (lib/json-stderr.ts). Commander's own errors (a missing URL, an option
 // without its value, an unknown option, at the root too) come before any
-// action, so the run is told from argv. The error is one event (a URL in it,
-// as in an unknown --url=postgresql://..., with its password masked); the help
-// after it is for a person. Set before any subcommand: they all share this.
+// action, so the run is told from argv. The error is one event; an unknown
+// option is named without its value (--password=..., -psecret), since a log
+// collector keeps the event. The help after it is for a person. Set before any
+// subcommand: they all share this.
 program.configureOutput({
   outputError: (text, write) => (jsonConnectArgv()
-    ? writeEvent({ event: "log", level: "error", message: text.trim().replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, (url) => maskConnectionString(url)) })
+    ? writeEvent({ event: "log", level: "error", message: text.trim().replace(/^(error: unknown option ')(--[^=]*|-[^-])[\s\S]*'(?=\n\(Did you mean [^\n]*\)$|$)/, "$1$2'") })
     : write(text)),
   writeErr: (text) => void (jsonConnectArgv() || process.stderr.write(text)),
 });
 
 /**
- * What argv asks for, as Commander reads it. The command is the first token
- * that names one: an unknown option's value before it (`--org acme connect`)
- * does not. --json counts as an option only, not as another option's value
- * (`--wait --json`). The values of the root's options and of the command's are skipped.
+ * Commander's split of argv for one command (its parseOptions): its options
+ * and their values come out wherever they are; the other tokens are operands
+ * up to the first unknown option, `unknown` from it on. --json counts only as
+ * an option, not as another option's value (`--wait --json`); nothing after
+ * "--" is an option.
  */
-function argvRun(argv = process.argv.slice(2)): { command?: string; json: boolean } {
-  let command: Command | undefined;
+function splitArgv(options: readonly Option[], argv: string[]): { operands: string[]; unknown: string[]; json: boolean } {
+  const operands: string[] = [];
+  const unknown: string[] = [];
+  let dest = operands;
   let json = false;
-  for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
-    const option = [...program.options, ...(command?.options ?? [])].find((o) => o.long === argv[i] || o.short === argv[i]);
-    if (option?.required) i++;
-    else if (argv[i] === "--json") json = true;
-    else command ??= program.commands.find((c) => c.name() === argv[i]);
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--") {
+      dest.push(...(dest === unknown ? argv.slice(i) : argv.slice(i + 1)));
+      break;
+    }
+    const option = options.find((o) => o.long === arg || o.short === arg);
+    if (option) {
+      if (option.required) i++;
+      else if (option.long === "--json") json = true;
+      continue;
+    }
+    // With its value in the same token: --api-key=k.
+    if (options.some((o) => o.required && arg.startsWith(`${o.long}=`))) continue;
+    if (dest === operands && arg.length > 1 && arg.startsWith("-")) dest = unknown;
+    dest.push(arg);
   }
-  return { command: command?.name(), json };
+  return { operands, unknown, json };
 }
 
+/**
+ * What argv asks for, as Commander reads it: the root's options first, then
+ * the command, its first operand, reads the rest with its own options. An
+ * unknown option before the command fails at the root (`--org acme connect`,
+ * `--org status connect`); the run is connect when `connect` follows it.
+ */
+function argvRun(argv = process.argv.slice(2)): { command?: Command; json: boolean } {
+  const root = splitArgv(program.options, argv);
+  let command = program.commands.find((c) => c.name() === root.operands[0]);
+  let rest = root.unknown;
+  if (root.operands.length === 0) {
+    const end = rest.indexOf("--");
+    const at = rest.slice(0, end < 0 ? undefined : end).indexOf("connect");
+    if (at >= 0) [command, rest] = [program.commands.find((c) => c.name() === "connect"), rest.slice(at + 1)];
+  }
+  return { command, json: !!command && splitArgv(command.options, rest).json };
+}
+
+/** `pgai connect` with JSON output: stderr is its event stream (JSON lines only). */
+function jsonConnect(command: Command | undefined, json?: boolean): boolean {
+  return command?.parent === program && command.name() === "connect" && jsonOutput(json);
+}
+
+/** jsonConnect from argv: before Commander has parsed it (its errors). */
 function jsonConnectArgv(): boolean {
   const run = argvRun();
-  return run.command === "connect" && jsonOutput(run.json);
+  return jsonConnect(run.command, run.json);
 }
 
 // Subtle, discoverable feedback line at the bottom of the top-level `--help`
@@ -1395,16 +1434,11 @@ function withOrgOptions(command: Command): Command {
     .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`);
 }
 
-/** `pgai connect` with JSON output: stderr is its event stream (JSON lines only). */
-function jsonConnect(command: Command): boolean {
-  return command.parent === program && command.name() === "connect" && jsonOutput(command.opts().json);
-}
-
 // From its first hook on, console.error and console.warn of such a run are JSON
 // events too: a config warning, the org check, a check's error, the --debug log.
 let restoreConsole: (() => void) | undefined;
 program.hook("preAction", (_thisCommand, actionCommand) => {
-  if (jsonConnect(actionCommand)) restoreConsole = jsonConsole();
+  if (jsonConnect(actionCommand, actionCommand.opts().json)) restoreConsole = jsonConsole();
 });
 program.hook("postAction", () => {
   restoreConsole?.();
