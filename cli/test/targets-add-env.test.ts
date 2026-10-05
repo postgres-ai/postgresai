@@ -179,6 +179,8 @@ const FORMAT = "Invalid connection string format: use postgresql://user:password
 const NO_PASSWORD = "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database";
 const IPV6 = "Invalid connection string format: an IPv6 address is not supported as the host; use a host name";
 const ENCODE = "Invalid connection string format: percent-encode the user name and the password (all but ASCII letters, digits, '-', '.', '_' and '~'), and an '@' in the database name or the query";
+const USER_COLON = "Invalid connection string format: percent-encode the user name and the password one at a time, with a raw ':' between them";
+const CONTROL = "Invalid connection string format: remove the control character (such as a CR from a CRLF file), or percent-encode it";
 
 // pgx and WHATWG split the user info at the last '@': no part of the password
 // may end up in the default name (and the node_name label).
@@ -236,13 +238,38 @@ test.each([
   ["postgresql://monitor@db.example:5432/app", NO_PASSWORD],
   [`postgresql://monitor@db.example:5432/app?password=${pwHead}`, NO_PASSWORD],
   [`postgresql://monitor:${pwHead}@[::1]:5432/app`, IPV6],
+  // user:password encoded as one unit (quote(f"{user}:{pw}", safe="")): WHATWG
+  // and pgx read it all as the user name, which decodes to monitor:<password>.
+  [`postgresql://monitor%3A${pwHead}@db.example:5432/app`, USER_COLON],
+  [`postgresql://monitor%3aAb%40${pwHead}@db.example:5432/app`, USER_COLON],
+  [`postgresql://monitor%3A${pwHead}:x@db.example:5432/app`, USER_COLON],
+  // WHATWG drops these, pgx refuses the URL: pgwatch would not collect.
+  [`postgresql://monitor:${pwHead}@db.example:5432/app\r`, CONTROL],
+  [`postgresql://monitor:${pwHead}@db.example:5432/app?sslmode=disable\r`, CONTROL],
+  [`postgresql://monitor:Ab\t${pwHead}@db.example:5432/app`, CONTROL],
+  [`postgresql://monitor:${pwHead}@db.example:5432/a\x7fpp`, CONTROL],
 ])("a PGAI_DB_URL that is not user:password@host[:port]/db is refused: %p", (dbUrl, error) => {
   const { exitCode, out } = run(["add"], { PGAI_DB_URL: dbUrl });
   expect(exitCode).toBe(1);
   expect(out.split("\n")).toContain(error);
+  // The source is named; the user only once the URL is accepted.
+  expect(out.split("\n")).toContain("Using PGAI_DB_URL");
   expect(out).not.toContain(pwHead);
   expect(out).not.toContain(pwTail);
   expect(instances()).toBe("");
+});
+
+// The database name stays as WHATWG reads it, percent-encoded.
+test.each([
+  ["postgresql://monitor:pw@db.example:5432/my%40db", "db-example-my-40db"],
+  ["postgresql://monitor:pw@db.example:5432/база", "db-example--D0-B1-D0-B0-D0-B7-D0-B0"],
+  ["postgresql://monitor:pw@db.example:5432/%D0%B1%D0%B0%D0%B7%D0%B0", "db-example--D0-B1-D0-B0-D0-B7-D0-B0"],
+])("the default name of %p is %p", (dbUrl, name) => {
+  const { exitCode, out } = run(["add"], { PGAI_DB_URL: dbUrl });
+  expect(exitCode).toBe(0);
+  expect(out).toContain("Using PGAI_DB_URL (user monitor)");
+  expect(out).toContain(`Monitoring target '${name}' added`);
+  expect(instances()).toContain(`name: ${name}`);
 });
 
 // An '@' after the host may be a raw '@' in a password: refused, with a name
@@ -273,4 +300,7 @@ test("targets add --help names PGAI_DB_URL, which automation probes for, and giv
   expect(out).not.toContain("--preserve-env=");
   // Not exported in the caller's shell: a later `mon local-install` or `prepare-db` would read it.
   expect(out).not.toContain("export PGAI_DB_URL=");
+  // sudo I/O logging records stdin: the URL is then read from a file in the root shell.
+  expect(out).toContain("log_input");
+  expect(out).toContain(`'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'`);
 });

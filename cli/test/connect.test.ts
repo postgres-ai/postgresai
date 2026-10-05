@@ -999,14 +999,17 @@ describe("prepareDatabase (a fake pg client)", () => {
   });
 
   // `mon targets add` refuses a raw '@' after the host: it may be a raw '@' in a password.
-  test("an '@' in the query reaches the box and the login percent-encoded, when no parameter is dropped", async () => {
+  test.each([
+    ["ops@team", "ops%40team"],
+    ["a@b@c", "a%40b%40c"],
+  ])("an '@' in the query reaches the box and the login percent-encoded, when no parameter is dropped: %p", async (raw, encoded) => {
     const s = server({ mon_exists: false }, [pgError("28000", "no pg_hba.conf entry for host")]);
-    const url = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=ops@team";
+    const url = `postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=${raw}`;
     expect(await withMonPassword("ours", () => s.prepare({}, url))).toEqual({
-      monitoringUrl: "postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=ops%40team",
+      monitoringUrl: `postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=${encoded}`,
     });
     expect(s.monUrls.length).toBeGreaterThan(0);
-    for (const monUrl of s.monUrls) expect(new URL(monUrl).search).toEndWith("application_name=ops%40team");
+    for (const monUrl of s.monUrls) expect(new URL(monUrl).search).toEndWith(`application_name=${encoded}`);
   });
 
   test("a server that accepts any password from this host: prepared, with a note that the password was not checked", async () => {
