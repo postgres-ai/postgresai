@@ -64,6 +64,15 @@ test.each(["region=west", "Prod.db_1-A"])("%p is a name", (name) => {
   expect(out).not.toContain(secret);
 });
 
+// As `targets add <url> ""`: a script running `targets add "$NAME"` with NAME empty.
+test("with PGAI_DB_URL set, an empty argument is no name: the default name", () => {
+  const { exitCode, out } = run(["add", ""], { PGAI_DB_URL: url });
+  expect(exitCode).toBe(0);
+  expect(out).toContain("Monitoring target 'db-example-app' added");
+  expect(instances()).toContain("name: db-example-app");
+  expect(out).not.toContain(secret);
+});
+
 test("a URL in argv still wins over PGAI_DB_URL", () => {
   const { exitCode, out } = run(["add", other, "app"], { PGAI_DB_URL: url });
   expect(exitCode).toBe(0);
@@ -120,14 +129,17 @@ test.each([
   `postgresql:/other.example/app?password=${argvSecret}`,
   `postgresql+ssl://monitor:${argvSecret}@other.example:5432/app`,
   ` ${other}`,
+  `host=other.example password = ${argvSecret}`,
   `team@prod-${argvSecret}`,
   // No password, still not a name.
   "Host=other.example;Database=app",
   "other.example:5432/app",
+  "host=other.example user=monitor dbname=app",
+  "прод",
 ])("with PGAI_DB_URL set, a lone argument that is not a plain name is refused: %p", (arg) => {
   const { exitCode, out } = run(["add", arg], { PGAI_DB_URL: url });
   expect(exitCode).toBe(1);
-  expect(out).toContain("PGAI_DB_URL is set: pass only the target name (letters, digits, '.', '_', '=', '-')");
+  expect(out).toContain("PGAI_DB_URL is set: pass only the target name (ASCII letters, digits, '.', '_', '=', '-'; no password= or pwd=)");
   expect(out).not.toContain(argvSecret);
   expect(out).not.toContain(secret);
   expect(instances()).toBe("");
@@ -159,12 +171,41 @@ test("a PGAI_DB_URL that does not parse is refused, and its password not printed
 
 // pgx and WHATWG split the user info at the last '@': no part of the password
 // may end up in the default name (and the node_name label).
-test("the default name takes the host after the last '@'", () => {
-  const { exitCode, out } = run(["add"], { PGAI_DB_URL: "postgresql://monitor:Ab@Tail-91c4@db.example:5432/app" });
+test.each([
+  "postgresql://monitor:Ab@Tail-91c4@db.example:5432/app",
+  "postgres://monitor:Ab@Tail-91c4@db.example:5432/app",
+])("the default name takes the host after the last '@': %p", (dbUrl) => {
+  const { exitCode, out } = run(["add"], { PGAI_DB_URL: dbUrl });
   expect(exitCode).toBe(0);
   expect(out).toContain("Monitoring target 'db-example-app' added");
   expect(instances()).toContain("name: db-example-app");
+  expect(instances()).toContain("node_name: db-example-app");
   expect(out).not.toContain("Tail-91c4");
+});
+
+// A raw '/', '?' or '#' in the password ends the host early: WHATWG then reads
+// part of the password as the host, and the real '@host' comes after it. Each
+// is refused, so no part of the password is in the output, a name or node_name.
+const pwHead = "PwHead-5d1", pwTail = "PwTail-9f3";
+test.each([
+  `postgresql://monitor:@@${pwHead}/${pwTail}@db.example:5432/app`,
+  `postgresql://monitor:Ab@:@${pwHead}/${pwTail}@db.example:5432/app`,
+  `postgresql://monitor:Ab@${pwHead}/${pwTail}@db.example:5432/app`,
+  `postgresql://monitor@db.example/app?password=Ab:${pwHead}@${pwTail}/x`,
+  `postgresql://monitor:Ab@${pwHead}/${pwTail}?x@db.example:5432/app`,
+  `postgresql://monitor:Ab@${pwHead}/${pwTail}#x@db.example:5432/app`,
+  // Not the user:password@host[:port]/db form either.
+  `postgresql://monitor:${pwHead}@db.example:5432`,
+  `postgresql://:${pwHead}@db.example:5432/app`,
+  "postgresql://monitor@db.example:5432/app",
+  `postgresql://monitor:${pwHead}@[::1]:5432/app`,
+])("a PGAI_DB_URL that is not user:password@host[:port]/db is refused: %p", (dbUrl) => {
+  const { exitCode, out } = run(["add"], { PGAI_DB_URL: dbUrl });
+  expect(exitCode).toBe(1);
+  expect(out).toContain("Invalid connection string format: use postgresql://user:password@host[:port]/database, and percent-encode '@', '/', '?' and '#' in the password");
+  expect(out).not.toContain(pwHead);
+  expect(out).not.toContain(pwTail);
+  expect(instances()).toBe("");
 });
 
 test("targets add --help names PGAI_DB_URL, which automation probes for", () => {
@@ -172,4 +213,6 @@ test("targets add --help names PGAI_DB_URL, which automation probes for", () => 
   expect(exitCode).toBe(0);
   expect(out).toContain("PGAI_DB_URL");
   expect(out).toContain("--preserve-env=PGAI_DB_URL");
+  // Not exported: a later `mon local-install` or `prepare-db` would read it.
+  expect(out).not.toContain("export PGAI_DB_URL");
 });
