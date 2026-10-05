@@ -18,8 +18,9 @@
   `host` / `port` in the URL's query string is refused; certificate files in the URL are used from
   this machine only (the monitoring box does not get them).
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
-  `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgresql://` URL; with it set, a
-  lone argument that looks like a connection string is refused, not saved as the name.
+  `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL;
+  with it set, a lone argument other than a plain name (letters, digits, `.`, `_`, `=`, `-`) is
+  refused, not saved as the name.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
   While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings

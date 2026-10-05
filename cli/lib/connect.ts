@@ -296,7 +296,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   }
 
   if (opts.selfHosted && deps.localStackRunning()) {
-    return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add <name>" };
+    return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add my-db" };
   }
 
   const rows = opts.selfHosted ? [] : await deps.list();
