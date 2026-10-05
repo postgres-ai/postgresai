@@ -310,11 +310,27 @@ export function buildClientConfig(
     port: parsed.port ? Number(parsed.port) : undefined,
     user: parsed.user,
     password: parsed.password,
-    database: parsed.database || undefined,
+    database: databaseName(withoutSslmode(channelBinding.uri), parsed.database),
     ssl: sslOptionFromSslmode(sslmode),
     ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
     ...extra,
   };
+}
+
+/**
+ * The database name percent-decoded in full, as libpq and pgx (pgwatch) read
+ * it: pg-connection-string's decodeURI keeps %40 and the like encoded. Its own
+ * value (`parsed`) for a socket: URL or an escape that does not decode.
+ */
+function databaseName(connStr: string, parsed: string | null | undefined): string | undefined {
+  if (!parsed) return undefined;
+  try {
+    const u = new URL(connStr);
+    if (/^postgres(ql)?:$/.test(u.protocol)) return decodeURIComponent(u.pathname.slice(1));
+  } catch {
+    // Not a URL, or an escape decodeURIComponent refuses.
+  }
+  return parsed;
 }
 
 function withoutSslmode(connStr: string): string {

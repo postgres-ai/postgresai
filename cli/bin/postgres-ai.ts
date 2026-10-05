@@ -4534,24 +4534,10 @@ mon
         console.log("Using database URL provided via --db-url parameter");
         console.log(`Adding PostgreSQL instance from: ${maskConnectionString(opts.dbUrl)}\n`);
 
-        const match = opts.dbUrl.match(/^postgresql:\/\/[^@]+@([^:/]+)/);
-        const autoInstanceName = match ? match[1] : "db-instance";
-
-        const connStr = opts.dbUrl;
-        const instanceName = defaultTargetName(connStr);
-        if (!instanceName) {
-          console.error("✗ Invalid connection string format");
-          process.exitCode = 1;
-          return;
-        }
-
-        const host = m[3];
-        const db = m[5].split("?")[0];
-        const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
         // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
         // the stack is started below, so nothing is applied here.
-        if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
+        const connStr = opts.dbUrl;
+        if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
           console.error("✗ The monitoring target was not saved");
           process.exitCode = 1;
           return;
@@ -4595,40 +4581,30 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const instanceName = defaultTargetName(connStr);
-            if (!instanceName) {
-              console.error("✗ Invalid connection string format");
-              console.error("⚠ Continuing without adding instance\n");
-            } else {
-              const host = m[3];
-              const db = m[5].split("?")[0];
-              const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+            if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
+              console.error("✗ The monitoring target was not saved");
+              process.exitCode = 1;
+              return;
+            }
+            console.log();
 
-              if (!(await addTarget(instancesPath, projectDir, connStr, instanceName, process.env, { apply: false }))) {
-                console.error("✗ The monitoring target was not saved");
-                process.exitCode = 1;
-                return;
-              }
-              console.log();
-
-              // Test connection
-              console.log("Testing connection to the added instance...");
-              {
-                let testClient: InstanceType<typeof Client> | null = null;
-                try {
-                  warnIfLaxSslmode(connStr);
-                  warnIfTransactionPoolerPort(connStr);
-                  testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
-                  await testClient.connect();
-                  const result = await testClient.query("select version();");
-                  console.log("✓ Connection successful");
-                  console.log(`${result.rows[0].version}\n`);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  console.error(`✗ Connection failed: ${message}\n`);
-                } finally {
-                  if (testClient) await testClient.end();
-                }
+            // Test connection
+            console.log("Testing connection to the added instance...");
+            {
+              let testClient: InstanceType<typeof Client> | null = null;
+              try {
+                warnIfLaxSslmode(connStr);
+                warnIfTransactionPoolerPort(connStr);
+                testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                await testClient.connect();
+                const result = await testClient.query("select version();");
+                console.log("✓ Connection successful");
+                console.log(`${result.rows[0].version}\n`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`✗ Connection failed: ${message}\n`);
+              } finally {
+                if (testClient) await testClient.end();
               }
             }
           } else {
@@ -5583,6 +5559,8 @@ const CONN_STR_FORMAT = "Invalid connection string format: use postgresql://user
 /** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else why it is refused. */
 function defaultTargetName(connStr: string): { name: string } | { error: string } {
   if (!/^postgres(ql)?:\/\//.test(connStr)) return { error: CONN_STR_FORMAT };
+  // WHATWG drops a tab, a newline and a trailing CR; pgx refuses the URL.
+  if (/[\x00-\x1f\x7f]/.test(connStr)) return { error: "Invalid connection string format: remove the control character (such as a CR from a CRLF file), or percent-encode it" };
   // The user info ends at the last '@', for WHATWG and pgx (Go's net/url) alike,
   // if no '/', '?' or '#' comes before it. A raw one in the password ends the
   // host early, and part of the password would be read as the host; an '@' in
@@ -5601,6 +5579,9 @@ function defaultTargetName(connStr: string): { name: string } | { error: string 
     return { error: CONN_STR_FORMAT };
   }
   if (!url.username) return { error: CONN_STR_FORMAT };
+  // user:password encoded as one unit is all user name to WHATWG and pgx, and
+  // decodes to user:password: it would be printed as the user.
+  if (/%3a/i.test(url.username)) return { error: "Invalid connection string format: percent-encode the user name and the password one at a time, with a raw ':' between them" };
   if (!url.password) return { error: "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database" };
   // An IPv6 host has no name form.
   if (url.hostname.includes(":")) return { error: "Invalid connection string format: an IPv6 address is not supported as the host; use a host name" };
@@ -5889,6 +5870,10 @@ Environment:
                Under sudo, pass it on stdin: sudo logs a variable kept with --preserve-env.
                  printf '%s\\n' "$URL" | sudo sh -c \\
                    'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
+               sudo I/O logging (log_input in sudoers) records stdin: then read it from a
+               file of mode 0600 in the root shell.
+                 sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
@@ -5906,11 +5891,16 @@ Environment:
       }
       name = arg;
       connStr = envUrl;
+      // PGAI_DB_URL is the admin URL for prepare-db: show whose URL is saved,
+      // once it is accepted (a refused one may hold the password in the user).
       let user = "";
-      try {
-        if (looksLikeConnStr(envUrl)) user = decodeURIComponent(new URL(envUrl).username);
-      } catch {}
-      // PGAI_DB_URL is the admin URL for prepare-db: show whose URL is saved.
+      if (!("error" in defaultTargetName(splitChannelBinding(envUrl).uri))) {
+        try {
+          user = decodeURIComponent(new URL(envUrl).username);
+        } catch {
+          user = new URL(envUrl).username;
+        }
+      }
       console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
     }
     await addTarget(file, projectDir, connStr, name, process.env);
