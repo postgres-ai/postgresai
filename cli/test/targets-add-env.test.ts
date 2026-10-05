@@ -56,10 +56,10 @@ test("targets add reads PGAI_DB_URL with no argument and uses the default name",
   expect(out).not.toContain(secret);
 });
 
-test("a name with '=' in it is a name", () => {
-  const { exitCode, out } = run(["add", "region=west"], { PGAI_DB_URL: url });
+test.each(["region=west", "Prod.db_1-A"])("%p is a name", (name) => {
+  const { exitCode, out } = run(["add", name], { PGAI_DB_URL: url });
   expect(exitCode).toBe(0);
-  expect(instances()).toContain("name: region=west");
+  expect(instances()).toContain(`name: ${name}`);
   expect(instances()).toContain(`conn_str: ${url}`);
   expect(out).not.toContain(secret);
 });
@@ -70,6 +70,10 @@ test("a URL in argv still wins over PGAI_DB_URL", () => {
   expect(instances()).toContain(`conn_str: ${other}`);
   expect(instances()).not.toContain(secret);
   expect(out).not.toContain(secret);
+  // PGAI_DB_URL is unused here, and still kept from docker and compose.
+  expect(docker()).toContain("compose");
+  expect(docker()).not.toContain(secret);
+  expect(docker()).not.toContain("PGAI_DB_URL");
 });
 
 test("a URL alone in argv wins over PGAI_DB_URL and gets the default name", () => {
@@ -81,6 +85,9 @@ test("a URL alone in argv wins over PGAI_DB_URL and gets the default name", () =
   expect(instances()).toContain("name: other-example-app");
   expect(instances()).not.toContain(secret);
   expect(out).not.toContain(secret);
+  expect(docker()).toContain("compose");
+  expect(docker()).not.toContain(secret);
+  expect(docker()).not.toContain("PGAI_DB_URL");
 });
 
 test("an upper-case scheme in argv is a connection string, refused as without PGAI_DB_URL", () => {
@@ -88,6 +95,7 @@ test("an upper-case scheme in argv is a connection string, refused as without PG
   expect(exitCode).toBe(1);
   expect(out).toContain("Invalid connection string format");
   expect(out).not.toContain("pass only the target name");
+  expect(out).not.toContain(argvSecret);
   expect(instances()).toBe("");
 });
 
@@ -102,14 +110,21 @@ test("two arguments with PGAI_DB_URL set: the first is the connection string", (
 // password printed and written to instances.yml and the node_name label.
 test.each([
   `host=other.example user=monitor password=${argvSecret} dbname=app`,
+  `HOST=other.example USER=monitor PASSWORD=${argvSecret}`,
+  `Host=other.example;Username=monitor;Password=${argvSecret};Database=app`,
+  `password=${argvSecret}`,
+  `Pwd=${argvSecret}`,
   `monitor:${argvSecret}@other.example:5432/app`,
+  `other.example:5432/app?password=${argvSecret}`,
+  `postgresql:other.example/app?password=${argvSecret}`,
   `postgresql:/other.example/app?password=${argvSecret}`,
   `postgresql+ssl://monitor:${argvSecret}@other.example:5432/app`,
   ` ${other}`,
-])("with PGAI_DB_URL set, a lone argument like a connection string is refused: %p", (arg) => {
+  `team@prod-${argvSecret}`,
+])("with PGAI_DB_URL set, a lone argument that is not a plain name is refused: %p", (arg) => {
   const { exitCode, out } = run(["add", arg], { PGAI_DB_URL: url });
   expect(exitCode).toBe(1);
-  expect(out).toContain("PGAI_DB_URL is set: pass only the target name");
+  expect(out).toContain("PGAI_DB_URL is set: pass only the target name (letters, digits, '.', '_', '=', '-')");
   expect(out).not.toContain(argvSecret);
   expect(out).not.toContain(secret);
   expect(instances()).toBe("");
@@ -129,6 +144,24 @@ test("an invalid PGAI_DB_URL is refused, named, and not printed", () => {
   expect(out).toContain("Invalid connection string format");
   expect(out).not.toContain(secret);
   expect(instances()).toBe("");
+});
+
+test("a PGAI_DB_URL that does not parse is refused, and its password not printed", () => {
+  const { exitCode, out } = run(["add", "app"], { PGAI_DB_URL: `postgresql://monitor:${secret}@db.example:54x2/app` });
+  expect(exitCode).toBe(1);
+  expect(out).toContain("Invalid connection string format");
+  expect(out).not.toContain(secret);
+  expect(instances()).toBe("");
+});
+
+// pgx and WHATWG split the user info at the last '@': no part of the password
+// may end up in the default name (and the node_name label).
+test("the default name takes the host after the last '@'", () => {
+  const { exitCode, out } = run(["add"], { PGAI_DB_URL: "postgresql://monitor:Ab@Tail-91c4@db.example:5432/app" });
+  expect(exitCode).toBe(0);
+  expect(out).toContain("Monitoring target 'db-example-app' added");
+  expect(instances()).toContain("name: db-example-app");
+  expect(out).not.toContain("Tail-91c4");
 });
 
 test("targets add --help names PGAI_DB_URL, which automation probes for", () => {
