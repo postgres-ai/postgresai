@@ -64,12 +64,18 @@ test.each(["region=west", "Prod.db_1-A"])("%p is a name", (name) => {
   expect(out).not.toContain(secret);
 });
 
-// As `targets add <url> ""`: a script running `targets add "$NAME"` with NAME empty.
-test("with PGAI_DB_URL set, an empty argument is no name: the default name", () => {
-  const { exitCode, out } = run(["add", ""], { PGAI_DB_URL: url });
+// As `targets add <url> "$NAME"`: a script running `targets add "$NAME"` with
+// NAME empty gets the default name, and the name is trimmed.
+test.each([
+  ["", "db-example-app"],
+  [" ", "db-example-app"],
+  ["my-db ", "my-db"],
+  [" my-db", "my-db"],
+])("with PGAI_DB_URL set, the argument %p is the name %p", (arg, name) => {
+  const { exitCode, out } = run(["add", arg], { PGAI_DB_URL: url });
   expect(exitCode).toBe(0);
-  expect(out).toContain("Monitoring target 'db-example-app' added");
-  expect(instances()).toContain("name: db-example-app");
+  expect(out).toContain(`Monitoring target '${name}' added`);
+  expect(instances()).toContain(`name: ${name}`);
   expect(out).not.toContain(secret);
 });
 
@@ -169,6 +175,11 @@ test("a PGAI_DB_URL that does not parse is refused, and its password not printed
   expect(instances()).toBe("");
 });
 
+const FORMAT = "Invalid connection string format: use postgresql://user:password@host[:port]/database";
+const NO_PASSWORD = "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database";
+const IPV6 = "Invalid connection string format: an IPv6 address is not supported as the host; use a host name";
+const ENCODE = "Invalid connection string format: percent-encode the user name and the password (all but ASCII letters, digits, '-', '.', '_' and '~'), and an '@' in the database name or the query";
+
 // pgx and WHATWG split the user info at the last '@': no part of the password
 // may end up in the default name (and the node_name label).
 test.each([
@@ -183,36 +194,83 @@ test.each([
   expect(out).not.toContain("Tail-91c4");
 });
 
-// A raw '/', '?' or '#' in the password ends the host early: WHATWG then reads
-// part of the password as the host, and the real '@host' comes after it. Each
-// is refused, so no part of the password is in the output, a name or node_name.
 const pwHead = "PwHead-5d1", pwTail = "PwTail-9f3";
+
+// What the percent-encode error asks for.
+test("a password with '@', '/', '?' and '#' percent-encoded gets the default name", () => {
+  const { exitCode, out } = run(["add"], { PGAI_DB_URL: `postgresql://monitor:Ab%40${pwHead}%2F${pwTail}%3Fx%23y@db.example:5432/app` });
+  expect(exitCode).toBe(0);
+  expect(out).toContain("Monitoring target 'db-example-app' added");
+  expect(instances()).toContain("name: db-example-app");
+  expect(instances()).toContain("node_name: db-example-app");
+  expect(out).not.toContain(pwHead);
+  expect(out).not.toContain(pwTail);
+});
+
+// A raw '/', '?' or '#' in the password ends the host early: WHATWG then reads
+// part of the password as the host, and the real '@host' comes after it. pgx
+// (Go's net/url) refuses a raw space, quote, non-ASCII character or a bad '%'
+// in the user info. Each is refused, so no part of the password is in the
+// output, a name or node_name.
 test.each([
-  `postgresql://monitor:@@${pwHead}/${pwTail}@db.example:5432/app`,
-  `postgresql://monitor:Ab@:@${pwHead}/${pwTail}@db.example:5432/app`,
-  `postgresql://monitor:Ab@${pwHead}/${pwTail}@db.example:5432/app`,
-  `postgresql://monitor@db.example/app?password=Ab:${pwHead}@${pwTail}/x`,
-  `postgresql://monitor:Ab@${pwHead}/${pwTail}?x@db.example:5432/app`,
-  `postgresql://monitor:Ab@${pwHead}/${pwTail}#x@db.example:5432/app`,
+  [`postgresql://monitor:@@${pwHead}/${pwTail}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab@:@${pwHead}/${pwTail}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab@${pwHead}/${pwTail}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor@db.example/app?password=Ab:${pwHead}@${pwTail}/x`, ENCODE],
+  [`postgresql://monitor:Ab@${pwHead}/${pwTail}?x@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab@${pwHead}/${pwTail}?k&x@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab@${pwHead}/${pwTail}#x@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab?${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab#${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab ${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab"${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab\\${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab[${pwHead}]@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Abé${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab%zz${pwHead}@db.example:5432/app`, ENCODE],
+  [`postgresql://monitor:Ab%4${pwHead}@db.example:5432/app`, ENCODE],
   // Not the user:password@host[:port]/db form either.
-  `postgresql://monitor:${pwHead}@db.example:5432`,
-  `postgresql://:${pwHead}@db.example:5432/app`,
-  "postgresql://monitor@db.example:5432/app",
-  `postgresql://monitor:${pwHead}@[::1]:5432/app`,
-])("a PGAI_DB_URL that is not user:password@host[:port]/db is refused: %p", (dbUrl) => {
+  [`postgresql://monitor:${pwHead}@db.example:5432`, FORMAT],
+  [`postgresql://:${pwHead}@db.example:5432/app`, FORMAT],
+  ["postgresql://db.example:5432/app", FORMAT],
+  ["postgresql://monitor@db.example:5432/app", NO_PASSWORD],
+  [`postgresql://monitor@db.example:5432/app?password=${pwHead}`, NO_PASSWORD],
+  [`postgresql://monitor:${pwHead}@[::1]:5432/app`, IPV6],
+])("a PGAI_DB_URL that is not user:password@host[:port]/db is refused: %p", (dbUrl, error) => {
   const { exitCode, out } = run(["add"], { PGAI_DB_URL: dbUrl });
   expect(exitCode).toBe(1);
-  expect(out).toContain("Invalid connection string format: use postgresql://user:password@host[:port]/database, and percent-encode '@', '/', '?' and '#' in the password");
+  expect(out.split("\n")).toContain(error);
   expect(out).not.toContain(pwHead);
   expect(out).not.toContain(pwTail);
   expect(instances()).toBe("");
 });
 
-test("targets add --help names PGAI_DB_URL, which automation probes for", () => {
+// An '@' after the host may be a raw '@' in a password: refused, with a name
+// given too, and the error says where to percent-encode it.
+test.each([
+  ["postgresql://monitor:pw@db.example:5432/app?application_name=ops@team", "postgresql://monitor:pw@db.example:5432/app?application_name=ops%40team"],
+  ["postgresql://monitor:pw@db.example:5432/my@db", "postgresql://monitor:pw@db.example:5432/my%40db"],
+  ["postgresql://monitor:pw@db.example:5432/app?sslrootcert=/home/john@corp.example/root.crt", "postgresql://monitor:pw@db.example:5432/app?sslrootcert=/home/john%40corp.example/root.crt"],
+])("an '@' in the database name or the query is refused raw and taken percent-encoded: %p", (raw, encoded) => {
+  const refused = run(["add", raw, "svc"]);
+  expect(refused.exitCode).toBe(1);
+  expect(refused.out.split("\n")).toContain(ENCODE);
+  expect(instances()).toBe("");
+  const added = run(["add", encoded, "svc"]);
+  expect(added.exitCode).toBe(0);
+  expect(added.out).toContain("Monitoring target 'svc' added");
+  // A long conn_str is folded onto the next line.
+  expect(instances()).toContain(encoded);
+});
+
+test("targets add --help names PGAI_DB_URL, which automation probes for, and gives it to sudo on stdin", () => {
   const { exitCode, out } = run(["add", "--help"]);
   expect(exitCode).toBe(0);
   expect(out).toContain("PGAI_DB_URL");
-  expect(out).toContain("--preserve-env=PGAI_DB_URL");
-  // Not exported: a later `mon local-install` or `prepare-db` would read it.
-  expect(out).not.toContain("export PGAI_DB_URL");
+  expect(out).toContain(`printf '%s\\n' "$URL" | sudo sh -c \\\n`);
+  expect(out).toContain(`'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'`);
+  // sudo logs a variable kept with --preserve-env (ENV=PGAI_DB_URL=<the URL>).
+  expect(out).not.toContain("--preserve-env=");
+  // Not exported in the caller's shell: a later `mon local-install` or `prepare-db` would read it.
+  expect(out).not.toContain("export PGAI_DB_URL=");
 });
