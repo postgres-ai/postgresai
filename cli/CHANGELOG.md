@@ -20,9 +20,16 @@
   `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
   `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL;
   with it set, a lone argument other than a plain name (ASCII letters, digits, `.`, `_`, `=`, `-`,
-  with no `password=` / `pwd=`) is refused, not saved as the name. The default name takes the host
-  and database as WHATWG and pgx read them; a URL whose password has a raw `/`, `?` or `#` after an
-  `@` is refused, so no part of the password ends up in the name.
+  with no `password=` / `pwd=`) is refused, not saved as the name. Under sudo, pass it on stdin
+  (`targets add --help`): sudo logs a variable kept with `--preserve-env`, password included.
+  The default name takes the host and database as WHATWG and pgx read them. Refused, each with its
+  own message: no password in the URL, an IPv6 host, a raw `/`, `?` or `#` in the password (part of
+  it would be read as the host, and end up in the name), an `@` in the database name or the query,
+  and a user info character that pgx refuses (a space, a quote, non-ASCII, a `%` without two hex
+  digits). `connect --self-hosted` percent-encodes an `@` in the query it passes on. A host or
+  database name with characters other than ASCII letters and digits may get a different default
+  name than before (`база` gives `db-example--D0-B1-D0-B0-D0-B7-D0-B0`, not `db-example-----`): a
+  re-run of `targets add <url>` without a name then adds a second target.
   Also `pgai init` (first run at a terminal), `pgai databases`, `pgai status [name]`, `pgai disconnect <name>`, and the MCP
   tool `connect_database`.
   While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings

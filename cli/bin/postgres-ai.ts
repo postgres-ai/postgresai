@@ -5578,23 +5578,35 @@ async function reloadHostMetrics(projectDir: string, job: string, file?: string)
   return true;
 }
 
-/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else null. */
-function defaultTargetName(connStr: string): string | null {
-  if (!/^postgres(ql)?:\/\//.test(connStr)) return null;
+const CONN_STR_FORMAT = "Invalid connection string format: use postgresql://user:password@host[:port]/database";
+
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else why it is refused. */
+function defaultTargetName(connStr: string): { name: string } | { error: string } {
+  if (!/^postgres(ql)?:\/\//.test(connStr)) return { error: CONN_STR_FORMAT };
+  // The user info ends at the last '@', for WHATWG and pgx (Go's net/url) alike,
+  // if no '/', '?' or '#' comes before it. A raw one in the password ends the
+  // host early, and part of the password would be read as the host; an '@' in
+  // the database name or the query moves the last '@' past one. Both are
+  // refused, as is any other character pgx refuses, or a '%' without two hex
+  // digits: no part of the password ends up in the name.
+  const at = connStr.lastIndexOf("@");
+  if (at < 0) return { error: CONN_STR_FORMAT };
+  if (!/^(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})*$/.test(connStr.slice(connStr.indexOf("//") + 2, at))) {
+    return { error: "Invalid connection string format: percent-encode the user name and the password (all but ASCII letters, digits, '-', '.', '_' and '~'), and an '@' in the database name or the query" };
+  }
   let url: URL;
   try {
     url = new URL(connStr);
   } catch {
-    return null;
+    return { error: CONN_STR_FORMAT };
   }
+  if (!url.username) return { error: CONN_STR_FORMAT };
+  if (!url.password) return { error: "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database" };
   // An IPv6 host has no name form.
+  if (url.hostname.includes(":")) return { error: "Invalid connection string format: an IPv6 address is not supported as the host; use a host name" };
   const db = url.pathname.slice(1);
-  if (!url.username || !url.password || url.hostname.includes(":") || !db) return null;
-  // Host and database as WHATWG and pgx read them. A raw '/', '?' or '#' in the
-  // password ends the host early: part of the password is then read as the
-  // host, and the real '@host' comes after it. Refused, not put into the name.
-  if (/@/.test(url.pathname + url.search + url.hash)) return null;
-  return `${url.hostname}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  if (!db) return { error: CONN_STR_FORMAT };
+  return { name: `${url.hostname}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-") };
 }
 
 /** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
@@ -5754,15 +5766,15 @@ export async function addTarget(
   const channelBinding = splitChannelBinding(connStr);
   connStr = channelBinding.uri;
   const defaultName = defaultTargetName(connStr);
-  if (!defaultName) {
-    console.error("Invalid connection string format: use postgresql://user:password@host[:port]/database, and percent-encode '@', '/', '?' and '#' in the password");
+  if ("error" in defaultName) {
+    console.error(defaultName.error);
     process.exitCode = 1;
     return false;
   }
   if (channelBinding.value !== null) {
     console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
-  const instanceName = name && name.trim() ? name.trim() : defaultName;
+  const instanceName = name && name.trim() ? name.trim() : defaultName.name;
   // Refused before the target is saved: the name cannot be changed by a re-run.
   if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME_RE.test(instanceName)) {
     console.error(SUPABASE_TARGET_NAME_ERROR);
@@ -5873,8 +5885,10 @@ Environment:
                (keeps the password out of argv). The only argument is then the name, of
                ASCII letters, digits, '.', '_', '=' and '-', with no password= or pwd=;
                anything else is refused. Set it for this command only:
-                 PGAI_DB_URL='postgresql://user:pass@host:5432/db' \\
-                   sudo --preserve-env=PGAI_DB_URL postgres-ai mon targets add my-db
+                 PGAI_DB_URL='postgresql://user:pass@host:5432/db' postgres-ai mon targets add my-db
+               Under sudo, pass it on stdin: sudo logs a variable kept with --preserve-env.
+                 printf '%s\\n' "$URL" | sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
 `)
   .action(async (connStr?: string, name?: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
@@ -5883,13 +5897,14 @@ Environment:
     const envUrl = process.env.PGAI_DB_URL || undefined;
     delete process.env.PGAI_DB_URL; // not for docker and compose
     if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
-      // An empty argument is no name, as in `targets add <url> ""`.
-      if (connStr && !isPlainTargetName(connStr)) {
+      // Trimmed, and a blank argument is no name, as in `targets add <url> <name>`.
+      const arg = connStr?.trim();
+      if (arg && !isPlainTargetName(arg)) {
         console.error("PGAI_DB_URL is set: pass only the target name (ASCII letters, digits, '.', '_', '=', '-'; no password= or pwd=)");
         process.exitCode = 1;
         return;
       }
-      name = connStr;
+      name = arg;
       connStr = envUrl;
       let user = "";
       try {
