@@ -196,11 +196,11 @@ and `next`. Then: `pgai databases`, `pgai status <name>`, `pgai disconnect <name
 
 With JSON output (`--json`, or stdout not a terminal) stderr is the progress stream: one JSON
 object a line, each with `event`. Besides the steps, any other text is
-`{"event":"log","level":"error"|"warn"|"info","message":...}`: an error (also a missing argument or
-a bad option), a warning, the `--debug` request log, and with `--self-hosted` each line of
-`mon local-install` (`"source":"mon local-install"`; `info` from its stdout, `error` from its stderr;
-the Grafana and VictoriaMetrics passwords it prints at its end are masked:
-`pgai mon show-grafana-credentials` shows them).
+`{"event":"log","level":"error"|"warn"|"info"|"debug","message":...}`: an error (also a missing
+argument or a bad option; a password in a URL it echoes is masked), a warning (`warn`), the `--debug`
+request log (`debug`), and with `--self-hosted` each line of `mon local-install`
+(`"source":"mon local-install"`; `info` from its stdout, `error` from its stderr; the Grafana and
+VictoriaMetrics logins it prints at its end are masked: `pgai mon show-grafana-credentials` shows them).
 
 `pgai init` is the same for a person at a terminal: it signs in, asks for the database URL (and,
 for ClickHouse, the API key; neither is shown as typed), then runs `pgai connect`. Without a

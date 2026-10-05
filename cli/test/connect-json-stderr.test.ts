@@ -124,7 +124,8 @@ test("a config file that cannot be read: its warning is a JSON event, from the f
 });
 
 // A person at a terminal: Commander's errors are text, with the help after them,
-// as before. --json given as the value of --wait does not ask for JSON.
+// as before. --json given as the value of --wait (connect's) or of --api-key
+// (the root's) does not ask for JSON.
 const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
 async function runTty(args: string[]) {
   let out = "";
@@ -135,7 +136,7 @@ async function runTty(args: string[]) {
   });
   return { status: await proc.exited, screen: clean(out) };
 }
-test.each([[["connect"]], [["connect", "--wait", "--json"]]])("at a terminal, %p: the error is text, the help follows", async (args) => {
+test.each([[["connect"]], [["connect", "--wait", "--json"]], [["connect", "--api-key", "--json"]]])("at a terminal, %p: the error is text, the help follows", async (args) => {
   const r = await runTty(args);
   expect(r.status).toBe(1);
   expect(r.screen).toStartWith("error: missing required argument 'database-url'\n");
