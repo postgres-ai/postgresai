@@ -23,11 +23,16 @@ export function jsonConsole(): () => void {
   };
 }
 
+// The logins mon local-install prints at its end: user, then password.
+const LOGIN = /^(\s*(?:Login|VictoriaMetrics Auth): \S+ \/ ).+$/;
+
 /**
  * Runs a child with stdin closed and resolves to its exit code (null when it
  * cannot start or is killed by a signal). Without JSON output, what it prints
  * goes to stderr as it is. With JSON output, each line is a log event naming
  * `source`: `info` from its stdout, `error` from its stderr; blank lines are dropped.
+ * A log collector keeps those events: a login's password is masked, the line
+ * names the command that shows it.
  */
 export function runChild(command: string, args: string[], env: NodeJS.ProcessEnv, json: boolean, source: string): Promise<number | null> {
   if (!json) return Promise.resolve(spawnSync(command, args, { stdio: ["ignore", 2, 2], env }).status);
@@ -35,7 +40,8 @@ export function runChild(command: string, args: string[], env: NodeJS.ProcessEnv
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
     for (const [stream, level] of [[child.stdout!, "info"], [child.stderr!, "error"]] as const) {
       createInterface({ input: stream }).on("line", (line) => {
-        if (line.trim() !== "") writeEvent({ event: "log", level, source, message: line });
+        const message = line.replace(LOGIN, "$1***** (pgai mon show-grafana-credentials)");
+        if (line.trim() !== "") writeEvent({ event: "log", level, source, message });
       });
     }
     child.on("error", (err) => {

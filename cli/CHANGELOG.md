@@ -41,7 +41,7 @@
   (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`). Each step and
   each change of the box's state is shown once, with the time since the start (JSON: one event a line
   on stderr; any other text there, such as an error, a warning, `--debug` or a line of `mon local-install`,
-  is a `{"event":"log","level",...,"message"}` event). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
+  is a `{"event":"log","level",...,"message"}` event, with the Grafana and VictoriaMetrics passwords masked). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
   `connected`. `pgai databases` uses the `status` words of `connect` and `status`. `pgai init` does not
   echo the URL. `--reset-password` gives an existing `postgres_ai_mon` a new password.
 

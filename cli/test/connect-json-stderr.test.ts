@@ -16,13 +16,15 @@ let dir: string;
 beforeAll(() => {
   dir = mkdtempSync(resolve(tmpdir(), "pgai-connect-json-"));
   for (const p of ["home", "bin", "project"]) mkdirSync(resolve(dir, p));
+  // The project mon local-install finds from its cwd: this one, not the checkout's (it writes .env there).
+  writeFileSync(resolve(dir, "project", "docker-compose.yml"), "services: {}\n");
   // No Docker: no stack is running, and `mon local-install` stops at its first compose call.
   writeFileSync(resolve(dir, "bin", "docker"), "#!/bin/sh\necho 'docker: not here' >&2\nexit 1\n");
   chmodSync(resolve(dir, "bin", "docker"), 0o755);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-async function run(args: string[], env: Record<string, string> = {}, cwd?: string) {
+async function run(args: string[], env: Record<string, string> = {}, cwd = resolve(dir, "project")) {
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
     cwd,
     env: {
