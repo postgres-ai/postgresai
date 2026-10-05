@@ -998,6 +998,17 @@ describe("prepareDatabase (a fake pg client)", () => {
     });
   });
 
+  // `mon targets add` refuses a raw '@' after the host: it may be a raw '@' in a password.
+  test("an '@' in the query reaches the box and the login percent-encoded, when no parameter is dropped", async () => {
+    const s = server({ mon_exists: false }, [pgError("28000", "no pg_hba.conf entry for host")]);
+    const url = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=ops@team";
+    expect(await withMonPassword("ours", () => s.prepare({}, url))).toEqual({
+      monitoringUrl: "postgresql://postgres_ai_mon:ours@db.example.com:5432/app?sslmode=require&application_name=ops%40team",
+    });
+    expect(s.monUrls.length).toBeGreaterThan(0);
+    for (const monUrl of s.monUrls) expect(new URL(monUrl).search).toEndWith("application_name=ops%40team");
+  });
+
   test("a server that accepts any password from this host: prepared, with a note that the password was not checked", async () => {
     const s = server({ mon_exists: true });
     expect(await withMonPassword("maybe", () => s.prepare())).toEqual({
