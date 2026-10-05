@@ -147,11 +147,11 @@ test("a config file that cannot be read: its warning is a JSON event, from the f
 // as before. --json given as the value of --wait (connect's) or of --api-key
 // (the root's) does not ask for JSON.
 const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
-async function runTty(args: string[]) {
+async function runTty(args: string[], env: Record<string, string> = {}) {
   let out = "";
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
     cwd: resolve(dir, "project"),
-    env: { ...process.env, HOME: resolve(dir, "home"), XDG_CONFIG_HOME: resolve(dir, "home"), PGAI_API_KEY: "", PGAI_NO_FEEDBACK_TIP: "1" },
+    env: { ...process.env, HOME: resolve(dir, "home"), XDG_CONFIG_HOME: resolve(dir, "home"), PGAI_API_KEY: "", PGAI_NO_FEEDBACK_TIP: "1", ...env },
     terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (out += new TextDecoder().decode(bytes)) },
   });
   return { status: await proc.exited, screen: clean(out) };
@@ -182,6 +182,16 @@ test.each([[["connect", "--json"]], [["--bogus", "connect", "--json"]]])("at a t
     { event: "log", level: "error", message: expect.stringMatching(/^error: (missing required argument 'database-url'|unknown option '--bogus')$/) },
   ]);
   expect(r.screen).not.toContain("Usage:");
+});
+
+test("at a terminal with --json, a config warning is a JSON event too", async () => {
+  const xdg = mkdtempSync(resolve(dir, "xdg-"));
+  mkdirSync(resolve(xdg, "postgresai"));
+  writeFileSync(resolve(xdg, "postgresai", "config.json"), "{bad");
+  const r = await runTty(["connect", URL_, "--json"], { XDG_CONFIG_HOME: xdg });
+  expect(r.screen).not.toMatch(/^Warning:/m);
+  const events = r.screen.split("\n").filter((l) => l.startsWith("{\"event\"")).map((l) => JSON.parse(l));
+  expect(events[0]).toMatchObject({ event: "log", level: "warn", message: expect.stringContaining("Failed to read config") });
 });
 
 // CI: the cli:clickhouse-like:tests job.
