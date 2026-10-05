@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -22,8 +22,9 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-async function run(args: string[], env: Record<string, string> = {}) {
+async function run(args: string[], env: Record<string, string> = {}, cwd?: string) {
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
+    cwd,
     env: {
       ...process.env, HOME: resolve(dir, "home"), XDG_CONFIG_HOME: resolve(dir, "home"),
       PATH: `${resolve(dir, "bin")}:${process.env.PATH}`, PGAI_PROJECT_DIR: resolve(dir, "project"),
@@ -121,7 +122,7 @@ describe.skipIf(!ADMIN)("real Postgres", () => {
     await c.query("drop role if exists postgres_ai_mon");
     await c.end();
   };
-  beforeAll(dropMonRole);
+  beforeEach(dropMonRole);
   afterAll(dropMonRole);
 
   test("--self-hosted: the output of mon local-install comes as JSON events", async () => {
@@ -134,5 +135,26 @@ describe.skipIf(!ADMIN)("real Postgres", () => {
     expect(child.some((e) => e.level === "error" && /docker/i.test(e.message!))).toBe(true);
     expect(JSON.parse(r.stdout).status).toBe("failed");
     expect(r.stderr).not.toContain(new URL(ADMIN!).password);
+  });
+
+  test("--self-hosted: the logins mon local-install prints at its end carry no password", async () => {
+    // Docker that says yes to everything: the install runs to its end, in a project of its own.
+    const sandbox = mkdtempSync(resolve(dir, "docker-ok-"));
+    for (const p of ["bin", "project"]) mkdirSync(resolve(sandbox, p));
+    writeFileSync(resolve(sandbox, "bin", "docker"), "#!/bin/sh\nexit 0\n");
+    chmodSync(resolve(sandbox, "bin", "docker"), 0o755);
+    writeFileSync(resolve(sandbox, "project", "docker-compose.yml"), "services: {}\n");
+    const project = resolve(sandbox, "project");
+    const r = await run(["connect", ADMIN!, "--self-hosted", "--json"], { PATH: `${resolve(sandbox, "bin")}:${process.env.PATH}`, PGAI_PROJECT_DIR: project }, project);
+    expect(JSON.parse(r.stdout).status).toBe("connected");
+    const logins = expectJsonLines(r.lines).filter((e) => e.source === "mon local-install" && /Login:|Auth:/.test(e.message!));
+    expect(logins.map((e) => e.message!.trim())).toEqual([
+      "Login: monitor / ***** (pgai mon show-grafana-credentials)",
+      "VictoriaMetrics Auth: vmauth / ***** (pgai mon show-grafana-credentials)",
+    ]);
+    const grafana = readFileSync(resolve(project, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m)![1]!;
+    const vm = readFileSync(resolve(project, ".env"), "utf8").match(/^VM_AUTH_PASSWORD=(.+)$/m)![1]!;
+    expect(r.stderr).not.toContain(grafana);
+    expect(r.stderr).not.toContain(vm);
   });
 });

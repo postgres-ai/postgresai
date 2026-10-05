@@ -61,3 +61,15 @@ test("runChild with JSON output: a child that cannot start resolves null and say
     { event: "log", level: "error", source: "child", message: expect.stringContaining("/nonexistent/pgai-child") },
   ]);
 });
+
+// mon local-install prints its logins at its end. A log event is kept by log
+// collectors: it names the command that shows them instead of the password.
+test("runChild with JSON output: the logins mon local-install prints carry no password", async () => {
+  const script = "console.log('   Login: monitor / gr4fana-pw'); console.log('   VictoriaMetrics Auth: vmauth / vm-pw'); console.log('   Grafana Dashboard: http://localhost:3000')";
+  const lines = await stderrOf(() => runChild(process.execPath, ["-e", script], process.env, true, "child"));
+  expect(lines.map((l) => JSON.parse(l).message)).toEqual([
+    "   Login: monitor / ***** (pgai mon show-grafana-credentials)",
+    "   VictoriaMetrics Auth: vmauth / ***** (pgai mon show-grafana-credentials)",
+    "   Grafana Dashboard: http://localhost:3000",
+  ]);
+});
