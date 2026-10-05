@@ -121,6 +121,9 @@ test.each([
   `postgresql+ssl://monitor:${argvSecret}@other.example:5432/app`,
   ` ${other}`,
   `team@prod-${argvSecret}`,
+  // No password, still not a name.
+  "Host=other.example;Database=app",
+  "other.example:5432/app",
 ])("with PGAI_DB_URL set, a lone argument that is not a plain name is refused: %p", (arg) => {
   const { exitCode, out } = run(["add", arg], { PGAI_DB_URL: url });
   expect(exitCode).toBe(1);

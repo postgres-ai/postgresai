@@ -275,8 +275,9 @@ user; the name of the connected database (`<host>[:<port>]/<database>`) uses tha
 key in its environment (`PGAI_DB_URL`, `PGAI_API_KEY`, `CLICKHOUSE_*`), not in its arguments.
 `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with
 `PGAI_DB_URL`: an exported `PGAI_API_KEY` alone does not change a plain or `--demo` install.
-`mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgresql://` URL (a URL in argv
-wins); with it set, a lone argument that looks like a connection string is refused.
+`mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL
+(a URL in argv wins); with it set, a lone argument other than a plain name (letters, digits, `.`,
+`_`, `=`, `-`) is refused.
 
 ### Authentication
 
@@ -393,7 +394,8 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 ```bash
 postgresai mon targets list                       # List databases to monitor
 postgresai mon targets add <conn-string> <name>   # Add database to monitor
-PGAI_DB_URL=<conn-string> postgresai mon targets add <name>  # Same, URL kept out of argv
+export PGAI_DB_URL=<conn-string>                  # Same, URL kept out of argv:
+sudo --preserve-env=PGAI_DB_URL postgresai mon targets add <name>
 postgresai mon targets remove <name>              # Remove monitoring target
 postgresai mon targets test <name>                # Test target connectivity
 ```

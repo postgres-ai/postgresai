@@ -5585,7 +5585,8 @@ function defaultTargetName(connStr: string): string | null {
   } catch {
     return null;
   }
-  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^@]+@([^:\/]+)(?::\d+)?\/([^?]+)/);
+  // The user info ends at the last '@' before the path, as pgx and WHATWG read it.
+  const m = connStr.match(/^postgres(?:ql)?:\/\/[^:]+:[^\/?#]+@([^:\/@]+)(?::\d+)?\/([^?]+)/);
   return m ? `${m[1]}-${m[2]}`.replace(/[^a-zA-Z0-9-]/g, "-") : null;
 }
 
@@ -5729,9 +5730,9 @@ async function syncVmalert(projectDir: string, apply: boolean, addOnly = false):
 
 // targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
 const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
-// A name never has these; a mistyped connection string (and its password) may.
-const looksLikeMistypedConnStr = (value: string): boolean =>
-  /:\/|@|(^|\s)(host|hostaddr|port|user|password|dbname|sslmode)\s*=/.test(value);
+// With PGAI_DB_URL set, the lone argument is a name only if it is plain: any
+// other string may be a mistyped connection string, and would print its password.
+const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(value) && !/(password|pwd)=/i.test(value);
 
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
@@ -5861,9 +5862,9 @@ Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes hos
 RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
 
 Environment:
-  PGAI_DB_URL  the connection string, unless a postgresql:// URL is given (keeps the password
-               out of argv). The only argument is then the name; one that looks like a
-               connection string is refused:
+  PGAI_DB_URL  the connection string, unless a postgres:// or postgresql:// URL is given
+               (keeps the password out of argv). The only argument is then the name, of
+               letters, digits, '.', '_', '=' and '-'; anything else is refused:
                  export PGAI_DB_URL='postgresql://user:pass@host:5432/db'
                  sudo --preserve-env=PGAI_DB_URL postgres-ai mon targets add my-db
 `)
@@ -5874,8 +5875,8 @@ Environment:
     const envUrl = process.env.PGAI_DB_URL || undefined;
     delete process.env.PGAI_DB_URL; // not for docker and compose
     if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
-      if (connStr !== undefined && looksLikeMistypedConnStr(connStr)) {
-        console.error("PGAI_DB_URL is set: pass only the target name");
+      if (connStr !== undefined && !isPlainTargetName(connStr)) {
+        console.error("PGAI_DB_URL is set: pass only the target name (letters, digits, '.', '_', '=', '-')");
         process.exitCode = 1;
         return;
       }
