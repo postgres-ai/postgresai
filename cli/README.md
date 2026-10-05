@@ -272,7 +272,10 @@ key in its environment (`PGAI_DB_URL`, `PGAI_API_KEY`, `CLICKHOUSE_*`), not in i
 `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL
 (a URL in argv wins); with it set, a lone argument other than a plain name (ASCII letters,
 digits, `.`, `_`, `=`, `-`, with no `password=` / `pwd=`) is refused. Its default name is
-`<host>-<database>`; a password with a raw `@`, `/`, `?` or `#` must be percent-encoded.
+`<host>-<database>`. Percent-encode the user name and the password (all but ASCII letters, digits,
+`-`, `.`, `_` and `~`) and an `@` in the database name or the query: a URL that pgx would misread
+or refuse is refused.
+Under sudo, pass `PGAI_DB_URL` on stdin, not with `--preserve-env`: sudo logs the variables it keeps.
 
 ### Authentication
 
@@ -389,8 +392,8 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 ```bash
 postgresai mon targets list                       # List databases to monitor
 postgresai mon targets add <conn-string> <name>   # Add database to monitor
-# Same, URL kept out of argv and set for this command only:
-PGAI_DB_URL=<conn-string> sudo --preserve-env=PGAI_DB_URL postgresai mon targets add <name>
+# Same, URL kept out of argv and out of the sudo log (read from stdin, not exported):
+printf '%s\n' "$URL" | sudo sh -c 'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgresai mon targets add <name>'
 postgresai mon targets remove <name>              # Remove monitoring target
 postgresai mon targets test <name>                # Test target connectivity
 ```
