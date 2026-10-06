@@ -67,6 +67,7 @@ import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } f
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
+import { jsonConsole, runChild, writeEvent } from "../lib/json-stderr";
 import {
   type Instance,
   InstancesParseError,
@@ -1319,6 +1320,81 @@ program
 // screen; pass a string here instead to show a short one-line hint.)
 program.showHelpAfterError();
 
+// `pgai connect` with JSON output: stderr is its event stream, one JSON event a
+// line (lib/json-stderr.ts). Commander's own errors (a missing URL, an option
+// without its value, an unknown option, at the root too) come before any
+// action, so the run is told from argv. The error is one event; an unknown
+// option is named without its value (--password=..., -psecret), since a log
+// collector keeps the event. The help after it is for a person. Set before any
+// subcommand: they all share this.
+program.configureOutput({
+  outputError: (text, write) => (jsonConnectArgv()
+    ? writeEvent({ event: "log", level: "error", message: text.trim().replace(/^(error: unknown option ')(--[^=]*|-[^-])[\s\S]*'(?=\n\(Did you mean [^\n]*\)$|$)/, "$1$2'") })
+    : write(text)),
+  writeErr: (text) => void (jsonConnectArgv() || process.stderr.write(text)),
+});
+
+/**
+ * Commander's split of argv for one command (its parseOptions): its options
+ * and their values come out wherever they are; the other tokens are operands
+ * up to the first unknown option, `unknown` from it on. --json counts only as
+ * an option, not as another option's value (`--wait --json`); nothing after
+ * "--" is an option.
+ */
+function splitArgv(options: readonly Option[], argv: string[]): { operands: string[]; unknown: string[]; json: boolean } {
+  const operands: string[] = [];
+  const unknown: string[] = [];
+  let dest = operands;
+  let json = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--") {
+      dest.push(...(dest === unknown ? argv.slice(i) : argv.slice(i + 1)));
+      break;
+    }
+    const option = options.find((o) => o.long === arg || o.short === arg);
+    if (option) {
+      if (option.required) i++;
+      else if (option.long === "--json") json = true;
+      continue;
+    }
+    // With its value in the same token: --api-key=k.
+    if (options.some((o) => o.required && arg.startsWith(`${o.long}=`))) continue;
+    if (dest === operands && arg.length > 1 && arg.startsWith("-")) dest = unknown;
+    dest.push(arg);
+  }
+  return { operands, unknown, json };
+}
+
+/**
+ * What argv asks for, as Commander reads it: the root's options first, then
+ * the command, its first operand, reads the rest with its own options. An
+ * unknown option before the command fails at the root (`--org acme connect`,
+ * `--org status connect`); the run is connect when `connect` follows it.
+ */
+function argvRun(argv = process.argv.slice(2)): { command?: Command; json: boolean } {
+  const root = splitArgv(program.options, argv);
+  let command = program.commands.find((c) => c.name() === root.operands[0]);
+  let rest = root.unknown;
+  if (root.operands.length === 0) {
+    const end = rest.indexOf("--");
+    const at = rest.slice(0, end < 0 ? undefined : end).indexOf("connect");
+    if (at >= 0) [command, rest] = [program.commands.find((c) => c.name() === "connect"), rest.slice(at + 1)];
+  }
+  return { command, json: !!command && splitArgv(command.options, rest).json };
+}
+
+/** `pgai connect` with JSON output: stderr is its event stream (JSON lines only). */
+function jsonConnect(command: Command | undefined, json?: boolean): boolean {
+  return command?.parent === program && command.name() === "connect" && jsonOutput(json);
+}
+
+/** jsonConnect from argv: before Commander has parsed it (its errors). */
+function jsonConnectArgv(): boolean {
+  const run = argvRun();
+  return jsonConnect(run.command, run.json);
+}
+
 // Subtle, discoverable feedback line at the bottom of the top-level `--help`
 // only (addHelpText on the program does not propagate to subcommand help).
 program.addHelpText("after", () => `\n💡 Ideas / feedback: ${FEEDBACK_URL}\n`);
@@ -1357,6 +1433,17 @@ function withOrgOptions(command: Command): Command {
     .option("--org <alias>", `organization alias (or ${ORG_ENV}); required with a global token`)
     .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`);
 }
+
+// From its first hook on, console.error and console.warn of such a run are JSON
+// events too: a config warning, the org check, a check's error, the --debug log.
+let restoreConsole: (() => void) | undefined;
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  if (jsonConnect(actionCommand, actionCommand.opts().json)) restoreConsole = jsonConsole();
+});
+program.hook("postAction", () => {
+  restoreConsole?.();
+  restoreConsole = undefined;
+});
 
 // Resolve the org once per invocation and stash it for the HTTP layer, so the
 // guard holds for every org-scoped command rather than only the ones somebody
@@ -4143,7 +4230,12 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
   return !!cloudApi().apiKey;
 }
 
-async function runConnect(url: string, opts: { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean }) {
+type ConnectOpts = { provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string; coupon?: string; yes?: boolean; json?: boolean; debug?: boolean };
+
+async function runConnect(url: string, opts: ConnectOpts) {
+  // With JSON output, stderr is the event stream: every line of it is a JSON event
+  // (console.error and console.warn too, since the preAction hook).
+  const json = jsonOutput(opts.json);
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai connect postgresql://user:password@host:5432/dbname" }, opts.json);
@@ -4154,11 +4246,11 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
   if (!Number.isFinite(waitMinutes) || waitMinutes < 0) {
     return emitConnect({ status: "failed", provider, name, next: "--wait must be a number of minutes (0 = do not wait)" }, opts.json);
   }
-  if (!opts.selfHosted && !signedIn(opts)) {
-    return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
-  }
-  const api = cloudApi(opts.debug);
   try {
+    if (!opts.selfHosted && !signedIn(opts)) {
+      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+    }
+    const api = cloudApi(opts.debug);
     const result = await connect(url, { ...opts, waitMs: waitMinutes * 60_000 }, {
       ...api,
       selfHosted: async (monitoringUrl, env) => {
@@ -4168,11 +4260,9 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
         // Registering the stack needs a project name: the database's name, as a token.
         const project = name.replace(/[^A-Za-z0-9._-]+/g, "-");
-        const r = childProcess.spawnSync(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project], {
-          stdio: ["ignore", 2, 2],
-          env: { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) },
-        });
-        if (r.status !== 0) throw new Error("mon local-install failed (see above)");
+        const status = await runChild(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project],
+          { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) }, json, "mon local-install");
+        if (status !== 0) throw new Error("mon local-install failed (see above)");
       },
       localStackRunning: () => checkRunningContainers().running,
       // A billed box: asked only of a person at a terminal (else --yes).
@@ -4187,7 +4277,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
         return /^(y|yes)$/i.test(answer.trim());
       },
       // stderr, so stdout is the result: a line for a person, a JSON event a line when stdout is JSON.
-      progress: (e) => console.error(opts.json || !process.stdout.isTTY ? JSON.stringify(e) : progressText(e)),
+      progress: (e) => (json ? writeEvent(e) : console.error(progressText(e))),
     });
     emitConnect(result, opts.json);
   } catch (err) {
@@ -4218,6 +4308,11 @@ withOrgOptions(program.command("connect <database-url>"))
     "",
     "Exit codes: 0 connected or provisioning, 1 failed, 3 action required (see \"next\").",
     "",
+    "JSON output (--json, or stdout not a TTY): stdout is the result; stderr is one JSON event a",
+    "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\"|\"debug\",\"message\":...}",
+    "for any other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that",
+    "child's lines (the logins it prints are masked: pgai mon show-grafana-credentials shows them).",
+    "",
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed),",
     "PGPASSWORD (the password for a URL without one),",
@@ -4231,6 +4326,11 @@ withOrgOptions(program.command("connect <database-url>"))
   .action(runConnect);
 
 const interactive = (json?: boolean) => !!process.stdin.isTTY && !!process.stdout.isTTY && !json;
+
+/** JSON output: asked for, or stdout is not a terminal. */
+function jsonOutput(json?: boolean): boolean {
+  return !!json || !process.stdout.isTTY;
+}
 
 withOrgOptions(program.command("init"))
   .description("first run for a person at a terminal: sign in, ask for the database URL, then pgai connect")

@@ -40,9 +40,12 @@
   While the box starts, `connect` runs the express checkup as `postgres_ai_mon`, prints its findings
   (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`). Each step and
   each change of the box's state is shown once, with the time since the start (JSON: one event a line
-  on stderr). A `--clickhouse-key` on a re-run is checked: a rejected key is exit 3, not
-  `connected`. `pgai databases` uses the `status` words of `connect` and `status`. `pgai init` does not
-  echo the URL. `--reset-password` gives an existing `postgres_ai_mon` a new password.
+  on stderr; any other text there, such as an error, a warning, `--debug` or a line of
+  `mon local-install`, is `{"event":"log","level":"error"|"warn"|"info"|"debug","message":...}`, with
+  the Grafana and VictoriaMetrics logins masked). A `--clickhouse-key` on a re-run is checked: a
+  rejected key is exit 3, not `connected`. `pgai databases` uses the `status` words of `connect` and
+  `status`. `pgai init` does not echo the URL. `--reset-password` gives an existing `postgres_ai_mon`
+  a new password.
 
 - `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
   from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
