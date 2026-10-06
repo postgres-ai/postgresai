@@ -156,7 +156,7 @@ tests:
     metricsql_expr_test:
       - {expr: '{__name__=~"host_disk_(read|write)_iops|host_network_(receive|transmit)_bytes_per_second"}', eval_time: 10m, exp_samples: []}
 
-  - name: clickhouse PostgresServer_* maps to host_*
+  - name: two targets on one clickhouse service map to one host rate
     interval: 1m
     input_series:
       # 300 CPU-seconds per minute: 240 idle, 15 iowait: 20 % busy, 5 % iowait.
@@ -185,6 +185,33 @@ tests:
       - series: 'PostgresServer_NetworkReceiveBytes_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
         values: '123456789+60000x10'
       - series: 'PostgresServer_NetworkTransmitBytes_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '234567890+120000x10'
+      # 300 CPU-seconds per minute: 240 idle, 15 iowait: 20 % busy, 5 % iowait.
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="idle"}'
+        values: '12000+240x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="user"}'
+        values: '1200+40x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="system"}'
+        values: '300+5x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres",mode="iowait"}'
+        values: '25+15x10'
+      - series: 'PostgresServer_MemoryLimitBytes{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '17179869184x10'
+      - series: 'PostgresServer_MemoryUsedPercent{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '37.5x10'
+      - series: 'PostgresServer_MemoryCachePercent{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '25x10'
+      - series: 'PostgresServer_StorageLimitBytes{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '107374182400x10'
+      - series: 'PostgresServer_FilesystemUsedPercent{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '25x10'
+      - series: 'PostgresServer_DiskReads_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '10000+600x10'
+      - series: 'PostgresServer_DiskWrites_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '20000+1200x10'
+      - series: 'PostgresServer_NetworkReceiveBytes_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '123456789+60000x10'
+      - series: 'PostgresServer_NetworkTransmitBytes_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
         values: '234567890+120000x10'
     metricsql_expr_test:
       - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="default",node_name="ch1"}', value: 20}]}
