@@ -772,6 +772,28 @@ describe("connect on the paid path: the price before the box", () => {
     expect(calls).toEqual(["list"]);
   });
 
+  // Billing starts when the box is active: a declined first charge then removes the box while connect waits.
+  test("the first charge declined at activation: why, where to fix it, and the generated role dropped", async () => {
+    const f = make({}, { rows: [undefined, row("registered", { name: SH_NAME, provider: "self-managed", host_metrics: false }), row("deleting_launched", { name: SH_NAME, provider: "self-managed", host_metrics: false, billing_error: "Payment Required: Stripe payment required for POST /subscriptions: Your card was declined." })] });
+    f.deps.prepare = async (_u, provider, o) => { f.calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }; };
+    expect(await connect(SH, { waitMs: 60_000, yes: true }, f.deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME, id: "i-1",
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false, checkup: CHECKUP,
+      next: "The first charge failed (Payment Required: Stripe payment required for POST /subscriptions: Your card was declined.): the box was removed and nothing is billed. Update the payment method at https://console.example/acme/billing, then re-run",
+    });
+    expect(f.calls.filter((c) => c === "unprepare")).toEqual(["unprepare"]);
+  });
+
+  test("the box removed while connect waits, with no reason given: failed, not waiting out the deadline", async () => {
+    const f = make({}, { rows: [undefined, row("registered", { name: SH_NAME, provider: "self-managed", host_metrics: false }), undefined] });
+    let t = 0;
+    f.deps.now = () => (t += 15_000);
+    const r = await connect(SH, { waitMs: 60 * 60_000, yes: true }, f.deps);
+    expect(r.status).toBe("failed");
+    expect(r.next).toBe("The monitoring box was removed before it became active: see pgai databases, then re-run pgai connect");
+    expect(f.calls.filter((c) => c === "sleep").length).toBeLessThan(5);
+  });
+
   // Pricing is per Postgres cluster observed: the quote is asked for this URL's cluster (host:port).
   test("the quote is asked for the URL's cluster; another database in a billed cluster is included, never prompted", async () => {
     const seen: (string | undefined)[] = [];
