@@ -215,8 +215,12 @@ terminal, or with `--json`, it only points to `pgai connect`.
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
 | `--reset-password` | `postgres_ai_mon` exists and its password is lost: set a new one (see below) |
 | `--wait <minutes>` | how long to wait for the monitoring box; `0` does not wait (default 20) |
-| `-y, --yes` | never prompt (`connect` does not start the browser sign-in; `disconnect` does not ask) |
+| `-y, --yes` | never prompt; accept a billed box's price (`connect` does not start the browser sign-in; `disconnect` does not ask) |
+| `--coupon <code>` | promotion code for the organization's monitoring subscription |
 | `--json` | JSON output, also on a terminal |
+
+Without `--yes`, a non-interactive run for a billed box returns `action_required` with the price
+and asks you to re-run with `--yes` to accept it.
 
 | Environment | |
 |---|---|
@@ -250,13 +254,19 @@ used: set `PGAI_MON_PASSWORD`, or turn TLS on; if nobody has the password, disco
 other databases, then `--reset-password` with `PGAI_MON_PASSWORD` set to a new one, and connect
 them again with it (`connect` names them).
 
-When the role exists (an admin URL with `PGAI_MON_PASSWORD`, or the role's own URL), `connect`
-also logs in once as `postgres_ai_mon` with a random password, to learn whether the server checks
-passwords for this host at all. On a server that does, this is one
-`password authentication failed for user "postgres_ai_mon"` line in the server log per run, and it
-counts toward failed-login policies (credcheck, fail2ban). On a server that does not (`trust`),
-`next` says that the password was not checked; a password from `PGPASSWORD` is then not used:
-put it in the URL.
+When preparing an existing role with a supplied password (an admin URL with `PGAI_MON_PASSWORD`,
+or the role's own URL), `connect` also tries a random password as `postgres_ai_mon` to learn
+whether the server checks passwords for this host. Successful PostgresAI Cloud preparation makes
+two attempts: one in the check before the price, and one in preparation. Stopping after the check
+(for example, without accepting the price) makes one. Successful `--self-hosted` preparation
+makes one. Creating or resetting the role with an admin URL, using the platform's stored password,
+or returning an existing box's status makes no random-password attempts. A rejected supplied
+password stops before the random-password probe; that rejection is itself a failed login.
+On a server that checks passwords, each random-password attempt adds one
+`password authentication failed for user "postgres_ai_mon"` line to the server log and counts
+toward failed-login policies (credcheck, fail2ban). On a server that does not (`trust`), `next`
+says that the password was not checked; a password from `PGPASSWORD` is then not used: put it
+in the URL.
 
 A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole
 preparation: `CREATEROLE`, `CREATE` on the database, `pg_stat_statements` already installed, and
@@ -506,7 +516,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
+- `connect_database`: `pgai connect` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, debug? }`). Returns the same JSON (`status`: `connected`, `provisioning`, `disconnecting`, `action_required` or `failed`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
 
 #### `attachments` parameter (issue/comment tools)
 
