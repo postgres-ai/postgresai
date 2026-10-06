@@ -21,6 +21,7 @@ from reporter.postgres_reports import PostgresReportGenerator
 API = "http://api.test"
 TOKEN = "tok"
 REPORT_ID = 77
+UPLOAD = {"report_chunck_id": 1}
 
 ARGS_ALL = [
     "postgres_reports.py",
@@ -62,15 +63,18 @@ def run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
     def run(argv: list[str], *, reports=None, fail_upload_of: str | None = None,
             generation_error: Exception | None = None,
             status_error: Exception | None = None,
-            reason_unsupported: bool = False) -> list[tuple[str, dict[str, Any]]]:
-        def fake_make_request(api_url: str, endpoint: str, data: dict[str, Any]) -> dict[str, Any]:
+            reason_unsupported: bool = False,
+            upload_response=UPLOAD) -> list[tuple[str, dict[str, Any]]]:
+        def fake_make_request(api_url: str, endpoint: str, data: dict[str, Any]) -> Any:
             assert api_url == API
             if endpoint == "/rpc/checkup_report_file_post":
                 calls.append((endpoint, {"checkup_report_id": data["checkup_report_id"],
                                          "filename": data["filename"]}))
                 if data["filename"] == fail_upload_of:
                     raise _http_error(500)
-                return {}
+                if isinstance(upload_response, Exception):
+                    raise upload_response
+                return upload_response
             calls.append((endpoint, dict(data)))
             if endpoint == "/rpc/checkup_report_create":
                 return {"report_id": REPORT_ID}
@@ -101,13 +105,40 @@ def run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
 
 
 @pytest.mark.unit
-def test_all_uploads_ok_marks_report_completed(run_main) -> None:
-    calls = run_main(ARGS_ALL, reports={"A002": {"checkId": "A002"}, "H001": {"checkId": "H001"}})
+@pytest.mark.parametrize("ack", [
+    {"report_chunck_id": 1},
+    {"report_chunk_id": 2},
+    {"report_chunck_id": None, "report_chunk_id": 2},
+    {"report_chunck_id": "3"},
+])
+def test_all_uploads_ok_marks_report_completed(run_main, ack) -> None:
+    calls = run_main(ARGS_ALL, reports={"A002": {"checkId": "A002"}, "H001": {"checkId": "H001"}},
+                     upload_response=ack)
     assert calls == [
         CREATE,
         file_post("A002.json"),
         file_post("H001.json"),
         status("completed"),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ack", [
+    {}, None,
+    requests.exceptions.JSONDecodeError("Invalid JSON", "not JSON", 0),
+    {"report_chunck_id": "invalid"},
+    {"report_chunck_id": {}},
+    {"report_chunck_id": True},
+    {"report_chunck_id": 1.5},
+    {"report_chunck_id": 0},
+    {"report_chunck_id": None},
+])
+def test_unconfirmed_upload_marks_report_failed(run_main, ack) -> None:
+    calls = run_main(ARGS_ALL, upload_response=ack)
+    assert calls == [
+        CREATE,
+        file_post("A002.json"),
+        status("failed", "1 file(s) failed to upload: A002.json"),
     ]
 
 
