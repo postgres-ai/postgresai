@@ -4025,7 +4025,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Network receive and transmit throughput, excluding loopback.",
+          "description": "Network receive and transmit throughput. RDS and Supabase exclude loopback; ClickHouse counters include it.",
           "fieldConfig": {
             "defaults": {
               "color": {
