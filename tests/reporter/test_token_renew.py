@@ -37,6 +37,7 @@ def test_renews_with_the_token_in_the_body(monkeypatch, capsys):
         json={"access_token": "secret-token-123"},
         headers={},
         timeout=30,
+        allow_redirects=False,
     )
     out = capsys.readouterr()
     assert "2027-01-03T00:00:00+00:00" in out.out

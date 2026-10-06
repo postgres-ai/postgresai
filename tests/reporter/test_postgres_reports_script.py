@@ -163,6 +163,7 @@ def run_one_cycle_logging_calls(tmp_path: Path, config_content: str, env_overrid
         "#!/usr/bin/env bash\n"
         'n=$(ls "$STUB_CALLS_DIR"/*.args 2>/dev/null | wc -l | tr -d " ")\n'
         'printf \'%s\\n\' "$@" > "$STUB_CALLS_DIR/$n.args"\n'
+        'printf \'%s\' "${REPORTER_API_URL:-}" > "$STUB_CALLS_DIR/$n.url"\n'
         'if [ -t 0 ]; then : > "$STUB_CALLS_DIR/$n.stdin"; else cat > "$STUB_CALLS_DIR/$n.stdin"; fi\n'
         f"exit {STUB_EXIT_CODE}\n"
     )
@@ -244,6 +245,8 @@ def test_api_url_falls_back_to_config_then_production(tmp_path, env_url, config_
     assert len(calls) == 2
     expected = config_url.rstrip("/") if config_url else "https://postgres.ai/api/general"
     assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    for i in range(2):
+        assert (tmp_path / "calls" / f"{i}.url").read_text() == expected
     args = calls[1][0]
     assert args[:2] == ["-m", "reporter.postgres_reports"]
     assert args[args.index("--api-url") + 1] == expected
@@ -261,6 +264,8 @@ def test_nonempty_api_url_env_wins_over_config(tmp_path):
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
     assert len(calls) == 2
     assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    for i in range(2):
+        assert (tmp_path / "calls" / f"{i}.url").read_text() == expected
     args = calls[1][0]
     assert args[:2] == ["-m", "reporter.postgres_reports"]
     assert args[args.index("--api-url") + 1] == expected
