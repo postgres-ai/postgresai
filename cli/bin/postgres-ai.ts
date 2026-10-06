@@ -74,6 +74,8 @@ import {
   loadInstances,
   buildInstance,
   splitChannelBinding,
+  requireChannelBinding,
+  extractSslmode,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -5852,6 +5854,15 @@ export async function addTarget(
   const defaultName = defaultTargetName(connStr);
   if ("error" in defaultName) {
     console.error(defaultName.error);
+    process.exitCode = 1;
+    return false;
+  }
+  try {
+    if (requireChannelBinding(channelBinding.value, extractSslmode(connStr) === "disable")) {
+      throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return false;
   }
