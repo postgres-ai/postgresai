@@ -148,7 +148,7 @@ def test_no_api_key_generates_local_reports(tmp_path):
     assert "generating reports (no upload)" in proc.stdout
 
 
-def run_one_cycle_logging_calls(tmp_path: Path, config_content: str):
+def run_one_cycle_logging_calls(tmp_path: Path, config_content: str, env_override=None):
     """Like run_one_cycle, but the stub logs every call: its argv and stdin.
 
     The stub fails every call; a call the script tolerates is followed by the
@@ -182,6 +182,11 @@ def run_one_cycle_logging_calls(tmp_path: Path, config_content: str):
             "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "all_reports_%Y%m%d_%H%M%S.json"),
         }
     )
+    for key, value in (env_override or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     proc = subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
         stdin=subprocess.DEVNULL, timeout=TIMEOUT_SECONDS,
@@ -218,3 +223,44 @@ def test_no_api_key_renews_nothing(tmp_path):
 
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
     assert [args[:2] for args, _ in calls] == [["-m", "reporter.postgres_reports"]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("env_url", ["", None])
+@pytest.mark.parametrize("config_url", [
+    "https://preview.example.test/api/general",
+    "https://preview.example.test/api/general/",
+    None,
+])
+def test_api_url_falls_back_to_config_then_production(tmp_path, env_url, config_url):
+    config = "api_key=test-key\nproject_name=my-project\n"
+    if config_url is not None:
+        config += f"api_url={config_url}\n"
+    proc, calls = run_one_cycle_logging_calls(
+        tmp_path, config, {"REPORTER_API_URL": env_url}
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(calls) == 2
+    expected = config_url.rstrip("/") if config_url else "https://postgres.ai/api/general"
+    assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    args = calls[1][0]
+    assert args[:2] == ["-m", "reporter.postgres_reports"]
+    assert args[args.index("--api-url") + 1] == expected
+
+
+@pytest.mark.unit
+def test_nonempty_api_url_env_wins_over_config(tmp_path):
+    expected = "https://override.example.test/api/general"
+    proc, calls = run_one_cycle_logging_calls(
+        tmp_path,
+        "api_key=test-key\nproject_name=my-project\napi_url=https://preview.example.test/api/general\n",
+        {"REPORTER_API_URL": expected},
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(calls) == 2
+    assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    args = calls[1][0]
+    assert args[:2] == ["-m", "reporter.postgres_reports"]
+    assert args[args.index("--api-url") + 1] == expected
