@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { errorText } from "../lib/connect";
-import { disconnectBilling, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { disconnectBilling, errorText, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
