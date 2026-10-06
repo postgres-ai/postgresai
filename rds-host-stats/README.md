@@ -6,7 +6,7 @@ CloudWatch and Performance Insights are queried up to the last minute boundary, 
 
 ## Metrics
 
-CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `RDSOSMetrics`; DB load (`host_db_load`) is Performance Insights `db.load.avg` at 60 s. We collect PI and OS metrics only when enabled on the instance. Each poll reads the newest GetLogEvents page (up to 1 MB); at Enhanced Monitoring intervals of 1–5 s, OS samples missed while the service was down are not backfilled.
+CloudWatch sources below use `AWS/RDS`; OS sources use Enhanced Monitoring in `RDSOSMetrics`; DB load (`host_db_load`) is Performance Insights `db.load.avg` at 60 s. We collect PI and OS metrics only when enabled on the instance. Each poll reads the newest GetLogEvents page (up to 1 MiB); at Enhanced Monitoring intervals of 1–5 s, OS samples missed while the service was down are not backfilled.
 
 The series, their sources and units are listed with the other providers' in [docs/host-metrics.md](../docs/host-metrics.md).
 
