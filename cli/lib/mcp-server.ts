@@ -18,7 +18,7 @@ import {
 } from "./issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, parseFlexibleDate } from "./reports";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "./storage";
-import { resolveBaseUrls } from "./util";
+import { resolveBaseUrls, type RootOptsLike as BaseUrlOpts } from "./util";
 import { connect, parseUrl, platformDeps } from "./connect";
 
 // MCP SDK imports - Bun handles these directly
@@ -26,9 +26,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-export interface RootOptsLike {
+export interface RootOptsLike extends BaseUrlOpts {
   apiKey?: string;
-  apiBaseUrl?: string;
 }
 
 // Interpret escape sequences (e.g., \n -> newline). Input comes from JSON, but
