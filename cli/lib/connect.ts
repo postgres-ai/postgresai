@@ -83,6 +83,10 @@ export interface Quote {
 export interface Database {
   id: string;
   name: string;
+  /** lower(host):port of the server, when known. */
+  cluster?: string | null;
+  /** The percent-encoded database path, when known. */
+  database?: string | null;
   provider: string;
   status: string | null;
   dashboard_url: string | null;
@@ -233,7 +237,7 @@ export function stateOf(raw: string | null): Status {
 /** A rejected ClickHouse Cloud key, or one that cannot see the service: the user's to fix (exit 3). */
 export class ClickhouseKeyError extends Error {}
 
-/** The server of a database name: one lock and one comparison for each, whatever the host's case or a trailing dot. */
+/** The server of a legacy database name, ignoring case and a trailing dot. */
 const serverOf = (name: string) => name.split("/")[0].toLowerCase().replace(/\.(?=$|:)/, "");
 
 /** lower(host):port of a URL (5432 when it names none): the cluster the price is per, as the platform keys it. */
@@ -425,6 +429,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
   checkUrlParams(url, opts.agent);
   const name = databaseName(url);
+  const cluster = clusterOf(url)!;
   // The exported key pair is read for ClickHouse only, and never for an agent's URL; elsewhere only the flag is an error.
   const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" && !opts.agent ? process.env : {});
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
@@ -483,12 +488,13 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url).catch(() => false); };
     let lockId: string | undefined;
     // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
-    // A box whose URL the platform could not read is named "Monitoring <6 hex>": its server is not known, so it may be this one.
-    const unread = (d: Database) => /^Monitoring [0-9a-f]{6}$/.test(d.name);
-    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && (unread(d) || serverOf(d.name) === serverOf(name)));
+    // Without a cluster or a plain platform name, the server is not known.
+    const unread = (d: Database) => !d.cluster && !/^[A-Za-z0-9._\[\]:-]{1,253}(?::[0-9]+)?(?:\/[A-Za-z0-9._-]*)?$/.test(d.name);
+    const onServer = (d: Database) => d.cluster ? d.cluster === cluster : !unread(d) && serverOf(d.name) === serverOf(name);
+    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && (unread(d) || onServer(d)));
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
-    const storedPassword = rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && serverOf(d.name) === serverOf(name)) || undefined;
+    const storedPassword = rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
     const cutOff = (others: Database[]): ConnectResult => {
       const on = others.filter((d) => !unread(d)).map((d) => d.name).join(", ");
       const maybe = others.filter(unread).map((d) => d.name).join(", ");
@@ -523,10 +529,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       // and the 15-minute lease does not run while a person decides.
       let lock: { lock_id?: unknown };
       try {
-        lock = await deps.resetLock(serverOf(name));
+        lock = await deps.resetLock(cluster);
       } catch (err) {
         if (err instanceof HttpStatusError && err.status === 409) {
-          return { status: "action_required", provider, name, ...billing, next: `Another pgai connect --reset-password for ${serverOf(name)} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)` };
+          return { status: "action_required", provider, name, ...billing, next: `Another pgai connect --reset-password for ${cluster} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)` };
         }
         if (err instanceof HttpStatusError && err.status === 404) {
           return { status: "action_required", provider, name, ...billing, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${DEFAULT_MONITORING_USER}'s password instead` };
