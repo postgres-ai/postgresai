@@ -536,8 +536,8 @@ describe("connect on the paid path: the price before the box", () => {
     deps.confirm = async () => false;
     expect(await connect(SH, { waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
-      next: "Re-run with --yes to accept $512.00/month per box (scale plan)",
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
+      next: "Re-run with --yes to accept $512.00/month per database cluster (scale plan)",
     });
     expect(calls).toEqual(["list", "check self-managed", "quote"]);
   });
@@ -551,7 +551,7 @@ describe("connect on the paid path: the price before the box", () => {
     expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
     // The price was accepted: the platform creates a billed box only with accept_price.
     expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, accept_price: true })}`);
-    expect(result).toMatchObject({ status: "connected", price: "$512.00/month per box (scale plan)", requires_payment_method: false });
+    expect(result).toMatchObject({ status: "connected", price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false });
   });
 
   test("--yes: no prompt; a box added to the subscription says which box it is", async () => {
@@ -559,7 +559,7 @@ describe("connect on the paid path: the price before the box", () => {
     deps.confirm = async () => { throw new Error("asked"); };
     const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
     expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
-    expect(result.price).toBe("$512.00/month per box (scale plan), box 2 on the subscription");
+    expect(result.price).toBe("$512.00/month per database cluster (scale plan), cluster 2 on the subscription");
   });
 
   test("declined at the prompt: nothing prepared", async () => {
@@ -573,7 +573,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make({ has_payment_method: false, requires_payment_method: true });
     expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: true,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: true,
       next: "Add a payment method at https://console.example/acme/billing, then re-run",
     });
     expect(calls).toEqual(["list", "check self-managed", "quote"]);
@@ -595,7 +595,7 @@ describe("connect on the paid path: the price before the box", () => {
     expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100", accept_price: true })}`);
     expect(result).toMatchObject({
       status: "connected",
-      price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per box (scale plan)",
+      price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per database cluster (scale plan)",
       coupon: { code: "LAUNCH100", valid: true, description: "100% off (first billing period)" },
     });
   });
@@ -604,7 +604,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make({ promo: { code: "OLD", valid: false, error: "Promo code is expired" } });
     expect(await connect(SH, { waitMs: 0, yes: true, coupon: "OLD" }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
       coupon: { code: "OLD", valid: false, error: "Promo code is expired" },
       next: "Promo code OLD: Promo code is expired. Nothing was changed: re-run with a valid code, or without --coupon",
     });
@@ -615,7 +615,7 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps } = make({}, { create: async () => { throw new HttpStatusError("Payment Required", 402); } });
     expect(await connect(SH, { waitMs: 0, yes: true }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: true,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: true,
       next: "Add a payment method at https://console.example/acme/billing, then re-run",
     });
   });
@@ -645,11 +645,29 @@ describe("connect on the paid path: the price before the box", () => {
     expect(calls).toEqual(["list"]);
   });
 
+  // Pricing is per Postgres cluster observed: the quote is asked for this URL's cluster (host:port).
+  test("the quote is asked for the URL's cluster; another database in a billed cluster is included, never prompted", async () => {
+    const seen: (string | undefined)[] = [];
+    const { deps, calls } = make({ billed: false, same_cluster: "db.example.com/other", subscription: true, quantity: 1 });
+    const inner = deps.quote;
+    deps.quote = async (coupon, cluster) => { seen.push(cluster); return inner(coupon, cluster); };
+    deps.confirm = async () => { throw new Error("asked"); };
+    const r = await connect("postgresql://postgres:adminpw@DB.Example.com/app", { waitMs: 0 }, deps);
+    expect(seen).toEqual(["db.example.com:5432"]);
+    expect(r.price).toBe("included: same database cluster as db.example.com/other, no extra charge");
+    expect(calls).toContain(`create ${JSON.stringify({ db_url: MON })}`);
+  });
+
+  test("the price is per database cluster, and names the cluster's place on the subscription", () => {
+    expect(priceText({ ...PAID } as never)).toBe("$512.00/month per database cluster (scale plan)");
+    expect(priceText({ ...PAID, subscription: true, quantity: 2 } as never)).toBe("$512.00/month per database cluster (scale plan), cluster 3 on the subscription");
+  });
+
   test("a repeating or permanent discount is not described as the first month only", async () => {
     const promo = (duration: string, extra: Record<string, unknown> = {}) => ({ code: "C", valid: true, discount_description: "x", duration, ...extra });
     const q = (p: Record<string, unknown>) => priceText({ ...PAID, promo: p, amount_after_promo: 25600 } as never);
-    expect(q(promo("repeating", { duration_in_months: 3 }))).toBe("$256.00/month for 3 months with C (x), then $512.00/month per box (scale plan)");
-    expect(q(promo("forever"))).toBe("$256.00/month with C (x), instead of $512.00/month per box (scale plan)");
+    expect(q(promo("repeating", { duration_in_months: 3 }))).toBe("$256.00/month for 3 months with C (x), then $512.00/month per database cluster (scale plan)");
+    expect(q(promo("forever"))).toBe("$256.00/month with C (x), instead of $512.00/month per database cluster (scale plan)");
   });
 
   test("a URL that cannot work (not an admin): the SQL before any price is asked, and nothing quoted", async () => {
@@ -669,7 +687,7 @@ describe("connect on the paid path: the price before the box", () => {
     deps.progress = (e) => seen.push(progressText(e));
     deps.confirm = async (q) => { seen.push(`ask ${q}`); return false; };
     await connect(SH, { waitMs: 0 }, deps);
-    expect(seen).toEqual(["Billing: $512.00/month per box (scale plan) (+0s)", `ask Provision ${SH_NAME}? (y/N): `]);
+    expect(seen).toEqual(["Billing: $512.00/month per database cluster (scale plan) (+0s)", `ask Provision ${SH_NAME}? (y/N): `]);
   });
 
   test("the billing page is the platform's own (a preview's console, not production's)", async () => {
@@ -681,8 +699,8 @@ describe("connect on the paid path: the price before the box", () => {
     const { deps, calls } = make();
     expect(await connect(SH, { waitMs: 0, agent: true }, deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
-      next: "Call connect_database again with yes: true to accept $512.00/month per box (scale plan)",
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
+      next: "Call connect_database again with yes: true to accept $512.00/month per database cluster (scale plan)",
     });
     const again = make({ promo: { code: "NOPE", valid: false, error: "Promo code not found or expired" } });
     expect((await connect(SH, { waitMs: 0, agent: true, yes: true, coupon: "NOPE" }, again.deps)).next)
