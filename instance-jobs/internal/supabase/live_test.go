@@ -1,5 +1,7 @@
 //go:build supabase_live
 
+// The supabase_live tag is manual-only; no CI job runs it.
+// From instance-jobs: go test -tags supabase_live ./internal/supabase -run TestSupabaseLive
 package supabase
 
 import (
@@ -52,7 +54,7 @@ func TestSupabaseLive(t *testing.T) {
 			return
 		}
 		var body map[string]string
-		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 1 || body["instance_id"] != "test-instance" || r.Header.Get("access-token") != "test-org-token" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 1 || body["instance_id"] != "test-instance" || r.Header.Get("access-token") != "test-org-token" || r.Header.Get("instance-secret") != "test-instance-secret" {
 			t.Error("incorrect platform RPC contract")
 			http.Error(w, "incorrect contract", http.StatusBadRequest)
 			return
@@ -108,7 +110,7 @@ func TestSupabaseLive(t *testing.T) {
 		}
 	}))
 	defer rpc.Close()
-	cfg := config.Config{APIToken: "test-org-token", InstanceID: "test-instance", APIBaseURL: rpc.URL, SupabaseHostMetrics: true}
+	cfg := config.Config{APIToken: "test-org-token", InstanceID: "test-instance", InstanceSecret: "test-instance-secret", APIBaseURL: rpc.URL, SupabaseHostMetrics: true}
 	relay := New(func() (config.Config, error) { return cfg, nil },
 		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer relay.client.CloseIdleConnections()
