@@ -96,14 +96,14 @@ describe("ClickHouse provider", () => {
     expect(result.stdout).not.toContain("-- scope:");
   });
 
-  // A connection string makes --print-sql connect first, and the host does not resolve here.
+  // A connection string makes --print-sql connect first; the preload fails it offline.
   // The detection note must be on screen BEFORE the admin connection is attempted.
   test.each([
     ["prepare-db", ["prepare-db", "--print-sql", "--password", "x", `postgres://u:p@${host}:5432/postgres`]],
     ["unprepare-db", ["unprepare-db", "--print-sql", `postgres://u:p@${host}:5432/postgres`]],
   ])("%s detects the provider from the host before connecting", (command, args) => {
     const plain = runCli(args);
-    expect(plain.stderr).toContain("ENOTFOUND");
+    expect(plain.stderr).toContain("Database unavailable in offline CLI smoke fixture");
     expect(plain.stdout.split("\n")).toContain("Provider: clickhouse (detected from host)");
 
     const json = runCli([...args, "--json"]);
