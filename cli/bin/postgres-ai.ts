@@ -4396,7 +4396,7 @@ withOrgOptions(program.command("disconnect <name>"))
     try {
       const [row] = (await cloudDatabases(opts, name)).filter((d) => !disconnecting(d.status));
       if (!row) throw new Error(`No database named ${name}. See: pgai databases`);
-      if (!opts.yes && !(process.stdin.isTTY && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
+      if (!opts.yes && !(interactive(opts.json) && /^y/i.test(await question(`Disconnect ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai disconnect ${row.name} --yes` }, opts.json);
       }
       const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
