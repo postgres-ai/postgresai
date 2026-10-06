@@ -463,6 +463,8 @@ services:
       # a HAND-WRITTEN api_base_url in .pgwatch-config wins over both (nothing
       # in this repo writes that key; it is there for an operator override).
       - PGAI_API_BASE_URL=${PGAI_API_BASE_URL:-}
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # The install now writes instance_id into .pgwatch-config on both
       # registration paths, and that is the value this service prefers. This
       # stays as a fallback for a box installed before that, where the id only

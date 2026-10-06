@@ -404,6 +404,7 @@ func (c *Client) callWithHeaders(ctx context.Context, rpc string, creds Credenti
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
+	c.addAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
