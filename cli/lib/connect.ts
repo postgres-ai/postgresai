@@ -88,6 +88,8 @@ export interface Database {
   host_metrics: boolean;
   /** When the box registered with the platform (it then sets up the monitoring). */
   registered_at?: string | null;
+  /** Why billing failed: a declined first charge (billing starts when the box is active) removes the box. */
+  billing_error?: string | null;
 }
 
 /**
@@ -345,25 +347,26 @@ type Billing = Pick<ConnectResult, "price" | "requires_payment_method" | "coupon
  * missing payment method, and `stop` when something comes first (a coupon
  * that does not apply, no payment method, a billed box not accepted).
  */
-async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void): Promise<{ billing: Billing; billingPage: Billing & { next: string }; accepted: boolean; stop?: Billing & { next: string } }> {
+async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void): Promise<{ billing: Billing; billingPage: Billing & { next: string }; billingUrl: string; accepted: boolean; stop?: Billing & { next: string } }> {
   const billing: Billing = { price: priceText(q), requires_payment_method: q.requires_payment_method };
   if (opts.coupon) {
     billing.coupon = q.promo?.valid
       ? { code: q.promo.code, valid: true, description: q.promo.discount_description }
       : { code: opts.coupon, valid: false, error: q.promo?.error ?? "not valid" };
   }
-  const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${q.billing_url ?? deps.billingUrl(q.org_alias)}, then re-run` };
-  const stop = (next: string) => ({ billing, billingPage, accepted: false, stop: { ...billing, next } });
+  const billingUrl = q.billing_url ?? deps.billingUrl(q.org_alias);
+  const billingPage = { ...billing, requires_payment_method: true, next: `Add a payment method at ${billingUrl}, then re-run` };
+  const stop = (next: string) => ({ billing, billingPage, billingUrl, accepted: false, stop: { ...billing, next } });
   if (billing.coupon && !billing.coupon.valid) {
     return stop(`Promo code ${opts.coupon}: ${billing.coupon.error}. Nothing was changed: re-run with a valid code, or without ${opts.agent ? "coupon" : "--coupon"}`);
   }
-  if (q.requires_payment_method) return { billing, billingPage, accepted: false, stop: billingPage };
+  if (q.requires_payment_method) return { billing, billingPage, billingUrl, accepted: false, stop: billingPage };
   // The price on its own line first: a prompt may wrap or be cut where it is shown.
   show(billing.price!);
   if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${name}? (y/N): `))) {
     return stop(opts.agent ? `Call connect_database again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
   }
-  return { billing, billingPage, accepted: q.billed };
+  return { billing, billingPage, billingUrl, accepted: q.billed };
 }
 
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
@@ -398,6 +401,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   let billing: Billing = {};
   let billingPage: Billing & { next: string } | undefined;
   let accepted = false;
+  let billingUrl: string | undefined;
+  // Drops the role this run created with a generated password, once its box is gone.
+  let undoRole: (() => Promise<unknown>) | undefined;
   // The key is checked first, on a re-run too: a rejected key or a stopped service changes nothing.
   const findOrg = async () => {
     try {
@@ -442,7 +448,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if ("next" in probe) return { status: "action_required", provider, name, ...probe };
       const b = await billingFor(await deps.quote(opts.coupon, clusterOf(url)), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
-      ({ billing, billingPage, accepted } = b);
+      ({ billing, billingPage, billingUrl, accepted } = b);
     }
     progress("preparing", `Preparing ${maskConnectionString(url)}`);
     const prepared = await deps.prepare(url, provider, { resetPassword: opts.resetPassword });
@@ -486,6 +492,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       return { status: "failed", provider, name, id: created.id, next: `${created.error} Re-run pgai connect later.` };
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
+    undoRole = undo;
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
     checkup = await deps.checkup(withLocalTls(prepared.monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
     progress("checkup", checkupLines(checkup).join("\n"), { checkup });
@@ -494,6 +501,11 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   // The box's state, each time it changes while connect waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
+    if (undoRole && row.billing_error && disconnecting(row.status)) {
+      await undoRole();
+      return { status: "action_required", provider, name, id: row.id, ...billing, ...(checkup ? { checkup } : {}),
+        next: `The first charge failed (${row.billing_error}): the box was removed and nothing is billed. Update the payment method at ${billingUrl}, then re-run` };
+    }
     const result = connectStatus(row, provider, fresh);
     const state = boxState(row);
     if (state !== shown && (shown !== undefined || result.status === "provisioning")) progress("box", `Monitoring box: ${state}`, { state });
@@ -507,7 +519,13 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
-    row = (await deps.list().catch(() => [] as Database[])).find((d) => d.id === row!.id) ?? row;
+    const listed = await deps.list().catch(() => undefined);
+    const now = listed?.find((d) => d.id === row!.id);
+    if (listed && !now && undoRole) {
+      await undoRole();
+      return { status: "failed", provider, name, id: row.id, ...billing, next: "The monitoring box was removed before it became active: see pgai databases, then re-run pgai connect" };
+    }
+    row = now ?? row;
   }
 }
 
