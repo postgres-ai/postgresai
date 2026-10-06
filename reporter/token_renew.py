@@ -11,6 +11,8 @@ import sys
 
 import requests
 
+from reporter.cf_access import cf_access_headers
+
 
 def main() -> int:
     api_url = sys.argv[1]
@@ -19,6 +21,7 @@ def main() -> int:
         response = requests.post(
             api_url + "/rpc/monitoring_instance_token_renew",
             json={"access_token": token},
+            headers=cf_access_headers(),
             timeout=30,
         )
         if response.status_code == 403:

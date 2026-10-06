@@ -59,6 +59,7 @@ except ImportError:  # pragma: no cover
 import boto3
 from requests_aws4auth import AWS4Auth
 
+from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
 try:
     from monitoring_flask_backend.promql_utils import escape_promql_label as _promql_escape_label
@@ -5389,7 +5390,7 @@ class PostgresReportGenerator:
 
 
 def make_request(api_url, endpoint, request_data):
-    response = requests.post(api_url + endpoint, json=request_data, timeout=30)
+    response = requests.post(api_url + endpoint, json=request_data, headers=cf_access_headers(), timeout=30)
     response.raise_for_status()
     return response.json()
 
