@@ -1152,10 +1152,10 @@ describe("saving the express checkup", () => {
 
 describe("disconnect: what happened to the billing", () => {
   test("the last box: the subscription is canceled; another box left: how many remain; a failure is said; nothing released: nothing", () => {
-    expect(disconnectBilling({ billing: { subscription: "canceled", quantity: 0 } })).toBe("subscription canceled: no further charges (the current period is not refunded)");
-    expect(disconnectBilling({ billing: { subscription: "canceled" } })).toBe("subscription canceled: no further charges (the current period is not refunded)");
-    expect(disconnectBilling({ billing: { subscription: "active", quantity: 2 } })).toBe("2 boxes left on the subscription");
-    expect(disconnectBilling({ billing: { subscription: "active", quantity: 1 } })).toBe("1 box left on the subscription");
+    expect(disconnectBilling({ billing: { subscription: "canceled", quantity: 0 } })).toBe("subscription canceled: no further charges; the unused part of this period is credited (prorated)");
+    expect(disconnectBilling({ billing: { subscription: "canceled" } })).toBe("subscription canceled: no further charges; the unused part of this period is credited (prorated)");
+    expect(disconnectBilling({ billing: { subscription: "active", quantity: 2 } })).toBe("2 database clusters left on the subscription");
+    expect(disconnectBilling({ billing: { subscription: "active", quantity: 1 } })).toBe("1 database cluster left on the subscription");
     expect(disconnectBilling({ billing_warning: "Failed to cancel org subscription: stripe down" })).toBe("not released (Failed to cancel org subscription: stripe down): contact support");
     expect(disconnectBilling({})).toBeUndefined();
     expect(disconnectBilling(null)).toBeUndefined();
