@@ -49,8 +49,8 @@ groups:
       - record: host_network_transmit_bytes_per_second
         expr: sum by (cluster, node_name) (labels_equal(rate(node_network_transmit_bytes_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", device!="lo"}[3m]), "supabase_identifier", "supabase_project_ref")) / (max by (cluster, node_name) (labels_equal(rate(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
 
-  # ClickHouse Managed Postgres: one service per scrape job (clickhouse-<name>),
-  # labelled with the target's cluster/node_name by `mon targets add`.
+  # ClickHouse Managed Postgres: each target scrapes its service, labelled
+  # with cluster/node_name. Deduplicate service rates across target jobs.
   - name: host-clickhouse
     interval: 60s
     rules:
@@ -67,10 +67,10 @@ groups:
       - record: host_disk_free_bytes
         expr: max by (cluster, node_name) (PostgresServer_StorageLimitBytes{job=~"clickhouse-.+", cluster!="", node_name!=""}) * (1 - max by (cluster, node_name) (PostgresServer_FilesystemUsedPercent{job=~"clickhouse-.+", cluster!="", node_name!=""}) / 100)
       - record: host_disk_read_iops
-        expr: sum by (cluster, node_name) (rate(PostgresServer_DiskReads_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+        expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_DiskReads_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
       - record: host_disk_write_iops
-        expr: sum by (cluster, node_name) (rate(PostgresServer_DiskWrites_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+        expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_DiskWrites_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
       - record: host_network_receive_bytes_per_second
-        expr: sum by (cluster, node_name) (rate(PostgresServer_NetworkReceiveBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+        expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_NetworkReceiveBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
       - record: host_network_transmit_bytes_per_second
-        expr: sum by (cluster, node_name) (rate(PostgresServer_NetworkTransmitBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+        expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_NetworkTransmitBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
