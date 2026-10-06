@@ -536,40 +536,61 @@ cli:npm:publish:
       export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
 
       # True when the registry already serves exactly <pkg>@<version>.
-      npm_has_version() {
-        [ "$(npm view "$1@$2" version 2>/dev/null || true)" = "$2" ]
+      #
+      # This asks registry.npmjs.org for the version manifest directly, with a
+      # cache-busting query string, instead of using `npm view`. `npm view`
+      # reads through the npm CDN, which keeps answering 404 for minutes after
+      # a successful publish -- that is what failed the 0.17.0-rc.3 job (#380)
+      # for a version that was already on the registry.
+      #
+      # Any non-200 (404, 5xx, or a network error, which leaves $code empty) is
+      # treated as "not served yet".
+      registry_has_version() {
+        local code
+        code="$(curl -sS -o /dev/null -w '%{http_code}' \
+          "https://registry.npmjs.org/$1/$2?cb=$(date +%s%N)" 2>/dev/null || true)"
+        [ "$code" = "200" ]
       }
 
-      # The registry can take minutes to serve a freshly published version
-      # (~150 s observed on 0.17.0-rc.2, #368); a 75 s wait used to kill the
-      # job here, after postgresai was out but before pgai was published.
+      # Report when the registry starts serving a freshly published version
+      # (~150 s observed on 0.17.0-rc.2, longer on rc.3 -- #380). Advisory
+      # only: it runs after both packages are out and never fails the job.
+      #
+      # Nothing downstream needs it. The pgai leg pins its dependency with
+      # `npm pkg set` and npm does not resolve declared dependencies at
+      # publish time, so the old "prevents the pgai step from failing" comment
+      # was describing a guard that did not exist.
       wait_for_version() {
         for i in $(seq 1 60); do
-          if npm_has_version "$1" "$2"; then
+          if registry_has_version "$1" "$2"; then
+            echo "npm is serving $1@$2"
             return 0
           fi
           echo "Waiting for npm to serve $1@$2 (attempt $i/60)..."
-          sleep 10
+          sleep 5
         done
-        echo "npm did not serve $1@$2 within 10 minutes"
-        return 1
+        echo "WARNING: npm has not served $1@$2 within 5 minutes."
+        echo "WARNING: $1@$2 WAS PUBLISHED SUCCESSFULLY above and its dist-tag is set;"
+        echo "WARNING: this is read-path propagation lag, not a publish failure."
+        echo "WARNING: Do NOT re-run this job -- npm rejects a republish of an"
+        echo "WARNING: existing version with EPUBLISHCONFLICT."
       }
 
       # Publish the package in the current directory unless that exact version
       # is already on the registry, so a job retry after a partial run finishes
       # the release instead of failing on "cannot publish over existing version"
-      # (#368). The dist-tag is (re)asserted either way: npm sets it only on a
-      # real publish, and a skipped publish must still end with the tag in place.
+      # (#368).
       publish_pkg() {
         local pkg="$1"
-        if npm_has_version "$pkg" "$NPM_VERSION"; then
+        if registry_has_version "$pkg" "$NPM_VERSION"; then
           echo "$pkg@$NPM_VERSION is already on the registry; skipping publish"
+          # npm points the dist-tag as part of a real publish, so only the
+          # skipped path has to assert it.
+          npm dist-tag add "$pkg@$NPM_VERSION" "$DIST_TAG"
         else
           npm publish --dry-run --tag "$DIST_TAG" --access public
           npm publish --tag "$DIST_TAG" --access public
         fi
-        wait_for_version "$pkg" "$NPM_VERSION"
-        npm dist-tag add "$pkg@$NPM_VERSION" "$DIST_TAG"
         if [ -n "$EXTRA_TAG" ]; then
           npm dist-tag add "$pkg@$NPM_VERSION" "$EXTRA_TAG"
         fi
@@ -599,9 +620,10 @@ cli:npm:publish:
       npm version --no-git-tag-version "$NPM_VERSION"
       publish_pkg pgai
 
-      # Verify both packages are visible as published versions.
-      npm view "postgresai@${NPM_VERSION}" version >/dev/null
-      npm view "pgai@${NPM_VERSION}" version >/dev/null
+      # Both packages are published at this point. Everything below is a
+      # readiness report for the release log; it cannot fail the job.
+      wait_for_version postgresai "$NPM_VERSION"
+      wait_for_version pgai "$NPM_VERSION"
   after_script:
     - rm -f ~/.npmrc
   rules:
