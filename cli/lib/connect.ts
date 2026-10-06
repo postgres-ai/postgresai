@@ -750,8 +750,13 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
 
 /** What a disconnect did to the billing (monitoring_instance_delete's reply), for a person; undefined when nothing was released. */
 export function disconnectBilling(reply: unknown): string | undefined {
-  const r = (reply ?? {}) as { billing?: { subscription?: string; quantity?: number }; billing_warning?: string };
+  const r = (reply ?? {}) as { billing?: { subscription?: string; quantity?: number; refunded?: number; currency?: string; credited?: boolean }; billing_warning?: string };
+  // The last cluster: the unused time is refunded to the card; when that refund fails it stays as account credit.
+  if (r.billing?.subscription === "canceled" && r.billing.credited && r.billing_warning) return `subscription canceled: no further charges; the refund failed (${r.billing_warning})`;
   if (r.billing_warning) return `not released (${r.billing_warning}): contact support`;
+  if (r.billing?.subscription === "canceled" && typeof r.billing.refunded === "number" && r.billing.refunded > 0) {
+    return `subscription canceled: no further charges; refunded ${money(r.billing.refunded, r.billing.currency ?? "usd")} to your card`;
+  }
   if (r.billing?.subscription === "canceled") return "subscription canceled: no further charges; the unused part of this period is credited (prorated)";
   if (r.billing?.subscription === "active" && typeof r.billing.quantity === "number") {
     return `${r.billing.quantity} ${r.billing.quantity === 1 ? "database cluster" : "database clusters"} left on the subscription`;
