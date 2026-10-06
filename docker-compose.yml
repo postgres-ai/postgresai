@@ -399,6 +399,10 @@ services:
       # (https://postgres.ai/api/general) is used, so production is unchanged.
       # See postgres-ai/platform-all#338.
       - REPORTER_API_URL=${PGAI_API_BASE_URL:-}
+      # A preview platform behind Cloudflare Access: its service token (unset in
+      # production; the reporter sends it only when both are set).
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # Optional overrides:
       # - REPORTER_INITIAL_DELAY_SECONDS=1800
       # - REPORTER_INTERVAL_SECONDS=86400
