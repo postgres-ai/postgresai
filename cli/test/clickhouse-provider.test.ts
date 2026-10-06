@@ -7,7 +7,7 @@ const scope = "-- scope: role postgres_ai_mon gets: create/update role | create 
 const scopeWithoutOptional = "-- scope: role postgres_ai_mon gets: create/update role | create extension pg_stat_statements | connect; pg_monitor, pg_read_all_stats; select on pg_catalog.pg_index; schema postgres_ai (view pg_statistic); usage on schema public; alter user set search_path | execute on postgres_ai.table_describe (SECURITY INVOKER, catalog only); this admin connection is used for this run only and is not stored";
 
 function runCli(args: string[]) {
-  const result = Bun.spawnSync([process.execPath, "./bin/postgres-ai.ts", ...args], {
+  const result = Bun.spawnSync([process.execPath, "--preload", "./test/cli-offline-preload.ts", "./bin/postgres-ai.ts", ...args], {
     cwd: `${import.meta.dir}/..`,
     env: { ...process.env, PGHOST: "", PGDATABASE: "" },
     timeout: 15000,
