@@ -224,7 +224,9 @@ export class ClickhouseKeyError extends Error {}
 /** host[:port] of a name (host[:port]/db). */
 const serverOf = (name: string) => name.split("/")[0];
 
-const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+/** An error's text; an AggregateError (node tried each address of a host name) has none of its own: its errors'. */
+export const errorText = (err: unknown): string =>
+  err instanceof AggregateError && !err.message ? err.errors.map(errorText).join("; ") : err instanceof Error ? err.message : String(err);
 
 const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams.get("password") || "";
 
