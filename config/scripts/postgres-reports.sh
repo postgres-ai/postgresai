@@ -10,7 +10,7 @@ output_template="${REPORTER_OUTPUT_TEMPLATE:-/app/all_reports_%Y%m%d_%H%M%S.json
 use_current_time="${USE_CURRENT_TIME:-false}"
 
 pgwatch_config_path="${REPORTER_PGWATCH_CONFIG_PATH:-/app/.pgwatch-config}"
-api_url="${REPORTER_API_URL:-https://postgres.ai/api/general}"
+api_url="${REPORTER_API_URL:-}"
 # Project name: env var takes priority, then config file. No default — uploads
 # require a project name (the hardcoded "postgres-ai-monitoring" default was removed).
 project_name="${REPORTER_PROJECT_NAME:-}"
@@ -43,6 +43,24 @@ read_api_key() {
   return 1
 }
 
+read_api_url() {
+  local url
+  if [[ ! -f "${pgwatch_config_path}" ]]; then
+    return 1
+  fi
+  url="$(
+    grep -E '^api_url=' "${pgwatch_config_path}" 2>/dev/null \
+      | head -n 1 \
+      | cut -d'=' -f2- \
+      | tr -d '\r'
+  )"
+  if [[ -n "${url:-}" ]]; then
+    printf '%s' "${url%/}"
+    return 0
+  fi
+  return 1
+}
+
 read_project_name() {
   local name
   if [[ ! -f "${pgwatch_config_path}" ]]; then
@@ -60,6 +78,15 @@ read_project_name() {
   fi
   return 1
 }
+
+# Resolve API base: non-empty env var > config file > production default.
+if [[ -z "${api_url}" ]]; then
+  if config_api_url="$(read_api_url)"; then
+    api_url="${config_api_url}"
+  else
+    api_url="https://postgres.ai/api/general"
+  fi
+fi
 
 # Resolve project name: env var > config file. No default — uploads require a
 # project name (the hardcoded "postgres-ai-monitoring" default was removed).
