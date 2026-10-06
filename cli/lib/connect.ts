@@ -542,7 +542,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (lockId && !unanswered) await deps.resetUnlock(lockId).catch(() => {});
     }
     row = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!ch };
-    undoRole = undo;
+    const made = prepared;
+    undoRole = () => undo(made);
     // First value while the box starts (minutes): the express checkup, as the monitoring role.
     checkup = await deps.checkup(withLocalTls((prepared as { monitoringUrl: string }).monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
     progress("checkup", checkupLines(checkup).join("\n"), { checkup });
