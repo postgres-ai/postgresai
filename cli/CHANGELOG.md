@@ -140,6 +140,19 @@
 
 ### Fixed
 
+- `pgai joe` works against an *inverted* Joe instance — one whose platform agent
+  polls the job channel and has no URL for the platform to dial. Every verb used
+  to fail with `HTTP 426 Upgrade Required`, because the run rpc will only enqueue
+  a command for a client that has declared it understands the async handle. The
+  CLI now declares it, takes the handle, and polls the same `command_id` it
+  always polled; a platform that predates the handle is retried once without the
+  flag, and a command is never re-sent. The wait on that route is sized from the
+  handle's own `expires_in_s` (clamped to the platform's [10 min, 1 h] window)
+  rather than the 25s one-shot, because an enqueued command waits for its box to
+  poll — `--budget` still overrides it, the polls are paced by a backoff ladder,
+  and a command that outlives the wait still prints the
+  `pgai joe result <id>` resume line. (#402, postgres-ai/platform-all#840)
+
 - `mon local-install` no longer throws away what the platform says about AAS
   auto-collection. A refused registration now reports the platform's own reason
   (`platform returned HTTP 400 — PT400: <detail>`) instead of a bare status —

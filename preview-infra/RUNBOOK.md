@@ -9,6 +9,8 @@ Operations guide for the PostgresAI monitoring preview environments.
 - **DNS:** Dynamic A records created per preview via Cloudflare API
 - **Max Concurrent:** 2 previews
 
+Each preview has its own Docker network and reaches Grafana through Traefik, without publishing host ports. This lets stacks use the same internal ports. `scripts/sanitize-branch.sh` defines the branch slug used by CI and the manager; use it when addressing a preview directory or DNS name. The manager serializes quota reservations with a global lock and deployment with a per-preview lock. Cleanup expires previews after three days.
+
 ## Access
 
 ### SSH to the preview VM

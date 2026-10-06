@@ -22,6 +22,7 @@ import (
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/collect"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/config"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/dblab"
+	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/joe"
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/platform"
 )
 
@@ -1080,6 +1081,16 @@ func TestEveryFailureIsClassified(t *testing.T) {
 		{fmt.Errorf("%w: json", errUnencodableResult),
 			"the collected result could not be encoded", "unencodable_result"},
 		{&collect.UpstreamError{StatusCode: 503}, "metric store returned 503", "store_error"},
+		// THE STATUS IS PART OF THE CLASS on the two call channels (#402): a
+		// deleted clone's 404 and a broken engine's 500 both arrive inside an
+		// HTTP 200 as `status: failed`, and the Console had no way to tell them
+		// apart but to regex the English text. Literals on both sides, so the
+		// assertion cannot agree with a wrong format string.
+		{&dblab.EngineError{StatusCode: 404, Message: "clone not found"},
+			"dblab engine returned 404: clone not found", "engine_error_404"},
+		{&dblab.EngineError{StatusCode: 500}, "dblab engine returned 500", "engine_error_500"},
+		{&joe.JoeError{StatusCode: 403}, "joe returned 403", "joe_error_403"},
+		{&joe.JoeError{StatusCode: 500, Message: "boom"}, "joe returned 500: boom", "joe_error_500"},
 		{fmt.Errorf("dial tcp: refused"), "metric store unreachable", "store_unreachable"},
 		// Its own class on purpose: without it a panic fell through to
 		// store_unreachable and reported a metric-store outage on a box whose
@@ -1102,6 +1113,33 @@ func TestEveryFailureIsClassified(t *testing.T) {
 				t.Fatalf("describeFailure = (%q, %q), want (%q, %q)", text, class, tc.text, tc.class)
 			}
 		})
+	}
+}
+
+// The suffix carries the UPSTREAM status and nothing else. Where there is no
+// status the class stays flat: the platform enumerates nothing, so an invented
+// `_0` would be a class no reader of the column can act on.
+func TestOnlyARealHTTPStatusIsAppendedToAFailureClass(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   string
+	}{
+		{404, "engine_error_404"},
+		{100, "engine_error_100"},
+		{599, "engine_error_599"},
+		{0, "engine_error"},
+		{99, "engine_error"},
+		{600, "engine_error"},
+		{-1, "engine_error"},
+	} {
+		if got := classWithStatus("engine_error", tc.status); got != tc.want {
+			t.Errorf("classWithStatus(engine_error, %d) = %q, want %q", tc.status, got, tc.want)
+		}
+	}
+	// The platform length-caps failure_class at 64 bytes and refuses a submit
+	// that exceeds it -- which would leave the job running until the sweep.
+	if n := len(classWithStatus("engine_error", 404)); n > 64 {
+		t.Errorf("the class is %d bytes, over the platform's 64-byte cap", n)
 	}
 }
 

@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4130,7 +4130,7 @@ function emitConnect(result: ConnectResult, json?: boolean): void {
 
 /** An error of databases / status / disconnect, in the same shape as a connect result. */
 function failCloud(err: unknown, json?: boolean): void {
-  printResult({ status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
+  printResult({ status: "failed", next: errorText(err) }, json);
   process.exitCode = 1;
 }
 
@@ -4191,7 +4191,7 @@ async function runConnect(url: string, opts: { provider?: string; clickhouseKey?
     });
     emitConnect(result, opts.json);
   } catch (err) {
-    emitConnect({ status: "failed", provider, name, next: err instanceof Error ? err.message : String(err) }, opts.json);
+    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
 }
 
@@ -4212,7 +4212,8 @@ withOrgOptions(program.command("connect <database-url>"))
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, run the express checkup while it starts, wait, print the dashboard URL.",
     "",
-    "Billing: once the URL is checked, before a new box, connect shows its price (or \"free (N of M free slots)\"). A billed",
+    "Billing is per Postgres cluster observed: another database in a cluster the organization already",
+    "monitors is included. Once the URL is checked, connect shows the price (or \"free (N of M free slots)\"). A billed",
     "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
     "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
@@ -7726,10 +7727,15 @@ interface JoeCliOpts {
 }
 
 function printJoeOutcome(outcome: ExecuteJoeOutcome, json: boolean, budgetMs?: number): void {
-  // The expiry hint reports the ACTUAL effective budget (--budget when given,
-  // the default otherwise) — not a hardcoded DEFAULT_BUDGET_MS.
-  const effectiveBudgetMs =
-    typeof budgetMs === "number" && Number.isFinite(budgetMs) ? budgetMs : DEFAULT_BUDGET_MS;
+  // The expiry hint reports the ACTUAL effective budget, which the run reports
+  // because it is not always the caller's: an enqueued command gets the window
+  // the platform holds its slot for. `budgetMs` is the fallback for a caller
+  // that built an outcome without it.
+  const effectiveBudgetMs = Number.isFinite(outcome.budgetMs)
+    ? outcome.budgetMs
+    : typeof budgetMs === "number" && Number.isFinite(budgetMs)
+      ? budgetMs
+      : DEFAULT_BUDGET_MS;
   const budgetSeconds = Math.round(effectiveBudgetMs / 1000);
   // One-shot budget reached before a terminal state — hand back a resume handle.
   // This is expected (a cold clone), NOT a failure: exit 0.

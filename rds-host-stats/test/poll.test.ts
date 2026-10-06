@@ -19,7 +19,7 @@ function replay(recorded: Recorded[]) {
       return revive(JSON.stringify(r.output))
     },
   })
-  const clients = { rds: client('rds'), cloudwatch: client('cloudwatch'), logs: client('logs') }
+  const clients = { rds: client('rds'), cloudwatch: client('cloudwatch'), pi: client('pi'), logs: client('logs') }
   return { clients, pending }
 }
 
@@ -57,9 +57,9 @@ for (const name of readdirSync(root)) {
   })
 
   // The recorded requests carry an EndTime on the minute. A poll 17 s later
-  // sends the same CloudWatch requests and the same import text; only the OS
-  // log window follows the clock.
-  test(`${name}: an unaligned clock queries CloudWatch up to the last minute boundary`, async () => {
+  // sends the same CloudWatch and PI requests and the same import text; only
+  // the OS log window follows the clock.
+  test(`${name}: an unaligned clock queries CloudWatch and PI up to the last minute boundary`, async () => {
     const later = new Date(Date.parse(now) + 17_000)
     const shifted = structuredClone(recorded)
     const logs = shifted.find((r) => r.command === 'GetLogEventsCommand')
@@ -68,6 +68,47 @@ for (const name of readdirSync(root)) {
     const { text } = await pollOnce(clients, target, later, new Map())
     expect(text).toBe(await Bun.file(`${dir}/expected.prom`).text())
     expect(pending).toEqual([])
+  })
+
+  // PI stamps a point at the end of its minute. The recorded replies carry a
+  // point at `end` itself, a minute that closed as the poll started; it is
+  // written by the next poll, like a CloudWatch bucket.
+  test(`${name}: Performance Insights points at or after the minute boundary are not written`, async () => {
+    const pi = structuredClone(recorded).filter((r) => r.command === 'GetResourceMetricsCommand')
+    if (!pi.length) return
+    const future = structuredClone(recorded)
+    const metric = (future.find((r) => r.command === 'GetResourceMetricsCommand')!.output as { MetricList: { DataPoints: { Timestamp: string; Value: number }[] }[] }).MetricList[0]
+    expect(metric.DataPoints.at(-1)!.Timestamp).toBe(now)
+    const before = metric.DataPoints.at(-2)!
+    metric.DataPoints.at(-1)!.Value = 66
+    metric.DataPoints.push({ Timestamp: new Date(Date.parse(now) + 60_000).toISOString(), Value: 77 })
+    const { text } = await pollOnce(replay(future).clients, target, new Date(now), new Map())
+    expect(text).toBe(await Bun.file(`${dir}/expected.prom`).text())
+    expect(text).not.toContain(' 66 ')
+    expect(text).not.toContain(' 77 ')
+    expect(text).toContain(`host_db_load{cluster="ci",node_name="node-01"} ${before.Value} ${Date.parse(now) - 60_000}\n`)
+  })
+
+  test(`${name}: an instance without Performance Insights gets no PI call and no DB load`, async () => {
+    const off = structuredClone(recorded)
+    const describe = off.find((r) => r.command === 'DescribeDBInstancesCommand')!.output as { DBInstances: { PerformanceInsightsEnabled?: boolean }[] }
+    describe.DBInstances[0].PerformanceInsightsEnabled = false
+    const { clients, pending } = replay(off)
+    const { text, errors } = await pollOnce(clients, target, new Date(now), new Map())
+    expect(errors).toEqual([])
+    expect(text).toBe((await Bun.file(`${dir}/expected.prom`).text()).replace(/^host_db_load.*\n/gm, ''))
+    expect(pending.map((r) => r.command)).toEqual(['GetResourceMetricsCommand'])
+  })
+
+  test(`${name}: a Performance Insights failure keeps the CloudWatch samples and reports the error`, async () => {
+    const { clients } = replay(recorded)
+    const failing = { ...clients, pi: { send: async () => { throw Object.assign(new Error('stream not found'), { name: 'ResourceNotFoundException' }) } } }
+    const { text, errors } = await pollOnce(failing, target, new Date(now), new Map())
+    const golden = await Bun.file(`${dir}/expected.prom`).text()
+    expect(text).toContain(golden.split('\n')[0])
+    expect(text).not.toContain('host_db_load')
+    const hasPI = recorded.some((r) => r.command === 'GetResourceMetricsCommand')
+    expect(errors.map((e) => e.name)).toEqual(hasPI ? ['ResourceNotFoundException'] : [])
   })
 
   test(`${name}: an Enhanced Monitoring failure keeps the CloudWatch samples and reports the error`, async () => {

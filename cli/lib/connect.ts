@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import { generateAllReports } from "./checkup";
+import { createCheckupReport, uploadCheckupReportJson } from "./checkup-upload";
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
@@ -50,7 +51,7 @@ export interface ConnectResult {
   host_metrics?: boolean;
   first_checkup_eta?: string;
   checkup?: CheckupResult;
-  /** A new box: what it costs ("$512.00/month per box (scale plan)", "free (1 of 2 free slots)"). */
+  /** A new box: what it costs ("$512.00/month per database cluster (scale plan)", "free (1 of 2 free slots)", "included: same database cluster as ..."). */
   price?: string;
   requires_payment_method?: boolean;
   coupon?: { code: string; valid: boolean; description?: string; error?: string };
@@ -73,6 +74,8 @@ export interface Quote {
   amount_after_promo?: number;
   /** The org's billing page on this platform's console (a preview's, on a preview). */
   billing_url?: string;
+  /** A database the org already monitors in this cluster: this one is included (billed: false). */
+  same_cluster?: string;
 }
 
 /** A row of v1.cloud_monitoring_list. */
@@ -110,7 +113,8 @@ export interface ConnectDeps {
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds" | "supabase"): Promise<string>;
   /** What the next box costs, with the coupon checked. */
-  quote(coupon?: string): Promise<Quote>;
+  /** `cluster`: lower(host):port of the URL, which the price is per. */
+  quote(coupon?: string, cluster?: string): Promise<Quote>;
   /** The console page where the org adds a payment method, when the quote names none. */
   billingUrl(orgAlias: string): string;
   /** Asks a person; false when nobody can be asked. */
@@ -138,11 +142,12 @@ export interface ConnectOptions {
 const money = (cents: number, currency: string) =>
   currency.toLowerCase() === "usd" ? `$${(cents / 100).toFixed(2)}` : `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
 
-/** The quote as one line: free, the price per box, or the price after the coupon. */
+/** The quote as one line: free, included (a cluster already billed), the price per cluster, or the price after the coupon. */
 export function priceText(q: Quote): string {
+  if (!q.billed && q.same_cluster) return `included: same database cluster as ${q.same_cluster}, no extra charge`;
   if (!q.billed) return q.free_slots.total ? `free (${q.free_slots.remaining} of ${q.free_slots.total} free slots)` : "free";
   const { amount, currency, interval } = q.price;
-  const base = `${money(amount, currency)}/${interval} per box (${q.plan} plan)${q.subscription ? `, box ${q.quantity + 1} on the subscription` : ""}`;
+  const base = `${money(amount, currency)}/${interval} per database cluster (${q.plan} plan)${q.subscription ? `, cluster ${q.quantity + 1} on the subscription` : ""}`;
   if (q.promo?.valid && q.amount_after_promo !== undefined && q.amount_after_promo !== null) {
     const after = `${money(q.amount_after_promo, currency)}`;
     const how = `with ${q.promo.code} (${q.promo.discount_description})`;
@@ -225,7 +230,15 @@ export class ClickhouseKeyError extends Error {}
 /** host[:port] of a name (host[:port]/db), lowercased: the platform keys a server on lower(host). */
 const serverOf = (name: string) => name.split("/")[0].toLowerCase();
 
-const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+/** lower(host):port of a URL (5432 when it names none): the cluster the price is per, as the platform keys it. */
+export function clusterOf(url: string): string | undefined {
+  const u = parseUrl(url);
+  return u?.hostname ? `${u.hostname.toLowerCase()}:${u.port || "5432"}` : undefined;
+}
+
+/** An error's text; an AggregateError (node tried each address of a host name) has none of its own: its errors'. */
+export const errorText = (err: unknown): string =>
+  err instanceof AggregateError && !err.message ? err.errors.map(errorText).join("; ") : err instanceof Error ? err.message : String(err);
 
 const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams.get("password") || "";
 
@@ -464,7 +477,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true });
       if ("next" in probe) return { status: "action_required", provider, name, ...probe };
-      const b = await billingFor(await deps.quote(opts.coupon), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
+      const b = await billingFor(await deps.quote(opts.coupon, clusterOf(url)), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, accepted } = b);
     }
@@ -765,22 +778,14 @@ export async function expressCheckup(url: string, opts: PrepareOptions & { save?
  * pending, a file per check, then completed (failed when a file did not upload).
  */
 export async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
-  // An answer without the id (a message instead, say) is a refusal, as the other uploaders treat it.
-  const idOf = (fn: string, answer: unknown, ...keys: string[]) => {
-    const a = (answer ?? {}) as Record<string, unknown>;
-    const id = Number(keys.map((k) => a[k]).find((v) => v !== undefined));
-    if (!(id > 0)) throw new Error(typeof a.message === "string" ? a.message : `Unexpected ${fn} answer: ${JSON.stringify(answer)}`);
-    return id;
-  };
-  const reportId = idOf("checkup_report_create", await rpc("checkup_report_create", { access_token: accessToken, project }), "report_id");
+  const { reportId } = await createCheckupReport(rpc, { apiKey: accessToken, project });
   const setStatus = (status: string) => rpc("checkup_report_status_update", { access_token: accessToken, report_id: reportId, status });
   try {
     for (const [checkId, report] of Object.entries(reports)) {
-      // The platform spells it report_chunck_id.
-      idOf("checkup_report_file_post", await rpc("checkup_report_file_post", {
-        access_token: accessToken, checkup_report_id: reportId, filename: `${checkId}.json`, check_id: checkId,
-        data: JSON.stringify(report, null, 2), type: "json", generate_issue: true,
-      }), "report_chunck_id", "report_chunk_id");
+      await uploadCheckupReportJson(rpc, {
+        apiKey: accessToken, reportId, filename: `${checkId}.json`, checkId,
+        jsonText: JSON.stringify(report, null, 2),
+      });
     }
   } catch (err) {
     await setStatus("failed").catch(() => {});
@@ -822,9 +827,9 @@ export async function clickhouseOrgFor(host: string, keyId: string, keySecret: s
 export function disconnectBilling(reply: unknown): string | undefined {
   const r = (reply ?? {}) as { billing?: { subscription?: string; quantity?: number }; billing_warning?: string };
   if (r.billing_warning) return `not released (${r.billing_warning}): contact support`;
-  if (r.billing?.subscription === "canceled") return "subscription canceled: no further charges (the current period is not refunded)";
+  if (r.billing?.subscription === "canceled") return "subscription canceled: no further charges; the unused part of this period is credited (prorated)";
   if (r.billing?.subscription === "active" && typeof r.billing.quantity === "number") {
-    return `${r.billing.quantity} ${r.billing.quantity === 1 ? "box" : "boxes"} left on the subscription`;
+    return `${r.billing.quantity} ${r.billing.quantity === 1 ? "database cluster" : "database clusters"} left on the subscription`;
   }
   return undefined;
 }
@@ -842,7 +847,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>
       expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),
-    quote: (coupon?: string) => rpc<Quote>("cloud_monitoring_quote", coupon ? { promo_code: coupon } : {}),
+    quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
     billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,
     handoffUrl: async (provider: "rds" | "supabase") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });

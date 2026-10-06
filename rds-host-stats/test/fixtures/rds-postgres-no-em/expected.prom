@@ -16,3 +16,5 @@ host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 29264.3
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20710682624 1790574120000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609404928 1790574180000
 host_disk_free_bytes{cluster="ci",node_name="node-01"} 20609236992 1790574240000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574240000
+host_db_load{cluster="ci",node_name="node-01"} 0 1790574300000

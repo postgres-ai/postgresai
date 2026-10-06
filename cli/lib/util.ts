@@ -182,6 +182,50 @@ export function isRetryableHttpStatus(status: number): boolean {
   return status >= 500 || status === 429;
 }
 
+/**
+ * Did PostgREST refuse to RESOLVE `rpc`, rather than run it?
+ *
+ * PostgREST picks an rpc by the exact set of body keys, so an added argument
+ * (`accept_async`) against a platform that predates it answers 404 out of the
+ * schema cache — measured on v9.0.1, `{"hint":"If a new function was created …",
+ * "message":"Could not find the v1.dblab_api_call(accept_async, action,
+ * instance_id, method) function …"}`. Nothing ran, which is what makes the
+ * retry safe even for a write: a refused call never reached the function.
+ *
+ * It must therefore never match an error raised from INSIDE the function.
+ * Requiring the message to name the rpc we sent is what enforces that here,
+ * rather than relying on the platform repo's PT404 keeping its own wording.
+ */
+export function isUnknownRpcSignature(status: number, text: string, rpc: string): boolean {
+  if (status !== 404) return false;
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown };
+    return (
+      typeof parsed.message === "string" &&
+      /Could not find the .* function/.test(parsed.message) &&
+      parsed.message.includes(`${rpc}(`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** A usable positive number of seconds, or null for anything else. */
+export function positiveSeconds(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/**
+ * Poll delays, in ms, for a platform async handle — the same ladder `pgai promql`
+ * uses against the same job channel: fast at the start for a box on a short
+ * interval, doubling to a 15s ceiling because each poll is a full
+ * api_token_check (a bcrypt per candidate token in the org) and the fleet
+ * default pacing is 600s.
+ */
+export function asyncPollDelayMs(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 15000);
+}
+
 /** Hard upper bound for a single platform request, even outside Joe polling. */
 export const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 25_000;
 
