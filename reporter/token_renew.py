@@ -36,7 +36,7 @@ def main() -> int:
         response.raise_for_status()
         expires_at = response.json()["expires_at"]
     except (requests.RequestException, ValueError, KeyError, TypeError) as e:
-        print(f"postgres-reports: WARNING token renewal failed: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"postgres-reports: WARNING token renewal failed: {type(e).__name__}", file=sys.stderr)
         return 1
     print(f"postgres-reports: token renewed, expires at {expires_at}")
     return 0
