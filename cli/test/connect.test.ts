@@ -834,7 +834,7 @@ describe("connect on the paid path: the price before the box", () => {
     const f = make({}, { rows: [row("registered", { name: SH_NAME }), row("deleting_launched", { name: SH_NAME, billing_error: "Your card was declined." })] });
     expect(await connect(SH, { waitMs: 60_000 }, f.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME, id: "i-1",
-      next: "The first charge failed (Your card was declined.): the box was removed and nothing is billed. Update the payment method, then re-run",
+      next: "The first charge failed (Your card was declined.): the box is being removed and nothing is billed. Update the payment method, then re-run",
     });
     expect(f.calls).toEqual(["list", "sleep", "list"]);
   });

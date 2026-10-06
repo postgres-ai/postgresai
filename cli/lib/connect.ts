@@ -624,10 +624,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   // The box's state, each time it changes while connect waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
-    if (undoRole && row.billing_error && disconnecting(row.status)) {
-      await undoRole();
+    if (row.billing_error && disconnecting(row.status)) {
+      if (undoRole) await undoRole();
       return { status: "action_required", provider, name, id: row.id, ...billing, ...(checkup ? { checkup } : {}),
-        next: `The first charge failed (${row.billing_error}): the box is being removed and nothing is billed. Update the payment method at ${billingUrl}, then re-run` };
+        next: `The first charge failed (${row.billing_error}): the box is being removed and nothing is billed. Update the payment method${billingUrl ? ` at ${billingUrl}` : ""}, then re-run` };
     }
     const result = connectStatus(row, provider, fresh);
     const state = boxState(row);

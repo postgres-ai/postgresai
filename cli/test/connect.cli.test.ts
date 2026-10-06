@@ -202,7 +202,7 @@ describe("pgai connect / databases / status / disconnect", () => {
       expect(r.status).toBe(3);
       expect(r.json()).toEqual({
         status: "action_required", provider: "clickhouse", name: NAME, id: "i-1",
-        next: "The first charge failed (Your card was declined.): the box was removed and nothing is billed. Update the payment method, then re-run",
+        next: "The first charge failed (Your card was declined.): the box is being removed and nothing is billed. Update the payment method, then re-run",
       });
       expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}", "/rpc/cloud_monitoring_list test-key {}"]);
     }, () => [{ ...ROW, status: listed++ ? "deleting_launched" : "registered", billing_error: "Your card was declined." }]);
