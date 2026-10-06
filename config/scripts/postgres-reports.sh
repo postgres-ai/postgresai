@@ -88,6 +88,8 @@ if [[ -z "${api_url}" ]]; then
   fi
 fi
 
+export REPORTER_API_URL="${api_url}"
+
 # Resolve project name: env var > config file. No default — uploads require a
 # project name (the hardcoded "postgres-ai-monitoring" default was removed).
 if [[ -z "${project_name}" ]]; then

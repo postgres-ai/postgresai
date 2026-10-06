@@ -17,13 +17,17 @@ from reporter.cf_access import cf_access_headers
 def main() -> int:
     api_url = sys.argv[1]
     token = sys.stdin.readline().strip()
+    url = api_url + "/rpc/monitoring_instance_token_renew"
     try:
         response = requests.post(
-            api_url + "/rpc/monitoring_instance_token_renew",
+            url,
             json={"access_token": token},
-            headers=cf_access_headers(),
+            headers=cf_access_headers(url),
             timeout=30,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise requests.HTTPError("Platform API redirected the request", response=response)
         if response.status_code == 403:
             # A key set by hand (a member's or the org's), not one the platform
             # minted for this box: nothing to renew.

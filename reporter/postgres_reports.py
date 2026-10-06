@@ -5431,7 +5431,11 @@ class PostgresReportGenerator:
 
 
 def make_request(api_url, endpoint, request_data):
-    response = requests.post(api_url + endpoint, json=request_data, headers=cf_access_headers(), timeout=30)
+    url = api_url + endpoint
+    response = requests.post(url, json=request_data, headers=cf_access_headers(url), timeout=30,
+                             allow_redirects=False)
+    if 300 <= response.status_code < 400:
+        raise requests.HTTPError("Platform API redirected the request", response=response)
     response.raise_for_status()
     return response.json()
 
