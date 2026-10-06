@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { disconnectBilling, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { disconnectBilling, errorText, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -1609,5 +1609,22 @@ describe("disconnect: what happened to the billing", () => {
     expect(disconnectBilling({ billing_warning: "Failed to cancel org subscription: stripe down" })).toBe("not released (Failed to cancel org subscription: stripe down): contact support");
     expect(disconnectBilling({})).toBeUndefined();
     expect(disconnectBilling(null)).toBeUndefined();
+  });
+});
+
+describe("errorText", () => {
+  // node's connect tries every address of a host name (IPv6 and IPv4) and,
+  // when all refuse, throws an AggregateError whose own message is empty.
+  test("an AggregateError with no message says what each attempt got", () => {
+    const err = Object.assign(new AggregateError([
+      Object.assign(new Error("connect ECONNREFUSED 2001:db8::1:25499"), { code: "ECONNREFUSED" }),
+      Object.assign(new Error("connect ECONNREFUSED 192.0.2.1:25499"), { code: "ECONNREFUSED" }),
+    ], ""), { code: "ECONNREFUSED" });
+    expect(errorText(err)).toBe("connect ECONNREFUSED 2001:db8::1:25499; connect ECONNREFUSED 192.0.2.1:25499");
+  });
+
+  test("an error with a message, and a non-error, as before", () => {
+    expect(errorText(new Error("boom"))).toBe("boom");
+    expect(errorText("plain")).toBe("plain");
   });
 });

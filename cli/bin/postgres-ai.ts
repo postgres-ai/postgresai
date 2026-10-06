@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { connect, connectStatus, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4217,7 +4217,7 @@ function emitConnect(result: ConnectResult, json?: boolean): void {
 
 /** An error of databases / status / disconnect, in the same shape as a connect result. */
 function failCloud(err: unknown, json?: boolean): void {
-  printResult({ status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
+  printResult({ status: "failed", next: errorText(err) }, json);
   process.exitCode = 1;
 }
 
@@ -4281,7 +4281,7 @@ async function runConnect(url: string, opts: ConnectOpts) {
     });
     emitConnect(result, opts.json);
   } catch (err) {
-    emitConnect({ status: "failed", provider, name, next: err instanceof Error ? err.message : String(err) }, opts.json);
+    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
 }
 
