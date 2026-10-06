@@ -1419,6 +1419,13 @@ describe("prepareDatabase (a fake pg client)", () => {
   const MON_URL = "postgresql://postgres_ai_mon:its-password@db.example.com:5432/app?sslmode=require";
   const REJECTED = pgError("28P01", "password authentication failed");
 
+  test("a query password overrides the authority password in the prepared monitoring URL", async () => {
+    const s = server({ name: "postgres_ai_mon", mon_exists: true }, ["ok", REJECTED]);
+    const result = await s.prepare({}, "postgresql://postgres_ai_mon:old@db.example.com:5432/app?password=right&sslmode=require");
+    expect(s.monLogins[0]).toBe("right");
+    expect(new URL((result as { monitoringUrl: string }).monitoringUrl).password).toBe("right");
+  });
+
   test("a postgres_ai_mon URL on a server that checks passwords: its URL, no note", async () => {
     const s = server({ name: "postgres_ai_mon", mon_exists: true }, ["ok", REJECTED]);
     expect(await s.prepare({}, MON_URL)).toEqual({ monitoringUrl: MON_URL });
