@@ -5373,8 +5373,17 @@ class PostgresReportGenerator:
         try:
             # Try the primary endpoint
             response = make_request(api_url, "/rpc/checkup_report_file_post", request_data)
+            if not isinstance(response, dict):
+                raise ValueError("Upload acknowledgement has no valid chunk id")
             if "message" in response:
                 raise Exception(response["message"])
+            chunk_id = response.get("report_chunck_id")
+            if chunk_id is None:
+                chunk_id = response.get("report_chunk_id")
+            if isinstance(chunk_id, str) and chunk_id.isdecimal():
+                chunk_id = int(chunk_id)
+            if type(chunk_id) is not int or chunk_id <= 0:
+                raise ValueError("Upload acknowledgement has no valid chunk id")
             logger.info(f"Uploaded: {file_name}")
             return
         except requests.exceptions.HTTPError as e:
