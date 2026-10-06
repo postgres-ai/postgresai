@@ -529,7 +529,7 @@ describe("connect", () => {
     const other = row("launch_requested", { id: "i-7", name: `${SERVER}/orders` });
     const { deps, calls } = fake({ rows: [undefined, other] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
-      `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead`);
+      `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead, or pgai disconnect ${SERVER}/orders --yes first`);
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
@@ -542,12 +542,12 @@ describe("connect", () => {
     both.deps.list = async () => { both.calls.push("list"); return [other, unread]; };
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, both.deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME,
-      next: `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server, and may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead`,
+      next: `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server, and may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai disconnect ${SERVER}/orders --yes and pgai disconnect 'Monitoring 16bb1d' --yes first`,
     });
     expect(both.calls).toEqual(["list"]);
     const { deps, calls } = fake({ rows: [undefined, unread] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
-      "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead");
+      "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai disconnect 'Monitoring 16bb1d' --yes first");
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
   });
 
