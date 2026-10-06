@@ -962,7 +962,7 @@ describe("connect on the paid path: the price before the box", () => {
     cli.deps.prepare = storedPrepare();
     expect(await connect(SH, { waitMs: 0, yes: true }, cli.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME,
-      price: "$512.00/month per box (scale plan)", requires_payment_method: false,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
       next: "PostgresAI no longer keeps the password of postgres_ai_mon for this server: re-run with --reset-password (anything else that logs in as postgres_ai_mon then needs the new one), or set PGAI_MON_PASSWORD to its password",
     });
     const agent = make({}, { list: async () => [row("active", FIRST)], create });
