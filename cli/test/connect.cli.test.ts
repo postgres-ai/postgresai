@@ -261,6 +261,16 @@ describe("pgai connect / databases / status / disconnect", () => {
     });
   });
 
+  test("disconnect --json with TTY stdin does not prompt and prints valid JSON", async () => {
+    await withApi(async (env, calls) => {
+      const r = await runTty(["disconnect", NAME, "--json"], env, [[`Disconnect ${NAME} and delete its monitoring box? (y/N): `, "n\r"]]);
+      expect(r.screen).not.toContain("(y/N)");
+      expect(r.status).toBe(3);
+      expect(JSON.parse(r.screen)).toEqual({ status: "action_required", provider: "clickhouse", name: NAME, id: "i-1", next: `pgai disconnect ${NAME} --yes` });
+      expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}"]);
+    });
+  });
+
   test("an unusable --wait is refused before anything is touched", async () => {
     const r = await run(["connect", CH, "--wait", "soon"], { PGAI_API_KEY: "k", PGAI_API_BASE_URL: "http://127.0.0.1:9" });
     expect(r.status).toBe(1);
