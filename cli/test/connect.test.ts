@@ -124,6 +124,81 @@ describe("connect", () => {
     expect(JSON.stringify(result)).not.toContain("Sec4b1d");
   });
 
+  test.each(["sales data", "注文", "slash/name", "app"])("a retry finds a custom-named database by identity (%s)", async (db) => {
+    const u = new URL(CH);
+    u.pathname = `/${encodeURIComponent(db)}`;
+    const existing = row("active", { name: "Monitoring 16bb1d", cluster: `${u.hostname}:5432`, database: encodeURIComponent(db) });
+    const { deps, calls } = fake({ rows: [existing] });
+    const result = await connect(u.toString(), { waitMs: 0 }, deps);
+    expect(result.status).toBe("connected");
+    expect(result.name).toBe(existing.name);
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("identity takes precedence over a legacy display-name match", async () => {
+    const existing = row("active", { id: "i-2", name: "Monitoring 16bb1d", cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "postgres" });
+    const { deps, calls } = fake({ list: async () => { calls.push("list"); return [row("active"), existing]; } });
+    expect((await connect(CH, { waitMs: 0 }, deps)).id).toBe("i-2");
+    expect(calls).toEqual(["list"]);
+  });
+
+  test.each([
+    { cluster: "other.example.com:5432", database: "postgres" },
+    { cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "orders" },
+  ])("a matching display name with a different identity is not this database (%p)", async (identity) => {
+    const { deps, calls } = fake({ rows: [row("active", identity)] });
+    expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("provisioning");
+    expect(calls).toContain("prepare clickhouse");
+  });
+
+  test.each([false, true])("a display-name collision with another database blocks a reset (under lock: %p)", async (underLock) => {
+    const other = row("active", { cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "orders" });
+    const { deps, calls } = fake({ rows: underLock ? [undefined, other] : [other] });
+    const result = await connect(CH, { resetPassword: true, waitMs: 0 }, deps);
+    expect(result.status).toBe("action_required");
+    expect(result.next).toContain(`would cut off the monitoring of ${CH_NAME}`);
+    expect(calls).toEqual(underLock ? ["list", "check clickhouse", "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "resetUnlock l-1"] : ["list"]);
+  });
+
+  test.each([
+    { cluster: null, database: null },
+    { cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: null },
+    { cluster: null, database: "postgres" },
+  ])("a row without complete identity still matches by name (%p)", async (identity) => {
+    const { deps, calls } = fake({ rows: [row("active", identity)] });
+    expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("connected");
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("identity uses the user or PGDATABASE when the URL has no path", async () => {
+    const saved = process.env.PGDATABASE;
+    const u = new URL(CH);
+    u.pathname = "";
+    try {
+      for (const db of ["postgres", "sales data"]) {
+        if (db === "postgres") delete process.env.PGDATABASE;
+        else process.env.PGDATABASE = db;
+        const { deps, calls } = fake({ rows: [row("active", { name: "Monitoring 16bb1d", cluster: `${u.hostname}:5432`, database: encodeURIComponent(db) })] });
+        expect((await connect(u.toString(), { waitMs: 0 }, deps)).status).toBe("connected");
+        expect(calls).toEqual(["list"]);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PGDATABASE;
+      else process.env.PGDATABASE = saved;
+    }
+  });
+
+  test.each(["sales data", "注文"])("the same database is found by identity under the reset lock (%s)", async (db) => {
+    const u = new URL(CH);
+    u.pathname = `/${encodeURIComponent(db)}`;
+    const existing = row("registered", { name: "Monitoring 16bb1d", cluster: `${u.hostname}:5432`, database: encodeURIComponent(db) });
+    const { deps, calls } = fake({ rows: [undefined, existing] });
+    const result = await connect(u.toString(), { resetPassword: true, waitMs: 0 }, deps);
+    expect(result.status).toBe("action_required");
+    expect(result.id).toBe(existing.id);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${u.hostname}:5432`, "list", "resetUnlock l-1"]);
+  });
+
   test("already connected: nothing is prepared or provisioned again", async () => {
     const { deps, calls } = fake({ rows: [row("active")] });
     const result = await connect(CH, { waitMs: 60_000 }, deps);
