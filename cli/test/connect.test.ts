@@ -779,7 +779,7 @@ describe("connect on the paid path: the price before the box", () => {
     expect(await connect(SH, { waitMs: 60_000, yes: true }, f.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME, id: "i-1",
       price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false, checkup: CHECKUP,
-      next: "The first charge failed (Payment Required: Stripe payment required for POST /subscriptions: Your card was declined.): the box was removed and nothing is billed. Update the payment method at https://console.example/acme/billing, then re-run",
+      next: "The first charge failed (Payment Required: Stripe payment required for POST /subscriptions: Your card was declined.): the box is being removed and nothing is billed. Update the payment method at https://console.example/acme/billing, then re-run",
     });
     expect(f.calls.filter((c) => c === "unprepare")).toEqual(["unprepare"]);
   });
