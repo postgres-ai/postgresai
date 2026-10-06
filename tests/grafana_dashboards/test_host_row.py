@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -84,11 +86,11 @@ def _providers() -> dict[str, set[str]]:
     return {"rds": _written_by_rds(), "supabase": rules["host-supabase"], "clickhouse": rules["host-clickhouse"]}
 
 
-def _panels(path):
+def _panels(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text())["panels"]
 
 
-def _row(path):
+def _row(path: Path) -> dict[str, Any]:
     rows = [p for p in _panels(path) if p.get("type") == "row" and p["title"].startswith("Host")]
     assert [r["title"] for r in rows] == ["Host"], "one Host row replaces the per-provider rows"
     return rows[0]
@@ -98,17 +100,17 @@ DB_LOAD_ROW = "RDS DB load (Performance Insights)"
 SELECTOR = '{cluster="$cluster_name", node_name="$node_name"}'
 
 
-def _db_load_row(path):
+def _db_load_row(path: Path) -> dict[str, Any]:
     rows = [p for p in _panels(path) if p.get("type") == "row" and p["title"] == DB_LOAD_ROW]
     assert len(rows) == 1
     return rows[0]
 
 
-def _host_panels(path):
+def _host_panels(path: Path) -> dict[str, dict[str, Any]]:
     return {p["title"]: p for p in _row(path)["panels"]}
 
 
-def _family(expr):
+def _family(expr: str) -> str:
     return expr.split("{", 1)[0]
 
 
