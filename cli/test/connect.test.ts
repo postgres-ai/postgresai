@@ -554,10 +554,33 @@ describe("connect", () => {
   // Two runs at once for databases on one server would each set a new
   // password: the platform's per-server lock lets one through.
   const SERVER = "abc123.us-east-1.aws.pg.clickhouse.cloud";
+  for (const underLock of [false, true]) {
+    test.each([
+      ["a custom name with a known cluster", { name: "Production orders", cluster: `${SERVER}:5432` }, "would"],
+      ["a custom name without a cluster", { name: "Production orders", cluster: null }, "may"],
+      ["a legacy name with percent escapes", { name: `${SERVER}/orders%20data` }, "may"],
+      ["a legacy name with non-ASCII text", { name: `${SERVER}/注文` }, "may"],
+    ] as const)(`--reset-password with %s (${underLock ? "under the lock" : "before the lock"}): no reset`, async (_, identity, certainty) => {
+      const other = row("active", { ...identity, id: "i-7" });
+      const { deps, calls } = fake({ rows: underLock ? [undefined, other] : [other] });
+      const result = await connect(CH, { resetPassword: true, waitMs: 0 }, deps);
+      expect(result.status).toBe("action_required");
+      expect(result.next).toContain(`${certainty} cut off the monitoring of ${other.name}`);
+      expect(calls).toEqual(underLock ? ["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"] : ["list"]);
+    });
+  }
+
+  test.each(["Production orders", `${SERVER}/orders`, "Monitoring 16bb1d"])("a known other cluster overrides its display name (%s)", async (name) => {
+    const identity = { name, cluster: "other.example.com:5432" };
+    const { deps, calls } = fake({ rows: [row("active", identity), row("active", identity)] });
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).status).toBe("provisioning");
+    expect(calls).toContain("prepare clickhouse");
+  });
+
   test("--reset-password takes the server's lock after the price, checks the server again under it, and releases it once the box is requested", async () => {
     const { deps, calls } = fake({ rows: [undefined, undefined, row("launch_requested")] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).status).toBe("provisioning");
-    expect(calls.slice(0, 5)).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "prepare clickhouse"]);
+    expect(calls.slice(0, 5)).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "prepare clickhouse"]);
     expect(calls[5]).toStartWith("create ");
     expect(calls[6]).toBe("resetUnlock l-1");
   });
@@ -566,9 +589,9 @@ describe("connect", () => {
     const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 409): Another pgai connect --reset-password for ... is running", 409); } });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME, ...FREE,
-      next: `Another pgai connect --reset-password for ${SERVER} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)`,
+      next: `Another pgai connect --reset-password for ${SERVER}:5432 is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)`,
     });
-    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`]);
   });
 
   test("--reset-password: a database on the server connected while this run waited is seen under the lock", async () => {
@@ -576,7 +599,7 @@ describe("connect", () => {
     const { deps, calls } = fake({ rows: [undefined, other] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
       `A new password for postgres_ai_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead, or pgai disconnect ${SERVER}/orders --yes first`);
-    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"]);
   });
 
   // A box whose URL the platform could not read is named "Monitoring <6 hex>":
@@ -594,7 +617,7 @@ describe("connect", () => {
     const { deps, calls } = fake({ rows: [undefined, unread] });
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
       "A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai disconnect 'Monitoring 16bb1d' --yes first");
-    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"]);
   });
 
   test("--reset-password against a platform without the lock: nothing reset, PGAI_MON_PASSWORD instead", async () => {
@@ -612,14 +635,14 @@ describe("connect", () => {
     test(`--reset-password when the lock request gets ${what}: the error, nothing prepared or requested`, async () => {
       const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); throw err; } });
       await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow(err.message);
-      expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
+      expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`]);
     });
   }
 
   test("--reset-password when the platform answers the lock without a lock id: the error, nothing prepared or requested", async () => {
     const { deps, calls } = fake({ resetLock: async (server) => { calls.push(`resetLock ${server}`); return {} as never; } });
     await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow("cloud_monitoring_reset_lock returned no lock_id: nothing was changed");
-    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`]);
   });
 
   test("--reset-password: the same database connected by the run that held the lock is seen under it", async () => {
@@ -628,7 +651,7 @@ describe("connect", () => {
       status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1", ...FREE,
       next: `${CH_NAME} is already connected, and its monitoring uses the current password: pgai disconnect ${CH_NAME} --yes first`,
     });
-    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}`, "list", "resetUnlock l-1"]);
+    expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"]);
   });
 
   test("--reset-password: the server is one lock and one name whatever its case or trailing dot, with a port too", async () => {
@@ -638,10 +661,10 @@ describe("connect", () => {
     expect(calls).toEqual(["list"]);
     const second = fake();
     await connect(CH.replace(SERVER, SERVER.toUpperCase()), { resetPassword: true, waitMs: 0 }, second.deps);
-    expect(second.calls[2]).toBe(`resetLock ${SERVER}`);
+    expect(second.calls[2]).toBe(`resetLock ${SERVER}:5432`);
     const port = fake();
     await connect(CH.replace(`${SERVER}:5432`, `${SERVER.toUpperCase()}.:6432`), { resetPassword: true, waitMs: 0 }, port.deps);
-    expect(port.calls[2]).toBe(`resetLock ${SERVER}:6432`);
+    expect(port.calls[2]).toBe(`resetLock ${SERVER}.:6432`);
   });
 
   test("--reset-password: a refused launch drops the generated role before the lock is released", async () => {
@@ -935,7 +958,7 @@ describe("connect on the paid path: the price before the box", () => {
       const f = make({}, { rows: [undefined], create: async () => { throw err; } });
       f.deps.prepare = async (_u, provider, o) => { f.calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }; };
       expect((await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, f.deps)).status).toBe("action_required");
-      expect(f.calls).toEqual(["list", "check self-managed", "quote", "resetLock db.example.com", "list", "prepare self-managed", "unprepare", "resetUnlock l-1"]);
+      expect(f.calls).toEqual(["list", "check self-managed", "quote", "resetLock db.example.com:5432", "list", "prepare self-managed", "unprepare", "resetUnlock l-1"]);
     });
   }
 
@@ -979,6 +1002,17 @@ describe("connect on the paid path: the price before the box", () => {
     const seen: (boolean | undefined)[] = [];
     deps.list = async () => [{ ...row("launch_requested", FIRST), ...over }];
     deps.prepare = storedPrepare(seen);
+    await connect(SH, { waitMs: 0, yes: true }, deps);
+    expect(seen).toEqual([expected, expected]);
+  });
+
+  test.each([
+    ["a custom name on this cluster", { name: "Production orders", cluster: "db.example.com:5432" }, true],
+    ["a matching name on another cluster", { name: FIRST.name, cluster: "other.example.com:5432" }, undefined],
+    ["a custom name without a known cluster", { name: "db.example.com/orders data", cluster: null }, undefined],
+  ] as const)("the stored password follows cluster identity: %s", async (_, identity, expected) => {
+    const seen: (boolean | undefined)[] = [];
+    const { deps } = make({}, { list: async () => [row("active", { ...FIRST, ...identity })], prepare: storedPrepare(seen) });
     await connect(SH, { waitMs: 0, yes: true }, deps);
     expect(seen).toEqual([expected, expected]);
   });
