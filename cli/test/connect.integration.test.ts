@@ -558,7 +558,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         const n = await atPrompt("n\r");
         expect(n.status).toBe(3);
         expect(n.screen).toMatch(/Billing: \$512\.00\/month per box \(scale plan\) \(\+\d+s\)\nProvision /);
-        expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per box (scale plan)");
+        expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per database cluster (scale plan)");
         expect((await atPrompt("yes, but not now\r")).status).toBe(3);
         expect(n.calls.filter((p) => p.includes("cloud_monitoring_connect"))).toEqual([]);
         expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(0);
