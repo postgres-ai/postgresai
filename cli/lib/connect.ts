@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import { parseIntoClientConfig } from "pg-connection-string";
 import { generateAllReports } from "./checkup";
 import { createCheckupReport, uploadCheckupReportJson } from "./checkup-upload";
 import { findService } from "./clickhouse";
@@ -259,11 +260,21 @@ const URL_PARAMS_TLS = ["sslrootcert", "sslcert", "sslkey", "uselibpqcompat"];
  * agent's URL may carry only what the box gets (and its password): `sslcert`
  * or `sslkey` would present this machine's files to a host the agent chose.
  */
-export function checkUrlParams(url: string, agent?: boolean): void {
-  const keys = [...new Set(new URL(url).searchParams.keys())];
+export function checkUrlParams(url: string, agent?: boolean) {
+  const u = new URL(url);
+  const keys = [...new Set(u.searchParams.keys())];
   if (agent) {
+    for (const key of ["password", "user", "host", "port", "dbname"]) {
+      if (u.searchParams.getAll(key).length > 1) throw new Error(`database_url query parameter ${key} must appear only once`);
+    }
+    if (u.password && u.searchParams.has("password")) throw new Error("database_url must give the password only once, in the authority or in ?password=");
     const refused = keys.filter((k) => k !== "password" && !URL_PARAMS_KEPT.includes(k));
     if (refused.length) throw new Error(`database_url may carry only these query parameters: ${URL_PARAMS_KEPT.join(", ")} (got: ${refused.join(", ")})`);
+    u.searchParams.delete("sslmode");
+    u.searchParams.delete("channel_binding");
+    const config = parseIntoClientConfig(u.toString());
+    if (!/^postgres(ql)?:$/.test(u.protocol) || typeof config.password !== "string" || !config.password) throw new Error("database_url must be postgresql://user:password@host:5432/dbname, with the password in it");
+    return { ...config, password: config.password };
   }
   const moved = keys.filter((k) => k === "host" || k === "port");
   if (moved.length) throw new Error(`The URL's query string sets ${moved.join(" and ")}: put the host and the port in the URL itself (postgresql://user:password@host:5432/dbname), so that the server prepared is the server monitored`);
@@ -658,7 +669,12 @@ export interface PrepareOptions {
 
 /** A session over `url`; `refusedTls`: the server refused TLS, and the session fell back to plaintext. */
 async function openConnection(url: string, opts: PrepareOptions) {
+  const config = checkUrlParams(url, opts.agent);
   const conn = resolveAdminConnection({ conn: url });
+  if (config) {
+    const { connectionString, ...explicit } = conn.clientConfig;
+    conn.clientConfig = { ...config, ...explicit };
+  }
   const fallback = !opts.agent && !!conn.sslFallbackEnabled;
   const { client, usedSsl } = await connectWithSslFallback(opts.Client ?? Client, { ...conn, sslFallbackEnabled: fallback });
   return { client, usedSsl, refusedTls: fallback && !usedSsl };

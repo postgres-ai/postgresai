@@ -112,10 +112,8 @@ export async function handleToolCall(
       const scope = resolveMcpOrgScope(args, apiKey, cfg);
       if (scope.error) return scope.error;
       const url = String(args.database_url ?? "");
-      // The URL comes from an agent: it must carry its own password, so that
-      // PGPASSWORD (or a password file) of this process is never sent to its host.
       const u = parseUrl(url);
-      if (!u || !/^postgres(ql)?:$/.test(u.protocol) || !(u.password || u.searchParams.get("password"))) {
+      if (!u || !/^postgres(ql)?:$/.test(u.protocol)) {
         throw new Error("database_url must be postgresql://user:password@host:5432/dbname, with the password in it");
       }
       const result = await connect(url, {

@@ -1074,7 +1074,7 @@ describe("prepareDatabase (a fake pg client)", () => {
         const u = config.connectionString ? new URL(config.connectionString) : undefined;
         for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) u?.searchParams.delete(key);
         const client = new Client({ ...config, connectionString: u?.toString() });
-        this.user = client.user;
+        this.user = client.user ?? "";
         this.password = client.password ?? "";
         if (this.user === "postgres_ai_mon" && config.connectionString) monUrls.push(config.connectionString);
       }
@@ -1105,7 +1105,7 @@ describe("prepareDatabase (a fake pg client)", () => {
       }
       async end() {}
     }
-    const prepare = (opts: PrepareOptions = {}, url = ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
+    const prepare = (opts: PrepareOptions = {}, url = opts.agent ? "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=pgai" : ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
     return { prepare, ran, sqls, monLogins, monUrls };
   }
   const withMonPassword = async <T>(value: string | undefined, fn: () => Promise<T>) => {
@@ -1600,7 +1600,7 @@ describe("MCP connect_database", () => {
 
   test("a database that cannot be reached: the agent is told so, and no price is quoted first", async () => {
     const quotes: unknown[] = [];
-    const connection = spyOn(Client.prototype, "connect").mockRejectedValue(new Error("offline connection refused"));
+    const connection = spyOn(Client.prototype, "connect").mockImplementation(() => { throw new Error("offline connection refused"); });
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
       async fetch(req) {
@@ -1637,11 +1637,11 @@ describe("MCP connect_database", () => {
 
   test.each(["password=x&password=", "password=&password=x"])("duplicate password parameters are refused by the MCP tool: %s", async (query) => {
     const requests: string[] = [];
-    const fetch = spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const fetch = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request) => {
       requests.push(String(input));
       return Response.json([row("active", { name: "db.example.com/app" })]);
-    });
-    const connection = spyOn(Client.prototype, "connect").mockRejectedValue(new Error("offline stop"));
+    }) as typeof globalThis.fetch);
+    const connection = spyOn(Client.prototype, "connect").mockImplementation(() => { throw new Error("offline stop"); });
     try {
       const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url: `postgresql://postgres@db.example.com/app?${query}` } } }, { apiKey: "k", apiBaseUrl: "https://api.example", uiBaseUrl: "https://console.example" });
       expect(result).toEqual({ content: [{ type: "text", text: "database_url query parameter password must appear only once" }], isError: true });
