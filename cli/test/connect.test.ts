@@ -1179,6 +1179,10 @@ describe("disconnect: what happened to the billing", () => {
     expect(disconnectBilling({ billing: { subscription: "active", quantity: 2 } })).toBe("2 database clusters left on the subscription");
     expect(disconnectBilling({ billing: { subscription: "active", quantity: 1 } })).toBe("1 database cluster left on the subscription");
     expect(disconnectBilling({ billing_warning: "Failed to cancel org subscription: stripe down" })).toBe("not released (Failed to cancel org subscription: stripe down): contact support");
+    // The last cluster: the unused time goes back to the card (or stays as credit when the refund failed).
+    expect(disconnectBilling({ billing: { subscription: "canceled", quantity: 0, refunded: 49907, currency: "usd" } })).toBe("subscription canceled: no further charges; refunded $499.07 to your card");
+    expect(disconnectBilling({ billing: { subscription: "canceled", quantity: 0, credited: true }, billing_warning: "The refund failed: card expired. The unused time stays as account credit." }))
+      .toBe("subscription canceled: no further charges; the refund failed (The refund failed: card expired. The unused time stays as account credit.)");
     expect(disconnectBilling({})).toBeUndefined();
     expect(disconnectBilling(null)).toBeUndefined();
   });
