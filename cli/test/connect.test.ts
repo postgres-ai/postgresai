@@ -3,7 +3,7 @@ import { Client, type ClientConfig } from "pg";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { disconnectBilling, errorText, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { disconnectBilling, errorText, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai connect` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -1067,9 +1067,11 @@ describe("prepareDatabase (a fake pg client)", () => {
     const sqls: string[] = [];
     const monLogins: string[] = [];
     const monUrls: string[] = [];
+    const sessions: string[][] = [];
     class FakeClient {
       password: string;
       private user: string;
+      private statements: string[] = [];
       constructor(private config: ClientConfig) {
         const u = config.connectionString ? new URL(config.connectionString) : undefined;
         for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) u?.searchParams.delete(key);
@@ -1080,12 +1082,15 @@ describe("prepareDatabase (a fake pg client)", () => {
       }
       async connect() {
         if (this.config.ssl && me.name === "no-tls") throw new Error("The server does not support SSL connections");
-        if (this.user !== "postgres_ai_mon") return;
-        const answer = logins[Math.min(monLogins.length, logins.length - 1)];
-        monLogins.push(this.password);
-        if (answer !== "ok") throw answer;
+        if (this.user === "postgres_ai_mon") {
+          const answer = logins[Math.min(monLogins.length, logins.length - 1)];
+          monLogins.push(this.password);
+          if (answer !== "ok") throw answer;
+        }
+        sessions.push(this.statements);
       }
       async query(sql: string) {
+        this.statements.push(sql);
         if (/session_user as name/.test(sql)) {
           // Only the columns the SQL selects, each from what it is: a column dropped from the query is missing here too.
           const row: Record<string, unknown> = { name: "postgres", db: "app", admin: true, iterations: "4096", ...me };
@@ -1096,8 +1101,8 @@ describe("prepareDatabase (a fake pg client)", () => {
           };
           return { rows: [Object.fromEntries(Object.entries(selects).filter(([, re]) => re.test(sql)).map(([k]) => [k, row[k]]))] };
         }
-        if (this.user !== "postgres_ai_mon" && !/statement_timeout/.test(sql)) ran.push(sql.trim().split("\n")[0]);
-        if (this.user !== "postgres_ai_mon" && !/session_user as name|statement_timeout/.test(sql)) sqls.push(sql);
+        if (this.user !== "postgres_ai_mon" && !/^set (statement_timeout|search_path) =/i.test(sql)) ran.push(sql.trim().split("\n")[0]);
+        if (this.user !== "postgres_ai_mon" && !/session_user as name/.test(sql) && !/^set (statement_timeout|search_path) =/i.test(sql)) sqls.push(sql);
         if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
         // The monitoring role's own session: every check of verifyInitSetup passes.
         if (me.name === "postgres_ai_mon") return { rowCount: 1, rows: [{ ok: true, rolconfig: ["search_path=postgres_ai, public, pg_catalog"] }] };
@@ -1106,7 +1111,8 @@ describe("prepareDatabase (a fake pg client)", () => {
       async end() {}
     }
     const prepare = (opts: PrepareOptions = {}, url = opts.agent ? "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=pgai" : ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
-    return { prepare, ran, sqls, monLogins, monUrls };
+    const unprepare = () => unprepareDatabase(ADMIN, { Client: FakeClient as unknown as PrepareOptions["Client"] });
+    return { prepare, unprepare, ran, sqls, monLogins, monUrls, sessions };
   }
   const withMonPassword = async <T>(value: string | undefined, fn: () => Promise<T>) => {
     if (value !== undefined) process.env.PGAI_MON_PASSWORD = value;
@@ -1116,6 +1122,32 @@ describe("prepareDatabase (a fake pg client)", () => {
       delete process.env.PGAI_MON_PASSWORD;
     }
   };
+
+  test.each([false, true])("every session sets a safe search_path before probes, setup and drop (agent=%p)", async (agent) => {
+    const s = server({ mon_exists: false });
+    expect(await withMonPassword(undefined, () => s.prepare({ check: true, agent }))).toEqual({ checked: true });
+    expect(await withMonPassword(undefined, () => s.prepare({ agent }))).toHaveProperty("monitoringUrl");
+    expect(await s.unprepare()).toBe(true);
+    expect(s.sessions.length).toBe(4);
+    for (const statements of s.sessions) {
+      expect(statements.filter((sql) => !/^set statement_timeout =/i.test(sql))[0]).toBe("set search_path = pg_catalog, pg_temp");
+    }
+    expect(s.sqls.join("\n")).toMatch(/create extension if not exists pg_stat_statements with schema public;/);
+    expect(s.sqls.join("\n")).toMatch(/create extension if not exists rds_tools with schema rds_tools;/);
+  });
+
+  test("the stored-password plan, TLS fallback and failed-plan cleanup keep a safe search_path", async () => {
+    const reused = server({ mon_exists: true });
+    expect(await withMonPassword(undefined, () => reused.prepare({ storedPassword: true }))).toHaveProperty("storedPassword", true);
+    const failed = server({ name: "no-tls", mon_exists: false, fails: /create extension/ });
+    await expect(withMonPassword(undefined, () => failed.prepare({}, "postgresql://postgres:adminpw@db.example.com:5432/app"))).rejects.toThrow('Failed at step "02.extensions"');
+    expect(failed.ran.at(-1)).toBe("drop role postgres_ai_mon");
+    expect(reused.sessions.length).toBe(1);
+    expect(failed.sessions.length).toBe(2);
+    for (const statements of [...reused.sessions, ...failed.sessions]) {
+      expect(statements.filter((sql) => !/^set statement_timeout =/i.test(sql))[0]).toBe("set search_path = pg_catalog, pg_temp");
+    }
+  });
 
   test("an existing role and a rejected PGAI_MON_PASSWORD: refused before anything runs", async () => {
     const s = server({ mon_exists: true }, [pgError("28P01", "password authentication failed")]);

@@ -4767,6 +4767,24 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
       });
     }
 
+    test.each(["public", "extensions", 'extension"schema'])("qualifies extension views in %s without relying on search_path", async (schema) => {
+      const mockClient = createMockClient({
+        ...createVersionMockData(16, 3),
+        pgStatStatementsExtensionRows: [{ schema }],
+        pgStatStatementsStatsRows: [{ cnt: "2", total_calls: "42" }],
+        pgStatKcacheExtensionRows: [{ schema }],
+        pgStatKcacheStatsRows: [{ cnt: "1", total_exec_time: "12.5", total_user_time: "8.5", total_system_time: "4" }],
+      });
+      const queries: string[] = [];
+      const client = { query: async (sql: string) => { queries.push(sql); return mockClient.query(sql); } };
+      const report = await checkup.REPORT_GENERATORS.D004(client as any, "test-node");
+      expect(report.results["test-node"].data.pg_stat_statements_status).toMatchObject({ metrics_count: 2, total_calls: 42 });
+      expect(report.results["test-node"].data.pg_stat_kcache_status).toMatchObject({ metrics_count: 1, total_exec_time: 12.5 });
+      const quoted = `"${schema.replace(/"/g, '""')}"`;
+      expect(queries.filter((sql) => sql.includes(`from ${quoted}."pg_stat_statements"`)).length).toBe(2);
+      expect(queries.filter((sql) => sql.includes(`from ${quoted}."pg_stat_kcache"`)).length).toBe(2);
+    });
+
     test("surfaces populated extension metrics", async () => {
       const mockClient = createMockClient({
         ...createVersionMockData(16, 3),
@@ -4792,13 +4810,13 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
             unit_normalized: null,
           },
         ],
-        pgStatStatementsExtensionRows: [{ exists: 1 }],
+        pgStatStatementsExtensionRows: [{ schema: "public" }],
         pgStatStatementsStatsRows: [{ cnt: "2", total_calls: "42" }],
         pgStatStatementsSampleRows: [
           { queryid: "101", user: "app", database: "testdb", calls: "40" },
           { queryid: "202", user: "worker", database: "testdb", calls: "2" },
         ],
-        pgStatKcacheExtensionRows: [{ exists: 1 }],
+        pgStatKcacheExtensionRows: [{ schema: "public" }],
         pgStatKcacheStatsRows: [{ cnt: "1", total_exec_time: "12.5", total_user_time: "8.5", total_system_time: "4" }],
         pgStatKcacheSampleRows: [{ queryid: "101", user: "app", exec_total_time: "12.5" }],
       });

@@ -9,6 +9,7 @@ import * as os from "os";
 import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
+import { prepareDatabase } from "../lib/connect";
 
 const TEST_TIMEOUT = 30000; // 30 seconds
 
@@ -209,6 +210,37 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
 
   // Use a shared postgres instance for all tests in this describe block
   // Each test will reset state as needed
+
+  test("connect setup ignores public.format and installs pg_stat_statements in public", async () => {
+    pg = await createTempPostgres();
+    try {
+      const c = new Client({ connectionString: pg.adminUri });
+      await c.connect();
+      try {
+        await c.query("alter database testdb set search_path = public, pg_catalog");
+        await c.query(`create function public.format(text, text) returns text language plpgsql as $$
+begin
+  raise exception 'public.format called';
+end;
+$$`);
+      } finally {
+        await c.end();
+      }
+      const prepared = await prepareDatabase(`${pg.adminUri}?sslmode=disable`, "self-managed", { agent: true });
+      expect(prepared).toHaveProperty("monitoringUrl");
+      const check = new Client({ connectionString: pg.adminUri });
+      await check.connect();
+      try {
+        expect((await check.query(`select n.nspname from pg_catalog.pg_extension e
+join pg_catalog.pg_namespace n on n.oid = e.extnamespace
+where e.extname = 'pg_stat_statements'`)).rows).toEqual([{ nspname: "public" }]);
+      } finally {
+        await check.end();
+      }
+    } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
 
   test("supports URI / conninfo / psql-like connection styles", async () => {
     pg = await createTempPostgres();
