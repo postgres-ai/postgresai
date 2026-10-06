@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { Client, type ClientConfig } from "pg";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
@@ -468,6 +469,51 @@ describe("connect", () => {
       delete process.env.CLICKHOUSE_KEY_ID;
       delete process.env.CLICKHOUSE_KEY_SECRET;
     }
+  });
+
+  test.each(["password", "user", "host", "port", "dbname"])("an agent's URL refuses repeated %s before calling dependencies", async (key) => {
+    const { deps, calls } = fake();
+    await expect(connect(`postgresql://postgres@db.example.com/app?${key}=x&${key}=`, { waitMs: 0, agent: true }, deps))
+      .rejects.toThrow(`database_url query parameter ${key} must appear only once`);
+    expect(calls).toEqual([]);
+  });
+
+  test("an agent's URL refuses a password in both the authority and the query", async () => {
+    const { deps, calls } = fake();
+    await expect(connect("postgresql://postgres:old@db.example.com/app?password=right", { waitMs: 0, agent: true }, deps))
+      .rejects.toThrow("database_url must give the password only once");
+    expect(calls).toEqual([]);
+  });
+
+  test("an agent's empty effective password never opens a connection with PGPASSWORD set", async () => {
+    const previous = process.env.PGPASSWORD;
+    process.env.PGPASSWORD = "ambient-test-password";
+    const configs: ClientConfig[] = [];
+    class FakeClient {
+      constructor(config: ClientConfig) { configs.push(config); }
+      async connect() { throw new Error("unexpected connection"); }
+    }
+    try {
+      for (const url of ["postgresql://postgres@db.example.com/app?password=", "postgresql://postgres@db.example.com/app"]) {
+        const error = await prepareDatabase(url, "self-managed", { agent: true, Client: FakeClient as unknown as PrepareOptions["Client"] }).catch((err) => err);
+        expect(configs).toEqual([]);
+        expect(error.message).toBe("database_url must be postgresql://user:password@host:5432/dbname, with the password in it");
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PGPASSWORD;
+      else process.env.PGPASSWORD = previous;
+    }
+  });
+
+  test.each(["postgresql://postgres:explicit@db.example.com/app", "postgresql://postgres@db.example.com/app?password=explicit"])("an agent's client config carries its explicit password: %s", async (url) => {
+    const configs: ClientConfig[] = [];
+    class FakeClient {
+      constructor(config: ClientConfig) { configs.push(config); }
+      async connect() { throw new Error("offline stop"); }
+    }
+    await expect(prepareDatabase(url, "self-managed", { agent: true, Client: FakeClient as unknown as PrepareOptions["Client"] })).rejects.toThrow("offline stop");
+    expect(configs[0].password).toBe("explicit");
+    expect(configs[0].connectionString).toBeUndefined();
   });
 
   test("--reset-password: refused while another database on the same server is monitored with postgres_ai_mon", async () => {
@@ -1024,12 +1070,13 @@ describe("prepareDatabase (a fake pg client)", () => {
     class FakeClient {
       password: string;
       private user: string;
-      constructor(private config: { connectionString: string; ssl?: unknown }) {
-        const u = new URL(config.connectionString);
-        this.user = u.username;
-        // As pg does: PGPASSWORD for a URL without a password.
-        this.password = decodeURIComponent(u.password) || process.env.PGPASSWORD || "";
-        if (this.user === "postgres_ai_mon") monUrls.push(config.connectionString);
+      constructor(private config: ClientConfig) {
+        const u = config.connectionString ? new URL(config.connectionString) : undefined;
+        for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) u?.searchParams.delete(key);
+        const client = new Client({ ...config, connectionString: u?.toString() });
+        this.user = client.user;
+        this.password = client.password ?? "";
+        if (this.user === "postgres_ai_mon" && config.connectionString) monUrls.push(config.connectionString);
       }
       async connect() {
         if (this.config.ssl && me.name === "no-tls") throw new Error("The server does not support SSL connections");
@@ -1553,6 +1600,7 @@ describe("MCP connect_database", () => {
 
   test("a database that cannot be reached: the agent is told so, and no price is quoted first", async () => {
     const quotes: unknown[] = [];
+    const connection = spyOn(Client.prototype, "connect").mockRejectedValue(new Error("offline connection refused"));
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
       async fetch(req) {
@@ -1569,6 +1617,7 @@ describe("MCP connect_database", () => {
       expect(quotes).toEqual([]);
     } finally {
       server.stop(true);
+      connection.mockRestore();
     }
   });
 
@@ -1583,6 +1632,23 @@ describe("MCP connect_database", () => {
     for (const database_url of ["postgresql://postgres@db.example.com:5432/app", "host=db dbname=app", undefined]) {
       const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url } } }, opts);
       expect(result).toEqual({ content: [{ type: "text", text: "database_url must be postgresql://user:password@host:5432/dbname, with the password in it" }], isError: true });
+    }
+  });
+
+  test.each(["password=x&password=", "password=&password=x"])("duplicate password parameters are refused by the MCP tool: %s", async (query) => {
+    const requests: string[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(String(input));
+      return Response.json([row("active", { name: "db.example.com/app" })]);
+    });
+    const connection = spyOn(Client.prototype, "connect").mockRejectedValue(new Error("offline stop"));
+    try {
+      const result = await handleToolCall({ params: { name: "connect_database", arguments: { database_url: `postgresql://postgres@db.example.com/app?${query}` } } }, { apiKey: "k", apiBaseUrl: "https://api.example", uiBaseUrl: "https://console.example" });
+      expect(result).toEqual({ content: [{ type: "text", text: "database_url query parameter password must appear only once" }], isError: true });
+      expect(requests).toEqual([]);
+    } finally {
+      fetch.mockRestore();
+      connection.mockRestore();
     }
   });
 });
