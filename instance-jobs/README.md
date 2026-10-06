@@ -359,9 +359,10 @@ primary's series to `host_*`, which the **Host** row of Dashboard 01 reads; see
 [docs/host-metrics.md](../docs/host-metrics.md).
 
 Credential lifecycle: the key is cached for one hour, then fetched again. A
-`401`/`403` from Supabase discards it and triggers one immediate refetch; a
-second rejection answers 502 and the next fetch waits for the five-minute
-cooldown. Nothing re-checks the platform inside the hour, so a connection or
+`401`/`403` from Supabase discards it and permits one refetch if the five-minute
+cooldown since the last fetch has elapsed. During the cooldown the relay answers
+503 until it can fetch again. A second rejection answers 502 and the next fetch
+waits for the cooldown. Nothing re-checks the platform inside the hour, so a connection or
 consent revoked in the console keeps working for up to one hour. The credential
 RPC runs detached from the scrape request (10-second timeout), so a scraper
 that gives up does not consume the cooldown.
