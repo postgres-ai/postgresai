@@ -22,7 +22,8 @@ def _response(status: int, body=None):
 def _run(monkeypatch, response):
     monkeypatch.setattr("sys.argv", ["token_renew", API_URL])
     monkeypatch.setattr("sys.stdin", io.StringIO("secret-token-123\n"))
-    with patch.object(token_renew.requests, "post", return_value=response) as post:
+    with patch.object(token_renew.requests, "post", return_value=response,
+                      side_effect=response if isinstance(response, Exception) else None) as post:
         code = token_renew.main()
     return code, post
 
@@ -59,4 +60,27 @@ def test_a_refused_renewal_warns(monkeypatch, capsys):
     assert code == 1
     out = capsys.readouterr()
     assert "token renewal failed" in out.err
+    assert "secret-token-123" not in out.out + out.err
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure, warning", [
+    ("transport", "ConnectionError"),
+    ("json", "JSONDecodeError"),
+    ("null", "TypeError"),
+])
+def test_failed_renewal_warns_without_printing_the_token(monkeypatch, capsys, failure, warning):
+    response = _response(200)
+    if failure == "transport":
+        response = requests.ConnectionError("request failed for secret-token-123")
+    elif failure == "json":
+        response.json.side_effect = requests.exceptions.JSONDecodeError(
+            "invalid response for secret-token-123", "not JSON", 0
+        )
+
+    code, _ = _run(monkeypatch, response)
+
+    assert code == 1
+    out = capsys.readouterr()
+    assert f"WARNING token renewal failed: {warning}" in out.err
     assert "secret-token-123" not in out.out + out.err
