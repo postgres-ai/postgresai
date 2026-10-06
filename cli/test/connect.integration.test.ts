@@ -133,6 +133,48 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await still.end();
   });
 
+  test("a second database with the password PostgresAI keeps for the server: over TLS, no PGAI_MON_PASSWORD and the role's password stays; without TLS, refused before anything runs, with the way out", async () => {
+    const c = await admin();
+    await c.query("drop database if exists pgai_connect_db2");
+    await c.query("create database pgai_connect_db2");
+    await c.query("revoke connect on database pgai_connect_db2 from public");
+    const verifier = async () => (await c.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0].rolpassword;
+    const before = await verifier();
+    const tls = (await c.query("show ssl")).rows[0].ssl === "on";
+    // CI's server has TLS (cli:clickhouse-like:tests), so both halves run there.
+    if (process.env.CI) expect(tls).toBe(true);
+    const db2 = (sslmode: string) => { const u = new URL(ADMIN!); u.pathname = "/pgai_connect_db2"; u.searchParams.set("sslmode", sslmode); return u.toString(); };
+    // The first database's password, on the second database, as the box will log in.
+    const m = new URL(monUrlFromEarlierTest);
+    m.pathname = "/pgai_connect_db2";
+    const monLogsIn = () => { const mon = new Client({ connectionString: m.toString() }); return mon.connect().then(() => mon.end().then(() => true), () => false); };
+    try {
+      // sslmode=disable: on a server with TLS, the URL needs sslmode=require; on one without (ssl off), there is no TLS to ask for.
+      expect(await prepareDatabase(db2("disable"), "self-managed", { storedPassword: true, others: ["db.example.com/first"] })).toEqual({
+        next: tls
+          ? "postgres_ai_mon already exists on this server. The URL needs sslmode=require (or verify-full): the password PostgresAI keeps for this server is sent only over TLS, to a URL with each parameter once"
+          : "postgres_ai_mon already exists on this server, but this server takes no TLS, and PostgresAI sends the password it keeps for postgres_ai_mon only over TLS. Set PGAI_MON_PASSWORD to its password, or turn on TLS on the server (ssl = on) and put sslmode=require in the URL. If nobody has the password: pgai disconnect db.example.com/first --yes, then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and connect db.example.com/first again with it)",
+      });
+      if (!tls) {
+        // No sslmode: the session falls back to plaintext, which says the same.
+        const prefer = new URL(db2("disable"));
+        prefer.searchParams.delete("sslmode");
+        expect(await prepareDatabase(prefer.toString(), "self-managed", { storedPassword: true })).toHaveProperty("next", expect.stringContaining("but this server takes no TLS"));
+      }
+      expect(await monLogsIn()).toBe(false);
+      if (tls) {
+        const second = await prepareDatabase(db2("require"), "self-managed", { storedPassword: true });
+        if (!("monitoringUrl" in second)) throw new Error(`expected a URL, got: ${JSON.stringify(second)}`);
+        expect(second.storedPassword).toBe(true);
+        expect(new URL(second.monitoringUrl).password).toBe("");
+        expect(await monLogsIn()).toBe(true);
+      }
+      expect(await verifier()).toBe(before);
+    } finally {
+      await c.end();
+    }
+  });
+
   test("a new role's password with '%' and spaces survives into the monitoring URL", async () => {
     const c = await admin();
     await c.query("drop database if exists pgai_connect_db2");
