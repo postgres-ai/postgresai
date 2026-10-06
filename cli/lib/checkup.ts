@@ -2131,13 +2131,14 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
 
   try {
     const extCheck = await client.query(
-      "select 1 from pg_extension where extname = 'pg_stat_statements'"
+      "select n.nspname as schema from pg_catalog.pg_extension e join pg_catalog.pg_namespace n on n.oid = e.extnamespace where e.extname = 'pg_stat_statements'"
     );
     if (extCheck.rows.length > 0) {
       pgssAvailable = true;
+      const pgssView = quoteIdent(extCheck.rows[0].schema, "pg_stat_statements");
       const statsResult = await client.query(`
         select count(*) as cnt, coalesce(sum(calls), 0) as total_calls
-        from pg_stat_statements
+        from ${pgssView}
       `);
       pgssMetricsCount = parseInt(statsResult.rows[0]?.cnt || "0", 10);
       pgssTotalCalls = parseInt(statsResult.rows[0]?.total_calls || "0", 10);
@@ -2149,7 +2150,7 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
           coalesce(usename, 'unknown') as "user",
           coalesce(datname, 'unknown') as database,
           calls
-        from pg_stat_statements s
+        from ${pgssView} s
         left join pg_database d on s.dbid = d.oid
         left join pg_user u on s.userid = u.usesysid
         order by calls desc
@@ -2181,17 +2182,18 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
 
   try {
     const extCheck = await client.query(
-      "select 1 from pg_extension where extname = 'pg_stat_kcache'"
+      "select n.nspname as schema from pg_catalog.pg_extension e join pg_catalog.pg_namespace n on n.oid = e.extnamespace where e.extname = 'pg_stat_kcache'"
     );
     if (extCheck.rows.length > 0) {
       kcacheAvailable = true;
+      const kcacheView = quoteIdent(extCheck.rows[0].schema, "pg_stat_kcache");
       const statsResult = await client.query(`
         select
           count(*) as cnt,
           coalesce(sum(exec_user_time + exec_system_time), 0) as total_exec_time,
           coalesce(sum(exec_user_time), 0) as total_user_time,
           coalesce(sum(exec_system_time), 0) as total_system_time
-        from pg_stat_kcache
+        from ${kcacheView}
       `);
       kcacheMetricsCount = parseInt(statsResult.rows[0]?.cnt || "0", 10);
       kcacheTotalExecTime = parseFloat(statsResult.rows[0]?.total_exec_time || "0");
@@ -2204,7 +2206,7 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
           queryid::text as queryid,
           coalesce(usename, 'unknown') as "user",
           (exec_user_time + exec_system_time) as exec_total_time
-        from pg_stat_kcache k
+        from ${kcacheView} k
         left join pg_user u on k.userid = u.usesysid
         order by (exec_user_time + exec_system_time) desc
         limit 5

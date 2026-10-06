@@ -680,6 +680,7 @@ async function openConnection(url: string, opts: PrepareOptions) {
   }
   const fallback = !opts.agent && !!conn.sslFallbackEnabled;
   const { client, usedSsl } = await connectWithSslFallback(opts.Client ?? Client, { ...conn, sslFallbackEnabled: fallback });
+  await client.query("set search_path = pg_catalog, pg_temp");
   return { client, usedSsl, refusedTls: fallback && !usedSsl };
 }
 
