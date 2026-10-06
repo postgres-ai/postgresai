@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -58,5 +59,94 @@ func TestSupabaseHostMetricsCredentialKeepsTokenInHeaderOnly(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Errorf("status = %q, want ok", resp.Status)
+	}
+}
+
+func TestSupabaseCredentialAccessHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, secret string
+		https, want      bool
+	}{
+		{"both", "test-id", "test-secret", true, true},
+		{"padded", " test-id ", " test-secret ", true, true},
+		{"missing id", "", "test-secret", true, false},
+		{"missing secret", "test-id", "", true, false},
+		{"blank id", " \t ", "test-secret", true, false},
+		{"blank secret", "test-id", " \t ", true, false},
+		{"http", "test-id", "test-secret", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CF_ACCESS_CLIENT_ID", tc.id)
+			t.Setenv("CF_ACCESS_CLIENT_SECRET", tc.secret)
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id, secret := "", ""
+				if tc.want {
+					id, secret = "test-id", "test-secret"
+				}
+				if r.Header.Get("CF-Access-Client-Id") != id || r.Header.Get("CF-Access-Client-Secret") != secret {
+					t.Error("incorrect Cloudflare Access headers")
+				}
+				io.WriteString(w, `{"status":"ok"}`)
+			})
+			var srv *httptest.Server
+			if tc.https {
+				srv = httptest.NewTLSServer(handler)
+			} else {
+				srv = httptest.NewServer(handler)
+			}
+			defer srv.Close()
+			client := NewClient(srv.URL, "v", time.Second)
+			client.httpClient.Transport = srv.Client().Transport
+			_, err := client.SupabaseHostMetricsCredential(context.Background(), Credentials{}, "test-instance-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSupabaseCredentialAccessRedirectIsNotFollowed(t *testing.T) {
+	t.Setenv("CF_ACCESS_CLIENT_ID", "test-id")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "test-secret")
+	for _, code := range []int{301, 302, 307, 308} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("redirect reached another origin")
+				if r.Header.Get("CF-Access-Client-Id") != "" || r.Header.Get("CF-Access-Client-Secret") != "" {
+					t.Error("Access headers reached another origin")
+				}
+				io.WriteString(w, `{"status":"ok"}`)
+			}))
+			defer other.Close()
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("CF-Access-Client-Id") != "test-id" || r.Header.Get("CF-Access-Client-Secret") != "test-secret" {
+					t.Error("configured HTTPS origin did not receive Access headers")
+				}
+				http.Redirect(w, r, other.URL, code)
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "v", time.Second)
+			client.httpClient.Transport = srv.Client().Transport
+			if _, err := client.SupabaseHostMetricsCredential(context.Background(), Credentials{}, "test-instance-secret"); err == nil {
+				t.Error("redirect must fail the credential request")
+			}
+		})
+	}
+}
+
+func TestInstanceJobsComposePassesAccessVariables(t *testing.T) {
+	raw, err := os.ReadFile("../../../docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, service, ok := strings.Cut(string(raw), "\n  instance-jobs:\n")
+	if !ok {
+		t.Fatal("instance-jobs service missing")
+	}
+	service, _, _ = strings.Cut(service, "\n  rds-host-stats:\n")
+	for _, name := range []string{"CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"} {
+		if !strings.Contains(service, "- "+name+"=${"+name+":-}") {
+			t.Errorf("instance-jobs does not pass %s", name)
+		}
 	}
 }
