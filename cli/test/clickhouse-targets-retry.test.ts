@@ -105,12 +105,24 @@ test("targets add accepts the postgres:// URL ClickHouse Cloud hands out", async
   expect(existsSync(`${dir}/host-metrics/clickhouse-retry.yml`)).toBe(true);
 });
 
-test("targets add drops channel_binding, which pgwatch rejects as a server parameter", async () => {
-  const result = await run(credentials, `postgres://monitor:password@${hostname}:5432/postgres?sslmode=require&channel_binding=require`);
+test.each(["prefer", "disable"])("targets add drops channel_binding=%s with a note", async (mode) => {
+  const result = await run({}, `postgres://monitor:password@${hostname}:5432/postgres?sslmode=require&channel_binding=${mode}`);
   expect(result.code).toBe(0);
   expect(result.stderr).toContain("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   expect(result.stdout).not.toContain("Note: removed channel_binding");
   expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=require`);
+  expect(requests).toEqual([]);
+});
+
+test.each(["", "&sslmode=require", "&sslmode=disable"])("targets add refuses channel_binding=require before saving: %s", async (sslmode) => {
+  const result = await run({}, `${conn}?channel_binding=require${sslmode}`);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toBe(sslmode === "&sslmode=disable"
+    ? "channel_binding=require needs TLS, but sslmode=disable is set"
+    : "channel_binding=require is not supported by the monitoring collector; the target was not saved");
+  expect(result.stdout).not.toContain("added");
+  expect(requests).toEqual([]);
+  expect(readdirSync(dir)).toEqual([]);
 });
 
 test("targets add retries with the saved target labels and preserves instance data", async () => {
