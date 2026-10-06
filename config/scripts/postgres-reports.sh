@@ -82,6 +82,9 @@ while true; do
   fi
 
   if api_key="$(read_api_key)"; then
+    # A box token lives 90 days; renew it each cycle (internal#354). On stdin,
+    # not argv. A failure is logged and the reports go on.
+    printf '%s\n' "${api_key}" | python -m reporter.token_renew "${api_url}" || true
     if [[ -z "${project_name}" ]]; then
       # Upload requires a project name; there is no default. Still generate
       # reports locally (like the no-api-key branch) and only skip the upload.
