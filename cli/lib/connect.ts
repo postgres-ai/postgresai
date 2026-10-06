@@ -446,8 +446,13 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add" };
   }
 
+  const findDatabase = (list: Database[]) => {
+    const live = list.filter((d) => !disconnecting(d.status));
+    return live.find((d) => d.cluster === cluster && d.database != null && decodeURIComponent(d.database) === name.split("/").slice(1).join("/"))
+      ?? live.find((d) => (d.cluster == null || d.database == null) && d.name === name);
+  };
   const rows = opts.selfHosted ? [] : await deps.list();
-  let row = rows.find((d) => d.name === name && !disconnecting(d.status));
+  let row = findDatabase(rows);
   const fresh = !row;
   let note = "";
   let checkup: CheckupResult | undefined;
@@ -491,7 +496,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     // Without a cluster or a plain platform name, the server is not known.
     const unread = (d: Database) => !d.cluster && !/^[A-Za-z0-9._\[\]:-]{1,253}(?::[0-9]+)?(?:\/[A-Za-z0-9._-]*)?$/.test(d.name);
     const onServer = (d: Database) => d.cluster ? d.cluster === cluster : !unread(d) && serverOf(d.name) === serverOf(name);
-    const othersOnServer = (list: Database[]) => list.filter((d) => d.name !== name && !disconnecting(d.status) && (unread(d) || onServer(d)));
+    const othersOnServer = (list: Database[]) => list.filter((d) => !disconnecting(d.status) && (unread(d) || onServer(d)));
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
     const storedPassword = rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
@@ -551,7 +556,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       // What another run connected on this server before this one got the lock.
       if (lockId) {
         const now = await deps.list();
-        const same = now.find((d) => d.name === name && !disconnecting(d.status));
+        const same = findDatabase(now);
         if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${name} is already connected, and its monitoring uses the current password: pgai disconnect ${name} --yes first` };
         const others = othersOnServer(now);
         if (others.length) return { ...cutOff(others), ...billing };
