@@ -3474,14 +3474,14 @@ export function updatePgwatchConfig(configPath: string, updates: Record<string, 
 }
 
 /**
- * Record the API key in `.pgwatch-config`, where the reporter reads it.
+ * Record the API key and base in `.pgwatch-config`, where the reporter reads them.
  * False when it could not be written, having already said why. See #366.
  */
-function applyApiKey(projectDir: string, apiKey: string): boolean {
+function applyApiKey(projectDir: string, apiKey: string, opts?: CliOptions): boolean {
   const configPath = path.resolve(projectDir, ".pgwatch-config");
   try {
     // Keep reporter compatibility (docker-compose mounts .pgwatch-config)
-    updatePgwatchConfig(configPath, { api_key: apiKey });
+    updatePgwatchConfig(configPath, { api_key: apiKey, api_url: resolveBaseUrls(opts).apiBaseUrl });
   } catch (err) {
     console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
     return false;
@@ -4576,7 +4576,7 @@ mon
       if (apiKey) {
         console.log("Using API key provided via --api-key parameter");
         config.writeConfig({ apiKey });
-        if (!applyApiKey(projectDir, apiKey)) {
+        if (!applyApiKey(projectDir, apiKey, globalOpts)) {
           process.exitCode = 1;
           return;
         }
@@ -4596,7 +4596,7 @@ mon
 
             if (trimmedKey) {
               config.writeConfig({ apiKey: trimmedKey });
-              if (!applyApiKey(projectDir, trimmedKey)) {
+              if (!applyApiKey(projectDir, trimmedKey, globalOpts)) {
                 process.exitCode = 1;
                 return;
               }

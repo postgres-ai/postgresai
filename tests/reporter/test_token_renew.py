@@ -35,6 +35,7 @@ def test_renews_with_the_token_in_the_body(monkeypatch, capsys):
     post.assert_called_once_with(
         API_URL + "/rpc/monitoring_instance_token_renew",
         json={"access_token": "secret-token-123"},
+        headers={},
         timeout=30,
     )
     out = capsys.readouterr()
