@@ -1,5 +1,5 @@
 import { Client } from "pg";
-import { parseIntoClientConfig } from "pg-connection-string";
+import { parse as parseConnString, parseIntoClientConfig } from "pg-connection-string";
 import { generateAllReports } from "./checkup";
 import { createCheckupReport, uploadCheckupReportJson } from "./checkup-upload";
 import { findService } from "./clickhouse";
@@ -246,7 +246,10 @@ export function clusterOf(url: string): string | undefined {
 export const errorText = (err: unknown): string =>
   err instanceof AggregateError && !err.message ? err.errors.map(errorText).join("; ") : err instanceof Error ? err.message : String(err);
 
-const urlPassword = (u: URL) => decodeURIComponent(u.password) || u.searchParams.get("password") || "";
+const urlPassword = (u: URL) => {
+  for (const key of [...u.searchParams.keys()]) if (key !== "password") u.searchParams.delete(key);
+  return parseConnString(u.toString()).password || "";
+};
 
 // What of the given URL's query string goes to the box: `options`, certificate
 // paths and the rest describe this machine's session, not the box's.
