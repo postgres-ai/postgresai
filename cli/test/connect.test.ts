@@ -830,6 +830,15 @@ describe("connect on the paid path: the price before the box", () => {
     expect(f.calls.filter((c) => c === "unprepare")).toEqual(["unprepare"]);
   });
 
+  test("a retry polling an existing box reports its billing failure without dropping the role", async () => {
+    const f = make({}, { rows: [row("registered", { name: SH_NAME }), row("deleting_launched", { name: SH_NAME, billing_error: "Your card was declined." })] });
+    expect(await connect(SH, { waitMs: 60_000 }, f.deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: SH_NAME, id: "i-1",
+      next: "The first charge failed (Your card was declined.): the box was removed and nothing is billed. Update the payment method, then re-run",
+    });
+    expect(f.calls).toEqual(["list", "sleep", "list"]);
+  });
+
   test("the box removed while connect waits, with no reason given: failed, not waiting out the deadline", async () => {
     const f = make({}, { rows: [undefined, row("registered", { name: SH_NAME, provider: "self-managed", host_metrics: false }), undefined] });
     let t = 0;

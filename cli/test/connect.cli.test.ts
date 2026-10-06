@@ -30,14 +30,14 @@ const BILLED = {
   price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
 };
 
-async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] = [ROW]) {
+async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] | (() => unknown[]) = [ROW]) {
   const calls: string[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
       calls.push(`${path} ${req.headers.get("access-token")} ${await req.text()}`);
-      if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(rows);
+      if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(typeof rows === "function" ? rows() : rows);
       if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json(BILLED);
       if (path.endsWith("/rpc/cloud_monitoring_disconnect")) return Response.json({ id: "i-1", status: "deleting_launched" });
       return new Response("not found", { status: 404 });
@@ -194,6 +194,19 @@ describe("pgai connect / databases / status / disconnect", () => {
       expect(r.stdout + r.stderr).not.toContain("adminpw");
     });
   });
+
+  test("a retry whose existing box is removed for billing: action required, exit 3", async () => {
+    let listed = 0;
+    await withApi(async (env, calls) => {
+      const r = await run(["connect", CH, "--json"], env);
+      expect(r.status).toBe(3);
+      expect(r.json()).toEqual({
+        status: "action_required", provider: "clickhouse", name: NAME, id: "i-1",
+        next: "The first charge failed (Your card was declined.): the box was removed and nothing is billed. Update the payment method, then re-run",
+      });
+      expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}", "/rpc/cloud_monitoring_list test-key {}"]);
+    }, () => [{ ...ROW, status: listed++ ? "deleting_launched" : "registered", billing_error: "Your card was declined." }]);
+  }, 20_000);
 
   test("databases and status", async () => {
     await withApi(async (env) => {
