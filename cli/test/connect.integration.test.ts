@@ -557,7 +557,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         for (const key of ["\x03", "\x04"]) expect((await atPrompt(key)).status).toBe(130);
         const n = await atPrompt("n\r");
         expect(n.status).toBe(3);
-        expect(n.screen).toMatch(/Billing: \$512\.00\/month per box \(scale plan\) \(\+\d+s\)\nProvision /);
+        expect(n.screen).toMatch(/Billing: \$512\.00\/month per database cluster \(scale plan\) \(\+\d+s\)\nProvision /);
         expect(n.screen).toContain("next: Re-run with --yes to accept $512.00/month per database cluster (scale plan)");
         expect((await atPrompt("yes, but not now\r")).status).toBe(3);
         expect(n.calls.filter((p) => p.includes("cloud_monitoring_connect"))).toEqual([]);
