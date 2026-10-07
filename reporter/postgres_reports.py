@@ -206,6 +206,7 @@ class PostgresReportGenerator:
         self.base_url = f"{prometheus_url}/api/v1"
         self.postgres_sink_url = postgres_sink_url
         self.pg_conn = None
+        self.report_source = None
         self.use_current_time = use_current_time
         # Files that failed to upload, per report id; finish_report reads it.
         self.failed_uploads: Dict[int, List[str]] = {}
@@ -317,6 +318,8 @@ class PostgresReportGenerator:
                 return {}
 
         index_definitions = {}
+        # Sink dbname is the pgwatch source name, not the connected database name.
+        db_name = self.report_source or db_name
 
         try:
             with self.pg_conn.cursor(cursor_factory=psycopg2.extras.DictCursor, name='index_defs_cursor') as cursor:
@@ -379,6 +382,8 @@ class PostgresReportGenerator:
                 return {}
 
         queries_by_db: Dict[str, Dict[str, str]] = {}
+        if self.report_source:
+            db_names = [self.report_source]
 
         try:
             # Use server-side cursor for memory efficiency with large result sets
@@ -5449,6 +5454,52 @@ def make_request(api_url, endpoint, request_data):
     return response.json()
 
 
+def generate_project_reports(generator, args, projects):
+    for project in projects:
+        report_id = None
+        try:
+            _esc = generator._escape_promql_label
+            result = generator.query_instant(
+                f'last_over_time(pgwatch_settings_configured{{node_name="{_esc(project)}"}}[3h])'
+            )
+            clusters = {item['metric'].get('cluster') for item in result.get('data', {}).get('result', [])
+                        if item['metric'].get('node_name') == project and item['metric'].get('cluster')}
+            if result.get('status') != 'success' or len(clusters) != 1:
+                raise ValueError("Expected one cluster for the project's pgwatch source")
+            cluster = next(iter(clusters))
+            generator.report_source = project
+            if not args.no_upload:
+                report_id = generator.create_report(args.api_url, args.token, project, args.epoch)
+            reports = generator.generate_all_reports(cluster, project, False)
+            generator.generate_per_query_jsons(
+                reports, cluster, node_name=project, query_text_limit=66560, hours=24,
+                write_immediately=True, include_cluster_prefix=False,
+                api_url=args.api_url if report_id else None,
+                token=args.token if report_id else None, report_id=report_id
+            )
+            for report_key in list(reports.keys()):
+                output_filename = f"{report_key}.json"
+                with open(output_filename, "w") as f:
+                    json.dump(reports[report_key], f, indent=2)
+                logger.info(f"Generated report for project {project}: {output_filename}")
+                if report_id:
+                    generator.upload_report_file(args.api_url, args.token, report_id, output_filename)
+                del reports[report_key]
+            if report_id:
+                generator.finish_report(args.api_url, args.token, report_id)
+        except Exception as e:
+            logger.error(f"Error generating reports for project {project}: {e}")
+            if report_id:
+                try:
+                    generator.finish_report(args.api_url, args.token, report_id, error=e)
+                except Exception as finish_error:
+                    logger.error(f"Error closing report for project {project}: {finish_error}")
+        finally:
+            generator.report_source = None
+            generator.close_postgres_sink()
+            gc.collect()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate PostgreSQL reports using PromQL')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
@@ -5500,6 +5551,15 @@ def main():
         sys.exit(1)
 
     try:
+        projects_file = os.environ.get('REPORTER_PROJECTS_PATH', '.pgai-report-projects.json')
+        if os.path.isfile(projects_file):
+            with open(projects_file) as f:
+                projects = json.load(f)['projects']
+            if not isinstance(projects, list) or any(not isinstance(p, str) or not p for p in projects):
+                raise ValueError("Invalid report projects file")
+            generate_project_reports(generator, args, list(dict.fromkeys(projects)))
+            return
+
         # Discover all clusters if not specified
         clusters_to_process = []
         if args.cluster:

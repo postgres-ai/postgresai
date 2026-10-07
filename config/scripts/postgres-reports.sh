@@ -10,6 +10,7 @@ output_template="${REPORTER_OUTPUT_TEMPLATE:-/app/all_reports_%Y%m%d_%H%M%S.json
 use_current_time="${USE_CURRENT_TIME:-false}"
 
 pgwatch_config_path="${REPORTER_PGWATCH_CONFIG_PATH:-/app/.pgwatch-config}"
+export REPORTER_PROJECTS_PATH="${REPORTER_PROJECTS_PATH:-$(dirname "${pgwatch_config_path}")/.pgai-report-projects.json}"
 api_url="${REPORTER_API_URL:-}"
 # Project name: env var takes priority, then config file. No default — uploads
 # require a project name (the hardcoded "postgres-ai-monitoring" default was removed).
@@ -114,7 +115,7 @@ while true; do
     # A box token lives 90 days; renew it each cycle (internal#354). On stdin,
     # not argv. A failure is logged and the reports go on.
     printf '%s\n' "${api_key}" | python -m reporter.token_renew "${api_url}" || true
-    if [[ -z "${project_name}" ]]; then
+    if [[ -z "${project_name}" && ! -f "${REPORTER_PROJECTS_PATH}" ]]; then
       # Upload requires a project name; there is no default. Still generate
       # reports locally (like the no-api-key branch) and only skip the upload.
       echo "postgres-reports: ERROR project name is required for upload — set REPORTER_PROJECT_NAME or project_name in .pgwatch-config; skipping upload this cycle" >&2

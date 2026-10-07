@@ -385,8 +385,11 @@ services:
     working_dir: /app
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
+      # A directory mount sees atomic projects-file replacements and permits absence.
+      - ./:/app/pgai-stack:ro
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
+      - REPORTER_PROJECTS_PATH=/app/pgai-stack/.pgai-report-projects.json
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
       - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
