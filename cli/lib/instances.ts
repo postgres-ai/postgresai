@@ -368,7 +368,10 @@ export async function collectorConnection(url: string): Promise<{ url: string; n
     if (sslmode === "disable" || sslmode === "allow") {
       throw new Error(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
     }
-    throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
+    if (sslmode !== "verify-full") {
+      throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
+    }
+    return { url: binding.uri, note: "the collector can't do channel binding; it connects with TLS and full certificate verification" };
   }
   return { url: binding.uri, ...(binding.value !== null ? { note: "removed channel_binding from the connection string; the collector does not support it (TLS is kept)" } : {}) };
 }

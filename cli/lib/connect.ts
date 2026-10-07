@@ -7,7 +7,7 @@ import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
   maskConnectionString, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
 } from "./init";
-import { collectorConnection } from "./instances";
+import { collectorConnection, splitChannelBinding } from "./instances";
 import { callRpc } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
 import { HttpStatusError, requestTimeoutSignal } from "./util";
@@ -328,7 +328,7 @@ function roleUrlFor(url: string, db: string, password: string, kept: string[]): 
 }
 
 /** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
-const monitoringUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, URL_PARAMS_KEPT);
+const monitoringUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, URL_PARAMS_KEPT.filter((p) => p !== "channel_binding"));
 
 /** The same login from this machine: with the given URL's TLS files (a private CA, say). */
 const loginUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, [...URL_PARAMS_KEPT, ...URL_PARAMS_TLS]);
@@ -432,7 +432,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const name = databaseName(url);
   try {
     const collector = await collectorConnection(url);
-    if (collector.note) progress("preparing", `Note: ${collector.note}`);
+    const required = splitChannelBinding(url).value === "require";
+    url = collector.url;
+    if (collector.note) progress("preparing", `${required ? "Warning" : "Note"}: ${collector.note}`);
   } catch (err) {
     return { status: "action_required", provider, name, next: err instanceof Error ? err.message : String(err) };
   }

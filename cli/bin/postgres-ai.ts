@@ -5859,7 +5859,7 @@ export async function addTarget(
   try {
     const collector = await collectorConnection(connStr);
     connStr = collector.url;
-    if (collector.note) console.error(`Note: ${collector.note}`);
+    if (collector.note) console.error(`${channelBinding.value === "require" ? "Warning" : "Note"}: ${collector.note}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
