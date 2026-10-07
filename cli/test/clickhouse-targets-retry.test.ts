@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { Client } from "pg";
 import { addTarget } from "../bin/postgres-ai";
 import { addInstanceToFile, buildInstance, loadInstances } from "../lib/instances";
 
@@ -29,14 +30,14 @@ beforeEach(() => {
 });
 afterEach(() => { server.stop(true); rmSync(dir, { recursive: true, force: true }); });
 
-async function run(env: NodeJS.ProcessEnv, connection = conn) {
+async function run(env: NodeJS.ProcessEnv, connection = conn, verifyTls: ((url: string) => Promise<void>) | null = async (_url: string) => {}) {
   const stdout: string[] = [], stderr: string[] = [];
   const log = spyOn(console, "log").mockImplementation((message) => { stdout.push(String(message)); });
   const error = spyOn(console, "error").mockImplementation((message) => { stderr.push(String(message)); });
   const previous = process.exitCode ?? 0;
   process.exitCode = 0;
   try {
-    await addTarget(`${dir}/instances.yml`, dir, connection, "retry", env, { apply: false });
+    await addTarget(`${dir}/instances.yml`, dir, connection, "retry", env, { apply: false, ...(verifyTls ? { verifyTls } : {}) });
     return { code: process.exitCode, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
   } finally {
     process.exitCode = previous;
@@ -143,4 +144,93 @@ test("targets add strips channel_binding=require with verify-full and warns once
   expect(result.stderr).toBe("Warning: the collector can't do channel binding; it connects with TLS and full certificate verification");
   expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`${conn}?sslmode=verify-full`);
   expect(requests).toEqual([]);
+});
+
+const certErrors = ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED"];
+
+test.each(["require", "prefer", "verify-ca", ""])("targets add upgrades channel_binding=require with sslmode=%s after verification", async (sslmode) => {
+  const seen: string[] = [];
+  const url = `${conn}?channel_binding=require${sslmode ? `&sslmode=${sslmode}` : ""}`;
+  const result = await run({}, url, async (url) => { seen.push(url); });
+  expect(result.code).toBe(0);
+  expect(seen).toEqual([`${conn}?sslmode=verify-full`]);
+  expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`${conn}?sslmode=verify-full`);
+  expect(result.stderr).toBe("Warning: the collector can't do channel binding; it connects with TLS and full certificate verification; upgraded to sslmode=verify-full");
+});
+
+test.each(certErrors)("targets add refuses a TLS verification failure (%s) before saving", async (code) => {
+  const result = await run(credentials, `${conn}?sslmode=require&channel_binding=require`, async () => { throw Object.assign(new Error("certificate rejected"), { code }); });
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("sslrootcert=<CA file>");
+  expect(result.stderr).toContain("sslmode=verify-full");
+  expect(result.stderr).toContain("removing channel_binding=require from the URL");
+  expect(result.stdout).not.toContain("added");
+  expect(requests).toEqual([]);
+  expect(readdirSync(dir)).toEqual([]);
+});
+
+test("targets add verifies using the supplied CA and notes that the box needs it", async () => {
+  const seen: string[] = [];
+  const result = await run({}, `${conn}?sslmode=require&channel_binding=require&sslrootcert=%2Ftmp%2Fca.pem`, async (url) => { seen.push(url); });
+  expect(result.code).toBe(0);
+  expect(new URL(seen[0]).searchParams.get("sslrootcert")).toBe("/tmp/ca.pem");
+  expect(new URL(seen[0]).searchParams.get("sslmode")).toBe("verify-full");
+  expect(result.stderr).toContain("the monitoring box has no copy of the CA in sslrootcert");
+  const saved = new URL(loadInstances(`${dir}/instances.yml`)[0].conn_str!);
+  expect(saved.searchParams.get("sslrootcert")).toBe("/tmp/ca.pem");
+  expect(saved.searchParams.get("sslmode")).toBe("verify-full");
+  expect(saved.searchParams.has("channel_binding")).toBe(false);
+});
+
+test.each(["login", "28P01", "3D000", "post-handshake"])("the real TLS probe accepts %s only after certificate verification", async (answer) => {
+  const configs: unknown[] = [];
+  const connect = spyOn(Client.prototype, "connect").mockImplementation(async function(this: Client) {
+    configs.push({ host: this.host, ssl: this.ssl });
+    (this as any).connection.stream.authorized = true;
+    if (answer !== "login") throw Object.assign(new Error("after handshake"), answer === "post-handshake" ? {} : { code: answer });
+  });
+  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  try {
+    const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
+    expect(result.code).toBe(0);
+    expect(configs).toEqual([{ host: hostname, ssl: { rejectUnauthorized: true, servername: hostname } }]);
+    expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`${conn}?sslmode=verify-full`);
+    expect(end).toHaveBeenCalledTimes(1);
+  } finally { connect.mockRestore(); end.mockRestore(); }
+});
+
+test("the real TLS probe refuses an unverified handshake and closes the client", async () => {
+  const connect = spyOn(Client.prototype, "connect").mockRejectedValue(Object.assign(new Error("self-signed"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }));
+  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  try {
+    const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
+    expect(result.stderr).toContain("sslrootcert=<CA file>");
+    expect(readdirSync(dir)).toEqual([]);
+    expect(end).toHaveBeenCalledTimes(1);
+  } finally { connect.mockRestore(); end.mockRestore(); }
+});
+
+test("the real TLS probe uses the CA file rather than the default roots", async () => {
+  const ca = `${dir}/ca.pem`;
+  writeFileSync(ca, "fixture CA");
+  const configs: unknown[] = [];
+  const connect = spyOn(Client.prototype, "connect").mockImplementation(async function(this: Client) { configs.push(this.ssl); });
+  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  try {
+    const result = await run({}, `${conn}?sslmode=require&channel_binding=require&sslrootcert=${encodeURIComponent(ca)}`, null);
+    expect(result.code).toBe(0);
+    expect(configs).toEqual([{ rejectUnauthorized: true, servername: hostname, ca: "fixture CA" }]);
+  } finally { connect.mockRestore(); end.mockRestore(); }
+});
+
+test("the real TLS probe refuses a connection failure before the handshake", async () => {
+  const connect = spyOn(Client.prototype, "connect").mockRejectedValue(Object.assign(new Error("offline"), { code: "ECONNREFUSED" }));
+  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  try {
+    const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("removing channel_binding=require from the URL");
+    expect(readdirSync(dir)).toEqual([]);
+    expect(end).toHaveBeenCalledTimes(1);
+  } finally { connect.mockRestore(); end.mockRestore(); }
 });

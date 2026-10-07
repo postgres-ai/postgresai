@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
-import { expressCheckup, prepareDatabase, unprepareDatabase } from "../lib/connect";
+import { connect, platformDeps, expressCheckup, prepareDatabase, unprepareDatabase } from "../lib/connect";
 
 // `pgai connect`'s prepare step against a real Postgres, with a superuser URL
 // like the one ClickHouse Managed Postgres hands out. CI: the
@@ -23,6 +23,27 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     await c.query("drop role if exists pgai_connect_login");
     await c.query("drop database if exists pgai_connect_db2");
     await c.end();
+  });
+
+  test("channel_binding=require refuses the real self-signed server certificate before anything is quoted or changed", async () => {
+    const url = new URL(ADMIN!);
+    url.searchParams.set("sslmode", "require");
+    url.searchParams.set("channel_binding", "require");
+    const calls: string[] = [];
+    const deps = {
+      ...platformDeps({ apiKey: "unused", apiBaseUrl: "http://unused.invalid", uiBaseUrl: "http://unused.invalid" }),
+      list: async () => { calls.push("list"); return []; },
+      quote: async () => { calls.push("quote"); throw new Error("must not quote"); },
+      create: async () => { calls.push("create"); throw new Error("must not create"); },
+      prepare: async () => { calls.push("prepare"); throw new Error("must not prepare"); },
+      progress: () => {}, confirm: async () => false, localStackRunning: () => false, selfHosted: async () => {},
+    };
+    const result = await connect(url.toString(), { waitMs: 0 }, deps);
+    expect(result.status).toBe("action_required");
+    expect(result.next).toContain("sslrootcert=<CA file>");
+    expect(result.next).toContain("sslmode=verify-full");
+    expect(result.next).toContain("removing channel_binding=require from the URL");
+    expect(calls).toEqual([]);
   });
 
   test("an admin URL creates the monitoring role; its URL connects to the prepared database as postgres_ai_mon", async () => {

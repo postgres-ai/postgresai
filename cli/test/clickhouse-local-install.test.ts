@@ -41,13 +41,13 @@ beforeEach(async () => {
   });
   env = {
     PATH: `${dir}/bin:/usr/bin:/bin`, HOME: `${dir}/home`, XDG_CONFIG_HOME: `${dir}/xdg`, PGAI_PROJECT_DIR: projectDir,
-    CLICKHOUSE_ORG_ID: orgId, CLICKHOUSE_KEY_ID: "key", CLICKHOUSE_KEY_SECRET: "good-secret", CLICKHOUSE_API_URL: origin,
+    CLICKHOUSE_ORG_ID: orgId, CLICKHOUSE_KEY_ID: "key", CLICKHOUSE_KEY_SECRET: "good-secret", CLICKHOUSE_API_URL: origin, PGAI_TEST_TLS_VERIFY: "success",
   };
 });
 afterEach(() => { server?.terminate(); URL.revokeObjectURL(workerUrl); rmSync(dir, { recursive: true, force: true }); });
 
 function localInstall(dbUrl: string, extra: Record<string, string> = {}) {
-  const result = Bun.spawnSync([process.execPath, cli, "mon", "local-install", "--db-url", dbUrl, "-y"], {
+  const result = Bun.spawnSync([process.execPath, "--preload", resolve(import.meta.dir, "cli-offline-preload.ts"), cli, "mon", "local-install", "--db-url", dbUrl, "-y"], {
     cwd: dir, env: { ...env, ...extra }, timeout: 60000,
   });
   return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
@@ -62,7 +62,10 @@ test("local-install --db-url sets up ClickHouse host metrics", () => {
   expect(scrape.static_configs[0].labels).toMatchObject({ cluster: "default", node_name: name });
   expect(readFileSync(`${projectDir}/host-metrics/clickhouse-${name}.secret`, "utf8")).toBe("good-secret");
   expect(statSync(`${projectDir}/host-metrics/clickhouse-${name}.secret`).mode & 0o777).toBe(0o600);
-  expect(readFileSync(`${projectDir}/instances.yml`, "utf8")).toContain(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=require`);
+  const saved = readFileSync(`${projectDir}/instances.yml`, "utf8");
+  expect(saved).toContain(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=verify-full`);
+  expect(saved).not.toContain("channel_binding");
+  expect(result.stderr).toContain("Warning: the collector can't do channel binding; it connects with TLS and full certificate verification; upgraded to sslmode=verify-full");
   expect(result.stdout + result.stderr).not.toContain("good-secret");
 });
 
@@ -122,4 +125,14 @@ test("read-only commands work in a project directory they cannot write", () => {
   } finally {
     chmodSync(projectDir, 0o755);
   }
+});
+
+test("local-install refuses an unverified channel_binding=require URL before saving", () => {
+  const result = localInstall(`postgres://monitor:password@${hostname}:5432/postgres?sslmode=require&channel_binding=require`, { PGAI_TEST_TLS_VERIFY: "DEPTH_ZERO_SELF_SIGNED_CERT" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("sslrootcert=<CA file>");
+  expect(result.stderr).toContain("removing channel_binding=require from the URL");
+  expect(existsSync(`${projectDir}/instances.yml`)).toBe(false);
+  expect(existsSync(`${projectDir}/host-metrics`)).toBe(false);
+  expect(result.stdout).not.toContain("Step 3");
 });

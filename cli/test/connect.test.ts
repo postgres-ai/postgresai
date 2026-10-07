@@ -127,6 +127,58 @@ describe("connect", () => {
     }
   });
 
+  test.each(["require", "prefer", "verify-ca", ""])("channel_binding=require upgrades sslmode=%s before quoting and preparing, including agents", async (sslmode) => {
+    for (const agent of [false, true]) {
+      const seen: string[] = [], messages: string[] = [];
+      const f = fake({
+        prepare: async (url, _provider, o) => { seen.push(url); return o?.check ? { checked: true } : { monitoringUrl: url.replace("postgres:adminpw", "postgres_ai_mon:genpw") }; },
+        progress: (event) => { messages.push(event.message); },
+      });
+      Object.assign(f.deps, { verifyTls: async (url: string) => { f.calls.push("verifyTls"); seen.push(url); } });
+      f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+      const url = new URL(CH);
+      if (sslmode) url.searchParams.set("sslmode", sslmode); else url.searchParams.delete("sslmode");
+      url.searchParams.set("channel_binding", "require");
+      const result = await connect(url.toString(), { waitMs: 0, agent }, f.deps);
+      expect(result.status).toBe("provisioning");
+      expect(f.calls[0]).toBe("verifyTls");
+      expect(f.calls).toContain("quote");
+      expect(seen).toEqual(Array(3).fill(CH.replace("sslmode=require", "sslmode=verify-full")));
+      const body = JSON.parse(f.calls.find((c) => c.startsWith("create "))!.slice(7));
+      expect(body.db_url).toBe(MON.replace("sslmode=require", "sslmode=verify-full"));
+      expect(messages.filter((m) => m.includes("collector"))).toEqual(["Warning: the collector can't do channel binding; it connects with TLS and full certificate verification; upgraded to sslmode=verify-full"]);
+    }
+  });
+
+  test.each(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED"])("channel_binding=require refuses certificate error %s before any platform or database changes, including agents", async (code) => {
+    for (const agent of [false, true]) {
+      const f = fake();
+      Object.assign(f.deps, { verifyTls: async () => { throw Object.assign(new Error("certificate rejected"), { code }); } });
+      f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+      const result = await connect(`${CH}&channel_binding=require`, { waitMs: 0, agent }, f.deps);
+      expect(result.status).toBe("action_required");
+      expect(result.next).toContain("sslrootcert=<CA file>");
+      expect(result.next).toContain("sslmode=verify-full");
+      expect(result.next).toContain("removing channel_binding=require from the URL");
+      expect(f.calls).toEqual([]);
+    }
+  });
+
+  test("channel_binding=require verifies with a supplied CA and reuses the box CA note", async () => {
+    const seen: string[] = [], messages: string[] = [];
+    const f = fake({
+      prepare: async (url, _provider, o) => o?.check ? { checked: true } : { monitoringUrl: url.replace("postgres:adminpw", "postgres_ai_mon:genpw").replace("&sslrootcert=%2Ftmp%2Fca.pem", "") },
+      progress: (event) => { messages.push(event.message); },
+    });
+    Object.assign(f.deps, { verifyTls: async (url: string) => { seen.push(url); } });
+    const result = await connect(`${CH}&channel_binding=require&sslrootcert=%2Ftmp%2Fca.pem`, { waitMs: 0 }, f.deps);
+    expect(result.status).toBe("provisioning");
+    expect(seen).toEqual([`${CH.replace("sslmode=require", "sslmode=verify-full")}&sslrootcert=%2Ftmp%2Fca.pem`]);
+    expect(messages.join("\n")).toContain("the monitoring box has no copy of the CA in sslrootcert");
+    expect(f.calls.find((c) => c.startsWith("create "))).toContain(MON.replace("sslmode=require", "sslmode=verify-full"));
+    expect(f.calls.find((c) => c.startsWith("create "))).not.toContain("channel_binding");
+  });
+
   test("ClickHouse with a key: find the org, prepare, provision, wait, dashboard", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested"), row("active")] });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps);
