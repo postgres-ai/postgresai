@@ -5455,24 +5455,25 @@ def make_request(api_url, endpoint, request_data):
 
 
 def generate_project_reports(generator, args, projects):
-    for project in projects:
+    for entry in projects:
+        project, source = entry['project'], entry['source']
         report_id = None
         try:
             _esc = generator._escape_promql_label
             result = generator.query_instant(
-                f'last_over_time(pgwatch_settings_configured{{node_name="{_esc(project)}"}}[3h])'
+                f'last_over_time(pgwatch_settings_configured{{node_name="{_esc(source)}"}}[3h])'
             )
             clusters = {item['metric'].get('cluster') for item in result.get('data', {}).get('result', [])
-                        if item['metric'].get('node_name') == project and item['metric'].get('cluster')}
+                        if item['metric'].get('node_name') == source and item['metric'].get('cluster')}
             if result.get('status') != 'success' or len(clusters) != 1:
                 raise ValueError("Expected one cluster for the project's pgwatch source")
             cluster = next(iter(clusters))
-            generator.report_source = project
+            generator.report_source = source
             if not args.no_upload:
                 report_id = generator.create_report(args.api_url, args.token, project, args.epoch)
-            reports = generator.generate_all_reports(cluster, project, False)
+            reports = generator.generate_all_reports(cluster, source, False)
             generator.generate_per_query_jsons(
-                reports, cluster, node_name=project, query_text_limit=66560, hours=24,
+                reports, cluster, node_name=source, query_text_limit=66560, hours=24,
                 write_immediately=True, include_cluster_prefix=False,
                 api_url=args.api_url if report_id else None,
                 token=args.token if report_id else None, report_id=report_id
@@ -5555,9 +5556,13 @@ def main():
         if os.path.isfile(projects_file):
             with open(projects_file) as f:
                 projects = json.load(f)['projects']
-            if not isinstance(projects, list) or any(not isinstance(p, str) or not p for p in projects):
+            if not isinstance(projects, list) or any(
+                not isinstance(p, dict) or set(p) != {'project', 'source'} or
+                any(not isinstance(p[k], str) or not p[k] or p[k] != p[k].strip() for k in ('project', 'source'))
+                for p in projects
+            ):
                 raise ValueError("Invalid report projects file")
-            generate_project_reports(generator, args, list(dict.fromkeys(projects)))
+            generate_project_reports(generator, args, projects)
             return
 
         # Discover all clusters if not specified

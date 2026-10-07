@@ -5,7 +5,8 @@ import { writePrivateFileAtomic } from "./atomic-file";
 import { withTargetsLock } from "./targets-lock";
 
 interface Target { target_id: string; name: string; adopt: boolean }
-interface ManagedTarget { target_id: string; name: string; pending?: boolean; adopted?: boolean }
+interface ManagedTarget { target_id: string; name: string; local_name?: string; pending?: boolean; adopted?: boolean }
+interface Journal { targets: ManagedTarget[]; desired?: Array<{ target_id: string; name: string }> }
 interface Job { id: string | number; generation: number; targets: Target[] }
 interface WorkerHooks {
   add: (url: string, name: string) => Promise<boolean>;
@@ -91,16 +92,45 @@ async function rpc(config: ReturnType<typeof targetChannelConfig>, name: string,
   }
 }
 
-function readJournal(file: string): ManagedTarget[] {
-  if (!fs.existsSync(file)) return [];
-  const entries: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+function readJournal(file: string): Journal {
+  if (!fs.existsSync(file)) return { targets: [] };
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  const journal = Array.isArray(value) ? { targets: value } : value;
+  const entries: unknown = journal?.targets;
   if (!Array.isArray(entries) || entries.some(e => !e || typeof e.target_id !== "string" ||
     typeof e.name !== "string" || !e.name || e.name !== e.name.trim() ||
+    (e.local_name !== undefined && (typeof e.local_name !== "string" || !e.local_name || e.local_name !== e.local_name.trim())) ||
     (e.pending !== undefined && typeof e.pending !== "boolean") ||
     (e.adopted !== undefined && typeof e.adopted !== "boolean")) ||
     new Set(entries.map(e => e.target_id)).size !== entries.length ||
-    new Set(entries.map(e => e.name)).size !== entries.length) throw new ChannelError(true);
-  return entries;
+    new Set(entries.map(e => e.name)).size !== entries.length ||
+    new Set(entries.map(e => e.local_name || e.name)).size !== entries.length) throw new ChannelError(true);
+  const desired: unknown = journal.desired;
+  if (desired !== undefined && (!Array.isArray(desired) || desired.some(t => !t || typeof t.target_id !== "string" || !t.target_id ||
+    typeof t.name !== "string" || !t.name || t.name !== t.name.trim()) ||
+    new Set(desired.map(t => t.target_id)).size !== desired.length ||
+    new Set(desired.map(t => t.name)).size !== desired.length)) throw new ChannelError(true);
+  return journal;
+}
+
+function saveJournal(file: string, journal: Journal) {
+  writePrivateFileAtomic(file, JSON.stringify(journal) + "\n");
+}
+
+async function removeUndesired(journal: Journal, file: string, hooks: WorkerHooks, signal: AbortSignal) {
+  if (!journal.desired) return;
+  const desired = new Set(journal.desired.map(t => t.target_id));
+  for (const entry of [...journal.targets]) {
+    if (signal.aborted) break;
+    if (desired.has(entry.target_id)) continue;
+    try {
+      if (!(await hooks.remove(entry.local_name || entry.name))) throw new Error();
+      journal.targets = journal.targets.filter(e => e.target_id !== entry.target_id);
+      saveJournal(file, journal);
+    } catch {
+      // Keep ownership for an empty-poll retry; removal failures are outside the desired set.
+    }
+  }
 }
 
 function validJob(job: any): job is Job {
@@ -115,21 +145,42 @@ async function applyJob(projectDir: string, instancesFile: string, job: Job, hoo
   config: ReturnType<typeof targetChannelConfig>, signal: AbortSignal) {
   return withTargetsLock(projectDir, async () => {
     const journalFile = path.join(path.dirname(instancesFile), ".pgai-managed-targets.json");
-    let journal = readJournal(journalFile);
-    const save = () => writePrivateFileAtomic(journalFile, JSON.stringify(journal) + "\n");
+    const journal = readJournal(journalFile);
+    journal.desired = job.targets.map(t => ({ target_id: t.target_id, name: t.name }));
+    const save = () => saveJournal(journalFile, journal);
+    save();
     const failed: Array<{ target_id: string; error: string }> = [];
     const applied: string[] = [];
+    let adopted = false;
     for (const target of job.targets) {
       if (signal.aborted) break;
       try {
-        let entry = journal.find(e => e.target_id === target.target_id);
-        const local = loadInstances(instancesFile).find(i => i.name === target.name);
-        if ((entry && entry.name !== target.name) || (!entry && journal.some(e => e.name === target.name))) throw new Error();
+        let entry = journal.targets.find(e => e.target_id === target.target_id);
+        const instances = loadInstances(instancesFile);
+        let local = instances.find(i => i.name === (entry?.local_name || target.name));
+        if ((entry && entry.name !== target.name) || (!entry && journal.targets.some(e =>
+          e.name === target.name || (e.local_name || e.name) === target.name))) throw new Error();
+        if (target.adopt) {
+          if (adopted) throw new Error();
+          adopted = true;
+          if (!local) {
+            const candidates = instances.filter(i => !journal.targets.some(e => (e.local_name || e.name) === i.name));
+            if (candidates.length !== 1) throw new Error();
+            local = candidates[0];
+            if (entry) {
+              entry.local_name = local.name;
+              entry.pending = false;
+              entry.adopted = true;
+              save();
+            }
+          }
+        }
         if (!entry) {
           if (local && !target.adopt) throw new Error();
-          entry = { target_id: target.target_id, name: target.name, pending: !local, adopted: !!local && target.adopt };
+          entry = { target_id: target.target_id, name: target.name, local_name: local?.name || target.name,
+            pending: !local, adopted: !!local && target.adopt };
           // Persist ownership before redeeming the secret or mutating the stack.
-          journal.push(entry);
+          journal.targets.push(entry);
           save();
         }
         if (entry.pending || !local) {
@@ -146,20 +197,12 @@ async function applyJob(projectDir: string, instancesFile: string, job: Job, hoo
         failed.push({ target_id: target.target_id, error: "Could not add or reconcile the monitoring target" });
       }
     }
-    const desired = new Set(job.targets.map(t => t.target_id));
-    for (const entry of [...journal]) {
-      if (signal.aborted) break;
-      if (desired.has(entry.target_id)) continue;
-      try {
-        if (!(await hooks.remove(entry.name))) throw new Error();
-        journal = journal.filter(e => e.target_id !== entry.target_id);
-        save();
-      } catch {
-        failed.push({ target_id: entry.target_id, error: "Could not remove or reconcile the monitoring target" });
-      }
-    }
+    await removeUndesired(journal, journalFile, hooks, signal);
     save();
-    const projects = job.targets.filter(t => applied.includes(t.target_id)).map(t => t.name);
+    const projects = job.targets.filter(t => applied.includes(t.target_id)).map(t => {
+      const entry = journal.targets.find(e => e.target_id === t.target_id)!;
+      return { project: t.name, source: entry.local_name || entry.name };
+    });
     writePrivateFileAtomic(path.join(path.dirname(instancesFile), ".pgai-report-projects.json"),
       JSON.stringify({ projects }) + "\n");
     return { job_id: job.id, generation: job.generation, applied, failed };
@@ -192,6 +235,11 @@ export async function runTargetsSyncWorker(projectDir: string, instancesFile: st
           const reply = await rpc(config, "monitoring_target_submit", submit, signal);
           if (reply.ok !== true) throw new ChannelError(false);
         }
+      } else {
+        await withTargetsLock(projectDir, async () => {
+          const journalFile = path.join(path.dirname(instancesFile), ".pgai-managed-targets.json");
+          await removeUndesired(readJournal(journalFile), journalFile, hooks, signal);
+        }, signal);
       }
       failures = 0;
     } catch (err) {
