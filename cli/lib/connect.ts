@@ -105,7 +105,7 @@ export interface Database {
  * `generated`: this run created the role with a password generated here, which
  * nobody has once the run ends.
  */
-export type Prepared = { monitoringUrl: string; note?: string; generated?: true; storedPassword?: true } | { next: string; sql?: string } | { checked: true };
+export type Prepared = { monitoringUrl: string; note?: string; generated?: true; storedPassword?: true } | { next: string; sql?: string; resettable?: true } | { checked: true };
 
 export interface ConnectDeps {
   verifyTls?(url: string): Promise<void>;
@@ -533,7 +533,13 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true });
-      if ("next" in probe) return { status: "action_required", provider, name, ...probe };
+      if ("next" in probe) {
+        const { resettable, ...refusal } = probe;
+        if (resettable && !opts.resetPassword && !opts.agent && await deps.confirm("A monitoring role from an earlier connection exists, and its password isn't stored. Reset it now? Anything else using this role will need the new password. [y/N] ")) {
+          return connect(url, { ...opts, resetPassword: true }, deps);
+        }
+        return { status: "action_required", provider, name, ...refusal };
+      }
       const b = await billingFor(await deps.quote(opts.coupon, clusterOf(url)), name, opts, deps, (price) => progress("billing", `Billing: ${price}`));
       if (b.stop) return { status: "action_required", provider, name, ...b.stop };
       ({ billing, billingPage, billingUrl, accepted } = b);
@@ -574,7 +580,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       }
       progress("preparing", `Preparing ${maskConnectionString(url)}`);
       prepared = await deps.prepare(url, provider, prepOpts);
-      if ("next" in prepared) return { status: "action_required", provider, name, ...billing, ...prepared };
+      if ("next" in prepared) {
+        const { resettable, ...refusal } = prepared;
+        return { status: "action_required", provider, name, ...billing, ...refusal };
+      }
       if (!("monitoringUrl" in prepared)) throw new Error("prepare returned no monitoring URL");
       if (prepared.note) note = `; ${prepared.note}`;
       if (opts.selfHosted) {
@@ -825,7 +834,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
       const reset = !!opts.resetPassword && me.mon_exists;
       if (me.mon_exists && !reset) {
-        if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}` };
+        if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}`, resettable: true };
         let accepted: boolean;
         try {
           accepted = await logsIn(loginUrlFor(url, me.db, password));
