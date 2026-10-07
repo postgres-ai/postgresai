@@ -376,7 +376,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       const screen = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
       // The SQL as psql takes it: statements at the start of a line, not folded into a YAML string.
       expect(screen).toMatch(/^-- 01\.role$/m);
-      expect(screen).toMatch(/^create extension if not exists pg_stat_statements;$/m);
+      expect(screen).toMatch(/^create extension if not exists pg_stat_statements with schema public;$/m);
       expect(screen).toContain("password '<redacted>'");
       expect(screen).not.toMatch(/^sql:/m);
       expect(screen).toMatch(/^status: action_required$/m);
