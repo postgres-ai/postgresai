@@ -274,7 +274,7 @@ def test_nonempty_api_url_env_wins_over_config(tmp_path):
 @pytest.mark.unit
 def test_projects_file_enables_upload_without_legacy_project_name(tmp_path):
     projects = tmp_path / ".pgai-report-projects.json"
-    projects.write_text('{"projects": ["app", "app2"]}')
+    projects.write_text('{"projects": [{"project": "app", "source": "host-db"}, {"project": "app2", "source": "app2"}]}')
     proc, calls = run_one_cycle_logging_calls(tmp_path, "api_key=synthetic-token\n")
     assert proc.returncode == STUB_EXIT_CODE
     args = calls[-1][0]

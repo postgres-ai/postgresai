@@ -50,7 +50,7 @@ def run_projects(monkeypatch, tmp_path):
     def create(api, token, project, epoch):
         calls.append(project)
         return project
-    monkeypatch.setattr(generator, "create_report", create)
+    monkeypatch.setattr(generator, "create_report", MagicMock(side_effect=create))
     monkeypatch.setattr(generator, "upload_report_file",
                         lambda api, token, report, file: uploads.append((report, Path(file).name, json.loads(Path(file).read_text()))))
     monkeypatch.setattr(generator, "finish_report", lambda *a, **k: finishes.append((a, k)))
@@ -72,12 +72,16 @@ def run_projects(monkeypatch, tmp_path):
     return run, generator
 
 
-def test_each_project_uploads_only_its_source(run_projects):
+def test_each_project_uploads_only_its_source(run_projects, monkeypatch):
     run, generator = run_projects
+    sources = []
+    monkeypatch.setattr(generator, "get_index_definitions_from_sink",
+                        lambda *a: sources.append(generator.report_source) or {})
     # The legacy classifier labels the second primary a standby; the new path bypasses it.
     assert generator.get_all_nodes("default") == {"primary": "app", "standbys": ["app2"]}
-    calls, uploads, _ = run(["app", "app2"])
-    assert calls == ["app", "app2"]
+    calls, uploads, _ = run([{"project": "host-project", "source": "app"}, {"project": "app2", "source": "app2"}])
+    assert calls == ["host-project", "app2"]
+    assert set(sources) == {"app", "app2"}
     app2 = {name: data for project, name, data in uploads if project == "app2"}
     for check in ["H002", "H004", "F004"]:
         data = app2[f"{check}.json"]
@@ -86,6 +90,9 @@ def test_each_project_uploads_only_its_source(run_projects):
         assert "app_table" not in text
         assert "app_index" not in text
         assert list(data["results"]) == ["app2"]
+    host = next(data for project, name, data in uploads if project == "host-project" and name == "H002.json")
+    assert list(host["results"]) == ["app"]
+    assert "app2_table" not in json.dumps(host)
     query = app2["query_42.json"]
     assert query["nodes"] == {"primary": "app2", "standbys": []}
     assert list(query["results"]) == ["app2"]
@@ -102,10 +109,10 @@ def test_absent_file_preserves_combined_legacy_uploads(run_projects):
 
 def test_failed_project_does_not_stop_next_project(run_projects):
     run, _ = run_projects
-    calls, uploads, finishes = run(["app", "app2"], fail="app")
-    assert calls == ["app", "app2"]
+    calls, uploads, finishes = run([{"project": "host-project", "source": "app"}, {"project": "app2", "source": "app2"}], fail="app")
+    assert calls == ["host-project", "app2"]
     assert uploads and all(project == "app2" for project, _, _ in uploads)
-    assert any(args[2] == "app" and "error" in kwargs for args, kwargs in finishes)
+    assert any(args[2] == "host-project" and "error" in kwargs for args, kwargs in finishes)
     assert any(args[2] == "app2" and not kwargs for args, kwargs in finishes)
 
 
@@ -114,6 +121,20 @@ def test_empty_projects_does_not_upload_detached_host(run_projects):
     calls, uploads, _ = run([])
     assert calls == []
     assert uploads == []
+
+
+@pytest.mark.parametrize("projects", [
+    ["app"], [{"project": "app"}], [{"source": "app"}],
+    [{"project": "app", "source": ""}], [{"project": "", "source": "app"}],
+    [{"project": "app", "source": 1}], [{"project": 1, "source": "app"}],
+    [{"project": "app", "source": "app", "extra": True}],
+    [{"project": " app", "source": "app"}], [{"project": "app", "source": "app "}],
+])
+def test_invalid_projects_file_never_falls_back_to_legacy_upload(run_projects, projects):
+    run, generator = run_projects
+    with pytest.raises(ValueError, match="Invalid report projects file"):
+        run(projects)
+    generator.create_report.assert_not_called()
 
 
 @pytest.mark.parametrize("method", ["get_index_definitions_from_sink", "get_queryid_queries_from_sink"])

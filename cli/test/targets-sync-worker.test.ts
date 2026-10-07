@@ -25,12 +25,13 @@ function fixture(targets: Array<{ target_id: string; name: string; adopt: boolea
   const journal = path.join(box.projectDir, ".pgai-managed-targets.json");
   const calls: Array<{ rpc: string; body: any; headers: Headers }> = [];
   const submits: any[] = [];
+  const acceptedSubmits: any[] = [];
   const stackLog = path.join(box.root, "stack.log");
   let polls = 0;
   let releasePoll: (() => void) | undefined;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
     const rpc = new URL(req.url).pathname.split("/").pop()!;
-    const body = await req.json();
+    const body: any = await req.json();
     calls.push({ rpc, body, headers: req.headers });
     if (rpc === "monitoring_target_poll") {
       polls++;
@@ -40,10 +41,17 @@ function fixture(targets: Array<{ target_id: string; name: string; adopt: boolea
       });
       return Response.json({ job: submits.length && !options.loseSubmit ? null : { id: 878, generation: polls, targets }, next_poll_ms: 1 });
     }
-    if (rpc === "monitoring_target_secret") return Response.json({ db_url: url });
+    if (rpc === "monitoring_target_secret") {
+      if (targets.some(t => t.target_id === body.target_id && t.adopt)) return Response.json({ code: "PT404" }, { status: 404 });
+      return Response.json({ db_url: url });
+    }
     if (rpc === "monitoring_target_submit") {
       submits.push(body);
       if (options.loseSubmit && submits.length === 1) return Response.json({ code: "503", message: url }, { status: 503 });
+      if (body.failed.some((t: any) => !targets.some(desired => desired.target_id === t.target_id))) {
+        return Response.json({ code: "PT400", message: "outside the desired set" }, { status: 400 });
+      }
+      acceptedSubmits.push(body);
       return Response.json({ ok: true });
     }
     return new Response("Unexpected RPC", { status: 500 });
@@ -76,7 +84,7 @@ exit 0
     });
     return { child, output, async stop() { child.kill("SIGTERM"); await child.exited; return (await output).join("\n"); } };
   }
-  return { box, file, journal, calls, submits, stackLog, start, get polls() { return polls; } };
+  return { box, file, journal, calls, submits, acceptedSubmits, stackLog, start, get polls() { return polls; } };
 }
 
 test("sync adds, adopts without a secret, and removes only journal targets", async () => {
@@ -113,7 +121,7 @@ test("journal-only removal reconciles an already absent name", async () => {
   fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "old", name: "absent" }]));
   const worker = f.start();
   await until(() => f.submits.length === 1);
-  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual({ targets: [], desired: [] });
   expect(fs.readFileSync(f.stackLog, "utf8")).toContain("sources-generator");
   await worker.stop();
 });
@@ -161,7 +169,7 @@ test("worker refuses to adopt a manual target without adopt=true", async () => {
   expect(f.submits[0].applied).toEqual([]);
   expect(f.submits[0].failed.length).toBe(1);
   expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
-  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets).toEqual([]);
   await worker.stop();
 });
 
@@ -239,10 +247,10 @@ test("failed removal retains ownership until an absent-name replay reconciles", 
   const worker = f.start();
   await until(() => f.submits.length === 1);
   expect(loadInstances(f.file)).toEqual([]);
-  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).length).toBe(1);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.length).toBe(1);
   fs.unlinkSync(path.join(f.box.root, "fail"));
   await until(() => f.submits.length >= 2, 12000);
-  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets).toEqual([]);
   await worker.stop();
 }, 15000);
 
@@ -251,11 +259,11 @@ test("sync publishes only applied desired projects, including adoption and detac
   addInstanceToFile(f.file, buildInstance("app", "postgresql://host/db"));
   addInstanceToFile(f.file, buildInstance("manual", "postgresql://manual/db"));
   const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
-  fs.writeFileSync(projects, JSON.stringify({ projects: ["detached"] }), { mode: 0o644 });
+  fs.writeFileSync(projects, JSON.stringify({ projects: [{ project: "detached", source: "old-db" }] }), { mode: 0o644 });
   const worker = f.start();
   await until(() => f.submits.length === 1);
   await worker.stop();
-  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: ["app", "app2"] });
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [{ project: "app", source: "app" }, { project: "app2", source: "app2" }] });
   expect(fs.statSync(projects).mode & 0o777).toBe(0o600);
 });
 
@@ -275,10 +283,148 @@ test("failed adds publish an empty projects file and never print the redeemed pa
 test("empty desired set retains a private empty projects file", async () => {
   const f = fixture([]);
   const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
-  fs.writeFileSync(projects, JSON.stringify({ projects: ["detached"] }));
+  fs.writeFileSync(projects, JSON.stringify({ projects: [{ project: "detached", source: "old-db" }] }));
   const worker = f.start();
   await until(() => f.submits.length === 1);
   await worker.stop();
   expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [] });
   expect(fs.statSync(projects).mode & 0o777).toBe(0o600);
+});
+
+test("inferred host name is adopted, replayed, and removed by its local name", async () => {
+  const targets = [{ target_id: "host", name: "host-project", adopt: true }];
+  const f = fixture(targets, { loseSubmit: true });
+  addInstanceToFile(f.file, buildInstance("hostname-db", "postgresql://host/db"));
+  addInstanceToFile(f.file, buildInstance("old-db", "postgresql://old/db"));
+  fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "old", name: "old-db" }]));
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(f.submits[0].applied).toEqual(["host"]);
+  expect(f.submits[0].failed).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets).toEqual([
+    { target_id: "host", name: "host-project", local_name: "hostname-db", pending: false, adopted: true },
+  ]);
+  const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [{ project: "host-project", source: "hostname-db" }] });
+  await until(() => f.submits.length >= 2, 12000);
+  expect(f.submits[1].applied).toEqual(["host"]);
+  expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
+  targets.splice(0);
+  await until(() => f.submits.length >= 3, 12000);
+  expect(loadInstances(f.file).map(i => i.name)).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual({ targets: [], desired: [] });
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [] });
+  await worker.stop();
+}, 30000);
+
+for (const names of [[], ["first-db", "second-db"]]) {
+  test(`host adoption refuses ${names.length} unjournaled candidates without a secret`, async () => {
+    const f = fixture([{ target_id: "host", name: "host-project", adopt: true }]);
+    for (const name of names) addInstanceToFile(f.file, buildInstance(name, "postgresql://host/db"));
+    const worker = f.start();
+    await until(() => f.submits.length === 1);
+    expect(f.submits[0].applied).toEqual([]);
+    expect(f.submits[0].failed.map((t: any) => t.target_id)).toEqual(["host"]);
+    expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
+    expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets).toEqual([]);
+    expect(loadInstances(f.file).map(i => i.name)).toEqual(names);
+    await worker.stop();
+  });
+}
+
+test("only one new adoption is allowed per job, including exact-name matches", async () => {
+  const f = fixture([{ target_id: "first", name: "first-db", adopt: true }, { target_id: "second", name: "second-db", adopt: true }], { loseSubmit: true });
+  for (const name of ["first-db", "second-db"]) addInstanceToFile(f.file, buildInstance(name, "postgresql://host/db"));
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(f.submits[0].applied).toEqual(["first"]);
+  expect(f.submits[0].failed.map((t: any) => t.target_id)).toEqual(["second"]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.map((t: any) => t.target_id)).toEqual(["first"]);
+  await until(() => f.submits.length >= 2, 12000);
+  expect(f.submits[1].applied).toEqual(["first"]);
+  expect(f.submits[1].failed.map((t: any) => t.target_id)).toEqual(["second"]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.map((t: any) => t.target_id)).toEqual(["first"]);
+  await worker.stop();
+}, 15000);
+
+test("an adopted local name cannot be claimed by another desired target", async () => {
+  const f = fixture([{ target_id: "host", name: "host-project", adopt: true }, { target_id: "new", name: "hostname-db", adopt: false }]);
+  addInstanceToFile(f.file, buildInstance("hostname-db", "postgresql://host/db"));
+  fs.writeFileSync(f.journal, JSON.stringify({
+    targets: [{ target_id: "host", name: "host-project", local_name: "hostname-db", adopted: true }],
+    desired: [{ target_id: "host", name: "host-project" }],
+  }));
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(f.submits[0].applied).toEqual(["host"]);
+  expect(f.submits[0].failed.map((t: any) => t.target_id)).toEqual(["new"]);
+  expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
+  await worker.stop();
+});
+
+test("host adoption recovers a pending journal from the previous name-mismatch failure", async () => {
+  const f = fixture([{ target_id: "host", name: "host-project", adopt: true }]);
+  addInstanceToFile(f.file, buildInstance("hostname-db", "postgresql://host/db"));
+  fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "host", name: "host-project", pending: true, adopted: false }]));
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(f.submits[0].applied).toEqual(["host"]);
+  expect(f.submits[0].failed).toEqual([]);
+  expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets).toEqual([
+    { target_id: "host", name: "host-project", local_name: "hostname-db", pending: false, adopted: true },
+  ]);
+  await worker.stop();
+});
+
+test("failed removal submits successfully and retries on the next empty poll under the lock", async () => {
+  const f = fixture([]);
+  fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "old", name: "old-db" }]));
+  addInstanceToFile(f.file, buildInstance("old-db", url));
+  fs.writeFileSync(path.join(f.box.root, "fail"), "");
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(f.submits[0].failed).toEqual([]);
+  expect(f.acceptedSubmits.length).toBe(1);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.map((t: any) => t.target_id)).toEqual(["old"]);
+  fs.unlinkSync(path.join(f.box.root, "fail"));
+  fs.rmSync(path.join(f.box.root, "applying"));
+  fs.writeFileSync(path.join(f.box.root, "hold"), "");
+  const manual = f.start(["remove", "absent"]);
+  await until(() => fs.existsSync(path.join(f.box.root, "applying")));
+  const stackCalls = fs.readFileSync(f.stackLog, "utf8");
+  await until(() => f.polls >= 2, 12000);
+  await Bun.sleep(250);
+  expect(fs.readFileSync(f.stackLog, "utf8") === stackCalls).toBe(true);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.length).toBe(1);
+  fs.unlinkSync(path.join(f.box.root, "hold"));
+  await manual.child.exited;
+  await until(() => JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.length === 0);
+  expect(f.submits.length).toBe(1);
+  expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(0);
+  await worker.stop();
+}, 20000);
+
+test("empty polls after restart use persisted desired ids and names and only retry removals", async () => {
+  const f = fixture([{ target_id: "new", name: "new-db", adopt: false }]);
+  fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "old", name: "old-db" }]));
+  addInstanceToFile(f.file, buildInstance("old-db", url));
+  fs.writeFileSync(path.join(f.box.root, "fail"), "");
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  await worker.stop();
+  expect(f.submits[0].failed.map((t: any) => t.target_id)).toEqual(["new"]);
+  expect(f.acceptedSubmits.length).toBe(1);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).desired).toEqual([{ target_id: "new", name: "new-db" }]);
+  const secretCalls = f.calls.filter(c => c.rpc === "monitoring_target_secret").length;
+  fs.unlinkSync(path.join(f.box.root, "fail"));
+  const resumed = f.start();
+  await until(() => JSON.parse(fs.readFileSync(f.journal, "utf8")).targets.length === 1);
+  const journal = JSON.parse(fs.readFileSync(f.journal, "utf8"));
+  expect(journal.targets[0].target_id).toBe("new");
+  expect(journal.targets[0].pending).toBe(true);
+  expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").length).toBe(secretCalls);
+  expect(f.submits.length).toBe(1);
+  expect(JSON.parse(fs.readFileSync(path.join(f.box.projectDir, ".pgai-report-projects.json"), "utf8"))).toEqual({ projects: [] });
+  await resumed.stop();
 });
