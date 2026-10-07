@@ -136,3 +136,11 @@ test("targets add retries with the saved target labels and preserves instance da
   expect(readFileSync(`${dir}/instances.yml`, "utf8")).toBe(saved);
   expect(loadInstances(`${dir}/instances.yml`)).toEqual([instance]);
 });
+
+test("targets add strips channel_binding=require with verify-full and warns once", async () => {
+  const result = await run({}, `${conn}?sslmode=verify-full&channel_binding=require`);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("Warning: the collector can't do channel binding; it connects with TLS and full certificate verification");
+  expect(loadInstances(`${dir}/instances.yml`)[0].conn_str).toBe(`${conn}?sslmode=verify-full`);
+  expect(requests).toEqual([]);
+});

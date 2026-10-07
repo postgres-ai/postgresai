@@ -112,6 +112,21 @@ describe("connect", () => {
     }
   });
 
+  test("channel_binding=require with verify-full strips the box URL and warns once, including agents", async () => {
+    for (const agent of [false, true]) {
+      const messages: string[] = [];
+      const f = fake({
+        progress: (event) => { messages.push(event.message); },
+        prepare: async (url, _provider, o) => o?.check ? { checked: true } : { monitoringUrl: url.replace("postgres:adminpw", "postgres_ai_mon:genpw") },
+      });
+      const result = await connect(`${CH.replace("sslmode=require", "sslmode=verify-full")}&channel_binding=require`, { waitMs: 0, agent }, f.deps);
+      expect(result.status).toBe("provisioning");
+      const body = JSON.parse(f.calls.find((c) => c.startsWith("create "))!.slice(7));
+      expect(body.db_url).toBe(MON.replace("sslmode=require", "sslmode=verify-full"));
+      expect(messages.filter((m) => m.includes("collector"))).toEqual(["Warning: the collector can't do channel binding; it connects with TLS and full certificate verification"]);
+    }
+  });
+
   test("ClickHouse with a key: find the org, prepare, provision, wait, dashboard", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested"), row("active")] });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps);
