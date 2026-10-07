@@ -245,3 +245,40 @@ test("failed removal retains ownership until an absent-name replay reconciles", 
   expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual([]);
   await worker.stop();
 }, 15000);
+
+test("sync publishes only applied desired projects, including adoption and detach", async () => {
+  const f = fixture([{ target_id: "host", name: "app", adopt: true }, { target_id: "new", name: "app2", adopt: false }]);
+  addInstanceToFile(f.file, buildInstance("app", "postgresql://host/db"));
+  addInstanceToFile(f.file, buildInstance("manual", "postgresql://manual/db"));
+  const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
+  fs.writeFileSync(projects, JSON.stringify({ projects: ["detached"] }), { mode: 0o644 });
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  await worker.stop();
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: ["app", "app2"] });
+  expect(fs.statSync(projects).mode & 0o777).toBe(0o600);
+});
+
+test("failed adds publish an empty projects file and never print the redeemed password", async () => {
+  const f = fixture([{ target_id: "new", name: "app2", adopt: false }]);
+  fs.writeFileSync(path.join(f.box.root, "fail"), "");
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  const output = await worker.stop();
+  expect(output.includes(new URL(url).password)).toBe(false);
+  expect(JSON.stringify(f.submits).includes(new URL(url).password)).toBe(false);
+  const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
+  expect(fs.existsSync(projects)).toBe(true);
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [] });
+});
+
+test("empty desired set retains a private empty projects file", async () => {
+  const f = fixture([]);
+  const projects = path.join(f.box.projectDir, ".pgai-report-projects.json");
+  fs.writeFileSync(projects, JSON.stringify({ projects: ["detached"] }));
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  await worker.stop();
+  expect(JSON.parse(fs.readFileSync(projects, "utf8"))).toEqual({ projects: [] });
+  expect(fs.statSync(projects).mode & 0o777).toBe(0o600);
+});

@@ -269,3 +269,15 @@ def test_nonempty_api_url_env_wins_over_config(tmp_path):
     args = calls[1][0]
     assert args[:2] == ["-m", "reporter.postgres_reports"]
     assert args[args.index("--api-url") + 1] == expected
+
+
+@pytest.mark.unit
+def test_projects_file_enables_upload_without_legacy_project_name(tmp_path):
+    projects = tmp_path / ".pgai-report-projects.json"
+    projects.write_text('{"projects": ["app", "app2"]}')
+    proc, calls = run_one_cycle_logging_calls(tmp_path, "api_key=synthetic-token\n")
+    assert proc.returncode == STUB_EXIT_CODE
+    args = calls[-1][0]
+    assert "--no-upload" not in args
+    assert "--token" in args
+    assert "project name is required" not in proc.stderr
