@@ -12,7 +12,7 @@ import * as fs from "fs";
 import * as yaml from "js-yaml";
 import { redactTextSecrets } from "./util";
 import { parse as parseConnString } from "pg-connection-string";
-import type { ClientConfig } from "pg";
+import { Client, type ClientConfig } from "pg";
 
 export interface Instance {
   name: string;
@@ -361,17 +361,44 @@ export function splitChannelBinding(uri: string): { uri: string; value: string |
   return { uri: uri.slice(0, start) + (params.length ? `?${params.join("&")}` : "") + uri.slice(end), value };
 }
 
-export async function collectorConnection(url: string): Promise<{ url: string; note?: string }> {
+export async function verifyCollectorTls(url: string): Promise<void> {
+  const u = new URL(url);
+  const ca = u.searchParams.get("sslrootcert");
+  for (const key of ["sslrootcert", "sslcert", "sslkey", "uselibpqcompat"]) u.searchParams.delete(key);
+  const client = new Client({
+    ...buildClientConfig(splitChannelBinding(u.toString()).uri, { connectionTimeoutMillis: 10_000 }),
+    ssl: { rejectUnauthorized: true, servername: u.hostname, ...(ca ? { ca: fs.readFileSync(ca, "utf8") } : {}) },
+  });
+  try {
+    await client.connect();
+  } catch (err) {
+    // Authentication and other errors after a verified handshake do not invalidate the certificate.
+    if (!(client as any).connection.stream.authorized) throw err;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+export async function collectorConnection(url: string, verifyTls = verifyCollectorTls): Promise<{ url: string; note?: string }> {
   const binding = splitChannelBinding(url);
   const sslmode = extractSslmode(url);
   if (binding.value === "require") {
     if (sslmode === "disable" || sslmode === "allow") {
       throw new Error(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
     }
+    let collectorUrl = binding.uri;
     if (sslmode !== "verify-full") {
-      throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
+      const u = new URL(collectorUrl);
+      u.searchParams.set("sslmode", "verify-full");
+      collectorUrl = u.toString();
+      try {
+        await verifyTls(collectorUrl);
+      } catch (err) {
+        const why = err instanceof Error && err.message ? ` (${err.message})` : "";
+        throw new Error(`Could not verify the TLS certificate for channel_binding=require${why}. Provide sslrootcert=<CA file> with sslmode=verify-full, or explicitly accept the downgrade by removing channel_binding=require from the URL`);
+      }
     }
-    return { url: binding.uri, note: "the collector can't do channel binding; it connects with TLS and full certificate verification" };
+    return { url: collectorUrl, note: "the collector can't do channel binding; it connects with TLS and full certificate verification" + (sslmode !== "verify-full" ? "; upgraded to sslmode=verify-full" : "") };
   }
   return { url: binding.uri, ...(binding.value !== null ? { note: "removed channel_binding from the connection string; the collector does not support it (TLS is kept)" } : {}) };
 }

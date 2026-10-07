@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { connect, connectStatus, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { caNote, connect, connectStatus, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -5842,7 +5842,7 @@ const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
-  env: NodeJS.ProcessEnv, { apply = true }: { apply?: boolean } = {},
+  env: NodeJS.ProcessEnv, { apply = true, verifyTls }: { apply?: boolean; verifyTls?: (url: string) => Promise<void> } = {},
 ): Promise<boolean> {
   if (!connStr) {
     console.error("Connection string required: postgresql://user:pass@host:port/db");
@@ -5857,9 +5857,10 @@ export async function addTarget(
     return false;
   }
   try {
-    const collector = await collectorConnection(connStr);
+    const collector = await collectorConnection(connStr, verifyTls);
     connStr = collector.url;
     if (collector.note) console.error(`${channelBinding.value === "require" ? "Warning" : "Note"}: ${collector.note}`);
+    if (channelBinding.value === "require" && caNote(connStr)) console.error(`Note: ${caNote(connStr)}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;

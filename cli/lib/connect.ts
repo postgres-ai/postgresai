@@ -7,7 +7,7 @@ import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
   maskConnectionString, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
 } from "./init";
-import { collectorConnection, splitChannelBinding } from "./instances";
+import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
 import { callRpc } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
 import { HttpStatusError, requestTimeoutSignal } from "./util";
@@ -108,6 +108,7 @@ export interface Database {
 export type Prepared = { monitoringUrl: string; note?: string; generated?: true; storedPassword?: true } | { next: string; sql?: string } | { checked: true };
 
 export interface ConnectDeps {
+  verifyTls?(url: string): Promise<void>;
   list(): Promise<Database[]>;
   create(body: Record<string, string | boolean>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
@@ -334,7 +335,7 @@ const monitoringUrlFor = (url: string, db: string, password: string) => roleUrlF
 const loginUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, [...URL_PARAMS_KEPT, ...URL_PARAMS_TLS]);
 
 /** What to tell the user when the URL verifies the server with a CA file the box will not have. */
-function caNote(url: string): string | undefined {
+export function caNote(url: string): string | undefined {
   const q = new URL(url).searchParams;
   if (!q.get("sslrootcert") || !/^verify-/.test(q.get("sslmode") ?? "")) return undefined;
   return `the monitoring box has no copy of the CA in sslrootcert: with sslmode=${q.get("sslmode")} it connects only to a server certificate signed by a public CA (else connect with sslmode=require)`;
@@ -431,10 +432,11 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   checkUrlParams(url, opts.agent);
   const name = databaseName(url);
   try {
-    const collector = await collectorConnection(url);
+    const collector = await collectorConnection(url, deps.verifyTls);
     const required = splitChannelBinding(url).value === "require";
     url = collector.url;
     if (collector.note) progress("preparing", `${required ? "Warning" : "Note"}: ${collector.note}`);
+    if (required && caNote(url)) progress("preparing", `Note: ${caNote(url)}`);
   } catch (err) {
     return { status: "action_required", provider, name, next: err instanceof Error ? err.message : String(err) };
   }
@@ -957,6 +959,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
   const rpc = <T>(fn: string, body: Record<string, unknown> = {}) =>
     callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope });
   return {
+    verifyTls: verifyCollectorTls,
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     create: (body: Record<string, string | boolean>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),

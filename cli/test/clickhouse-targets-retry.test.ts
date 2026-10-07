@@ -189,7 +189,7 @@ test.each(["login", "28P01", "3D000", "post-handshake"])("the real TLS probe acc
     (this as any).connection.stream.authorized = true;
     if (answer !== "login") throw Object.assign(new Error("after handshake"), answer === "post-handshake" ? {} : { code: answer });
   });
-  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  const end = spyOn(Client.prototype, "end").mockImplementation(async () => {});
   try {
     const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
     expect(result.code).toBe(0);
@@ -200,8 +200,8 @@ test.each(["login", "28P01", "3D000", "post-handshake"])("the real TLS probe acc
 });
 
 test("the real TLS probe refuses an unverified handshake and closes the client", async () => {
-  const connect = spyOn(Client.prototype, "connect").mockRejectedValue(Object.assign(new Error("self-signed"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }));
-  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  const connect = spyOn(Client.prototype, "connect").mockImplementation(async () => { throw Object.assign(new Error("self-signed"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }); });
+  const end = spyOn(Client.prototype, "end").mockImplementation(async () => {});
   try {
     const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
     expect(result.stderr).toContain("sslrootcert=<CA file>");
@@ -215,7 +215,7 @@ test("the real TLS probe uses the CA file rather than the default roots", async 
   writeFileSync(ca, "fixture CA");
   const configs: unknown[] = [];
   const connect = spyOn(Client.prototype, "connect").mockImplementation(async function(this: Client) { configs.push(this.ssl); });
-  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  const end = spyOn(Client.prototype, "end").mockImplementation(async () => {});
   try {
     const result = await run({}, `${conn}?sslmode=require&channel_binding=require&sslrootcert=${encodeURIComponent(ca)}`, null);
     expect(result.code).toBe(0);
@@ -224,8 +224,8 @@ test("the real TLS probe uses the CA file rather than the default roots", async 
 });
 
 test("the real TLS probe refuses a connection failure before the handshake", async () => {
-  const connect = spyOn(Client.prototype, "connect").mockRejectedValue(Object.assign(new Error("offline"), { code: "ECONNREFUSED" }));
-  const end = spyOn(Client.prototype, "end").mockResolvedValue(undefined);
+  const connect = spyOn(Client.prototype, "connect").mockImplementation(async () => { throw Object.assign(new Error("offline"), { code: "ECONNREFUSED" }); });
+  const end = spyOn(Client.prototype, "end").mockImplementation(async () => {});
   try {
     const result = await run({}, `${conn}?sslmode=require&channel_binding=require`, null);
     expect(result.code).toBe(1);

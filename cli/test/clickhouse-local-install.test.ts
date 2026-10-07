@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { loadInstances } from "../lib/instances";
 
 // `mon local-install --db-url` is the main onboarding path, so it must set up
 // ClickHouse host metrics exactly like `mon targets add` does.
@@ -132,7 +133,7 @@ test("local-install refuses an unverified channel_binding=require URL before sav
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("sslrootcert=<CA file>");
   expect(result.stderr).toContain("removing channel_binding=require from the URL");
-  expect(existsSync(`${projectDir}/instances.yml`)).toBe(false);
-  expect(existsSync(`${projectDir}/host-metrics`)).toBe(false);
+  expect(loadInstances(`${projectDir}/instances.yml`)).toEqual([]);
+  expect(existsSync(`${projectDir}/host-metrics/clickhouse-${name}.yml`)).toBe(false);
   expect(result.stdout).not.toContain("Step 3");
 });
