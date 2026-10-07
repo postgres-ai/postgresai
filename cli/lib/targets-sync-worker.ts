@@ -159,6 +159,9 @@ async function applyJob(projectDir: string, instancesFile: string, job: Job, hoo
       }
     }
     save();
+    const projects = job.targets.filter(t => applied.includes(t.target_id)).map(t => t.name);
+    writePrivateFileAtomic(path.join(path.dirname(instancesFile), ".pgai-report-projects.json"),
+      JSON.stringify({ projects }) + "\n");
     return { job_id: job.id, generation: job.generation, applied, failed };
   }, signal);
 }
