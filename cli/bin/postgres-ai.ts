@@ -4,6 +4,8 @@ import { Command, Option } from "commander";
 import pkg from "../package.json";
 import * as config from "../lib/config";
 import { isEpipe, writeStdout } from "../lib/stdout";
+import { withTargetsLock } from "../lib/targets-lock";
+import { runTargetsSyncWorker } from "../lib/targets-sync-worker";
 import * as yaml from "js-yaml";
 import * as fs from "fs";
 import * as path from "path";
@@ -549,6 +551,21 @@ function buildLocalInstallEnv(
   return { content: envLines.join("\n") + "\n", preservedKeys };
 }
 
+let quietTargets = false;
+let targetsWorkerSignal: AbortSignal | undefined;
+
+async function silentTargetsAction<T>(action: () => Promise<T>): Promise<T> {
+  const previous = { log: console.log, error: console.error, warn: console.warn, quiet: quietTargets };
+  quietTargets = true;
+  console.log = console.error = console.warn = () => {};
+  try { return await action(); } finally {
+    console.log = previous.log;
+    console.error = previous.error;
+    console.warn = previous.warn;
+    quietTargets = previous.quiet;
+  }
+}
+
 // Helper functions for spawning processes - use Node.js child_process for compatibility
 async function execFilePromise(
   file: string,
@@ -571,7 +588,7 @@ async function execFilePromise(
 function spawnSync(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore" | "inherit"; encoding?: string; env?: Record<string, string | undefined>; cwd?: string }): { status: number | null; stdout: string; stderr: string } {
   const result = childProcess.spawnSync(cmd, args, {
     stdio: options?.stdio === "inherit" ? "inherit" : "pipe",
-    env: options?.env as NodeJS.ProcessEnv,
+    env: options?.env ?? { ...process.env },
     cwd: options?.cwd,
     encoding: "utf8",
   });
@@ -584,11 +601,14 @@ function spawnSync(cmd: string, args: string[], options?: { stdio?: "pipe" | "ig
 
 function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore" | "inherit"; env?: Record<string, string | undefined>; cwd?: string; detached?: boolean }): { on: (event: string, cb: (code: number | null, signal?: string) => void) => void; unref: () => void; pid?: number } {
   const proc = childProcess.spawn(cmd, args, {
-    stdio: options?.stdio ?? "pipe",
+    stdio: quietTargets ? "pipe" : options?.stdio ?? "pipe",
+    ...(quietTargets && targetsWorkerSignal ? { signal: targetsWorkerSignal } : {}),
     env: options?.env as NodeJS.ProcessEnv,
     cwd: options?.cwd,
     detached: options?.detached,
   });
+
+  if (quietTargets) { proc.stdout?.resume(); proc.stderr?.resume(); }
 
   return {
     on(event: string, cb: (code: number | null, signal?: string) => void) {
@@ -3854,6 +3874,7 @@ async function runCompose(
     });
     // A signal leaves code null: that is a failure, not success.
     child.on("close", (code) => resolve(code ?? 1));
+    child.on("error", () => resolve(1));
   });
 }
 
@@ -5915,8 +5936,100 @@ export async function addTarget(
   }
 }
 
+export async function removeTarget(file: string, projectDir: string, name: string, reconcileAbsent = false): Promise<boolean> {
+  if (!reconcileAbsent && (!fs.existsSync(file) || fs.lstatSync(file).isDirectory())) {
+    console.error("instances.yml not found");
+    process.exitCode = 1;
+    return false;
+  }
+
+  try {
+    const target = loadInstances(file).find((instance) => instance.name === name);
+    const removed = removeInstanceFromFile(file, name);
+    if (!removed && !reconcileAbsent) {
+      console.error(`Monitoring target '${name}' not found`);
+      process.exitCode = 1;
+    }
+    if (removed) console.log(`Monitoring target '${name}' removed`);
+    const reconcile = async () => {
+      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
+      const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
+      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
+        fs.rmSync(supabaseFile);
+        if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
+      }
+      if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
+      let rds: ReturnType<typeof rdsInstance>;
+      try {
+        rds = rdsInstance(new URL(target?.conn_str ?? "").hostname);
+      } catch {
+        // Not a URL: no RDS endpoint to look for.
+      }
+      if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
+        if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
+        console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
+      }
+
+      const applyCode = await applyMonitoringTargetsConfig();
+      if (applyCode !== 0) {
+        console.error("Monitoring target was removed, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+        process.exitCode = 1;
+        return false;
+      }
+      console.log("✓ Monitoring target configuration applied");
+      return process.exitCode !== 1;
+    };
+    return !removed && !reconcileAbsent ? await silentTargetsAction(reconcile) : await reconcile();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error processing instances.yml: ${message}`);
+    process.exitCode = 1;
+  }
+  return false;
+}
+
 // Monitoring targets (databases to monitor)
 const targets = mon.command("targets").description("manage databases to monitor");
+
+targets
+  .command("sync-worker", { hidden: true })
+  .action(async () => {
+    delete process.env.PGAI_DB_URL;
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    process.on("SIGTERM", stop);
+    process.on("SIGINT", stop);
+    targetsWorkerSignal = controller.signal;
+    const log = console.error.bind(console);
+    try {
+      await silentTargetsAction(async () => {
+        const { instancesFile: file, projectDir } = await resolveOrInitPaths();
+        await runTargetsSyncWorker(projectDir, file, {
+          add: async (url, name) => {
+            process.exitCode = 0;
+            const saved = await addTarget(file, projectDir, url, name, process.env);
+            const ok = saved && process.exitCode !== 1;
+            process.exitCode = 0;
+            return ok;
+          },
+          remove: async (name) => {
+            process.exitCode = 0;
+            const ok = await removeTarget(file, projectDir, name, true);
+            process.exitCode = 0;
+            return ok;
+          },
+        }, controller.signal, log);
+      });
+      process.exitCode = 0;
+    } catch {
+      log("Cannot start target synchronization worker");
+      process.exitCode = controller.signal.aborted ? 0 : 1;
+    } finally {
+      targetsWorkerSignal = undefined;
+      process.removeListener("SIGTERM", stop);
+      process.removeListener("SIGINT", stop);
+    }
+  });
 
 targets
   .command("list")
@@ -5987,11 +6100,11 @@ Environment:
                    'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
 `)
   .action(async (connStr?: string, name?: string) => {
-    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     // Automation passes the URL here, not in argv, where `ps` and the sudo
     // log would show the password. A connection string in argv still wins.
     const envUrl = process.env.PGAI_DB_URL || undefined;
     delete process.env.PGAI_DB_URL; // not for docker and compose
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     if (envUrl && name === undefined && (connStr === undefined || !looksLikeConnStr(connStr))) {
       // Trimmed, and a blank argument is no name, as in `targets add <url> <name>`.
       const arg = connStr?.trim();
@@ -6014,58 +6127,14 @@ Environment:
       }
       console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
     }
-    await addTarget(file, projectDir, connStr, name, process.env);
+    await withTargetsLock(projectDir, () => addTarget(file, projectDir, connStr, name, process.env));
   });
 targets
   .command("remove <name>")
   .description("remove monitoring target database")
   .action(async (name: string) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
-    if (!fs.existsSync(file) || fs.lstatSync(file).isDirectory()) {
-      console.error("instances.yml not found");
-      process.exitCode = 1;
-      return;
-    }
-
-    try {
-      const target = loadInstances(file).find((instance) => instance.name === name);
-      const removed = removeInstanceFromFile(file, name);
-      if (!removed) {
-        console.error(`Monitoring target '${name}' not found`);
-        process.exitCode = 1;
-        return;
-      }
-      console.log(`Monitoring target '${name}' removed`);
-      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
-      const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
-      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
-        fs.rmSync(supabaseFile);
-        if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
-      }
-      if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
-      let rds: ReturnType<typeof rdsInstance>;
-      try {
-        rds = rdsInstance(new URL(target?.conn_str ?? "").hostname);
-      } catch {
-        // Not a URL: no RDS endpoint to look for.
-      }
-      if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
-        if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
-        console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
-      }
-
-      const applyCode = await applyMonitoringTargetsConfig();
-      if (applyCode !== 0) {
-        console.error("Monitoring target was removed, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
-        process.exitCode = 1;
-        return;
-      }
-      console.log("✓ Monitoring target configuration applied");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`Error processing instances.yml: ${message}`);
-      process.exitCode = 1;
-    }
+    await withTargetsLock(projectDir, () => removeTarget(file, projectDir, name));
   });
 targets
   .command("test <name>")

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createCliSandbox } from "./cli-sandbox";
 import { loadInstances, addInstanceToFile, buildInstance } from "../lib/instances";
+import { targetChannelConfig, targetChannelHeaders } from "../lib/targets-sync-worker";
 
 const url = "postgresql://worker:synthetic-password-878@database.invalid/db?sslmode=disable";
 const token = "synthetic-box-token=878";
@@ -17,7 +18,7 @@ async function until(check: () => boolean, ms = 4000) {
   }
 }
 
-function fixture(targets: Array<{ target_id: string; name: string; adopt: boolean }>, options: { loseSubmit?: boolean; hangPoll?: boolean } = {}) {
+function fixture(targets: Array<{ target_id: string; name: string; adopt: boolean }>, options: { loseSubmit?: boolean; hangPoll?: boolean; redirectPoll?: string } = {}) {
   const box = createCliSandbox();
   cleanup.push(() => box.cleanup());
   const file = path.join(box.projectDir, "instances.yml");
@@ -26,13 +27,17 @@ function fixture(targets: Array<{ target_id: string; name: string; adopt: boolea
   const submits: any[] = [];
   const stackLog = path.join(box.root, "stack.log");
   let polls = 0;
+  let releasePoll: (() => void) | undefined;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
     const rpc = new URL(req.url).pathname.split("/").pop()!;
     const body = await req.json();
     calls.push({ rpc, body, headers: req.headers });
     if (rpc === "monitoring_target_poll") {
       polls++;
-      if (options.hangPoll) return new Promise<Response>(() => {});
+      if (options.redirectPoll) return new Response(null, { status: 307, headers: { Location: options.redirectPoll } });
+      if (options.hangPoll) return new Promise<Response>(resolve => {
+        releasePoll = () => resolve(new Response(null, { status: 503 }));
+      });
       return Response.json({ job: submits.length && !options.loseSubmit ? null : { id: 878, generation: polls, targets }, next_poll_ms: 1 });
     }
     if (rpc === "monitoring_target_secret") return Response.json({ db_url: url });
@@ -43,7 +48,7 @@ function fixture(targets: Array<{ target_id: string; name: string; adopt: boolea
     }
     return new Response("Unexpected RPC", { status: 500 });
   } });
-  cleanup.push(() => server.stop(true));
+  cleanup.push(() => { releasePoll?.(); return server.stop(true); });
   fs.writeFileSync(file, "[]\n");
   fs.writeFileSync(path.join(box.projectDir, ".pgwatch-config"),
     `\ufeffapi_key= ${token} \r\napi_key=wrong\ninstance_id=never-send-this\napi_base_url=${server.url}api/general///\n`);
@@ -57,14 +62,6 @@ case "$*" in
     if test -f '${box.root}/fail'; then cat '${file}'; exit 1; fi ;;
 esac
 exit 0
-`, { mode: 0o700 });
-  // macOS lacks util-linux flock; use the same kernel lock semantics in the fixture.
-  if (process.platform === "darwin") fs.writeFileSync(path.join(box.binDir, "flock"), `#!/usr/bin/python3
-import fcntl, os, sys
-with open(sys.argv[2], 'a') as lock:
-    os.chmod(sys.argv[2], 0o600)
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    os.system(' '.join(__import__('shlex').quote(s) for s in sys.argv[3:]))
 `, { mode: 0o700 });
   const env = { ...process.env, HOME: box.home, XDG_CONFIG_HOME: box.configHome,
     PATH: `${box.binDir}:${process.env.PATH}`, PGAI_API_BASE_URL: "http://127.0.0.1:1",
@@ -95,6 +92,7 @@ test("sync adds, adopts without a secret, and removes only journal targets", asy
   expect(f.submits[0].failed).toEqual([]);
   expect(f.calls.filter(c => c.rpc === "monitoring_target_secret").map(c => c.body)).toEqual([{ target_id: "new" }]);
   expect(fs.statSync(f.journal).mode & 0o777).toBe(0o600);
+  expect(fs.readFileSync(f.journal, "utf8").includes(url)).toBe(false);
   expect(fs.statSync(f.file).mode & 0o777).toBe(0o600);
   const output = await worker.stop();
   expect(output.includes(url)).toBe(false);
@@ -170,7 +168,7 @@ test("worker refuses to adopt a manual target without adopt=true", async () => {
 test("manual mutations exclude the worker and SIGTERM releases the lock", async () => {
   const f = fixture([{ target_id: "new", name: "new-db", adopt: false }]);
   fs.writeFileSync(path.join(f.box.root, "hold"), "");
-  const manual = f.start(["add", "postgresql://manual/db", "manual"]);
+  const manual = f.start(["add", "postgresql://manual:fixture@database.invalid/db?sslmode=disable", "manual"]);
   await until(() => fs.existsSync(path.join(f.box.root, "applying")));
   const worker = f.start();
   await until(() => f.polls > 0);
@@ -203,3 +201,47 @@ test("instances writes replace the inode instead of truncating the reader's file
     expect(loadInstances(f.file).length).toBe(1);
   } finally { fs.closeSync(fd); }
 });
+
+test("target transport mirrors config precedence and HTTPS-only CF Access headers", () => {
+  const f = fixture([]);
+  const env = { PGAI_API_BASE_URL: "https://inherited.invalid/api", CF_ACCESS_CLIENT_ID: " id ", CF_ACCESS_CLIENT_SECRET: " secret " };
+  const config = targetChannelConfig(f.box.projectDir, env);
+  expect(config.token === token).toBe(true);
+  expect(config.baseURL.startsWith("http://127.0.0.1:")).toBe(true);
+  const headers = targetChannelHeaders("https://box.invalid/api", token, env);
+  expect(headers["CF-Access-Client-Id"] === "id").toBe(true);
+  expect(headers["CF-Access-Client-Secret"] === "secret").toBe(true);
+  expect(targetChannelHeaders(config.baseURL, token, env)["CF-Access-Client-Secret"]).toBeUndefined();
+  expect(targetChannelHeaders("https://box.invalid/api", token, { CF_ACCESS_CLIENT_ID: "id" })["CF-Access-Client-Id"]).toBeUndefined();
+  fs.writeFileSync(path.join(f.box.projectDir, ".pgwatch-config"), "api_key=fixture\n api_base_url=https://ignored.invalid\n");
+  expect(targetChannelConfig(f.box.projectDir, env).baseURL).toBe(env.PGAI_API_BASE_URL);
+  expect(targetChannelConfig(f.box.projectDir, {}).baseURL).toBe("https://postgres.ai/api/general");
+  expect(() => targetChannelConfig(f.box.projectDir, { PGAI_API_BASE_URL: "http://public.invalid" })).toThrow();
+});
+
+test("poll redirects never replay the box credential", async () => {
+  let requests = 0;
+  const other = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return Response.json({}); } });
+  cleanup.push(() => other.stop(true));
+  const f = fixture([], { redirectPoll: other.url.toString() });
+  const worker = f.start();
+  await until(() => f.polls === 1);
+  await Bun.sleep(100);
+  expect(requests).toBe(0);
+  await worker.stop();
+});
+
+test("failed removal retains ownership until an absent-name replay reconciles", async () => {
+  const f = fixture([], { loseSubmit: true });
+  fs.writeFileSync(f.journal, JSON.stringify([{ target_id: "old", name: "old-db" }]));
+  addInstanceToFile(f.file, buildInstance("old-db", url));
+  fs.writeFileSync(path.join(f.box.root, "fail"), "");
+  const worker = f.start();
+  await until(() => f.submits.length === 1);
+  expect(loadInstances(f.file)).toEqual([]);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8")).length).toBe(1);
+  fs.unlinkSync(path.join(f.box.root, "fail"));
+  await until(() => f.submits.length >= 2, 12000);
+  expect(JSON.parse(fs.readFileSync(f.journal, "utf8"))).toEqual([]);
+  await worker.stop();
+}, 15000);

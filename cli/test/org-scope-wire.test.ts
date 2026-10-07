@@ -71,6 +71,7 @@ const ORG_AGNOSTIC_COMMANDS = [
   "mon targets add",
   "mon targets list",
   "mon targets remove",
+  "mon targets sync-worker",
   "mon targets test",
   "mon update",
   "mon update-config",

@@ -687,10 +687,8 @@ describe.skipIf(process.platform === "win32")("instances.yml permissions (#353)"
     expect(modeOf(instancesFile)).toBe("600");
   });
 
-  // A file owned by another UID but writable (root-created by a sudo install,
-  // a bind mount, a CI image): the write succeeds and the chmod raises EPERM.
-  // Tightening is best-effort hardening; it must not fail an add/remove that
-  // already landed, or pgwatch's sources are never regenerated (#353).
+  // Atomic replacement creates a new owner-only inode, so saving no longer
+  // needs permission to chmod the old inode (#353).
   const eperm = () => {
     const err = new Error("EPERM: operation not permitted, chmod") as NodeJS.ErrnoException;
     err.code = "EPERM";
@@ -710,7 +708,8 @@ describe.skipIf(process.platform === "win32")("instances.yml permissions (#353)"
         addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db")),
       ).not.toThrow();
       expect(loadInstances(instancesFile).map((i) => i.name)).toEqual(["t1"]);
-      expect(errSpy.mock.calls.flat().join("\n")).toMatch(/could not restrict permissions/);
+      expect(modeOf(instancesFile)).toBe("600");
+      expect(errSpy.mock.calls).toHaveLength(0);
     } finally {
       spies.forEach((s) => s.mockRestore());
       errSpy.mockRestore();

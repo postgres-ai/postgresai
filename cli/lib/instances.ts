@@ -13,6 +13,7 @@ import * as yaml from "js-yaml";
 import { redactTextSecrets } from "./util";
 import { parse as parseConnString } from "pg-connection-string";
 import { Client, type ClientConfig } from "pg";
+import { writePrivateFileAtomic } from "./atomic-file";
 
 export interface Instance {
   name: string;
@@ -98,8 +99,7 @@ export function buildInstance(name: string, connStr: string): Instance {
  * Replaces files where the previous code path treated the directory created
  * by Docker's bind-mount-into-missing-path as a target.
  *
- * A write leaves the file 0600 where the OS permits it; a chmod the CLI may
- * not perform is warned about, not fatal (see writeInstancesFile).
+ * Writes replace the file atomically with an owner-only file.
  */
 export function addInstanceToFile(file: string, instance: Instance): void {
   if (fs.existsSync(file) && fs.lstatSync(file).isDirectory()) {
@@ -127,28 +127,11 @@ export function removeInstanceFromFile(file: string, name: string): boolean {
 }
 
 /**
- * instances.yml holds password-bearing conn_strs, so it must be owner-only
- * (#353). `mode` only applies when the file is created, so an existing file
- * is fchmod'ed on the open fd BEFORE the content lands. Best-effort like
- * config.ts: EPERM on a foreign-owned file must not fail an add/remove that
- * is otherwise fine. On Windows chmod only toggles read-only; ACLs are inherited.
+ * instances.yml holds password-bearing conn_strs. Readers must see either
+ * the old complete list or the new one, including after an interrupted write.
  */
 function writeInstancesFile(file: string, instances: Instance[]): void {
-  // Serialize before truncating so a dump failure cannot leave an empty file.
-  const content = yaml.dump(instances);
-  const fd = fs.openSync(file, "w", 0o600);
-  try {
-    try {
-      fs.fchmodSync(fd, 0o600);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`Warning: could not restrict permissions on ${file}: ${message}`);
-      console.error("         It may be readable by other users on this machine.");
-    }
-    fs.writeFileSync(fd, content, "utf8");
-  } finally {
-    fs.closeSync(fd);
-  }
+  writePrivateFileAtomic(file, yaml.dump(instances));
 }
 
 /**
