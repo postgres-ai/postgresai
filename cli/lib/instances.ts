@@ -361,6 +361,18 @@ export function splitChannelBinding(uri: string): { uri: string; value: string |
   return { uri: uri.slice(0, start) + (params.length ? `?${params.join("&")}` : "") + uri.slice(end), value };
 }
 
+export async function collectorConnection(url: string): Promise<{ url: string; note?: string }> {
+  const binding = splitChannelBinding(url);
+  const sslmode = extractSslmode(url);
+  if (binding.value === "require") {
+    if (sslmode === "disable" || sslmode === "allow") {
+      throw new Error(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
+    }
+    throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
+  }
+  return { url: binding.uri, ...(binding.value !== null ? { note: "removed channel_binding from the connection string; the collector does not support it (TLS is kept)" } : {}) };
+}
+
 /**
  * Whether to enable channel binding. channel_binding=require (libpq semantics) needs TLS:
  * with sslmode=disable libpq refuses to connect, so do the same instead of silently sending

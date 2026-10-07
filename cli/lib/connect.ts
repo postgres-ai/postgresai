@@ -7,6 +7,7 @@ import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
   maskConnectionString, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
 } from "./init";
+import { collectorConnection } from "./instances";
 import { callRpc } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
 import { HttpStatusError, requestTimeoutSignal } from "./util";
@@ -429,6 +430,12 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
   checkUrlParams(url, opts.agent);
   const name = databaseName(url);
+  try {
+    const collector = await collectorConnection(url);
+    if (collector.note) progress("preparing", `Note: ${collector.note}`);
+  } catch (err) {
+    return { status: "action_required", provider, name, next: err instanceof Error ? err.message : String(err) };
+  }
   const cluster = clusterOf(url)!;
   // The exported key pair is read for ClickHouse only, and never for an agent's URL; elsewhere only the flag is an error.
   const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" && !opts.agent ? process.env : {});

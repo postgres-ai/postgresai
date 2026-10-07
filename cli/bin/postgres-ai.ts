@@ -74,7 +74,7 @@ import {
   loadInstances,
   buildInstance,
   splitChannelBinding,
-  requireChannelBinding,
+  collectorConnection,
   extractSslmode,
   addInstanceToFile,
   removeInstanceFromFile,
@@ -5850,24 +5850,20 @@ export async function addTarget(
     return false;
   }
   const channelBinding = splitChannelBinding(connStr);
-  connStr = channelBinding.uri;
-  const defaultName = defaultTargetName(connStr);
+  const defaultName = defaultTargetName(channelBinding.uri);
   if ("error" in defaultName) {
     console.error(defaultName.error);
     process.exitCode = 1;
     return false;
   }
   try {
-    if (requireChannelBinding(channelBinding.value, extractSslmode(connStr) === "disable")) {
-      throw new Error("channel_binding=require is not supported by the monitoring collector; the target was not saved");
-    }
+    const collector = await collectorConnection(connStr);
+    connStr = collector.url;
+    if (collector.note) console.error(`Note: ${collector.note}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return false;
-  }
-  if (channelBinding.value !== null) {
-    console.error("Note: removed channel_binding from the connection string; the collector does not support it (TLS is kept)");
   }
   const instanceName = name && name.trim() ? name.trim() : defaultName.name;
   // Refused before the target is saved: the name cannot be changed by a re-run.
