@@ -40,6 +40,7 @@ import {
   destroySnapshot,
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
+import { registerDblabDeployCommands, registerMonDeployCommand, type DeployCliDeps } from "../lib/deploy-commands";
 import {
   enqueueQuery,
   awaitQueryResult,
@@ -4045,6 +4046,9 @@ program.command("help").description("show help").action(() => {
 // Monitoring services management
 const mon = program.command("mon").description("monitoring services management");
 
+// `pgai mon deploy` is registered with the dblab deploy commands below
+// (platform-all#876), once their shared dependencies exist.
+
 mon
   .command("local-install")
   .description("install local monitoring stack (generate config, start services)")
@@ -7507,7 +7511,24 @@ async function resolveDblabTarget(
 
 const dblab = program
   .command("dblab")
-  .description("DBLab thin-clone / branch / snapshot management (proxies the Platform DBLab API)");
+  .description("DBLab: deploy in PostgresAI cloud, and thin-clone / branch / snapshot management");
+
+// ---- deploy / instances (platform-all#876) ----------------------------------
+
+const deployDeps: DeployCliDeps = {
+  resolveApi: (debug: boolean) => {
+    const rootOpts = program.opts<CliOptions>();
+    const cfg = config.readConfig();
+    const { apiKey } = getConfig(rootOpts);
+    if (!apiKey) throw new Error("API key is required. Run 'pgai auth' first or set --api-key.");
+    return { apiKey, apiBaseUrl: resolveBaseUrls(rootOpts, cfg).apiBaseUrl, debug };
+  },
+  withOrgOptions,
+  printResult,
+  uiBaseUrl: () => resolveBaseUrls(program.opts<CliOptions>(), config.readConfig()).uiBaseUrl,
+};
+registerDblabDeployCommands(dblab, deployDeps);
+registerMonDeployCommand(mon, { ...deployDeps, orgId: (apiKey: string) => configOrgIdForBody(apiKey, config.readConfig().orgId) });
 
 // ---- clone ----------------------------------------------------------------
 
@@ -7519,13 +7540,17 @@ withOrgOptions(clone.command("create"))
   .option("--branch <branch>", "branch to clone from")
   .option("--snapshot <id>", "snapshot id to clone from")
   .option("--id <id>", "clone id (DBLab generates one when omitted)")
-  .option("--db-user <user>", "clone DB user (set password via PGAI_CLONE_DB_PASSWORD)")
+  .option("--db-user <user>", "clone DB user (required; set its password in PGAI_CLONE_DB_PASSWORD)")
   .option("--protected", "protect the clone from auto-deletion")
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
   .action(async (opts: DblabCmdOpts & { branch?: string; snapshot?: string; id?: string; dbUser?: string; protected?: boolean }) => {
     try {
       const dbPassword = process.env.PGAI_CLONE_DB_PASSWORD;
+      // The engine refuses a clone without both, so say it here rather than after a round trip.
+      if (!opts.dbUser && !dbPassword) {
+        throw new Error("A clone needs a DB user and password: pass --db-user <user> and set PGAI_CLONE_DB_PASSWORD.");
+      }
       if ((opts.dbUser && !dbPassword) || (!opts.dbUser && dbPassword)) {
         throw new Error("--db-user and PGAI_CLONE_DB_PASSWORD must be provided together");
       }
