@@ -145,6 +145,8 @@ interface DblabApiCallParams {
   data?: Record<string, unknown>;
   operation: string;
   debug?: boolean;
+  /** Every engine 4xx for this call is pre-change validation (clone create), so it may say nothing changed. */
+  refusalChangesNothing?: boolean;
 }
 
 /**
@@ -399,6 +401,7 @@ export async function awaitDblabCall<T>(
     apiBaseUrl: string;
     operation: string;
     debug?: boolean;
+    refusalChangesNothing?: boolean;
     sleep?: (ms: number) => Promise<void>;
     // Injectable so a test drives the deadline instead of real elapsed time.
     now?: () => number;
@@ -467,6 +470,18 @@ export async function awaitDblabCall<T>(
           typeof res.failure_class === "string" && res.failure_class
             ? ` [${scrubBoxText(res.failure_class)}]`
             : "";
+        // The engine answered with a client error, so "may still complete" is
+        // wrong. But DLE also answers 400 AFTER a write landed (a snapshot taken,
+        // clones destroyed, a branch dataset gone), so only a call whose 4xx are
+        // all pre-change validation (clone create) may say nothing changed.
+        if (typeof res.failure_class === "string" && /^engine_error_4\d\d$/.test(res.failure_class)) {
+          const after = params.refusalChangesNothing
+            ? "Nothing was changed."
+            : "Check the instance's current state before running this command again.";
+          throw new Error(
+            `${operation}: the DBLab engine refused the call — ${scrubBoxText(why)}${klass}. ${after}`
+          );
+        }
         // `expired` means nothing ran; every other stop may have landed a
         // write, so it gets the job id and the do-not-repeat advice.
         const advice = res.status === "expired" ? "" : ` ${dblabNotResentAdvice(jobId)}`;
@@ -559,7 +574,7 @@ async function callDblabApi<T>(params: DblabApiCallParams): Promise<T> {
   // platform refuses a job-backed instance with PT426 rather than returning one,
   // because a client that treats any 2xx as the engine's reply would render the
   // handle as a successful result.
-  const rpcParams = { apiKey, apiBaseUrl, operation, debug };
+  const rpcParams = { apiKey, apiBaseUrl, operation, debug, refusalChangesNothing: params.refusalChangesNothing };
   // A GET changes nothing, so only a write needs the "it may have landed" line.
   const isWrite = method.toLowerCase() !== "get";
   let { response, text } = await enqueueDblabCall(
@@ -666,6 +681,8 @@ export async function createClone<T = unknown>(params: CreateCloneParams): Promi
     apiKey, apiBaseUrl, instanceId,
     action: "/clone", method: "post", data,
     operation: "Failed to create clone", debug,
+    // Every DLE createClone 4xx is request validation, before anything is made.
+    refusalChangesNothing: true,
   });
 }
 

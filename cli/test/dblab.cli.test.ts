@@ -147,7 +147,8 @@ describe("CLI DBLab companion command groups (grouped under `pgai dblab …`)", 
   });
 
   test("clone create fails fast without an API key", () => {
-    const r = runCli(["dblab", "clone", "create", "--project", "main-db"], isolatedEnv());
+    const r = runCli(["dblab", "clone", "create", "--project", "main-db", "--db-user", "u"],
+      isolatedEnv({ PGAI_CLONE_DB_PASSWORD: "p" }));
     expect(r.status).toBe(1);
     expect(`${r.stdout}\n${r.stderr}`).toContain("API key is required");
   });
@@ -158,12 +159,35 @@ describe("CLI DBLab companion command groups (grouped under `pgai dblab …`)", 
     expect(`${r.stdout}\n${r.stderr}`.toLowerCase()).toContain("project");
   });
 
+  test("clone create without DB credentials refuses before any call", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["dblab", "clone", "create", "--project", "main-db"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("A clone needs a DB user and password");
+      expect(r.stderr).toContain("--db-user");
+      expect(r.stderr).toContain("PGAI_CLONE_DB_PASSWORD");
+      expect(api.resolverCalls().length).toBe(0);
+      expect(api.proxyCalls().length).toBe(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("clone create --help marks the DB credentials as required", () => {
+    const r = runCli(["dblab", "clone", "create", "--help"], isolatedEnv());
+    expect(r.stdout).toMatch(/--db-user <user>\s+clone DB user \(required; set its password in\s+PGAI_CLONE_DB_PASSWORD\)/);
+  });
+
   test("clone create resolves the alias then proxies /clone POST", async () => {
     const api = await startFakeApi();
     try {
       const r = await runCliAsync(
-        ["dblab", "clone", "create", "--project", "main-db", "--json"],
-        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+        ["dblab", "clone", "create", "--project", "main-db", "--db-user", "u", "--json"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_CLONE_DB_PASSWORD: "p" })
       );
       expect(r.status).toBe(0);
       // The resolver call happened.
@@ -174,7 +198,7 @@ describe("CLI DBLab companion command groups (grouped under `pgai dblab …`)", 
       expect(proxied[0].bodyJson.instance_id).toBe("7");
       expect(proxied[0].bodyJson.action).toBe("/clone");
       expect(proxied[0].bodyJson.method).toBe("post");
-      expect(proxied[0].bodyJson.data).toEqual({ protected: false });
+      expect(proxied[0].bodyJson.data).toEqual({ protected: false, db: { username: "u", password: "p" } });
     } finally {
       api.stop();
     }
@@ -205,12 +229,15 @@ describe("CLI DBLab companion command groups (grouped under `pgai dblab …`)", 
     const api = await startFakeApi();
     try {
       const r = await runCliAsync(
-        ["dblab", "clone", "create", "--project", "main-db", "--branch", "feature-idx", "--snapshot", "s-9", "--protected", "--json"],
-        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+        ["dblab", "clone", "create", "--project", "main-db", "--branch", "feature-idx", "--snapshot", "s-9", "--protected",
+          "--db-user", "u", "--json"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_CLONE_DB_PASSWORD: "p" })
       );
       expect(r.status).toBe(0);
       const body = api.proxyCalls()[0].bodyJson;
-      expect(body.data).toEqual({ protected: true, branch: "feature-idx", snapshot: { id: "s-9" } });
+      expect(body.data).toEqual({
+        protected: true, branch: "feature-idx", snapshot: { id: "s-9" }, db: { username: "u", password: "p" },
+      });
     } finally {
       api.stop();
     }

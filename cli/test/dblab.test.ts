@@ -1169,6 +1169,55 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
     expect(err.message).not.toContain("aaaaaaaa");
   });
 
+  // An engine 4xx is an answer, so "may still complete" is wrong; but DLE also answers 400 AFTER a write
+  // landed (a snapshot taken, clones destroyed, a branch dataset gone), so only clone create, whose 4xx
+  // are all pre-change validation, may say nothing changed. Everything else: check the state first.
+  test("an engine 4xx is an answer: no 'may still complete'; only clone create says nothing changed", async () => {
+    const run = async (klass: string, extra: Record<string, unknown> = {}) => {
+      scriptFetch({
+        dblab_call_result: [
+          {
+            body: {
+              status: "failed",
+              outcome: "error",
+              error: "dblab engine returned 400: something went wrong",
+              failure_class: klass,
+            },
+          },
+        ],
+      });
+      const clock = fakeClock();
+      return (await awaitDblabCall({ job_id: "job-810", expires_in_s: 2 }, { ...clock.params, ...extra }).then(
+        () => null,
+        (e: Error) => e
+      )) as Error;
+    };
+    const snapshot = await run("engine_error_400");
+    expect(snapshot.message).toContain("the DBLab engine refused the call");
+    expect(snapshot.message).toContain("something went wrong");
+    expect(snapshot.message).toContain("Check the instance's current state");
+    expect(snapshot.message).not.toMatch(/Nothing was changed|NOT re-sent|may still complete/);
+    const clone = await run("engine_error_400", { refusalChangesNothing: true });
+    expect(clone.message).toContain("Nothing was changed");
+    expect(clone.message).not.toContain("Check the instance's current state");
+    // Control: a 5xx from the engine is not a definite answer and keeps the advice.
+    const broken = await run("engine_error_500");
+    expect(broken.message).toMatch(/job-810.*was NOT re-sent/s);
+  });
+
+  test("through the real commands: clone create says nothing changed, snapshot create says check the state", async () => {
+    const refused = { status: "failed", outcome: "error", error: "dblab engine returned 400: no", failure_class: "engine_error_400" };
+    scriptFetch({ dblab_api_call: [{ status: 202, body: HANDLE }], dblab_call_result: [{ body: refused }] });
+    const clone = (await createClone({ apiKey: "k", apiBaseUrl: API, instanceId: "7", cloneId: "c-1", dbUser: "u", dbPassword: "p" })
+      .then(() => null, (e: Error) => e)) as Error;
+    expect(clone.message).toContain("Nothing was changed");
+    scriptFetch({ dblab_api_call: [{ status: 202, body: HANDLE }], dblab_call_result: [{ body: refused }] });
+    const snap = (await createSnapshot({ apiKey: "k", apiBaseUrl: API, instanceId: "7", cloneId: "c-1", message: "m" })
+      .then(() => null, (e: Error) => e)) as Error;
+    expect(snap.message).toContain("Check the instance's current state");
+    expect(snap.message).not.toContain("Nothing was changed");
+  });
+
   test("a JSON error is scrubbed by PATTERN too, not only by key name", async () => {
     // `redactSecretsForLog` parses a JSON body and redacts by KEY, so a
     // credential under a benign key survives that pass entirely. This fixture
