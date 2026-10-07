@@ -114,12 +114,10 @@ test.each(["prefer", "disable"])("targets add drops channel_binding=%s with a no
   expect(requests).toEqual([]);
 });
 
-test.each(["", "&sslmode=require", "&sslmode=disable"])("targets add refuses channel_binding=require before saving: %s", async (sslmode) => {
-  const result = await run({}, `${conn}?channel_binding=require${sslmode}`);
+test.each(["disable", "allow"])("targets add refuses channel_binding=require with sslmode=%s before saving", async (sslmode) => {
+  const result = await run({}, `${conn}?channel_binding=require&sslmode=${sslmode}`);
   expect(result.code).toBe(1);
-  expect(result.stderr).toBe(sslmode === "&sslmode=disable"
-    ? "channel_binding=require needs TLS, but sslmode=disable is set"
-    : "channel_binding=require is not supported by the monitoring collector; the target was not saved");
+  expect(result.stderr).toBe(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
   expect(result.stdout).not.toContain("added");
   expect(requests).toEqual([]);
   expect(readdirSync(dir)).toEqual([]);

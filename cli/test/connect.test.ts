@@ -101,6 +101,17 @@ describe("provider and name", () => {
 });
 
 describe("connect", () => {
+  test.each(["disable", "allow"])("channel_binding=require with sslmode=%s refuses before quoting or preparing, including agents", async (sslmode) => {
+    for (const agent of [false, true]) {
+      const f = fake();
+      f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+      const result = await connect(`${CH.replace("sslmode=require", `sslmode=${sslmode}`)}&channel_binding=require`, { waitMs: 0, agent }, f.deps);
+      expect(result.status).toBe("action_required");
+      expect(result.next).toBe(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
+      expect(f.calls).toEqual([]);
+    }
+  });
+
   test("ClickHouse with a key: find the org, prepare, provision, wait, dashboard", async () => {
     const { deps, calls } = fake({ rows: [undefined, row("launch_requested"), row("active")] });
     const result = await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps);
