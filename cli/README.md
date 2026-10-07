@@ -140,9 +140,19 @@ Before any grant runs, one `-- scope:` line lists exactly what the run grants th
 monitoring role, derived from the steps about to run (so it shrinks under `--skip-optional-permissions`
 and is not printed on `--reset-password`, which grants nothing). With `--json` it goes to stderr.
 
-`channel_binding=require` in a URI or conninfo string enables SCRAM-SHA-256-PLUS when the server
+For `prepare-db`, `channel_binding=require` in a URI or conninfo string enables SCRAM-SHA-256-PLUS when the server
 offers it, disables the plaintext retry that `sslmode=prefer` would otherwise do, and is rejected
 together with `sslmode=disable`. The mechanism actually negotiated is not enforced by the driver.
+
+The collector cannot do channel binding. `mon targets add`, `mon local-install --db-url`, and
+`pgai connect` remove `channel_binding` from the saved/box URL. With `require`, they refuse
+`sslmode=disable` or `allow`; keep `verify-full` with a warning; and upgrade `require`, `prefer`,
+`verify-ca` or unset to `verify-full` after testing certificate and hostname verification with
+Node's default trust store (or the CA file in `sslrootcert`). Authentication or other errors after
+a verified TLS handshake do not block the upgrade. If verification fails, provide
+`sslrootcert=<CA file>` with `sslmode=verify-full`, or explicitly accept the downgrade by removing
+`channel_binding=require`. Successful upgrades print the collector warning and
+`upgraded to sslmode=verify-full`. `channel_binding=prefer` or `disable` is removed with a note.
 
 ### ClickHouse Cloud host metrics
 
@@ -274,7 +284,8 @@ on PostgreSQL 16+ `ADMIN OPTION` on `pg_monitor` and `pg_read_all_stats`. Otherw
 printed and nothing is created.
 
 The host and the port are the ones in the URL: `host` or `port` in the query string is refused.
-Of the query string, the monitoring box gets `sslmode`, `channel_binding` and `application_name`.
+Of the query string, the monitoring box gets `sslmode` and `application_name`; `channel_binding`
+is removed using the collector rule above, before a price is quoted or anything is changed.
 Certificate files (`sslrootcert`, `sslcert`, `sslkey`) are used for the connections from this
 machine only; with `sslmode=verify-ca` or `verify-full` and a private CA in `sslrootcert`, `next`
 says that the box has no copy of that CA.
