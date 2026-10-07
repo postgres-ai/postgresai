@@ -704,6 +704,63 @@ describe("connect", () => {
     expect(seen).toEqual({ resetPassword: true });
   });
 
+  const RESET_NEXT = "postgres_ai_mon already exists on this server. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or give it a new one: pgai connect <admin-url> --reset-password (anything else that logs in as postgres_ai_mon then needs the new password)";
+  const RESET_PROMPT = "A monitoring role from an earlier connection exists, and its password isn't stored. Reset it now? Anything else using this role will need the new password. [y/N] ";
+
+  test("accepting a reset of an earlier connection's role takes the --reset-password path", async () => {
+    const seen: unknown[] = [], questions: string[] = [];
+    const { deps, calls } = fake({
+      confirm: async (q) => { questions.push(q); return true; },
+      prepare: async (_url, provider, o) => {
+        calls.push(`${o?.check ? "check" : "prepare"} ${provider}`);
+        seen.push(o);
+        return !o?.resetPassword ? { next: RESET_NEXT, resettable: true as const } : o.check ? { checked: true } : { monitoringUrl: MON };
+      },
+    });
+    expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("provisioning");
+    expect(questions).toEqual([RESET_PROMPT]);
+    expect(seen).toEqual([{ check: true }, { resetPassword: true, check: true }, { resetPassword: true }]);
+    expect(calls).toEqual([
+      "list", "check clickhouse", "list", "check clickhouse",
+      "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "prepare clickhouse",
+      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
+      `checkup ${MON} as ${CH_NAME}`,
+    ]);
+  });
+
+  test.each(["declined", "non-interactive", "agent"])("an earlier connection's role: %s leaves everything unchanged", async (mode) => {
+    const questions: string[] = [];
+    const next = mode === "agent" ? "postgres_ai_mon already exists on this server. Pass its URL as database_url, or run pgai connect in a terminal with PGAI_MON_PASSWORD set to its password" : RESET_NEXT;
+    const { deps, calls } = fake({
+      confirm: async (q) => { if (mode !== "non-interactive") questions.push(q); return false; },
+      prepare: async () => { calls.push("check clickhouse"); return { next, resettable: true as const }; },
+    });
+    expect(await connect(CH, { waitMs: 0, agent: mode === "agent", yes: true }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME, next,
+    });
+    expect(questions).toEqual(mode === "declined" ? [RESET_PROMPT] : []);
+    expect(calls).toEqual(["list", "check clickhouse"]);
+    if (mode !== "agent") expect(next).toContain("--reset-password");
+  });
+
+  test.each([false, true])("accepting the reset still refuses other monitoring on the server (under lock: %p)", async (underLock) => {
+    const other = row("active", { id: "i-7", name: "abc123.us-east-1.aws.pg.clickhouse.cloud/orders" });
+    const { deps, calls } = fake({
+      rows: underLock ? [undefined, undefined, other] : [other],
+      confirm: async () => true,
+      prepare: async (_url, provider, o) => {
+        calls.push(`check ${provider}`);
+        return o?.resetPassword ? { checked: true } : { next: RESET_NEXT, resettable: true as const };
+      },
+    });
+    const result = await connect(CH, { waitMs: 0 }, deps);
+    expect(result.next).toContain(`would cut off the monitoring of ${other.name}`);
+    expect(result.status).toBe("action_required");
+    expect(calls).toEqual(underLock
+      ? ["list", "check clickhouse", "list", "check clickhouse", "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "resetUnlock l-1"]
+      : ["list", "check clickhouse", "list"]);
+  });
+
   // Two runs at once for databases on one server would each set a new
   // password: the platform's per-server lock lets one through.
   const SERVER = "abc123.us-east-1.aws.pg.clickhouse.cloud";
@@ -1539,9 +1596,9 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(result).toEqual({ monitoringUrl: `postgresql://postgres_ai_mon:${password}@db.example.com:5432/app?sslmode=require&application_name=pgai`, generated: true });
   });
 
-  test("an existing role and no PGAI_MON_PASSWORD: refused, no login tried", async () => {
+  test.each([false, true])("an existing role and no PGAI_MON_PASSWORD: resettable, no login tried (check: %p)", async (check) => {
     const s = server({ mon_exists: true });
-    expect(await withMonPassword(undefined, () => s.prepare())).toEqual({ next: `postgres_ai_mon already exists on this server. ${SET_PASSWORD}` });
+    expect(await withMonPassword(undefined, () => s.prepare({ check }))).toEqual({ next: `postgres_ai_mon already exists on this server. ${SET_PASSWORD}`, resettable: true });
     expect(s.monLogins).toEqual([]);
     expect(s.ran).toEqual([]);
   });
