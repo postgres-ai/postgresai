@@ -14,6 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
+import { boxWords, CancelledError, caNote, connect, connectStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -40,7 +41,9 @@ import {
   destroySnapshot,
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
-import { registerDblabDeployCommands, registerMonDeployCommand, type DeployCliDeps } from "../lib/deploy-commands";
+import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
+import { MONITORING_STEPS, StepView } from "../lib/deploy";
+import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
   enqueueQuery,
   awaitQueryResult,
@@ -51,7 +54,9 @@ import {
 } from "../lib/promql";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
-import { applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, validateProvider, verifyInitSetup } from "../lib/init";
+import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
+import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -59,16 +64,21 @@ import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgSco
 import { maskSecret } from "../lib/util";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
+import { Writable } from "stream";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
 import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
+import { jsonConsole, runChild, writeEvent } from "../lib/json-stderr";
 import {
   type Instance,
   InstancesParseError,
   loadInstances,
   buildInstance,
+  splitChannelBinding,
+  collectorConnection,
+  extractSslmode,
   addInstanceToFile,
   removeInstanceFromFile,
   buildClientConfig,
@@ -340,6 +350,7 @@ const INSTANCE_JOBS_PROFILE = "instance-jobs";
 export function composeProfilesValue(
   existing: string | null | undefined,
   want?: boolean,
+  profile = INSTANCE_JOBS_PROFILE,
 ): string | null {
   const profiles: string[] = [];
   for (const raw of (existing ?? "").split(",")) {
@@ -347,19 +358,19 @@ export function composeProfilesValue(
     if (token && !profiles.includes(token)) profiles.push(token);
   }
 
-  const at = profiles.indexOf(INSTANCE_JOBS_PROFILE);
-  if (want === true && at === -1) profiles.push(INSTANCE_JOBS_PROFILE);
+  const at = profiles.indexOf(profile);
+  if (want === true && at === -1) profiles.push(profile);
   if (want === false && at !== -1) profiles.splice(at, 1);
 
   return profiles.length > 0 ? profiles.join(",") : null;
 }
 
 /** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
-export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined): boolean {
+export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
   return (composeProfiles ?? "")
     .split(",")
     .map((p) => p.trim())
-    .includes(INSTANCE_JOBS_PROFILE);
+    .includes(profile);
 }
 
 /**
@@ -448,7 +459,10 @@ function buildLocalInstallEnv(
     // Read the way compose does: tolerate `export `/indentation and take the
     // LAST assignment. A value that reduces to "" (including `KEY=""`) counts
     // as absent, so a blank admin key is minted rather than carried forward
-    // (#359) - `ensureRequiredEnvVars` treats it the same way.
+    // (#359) - `ensureRequiredEnvVars` treats it the same way. Not
+    // `parseEnvValue`: the value is written back to the new .env as it was
+    // (quotes and an inline comment included), so compose reads the new file
+    // as it read the old one.
     const re = new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`, "gm");
     let value: string | null = null;
     for (const m of existingEnv.matchAll(re)) {
@@ -599,6 +613,21 @@ function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore
 async function question(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     getReadline().question(prompt, (answer) => {
+      resolve(answer);
+    });
+  });
+}
+
+/** question() for a secret: what is typed is not echoed. */
+async function questionHidden(prompt: string): Promise<string> {
+  closeReadline();
+  // The reader owns the terminal (no echo) before the prompt invites typing.
+  const hidden = createInterface({ input: process.stdin, output: new Writable({ write: (_chunk, _encoding, done) => done() }), terminal: true });
+  process.stdout.write(prompt);
+  return new Promise((resolve) => {
+    hidden.question("", (answer) => {
+      hidden.close();
+      process.stdout.write("\n");
       resolve(answer);
     });
   });
@@ -997,6 +1026,8 @@ async function ensureDefaultMonitoringProject(): Promise<PathResolution> {
     }
   }
 
+  ensureHostMetricsDir(projectDir);
+
   // Ensure instances.yml exists as a FILE (avoid Docker creating a directory).
   // Docker bind-mounts create missing paths as directories; replace if so.
   if (fs.existsSync(instancesFile) && fs.lstatSync(instancesFile).isDirectory()) {
@@ -1294,6 +1325,90 @@ program
 // screen; pass a string here instead to show a short one-line hint.)
 program.showHelpAfterError();
 
+// `pgai mon deploy` with JSON output: stderr is its event stream, one JSON event a
+// line (lib/json-stderr.ts). Commander's own errors (a missing URL, an option
+// without its value, an unknown option, at the root too) come before any
+// action, so the run is told from argv. The error is one event; an unknown
+// option is named without its value (--password=..., -psecret), since a log
+// collector keeps the event. The help after it is for a person. Set before any
+// subcommand: they all share this.
+program.configureOutput({
+  outputError: (text, write) => (jsonConnectArgv()
+    ? writeEvent({ event: "log", level: "error", message: text.trim().replace(/^(error: unknown option ')(--[^=]*|-[^-])[\s\S]*'(?=\n\(Did you mean [^\n]*\)$|$)/, "$1$2'") })
+    : write(text)),
+  writeErr: (text) => void (jsonConnectArgv() || process.stderr.write(text)),
+});
+
+/**
+ * Commander's split of argv for one command (its parseOptions): its options
+ * and their values come out wherever they are; the other tokens are operands
+ * up to the first unknown option, `unknown` from it on. --json counts only as
+ * an option, not as another option's value (`--wait --json`); nothing after
+ * "--" is an option.
+ */
+function splitArgv(options: readonly Option[], argv: string[]): { operands: string[]; unknown: string[]; json: boolean } {
+  const operands: string[] = [];
+  const unknown: string[] = [];
+  let dest = operands;
+  let json = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--") {
+      // Keep the separator while descending into subcommands, so --json after it stays an operand.
+      dest.push(...argv.slice(i));
+      break;
+    }
+    const option = options.find((o) => o.long === arg || o.short === arg);
+    if (option) {
+      if (option.required) i++;
+      else if (option.long === "--json") json = true;
+      continue;
+    }
+    // With its value in the same token: --api-key=k.
+    if (options.some((o) => o.required && arg.startsWith(`${o.long}=`))) continue;
+    if (dest === operands && arg.length > 1 && arg.startsWith("-")) dest = unknown;
+    dest.push(arg);
+  }
+  return { operands, unknown, json };
+}
+
+/**
+ * What argv asks for, as Commander reads it: the root's options first, then
+ * the command, its first operand, reads the rest with its own options. An
+ * unknown option before the command fails at the root (`--org acme mon deploy`,
+ * `--org status mon deploy`); the run is mon deploy when `mon deploy` follows it.
+ */
+function argvRun(argv = process.argv.slice(2)): { command?: Command; json: boolean } {
+  let parsed = splitArgv(program.options, argv);
+  let command = program.commands.find((c) => c.name() === parsed.operands[0]);
+  let rest = [...parsed.operands.slice(1), ...parsed.unknown];
+  if (parsed.operands.length === 0) {
+    const end = parsed.unknown.indexOf("--");
+    const beforeEnd = parsed.unknown.slice(0, end < 0 ? undefined : end);
+    const at = beforeEnd.findIndex((arg, i) => arg === "mon" && beforeEnd[i + 1] === "deploy");
+    if (at >= 0) [command, rest] = [program.commands.find((c) => c.name() === "mon"), parsed.unknown.slice(at + 1)];
+  }
+  while (command) {
+    parsed = splitArgv(command.options, rest);
+    const child = command.commands.find((c) => c.name() === parsed.operands[0]);
+    if (!child) return { command, json: parsed.json };
+    command = child;
+    rest = [...parsed.operands.slice(1), ...parsed.unknown];
+  }
+  return { command, json: false };
+}
+
+/** `pgai mon deploy` or `pgai dblab deploy` with JSON output: stderr is its event stream (JSON lines only). */
+function jsonConnect(command: Command | undefined, json?: boolean): boolean {
+  return command?.name() === "deploy" && (command.parent === mon || command.parent?.name() === "dblab") && jsonOutput(json);
+}
+
+/** jsonConnect from argv: before Commander has parsed it (its errors). */
+function jsonConnectArgv(): boolean {
+  const run = argvRun();
+  return jsonConnect(run.command, run.json);
+}
+
 // Subtle, discoverable feedback line at the bottom of the top-level `--help`
 // only (addHelpText on the program does not propagate to subcommand help).
 program.addHelpText("after", () => `\n💡 Ideas / feedback: ${FEEDBACK_URL}\n`);
@@ -1333,12 +1448,25 @@ function withOrgOptions(command: Command): Command {
     .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`);
 }
 
+// From its first hook on, console.error and console.warn of such a run are JSON
+// events too: a config warning, the org check, a check's error, the --debug log.
+let restoreConsole: (() => void) | undefined;
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  if (jsonConnect(actionCommand, actionCommand.opts().json)) restoreConsole = jsonConsole();
+});
+program.hook("postAction", () => {
+  restoreConsole?.();
+  restoreConsole = undefined;
+});
+
 // Resolve the org once per invocation and stash it for the HTTP layer, so the
 // guard holds for every org-scoped command rather than only the ones somebody
 // remembered to wire. Emitting the header is the lib layer's job (see
 // lib/org-scope.ts); both halves must hold for the org to reach the wire.
 program.hook("preAction", (_thisCommand, actionCommand) => {
-  if (!ORG_SCOPED_COMMANDS.has(actionCommand)) {
+  // Not at a terminal, pgai init only points to pgai mon deploy: no org needed for that.
+  const initPointsToConnect = actionCommand.parent === program && actionCommand.name() === "init" && !interactive(actionCommand.opts().json);
+  if (!ORG_SCOPED_COMMANDS.has(actionCommand) || initPointsToConnect) {
     setActiveOrgScope(undefined);
     return;
   }
@@ -1419,7 +1547,7 @@ program
 program
   .command("prepare-db [conn]")
   .description("prepare database for monitoring: create monitoring user, required view(s), and grant permissions (idempotent)")
-  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg)")
+  .option("--db-url <url>", "PostgreSQL connection URL (admin) to run the setup against (deprecated; pass it as positional arg, or PGAI_DB_URL)")
   .option("-h, --host <host>", "PostgreSQL host (psql-like)")
   .option("-p, --port <port>", "PostgreSQL port (psql-like)")
   .option("-U, --username <username>", "PostgreSQL user (psql-like)")
@@ -1428,7 +1556,7 @@ program
   .option("--monitoring-user <name>", "Monitoring role name to create/update", DEFAULT_MONITORING_USER)
   .option("--password <password>", "Monitoring role password (overrides PGAI_MON_PASSWORD)")
   .option("--skip-optional-permissions", "Skip optional permissions (RDS/self-managed extras)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
   .option("--verify", "Verify that monitoring role/permissions are in place (no changes)", false)
   .option("--reset-password", "Reset monitoring role password only (no other changes)", false)
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
@@ -1458,10 +1586,12 @@ program
       "  Tries SSL first, falls back to non-SSL if server doesn't support it.",
       "  To force SSL: PGSSLMODE=require or ?sslmode=require in URL",
       "  To disable SSL: PGSSLMODE=disable or ?sslmode=disable in URL",
+      "  sslmode in the URL wins over PGSSLMODE (as in libpq)",
       "",
       "Environment variables (libpq standard):",
       "  PGHOST, PGPORT, PGUSER, PGDATABASE  — connection defaults",
       "  PGPASSWORD                          — admin password",
+      "  PGAI_DB_URL                         — admin connection URL, when none is given (keeps it out of argv)",
       "  PGSSLMODE                           — SSL mode (disable, require, verify-full)",
       "  PGAI_MON_PASSWORD                   — monitoring password",
       "",
@@ -1547,14 +1677,32 @@ program
       return;
     }
 
+    // Automation passes the admin URL (and its password) here, not in argv,
+    // where `ps` and the sudo log would show it. Any connection flag wins;
+    // --print-sql stays the offline plan.
+    if (!conn && !opts.dbUrl && !opts.host && !opts.port && !opts.username && !opts.dbname && !opts.supabase && !opts.printSql) {
+      conn = process.env.PGAI_DB_URL || undefined;
+    }
+
     const shouldPrintSql = !!opts.printSql;
     const redactPasswords = (sql: string): string => redactPasswordsInSql(sql);
 
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
+
     // Validate provider and warn if unknown
-    const providerWarning = validateProvider(opts.provider);
+    const providerWarning = validateProvider(provider);
     if (providerWarning) {
       console.warn(`⚠ ${providerWarning}`);
     }
+
+    // ClickHouse Managed Postgres hands us a superuser connection; say exactly what this run
+    // grants before using it. Derived from the plan steps that will actually run, so it is
+    // accurate under --skip-optional-permissions and silent on --reset-password (grants nothing).
+    const announceScope = (plan: InitPlan) => {
+      if (provider === "clickhouse" && !opts.verify && !opts.resetPassword) note(describeInitScope(plan));
+    };
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
     // Useful for audits/reviews; caller can provide -d/PGDATABASE.
@@ -1573,13 +1721,14 @@ program
           monitoringUser: opts.monitoringUser,
           monitoringPassword: monPassword,
           includeOptionalPermissions,
-          provider: opts.provider,
+          provider,
         });
 
+        announceScope(plan);
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
-        console.log(`-- provider: ${opts.provider ?? "self-managed"}`);
+        console.log(`-- provider: ${provider}`);
         console.log(`-- optional permissions: ${includeOptionalPermissions ? "enabled" : "skipped"}`);
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
@@ -1738,10 +1887,12 @@ program
           return;
         }
 
+        const scramSetting = await supabaseClient.query("select current_setting('scram_iterations', true) as iterations");
         const plan = await buildInitPlan({
           database,
           monitoringUser: opts.monitoringUser,
           monitoringPassword: monPassword,
+          iterations: Number(scramSetting.rows[0]?.iterations),
           includeOptionalPermissions,
         });
 
@@ -1958,7 +2109,7 @@ program
           database,
           monitoringUser: opts.monitoringUser,
           includeOptionalPermissions,
-          provider: opts.provider,
+          provider,
         });
         if (v.ok) {
           if (jsonOutput) {
@@ -1968,12 +2119,12 @@ program
               action: "verify",
               database,
               monitoringUser: opts.monitoringUser,
-              provider: opts.provider,
+              provider: opts.provider ?? (detected ? provider : undefined),
               verified: true,
               missingOptional: v.missingOptional,
             });
           } else {
-            console.log(`✓ prepare-db verify: OK${opts.provider ? ` (provider: ${opts.provider})` : ""}`);
+            console.log(`✓ prepare-db verify: OK${opts.provider || detected ? ` (provider: ${provider})` : ""}`);
             if (v.missingOptional.length > 0) {
               console.error("⚠ Optional items missing:");
               for (const m of v.missingOptional) console.error(`- ${m}`);
@@ -2050,12 +2201,14 @@ program
         return;
       }
 
+      const scramSetting = await client.query("select current_setting('scram_iterations', true) as iterations");
       const plan = await buildInitPlan({
         database,
         monitoringUser: opts.monitoringUser,
         monitoringPassword: monPassword,
+        iterations: Number(scramSetting.rows[0]?.iterations),
         includeOptionalPermissions,
-        provider: opts.provider,
+        provider,
       });
 
       // For reset-password, we only want the role step. But if provider skips role creation,
@@ -2065,10 +2218,11 @@ program
         : plan;
 
       if (opts.resetPassword && effectivePlan.steps.length === 0) {
-        console.error(`✗ --reset-password not supported for provider "${opts.provider}" (role creation is skipped)`);
+        console.error(`✗ --reset-password not supported for provider "${provider}" (role creation is skipped)`);
         process.exitCode = 1;
         return;
       }
+      announceScope(effectivePlan);
 
       if (shouldPrintSql) {
         console.log("\n--- SQL plan ---");
@@ -2219,7 +2373,7 @@ program
   .option("--admin-password <password>", "Admin connection password (otherwise uses PGPASSWORD if set)")
   .option("--monitoring-user <name>", "Monitoring role name to remove", DEFAULT_MONITORING_USER)
   .option("--keep-role", "Keep the monitoring role (only revoke permissions and drop objects)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
   .option("--force", "Skip confirmation prompt", false)
   .option("--json", "Output result as JSON (machine-readable)", false)
@@ -2292,8 +2446,12 @@ program
     const shouldPrintSql = !!opts.printSql;
     const dropRole = !opts.keepRole;
 
+    const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
+    const note = opts.json ? console.error : console.log;
+    if (detected) note("Provider: clickhouse (detected from host)");
+
     // Validate provider and warn if unknown
-    const providerWarning = validateProvider(opts.provider);
+    const providerWarning = validateProvider(provider);
     if (providerWarning) {
       console.warn(`⚠ ${providerWarning}`);
     }
@@ -2307,13 +2465,13 @@ program
           database,
           monitoringUser: opts.monitoringUser,
           dropRole,
-          provider: opts.provider,
+          provider,
         });
 
         console.log("\n--- SQL plan (offline; not connected) ---");
         console.log(`-- database: ${database}`);
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
-        console.log(`-- provider: ${opts.provider ?? "self-managed"}`);
+        console.log(`-- provider: ${provider}`);
         console.log(`-- drop role: ${dropRole}`);
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}`);
@@ -2387,7 +2545,7 @@ program
         database,
         monitoringUser: opts.monitoringUser,
         dropRole,
-        provider: opts.provider,
+        provider,
       });
 
       if (shouldPrintSql) {
@@ -2937,10 +3095,25 @@ function resolvePaths(): PathResolution {
 }
 
 async function resolveOrInitPaths(): Promise<PathResolution> {
+  let paths: PathResolution;
   try {
-    return resolvePaths();
+    paths = resolvePaths();
   } catch {
     return ensureDefaultMonitoringProject();
+  }
+  ensureHostMetricsDir(paths.projectDir);
+  return paths;
+}
+
+// Created before any `docker compose up`, which would otherwise create the
+// bind-mount source itself, owned by root. Best effort: every command resolves
+// paths, and a read-only one must work in a directory it cannot write.
+// addHostMetrics creates it for real (0700: it holds the ClickHouse API key).
+function ensureHostMetricsDir(projectDir: string): void {
+  try {
+    fs.mkdirSync(path.join(projectDir, "host-metrics"), { recursive: true, mode: 0o700 });
+  } catch {
+    // ignored, see above
   }
 }
 
@@ -2950,7 +3123,7 @@ async function resolveOrInitPaths(): Promise<PathResolution> {
 function isDockerRunning(): boolean {
   try {
     // Note: timeout is supported by Bun but not in @types/bun
-    const result = spawnSync("docker", ["info"], { stdio: "pipe", timeout: 5000 } as Parameters<typeof spawnSync>[2]);
+    const result = spawnSync("docker", ["info"], { stdio: "pipe", timeout: 5000, env: { ...process.env, PGAI_DB_URL: undefined } } as Parameters<typeof spawnSync>[2]);
     return result.status === 0;
   } catch {
     return false;
@@ -2981,7 +3154,7 @@ export function shouldScaleOutNodeExporter(args: string[]): boolean {
 
 function getComposeCmd(): string[] | null {
   const tryCmd = (cmd: string, args: string[]): boolean =>
-    spawnSync(cmd, args, { stdio: "ignore", timeout: 5000 } as Parameters<typeof spawnSync>[2]).status === 0;
+    spawnSync(cmd, args, { stdio: "ignore", timeout: 5000, env: { ...process.env, PGAI_DB_URL: undefined } } as Parameters<typeof spawnSync>[2]).status === 0;
   if (tryCmd("docker", ["compose", "version"])) return ["docker", "compose"];
   if (tryCmd("docker-compose", ["version"])) return ["docker-compose"];
   return null;
@@ -3315,14 +3488,14 @@ export function updatePgwatchConfig(configPath: string, updates: Record<string, 
 }
 
 /**
- * Record the API key in `.pgwatch-config`, where the reporter reads it.
+ * Record the API key and base in `.pgwatch-config`, where the reporter reads them.
  * False when it could not be written, having already said why. See #366.
  */
-function applyApiKey(projectDir: string, apiKey: string): boolean {
+function applyApiKey(projectDir: string, apiKey: string, opts?: CliOptions): boolean {
   const configPath = path.resolve(projectDir, ".pgwatch-config");
   try {
     // Keep reporter compatibility (docker-compose mounts .pgwatch-config)
-    updatePgwatchConfig(configPath, { api_key: apiKey });
+    updatePgwatchConfig(configPath, { api_key: apiKey, api_url: resolveBaseUrls(opts).apiBaseUrl });
   } catch (err) {
     console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
     return false;
@@ -3691,7 +3864,8 @@ async function runCompose(
       env: env,
       cwd: projectDir
     });
-    child.on("close", (code) => resolve(code || 0));
+    // A signal leaves code null: that is a failure, not success.
+    child.on("close", (code) => resolve(code ?? 1));
   });
 }
 
@@ -3807,12 +3981,9 @@ export function readComposeProfiles(knownProjectDir?: string): string | null {
     return null;
   }
 
-  // Last assignment wins, as compose does; tolerate `export `/indentation.
-  let value: string | null = null;
-  for (const m of content.matchAll(/^[ \t]*(?:export[ \t]+)?COMPOSE_PROFILES=(.*)$/gm)) {
-    value = stripMatchingQuotes(m[1].trim());
-  }
-  return value;
+  // Last assignment wins, as compose does; tolerate `export `/indentation,
+  // quotes and an inline comment, with the one parser `targets add` uses.
+  return parseEnvValue(content, "COMPOSE_PROFILES") ?? null;
 }
 
 /**
@@ -4032,6 +4203,357 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
   }
 }
 
+// ---- pgai mon deploy / mon instances list / watch / delete (postgres-ai/internal#354) ----
+// The surface pgai dblab deploy shares (lib/deploy-surface, postgresai#412): JSON
+// with --json (status, dashboard_url, next); exit codes 0 ready or in progress,
+// 1 failed, 3 action required (pgai init: 130 when cancelled at a prompt).
+const CONNECT_EXIT: Record<Status, number> = DEPLOY_EXIT;
+
+function cloudApi(debug?: boolean) {
+  const rootOpts = program.opts<CliOptions>();
+  const { apiKey } = getConfig(rootOpts);
+  const urls = resolveBaseUrls(rootOpts, config.readConfig());
+  return { apiKey, apiBaseUrl: urls.apiBaseUrl, ...platformDeps({ apiKey, ...urls, orgScope: getActiveOrgScope(), debug }) };
+}
+
+function emitConnect(result: ConnectResult, json?: boolean): void {
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
+  // the express checkup was shown as it finished.
+  if (!jsonOutput(json)) {
+    // At a terminal: a few sentences (lib/connect resultLines); a refusal or a failure is its one line on stderr.
+    if (result.sql) console.log(`${result.sql}\n`);
+    const lines = resultLines(result);
+    const out = result.status === "failed" || result.status === "action_required" ? console.error : console.log;
+    for (const line of lines) out(line);
+  } else {
+    printResult(result, json);
+  }
+  process.exitCode = CONNECT_EXIT[result.status];
+}
+
+/** An error of mon instances list / status / delete, in the same shape as a mon deploy result. */
+function failCloud(err: unknown, json?: boolean): void {
+  printResult({ status: "failed", next: errorText(err) }, json);
+  process.exitCode = 1;
+}
+
+/** Signs in through the browser when interactive; otherwise says how. */
+function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
+  if (cloudApi().apiKey) return true;
+  if (process.stdin.isTTY && process.stdout.isTTY && !opts.yes && !opts.json) {
+    childProcess.spawnSync(process.execPath, [process.argv[1]!, "auth", "login"], { stdio: "inherit" });
+  }
+  return !!cloudApi().apiKey;
+}
+
+type ConnectOpts = {
+  provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
+  yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
+};
+
+/** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
+function detachOnCtrlC(resume: string, view?: StepView): () => void {
+  const onSigint = (): void => {
+    view?.stop();
+    console.error(`\nStopped watching. The deploy continues on PostgresAI.\nResume: ${resume}`);
+    process.exit(130);
+  };
+  process.once("SIGINT", onSigint);
+  return () => process.removeListener("SIGINT", onSigint);
+}
+
+async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
+  let url: string;
+  try {
+    url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
+  } catch (err) {
+    return emitConnect({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
+  }
+  // With JSON output, stderr is the event stream: every line of it is a JSON event
+  // (console.error and console.warn too, since the preAction hook).
+  const json = jsonOutput(opts.json);
+  const name = (() => { try { return databaseName(url); } catch { return ""; } })();
+  if (!name || !/^postgres(ql)?:\/\//.test(url)) {
+    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
+  }
+  // What --provider names, when it is one; else the host's.
+  const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
+  let minutes: number;
+  try {
+    minutes = waitMinutes(opts.wait, 20);
+  } catch (err) {
+    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+  }
+  let vcpus: number | undefined;
+  try {
+    vcpus = vcpusArg(opts.vcpus);
+  } catch (err) {
+    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+  }
+  // The step view, once shown: a refusal must stop it, or it redraws over the reason and keeps the process alive.
+  let shownView: (() => StepView | undefined) | undefined;
+  try {
+    if (!opts.selfHosted && !signedIn(opts)) {
+      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+    }
+    const api = cloudApi(opts.debug);
+    // A person at a terminal gets the step view on stderr (after the price); piped, a line per step; --json, JSON events.
+    const tty = !json && !!process.stderr.isTTY && !process.env.CI && process.env.TERM !== "dumb";
+    let createdId: string | undefined;
+    let stopping = false;
+    const steps = stepProgress({
+      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, MONITORING_STEPS, true),
+      writeLine: (line) => console.error(line), writeEvent, onId: (id) => { createdId = id; },
+    });
+    shownView = () => steps.view() as StepView | undefined;
+    // Ctrl-C: once the box is requested, stop watching (it goes on); before that, cancel the run
+    // so its lock is released and a role it created is dropped. A second Ctrl-C ends it at once.
+    const resume = (): void => {
+      steps.view()?.stop();
+      console.error(`\nStopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch ${createdId}`);
+      process.exit(130);
+    };
+    const onSigint = (): void => {
+      if (createdId) return resume();
+      if (stopping) process.exit(130);
+      stopping = true;
+      console.error("\nCancelling: nothing has been created yet (Ctrl-C again to quit now).");
+    };
+    process.on("SIGINT", onSigint);
+    let result: ConnectResult;
+    try {
+      result = await connect(url, { ...opts, vcpus, waitMs: minutes * 60_000 }, {
+        ...api,
+        selfHosted: async (monitoringUrl, env) => {
+          // A child `mon local-install`: the URL, API key and ClickHouse key ride in its
+          // environment (never argv), and its output goes to stderr, so stdout is the result.
+          const scope = getActiveOrgScope();
+          const org = scope?.alias ? ["--org", scope.alias] : scope?.id ? ["--org-id", String(scope.id)] : [];
+          // Registering the stack needs a project name: the database's name, as a token.
+          const project = name.replace(/[^A-Za-z0-9._-]+/g, "-");
+          const status = await runChild(process.execPath, [process.argv[1]!, "mon", "local-install", "-y", ...org, "--project", project],
+            { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) }, json, "mon local-install");
+          if (status !== 0) throw new Error("mon local-install failed (see above)");
+        },
+        localStackRunning: () => checkRunningContainers().running,
+        // A billed box: asked only of a person at a terminal (else --yes).
+        confirm: async (q) => {
+          if (!interactive(opts.json)) return false;
+          // Ctrl-C / Ctrl-D at the prompt ends the process: cancelled, as at init's prompts.
+          process.exitCode = 130;
+          const answer = await question(q);
+          process.exitCode = undefined;
+          // An open prompt would take the first Ctrl-C while deploy waits for the box.
+          closeReadline();
+          return /^(y|yes)$/i.test(answer.trim());
+        },
+        // The database server's vCPUs, when --vcpus was not given: Enter skips (no AAS).
+        askVcpus: async (q) => {
+          if (!interactive(opts.json)) return undefined;
+          process.exitCode = 130;
+          try {
+            for (let tries = 0; tries < 3; tries++) {
+              const answer = (await question(q)).trim();
+              if (!answer) return undefined;
+              try {
+                return vcpusArg(answer);
+              } catch (err) {
+                console.error(errorText(err));
+              }
+            }
+            return undefined;
+          } finally {
+            process.exitCode = undefined;
+            closeReadline();
+          }
+        },
+        progress: steps.progress,
+        aborted: () => stopping,
+      });
+    } catch (err) {
+      if (err instanceof CancelledError) {
+        steps.view()?.stop();
+        console.error(err.message);
+        process.exitCode = 130;
+        return;
+      }
+      throw err;
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+    }
+    // Ctrl-C while the box was requested: connect returned at once; the deploy goes on.
+    if (stopping && createdId) return resume();
+    const view = steps.view();
+    if (view) {
+      if (result.status === "ready") view.complete();
+      else if (result.status !== "in_progress") view.fail();
+      view.stop();
+    }
+    emitConnect(result, opts.json);
+  } catch (err) {
+    const view = shownView?.();
+    if (view) {
+      view.fail();
+      view.stop();
+    }
+    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+  }
+}
+
+// Monitoring services management
+const mon = program.command("mon").description("monitoring services management");
+
+sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)")
+  .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
+  .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
+  .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
+  .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
+  .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
+  .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal)")
+  .addHelpText("after", [
+    "",
+    "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
+    "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
+    "the monitoring box, run the express checkup while it starts, wait, print the Health Matrix",
+    "(health_url) and Grafana, signed in with your PostgresAI account (dashboard_url).",
+    "",
+    "Billing is per Postgres cluster observed: another database in a cluster the organization already",
+    "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",
+    "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
+    "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
+    "",
+    "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
+    "",
+    "JSON output (--json): stdout is the result; stderr is one JSON event a",
+    "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\"|\"debug\",\"message\":...}",
+    "for any other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that",
+    "child's lines (the logins it prints are masked: pgai mon show-grafana-credentials shows them).",
+    "",
+    "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
+    "postgres_ai_mon when the role already exists; it is checked, never changed; not needed",
+    "for another database on a server PostgresAI already monitors for the org, with",
+    "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps (over TLS only), and",
+    "the express checkup is skipped, as it runs only as postgres_ai_mon),",
+    "PGPASSWORD (the password for a URL without one),",
+    "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
+    "",
+    "Examples:",
+    "  pgai mon deploy 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
+    "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai mon deploy '<url>'",
+    "  pgai mon deploy '<url>' --self-hosted",
+  ].join("\n"))
+  .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {
+    // The URL is the argument or --db-url: without either, Commander's own error for a missing argument.
+    if (!urlArg?.trim() && !opts.dbUrl?.trim()) return cmd.error("error: missing required argument 'database-url'");
+    return runConnect(urlArg, opts);
+  });
+
+const interactive = (json?: boolean) => !!process.stdin.isTTY && !!process.stdout.isTTY && !json;
+
+/** JSON output: the rule both deploy commands follow (lib/deploy-surface). */
+function jsonOutput(json?: boolean): boolean {
+  return deployJsonOutput(json);
+}
+
+withOrgOptions(program.command("init"))
+  .description("first run for a person at a terminal: sign in, ask for the database URL, then pgai mon deploy")
+  .option("--json", "JSON output (init is interactive: prints the pgai mon deploy command to use instead)")
+  .action(async (opts: { json?: boolean }) => {
+    if (!interactive(opts.json)) {
+      return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "pgai init is for a person at a terminal; agents and scripts: pgai mon deploy <database-url>" }, opts.json);
+    }
+    if (!signedIn({})) return emitConnect({ status: "action_required", provider: "self-managed", name: "", next: "Sign in: pgai auth login, then re-run pgai init" });
+    process.exitCode = 130; // Ctrl-C / Ctrl-D at a prompt; runConnect sets the real code
+    // The URL carries the admin password: not shown, as the key (deploy prints it masked).
+    const url = (await questionHidden("Database URL (postgresql://...; not shown): ")).trim();
+    const needsKey = !!parseUrl(url) && detectCloudProvider(url) === "clickhouse" && !parseClickhouseKey(undefined, process.env);
+    const clickhouseKey = needsKey ? (await questionHidden("ClickHouse Cloud API key <key-id>:<key-secret> for CPU, memory and disk (not shown; Enter to skip): ")).trim() : "";
+    // An open prompt would take the first Ctrl-C while deploy waits for the box.
+    closeReadline();
+    await runConnect(url, { clickhouseKey: clickhouseKey || undefined });
+  });
+
+/** One live monitoring instance of the org, by id or name (pgai mon instances watch / delete). */
+async function cloudInstance(opts: { debug?: boolean }, ref: string, live = false): Promise<Database> {
+  const rows = (await cloudApi(opts.debug).list()).filter((d) => !live || !disconnecting(d.status));
+  return pickInstance(rows, ref, (d) => d.id, (d) => d.name, "pgai mon instances list");
+}
+
+/** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in). */
+async function linkedDatabases(opts: { debug?: boolean }): Promise<Database[]> {
+  const api = cloudApi(opts.debug);
+  return Promise.all((await api.list()).map(api.links));
+}
+
+// Tests shorten the poll; people never need to.
+const monPollMs = (): number => {
+  const v = Number.parseInt(process.env.PGAI_DEPLOY_POLL_MS ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 15_000;
+};
+
+const monInstances = mon.command("instances").description("monitoring instances in PostgresAI Cloud (pgai mon deploy)");
+
+withOrgOptions(monInstances.command("list"))
+  .description("list the organization's monitoring instances")
+  .option("--json", "JSON output")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (opts: { json?: boolean; debug?: boolean }) => {
+    try {
+      printResult((await linkedDatabases(opts)).map((d) => ({ ...d, status: stateOf(d.status) })), opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
+withOrgOptions(monInstances.command("watch <id-or-name>"))
+  .alias("status")
+  .description("follow a monitoring instance until it is ready (or failed), then show it with the next action")
+  .option("--wait <minutes>", "how long to follow it (0 = show it now)", "20")
+  .option("--no-wait", "show it now (the same as --wait 0)")
+  .option("--json", "JSON output: one result on stdout, progress on stderr")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (ref: string, opts: { wait?: string | boolean; json?: boolean; debug?: boolean }) => {
+    try {
+      const deadline = Date.now() + waitMinutes(opts.wait, 20) * 60_000;
+      let row = await cloudInstance(opts, ref);
+      const undetach = detachOnCtrlC(`pgai mon instances watch ${row.id}`);
+      try {
+        let shown = "";
+        while (stateOf(row.status) === "in_progress" && Date.now() < deadline) {
+          if (row.status !== shown && !jsonOutput(opts.json)) console.error(`Monitoring box: ${boxWords(row.status)}`);
+          shown = row.status ?? "";
+          await new Promise((r) => setTimeout(r, monPollMs()));
+          row = (await cloudApi(opts.debug).list()).find((d) => d.id === row.id) ?? { ...row, status: "deleted" };
+        }
+      } finally {
+        undetach();
+      }
+      emitConnect(connectStatus(await cloudApi(opts.debug).links(row)), opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
+withOrgOptions(monInstances.command("delete <id-or-name>"))
+  .description("stop monitoring a database and delete its monitoring box")
+  .option("-y, --yes", "do not ask for confirmation")
+  .option("--json", "JSON output")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (ref: string, opts: { yes?: boolean; json?: boolean; debug?: boolean }) => {
+    try {
+      const row = await cloudInstance(opts, ref, true);
+      if (!opts.yes && !(interactive(opts.json) && /^y/i.test(await question(`Stop monitoring ${row.name} and delete its monitoring box? (y/N): `)))) {
+        return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai mon instances delete ${row.id} --yes` }, opts.json);
+      }
+      const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
+      emitConnect({ status: "deleting", provider: row.provider as Provider, name: row.name, id: row.id, ...(billing ? { billing } : {}),
+        next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
+    } catch (err) {
+      failCloud(err, opts.json);
+    }
+  });
+
 // `help` is intentionally NOT the default command: making it default causes
 // Commander to route any unmatched token (e.g. `pgai sdfasdf`) to this action
 // as an excess positional argument, producing a misleading "too many arguments
@@ -4042,12 +4564,6 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
 program.command("help").description("show help").action(() => {
   program.outputHelp();
 });
-
-// Monitoring services management
-const mon = program.command("mon").description("monitoring services management");
-
-// `pgai mon deploy` is registered with the dblab deploy commands below
-// (platform-all#876), once their shared dependencies exist.
 
 mon
   .command("local-install")
@@ -4071,7 +4587,7 @@ mon
   // anything. The requirement is enforced where registration actually happens.
   .option("--org <alias>", `organization alias (or ${ORG_ENV}); required to register with a global token`)
   .option("--org-id <id>", `organization id (or ${ORG_ID_ENV}); alternative to --org`)
-  .option("--db-url <url>", "PostgreSQL connection URL to monitor")
+  .option("--db-url <url>", "PostgreSQL connection URL to monitor (or PGAI_DB_URL)")
   .option("--tag <tag>", "Docker image tag to use (e.g., 0.14.0, 0.14.0-dev.33)")
   .option("--project <name>", "Docker Compose project name (default: postgres_ai)")
   .option(
@@ -4096,7 +4612,10 @@ mon
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
-    let apiKey = opts.apiKey || globalOpts.apiKey;
+    // `pgai mon deploy --self-hosted` passes the monitoring URL and key here, never
+    // in argv. PGAI_API_KEY alone (agents export it) must not reach --demo.
+    let apiKey = opts.apiKey || globalOpts.apiKey || (process.env.PGAI_DB_URL ? process.env.PGAI_API_KEY : undefined);
+    opts.dbUrl ??= process.env.PGAI_DB_URL;
 
     console.log("\n=================================");
     console.log("  PostgresAI monitoring local install");
@@ -4204,7 +4723,7 @@ mon
       if (apiKey) {
         console.log("Using API key provided via --api-key parameter");
         config.writeConfig({ apiKey });
-        if (!applyApiKey(projectDir, apiKey)) {
+        if (!applyApiKey(projectDir, apiKey, globalOpts)) {
           process.exitCode = 1;
           return;
         }
@@ -4224,7 +4743,7 @@ mon
 
             if (trimmedKey) {
               config.writeConfig({ apiKey: trimmedKey });
-              if (!applyApiKey(projectDir, trimmedKey)) {
+              if (!applyApiKey(projectDir, trimmedKey, globalOpts)) {
                 process.exitCode = 1;
                 return;
               }
@@ -4263,26 +4782,17 @@ mon
 
       if (opts.dbUrl) {
         console.log("Using database URL provided via --db-url parameter");
-        console.log(`Adding PostgreSQL instance from: ${opts.dbUrl}\n`);
+        console.log(`Adding PostgreSQL instance from: ${maskConnectionString(opts.dbUrl)}\n`);
 
-        const match = opts.dbUrl.match(/^postgresql:\/\/[^@]+@([^:/]+)/);
-        const autoInstanceName = match ? match[1] : "db-instance";
-
+        // Same path as `mon targets add`, so ClickHouse host metrics are set up too;
+        // the stack is started below, so nothing is applied here.
         const connStr = opts.dbUrl;
-        const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-
-        if (!m) {
-          console.error("✗ Invalid connection string format");
+        if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
+          console.error("✗ The monitoring target was not saved");
           process.exitCode = 1;
           return;
         }
-
-        const host = m[3];
-        const db = m[5];
-        const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
-
-        addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
-        console.log(`✓ Monitoring target '${instanceName}' added\n`);
+        console.log();
 
         // Test connection
         console.log("Testing connection to the added instance...");
@@ -4321,36 +4831,30 @@ mon
           const connStr = await question("Enter connection string (or press Enter to skip): ");
 
           if (connStr.trim()) {
-            const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-            if (!m) {
-              console.error("✗ Invalid connection string format");
-              console.error("⚠ Continuing without adding instance\n");
-            } else {
-              const host = m[3];
-              const db = m[5];
-              const instanceName = `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+            if (!(await addTarget(instancesPath, projectDir, connStr, undefined, process.env, { apply: false }))) {
+              console.error("✗ The monitoring target was not saved");
+              process.exitCode = 1;
+              return;
+            }
+            console.log();
 
-              addInstanceToFile(instancesPath, buildInstance(instanceName, connStr));
-              console.log(`✓ Monitoring target '${instanceName}' added\n`);
-
-              // Test connection
-              console.log("Testing connection to the added instance...");
-              {
-                let testClient: InstanceType<typeof Client> | null = null;
-                try {
-                  warnIfLaxSslmode(connStr);
-                  warnIfTransactionPoolerPort(connStr);
-            testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
-                  await testClient.connect();
-                  const result = await testClient.query("select version();");
-                  console.log("✓ Connection successful");
-                  console.log(`${result.rows[0].version}\n`);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  console.error(`✗ Connection failed: ${message}\n`);
-                } finally {
-                  if (testClient) await testClient.end();
-                }
+            // Test connection
+            console.log("Testing connection to the added instance...");
+            {
+              let testClient: InstanceType<typeof Client> | null = null;
+              try {
+                warnIfLaxSslmode(connStr);
+                warnIfTransactionPoolerPort(connStr);
+                testClient = new Client(buildClientConfig(connStr, { connectionTimeoutMillis: 10000 }));
+                await testClient.connect();
+                const result = await testClient.query("select version();");
+                console.log("✓ Connection successful");
+                console.log(`${result.rows[0].version}\n`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`✗ Connection failed: ${message}\n`);
+              } finally {
+                if (testClient) await testClient.end();
               }
             }
           } else {
@@ -4725,6 +5229,8 @@ const MONITORING_CONTAINERS = [
   // which this list already tolerates - `docker rm -f` on a missing container
   // is caught and ignored below.
   "instance-jobs",
+  "rds-host-stats",
+  "vmalert",
 ];
 
 /**
@@ -5245,6 +5751,315 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
+/**
+ * Whether sink-prometheus may be up: it has a running or paused container, or
+ * compose cannot tell (docker-compose v1 has no `ps --status`).
+ */
+async function sinkPrometheusMaybeUp(): Promise<boolean> {
+  const cmd = getComposeCmd();
+  if (!cmd) return true;
+  let composeFile: string;
+  try {
+    ({ composeFile } = await resolveOrInitPaths());
+  } catch {
+    return true;
+  }
+  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", "--status", "running", "--status", "paused", "sink-prometheus"]);
+  return ps.status !== 0 || ps.stdout.trim() !== "";
+}
+
+// Stacks older than host metrics support lack the ./host-metrics mount or
+// scrape_config_files, so check that the running sink-prometheus can see the
+// new scrape file before reporting success.
+// `file` is the scrape file just written for `job`; without it, the job's file was removed.
+async function reloadHostMetrics(projectDir: string, job: string, file?: string): Promise<boolean> {
+  const revision = file && scrapeRevision(projectDir, file);
+  if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
+    `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
+    "sh", `/etc/pgai/host-metrics/${file}`]) !== 0) {
+    // stop/start re-runs config-init, which a restart does not.
+    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
+    return false;
+  }
+  // A stopped sink-prometheus cannot be reloaded, and it will not load the
+  // deleted file when it starts, so a removal needs nothing more. Any other
+  // goes through reload and verification.
+  if (!revision) {
+    if (!(await sinkPrometheusMaybeUp())) {
+      console.log(`sink-prometheus is not running; it will not load '${job}' when it starts.`);
+      return true;
+    }
+  }
+  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+    console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
+    return false;
+  }
+  const needle = revision ? `"__pgai_rev":"${revision}"` : `"scrapePool":"${job}"`;
+  if (await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, revision ? "present" : "absent"]) !== 0) {
+    console.error(revision
+      ? `sink-prometheus did not load the scrape job '${job}' after the reload. Check 'docker logs sink-prometheus' for the error. The scrape files are saved.`
+      : `sink-prometheus still scrapes '${job}' after the reload. Check 'docker logs sink-prometheus' for the error.`);
+    return false;
+  }
+  return true;
+}
+
+const CONN_STR_FORMAT = "Invalid connection string format: use postgresql://user:password@host[:port]/database";
+
+/** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else why it is refused. */
+function defaultTargetName(connStr: string): { name: string } | { error: string } {
+  if (!/^postgres(ql)?:\/\//.test(connStr)) return { error: CONN_STR_FORMAT };
+  // WHATWG drops a tab, a newline and a trailing CR; pgx refuses the URL.
+  if (/[\x00-\x1f\x7f]/.test(connStr)) return { error: "Invalid connection string format: remove the control character (such as a CR from a CRLF file), or percent-encode it" };
+  // The user info ends at the last '@', for WHATWG and pgx (Go's net/url) alike,
+  // if no '/', '?' or '#' comes before it. A raw one in the password ends the
+  // host early, and part of the password would be read as the host; an '@' in
+  // the database name or the query moves the last '@' past one. Both are
+  // refused, as is any other character pgx refuses, or a '%' without two hex
+  // digits: no part of the password ends up in the name.
+  const at = connStr.lastIndexOf("@");
+  if (at < 0) return { error: CONN_STR_FORMAT };
+  if (!/^(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})*$/.test(connStr.slice(connStr.indexOf("//") + 2, at))) {
+    return { error: "Invalid connection string format: percent-encode the user name and the password (all but ASCII letters, digits, '-', '.', '_' and '~'), and an '@' in the database name or the query" };
+  }
+  let url: URL;
+  try {
+    url = new URL(connStr);
+  } catch {
+    return { error: CONN_STR_FORMAT };
+  }
+  if (!url.username) return { error: CONN_STR_FORMAT };
+  // user:password encoded as one unit is all user name to WHATWG and pgx, and
+  // decodes to user:password: it would be printed as the user.
+  if (/%3a/i.test(url.username)) return { error: "Invalid connection string format: percent-encode the user name and the password one at a time, with a raw ':' between them" };
+  if (!url.password) return { error: "Invalid connection string format: put the password in the URL: postgresql://user:password@host[:port]/database" };
+  // An IPv6 host has no name form.
+  if (url.hostname.includes(":")) return { error: "Invalid connection string format: an IPv6 address is not supported as the host; use a host name" };
+  const db = url.pathname.slice(1);
+  if (!db) return { error: CONN_STR_FORMAT };
+  return { name: `${url.hostname}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-") };
+}
+
+/** The last assignment of `key` in .env content, as compose reads it: unquoted, without an inline comment (" #"; a tab before "#" is part of the value). */
+function parseEnvValue(content: string, key: string): string | undefined {
+  const last = [...content.matchAll(new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}=(.*)$`, "gm"))].at(-1);
+  if (!last) return undefined;
+  const raw = last[1].trim();
+  const quoted = raw.match(/^"((?:\\.|[^"\\])*)"/)?.[1]?.replace(/\\(["\\])/g, "$1") ?? raw.match(/^'([^']*)'/)?.[1];
+  return quoted ?? raw.replace(/ #.*$/, "").trimEnd();
+}
+
+/** The last assignment of `key` in the project's .env, as compose reads it. */
+function readEnvValue(projectDir: string, key: string): string | undefined {
+  const envFile = path.resolve(projectDir, ".env");
+  if (!fs.existsSync(envFile)) return undefined;
+  return parseEnvValue(fs.readFileSync(envFile, "utf8"), key);
+}
+
+/** Is the Supabase relay on (PGAI_SUPABASE_HOST_METRICS is true in the environment, else in .env)? An exported empty value counts as set, as compose reads it. */
+function supabaseHostMetricsOn(projectDir: string, env: NodeJS.ProcessEnv): boolean {
+  return /^\s*true\s*$/i.test(env.PGAI_SUPABASE_HOST_METRICS ?? readEnvValue(projectDir, "PGAI_SUPABASE_HOST_METRICS") ?? "");
+}
+
+// A Supabase target's name is part of its scrape file's name.
+const SUPABASE_TARGET_NAME_RE = /^[A-Za-z0-9_-]+$/;
+const SUPABASE_TARGET_NAME_ERROR = "Host metrics: a Supabase target name may use only letters, digits, '_' and '-' while PGAI_SUPABASE_HOST_METRICS is true. Choose another name.";
+
+/** Sets keys in the project's .env (null deletes them), keeping every other line. */
+function setEnvValues(projectDir: string, values: Record<string, string | null>): void {
+  const envFile = path.resolve(projectDir, ".env");
+  let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  for (const [key, value] of Object.entries(values)) {
+    const line = `^[ \\t]*(?:export[ \\t]+)?${key}=.*(?:\\n|$)`;
+    if (value === null) content = content.replace(new RegExp(line, "gm"), "");
+    else if (new RegExp(line, "m").test(content)) content = content.replace(new RegExp(line, "gm"), `${key}=${value}\n`);
+    else content += `${content && !content.endsWith("\n") ? "\n" : ""}${key}=${value}\n`;
+  }
+  writeEnvFile(envFile, content);
+}
+
+/**
+ * Writes rds-host-stats' settings to .env (null clears them). A running
+ * rds-host-stats keeps the environment it started with, so it is recreated with
+ * these values, passed explicitly because an exported variable would win over
+ * .env. Returns false when that failed.
+ */
+async function setRdsHostStats(projectDir: string, values: Record<"RDS_DB_INSTANCE_IDENTIFIER" | "AWS_REGION" | "PGAI_CLUSTER" | "PGAI_NODE_NAME", string | null>): Promise<boolean> {
+  setEnvValues(projectDir, values);
+  const cmd = getComposeCmd();
+  if (!cmd) return true;
+  const { composeFile } = await resolveOrInitPaths();
+  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "--profile", "rds", "ps", "-q", "--status", "running", "rds-host-stats"]);
+  if (ps.status !== 0) {
+    console.error("If rds-host-stats is running, recreate it: docker compose --profile rds up -d rds-host-stats");
+    return true;
+  }
+  if (!ps.stdout.trim()) return true;
+  const env = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value ?? ""]));
+  if (await runCompose(["--profile", "rds", "up", "-d", "--no-deps", "rds-host-stats"], undefined, env) === 0) return true;
+  console.error("Recreating rds-host-stats failed. Run: docker compose --profile rds up -d rds-host-stats");
+  return false;
+}
+
+/**
+ * Copies the target's cluster/node_name into what its host metrics collector
+ * reads: the ClickHouse and Supabase scrape files in host-metrics/, and .env for
+ * rds-host-stats (it pushes past samples, so nothing scrapes it). Returns false
+ * when host metrics failed.
+ */
+async function setUpHostMetrics(projectDir: string, instance: Instance, connStr: string, env: NodeJS.ProcessEnv, apply: boolean): Promise<boolean> {
+  const name = instance.name;
+  const cluster = instance.custom_tags?.cluster ?? "default";
+  const nodeName = instance.custom_tags?.node_name ?? name;
+  try {
+    if (detectProvider(connStr) === "clickhouse") {
+      const message = await addHostMetrics({ projectDir, name, conn: connStr, env, cluster, nodeName });
+      const file = `clickhouse-${name}.yml`;
+      if (apply && message.startsWith("Host metrics: ClickHouse Cloud") && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`, file))) return false;
+      console.log(message);
+      return true;
+    }
+    const projectRef = extractProjectRefFromUrl(connStr);
+    if (projectRef) {
+      const on = supabaseHostMetricsOn(projectDir, env);
+      if (on && !SUPABASE_TARGET_NAME_RE.test(name)) throw new Error(SUPABASE_TARGET_NAME_ERROR);
+      const dir = hostMetricsDir(projectDir);
+      const file = `supabase-${name}.yml`;
+      const stale = fs.readdirSync(dir).filter((f) => /^supabase-.*\.yml$/.test(f) && !(on && f === file));
+      for (const f of stale) fs.rmSync(path.join(dir, f), { force: true });
+      if (on) writeScrapeFile(dir, file, renderSupabaseScrapeConfig({ projectRef: projectRef.toLowerCase(), cluster, nodeName }));
+      else if (stale.length === 0) return true;
+      if (apply && !(await reloadHostMetrics(projectDir, SUPABASE_JOB, on ? file : undefined))) return false;
+      console.log(on ? "Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)" : "Host metrics: Supabase relay job removed (PGAI_SUPABASE_HOST_METRICS is not true)");
+      if (on && !instanceJobsProfileEnabled(env.COMPOSE_PROFILES ?? readEnvValue(projectDir, "COMPOSE_PROFILES"))) {
+        console.error("Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.");
+      }
+      return true;
+    }
+    const rds = rdsInstance(new URL(connStr).hostname);
+    if (rds === null) {
+      console.log("Host metrics: add the RDS instance endpoint (<instance>.<id>.<region>.rds.amazonaws.com) to collect them; a cluster, reader or proxy endpoint names no instance");
+    } else if (rds) {
+      if (![cluster, nodeName].every((v) => /^[\w.@:\/-]+$/.test(v))) throw new Error(`Host metrics: cluster '${cluster}' or node_name '${nodeName}' cannot be written to .env; set PGAI_CLUSTER and PGAI_NODE_NAME there yourself.`);
+      if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName }))) return false;
+      console.log(`Host metrics: rds-host-stats polls RDS instance ${rds.id} (${rds.region}). Start it with: docker compose --profile rds up -d rds-host-stats`);
+    }
+    return true;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
+ * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
+ * itself. So its profile is in .env exactly while such a scrape file exists.
+ * With `apply`, vmalert is started (a no-op when it runs) or removed first,
+ * and .env follows only on success. `addOnly` records a needed profile but
+ * never drops one. Returns false when compose failed.
+ */
+async function syncVmalert(projectDir: string, apply: boolean, addOnly = false): Promise<boolean> {
+  const dir = path.join(projectDir, "host-metrics");
+  const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
+  const current = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
+  const exported = process.env.COMPOSE_PROFILES;
+  if (want && exported !== undefined && !instanceJobsProfileEnabled(exported, "host-metrics")) {
+    console.error(`COMPOSE_PROFILES=${exported} is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it`);
+  }
+  const has = instanceJobsProfileEnabled(current, "host-metrics");
+  if (apply && (want || has)) {
+    const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
+    if (await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) !== 0) {
+      console.error(`Host metrics: 'docker compose --profile host-metrics ${args.join(" ")}' failed.`);
+      return false;
+    }
+  }
+  if (has !== want && !(addOnly && has)) setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
+  return true;
+}
+
+// targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
+const looksLikeConnStr = (value: string): boolean => /^postgres(ql)?:\/\//i.test(value);
+// With PGAI_DB_URL set, the lone argument is a name only if it is plain: any
+// other string may be a mistyped connection string, and would print its password.
+const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(value) && !/(password|pwd)\s*=/i.test(value);
+
+/** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
+export async function addTarget(
+  file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
+  env: NodeJS.ProcessEnv, { apply = true, verifyTls }: { apply?: boolean; verifyTls?: (url: string) => Promise<void> } = {},
+): Promise<boolean> {
+  if (!connStr) {
+    console.error("Connection string required: postgresql://user:pass@host:port/db");
+    process.exitCode = 1;
+    return false;
+  }
+  const channelBinding = splitChannelBinding(connStr);
+  const defaultName = defaultTargetName(channelBinding.uri);
+  if ("error" in defaultName) {
+    console.error(defaultName.error);
+    process.exitCode = 1;
+    return false;
+  }
+  try {
+    const collector = await collectorConnection(connStr, verifyTls);
+    connStr = collector.url;
+    if (collector.note) console.error(`${channelBinding.value === "require" ? "Warning" : "Note"}: ${collector.note}`);
+    if (channelBinding.value === "require" && caNote(connStr)) console.error(`Note: ${caNote(connStr)}`);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return false;
+  }
+  const instanceName = name && name.trim() ? name.trim() : defaultName.name;
+  // Refused before the target is saved: the name cannot be changed by a re-run.
+  if (detectProvider(connStr) !== "clickhouse" && extractProjectRefFromUrl(connStr) && supabaseHostMetricsOn(projectDir, env) && !SUPABASE_TARGET_NAME_RE.test(instanceName)) {
+    console.error(SUPABASE_TARGET_NAME_ERROR);
+    process.exitCode = 1;
+    return false;
+  }
+
+  try {
+    const existing = loadInstances(file).find((instance) => instance.name === instanceName);
+    const instance = existing?.conn_str === connStr ? existing : buildInstance(instanceName, connStr);
+    if (existing && existing.conn_str === connStr) {
+      console.log(`Monitoring target '${instanceName}' already exists`);
+    } else {
+      addInstanceToFile(file, instance);
+      console.log(`Monitoring target '${instanceName}' added`);
+    }
+    const hostMetrics = await setUpHostMetrics(projectDir, instance, connStr, env, apply);
+    // A failed setup may have saved a scrape file for the next start: record the profile, start nothing.
+    if (!(await syncVmalert(projectDir, hostMetrics && apply, !hostMetrics)) || !hostMetrics) {
+      process.exitCode = 1;
+      // Applying runs `up -d pgwatch-*`, which would also start a stopped
+      // sink-prometheus as a dependency: a failed add leaves the stack alone.
+      console.error(apply
+        ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
+        : "The Postgres target was added; host metrics were not.");
+      return true;
+    }
+
+    if (!apply) return true;
+    const applyCode = await applyMonitoringTargetsConfig();
+    if (applyCode !== 0) {
+      console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+      process.exitCode = 1;
+      return true;
+    }
+    console.log("✓ Monitoring target configuration applied");
+    return true;
+  } catch (err) {
+    // Surface InstancesParseError as-is so we don't silently overwrite a
+    // corrupted file (which could discard several targets, including the
+    // credentials in their conn_str values).
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    process.exitCode = 1;
+    return false;
+  }
+}
+
 // Monitoring targets (databases to monitor)
 const targets = mon.command("targets").description("manage databases to monitor");
 
@@ -5290,48 +6105,77 @@ targets
 targets
   .command("add [connStr] [name]")
   .description("add monitoring target database")
-  .action(async (connStr?: string, name?: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
-    if (!connStr) {
-      console.error("Connection string required: postgresql://user:pass@host:port/db");
-      process.exitCode = 1;
-      return;
-    }
-    const m = connStr.match(/^postgresql:\/\/([^:]+):([^@]+)@([^:\/]+)(?::(\d+))?\/(.+)$/);
-    if (!m) {
-      console.error("Invalid connection string format");
-      process.exitCode = 1;
-      return;
-    }
-    const host = m[3];
-    const db = m[5];
-    const instanceName = name && name.trim() ? name.trim() : `${host}-${db}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  .option("--name <name>", "explicit target name (supports spaces and Unicode with PGAI_DB_URL)")
+  .addHelpText("after", `
+ClickHouse host metrics (non-interactive):
+  export CLICKHOUSE_ORG_ID='<org-id>' CLICKHOUSE_KEY_ID='<key-id>' CLICKHOUSE_KEY_SECRET='<secret>'
+  postgres-ai mon targets add 'postgresql://user:pass@host.pg.clickhouse.cloud:5432/db' my-db
+Use an organization API key with the Basic Service API Reader role; an Admin key is not needed.
+Writes instances.yml, host-metrics/clickhouse-my-db.yml and
+host-metrics/clickhouse-my-db.secret (the key secret, mode 0600).
+Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
 
-    try {
-      addInstanceToFile(file, buildInstance(instanceName, connStr));
-      console.log(`Monitoring target '${instanceName}' added`);
+Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes host-metrics/supabase-<name>.yml.
+RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
 
-      const applyCode = await applyMonitoringTargetsConfig();
-      if (applyCode !== 0) {
-        console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
+Environment:
+  PGAI_DB_URL  the connection string, unless a postgres:// or postgresql:// URL is given
+               (keeps the password out of argv). The only argument is then the name, of
+               ASCII letters, digits, '.', '_', '=' and '-', with no password= or pwd=;
+               anything else is refused. For existing names with spaces or Unicode,
+               pass an explicit --name "Production DB". Set it for this command only:
+                 PGAI_DB_URL='postgresql://user:pass@host:5432/db' postgres-ai mon targets add my-db
+               Under sudo, pass it on stdin: sudo logs a variable kept with --preserve-env.
+                 printf '%s\\n' "$URL" | sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
+               sudo I/O logging (log_input in sudoers) records stdin: then read it from a
+               file of mode 0600 in the root shell.
+                 sudo sh -c \\
+                   'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
+`)
+  .action(async (connStr: string | undefined, name: string | undefined, options: { name?: string }) => {
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
+    // Automation passes the URL here, not in argv, where `ps` and the sudo
+    // log would show the password. A connection string in argv still wins.
+    const envUrl = process.env.PGAI_DB_URL || undefined;
+    delete process.env.PGAI_DB_URL; // not for docker and compose
+    if (options.name !== undefined) {
+      if (name !== undefined || (connStr !== undefined && !looksLikeConnStr(connStr))) {
+        console.error("--name cannot be combined with a positional target name");
         process.exitCode = 1;
         return;
       }
-      console.log("✓ Monitoring target configuration applied");
-    } catch (err) {
-      // Surface InstancesParseError as-is so we don't silently overwrite a
-      // corrupted file (which could discard several targets, including the
-      // credentials in their conn_str values).
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(message);
-      process.exitCode = 1;
+      name = options.name;
     }
+    if (envUrl && (name === undefined || (options.name !== undefined && connStr === undefined)) && (connStr === undefined || !looksLikeConnStr(connStr))) {
+      // Trimmed, and a blank argument is no name, as in `targets add <url> <name>`.
+      const arg = connStr?.trim();
+      if (options.name === undefined && arg && !isPlainTargetName(arg)) {
+        console.error("PGAI_DB_URL is set: pass only the target name (ASCII letters, digits, '.', '_', '=', '-'; no password= or pwd=)");
+        process.exitCode = 1;
+        return;
+      }
+      if (options.name === undefined) name = arg;
+      connStr = envUrl;
+      // PGAI_DB_URL is the admin URL for prepare-db: show whose URL is saved,
+      // once it is accepted (a refused one may hold the password in the user).
+      let user = "";
+      if (!("error" in defaultTargetName(splitChannelBinding(envUrl).uri))) {
+        try {
+          user = decodeURIComponent(new URL(envUrl).username);
+        } catch {
+          user = new URL(envUrl).username;
+        }
+      }
+      console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
+    }
+    await addTarget(file, projectDir, connStr, name, process.env);
   });
 targets
   .command("remove <name>")
   .description("remove monitoring target database")
   .action(async (name: string) => {
-    const { instancesFile: file } = await resolveOrInitPaths();
+    const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     if (!fs.existsSync(file) || fs.lstatSync(file).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
@@ -5339,6 +6183,7 @@ targets
     }
 
     try {
+      const target = loadInstances(file).find((instance) => instance.name === name);
       const removed = removeInstanceFromFile(file, name);
       if (!removed) {
         console.error(`Monitoring target '${name}' not found`);
@@ -5346,6 +6191,23 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
+      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
+      const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
+      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
+        fs.rmSync(supabaseFile);
+        if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
+      }
+      if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
+      let rds: ReturnType<typeof rdsInstance>;
+      try {
+        rds = rdsInstance(new URL(target?.conn_str ?? "").hostname);
+      } catch {
+        // Not a URL: no RDS endpoint to look for.
+      }
+      if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
+        if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
+        console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
+      }
 
       const applyCode = await applyMonitoringTargetsConfig();
       if (applyCode !== 0) {
@@ -7528,7 +8390,6 @@ const deployDeps: DeployCliDeps = {
   uiBaseUrl: () => resolveBaseUrls(program.opts<CliOptions>(), config.readConfig()).uiBaseUrl,
 };
 registerDblabDeployCommands(dblab, deployDeps);
-registerMonDeployCommand(mon, { ...deployDeps, orgId: (apiKey: string) => configOrgIdForBody(apiKey, config.readConfig().orgId) });
 
 // ---- clone ----------------------------------------------------------------
 

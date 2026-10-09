@@ -146,3 +146,126 @@ def test_no_api_key_generates_local_reports(tmp_path):
     assert "--no-upload" in args
     assert "--token" not in args
     assert "generating reports (no upload)" in proc.stdout
+
+
+def run_one_cycle_logging_calls(tmp_path: Path, config_content: str, env_override=None):
+    """Like run_one_cycle, but the stub logs every call: its argv and stdin.
+
+    The stub fails every call; a call the script tolerates is followed by the
+    next one, and the reporter's failure ends the cycle.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    calls_dir = tmp_path / "calls"
+    calls_dir.mkdir()
+    stub = stub_dir / "python"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'n=$(ls "$STUB_CALLS_DIR"/*.args 2>/dev/null | wc -l | tr -d " ")\n'
+        'printf \'%s\\n\' "$@" > "$STUB_CALLS_DIR/$n.args"\n'
+        'printf \'%s\' "${REPORTER_API_URL:-}" > "$STUB_CALLS_DIR/$n.url"\n'
+        'if [ -t 0 ]; then : > "$STUB_CALLS_DIR/$n.stdin"; else cat > "$STUB_CALLS_DIR/$n.stdin"; fi\n'
+        f"exit {STUB_EXIT_CODE}\n"
+    )
+    stub.chmod(0o755)
+    config_path = tmp_path / ".pgwatch-config"
+    config_path.write_text(config_content)
+    env = os.environ.copy()
+    env.pop("REPORTER_PROJECT_NAME", None)
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "STUB_CALLS_DIR": str(calls_dir),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(config_path),
+            "REPORTER_API_URL": "https://api.example.test/api/general",
+            "REPORTER_INITIAL_DELAY_SECONDS": "0",
+            "REPORTER_INTERVAL_SECONDS": "86400",
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "all_reports_%Y%m%d_%H%M%S.json"),
+        }
+    )
+    for key, value in (env_override or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=TIMEOUT_SECONDS,
+    )
+    calls = []
+    for i in range(len(list(calls_dir.glob("*.args")))):
+        calls.append(((calls_dir / f"{i}.args").read_text().splitlines(),
+                      (calls_dir / f"{i}.stdin").read_text()))
+    return proc, calls
+
+
+@pytest.mark.unit
+def test_api_key_is_renewed_each_cycle_before_the_reports(tmp_path):
+    """A box token lives 90 days (internal#354): each cycle renews it first.
+
+    The token goes on stdin, never argv; a failed renewal does not stop the
+    cycle's reports.
+    """
+    proc, calls = run_one_cycle_logging_calls(
+        tmp_path, "api_key=secret-token-123\nproject_name=my-project\n"
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(calls) == 2, calls
+    renew_args, renew_stdin = calls[0]
+    assert renew_args == ["-m", "reporter.token_renew", "https://api.example.test/api/general"]
+    assert renew_stdin == "secret-token-123\n"
+    assert calls[1][0][:2] == ["-m", "reporter.postgres_reports"]
+
+
+@pytest.mark.unit
+def test_no_api_key_renews_nothing(tmp_path):
+    proc, calls = run_one_cycle_logging_calls(tmp_path, "project_name=my-project\n")
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert [args[:2] for args, _ in calls] == [["-m", "reporter.postgres_reports"]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("env_url", ["", None])
+@pytest.mark.parametrize("config_url", [
+    "https://preview.example.test/api/general",
+    "https://preview.example.test/api/general/",
+    None,
+])
+def test_api_url_falls_back_to_config_then_production(tmp_path, env_url, config_url):
+    config = "api_key=test-key\nproject_name=my-project\n"
+    if config_url is not None:
+        config += f"api_url={config_url}\n"
+    proc, calls = run_one_cycle_logging_calls(
+        tmp_path, config, {"REPORTER_API_URL": env_url}
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(calls) == 2
+    expected = config_url.rstrip("/") if config_url else "https://postgres.ai/api/general"
+    assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    for i in range(2):
+        assert (tmp_path / "calls" / f"{i}.url").read_text() == expected
+    args = calls[1][0]
+    assert args[:2] == ["-m", "reporter.postgres_reports"]
+    assert args[args.index("--api-url") + 1] == expected
+
+
+@pytest.mark.unit
+def test_nonempty_api_url_env_wins_over_config(tmp_path):
+    expected = "https://override.example.test/api/general"
+    proc, calls = run_one_cycle_logging_calls(
+        tmp_path,
+        "api_key=test-key\nproject_name=my-project\napi_url=https://preview.example.test/api/general\n",
+        {"REPORTER_API_URL": expected},
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(calls) == 2
+    assert calls[0][0] == ["-m", "reporter.token_renew", expected]
+    for i in range(2):
+        assert (tmp_path / "calls" / f"{i}.url").read_text() == expected
+    args = calls[1][0]
+    assert args[:2] == ["-m", "reporter.postgres_reports"]
+    assert args[args.index("--api-url") + 1] == expected

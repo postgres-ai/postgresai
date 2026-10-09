@@ -708,14 +708,14 @@ describe("global tokens reach hidden issues (postgresai #327 + platform-all #562
     // PT400 unless the request selects one. user_is_staff() resolves global
     // tokens too, so BOTH headers must be present on the same request or staff
     // silently see no hidden issues (hidden => PT404 looks like "none exist").
-    const h = issueRequestHeaders("pai_global_secret", { alias: "acme" });
+    const h = issueRequestHeaders("pai_global_secret", { alias: "acme", source: "--org" });
     expect(h["x-pgai-org"]).toBe("acme");
     expect(h["x-pgai-include-hidden"]).toBe("true");
     expect(h["access-token"]).toBe("pai_global_secret");
   });
 
   test("numeric org selection works the same way", () => {
-    const h = issueRequestHeaders("pai_global_secret", { id: 5225 });
+    const h = issueRequestHeaders("pai_global_secret", { id: 5225, source: "--org-id" });
     expect(h["x-pgai-org-id"]).toBe("5225");
     expect(h["x-pgai-include-hidden"]).toBe("true");
   });

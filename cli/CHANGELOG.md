@@ -2,7 +2,88 @@
 
 ## Unreleased
 
+### Added
+
+- `pgai mon deploy` and `pgai dblab deploy` share one surface (postgresai#412): the URL as the argument or
+  `--db-url`, `--name`, `--location`, `--wait <minutes>` / `--no-wait`, `--yes`, `--json`, one set of
+  `status` words (`ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required`, `failed`)
+  with exit codes 0 / 1 / 3, and `instances list | watch (status) | delete` by id or name. Progress goes
+  to stderr; stdout is the result. The console-path `pgai mon deploy` of the DBLab deploy release is gone.
+- `pgai mon deploy --vcpus <n>`: the database server's vCPUs, which AAS (database load) needs. At a terminal a
+  missing value is asked for; without one, the run says there will be no AAS data. MCP `deploy_monitoring` takes `vcpus`.
+- `pgai mon deploy <database-url>`: put a database under PostgresAI Cloud monitoring in one command.
+  Signs in if needed, prepares the database (an admin URL creates `postgres_ai_mon`; otherwise the
+  SQL is printed), provisions the monitoring box, waits, and prints the project's Health Matrix
+  (`health_url`, the next step) and Grafana, signed in with the PostgresAI account (`dashboard_url`). ClickHouse,
+  RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
+  disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
+  JSON (`status`, `health_url`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required),
+  and 130 for a `pgai init` cancelled at a prompt.
+  An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
+  Another database on a server PostgresAI already monitors for the organization needs no
+  `PGAI_MON_PASSWORD`: with `sslmode=require` or `verify-*` in the URL, PostgresAI fills in the
+  password it keeps for that server, and the express checkup is skipped (it never runs as the admin).
+  On a server without TLS, `mon deploy` says the kept password cannot be used there and names the way
+  out, to an agent too (`PGAI_MON_PASSWORD`, TLS, or the instances to delete before
+  `--reset-password`, quoted for the shell).
+  A failed run can be re-run: the ClickHouse key is checked before the database is touched, and a role
+  created with a generated password is dropped again when the launch is refused.
+  A role that is not a superuser creates `postgres_ai_mon` only if it can run the whole preparation;
+  `host` / `port` in the URL's query string is refused; certificate files in the URL are used from
+  this machine only (the monitoring box does not get them).
+  `mon local-install` reads `PGAI_DB_URL` like `--db-url`, and `PGAI_API_KEY` only together with it.
+  `mon targets add [name]` reads `PGAI_DB_URL` when argv has no `postgres://` / `postgresql://` URL;
+  with it set, a lone argument other than a plain name (ASCII letters, digits, `.`, `_`, `=`, `-`,
+  with no `password=` / `pwd=`) is refused, not saved as the name. Under sudo, pass it on stdin
+  (`targets add --help`): sudo logs a variable kept with `--preserve-env`, password included.
+  Where sudoers enables I/O logging (`log_input`), which records stdin, read it from a file of
+  mode 0600 inside the root shell. `Using PGAI_DB_URL` shows the user only for an accepted URL.
+  The default name takes the host and database as WHATWG and pgx read them. Refused: no password
+  in the URL, an IPv6 host, a raw `/`, `?` or `#` in the password (part of it would be read as the
+  host, and end up in the name), an `@` in the database name or the query, a user info character
+  that pgx refuses (a space, `"`, non-ASCII, a `%` without two hex digits), a user name with an
+  encoded `:` (`monitor%3A<password>`, user and password encoded as one unit, which pgx reads as
+  the user name), and a control character anywhere in the URL (such as a CR from a CRLF file).
+  `mon deploy --self-hosted` percent-encodes an `@` in the query it passes on. `targets test` decodes
+  a percent-encoded database name in full (`my%40db` is `my@db`), as pgwatch does. A host or
+  database name with characters other than ASCII letters and digits may get a different default
+  name than before (`база` gives `db-example--D0-B1-D0-B0-D0-B7-D0-B0`, not `db-example-----`): a
+  re-run of `targets add <url>` without a name then adds a second target.
+  Also `pgai init` (first run at a terminal), `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`, and the MCP
+  tool `deploy_monitoring`.
+  While the box starts, `mon deploy` runs the express checkup as `postgres_ai_mon`, prints its findings
+  (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`); where PostgresAI
+  keeps the role's password it is skipped (no `checkup` key, no first report). Each step and
+  each change of the box's state is shown once, with the time since the start (JSON: one event a line
+  on stderr; any other text there, such as an error, a warning, `--debug` or a line of
+  `mon local-install`, is `{"event":"log","level":"error"|"warn"|"info"|"debug","message":...}`, with
+  the Grafana and VictoriaMetrics logins masked). A `--clickhouse-key` on a re-run is checked: a
+  rejected key is exit 3, not `ready`. `pgai mon instances list` uses the `status` words of `mon deploy` and
+  `mon instances watch`. `pgai init` does not echo the URL. `--reset-password` gives an existing `postgres_ai_mon`
+  a new password.
+
+- `prepare-db` / `unprepare-db --provider clickhouse` for ClickHouse Managed Postgres, auto-detected
+  from `*.pg.clickhouse.cloud` hosts (positional URI, conninfo, `--db-url`, `--host`, `PGHOST`).
+  Before any grant runs, a `-- scope:` line lists what the run grants the monitoring
+  role, derived from the plan steps about to run (stderr under `--json`, omitted on `--reset-password`).
+  `channel_binding=require` in a URI or conninfo string is honoured: SCRAM-SHA-256-PLUS is
+  preferred, the plaintext retry is disabled, and `sslmode=disable` is rejected.
+
+- ClickHouse Cloud host metrics: `mon local-install --db-url` and `mon targets add` write a
+  VictoriaMetrics scrape job for the service's Prometheus endpoint when `CLICKHOUSE_ORG_ID`,
+  `CLICKHOUSE_KEY_ID` and `CLICKHOUSE_KEY_SECRET` are set. The key secret is kept in
+  `host-metrics/clickhouse-<name>.secret` (0600, directory 0700); a Basic Service API Reader key is enough.
+  For a Supabase target, while `PGAI_SUPABASE_HOST_METRICS` is true, they write the relay's scrape
+  job; for an RDS instance endpoint, the instance, region and labels `rds-host-stats` reads from `.env`.
+
 ### Changed
+
+- `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
+  `checkup`, `mon deploy`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
+  a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.
+
+- `prepare-db --verify --json` reports `provider` only when it was given explicitly or auto-detected,
+  as before; it is no longer filled with `self-managed`.
 
 - `issues list` now shows **open issues only** by default. Closed issues need
   an explicit `--status closed` (or `--status all` for both); an unknown

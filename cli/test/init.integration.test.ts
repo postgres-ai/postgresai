@@ -9,6 +9,7 @@ import * as os from "os";
 import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
+import { prepareDatabase } from "../lib/connect";
 
 const TEST_TIMEOUT = 30000; // 30 seconds
 
@@ -37,6 +38,28 @@ function findPgBin(cmd: string): string | null {
   const out = new TextDecoder().decode(probe.stdout).trim();
   if (out) return out;
 
+  return null;
+}
+
+/** First directory with initdb and postgres of at least `minMajor`: PATH, then Debian/Homebrew layouts. */
+function findPgBinDirAtLeast(minMajor: number): string | null {
+  const onPath = findPgBin("initdb");
+  const probe = Bun.spawnSync([
+    "sh",
+    "-c",
+    "ls -1d /usr/lib/postgresql/*/bin /opt/homebrew/opt/postgresql@*/bin 2>/dev/null || true",
+  ]);
+  const dirs = [
+    ...(onPath ? [path.dirname(onPath)] : []),
+    ...new TextDecoder().decode(probe.stdout).split("\n").filter(Boolean),
+  ];
+  for (const dir of dirs) {
+    const initdb = path.join(dir, "initdb");
+    if (!fs.existsSync(initdb) || !fs.existsSync(path.join(dir, "postgres"))) continue;
+    const version = new TextDecoder().decode(Bun.spawnSync([initdb, "--version"]).stdout);
+    const major = Number(version.match(/\(PostgreSQL\) (\d+)/)?.[1] ?? 0);
+    if (major >= minMajor) return dir;
+  }
   return null;
 }
 
@@ -85,14 +108,14 @@ interface TempPostgres {
   cleanup: () => Promise<void>;
 }
 
-async function createTempPostgres(): Promise<TempPostgres> {
+async function createTempPostgres(binDir?: string): Promise<TempPostgres> {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "postgresai-init-"));
   const dataDir = path.join(tmpRoot, "data");
   const socketDir = path.join(tmpRoot, "sock");
   fs.mkdirSync(socketDir, { recursive: true });
 
-  const initdb = findPgBin("initdb");
-  const postgresBin = findPgBin("postgres");
+  const initdb = binDir ? path.join(binDir, "initdb") : findPgBin("initdb");
+  const postgresBin = binDir ? path.join(binDir, "postgres") : findPgBin("postgres");
   if (!initdb || !postgresBin) {
     throw new Error("PostgreSQL binaries not found (need initdb and postgres)");
   }
@@ -104,7 +127,7 @@ async function createTempPostgres(): Promise<TempPostgres> {
 
   // Configure: local socket trust, TCP scram.
   const hbaPath = path.join(dataDir, "pg_hba.conf");
-  fs.appendFileSync(
+  fs.writeFileSync(
     hbaPath,
     "\n# Added by postgresai init integration tests\nlocal all all trust\nhost all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n",
     "utf8"
@@ -176,11 +199,48 @@ function runCliInit(
 // (initdb cannot be run as root)
 const skipTests = !havePostgresBinaries() || isRunningAsRoot();
 
+// CI sets PGAI_TEST_REQUIRE_PG16=1: fail loudly instead of skipping the suite or
+// the SCRAM iteration test when the required binaries are missing.
+if (process.env.PGAI_TEST_REQUIRE_PG16 === "1" && (skipTests || !findPgBinDirAtLeast(16))) {
+  throw new Error("PGAI_TEST_REQUIRE_PG16=1 but the integration suite cannot run PostgreSQL >= 16 here");
+}
+
 describe.skipIf(skipTests)("integration: prepare-db", () => {
   let pg: TempPostgres;
 
   // Use a shared postgres instance for all tests in this describe block
   // Each test will reset state as needed
+
+  test("mon deploy setup ignores public.format and installs pg_stat_statements in public", async () => {
+    pg = await createTempPostgres();
+    try {
+      const c = new Client({ connectionString: pg.adminUri });
+      await c.connect();
+      try {
+        await c.query("alter database testdb set search_path = public, pg_catalog");
+        await c.query(`create function public.format(text, text) returns text language plpgsql as $$
+begin
+  raise exception 'public.format called';
+end;
+$$`);
+      } finally {
+        await c.end();
+      }
+      const prepared = await prepareDatabase(`${pg.adminUri}?sslmode=disable`, "self-managed", { agent: true });
+      expect(prepared).toHaveProperty("monitoringUrl");
+      const check = new Client({ connectionString: pg.adminUri });
+      await check.connect();
+      try {
+        expect((await check.query(`select n.nspname from pg_catalog.pg_extension e
+join pg_catalog.pg_namespace n on n.oid = e.extnamespace
+where e.extname = 'pg_stat_statements'`)).rows).toEqual([{ nspname: "public" }]);
+      } finally {
+        await check.end();
+      }
+    } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
 
   test("supports URI / conninfo / psql-like connection styles", async () => {
     pg = await createTempPostgres();
@@ -215,6 +275,89 @@ describe.skipIf(skipTests)("integration: prepare-db", () => {
         expect(r.status).toBe(0);
       }
     } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  test("role SQL authenticates with SCRAM even when password_encryption is md5", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query("set password_encryption = 'md5'");
+      const { buildInitPlan, applyInitPlan, redactPasswordsInSql } = await import("../lib/init");
+      // Exercise both first creation and updating an existing role.
+      for (const password of ["test-only-initial", String.raw`test-only-pa'ss\word$$!`]) {
+        const plan = await buildInitPlan({ database: "testdb", monitoringPassword: password, includeOptionalPermissions: false });
+        plan.steps = plan.steps.filter(step => step.name === "01.role");
+        const sql = plan.steps[0].sql;
+        expect(sql.includes(password)).toBe(false);
+        const verifiers = [...sql.matchAll(/password '(SCRAM-SHA-256\$[^']+)'/g)].map(m => m[1]);
+        expect(verifiers.length).toBe(2);
+        expect(verifiers[0] === verifiers[1]).toBe(true);
+        expect(redactPasswordsInSql(sql).includes(verifiers[0])).toBe(false);
+        await applyInitPlan({ client: admin, plan });
+        const stored = await admin.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+        expect(stored.rows[0].rolpassword === verifiers[0]).toBe(true);
+        const config = { host: "127.0.0.1", port: pg.port, user: "postgres_ai_mon", database: "testdb", password };
+        const mon = new Client(config);
+        try {
+          await mon.connect();
+          expect((await mon.query("select current_user as u")).rows[0].u).toBe("postgres_ai_mon");
+        } finally { await mon.end(); }
+        // A negative control proves HBA does not accidentally allow trust.
+        const wrong = new Client({ ...config, password: "test-only-wrong" });
+        try { await expect(wrong.connect()).rejects.toThrow(/password authentication failed/); }
+        finally { await wrong.end(); }
+      }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("creation and reset honor the server SCRAM iteration count", async () => {
+    // scram_iterations exists since PostgreSQL 16. CI sets PGAI_TEST_REQUIRE_PG16=1 so
+    // this test fails instead of passing vacuously when only older binaries exist.
+    const binDir = findPgBinDirAtLeast(16);
+    if (!binDir) {
+      if (process.env.PGAI_TEST_REQUIRE_PG16 === "1") {
+        throw new Error("PGAI_TEST_REQUIRE_PG16=1 but no PostgreSQL >= 16 initdb/postgres found");
+      }
+      console.warn("skipped: SCRAM iteration test needs PostgreSQL >= 16 binaries");
+      return;
+    }
+    pg = await createTempPostgres(binDir);
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      const setting = await admin.query("select current_setting('scram_iterations', true) as iterations");
+      expect(setting.rows[0].iterations).not.toBeNull();
+      // Set the default for the new connections opened by prepare-db.
+      await admin.query("alter database testdb set scram_iterations = 10000");
+      for (const reset of [false, true]) {
+        const password = reset ? "test-only-reset" : "test-only-create";
+        const result = runCliInit([
+          pg.adminUri, "--password", password, "--skip-optional-permissions",
+          ...(reset ? ["--reset-password"] : []),
+        ]);
+        expect(result.status).toBe(0);
+        const stored = await admin.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'");
+        // Assert a boolean to avoid exposing the verifier in failure output.
+        expect(stored.rows[0].rolpassword.startsWith("SCRAM-SHA-256$10000:")).toBe(true);
+        const mon = new Client({
+          host: "127.0.0.1", port: pg.port, database: "testdb",
+          user: "postgres_ai_mon", password,
+        });
+        try {
+          await mon.connect();
+          expect((await mon.query("select current_user as u")).rows[0].u).toBe("postgres_ai_mon");
+        } finally {
+          await mon.end();
+        }
+      }
+    } finally {
+      await admin.end();
       await pg.cleanup();
     }
   }, { timeout: TEST_TIMEOUT });

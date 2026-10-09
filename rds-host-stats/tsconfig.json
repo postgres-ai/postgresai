@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "types": ["bun"],
+    "resolveJsonModule": true
+  },
+  "include": ["bin", "lib", "test"]
+}

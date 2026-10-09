@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as yaml from "js-yaml";
-import { Client } from "pg";
+import { Client, type ClientConfig } from "pg";
 import {
   addInstanceToFile,
   removeInstanceFromFile,
@@ -225,11 +225,12 @@ describe("registerMonitoringInstance", () => {
     fetchCalls = [];
     respond = () => new Response(JSON.stringify({ project_id: 7 }), { status: 200 });
     // Mock fetch to capture calls and return the test-configured response.
-    global.fetch = async (url: RequestInfo | URL, options?: RequestInit) => {
+    const fetchMock = async (url: Parameters<typeof fetch>[0], options?: Parameters<typeof fetch>[1]) => {
       const call = { url: url.toString(), options: options || {} };
       fetchCalls.push(call);
       return respond(call);
     };
+    global.fetch = Object.assign(fetchMock, { preconnect: originalFetch.preconnect });
   });
 
   afterEach(() => {
@@ -767,6 +768,9 @@ describe("sslOptionFromConnString — libpq semantics", () => {
 });
 
 describe("buildClientConfig — actual node-postgres Client gets the intended ssl (regression)", () => {
+  // @types/pg omits this internal property. Keep checking the real pg v8
+  // parsed connection parameters, with the same SSL type as ClientConfig.
+  type ClientWithParameters = Client & { connectionParameters: Pick<ClientConfig, "ssl"> };
   // The previous code passed `{ connectionString, ssl }` to `new Client(...)`.
   // node-postgres' ConnectionParameters internally does
   // `Object.assign({}, config, parse(connectionString))`, so the parsed
@@ -778,22 +782,22 @@ describe("buildClientConfig — actual node-postgres Client gets the intended ss
 
   test("require: actual Client.connectionParameters.ssl has rejectUnauthorized:false", () => {
     const c = new Client(buildClientConfig("postgresql://u:p@h/db?sslmode=require"));
-    expect(c.connectionParameters.ssl).toEqual({ rejectUnauthorized: false });
+    expect((c as ClientWithParameters).connectionParameters.ssl).toEqual({ rejectUnauthorized: false });
   });
 
   test("verify-full: actual Client.connectionParameters.ssl has rejectUnauthorized:true", () => {
     const c = new Client(buildClientConfig("postgresql://u:p@h/db?sslmode=verify-full"));
-    expect(c.connectionParameters.ssl).toEqual({ rejectUnauthorized: true });
+    expect((c as ClientWithParameters).connectionParameters.ssl).toEqual({ rejectUnauthorized: true });
   });
 
   test("disable: actual Client.connectionParameters.ssl is false", () => {
     const c = new Client(buildClientConfig("postgresql://u:p@h/db?sslmode=disable"));
-    expect(c.connectionParameters.ssl).toBe(false);
+    expect((c as ClientWithParameters).connectionParameters.ssl).toBe(false);
   });
 
   test("unset: actual Client.connectionParameters.ssl has rejectUnauthorized:false", () => {
     const c = new Client(buildClientConfig("postgresql://u:p@h/db"));
-    expect(c.connectionParameters.ssl).toEqual({ rejectUnauthorized: false });
+    expect((c as ClientWithParameters).connectionParameters.ssl).toEqual({ rejectUnauthorized: false });
   });
 
   test("connectionTimeoutMillis is forwarded (exact value, not just truthy)", () => {
@@ -801,6 +805,26 @@ describe("buildClientConfig — actual node-postgres Client gets the intended ss
     // node-postgres v8 stores it on `_connectionTimeoutMillis`. Asserting the
     // exact value catches regressions that would silently swap in the default.
     expect((c as any)._connectionTimeoutMillis).toBe(5000);
+  });
+});
+
+// pg-connection-string reads the database with decodeURI, which keeps %40 and
+// the like encoded; libpq and pgx (pgwatch) decode them, as `targets add` advises.
+describe("buildClientConfig — the database name is percent-decoded in full", () => {
+  test.each([
+    ["postgresql://u:p@h:5432/my%40db", "my@db"],
+    ["postgresql://u:p@h:5432/a%2Fb%3Fc%23d", "a/b?c#d"],
+    ["postgresql://u:p@h:5432/my%2540db?sslmode=require", "my%40db"],
+    ["postgresql://u:p@h:5432/%D0%B1%D0%B0%D0%B7%D0%B0", "база"],
+    ["postgresql://u:p@h:5432/my%zzdb", "my%zzdb"],
+    ["postgresql://u:p@h:5432/app", "app"],
+    ["postgresql://u:p@h:5432/", undefined],
+    // libpq takes the host from the query, the database from the path.
+    ["postgresql://u:p@%2Fvar%2Frun%2Fpostgresql/db?host=/tmp", "db"],
+    ["socket:/var/run/postgresql?db=app", "app"],
+  ])("%p → %p", (connStr, database) => {
+    expect(buildClientConfig(connStr).database).toBe(database);
+    expect((new Client(buildClientConfig(connStr)) as any).connectionParameters.database).toBe(database ?? "u");
   });
 });
 

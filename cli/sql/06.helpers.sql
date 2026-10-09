@@ -1,6 +1,4 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
--- These functions use SECURITY DEFINER to allow the monitoring user to perform
--- operations they don't have direct permissions for.
 
 /*
  * table_describe
@@ -15,18 +13,25 @@
  *
  * Usage:
  *   select postgres_ai.table_describe('public.users');
- *   select postgres_ai.table_describe('my_table');  -- uses search_path
+ *   select postgres_ai.table_describe('my_table');  -- pg_catalog, then public
+ *
+ * SECURITY INVOKER: it reads only the world-readable catalog, so it needs no
+ * privilege the caller lacks. Names are resolved by catalog query, not regclass
+ * (which demands USAGE on the schema): unqualified in pg_catalog, then public.
+ * search_path is pg_catalog, pg_temp so objects in a writable schema cannot
+ * shadow a built-in the function calls.
  */
 create or replace function postgres_ai.table_describe(
   in table_name text,
   out result text
 )
 language plpgsql
-security definer
-set search_path = pg_catalog, public
+security invoker
+set search_path = pg_catalog, pg_temp
 as $$
 declare
   v_oid oid;
+  v_ident text[];
   v_schema text;
   v_table text;
   v_relkind char;
@@ -37,8 +42,24 @@ declare
   v_rec record;
   v_constraint_count int := 0;
 begin
-  -- Resolve table name to OID (handles schema-qualified and search_path)
-  v_oid := table_name::regclass::oid;
+  -- Resolve table name to OID: [current database.]schema.table (pg_temp is the
+  -- caller's temp schema), or an unqualified name in pg_catalog, then public
+  v_ident := parse_ident(table_name);
+  select c.oid into v_oid
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where (cardinality(v_ident) <= 2 or (cardinality(v_ident) = 3 and v_ident[1] = current_database()))
+    and c.relname = v_ident[cardinality(v_ident)]::name
+    and case
+      when cardinality(v_ident) = 1 then n.nspname in ('pg_catalog', 'public')
+      when v_ident[cardinality(v_ident) - 1] = 'pg_temp' then n.oid = pg_my_temp_schema()
+      else n.nspname = v_ident[cardinality(v_ident) - 1]::name
+    end
+  order by n.nspname = 'public'
+  limit 1;
+  if v_oid is null then
+    raise exception 'relation "%" does not exist', table_name using errcode = '42P01';
+  end if;
 
   -- Get basic table info
   select
@@ -207,7 +228,7 @@ begin
         when 'f' then v_line := v_line || 'FK: ';
         when 'u' then v_line := v_line || 'UNIQUE: ';
         when 'c' then v_line := v_line || 'CHECK: ';
-        else v_line := v_line || v_rec.contype || ': ';
+        else v_line := v_line || v_rec.contype::text || ': ';
       end case;
       v_line := v_line || v_rec.conname || ' ' || v_rec.condef;
       v_lines := array_append(v_lines, v_line);

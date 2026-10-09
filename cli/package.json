@@ -36,7 +36,7 @@
     "embed-checkup-dictionary": "bun run scripts/embed-checkup-dictionary.ts",
     "embed-all": "bun run embed-metrics && bun run embed-checkup-dictionary",
     "sync-schemas": "node scripts/sync-schemas.mjs",
-    "build": "bun run sync-schemas && bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && cp -r ./sql ./dist/sql && cp ../instances.demo.yml ./instances.demo.yml",
+    "build": "bun run sync-schemas && bun run embed-all && bun build ./bin/postgres-ai.ts --outdir ./dist/bin --target node && node -e \"const fs=require('fs');const f='./dist/bin/postgres-ai.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('#!/usr/bin/env bun','#!/usr/bin/env node'))\" && rm -rf ./dist/sql && cp -r ./sql ./dist/sql && cp ../instances.demo.yml ./instances.demo.yml",
     "prepack": "npm run sync-schemas",
     "prepublishOnly": "npm run build",
     "start": "bun ./bin/postgres-ai.ts --help",

@@ -10,8 +10,9 @@
 
 import * as fs from "fs";
 import * as yaml from "js-yaml";
+import { redactTextSecrets } from "./util";
 import { parse as parseConnString } from "pg-connection-string";
-import type { ClientConfig } from "pg";
+import { Client, type ClientConfig } from "pg";
 
 export interface Instance {
   name: string;
@@ -25,8 +26,14 @@ export interface Instance {
 
 export class InstancesParseError extends Error {
   constructor(file: string, cause: unknown) {
-    const causeMsg = cause instanceof Error ? cause.message : String(cause);
-    super(`Failed to parse ${file}: ${causeMsg}`);
+    // A YAML error's message embeds a snippet of the file, i.e. of conn_str
+    // values with their passwords (truncated, so a text scrub cannot find
+    // them). Keep only the reason and position.
+    const yamlErr = cause as { reason?: unknown; mark?: { line: number; column: number } };
+    const causeMsg = typeof yamlErr?.reason === "string" && yamlErr.mark
+      ? `${yamlErr.reason} (${yamlErr.mark.line + 1}:${yamlErr.mark.column + 1})`
+      : cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to parse ${file}: ${redactTextSecrets(causeMsg)}`);
     this.name = "InstancesParseError";
   }
 }
@@ -295,16 +302,35 @@ export function buildClientConfig(
   extra: { connectionTimeoutMillis?: number } = {},
 ): ClientConfig {
   const sslmode = extractSslmode(connStr);
-  const parsed = parseConnString(withoutSslmode(connStr));
+  const channelBinding = splitChannelBinding(connStr);
+  const enableChannelBinding = requireChannelBinding(channelBinding.value, sslmode === "disable");
+  const parsed = parseConnString(withoutSslmode(channelBinding.uri));
   return {
     host: parsed.host || undefined,
     port: parsed.port ? Number(parsed.port) : undefined,
     user: parsed.user,
     password: parsed.password,
-    database: parsed.database || undefined,
+    database: databaseName(withoutSslmode(channelBinding.uri), parsed.database),
     ssl: sslOptionFromSslmode(sslmode),
+    ...(enableChannelBinding ? { enableChannelBinding: true } : {}),
     ...extra,
   };
+}
+
+/**
+ * The database name percent-decoded in full, as libpq and pgx (pgwatch) read
+ * it: pg-connection-string's decodeURI keeps %40 and the like encoded. Its own
+ * value (`parsed`) for a socket: URL or an escape that does not decode.
+ */
+function databaseName(connStr: string, parsed: string | null | undefined): string | undefined {
+  if (!parsed) return undefined;
+  try {
+    const u = new URL(connStr);
+    if (/^postgres(ql)?:$/.test(u.protocol)) return decodeURIComponent(u.pathname.slice(1));
+  } catch {
+    // Not a URL, or an escape decodeURIComponent refuses.
+  }
+  return parsed;
 }
 
 function withoutSslmode(connStr: string): string {
@@ -315,4 +341,76 @@ function withoutSslmode(connStr: string): string {
   } catch {
     return connStr;
   }
+}
+
+/**
+ * Removes channel_binding from a URI, keeping the rest of the text as is. pg ignores
+ * the parameter, so callers turn `value` into `enableChannelBinding` themselves.
+ */
+export function splitChannelBinding(uri: string): { uri: string; value: string | null } {
+  let value: string | null = null;
+  try {
+    value = new URL(uri).searchParams.get("channel_binding");
+  } catch {}
+  if (value === null) return { uri, value };
+  const fragment = uri.indexOf("#");
+  const end = fragment < 0 ? uri.length : fragment;
+  const start = uri.indexOf("?");
+  const params = uri.slice(start + 1, end).split("&")
+    .filter((param) => !new URLSearchParams(param).has("channel_binding"));
+  return { uri: uri.slice(0, start) + (params.length ? `?${params.join("&")}` : "") + uri.slice(end), value };
+}
+
+export async function verifyCollectorTls(url: string): Promise<void> {
+  const u = new URL(url);
+  const ca = u.searchParams.get("sslrootcert");
+  for (const key of ["sslrootcert", "sslcert", "sslkey", "uselibpqcompat"]) u.searchParams.delete(key);
+  const client = new Client({
+    ...buildClientConfig(splitChannelBinding(u.toString()).uri, { connectionTimeoutMillis: 10_000 }),
+    ssl: { rejectUnauthorized: true, servername: u.hostname, ...(ca ? { ca: fs.readFileSync(ca, "utf8") } : {}) },
+  });
+  try {
+    await client.connect();
+  } catch (err) {
+    // Authentication and other errors after a verified handshake do not invalidate the certificate.
+    if (!(client as any).connection?.stream?.authorized) throw err;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+export async function collectorConnection(url: string, verifyTls = verifyCollectorTls): Promise<{ url: string; note?: string }> {
+  const binding = splitChannelBinding(url);
+  const sslmode = extractSslmode(url);
+  if (binding.value === "require") {
+    if (sslmode === "disable" || sslmode === "allow") {
+      throw new Error(`channel_binding=require needs TLS, but sslmode=${sslmode} is set`);
+    }
+    let collectorUrl = binding.uri;
+    if (sslmode !== "verify-full") {
+      const u = new URL(collectorUrl);
+      u.searchParams.set("sslmode", "verify-full");
+      collectorUrl = u.toString();
+      try {
+        await verifyTls(collectorUrl);
+      } catch (err) {
+        const why = err instanceof Error && err.message ? ` (${err.message})` : "";
+        throw new Error(`Could not verify the TLS certificate for channel_binding=require${why}. Provide sslrootcert=<CA file> with sslmode=verify-full, or explicitly accept the downgrade by removing channel_binding=require from the URL`);
+      }
+    }
+    return { url: collectorUrl, note: "the collector can't do channel binding; it connects with TLS and full certificate verification" + (sslmode !== "verify-full" ? "; upgraded to sslmode=verify-full" : "") };
+  }
+  return { url: binding.uri, ...(binding.value !== null ? { note: "removed channel_binding from the connection string; the collector does not support it (TLS is kept)" } : {}) };
+}
+
+/**
+ * Whether to enable channel binding. channel_binding=require (libpq semantics) needs TLS:
+ * with sslmode=disable libpq refuses to connect, so do the same instead of silently sending
+ * SCRAM without channel binding. node-postgres only *prefers* SCRAM-SHA-256-PLUS when the
+ * server offers it; the mechanism actually negotiated is not enforced here.
+ */
+export function requireChannelBinding(value: string | null | undefined, sslDisabled: boolean): boolean {
+  if (value !== "require") return false;
+  if (sslDisabled) throw new Error("channel_binding=require needs TLS, but sslmode=disable is set");
+  return true;
 }

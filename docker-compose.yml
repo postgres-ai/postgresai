@@ -140,6 +140,7 @@ services:
     ports:
       - "${BIND_HOST:-}59090:9090"
     volumes:
+      - ./host-metrics:/etc/pgai/host-metrics:ro
       - victoria_metrics_data:/victoria-metrics-data
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
@@ -221,6 +222,47 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Host metrics vocabulary: evaluates config/prometheus/host_rules.yml, which
+  # maps Supabase node_* and ClickHouse PostgresServer_* series to the host_*
+  # names rds-host-stats writes, and stores the results in sink-prometheus.
+  # `mon targets add` enables the profile while a ClickHouse or Supabase scrape
+  # file exists. See docs/host-metrics.md.
+  vmalert:
+    profiles: ["host-metrics"]
+    image: victoriametrics/vmalert:v1.140.0
+    container_name: vmalert
+    cpus: ${VMALERT_CPUS:-0.1}
+    mem_limit: ${VMALERT_MEM:-134217728}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - postgres_ai_configs:/postgres_ai_configs:ro
+    environment:
+      # -envflag.enable reads these as -datasource.basicAuth.* and
+      # -remoteWrite.basicAuth.*; empty means no auth, as for sink-prometheus.
+      - datasource_basicAuth_username=${VM_AUTH_USERNAME:-}
+      - datasource_basicAuth_password=${VM_AUTH_PASSWORD:-}
+      - remoteWrite_basicAuth_username=${VM_AUTH_USERNAME:-}
+      - remoteWrite_basicAuth_password=${VM_AUTH_PASSWORD:-}
+    command:
+      - -envflag.enable
+      - -rule=/postgres_ai_configs/prometheus/host_rules.yml
+      - -datasource.url=http://sink-prometheus:9090
+      - -remoteWrite.url=http://sink-prometheus:9090
+      - -evaluationInterval=60s
+      # Only recording rules: nothing to notify, and no listener off the box.
+      - -notifier.blackhole
+      - -httpListenAddr=127.0.0.1:8880
+    depends_on:
+      config-init:
+        condition: service_completed_successfully
+      sink-prometheus:
+        condition: service_started
     restart: unless-stopped
 
   # PGWatch Instance 1 - Monitoring service (Postgres sink)
@@ -353,10 +395,14 @@ services:
       # PGAI_API_BASE_URL (postgres-ai/postgres_ai-ansible) and it is in the
       # environment when the CLI runs `docker compose up`; reuse it so reports
       # upload to that backend instead of the production default. Empty
-      # (standalone CLI / unset) → the wrapper's REPORTER_API_URL default
+      # (standalone CLI / unset) → api_url in .pgwatch-config, then the default
       # (https://postgres.ai/api/general) is used, so production is unchanged.
       # See postgres-ai/platform-all#338.
       - REPORTER_API_URL=${PGAI_API_BASE_URL:-}
+      # A preview platform behind Cloudflare Access: its service token (unset in
+      # production; the reporter sends it only when both are set).
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # Optional overrides:
       # - REPORTER_INITIAL_DELAY_SECONDS=1800
       # - REPORTER_INTERVAL_SECONDS=86400
@@ -378,8 +424,9 @@ services:
 
   # Instance jobs - collection runs HERE and the results are posted out.
   # Profile-gated, so an upgrade brings the definition and starts nothing;
-  # outbound only, and the one mount is the credential file the reporter
-  # already uses. See instance-jobs/README.md and postgresai#366.
+  # no published port (the Supabase relay listens on the compose network only)
+  # and the one mount is the credential file the reporter already uses.
+  # See instance-jobs/README.md and postgresai#366.
   instance-jobs:
     image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
     container_name: instance-jobs
@@ -405,6 +452,9 @@ services:
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
     environment:
+      - PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}
+      # Internal compose listener only; never publish this port.
+      - PGAI_SUPABASE_METRICS_LISTEN=:9188
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
       - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
@@ -413,12 +463,45 @@ services:
       # a HAND-WRITTEN api_base_url in .pgwatch-config wins over both (nothing
       # in this repo writes that key; it is there for an operator override).
       - PGAI_API_BASE_URL=${PGAI_API_BASE_URL:-}
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # The install now writes instance_id into .pgwatch-config on both
       # registration paths, and that is the value this service prefers. This
       # stays as a fallback for a box installed before that, where the id only
       # ever existed in the environment the provisioning flow set.
       - PGAI_INSTANCE_ID=${PGAI_INSTANCE_ID:-}
       - PGAI_MONITORING_INSTANCE_ID=${PGAI_MONITORING_INSTANCE_ID:-}
+    depends_on:
+      sink-prometheus:
+        condition: service_started
+    restart: unless-stopped
+
+  # RDS host stats polls AWS metrics and writes host_* series to VictoriaMetrics.
+  # AWS base credentials come from the VM instance profile.
+  rds-host-stats:
+    image: ${PGAI_REGISTRY:-postgresai}/rds-host-stats:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: rds-host-stats
+    profiles: ["rds"]
+    cpus: ${RDS_HOST_STATS_CPUS:-0.5}
+    mem_limit: ${RDS_HOST_STATS_MEM:-134217728}
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - RDS_DB_INSTANCE_IDENTIFIER=${RDS_DB_INSTANCE_IDENTIFIER:-}
+      - AWS_REGION=${AWS_REGION:-}
+      - RDS_ROLE_ARN=${RDS_ROLE_ARN:-}
+      - RDS_EXTERNAL_ID=${RDS_EXTERNAL_ID:-}
+      - RDS_POLL_INTERVAL_SECONDS=${RDS_POLL_INTERVAL_SECONDS:-60}
+      - PGAI_CLUSTER=${PGAI_CLUSTER:-}
+      - PGAI_NODE_NAME=${PGAI_NODE_NAME:-}
+      - PROMETHEUS_URL=http://sink-prometheus:9090
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
     depends_on:
       sink-prometheus:
         condition: service_started

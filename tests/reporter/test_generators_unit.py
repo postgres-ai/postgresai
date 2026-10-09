@@ -1532,7 +1532,7 @@ def test_upload_report_file_sends_contents(tmp_path, monkeypatch: pytest.MonkeyP
     def fake_make_request(api_url, endpoint, request_data):
         captured["endpoint"] = endpoint
         captured["data"] = request_data
-        return {}
+        return {"report_chunck_id": 1}
 
     monkeypatch.setattr(postgres_reports_module, "make_request", fake_make_request)
 

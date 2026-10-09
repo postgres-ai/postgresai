@@ -274,6 +274,21 @@ describe("readComposeProfiles never answers 'off' by accident", () => {
     expect(withoutProcessEnv(() => readComposeProfiles(d))).toBe("debug,instance-jobs");
   });
 
+  test("an inline comment is dropped, as `targets add` and compose read it", () => {
+    // `mon health` and `targets add` must agree on whether the profile is on.
+    const d = mkdir();
+    fs.writeFileSync(path.join(d, ".env"), "COMPOSE_PROFILES=instance-jobs # pinned\n");
+    expect(withoutProcessEnv(() => readComposeProfiles(d))).toBe("instance-jobs");
+  });
+
+  test("a value that is only a comment reads as that comment, as compose reads it", () => {
+    // `COMPOSE_PROFILES= # c` is "# c" to compose 5.0.2 (`docker compose
+    // config`), not "": the space before "#" is the value's leading blank.
+    const d = mkdir();
+    fs.writeFileSync(path.join(d, ".env"), "COMPOSE_PROFILES= # c\n");
+    expect(withoutProcessEnv(() => readComposeProfiles(d))).toBe("# c");
+  });
+
   test("no .env at all is a real answer, and stays quiet", () => {
     const d = mkdir();
     const errs: unknown[][] = [];

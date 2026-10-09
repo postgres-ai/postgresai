@@ -1,17 +1,16 @@
 /**
- * `pgai dblab deploy`, `pgai dblab instances list|watch|delete` and
- * `pgai mon deploy` (postgres-ai/platform-all#876). See ./deploy.
+ * `pgai dblab deploy` and `pgai dblab instances list|watch|delete`
+ * (postgres-ai/platform-all#876), on the surface `pgai mon deploy` shares
+ * (./deploy-surface, postgresai#412). See ./deploy.
  */
 
 import type { Command } from "commander";
 import { createInterface } from "readline";
+import { writeEvent } from "./json-stderr";
 import { HttpStatusError } from "./util";
 import {
   DBLAB_STEPS,
-  MONITORING_STEPS,
   StepView,
-  createMonitoring,
-  launchRefusal,
   terminalOutcome,
   withEnvPassword,
   DBLAB_STEPS as STEP_LABELS,
@@ -23,11 +22,25 @@ import {
   listCloudInstances,
   resolveSshKeys,
   watchDblabDeploy,
-  watchMonitoringDeploy,
   type ApiParams,
   type CloudInstance,
   type WatchOutcome,
 } from "./deploy";
+import {
+  DEPLOY_EXIT,
+  billingPage,
+  databaseUrlArg,
+  dblabStatus,
+  estimateLine,
+  jsonOutput,
+  nameFromDatabase,
+  noCardNext,
+  notAdminNext,
+  pickInstance,
+  sharedDeployOptions,
+  waitMinutes,
+  type DeployStatus,
+} from "./deploy-surface";
 
 export interface DeployCliDeps {
   /** The api key and base url, or throws when no api key is configured. */
@@ -35,12 +48,13 @@ export interface DeployCliDeps {
   withOrgOptions(cmd: Command): Command;
   printResult(result: unknown, json?: boolean): void;
   isTty?: () => boolean;
-  /** The Console's base URL, for the billing page (as `pgai connect` names it). */
+  /** The Console's base URL, for the billing page (as `pgai mon deploy` names it). */
   uiBaseUrl?: () => string;
 }
 
+// The step view and its spinner go to stderr: stdout is the command's result.
 const isTtyDefault = (): boolean =>
-  !!process.stdout.isTTY && !process.env.CI && process.env.TERM !== "dumb";
+  !!process.stderr.isTTY && !process.env.CI && process.env.TERM !== "dumb";
 
 /** Asks on stderr: stdout stays for results (--json, redirects). */
 export async function confirm(
@@ -62,20 +76,25 @@ const pollMs = (): number | undefined => {
   return Number.isFinite(v) && v > 0 ? v : undefined;
 };
 
-const fail = (err: unknown): void => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exitCode = 1;
-};
-
-/** No card on file: what `pgai connect` does -- name the billing page, create nothing, exit 3. */
-function needsCard(deps: DeployCliDeps, orgAlias: string | null | undefined, json: boolean | undefined): void {
-  const ui = (deps.uiBaseUrl?.() ?? "https://console.postgres.ai").replace(/\/+$/, "");
-  const page = orgAlias ? `${ui}/${orgAlias}/billing` : `${ui} (your organization > Billing)`;
-  const next = `Add a payment method at ${page}, then re-run.`;
-  if (json) deps.printResult({ status: "action_required", next }, true);
-  else console.error(next);
-  process.exitCode = 3;
+/** A result of deploy / watch / delete, in pgai mon deploy's shape. */
+interface DblabResult {
+  status: DeployStatus;
+  id?: number;
+  name?: string;
+  error?: string;
+  next: string;
+  [key: string]: unknown;
 }
+
+/** Prints a result (JSON on stdout with --json; else `next` on stderr) and sets the exit code. */
+function emit(deps: DeployCliDeps, result: DblabResult, json: boolean | undefined): void {
+  if (jsonOutput(json)) deps.printResult(result, true);
+  else if (result.status === "failed" || result.status === "action_required") console.error(result.next);
+  process.exitCode = DEPLOY_EXIT[result.status];
+}
+
+const failed = (deps: DeployCliDeps, err: unknown, json: boolean | undefined): void =>
+  emit(deps, { status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
 
 /**
  * Runs `watch` with Ctrl-C detaching (the deploy keeps going on the platform)
@@ -86,7 +105,7 @@ async function withDetach<T>(view: StepView, resumeHint: string, watch: () => Pr
   const onSigint = (): void => {
     detached = true;
     view.stop();
-    console.log(`\nStopped watching. The deploy continues on PostgresAI.\nResume: ${resumeHint}`);
+    console.error(`\nStopped watching. The deploy continues on PostgresAI.\nResume: ${resumeHint}`);
     process.exit(130);
   };
   process.once("SIGINT", onSigint);
@@ -98,12 +117,6 @@ async function withDetach<T>(view: StepView, resumeHint: string, watch: () => Pr
     view.stop();
     process.removeListener("SIGINT", onSigint);
   }
-}
-
-/** An instance id as typed: digits only (parseInt would read "12x" as 12 and "abc" as all instances). */
-function parseInstanceId(id: string): number {
-  if (!/^\d+$/.test(id.trim())) throw new Error(`"${id}" is not a DBLab instance id; see pgai dblab instances list.`);
-  return Number(id.trim());
 }
 
 function sshHint(inst: CloudInstance): string {
@@ -128,36 +141,53 @@ const STATE_LABELS: Record<string, string> = {
 
 const stepLabel = (key: string | null | undefined): string | null => STEP_LABELS.find((s) => s.key === key)?.label ?? null;
 
-/** A step view that writes nothing: under --json, stdout carries only the final object. */
+/** The step view; with JSON output, each step line is a JSON event on stderr (as pgai mon deploy's). */
 const viewFor = (title: string, steps: typeof DBLAB_STEPS, tty: boolean, json: boolean | undefined): StepView =>
-  json ? new StepView(title, steps, false, () => {}) : new StepView(title, steps, tty);
+  jsonOutput(json)
+    ? new StepView(title, steps, false, (s) => s.split("\n").filter(Boolean).forEach((message) => writeEvent({ event: "step", message })))
+    : new StepView(title, steps, tty);
 
-function reportEnd(outcome: Exclude<WatchOutcome, { kind: "gone" }>, id: number, json: boolean | undefined): void {
+/** How a deploy that has ended (or is still going) reads, as a result. */
+function dblabResult(outcome: WatchOutcome, id: number): DblabResult {
   const inst = outcome.instance;
-  const name = `DBLab "${inst.project_name}" (id ${id})`;
-  if (outcome.kind === "ready") {
-    if (!json) {
-      console.log(`\n${name} is ready.`);
-      console.log(`Create a clone: PGAI_CLONE_DB_PASSWORD=<password> pgai dblab clone create --project ${inst.project_name} --db-user <user>`);
-      const hint = sshHint(inst);
-      if (hint) console.log(hint);
+  // A failed or deleted deploy's server is gone; its IP may already be someone else's (as in list).
+  const ipShown = inst?.server_ip && inst.deploy_status !== "destroyed" && inst.deploy_status !== "failed";
+  const base = { id, name: inst?.project_name, ...(ipShown ? { server_ip: inst!.server_ip } : {}) };
+  switch (outcome.kind) {
+    case "ready":
+      return { ...base, status: "ready", next: `PGAI_CLONE_DB_PASSWORD=<password> pgai dblab clone create --project ${inst!.project_name} --db-user <user>` };
+    case "timeout":
+      return { ...base, status: "in_progress", next: `pgai dblab instances watch ${id}` };
+    case "deleted":
+      return { ...base, status: "deleted", next: "none" };
+    case "gone":
+      return { id, status: "deleted", next: `DBLab ${id} is no longer in this organization.` };
+    case "failed": {
+      const removed =
+        inst!.deploy_status === "destroying" ? "The server is being removed; you are not charged for it."
+        : inst!.deploy_status === "destroyed" ? "The server was removed; you were not charged for it."
+        : inst!.deploy_status === "destroy_failed" ? `Removing the server failed, so it may still be running: run pgai dblab instances delete ${id} again.`
+        : "";
+      const why = `Deploy failed${stepLabel(inst!.deploy_step) ? ` at "${stepLabel(inst!.deploy_step)}"` : ""}${inst!.deploy_error ? `: ${inst!.deploy_error}` : "."}`;
+      return { ...base, status: "failed", ...(inst!.deploy_error ? { error: inst!.deploy_error } : {}), next: [why, removed].filter(Boolean).join("\n") };
     }
-    return;
   }
-  if (outcome.kind === "deleted") {
-    console.error(`\n${name} was deleted.`);
-  } else {
-    const removed =
-      inst.deploy_status === "destroying" ? "The server is being removed; you are not charged for it."
-      : inst.deploy_status === "destroyed" ? "The server was removed; you were not charged for it."
-      : inst.deploy_status === "destroy_failed" ? "Removing the server failed, so it may still be running: run pgai dblab instances delete " + id + " again."
-      : "";
-    console.error(
-      `\nDeploy failed${stepLabel(inst.deploy_step) ? ` at "${stepLabel(inst.deploy_step)}"` : ""}${inst.deploy_error ? `: ${inst.deploy_error}` : "."}` +
-        (removed ? `\n${removed}` : ""),
-    );
+}
+
+function reportEnd(deps: DeployCliDeps, outcome: WatchOutcome, id: number, json: boolean | undefined): void {
+  const result = dblabResult(outcome, id);
+  if (!jsonOutput(json) && result.status === "ready") {
+    const inst = outcome.instance!;
+    console.log(`\nDBLab "${inst.project_name}" (id ${id}) is ready.`);
+    console.log(`Create a clone: ${result.next}`);
+    const hint = sshHint(inst);
+    if (hint) console.log(hint);
   }
-  process.exitCode = 1;
+  if (!jsonOutput(json) && result.status === "in_progress") console.error(`\nStill deploying. Follow it: ${result.next}`);
+  else if (!jsonOutput(json) && outcome.kind === "deleted") console.error(`\nDBLab "${outcome.instance.project_name}" (id ${id}) was deleted.`);
+  else if (!jsonOutput(json) && outcome.kind === "gone") console.error(`\n${result.next}`);
+  else emit(deps, result, json);
+  process.exitCode = DEPLOY_EXIT[result.status];
 }
 
 async function followDblab(
@@ -166,49 +196,65 @@ async function followDblab(
   name: string,
   tty: boolean,
   json: boolean | undefined,
+  minutes: number,
   deps: DeployCliDeps,
 ): Promise<void> {
   const view = viewFor(`Deploying DBLab "${name}" (id ${id})`, DBLAB_STEPS, tty, json);
   view.start();
-  const outcome = await withDetach(view, `pgai dblab instances watch ${id}`, () => watchDblabDeploy(api, id, view, { pollMs: pollMs() }));
+  const outcome = await withDetach(view, `pgai dblab instances watch ${id}`, () =>
+    watchDblabDeploy(api, id, view, { pollMs: pollMs(), maxMs: minutes * 60_000 }));
   if (outcome === "detached") return;
-  if (json) {
-    deps.printResult(outcome, true);
-  }
-  if (outcome.kind !== "gone") {
-    reportEnd(outcome, id, json);
-    return;
-  }
-  console.error(`\nDBLab ${id} is no longer in this organization.`);
-  process.exitCode = 1;
+  reportEnd(deps, outcome, id, json);
+}
+
+/** A DBLab of the org by id or name. */
+async function dblabInstance(api: ApiParams, ref: string): Promise<CloudInstance> {
+  return pickInstance(await listCloudInstances(api), ref, (r) => String(r.id), (r) => r.project_name, "pgai dblab instances list",
+    (r) => dblabStatus(r.deploy_status) !== "deleted");
 }
 
 export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps): void {
   const tty = deps.isTty ?? isTtyDefault;
 
-  deps.withOrgOptions(dblab.command("deploy"))
+  sharedDeployOptions(deps.withOrgOptions(dblab.command("deploy")), 120,
+    "instance name: lowercase letters, digits, hyphens (default: from the database's name)")
     .description("deploy DBLab + Joe in PostgresAI cloud, then follow it until it is ready")
-    .requiredOption("--name <name>", "instance name (lowercase letters, digits, hyphens)")
-    .requiredOption("--db-url <url>", "source database: postgresql://user@host:5432/dbname (password: set PGPASSWORD, or put it in the URL)")
     .option("--size <size>", "server size (S, M, L)", "S")
     .option("--disk <gib>", "disk size in GiB", "50")
     .option("--ssh-key <name|id...>", "org SSH key(s) for reaching the server and its clones (required)")
-    .option("--location <location>", "Hetzner location (default: any with capacity)")
-    .option("--no-wait", "return once the deploy has started")
-    .option("-y, --yes", "skip the cost confirmation")
-    .option("--debug", "enable debug output")
-    .option("--json", "output JSON")
-    .action(async (opts: {
-      name: string; dbUrl: string; size: string; disk: string; sshKey?: string[]; location?: string;
-      wait: boolean; yes?: boolean; debug?: boolean; json?: boolean;
-    }) => {
+    .addHelpText("after", [
+      "",
+      "The password: in the URL, or set PGPASSWORD.",
+      "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
+    ].join("\n"))
+    .action(async (urlArg: string | undefined, opts: {
+      dbUrl?: string; name?: string; size: string; disk: string; sshKey?: string[]; location?: string;
+      wait?: string | boolean; yes?: boolean; debug?: boolean; json?: boolean;
+    }, cmd: Command) => {
+      // The URL is the argument or --db-url: without either, Commander's own error for a missing argument.
+      if (!urlArg?.trim() && !opts.dbUrl?.trim()) return cmd.error("error: missing required argument 'database-url'");
       try {
+        const url = databaseUrlArg(urlArg, opts.dbUrl, "pgai dblab deploy");
+        const name = opts.name?.trim() || nameFromDatabase(url);
+        const minutes = waitMinutes(opts.wait, 120);
         const api = deps.resolveApi(!!opts.debug);
         const diskGib = Number.parseInt(opts.disk, 10);
         if (!Number.isFinite(diskGib) || String(diskGib) !== opts.disk.trim()) {
           throw new Error("--disk must be a whole number of GiB");
         }
         const options = await getDeployOptions(api);
+        const notAdmin = (): void => emit(deps, { status: "action_required", name, next: notAdminNext }, opts.json);
+        if (options.is_admin === false) return notAdmin();
+        const cents = estimateMonthlyCents(options, opts.size, diskGib);
+        const price = cents === null ? null : `${formatCents(cents)}/month (size ${opts.size.toUpperCase()}, ${diskGib} GiB), prorated.`;
+        // Always shown before asking, on stderr: stdout is the result.
+        if (price) {
+          if (jsonOutput(opts.json)) writeEvent({ event: "billing", message: estimateLine(price) });
+          else console.error(estimateLine(price));
+        }
+        const noCard = (): void =>
+          emit(deps, { status: "action_required", name, next: noCardNext(billingPage(deps.uiBaseUrl?.(), options.org_alias)) }, opts.json);
+        if (options.has_payment_method === false) return noCard();
         const keys = opts.sshKey?.length ? opts.sshKey : [];
         if (!keys.length) {
           throw new Error(
@@ -219,19 +265,10 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           );
         }
         const sshKeyIds = resolveSshKeys(options, keys);
-        const cents = estimateMonthlyCents(options, opts.size, diskGib);
-        if (cents !== null) {
-          // Always shown before asking; on stderr under --json.
-          (opts.json ? console.error : console.log)(
-            `Estimated cost: ${formatCents(cents)}/month (size ${opts.size.toUpperCase()}, ${diskGib} GiB), prorated.`,
-          );
-        }
-        if (options.has_payment_method === false) {
-          needsCard(deps, options.org_alias, opts.json);
-          return;
-        }
         if (!opts.yes) {
-          if (!process.stdin.isTTY) throw new Error("Pass --yes to confirm the monthly cost when not running in a terminal.");
+          if (!process.stdin.isTTY || jsonOutput(opts.json)) {
+            return emit(deps, { status: "action_required", name, next: `Re-run with --yes to accept ${price ?? "the monthly cost"}` }, opts.json);
+          }
           if (!(await confirm("Deploy? [y/N] "))) {
             console.error("Cancelled.");
             return;
@@ -240,24 +277,23 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         let reply;
         try {
           reply = await deployDblab(api, {
-            name: opts.name, dbUrl: withEnvPassword(opts.dbUrl), size: opts.size, diskGib, sshKeyIds, location: opts.location,
+            name, dbUrl: withEnvPassword(url), size: opts.size, diskGib, sshKeyIds, location: opts.location,
           });
         } catch (err) {
           // The platform's own check (PT402), when the options could not tell.
-          if (err instanceof HttpStatusError && err.status === 402) {
-            needsCard(deps, options.org_alias, opts.json);
-            return;
-          }
+          if (err instanceof HttpStatusError && err.status === 402) return noCard();
+          if (err instanceof HttpStatusError && err.status === 403) return notAdmin();
           throw err;
         }
-        if (!opts.wait) {
-          if (opts.json) deps.printResult(reply, true);
-          else console.log(`Deploy started: id ${reply.id}. Follow it: pgai dblab instances watch ${reply.id}`);
+        if (minutes === 0) {
+          const started: DblabResult = { status: "in_progress", id: reply.id, name: reply.project_name, next: `pgai dblab instances watch ${reply.id}` };
+          if (!jsonOutput(opts.json)) console.error(`Deploy started: id ${reply.id}. Follow it: ${started.next}`);
+          emit(deps, started, opts.json);
           return;
         }
-        await followDblab(api, reply.id, reply.project_name, tty(), opts.json, deps);
+        await followDblab(api, reply.id, reply.project_name, tty(), opts.json, minutes, deps);
       } catch (err) {
-        fail(err);
+        failed(deps, err, opts.json);
       }
     });
 
@@ -265,13 +301,14 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
 
   deps.withOrgOptions(instances.command("list"))
     .description("list DBLab instances with their deploy status")
-    .option("--debug", "enable debug output")
-    .option("--json", "output JSON")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output")
     .action(async (opts: { debug?: boolean; json?: boolean }) => {
       try {
         const rows = await listCloudInstances(deps.resolveApi(!!opts.debug));
-        if (opts.json) {
-          deps.printResult(rows, true);
+        if (jsonOutput(opts.json)) {
+          // The same status words as pgai mon instances list (null: not deployed by PostgresAI).
+          deps.printResult(rows.map((r) => ({ ...r, status: r.is_cloud ? dblabStatus(r.deploy_status) : null })), true);
           return;
         }
         if (!rows.length) {
@@ -280,9 +317,9 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         }
         console.log(`${"ID".padEnd(6)} ${"NAME".padEnd(28)} ${"STATE".padEnd(14)} SIZE / SERVER`);
         for (const r of rows) {
-          const failed = r.deploy_status === "destroyed" && !!r.deploy_error;
+          const failedDeploy = r.deploy_status === "destroyed" && !!r.deploy_error;
           const status = r.is_cloud
-            ? failed ? "Deploy failed" : STATE_LABELS[r.deploy_status ?? ""] ?? r.deploy_status
+            ? failedDeploy ? "Deploy failed" : STATE_LABELS[r.deploy_status ?? ""] ?? r.deploy_status
             : r.is_job_backed ? "Connected" : "Self-managed";
           // A failed or deleted deploy's server is gone; its IP may already be someone else's.
           const ip = r.server_ip && r.deploy_status !== "destroyed" && r.deploy_status !== "failed" ? ` ${r.server_ip}` : "";
@@ -294,122 +331,60 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           }
         }
       } catch (err) {
-        fail(err);
+        failed(deps, err, opts.json);
       }
     });
 
-  deps.withOrgOptions(instances.command("watch <id>"))
+  deps.withOrgOptions(instances.command("watch <id-or-name>"))
+    .alias("status")
     .description("follow a deploy until it is ready or has failed")
-    .option("--debug", "enable debug output")
-    .option("--json", "output JSON")
-    .action(async (id: string, opts: { debug?: boolean; json?: boolean }) => {
+    .option("--wait <minutes>", "how long to follow it (0 = show it now)", "120")
+    .option("--no-wait", "show it now (the same as --wait 0)")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output: one result on stdout, progress on stderr")
+    .action(async (ref: string, opts: { wait?: string | boolean; debug?: boolean; json?: boolean }) => {
       try {
         const api = deps.resolveApi(!!opts.debug);
-        const n = parseInstanceId(id);
-        const inst = (await listCloudInstances(api, n))[0];
-        if (!inst) throw new Error(`No DBLab instance ${id} in this organization.`);
+        const minutes = waitMinutes(opts.wait, 120);
+        const inst = await dblabInstance(api, ref);
         if (!inst.is_cloud) {
-          const said = `DBLab ${n} is not deployed in PostgresAI cloud: there is no deploy to follow.`;
-          if (opts.json) {
-            deps.printResult({ kind: "not_cloud", instance: inst }, true);
-            console.error(said);
-          } else {
-            console.log(said);
-          }
-          return;
+          const said = `DBLab ${inst.id} is not deployed in PostgresAI cloud: there is no deploy to follow.`;
+          if (!jsonOutput(opts.json)) console.log(said);
+          return emit(deps, { status: "ready", id: inst.id, name: inst.project_name, next: said }, opts.json);
         }
         const ended = terminalOutcome(inst);
-        if (ended && ended.kind !== "gone") {
-          if (opts.json) deps.printResult(ended, true);
-          reportEnd(ended, n, opts.json);
-          if (ended.kind === "failed" && !opts.json) console.error("Fix the cause and deploy again.");
-          return;
-        }
-        await followDblab(api, n, inst.project_name, tty(), opts.json, deps);
+        if (ended && ended.kind !== "gone") return reportEnd(deps, ended, inst.id, opts.json);
+        if (minutes === 0) return reportEnd(deps, { kind: "timeout", instance: inst }, inst.id, opts.json);
+        await followDblab(api, inst.id, inst.project_name, tty(), opts.json, minutes, deps);
       } catch (err) {
-        fail(err);
+        failed(deps, err, opts.json);
       }
     });
 
-  deps.withOrgOptions(instances.command("delete <id>"))
+  deps.withOrgOptions(instances.command("delete <id-or-name>"))
     .description("delete a DBLab; one deployed in PostgresAI cloud also has its server destroyed")
-    .option("-y, --yes", "skip the confirmation")
-    .option("--debug", "enable debug output")
-    .option("--json", "output JSON")
-    .action(async (id: string, opts: { yes?: boolean; debug?: boolean; json?: boolean }) => {
+    .option("-y, --yes", "do not ask for confirmation")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output")
+    .action(async (ref: string, opts: { yes?: boolean; debug?: boolean; json?: boolean }) => {
       try {
         const api = deps.resolveApi(!!opts.debug);
-        const n = parseInstanceId(id);
-        const inst = (await listCloudInstances(api, n))[0];
-        const label = inst ? `DBLab "${inst.project_name}" (id ${n})` : `DBLab ${n}`;
+        const inst = await dblabInstance(api, ref);
+        const label = `DBLab "${inst.project_name}" (id ${inst.id})`;
         if (!opts.yes) {
-          if (!process.stdin.isTTY) throw new Error("Pass --yes to confirm the deletion when not running in a terminal.");
+          if (!process.stdin.isTTY || jsonOutput(opts.json)) {
+            return emit(deps, { status: "action_required", id: inst.id, name: inst.project_name, next: `pgai dblab instances delete ${inst.id} --yes` }, opts.json);
+          }
           if (!(await confirm(`Delete ${label} and its server? Its clones and its copy of the data are deleted, and billing for it stops. [y/N] `))) {
             console.error("Cancelled.");
             return;
           }
         }
-        const result = await destroyDblab(api, n);
-        if (opts.json) deps.printResult(result, true);
-        else console.log(`Deleting ${label}. Follow it: pgai dblab instances list`);
+        await destroyDblab(api, inst.id);
+        if (!jsonOutput(opts.json)) console.log(`Deleting ${label}. Follow it: pgai dblab instances list`);
+        emit(deps, { status: "deleting", id: inst.id, name: inst.project_name, next: "pgai dblab instances list" }, opts.json);
       } catch (err) {
-        fail(err);
-      }
-    });
-}
-
-export function registerMonDeployCommand(mon: Command, deps: DeployCliDeps & { orgId(apiKey: string): number | undefined }): void {
-  const tty = deps.isTty ?? isTtyDefault;
-
-  deps.withOrgOptions(mon.command("deploy"))
-    .description("deploy managed monitoring in PostgresAI cloud (same as the Console), then follow it")
-    .requiredOption("--db-url <url>", "database to monitor: postgresql://user@host:5432/dbname (password: set PGPASSWORD, or put it in the URL)")
-    .option("--name <name>", "project name")
-    .option("--plan <plan>", "monitoring plan", "scale")
-    .option("--location <location>", "Hetzner location", "fsn1")
-    .option("--ssh-key <id...>", "org SSH key id(s) for reaching the server")
-    .option("--vcpus <n>", "the database's vCPU count (for AAS thresholds)")
-    .option("--no-wait", "return once the deploy has started")
-    .option("--debug", "enable debug output")
-    .option("--json", "output JSON")
-    .action(async (opts: {
-      dbUrl: string; name?: string; plan: string; location: string; sshKey?: string[]; vcpus?: string;
-      wait: boolean; debug?: boolean; json?: boolean;
-    }) => {
-      try {
-        const api = deps.resolveApi(!!opts.debug);
-        const orgId = deps.orgId(api.apiKey);
-        const reply = await createMonitoring(api, {
-          orgId,
-          dbUrl: withEnvPassword(opts.dbUrl),
-          plan: opts.plan,
-          name: opts.name,
-          location: opts.location,
-          sshKeyIds: opts.sshKey ?? [],
-          vcpus: opts.vcpus ? Number.parseInt(opts.vcpus, 10) : undefined,
-        });
-        const id = (reply as { id?: string }).id;
-        if (!id) throw new Error(`Unexpected reply from the platform: ${JSON.stringify(reply)}`);
-        const refused = launchRefusal(reply);
-        if (refused) throw new Error(`The deploy did not start: ${refused}`);
-        if (!opts.wait) {
-          if (opts.json) deps.printResult(reply, true);
-          else console.log(`Monitoring deploy started: ${id}.`);
-          return;
-        }
-        const view = viewFor(`Deploying monitoring${opts.name ? ` "${opts.name}"` : ""} (${id})`, MONITORING_STEPS, tty(), opts.json);
-        view.start();
-        const outcome = await withDetach(view, "check the Console's Monitoring page", () => watchMonitoringDeploy(api, id, view, { pollMs: pollMs() }));
-        if (outcome === "detached") return;
-        if (opts.json) deps.printResult(outcome.status, true);
-        if (outcome.kind === "ready") {
-          if (!opts.json) console.log(`\nMonitoring is ready: ${outcome.status.grafana_url ?? "(no Grafana URL yet)"}`);
-          return;
-        }
-        console.error(`\nDeploy failed${outcome.status.error ? `: ${outcome.status.error}` : "."}`);
-        process.exitCode = 1;
-      } catch (err) {
-        fail(err);
+        failed(deps, err, opts.json);
       }
     });
 }
