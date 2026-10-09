@@ -47,70 +47,55 @@ describe("postgres_ai.pg_statistic permission check SQL", () => {
 });
 
 describe("Expected behavior per scenario", () => {
-  test("Scenario 1: Superuser with postgres_ai.pg_statistic", () => {
-    // to_regclass returns oid, has_table_privilege returns true
-    const checkViewExists = true; // to_regclass('postgres_ai.pg_statistic') is not null
-    const checkSelectPrivilege = true; // has_table_privilege returns true
+  const scenarios: Array<{
+    name: string;
+    checkViewExists: boolean;
+    checkSelectPrivilege: boolean | null;
+    missingOptional: string[];
+  }> = [
+    {
+      name: "Scenario 1: Superuser with postgres_ai.pg_statistic",
+      checkViewExists: true,
+      checkSelectPrivilege: true,
+      missingOptional: [],
+    },
+    {
+      name: "Scenario 2: pg_monitor, no postgres_ai schema access (before prepare-db)",
+      checkViewExists: false,
+      checkSelectPrivilege: null, // privilege check skipped when to_regclass returns NULL
+      missingOptional: ["postgres_ai.pg_statistic view exists"],
+    },
+    {
+      name: "Scenario 3: No pg_monitor (before prepare-db)",
+      checkViewExists: false,
+      checkSelectPrivilege: null, // schema doesn't exist yet
+      missingOptional: ["postgres_ai.pg_statistic view exists"],
+    },
+    {
+      name: "Scenario 8: After prepare-db with schema grants",
+      checkViewExists: true,
+      checkSelectPrivilege: true,
+      missingOptional: [],
+    },
+    {
+      name: "View exists but SELECT privilege is missing",
+      checkViewExists: true,
+      checkSelectPrivilege: false,
+      missingOptional: ["select on postgres_ai.pg_statistic"],
+    },
+  ];
 
-    const missingOptional: string[] = [];
-    if (!checkViewExists) {
-      missingOptional.push("postgres_ai.pg_statistic view exists");
-    }
-    if (checkSelectPrivilege === false) {
-      missingOptional.push("select on postgres_ai.pg_statistic");
-    }
+  for (const scenario of scenarios) {
+    test(scenario.name, () => {
+      const missingOptional: string[] = [];
+      if (!scenario.checkViewExists) {
+        missingOptional.push("postgres_ai.pg_statistic view exists");
+      }
+      if (scenario.checkSelectPrivilege === false) {
+        missingOptional.push("select on postgres_ai.pg_statistic");
+      }
 
-    expect(missingOptional).toHaveLength(0);
-  });
-
-  test("Scenario 2: pg_monitor, no postgres_ai schema access (before prepare-db)", () => {
-    // to_regclass returns NULL because user lacks USAGE on postgres_ai schema
-    const checkViewExists = false; // to_regclass('postgres_ai.pg_statistic') is null
-    const checkSelectPrivilege = null; // skipped because view doesn't exist
-
-    const missingOptional: string[] = [];
-    if (!checkViewExists) {
-      missingOptional.push("postgres_ai.pg_statistic view exists");
-    }
-    if (checkSelectPrivilege === false) {
-      missingOptional.push("select on postgres_ai.pg_statistic");
-    }
-
-    // Should show warning about missing view but NOT crash
-    expect(missingOptional).toEqual(["postgres_ai.pg_statistic view exists"]);
-  });
-
-  test("Scenario 3: No pg_monitor (before prepare-db)", () => {
-    // to_regclass returns NULL because schema doesn't exist yet
-    const checkViewExists = false; // to_regclass('postgres_ai.pg_statistic') is null
-    const checkSelectPrivilege = null; // skipped
-
-    const missingOptional: string[] = [];
-    if (!checkViewExists) {
-      missingOptional.push("postgres_ai.pg_statistic view exists");
-    }
-    if (checkSelectPrivilege === false) {
-      missingOptional.push("select on postgres_ai.pg_statistic");
-    }
-
-    // Should show warning but NOT crash
-    expect(missingOptional).toEqual(["postgres_ai.pg_statistic view exists"]);
-  });
-
-  test("Scenario 8: After prepare-db with schema grants", () => {
-    // to_regclass returns oid, has_table_privilege returns true
-    const checkViewExists = true; // to_regclass('postgres_ai.pg_statistic') is not null
-    const checkSelectPrivilege = true; // has_table_privilege returns true
-
-    const missingOptional: string[] = [];
-    if (!checkViewExists) {
-      missingOptional.push("postgres_ai.pg_statistic view exists");
-    }
-    if (checkSelectPrivilege === false) {
-      missingOptional.push("select on postgres_ai.pg_statistic");
-    }
-
-    // Should be clean, no warnings
-    expect(missingOptional).toHaveLength(0);
-  });
+      expect(missingOptional).toEqual(scenario.missingOptional);
+    });
+  }
 });

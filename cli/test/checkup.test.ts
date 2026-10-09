@@ -516,6 +516,19 @@ describe("Report generators with mock client", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
+  test("a failed pg_stat_io query is reported on stderr, never stdout (pgai mon deploy's JSON, the MCP stream)", async () => {
+    const client = { query: async () => { throw new Error("permission denied for view pg_stat_io"); } };
+    const logged: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { logged.push(args.join(" ")); };
+    try {
+      expect(await checkup.getIOStatistics(client as any, 17)).toEqual([]);
+    } finally {
+      console.log = original;
+    }
+    expect(logged).toEqual([]);
+  });
+
   test("getIOStatistics skips placeholder SQL without querying", async () => {
     const mockClient = createI001MockClient({ ioRows: i001Rows });
 
@@ -3504,6 +3517,14 @@ describe("checkup-api", () => {
 describe("checkup-summary", () => {
   const summary = require("../lib/checkup-summary");
 
+  test("generateCheckSummary for an F001 warning says what the warning is (UAT 2026-10-02: a count alone)", () => {
+    const rule = (id: string, severity: string, conclusion: string) => ({ id, severity, conclusion, recommendation: "r" });
+    expect(summary.generateCheckSummary("F001", { results: { node1: { data: { autovacuum: {} }, settings_analysis: {
+      severity: "WARNING",
+      rules_fired: [rule("n", "NOTICE", "Advisory first."), rule("w", "WARNING", "Autovacuum cost limit is low.")],
+    } } } })).toEqual({ status: "warning", message: "Autovacuum config: 1 warning, 1 advisory findings. Autovacuum cost limit is low." });
+  });
+
   test("generateCheckSummary for F002 handles healthy, risky, and unavailable reports", () => {
     const base = { databases: [{ database_name: "db1" }], tables: [], settings_available: true };
     expect(summary.generateCheckSummary("F002", { results: { node1: { data: { ...base, severity: "info" } } } })).toEqual({
@@ -4746,6 +4767,24 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
       });
     }
 
+    test.each(["public", "extensions", 'extension"schema'])("qualifies extension views in %s without relying on search_path", async (schema) => {
+      const mockClient = createMockClient({
+        ...createVersionMockData(16, 3),
+        pgStatStatementsExtensionRows: [{ schema }],
+        pgStatStatementsStatsRows: [{ cnt: "2", total_calls: "42" }],
+        pgStatKcacheExtensionRows: [{ schema }],
+        pgStatKcacheStatsRows: [{ cnt: "1", total_exec_time: "12.5", total_user_time: "8.5", total_system_time: "4" }],
+      });
+      const queries: string[] = [];
+      const client = { query: async (sql: string) => { queries.push(sql); return mockClient.query(sql); } };
+      const report = await checkup.REPORT_GENERATORS.D004(client as any, "test-node");
+      expect(report.results["test-node"].data.pg_stat_statements_status).toMatchObject({ metrics_count: 2, total_calls: 42 });
+      expect(report.results["test-node"].data.pg_stat_kcache_status).toMatchObject({ metrics_count: 1, total_exec_time: 12.5 });
+      const quoted = `"${schema.replace(/"/g, '""')}"`;
+      expect(queries.filter((sql) => sql.includes(`from ${quoted}."pg_stat_statements"`)).length).toBe(2);
+      expect(queries.filter((sql) => sql.includes(`from ${quoted}."pg_stat_kcache"`)).length).toBe(2);
+    });
+
     test("surfaces populated extension metrics", async () => {
       const mockClient = createMockClient({
         ...createVersionMockData(16, 3),
@@ -4771,13 +4810,13 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
             unit_normalized: null,
           },
         ],
-        pgStatStatementsExtensionRows: [{ exists: 1 }],
+        pgStatStatementsExtensionRows: [{ schema: "public" }],
         pgStatStatementsStatsRows: [{ cnt: "2", total_calls: "42" }],
         pgStatStatementsSampleRows: [
           { queryid: "101", user: "app", database: "testdb", calls: "40" },
           { queryid: "202", user: "worker", database: "testdb", calls: "2" },
         ],
-        pgStatKcacheExtensionRows: [{ exists: 1 }],
+        pgStatKcacheExtensionRows: [{ schema: "public" }],
         pgStatKcacheStatsRows: [{ cnt: "1", total_exec_time: "12.5", total_user_time: "8.5", total_system_time: "4" }],
         pgStatKcacheSampleRows: [{ queryid: "101", user: "app", exec_total_time: "12.5" }],
       });

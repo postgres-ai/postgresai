@@ -653,6 +653,7 @@ async function startFakeStorageServer() {
   const requests: Array<{
     method: string;
     pathname: string;
+    search: string;
     headers: Record<string, string>;
   }> = [];
 

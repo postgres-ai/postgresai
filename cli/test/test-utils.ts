@@ -234,10 +234,10 @@ export function createMockClient(options: MockClientOptions = {}) {
         return { rows: pgStatStatementsExtensionRows };
       }
       // D004: pg_stat_statements aggregate and sample queries
-      if (sql.includes("from pg_stat_statements") && sql.includes("count(*) as cnt")) {
+      if (sql.includes("pg_stat_statements") && sql.includes("count(*) as cnt")) {
         return { rows: pgStatStatementsStatsRows };
       }
-      if (sql.includes("from pg_stat_statements s") && sql.includes("order by calls desc")) {
+      if (sql.includes("pg_stat_statements") && sql.includes("order by calls desc")) {
         return { rows: pgStatStatementsSampleRows };
       }
       // D004: pg_stat_kcache extension check
@@ -245,10 +245,10 @@ export function createMockClient(options: MockClientOptions = {}) {
         return { rows: pgStatKcacheExtensionRows };
       }
       // D004: pg_stat_kcache aggregate and sample queries
-      if (sql.includes("from pg_stat_kcache") && sql.includes("count(*) as cnt")) {
+      if (sql.includes("pg_stat_kcache") && sql.includes("count(*) as cnt")) {
         return { rows: pgStatKcacheStatsRows };
       }
-      if (sql.includes("from pg_stat_kcache k") && sql.includes("order by")) {
+      if (sql.includes("pg_stat_kcache") && sql.includes("order by")) {
         return { rows: pgStatKcacheSampleRows };
       }
       // G001: Memory settings query

@@ -167,6 +167,15 @@ build:test:images:
         instance-jobs
       docker push "$CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
 
+      # Build and push rds-host-stats
+      docker build \
+        --build-arg "VERSION=$PGAI_TAG" \
+        --build-arg "BUILD_TS=$BUILD_TS" \
+        -f rds-host-stats/Dockerfile \
+        -t "$CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG" \
+        rds-host-stats
+      docker push "$CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG"
+
       # Build and push pgwatch (forked from cybertec-postgresql/pgwatch v3.7.0
       # with extension-version-0.0 patch — see pgwatch/Dockerfile)
       docker build \
@@ -181,6 +190,7 @@ build:test:images:
       echo "  $CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/monitoring-flask-backend:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
+      echo "  $CI_REGISTRY_IMAGE/rds-host-stats:$PGAI_TAG"
       echo "  $CI_REGISTRY_IMAGE/pgwatch:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -329,21 +339,8 @@ cli:node:smoke:
     - node ./cli/dist/bin/postgres-ai.js mon targets list | head -n 1 || true
     - node ./cli/dist/bin/postgres-ai.js mon targets add 'postgresql://user:pass@host:5432/db' ci-test || true
     - node ./cli/dist/bin/postgres-ai.js mon targets remove ci-test || true
-    # Verify production OAuth endpoint is reachable (smoke test for auth flow)
-    - |
-      echo "Testing OAuth endpoint reachability..."
-      # Generate random state and code_challenge for smoke test (these are throwaway values)
-      CI_STATE=$(openssl rand -base64 16 | tr -d '/+=')
-      CI_CHALLENGE=$(openssl rand -base64 32 | tr -d '/+=')
-      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-        -H "Content-Type: application/json" \
-        -d "{\"client_type\":\"cli\",\"state\":\"${CI_STATE}\",\"code_challenge\":\"${CI_CHALLENGE}\",\"code_challenge_method\":\"S256\",\"redirect_uri\":\"http://localhost:0/callback\"}" \
-        "https://postgres.ai/api/general/rpc/oauth_init" || echo "000")
-      echo "OAuth init endpoint returned HTTP $HTTP_CODE"
-      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-        echo "WARNING: OAuth endpoint returned unexpected status (expected 200/201, got $HTTP_CODE)"
-        echo "This may indicate the OAuth endpoint is misconfigured or unreachable"
-      fi
+    # Exercise OAuth against the auth suite's loopback API and callback fixtures.
+    - cd cli && bun test test/auth.test.ts
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
@@ -357,7 +354,11 @@ cli:node:tests:
   before_script:
     - corepack enable || true
     - apt-get update
-    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip && rm -rf /var/lib/apt/lists/*
+    - apt-get install -y --no-install-recommends postgresql postgresql-client unzip
+    # PostgreSQL 17 from PGDG for tests that need scram_iterations (PG >= 16); the
+    # default binaries found by the tests stay at bookworm's PostgreSQL 15.
+    - /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+    - apt-get install -y --no-install-recommends postgresql-17 && rm -rf /var/lib/apt/lists/*
     # Install Bun
     - curl -fsSL https://bun.sh/install | bash
     - export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH"
@@ -370,7 +371,7 @@ cli:node:tests:
   script:
     # Use 'bun run test' (not 'bun test') to invoke the npm script which generates metrics-embedded.ts first
     # Coverage is enabled via bunfig.toml and outputs text + lcov reports
-    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" && bun run test"
+    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" PGAI_TEST_REQUIRE_PG16=1 && bun run test"
     # Fix ownership of coverage directory for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/cli/coverage" || true
   # Regex matches Bun coverage table: "All files | % Funcs | % Lines |" - captures % Lines
@@ -383,6 +384,69 @@ cli:node:tests:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+
+cli:clickhouse-like:tests:
+  stage: test
+  image: oven/bun:1
+  parallel:
+    matrix:
+      - PG_VERSION: ["15", "17", "18"]
+  services:
+    - name: postgres:${PG_VERSION}
+      alias: pg
+      # TLS with the image's snakeoil pair: pgai mon deploy sends a kept password only over TLS.
+      command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem", "-c", "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key", "-c", "shared_preload_libraries=pg_stat_statements"]
+  variables:
+    GIT_STRATEGY: fetch
+    POSTGRES_PASSWORD: "chlike"
+    # components/index_pilot/.gitlab-ci.yml sets POSTGRES_HOST_AUTH_METHOD: trust
+    # for every job, and the service's pg_hba.conf then trusts the job container.
+    # Check passwords instead, so the connect tests see a wrong one refused.
+    POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+    POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    PGAI_TEST_CLICKHOUSE_LIKE_URL: "postgresql://postgres:chlike@pg:5432/postgres"
+  script:
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-provider.integration.test.ts test/connect.integration.test.ts test/connect-reset-race.test.ts test/connect-json-stderr.test.ts
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/**/*
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - cli/**/*
+        - .gitlab-ci.yml
+
+cli:host-metrics-scrape:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+    PGAI_TEST_VM_BIN: /tmp/vm/victoria-metrics-prod
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+    - mkdir -p /tmp/vm
+    - curl -fL https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.140.0/victoria-metrics-linux-amd64-v1.140.0.tar.gz -o /tmp/vm/vm.tar.gz
+    - tar -xzf /tmp/vm/vm.tar.gz -C /tmp/vm
+    # Without the binary both tests skip and the job would pass having run nothing.
+    - test -x "$PGAI_TEST_VM_BIN"
+  script:
+    - cd cli && bun install && bun run embed-all && bun test test/clickhouse-scrape.integration.test.ts test/supabase-scrape.integration.test.ts
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - cli/**/*
+        - config/prometheus/**/*
+        - instance-jobs/internal/supabase/testdata/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - cli/**/*
+        - config/prometheus/**/*
+        - instance-jobs/internal/supabase/testdata/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
 
 telemetry:tests:
   stage: test
@@ -401,6 +465,26 @@ telemetry:tests:
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - telemetry/**/*
+
+rds-host-stats:tests:
+  stage: test
+  image: oven/bun:1
+  variables:
+    GIT_STRATEGY: fetch
+  before_script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun install --frozen-lockfile
+  script:
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun audit --audit-level=high
+    - cd "$CI_PROJECT_DIR/rds-host-stats" && bun test && bun run typecheck
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - rds-host-stats/**/*
+        - docker-compose.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - rds-host-stats/**/*
+        - docker-compose.yml
 
 instance-jobs:tests:
   stage: test
@@ -477,6 +561,11 @@ validate-helm-chart:
 cli:npm:publish:
   stage: publish
   interruptible: false  # Never cancel publish jobs
+  # The CLI pulls the images of its own version (mon local-install): publish it
+  # only once they are pushed. That job waits for the earlier stages itself.
+  needs:
+    - job: docker:publish:images
+      artifacts: false
   image: node:20-bookworm
   variables:
     GIT_STRATEGY: fetch
@@ -697,6 +786,15 @@ cli:npm:publish:
 
   docker buildx build \
     --platform "$PLATFORMS" \
+    --build-arg "VERSION=$VERSION" \
+    --build-arg "BUILD_TS=$BUILD_TS" \
+    -f rds-host-stats/Dockerfile \
+    -t "postgresai/rds-host-stats:$VERSION" \
+    --push \
+    rds-host-stats
+
+  docker buildx build \
+    --platform "$PLATFORMS" \
     -f pgwatch/Dockerfile \
     -t "postgresai/pgwatch:$VERSION" \
     --push \
@@ -708,6 +806,7 @@ cli:npm:publish:
   echo "  postgresai/monitoring-flask-backend:$VERSION"
   echo "  postgresai/postgres-ai-configs:$VERSION"
   echo "  postgresai/instance-jobs:$VERSION"
+  echo "  postgresai/rds-host-stats:$VERSION"
   echo "  postgresai/pgwatch:$VERSION"
 
 docker:publish:images:

@@ -9,6 +9,8 @@ Operations guide for the PostgresAI monitoring preview environments.
 - **DNS:** Dynamic A records created per preview via Cloudflare API
 - **Max Concurrent:** 2 previews
 
+Each preview has its own Docker network and reaches Grafana through Traefik, without publishing host ports. This lets stacks use the same internal ports. CI derives the preview slug from GitLab's `CI_COMMIT_REF_SLUG` (up to 63 characters) in `.gitlab-ci.yml`; use that slug when addressing a preview directory or DNS name. `scripts/sanitize-branch.sh` truncates names longer than 50 characters and appends a hash, so its output can differ for long branch names. The manager serializes quota reservations with a global lock and deployment with a per-preview lock. Cleanup expires previews after three days.
+
 ## Access
 
 ### SSH to the preview VM

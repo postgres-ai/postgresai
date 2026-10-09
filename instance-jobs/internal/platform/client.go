@@ -380,6 +380,12 @@ func (c *Client) Submit(ctx context.Context, creds Credentials, s Submission) er
 
 // call posts one RPC. out may be nil when the reply is not needed.
 func (c *Client) call(ctx context.Context, rpc string, creds Credentials, body map[string]any, out any) error {
+	return c.callWithHeaders(ctx, rpc, creds, nil, body, out)
+}
+
+// callWithHeaders is call with extra request headers, for secrets that must
+// stay out of the body for the same reason the token does.
+func (c *Client) callWithHeaders(ctx context.Context, rpc string, creds Credentials, headers map[string]string, body map[string]any, out any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -395,6 +401,10 @@ func (c *Client) call(ctx context.Context, rpc string, creds Credentials, body m
 	// comment. api_token_check falls back to this header when the rpc's
 	// api_token argument is null.
 	req.Header.Set("access-token", creds.credential())
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	c.addAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

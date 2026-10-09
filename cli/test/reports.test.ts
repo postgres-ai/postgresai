@@ -6,6 +6,8 @@ import {
   fetchReportFileData,
   renderMarkdownForTerminal,
   parseFlexibleDate,
+  type CheckupReport,
+  type CheckupReportFile,
 } from "../lib/reports";
 
 const originalFetch = globalThis.fetch;
@@ -296,7 +298,7 @@ describe("fetchAllReports", () => {
       callCount++;
       const u = new URL(url);
       const idParam = u.searchParams.get("id");
-      let data;
+      let data: CheckupReport[];
       if (!idParam) {
         data = page1;
       } else if (idParam === "lt.90") {
@@ -525,7 +527,7 @@ describe("fetchReportFiles", () => {
   });
 
   test("returns parsed response array", async () => {
-    const mockData = [
+    const mockData: CheckupReportFile[] = [
       {
         id: 100,
         checkup_report_id: 42,

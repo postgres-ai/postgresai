@@ -27,7 +27,7 @@ def test_upload_report_file_extracts_check_id_from_json(tmp_path: Any, monkeypat
 
     def fake_make_request(_api_url: str, _endpoint: str, request_data: dict[str, Any]) -> dict[str, Any]:
         captured["request_data"] = request_data
-        return {}
+        return {"report_chunck_id": 1}
 
     monkeypatch.setattr(postgres_reports_module, "make_request", fake_make_request)
 
@@ -57,7 +57,7 @@ def test_upload_report_file_query_json_has_no_check_id(tmp_path: Any, monkeypatc
 
     def fake_make_request(_api_url: str, _endpoint: str, request_data: dict[str, Any]) -> dict[str, Any]:
         captured["request_data"] = request_data
-        return {}
+        return {"report_chunck_id": 1}
 
     monkeypatch.setattr(postgres_reports_module, "make_request", fake_make_request)
 

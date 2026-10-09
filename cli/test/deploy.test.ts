@@ -5,7 +5,6 @@ import {
   estimateMonthlyCents,
   formatDuration,
   resolveSshKeys,
-  splitDbUrl,
   watchDblabDeploy,
   type CloudInstance,
   type DeployOptions,
@@ -41,12 +40,6 @@ describe("deploy helpers", () => {
     expect(resolveSshKeys(options, ["laptop", "k-2"])).toEqual(["k-1", "k-2"]);
     expect(() => resolveSshKeys(options, ["ci"])).toThrow("More than one SSH key");
     expect(() => resolveSshKeys(options, ["nope"])).toThrow('No SSH key "nope"');
-  });
-
-  test("the db url is split like the Console sends it", () => {
-    expect(splitDbUrl("postgresql://u:p%40ss@h:5432/d")).toEqual({ url: "postgresql://u@h:5432/d", password: "p@ss" });
-    expect(() => splitDbUrl("postgresql://u@h/d")).toThrow("include the password");
-    expect(() => splitDbUrl("mysql://u:p@h/d")).toThrow("postgresql://");
   });
 
   test("durations read naturally", () => {

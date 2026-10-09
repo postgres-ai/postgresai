@@ -1,9 +1,8 @@
 /**
  * Deploy to PostgresAI cloud (postgres-ai/platform-all#876).
  *
- * `pgai dblab deploy` and `pgai mon deploy` call the SAME platform rpcs the
- * Console calls (`v1.dblab_instance_deploy`, `v1.monitoring_instance_create`),
- * then follow the platform's own status until the instance is ready. Nothing
+ * `pgai dblab deploy` calls the SAME platform rpc the Console calls
+ * (`v1.dblab_instance_deploy`), then follows the platform's own status until the instance is ready. Nothing
  * here talks to the provisioning service: the platform launches the server
  * with its own credentials, and the box reports progress back to the platform.
  */
@@ -222,89 +221,6 @@ export function resolveSshKeys(opts: DeployOptions, wanted: string[]): string[] 
 }
 
 // ---------------------------------------------------------------------------
-// Monitoring
-// ---------------------------------------------------------------------------
-
-export interface MonitoringStatus {
-  id: string;
-  project_name: string;
-  status: string;
-  grafana_url: string | null;
-  error: string | null;
-  failed_task: string | null;
-}
-
-/** Same server shape the Console picks for a managed Hetzner deploy. */
-export const MONITORING_HETZNER_TYPE: Record<string, string> = { startup: "CCX13", scale: "CCX23" };
-
-/** Splits a URL that carries a password into the URL without it and the password, as the Console sends them. */
-export function splitDbUrl(dbUrl: string): { url: string; password: string } {
-  let u: URL;
-  try {
-    u = new URL(dbUrl);
-  } catch {
-    throw new Error("The database URL must look like postgresql://user:password@host:5432/dbname.");
-  }
-  if (!/^postgres(ql)?:$/.test(u.protocol)) {
-    throw new Error("The database URL must start with postgresql://.");
-  }
-  const password = decodeURIComponent(u.password);
-  if (!password) throw new Error("The database URL must include the password.");
-  u.password = "";
-  return { url: u.toString(), password };
-}
-
-export const createMonitoring = (
-  p: ApiParams,
-  args: { orgId?: number; dbUrl: string; plan: string; name?: string; location: string; sshKeyIds: string[]; vcpus?: number },
-): Promise<{ id?: string; response?: unknown }> => {
-  const { url, password } = splitDbUrl(args.dbUrl);
-  return callDeployRpc(
-    p,
-    "monitoring_instance_create",
-    {
-      db_url: url,
-      db_pass: password,
-      // Empty when the CLI has no org: the platform then takes the token's.
-      org_id: args.orgId === undefined ? "" : String(args.orgId),
-      grafana_access: "public",
-      billing_mode: "managed",
-      software_plan: args.plan,
-      prepare_monitoring_db: true,
-      provision: "hetzner",
-      server_location: args.location,
-      server_type: MONITORING_HETZNER_TYPE[args.plan] ?? "CCX23",
-      server_image: "ubuntu-22.04",
-      ssh_login_user: "ubuntu",
-      ...(args.name ? { project_name: args.name } : {}),
-      ...(args.sshKeyIds.length ? { ssh_key_ids: args.sshKeyIds } : {}),
-      ...(args.vcpus ? { in_vcpus: args.vcpus } : {}),
-    },
-    "Deploy monitoring",
-  );
-};
-
-const asRecord = (v: unknown): Record<string, unknown> | undefined =>
-  v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
-
-/**
- * Why the provisioning service did not start a monitoring deploy, or null when it did. The platform
- * passes SI's reply through as `response` ({status_code, content}); the Console likewise requires a
- * task id in it.
- */
-export function launchRefusal(reply: { response?: unknown }): string | null {
-  const r = asRecord(reply.response);
-  const content = asRecord(r?.content) ?? r;
-  const taskId = content?.taskID;
-  if (typeof taskId === "string" && taskId.trim()) return null;
-  const why = [content?.Error, content?.error, r?.error, r?.message].find((x) => typeof x === "string" && x.trim());
-  return typeof why === "string" ? why : `no task id in the reply${r?.status_code ? ` (HTTP ${r.status_code})` : ""}`;
-}
-
-export const getMonitoringStatus = (p: ApiParams, id: string): Promise<MonitoringStatus> =>
-  callDeployRpc<MonitoringStatus>(p, "monitoring_instance_deploy_status", { p_instance_id: id }, "Read monitoring status");
-
-// ---------------------------------------------------------------------------
 // Progress view
 // ---------------------------------------------------------------------------
 
@@ -312,6 +228,15 @@ export interface StepDef {
   key: string;
   label: string;
 }
+
+/** pgai mon deploy's steps, in the order its progress events come (lib/connect). */
+export const MONITORING_STEPS: StepDef[] = [
+  { key: "preparing", label: "Prepare the database" },
+  { key: "provisioning", label: "Create the monitoring box" },
+  { key: "checkup", label: "Express checkup" },
+  { key: "box", label: "Install monitoring (about 5 min)" },
+  { key: "ready", label: "Ready" },
+];
 
 /** DBLab deploy steps, in the order the box reports them. */
 export const DBLAB_STEPS: StepDef[] = [
@@ -321,11 +246,6 @@ export const DBLAB_STEPS: StepDef[] = [
   { key: "connect_agents", label: "Connect DBLab and Joe to PostgresAI" },
   { key: "retrieve_data", label: "Copy data from the source" },
   { key: "ready", label: "Ready" },
-];
-
-export const MONITORING_STEPS: StepDef[] = [
-  { key: "launch_requested", label: "Create the server and install monitoring (about 5 min)" },
-  { key: "active", label: "Ready" },
 ];
 
 type StepState = "pending" | "running" | "done" | "failed";
@@ -365,7 +285,8 @@ export class StepView {
     private readonly title: string,
     private readonly steps: StepDef[],
     private readonly tty: boolean,
-    private readonly write: (s: string) => void = (s) => process.stdout.write(s),
+    // stderr: stdout carries only the command's result (postgresai#412).
+    private readonly write: (s: string) => void = (s) => process.stderr.write(s),
     private readonly now: () => number = Date.now,
   ) {
     this.t0 = now();
@@ -412,6 +333,19 @@ export class StepView {
 
   setNote(note: string): void {
     this.note = note;
+  }
+
+  /** Text above the steps (the express checkup's findings): the animation is redrawn below it. */
+  log(text: string): void {
+    const body = text.endsWith("\n") ? text : `${text}\n`;
+    if (!this.tty || this.stopped) {
+      this.write(body);
+      return;
+    }
+    if (this.drawnLines > 0) this.write(`\x1b[${this.drawnLines}A\r\x1b[0J`);
+    this.drawnLines = 0;
+    this.write(body);
+    this.draw();
   }
 
   stop(): void {
@@ -485,7 +419,9 @@ export type WatchOutcome =
   | { kind: "ready"; instance: CloudInstance }
   | { kind: "failed"; instance: CloudInstance }
   | { kind: "deleted"; instance: CloudInstance }
-  | { kind: "gone"; instance: CloudInstance | null };
+  | { kind: "gone"; instance: CloudInstance | null }
+  // --wait ran out first: the deploy goes on (pgai dblab instances watch <id>).
+  | { kind: "timeout"; instance: CloudInstance };
 
 const TERMINAL_FAILED = new Set(["failed", "destroying", "destroyed", "destroy_failed"]);
 
@@ -504,9 +440,11 @@ export async function watchDblabDeploy(
   p: ApiParams,
   id: number,
   view: StepView,
-  opts: { pollMs?: number; sleep?: (ms: number) => Promise<void>; maxErrors?: number } = {},
+  opts: { pollMs?: number; sleep?: (ms: number) => Promise<void>; maxErrors?: number; maxMs?: number; now?: () => number } = {},
 ): Promise<WatchOutcome> {
   const pollMs = opts.pollMs ?? 5000;
+  const now = opts.now ?? Date.now;
+  const deadline = opts.maxMs === undefined ? Infinity : now() + opts.maxMs;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const maxErrors = opts.maxErrors ?? 6;
   let errors = 0;
@@ -533,50 +471,7 @@ export async function watchDblabDeploy(
       lastStep = inst.deploy_step;
       view.advance(inst.deploy_step);
     }
-    await sleep(pollMs);
-  }
-}
-
-/** Polls a monitoring instance until it is active or failed. */
-export async function watchMonitoringDeploy(
-  p: ApiParams,
-  id: string,
-  view: StepView,
-  opts: { pollMs?: number; sleep?: (ms: number) => Promise<void>; maxErrors?: number; maxMs?: number; now?: () => number } = {},
-): Promise<{ kind: "ready" | "failed"; status: MonitoringStatus }> {
-  const pollMs = opts.pollMs ?? 5000;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const maxErrors = opts.maxErrors ?? 6;
-  const now = opts.now ?? Date.now;
-  const deadline = now() + (opts.maxMs ?? 60 * 60 * 1000);
-  let errors = 0;
-  view.advance("launch_requested");
-  for (;;) {
-    let st: MonitoringStatus;
-    try {
-      st = await getMonitoringStatus(p, id);
-      errors = 0;
-    } catch (err) {
-      errors++;
-      if (errors >= maxErrors) throw err;
-      view.setNote(`retrying (${err instanceof Error ? err.message : String(err)})`);
-      await sleep(pollMs);
-      continue;
-    }
-    view.setNote("");
-    if (st.status === "active") {
-      view.complete();
-      return { kind: "ready", status: st };
-    }
-    // Deleted or deactivated while we watched: it will not become active either.
-    if (["failed", "error", "deploy_failed", "deactivated"].includes(st.status) || /^delet/.test(st.status)) {
-      view.fail("launch_requested");
-      return { kind: "failed", status: st };
-    }
-    if (now() > deadline) {
-      view.fail("launch_requested");
-      return { kind: "failed", status: { ...st, error: st.error ?? "It did not become active within an hour; check the Console's Monitoring page." } };
-    }
+    if (now() >= deadline) return { kind: "timeout", instance: inst };
     await sleep(pollMs);
   }
 }
