@@ -22,7 +22,14 @@ import {
   listCloudInstances,
   resolveSshKeys,
   watchDblabDeploy,
+  DBLAB_PROVIDERS,
+  hasPassword,
+  probeSource,
+  sourceLine,
+  sourceName,
   type ApiParams,
+  type DblabProvider,
+  type ProbeReply,
   type CloudInstance,
   type WatchOutcome,
 } from "./deploy";
@@ -41,6 +48,7 @@ import {
   waitMinutes,
   type DeployStatus,
 } from "./deploy-surface";
+import { detectCloudProvider } from "./connect";
 
 export interface DeployCliDeps {
   /** The api key and base url, or throws when no api key is configured. */
@@ -213,6 +221,13 @@ async function dblabInstance(api: ApiParams, ref: string): Promise<CloudInstance
     (r) => dblabStatus(r.deploy_status) !== "deleted");
 }
 
+/** One line for a failed deploy: its headline and, when a database error says why, that cause. */
+function failureSummary(error: string): string {
+  const first = error.split(/\r?\n/)[0];
+  const cause = first.match(/\bERROR:\s+(.*)$/)?.[1];
+  return cause ? `${first.split(": ")[0]}: ${cause}` : first;
+}
+
 export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps): void {
   const tty = deps.isTty ?? isTtyDefault;
 
@@ -222,19 +237,25 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
     .option("--size <size>", "server size (S, M, L)", "S")
     .option("--disk <gib>", "disk size in GiB", "50")
     .option("--ssh-key <name|id...>", "org SSH key(s) for reaching the server and its clones (required)")
+    .option("--provider <provider>", "where the database runs: rds, supabase or self-managed (default: detected)")
     .addHelpText("after", [
       "",
       "The password: in the URL, or set PGPASSWORD.",
+      "A Supabase project without its password: deploy it from the Console (Connect Supabase).",
       "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
     ].join("\n"))
     .action(async (urlArg: string | undefined, opts: {
       dbUrl?: string; name?: string; size: string; disk: string; sshKey?: string[]; location?: string;
-      wait?: string | boolean; yes?: boolean; debug?: boolean; json?: boolean;
+      provider?: string; wait?: string | boolean; yes?: boolean; debug?: boolean; json?: boolean;
     }, cmd: Command) => {
       // The URL is the argument or --db-url: without either, Commander's own error for a missing argument.
       if (!urlArg?.trim() && !opts.dbUrl?.trim()) return cmd.error("error: missing required argument 'database-url'");
       try {
         const url = databaseUrlArg(urlArg, opts.dbUrl, "pgai dblab deploy");
+        const provider = opts.provider?.trim().toLowerCase() as DblabProvider | undefined;
+        if (provider && !DBLAB_PROVIDERS.includes(provider)) {
+          throw new Error(`--provider must be one of: ${DBLAB_PROVIDERS.join(", ")}`);
+        }
         const name = opts.name?.trim() || nameFromDatabase(url);
         const minutes = waitMinutes(opts.wait, 120);
         const api = deps.resolveApi(!!opts.debug);
@@ -245,6 +266,18 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         const options = await getDeployOptions(api);
         const notAdmin = (): void => emit(deps, { status: "action_required", name, next: notAdminNext }, opts.json);
         if (options.is_admin === false) return notAdmin();
+        // Supabase without its password: the Console connects the account and makes a read-only user.
+        const dbUrl = withEnvPassword(url);
+        const isSupabase = provider ? provider === "supabase" : detectCloudProvider(url) === "supabase";
+        if (isSupabase && !hasPassword(dbUrl)) {
+          const console_ = `${(deps.uiBaseUrl?.() ?? "https://console.postgres.ai").replace(/\/+$/, "")}/${options.org_alias ?? "<org>"}`;
+          return emit(deps, {
+            status: "action_required",
+            name,
+            next: "This Supabase URL has no password. Add it to the URL or set PGPASSWORD, or finish in the Console, "
+              + `which needs no password: ${console_}/instances/deploy?source=supabase`,
+          }, opts.json);
+        }
         const cents = estimateMonthlyCents(options, opts.size, diskGib);
         const price = cents === null ? null : `${formatCents(cents)}/month (size ${opts.size.toUpperCase()}, ${diskGib} GiB), prorated.`;
         // Always shown before asking, on stderr: stdout is the result.
@@ -255,6 +288,22 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         const noCard = (): void =>
           emit(deps, { status: "action_required", name, next: noCardNext(billingPage(deps.uiBaseUrl?.(), options.org_alias)) }, opts.json);
         if (options.has_payment_method === false) return noCard();
+        // The source as the deploy will see it, before anything is asked or paid for.
+        let probe: ProbeReply | null = null;
+        try {
+          probe = await probeSource(api, dbUrl, provider);
+        } catch (err) {
+          if (err instanceof HttpStatusError && err.status === 403) return notAdmin();
+          // Not testable now (e.g. too many tests): the deploy checks the source itself.
+        }
+        if (probe && !probe.reachable) {
+          // The advice on its own line, as the platform's refusals print it.
+          throw new Error(`Cannot connect to the source database: ${probe.error ?? "unknown error"}${probe.hint ? `\nHint: ${probe.hint}` : ""}`);
+        }
+        if (probe) {
+          if (jsonOutput(opts.json)) writeEvent({ event: "source", message: sourceLine(probe) });
+          else console.error(sourceLine(probe));
+        }
         const keys = opts.sshKey?.length ? opts.sshKey : [];
         if (!keys.length) {
           throw new Error(
@@ -277,7 +326,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         let reply;
         try {
           reply = await deployDblab(api, {
-            name, dbUrl: withEnvPassword(url), size: opts.size, diskGib, sshKeyIds, location: opts.location,
+            name, dbUrl, size: opts.size, diskGib, sshKeyIds, location: opts.location, provider,
           });
         } catch (err) {
           // The platform's own check (PT402), when the options could not tell.
@@ -315,7 +364,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           console.log("No DBLab instances. Deploy one: pgai dblab deploy --help");
           return;
         }
-        console.log(`${"ID".padEnd(6)} ${"NAME".padEnd(28)} ${"STATE".padEnd(14)} SIZE / SERVER`);
+        console.log(`${"ID".padEnd(6)} ${"NAME".padEnd(28)} ${"STATE".padEnd(14)} SIZE / SERVER / SOURCE`);
         for (const r of rows) {
           const failedDeploy = r.deploy_status === "destroyed" && !!r.deploy_error;
           const status = r.is_cloud
@@ -323,11 +372,12 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
             : r.is_job_backed ? "Connected" : "Self-managed";
           // A failed or deleted deploy's server is gone; its IP may already be someone else's.
           const ip = r.server_ip && r.deploy_status !== "destroyed" && r.deploy_status !== "failed" ? ` ${r.server_ip}` : "";
-          const extra = r.is_cloud ? ` ${r.size ?? ""} ${r.disk_gib ?? ""}GiB${ip}` : "";
+          const source = sourceName(r.source_provider, r.source_name);
+          const extra = r.is_cloud ? ` ${r.size ?? ""} ${r.disk_gib ?? ""}GiB${ip}${source ? ` from ${source}` : ""}` : "";
           console.log(`${String(r.id).padEnd(6)} ${r.project_name.padEnd(28)} ${String(status).padEnd(14)}${extra}`);
           if (r.deploy_error && r.deploy_status !== "ready") {
-            const first = r.deploy_error.split("\n")[0];
-            console.log(`       ${first.length > 160 ? `${first.slice(0, 157)}...` : first} (details: pgai dblab instances watch ${r.id})`);
+            const summary = failureSummary(r.deploy_error);
+            console.log(`       ${summary.length > 160 ? `${summary.slice(0, 157)}...` : summary} (details: pgai dblab instances watch ${r.id})`);
           }
         }
       } catch (err) {
