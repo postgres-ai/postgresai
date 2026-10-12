@@ -38,7 +38,8 @@ type Body = Record<string, unknown>;
 // The platform functions' argument names (db/api/v1/functions/*.sql in platform-all).
 const RPC_ARGS: Record<string, string[]> = {
   dblab_cloud_deploy_options: ["org_id"],
-  dblab_instance_deploy: ["org_id", "name", "db_url", "size", "disk_gib", "ssh_key_ids", "location"],
+  dblab_instance_deploy: ["org_id", "name", "db_url", "size", "disk_gib", "ssh_key_ids", "location", "provider", "supabase_source_id"],
+  dblab_cloud_source_probe: ["org_id", "db_url", "provider"],
   dblab_cloud_instances: ["org_id", "p_instance_id"],
   dblab_instance_destroy: ["instance_id"],
 };
@@ -50,6 +51,8 @@ async function startFakeApi(opts: {
   options?: Body;
   /** The org's instances as listed (instances watch / delete by name); default: the deploy being followed. */
   rows?: Body[];
+  /** v1.dblab_cloud_source_probe's reply; absent: the platform has no probe (404). */
+  probe?: Body;
 } = {}) {
   const calls: { fn: string; body: Body; headers: Record<string, string> }[] = [];
   let poll = 0;
@@ -98,6 +101,9 @@ async function startFakeApi(opts: {
         }
         case "dblab_instance_destroy":
           return json({ result: body.instance_id, deploy_status: "destroying" });
+        case "dblab_cloud_source_probe":
+          if (opts.probe) return json(opts.probe);
+          break;
       }
       return new Response("not found", { status: 404 });
     },
@@ -327,6 +333,18 @@ describe("pgai dblab instances", () => {
         expect(JSON.parse(r.stdout).next).toMatch(/^No instance (abc|12)\. See: pgai dblab instances list$/);
       }
       expect(api.fn("dblab_instance_destroy")).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("list: a long database error is summed up by its cause, not cut before it", async () => {
+    const deploy_error = "Copying data from the source database failed: failed to dump the database app: failed to dump a database: exit code: 1. Output: pg_dump: error: query failed: ERROR:  permission denied for table orders\r\npg_dump: detail: Query was: LOCK TABLE public.orders";
+    const api = await startFakeApi({ progress: [{ deploy_status: "destroyed", deploy_step: "retrieve_data", deploy_error }] });
+    try {
+      const r = await runTty(["dblab", "instances", "list"], api.env);
+      expect(r.screen).toContain("Copying data from the source database failed: permission denied for table orders (details: pgai dblab instances watch 41)");
+      expect(r.screen).toContain("SIZE / SERVER / SOURCE");
     } finally {
       api.stop();
     }
@@ -569,6 +587,114 @@ describe("pgai dblab instances: a deleted instance does not compete for its name
       expect(JSON.parse(byName.stdout)).toMatchObject({ status: "ready", id: 50 });
       const byId = await runCli(["dblab", "instances", "watch", "47", "--json"], api.env);
       expect(JSON.parse(byId.stdout)).toMatchObject({ status: "deleted", id: 47 });
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+// platform-all#893
+describe("pgai dblab deploy --provider", () => {
+  const RDS_URL = "postgresql://u:secret@db1.abc.us-east-1.rds.amazonaws.com:5432/app";
+  const probe = (over: Body = {}) => ({
+    reachable: true, provider: "rds", detected_by: "host", postgres_major: 17, supported: true, ...over,
+  });
+
+  test("the source is named before the confirmation: detected by host, by extensions, or self-managed", async () => {
+    for (const [p, line] of [
+      [probe(), "Source: Amazon RDS (detected)"],
+      [probe({ detected_by: "extensions" }), "Source: Amazon RDS (detected from extensions)"],
+      [probe({ provider: "generic", detected_by: "default" }), "Source: PostgreSQL (self-managed)"],
+    ] as [Body, string][]) {
+      const api = await startFakeApi({ probe: p });
+      try {
+        // No --yes and nobody to ask: it stops at the confirmation, after naming the source.
+        const r = await runCli(["dblab", "deploy", RDS_URL, "--name", "app-db", "--ssh-key", "laptop", "--json"], api.env);
+        expect(r.status).toBe(3);
+        const events = r.stderr.trim().split("\n").map((l) => JSON.parse(l));
+        expect(events).toContainEqual({ event: "source", message: line });
+        expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+      } finally {
+        api.stop();
+      }
+    }
+  });
+
+  test("--provider is sent to the test and the deploy", async () => {
+    const api = await startFakeApi({ probe: probe({ detected_by: "flag" }) });
+    try {
+      const r = await runCli([...DEPLOY, "--provider", "RDS", "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_source_probe")[0].body).toEqual({ db_url: "postgresql://u:secret@db.example:5432/app", provider: "rds" });
+      expect(api.fn("dblab_instance_deploy")[0].body.provider).toBe("rds");
+      expect(r.stderr).toContain('"Source: Amazon RDS (from --provider)"');
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("an unknown provider is refused before anything is called, exit 1", async () => {
+    const api = await startFakeApi();
+    try {
+      for (const bad of ["clickhouse", "foo"]) {
+        const r = await runCli([...DEPLOY, "--provider", bad, "--yes"], api.env);
+        expect(r.status).toBe(1);
+        expect(JSON.parse(r.stdout).next).toBe("--provider must be one of: rds, supabase, self-managed");
+      }
+      expect(api.calls).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("a Supabase URL without a password goes to the Console, exit 3, nothing tested or deployed", async () => {
+    const api = await startFakeApi({ probe: probe() });
+    try {
+      const url = "postgresql://postgres.abcdefghij@aws-1-eu-central-1.pooler.supabase.com:5432/postgres";
+      const r = await runCli(["dblab", "deploy", url, "--ssh-key", "laptop", "--yes", "--json"], {
+        ...api.env, PGAI_UI_BASE_URL: "https://console.example", PGPASSWORD: "",
+      });
+      expect(r.status).toBe(3);
+      expect(JSON.parse(r.stdout)).toMatchObject({
+        status: "action_required",
+        next: "This Supabase URL has no password. Add it to the URL or set PGPASSWORD, or finish in the Console, which needs no password: https://console.example/acme/instances/deploy?source=supabase",
+      });
+      expect(api.fn("dblab_cloud_source_probe")).toHaveLength(0);
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+      // With its password it deploys like any other source.
+      const ok = await runCli(["dblab", "deploy", url.replace("@", ":pw@"), "--ssh-key", "laptop", "--yes"], api.env);
+      expect(ok.status).toBe(0);
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(1);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("an unreachable source fails before the confirmation with the reason and what to do", async () => {
+    const api = await startFakeApi({
+      probe: probe({ reachable: false, error: "connection timed out", hint: "The RDS instance must be publicly accessible." }),
+    });
+    try {
+      const r = await runCli([...DEPLOY, "--yes"], api.env);
+      expect(r.status).toBe(1);
+      expect(JSON.parse(r.stdout).next).toBe(
+        "Cannot connect to the source database: connection timed out\nHint: The RDS instance must be publicly accessible.");
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("instances list names the source", async () => {
+    const api = await startFakeApi({
+      rows: [{ id: 41, project_id: 9, project_name: "app-db", created_at: "", is_cloud: true, deploy_status: "ready",
+        deploy_step: "ready", deploy_error: null, deploy_updated_at: null, size: "S", disk_gib: 50, location: "fsn1",
+        server_ip: "203.0.113.9", is_job_backed: true, joe_instance_id: null, source_provider: "supabase", source_name: "Shop" }],
+    });
+    try {
+      const r = await runTty(["dblab", "instances", "list"], api.env);
+      expect(r.status).toBe(0);
+      expect(r.screen).toContain("S 50GiB 203.0.113.9 from Supabase · Shop");
     } finally {
       api.stop();
     }

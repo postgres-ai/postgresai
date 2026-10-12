@@ -137,6 +137,53 @@ export interface DeployOptions {
   org_alias?: string | null;
 }
 
+/** `pgai dblab deploy --provider`: where the database runs (as `pgai mon deploy` names it). */
+export type DblabProvider = "rds" | "supabase" | "self-managed";
+export const DBLAB_PROVIDERS: DblabProvider[] = ["rds", "supabase", "self-managed"];
+
+/** The provider the platform recorded for a source (platform-all#893). */
+export type SourceProvider = "generic" | "rds" | "aurora" | "supabase";
+
+const SOURCE_NAMES: Record<SourceProvider, string> = {
+  generic: "PostgreSQL",
+  rds: "Amazon RDS",
+  aurora: "Amazon Aurora",
+  supabase: "Supabase",
+};
+
+export function sourceName(provider: string | null | undefined, project?: string | null): string | null {
+  const name = provider ? SOURCE_NAMES[provider as SourceProvider] : undefined;
+  if (!name) return null;
+  return project ? `${name} · ${project}` : name;
+}
+
+/** v1.dblab_cloud_source_probe: the source as the deploy will see it. */
+export interface ProbeReply {
+  reachable: boolean;
+  provider: SourceProvider | null;
+  detected_by?: "flag" | "host" | "extensions" | "default" | null;
+  postgres_major?: number | null;
+  supported?: boolean;
+  image_note?: string | null;
+  error?: string | null;
+  hint?: string | null;
+}
+
+/** The line shown before the confirmation: which source this is, and how we know. */
+export function sourceLine(p: ProbeReply): string {
+  const name = sourceName(p.provider) ?? "PostgreSQL";
+  switch (p.detected_by) {
+    case "flag":
+      return `Source: ${name} (from --provider)`;
+    case "host":
+      return `Source: ${name} (detected)`;
+    case "extensions":
+      return `Source: ${name} (detected from extensions)`;
+    default:
+      return `Source: ${name} (self-managed)`;
+  }
+}
+
 export interface CloudInstance {
   id: number;
   project_id: number;
@@ -153,6 +200,8 @@ export interface CloudInstance {
   server_ip: string | null;
   is_job_backed: boolean;
   joe_instance_id: number | null;
+  source_provider?: string | null;
+  source_name?: string | null;
 }
 
 export interface DeployReply {
@@ -161,6 +210,7 @@ export interface DeployReply {
   project_name: string;
   deploy_status: string;
   monthly_price_cents: number;
+  provider?: string | null;
 }
 
 export const getDeployOptions = (p: ApiParams): Promise<DeployOptions> =>
@@ -176,7 +226,10 @@ export const listCloudInstances = async (p: ApiParams, instanceId?: number): Pro
 
 export const deployDblab = (
   p: ApiParams,
-  args: { name: string; dbUrl: string; size: string; diskGib: number; sshKeyIds: string[]; location?: string },
+  args: {
+    name: string; dbUrl: string; size: string; diskGib: number; sshKeyIds: string[]; location?: string;
+    provider?: DblabProvider;
+  },
 ): Promise<DeployReply> =>
   callDeployRpc<DeployReply>(
     p,
@@ -188,9 +241,27 @@ export const deployDblab = (
       disk_gib: args.diskGib,
       ssh_key_ids: args.sshKeyIds,
       ...(args.location ? { location: args.location } : {}),
+      ...(args.provider ? { provider: args.provider } : {}),
     },
     "Deploy DBLab",
   );
+
+export const probeSource = (p: ApiParams, dbUrl: string, provider?: DblabProvider): Promise<ProbeReply> =>
+  callDeployRpc<ProbeReply>(
+    p,
+    "dblab_cloud_source_probe",
+    { db_url: dbUrl, ...(provider ? { provider } : {}) },
+    "Test the source database",
+  );
+
+/** True when the URL has a password (or PGPASSWORD will put one in). */
+export function hasPassword(dbUrl: string): boolean {
+  try {
+    return new URL(dbUrl).password !== "";
+  } catch {
+    return false;
+  }
+}
 
 export const destroyDblab = (p: ApiParams, instanceId: number): Promise<unknown> =>
   callDeployRpc(p, "dblab_instance_destroy", { instance_id: instanceId }, "Delete DBLab");
