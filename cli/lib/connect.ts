@@ -106,6 +106,8 @@ export interface Database {
   monitoring_password_stored?: boolean;
   /** Why billing failed: a declined first charge (billing starts when the box is active) removes the box. */
   billing_error?: string | null;
+  /** The database server's vCPUs; AAS is collected only with them (null: not set). */
+  vcpus?: number | null;
 }
 
 /**
@@ -140,6 +142,8 @@ export interface ConnectDeps {
   confirm(question: string): Promise<boolean>;
   /** Asks a person for the database server's vCPUs; undefined when skipped or nobody can be asked. */
   askVcpus?(question: string): Promise<number | undefined>;
+  /** Sets an instance's vCPUs (v1.cloud_monitoring_set_vcpus, #904). */
+  setVcpus?(instanceId: string, vcpus: number): Promise<unknown>;
   /** The platform's per-server lock for --reset-password: one run at a time may reset postgres_ai_mon. */
   resetLock(server: string): Promise<{ lock_id: string }>;
   resetUnlock(lockId: string): Promise<unknown>;
@@ -171,10 +175,19 @@ export interface ConnectOptions {
   vcpus?: number;
 }
 
+/**
+ * An error's HTTP status, read by shape: the bundled CLI holds two copies of
+ * HttpStatusError, so `instanceof` can miss the one a call threw.
+ */
+export function httpStatus(err: unknown): number | undefined {
+  const status = err instanceof Error ? (err as { status?: unknown }).status : undefined;
+  return typeof status === "number" ? status : undefined;
+}
+
 /** Asked at a terminal when --vcpus is missing: AAS (database load) is collected only with it. */
 export const VCPUS_QUESTION = "How many vCPUs does the database server have? If you skip this (Enter), you get no AAS (database load) data for this database. vCPUs: ";
 /** Said when a box is requested without vCPUs. */
-export const NO_VCPUS_NOTE = "Note: no vCPUs given, so you get no AAS (database load) data for this database (pass --vcpus <n> when deploying).";
+export const NO_VCPUS_NOTE = "Note: no vCPUs given, so you get no AAS (database load) data for this database. Add them later: pgai mon instances set <id-or-name> --vcpus <n>.";
 
 const money = (cents: number, currency: string) =>
   currency.toLowerCase() === "usd" ? `$${(cents / 100).toFixed(2)}` : `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
@@ -600,6 +613,26 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   };
   // A database already monitored keeps its name: --name names a new instance only.
   if (row && opts.name && row.name !== opts.name) note = `; --name ignored: this database is already monitored as ${row.name}`;
+  // Its vCPUs (#904): missing ones are set (--vcpus, or asked at a terminal); a set
+  // value is never changed here. ClickHouse's come from ClickHouse Cloud.
+  if (row && !disconnecting(row.status) && provider !== "clickhouse") {
+    const has = (row.vcpus ?? 0) > 0;
+    let want = opts.vcpus;
+    if (want === undefined && !has && !opts.yes && !opts.agent && deps.askVcpus) want = await deps.askVcpus(VCPUS_QUESTION);
+    if (want !== undefined && !has && deps.setVcpus) {
+      try {
+        await deps.setVcpus(row.id, want);
+        note += `; vCPUs set to ${want}: AAS (database load) is collected from now on`;
+      } catch (err) {
+        if (httpStatus(err) !== 403) throw err;
+        note += `; vCPUs not set: only an organization admin can (pgai mon instances set ${row.id} --vcpus ${want})`;
+      }
+    } else if (want !== undefined && has && row.vcpus !== want) {
+      note += `; --vcpus ignored: ${row.name} already has ${row.vcpus} vCPUs (to change them: pgai mon instances set ${row.id} --vcpus ${want})`;
+    } else if (!has) {
+      note += `; no vCPUs, so no AAS (database load) data for this database (add them: pgai mon instances set ${row.id} --vcpus <n>)`;
+    }
+  }
   if (row && opts.resetPassword) {
     return { status: "action_required", provider, name, id: row.id, next: `${name} is already monitored, and its monitoring uses the current password: pgai mon instances delete ${name} --yes first` };
   }
@@ -682,7 +715,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (vcpus === undefined && provider !== "clickhouse") {
         vcpus = !opts.yes && !opts.agent && deps.askVcpus ? await deps.askVcpus(VCPUS_QUESTION) : undefined;
         if (deps.aborted?.()) throw new CancelledError();
-        if (vcpus === undefined) progress("preparing", opts.agent ? NO_VCPUS_NOTE.replace("--vcpus <n>", "vcpus") : NO_VCPUS_NOTE);
+        if (vcpus === undefined) progress("preparing", NO_VCPUS_NOTE);
       }
     }
     if (opts.resetPassword) {
@@ -1167,6 +1200,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     links: withLinks,
     create: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
+    setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),
     resetUnlock: (lockId: string) => rpc("cloud_monitoring_reset_unlock", { lock_id: lockId }),
     prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[] } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),

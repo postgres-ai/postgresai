@@ -205,7 +205,8 @@ with your PostgresAI account (`https://<box>/login/generic_oauth?redirectTo=%2F`
 re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
 (a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
 machine instead. When stdout is not a terminal the result is JSON with `status`, `health_url`,
-`dashboard_url` and `next`. Then: `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`.
+`dashboard_url` and `next`. Then: `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`,
+and `pgai mon instances set <id-or-name> --vcpus <n>` to add or change the database server's vCPUs later (an org admin; AAS starts within a minute).
 
 `pgai mon deploy` and `pgai dblab deploy` share their options and results: the database URL as the
 argument (or `--db-url`), `--name` (default: from the database), `--location` (a Hetzner location;
@@ -235,7 +236,7 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 | `--db-url <url>` | the database URL, instead of the argument |
 | `--name <name>` | the instance's name (default: `host[:port]/database`); ignored, with a note, for a database already monitored |
 | `--location <location>` | Hetzner location `fsn1`, `nbg1` or `hel1` (default: any with capacity) |
-| `--vcpus <n>` | `mon deploy` only: the database server's vCPUs. Without it there is no AAS (database load) data; at a terminal you are asked |
+| `--vcpus <n>` | `mon deploy` only: the database server's vCPUs. Without it there is no AAS (database load) data; at a terminal you are asked. On a database already monitored, it sets missing vCPUs (a set value is changed with `mon instances set`) |
 | `--wait <minutes>` | how long to wait for the monitoring box; `0` does not wait (default 20) |
 | `--no-wait` | the same as `--wait 0` |
 | `-y, --yes` | never prompt; accept a billed box's price (`mon deploy` does not start the browser sign-in; `mon instances delete` does not ask) |

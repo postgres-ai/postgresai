@@ -1,9 +1,10 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import {
+  describe, expect, spyOn, test } from "bun:test";
 import { Client, type ClientConfig } from "pg";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -1028,10 +1029,81 @@ describe("mon deploy", () => {
       }
     });
 
-    test("not asked for a database already monitored, nor for ClickHouse (its vCPUs come from ClickHouse Cloud)", async () => {
+    describe("a database already monitored (#904)", () => {
+      const live = (vcpus?: number | null) => row("active", { name: "10.0.0.5/app", provider: "self-managed", vcpus });
+      const withSet = (over: Parameters<typeof fake>[0] = {}) => {
+        const sets: [string, number][] = [];
+        const f = fake({ setVcpus: async (id: string, n: number) => { sets.push([id, n]); return { changed: true }; }, ...over });
+        return { ...f, sets };
+      };
+
+      test("--vcpus sets them when it has none, and says so", async () => {
+        const f = withSet({ rows: [live(null)] });
+        const r = await connect(SM, { waitMs: 0, vcpus: 4 }, f.deps);
+        expect(f.sets).toEqual([["i-1", 4]]);
+        expect(r.next).toMatch(/vCPUs set to 4/);
+      });
+
+      test("--vcpus with a different value already set: unchanged, a note points to instances set", async () => {
+        const f = withSet({ rows: [live(2)] });
+        const r = await connect(SM, { waitMs: 0, vcpus: 4 }, f.deps);
+        expect(f.sets).toEqual([]);
+        expect(r.next).toContain("already has 2 vCPUs");
+        expect(r.next).toContain("pgai mon instances set i-1 --vcpus 4");
+      });
+
+      test("no --vcpus and none set: a terminal asks (no AAS without them); the answer is set", async () => {
+        const asked: string[] = [];
+        const f = withSet({ rows: [live(null)], askVcpus: async (q) => { asked.push(q); return 3; } });
+        await connect(SM, { waitMs: 0 }, f.deps);
+        expect(asked).toHaveLength(1);
+        expect(asked[0]).toMatch(/no AAS/);
+        expect(f.sets).toEqual([["i-1", 3]]);
+      });
+
+      test("no --vcpus, none set, nobody to ask: not asked, nothing set, a note says there is no AAS and how to fix it", async () => {
+        for (const opts of [{ yes: true }, { agent: true }]) {
+          const f = withSet({ rows: [live(null)], askVcpus: async () => 3 });
+          const r = await connect(SM, { waitMs: 0, ...opts }, f.deps);
+          expect(f.sets).toEqual([]);
+          expect(r.next).toMatch(/no AAS/);
+          expect(r.next).toContain("pgai mon instances set i-1 --vcpus <n>");
+        }
+      });
+
+      test("vCPUs already set and no --vcpus: nothing asked, nothing set, no note", async () => {
+        const asked: string[] = [];
+        const f = withSet({ rows: [live(2)], askVcpus: async (q) => { asked.push(q); return 3; } });
+        const r = await connect(SM, { waitMs: 0 }, f.deps);
+        expect(asked).toEqual([]);
+        expect(f.sets).toEqual([]);
+        expect(r.next ?? "").not.toMatch(/vCPU|AAS/);
+      });
+
+      test("not an org admin: nothing set, a note says only an admin can", async () => {
+        const f = withSet({ rows: [live(null)], setVcpus: async () => { throw new HttpStatusError("cloud monitoring set vcpus: HTTP 403 - Permission Denied", 403); } });
+        const r = await connect(SM, { waitMs: 0, vcpus: 4 }, f.deps);
+        expect(r.status).toBe("ready");
+        expect(r.next).toMatch(/only an organization admin/i);
+      });
+    });
+
+    test("an HTTP status is read by shape: the bundle holds two copies of HttpStatusError (instanceof misses one)", () => {
+      class OtherCopy extends Error { constructor(message: string, readonly status: number) { super(message); } }
+      expect(httpStatus(new OtherCopy("cloud monitoring set vcpus: HTTP 403 - Permission Denied", 403))).toBe(403);
+      expect(httpStatus(new HttpStatusError("x: HTTP 404", 404))).toBe(404);
+      expect(httpStatus(new Error("no status"))).toBeUndefined();
+      expect(httpStatus("403")).toBeUndefined();
+    });
+
+    test("the no-vCPUs note of a new deploy names the way to add them later", () => {
+      expect(NO_VCPUS_NOTE).toContain("pgai mon instances set");
+    });
+
+    test("not asked for a database already monitored with vCPUs, nor for ClickHouse (its vCPUs come from ClickHouse Cloud)", async () => {
       const asked: string[] = [];
       const ask = { askVcpus: async (q: string) => { asked.push(q); return 2; } };
-      await connect(SM, { waitMs: 0 }, fake({ rows: [row("active", { name: "10.0.0.5/app", provider: "self-managed" })], ...ask }).deps);
+      await connect(SM, { waitMs: 0 }, fake({ rows: [row("active", { name: "10.0.0.5/app", provider: "self-managed", vcpus: 2 })], ...ask }).deps);
       await connect(CH, { waitMs: 0 }, fake(ask).deps);
       expect(asked).toEqual([]);
     });

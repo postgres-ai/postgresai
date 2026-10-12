@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, caNote, connect, connectStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -43,7 +43,7 @@ import {
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
 import { MONITORING_STEPS, StepView } from "../lib/deploy";
-import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
+import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, monitoringStatus, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
   enqueueQuery,
   awaitQueryResult,
@@ -4551,6 +4551,60 @@ withOrgOptions(monInstances.command("delete <id-or-name>"))
         next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
+    }
+  });
+
+withOrgOptions(monInstances.command("set <id-or-name>"))
+  .description("change a monitoring instance: the database server's vCPUs, which AAS (database load) needs")
+  .requiredOption("--vcpus <n>", "vCPUs of the database server (1 to 1024)")
+  .option("--json", "JSON output (the default when stdout is not a terminal)")
+  .option("--debug", "print HTTP requests (secrets masked)")
+  .action(async (ref: string, opts: { vcpus: string; json?: boolean; debug?: boolean }) => {
+    const json = deployJsonOutput(opts.json);
+    try {
+      const vcpus = vcpusArg(opts.vcpus)!;
+      const refused = (next: string): void => {
+        printResult({ status: "action_required", next }, json);
+        process.exitCode = DEPLOY_EXIT.action_required;
+      };
+      let rows: Awaited<ReturnType<ReturnType<typeof cloudApi>["list"]>>;
+      try {
+        rows = await cloudApi(opts.debug).list();
+      } catch (err) {
+        // An organization (box) key: the platform says why, and which key to use.
+        if (httpStatus(err) === 403) return refused(errorText(err));
+        throw err;
+      }
+      // A gone instance is found by its id (and refused here), never by its name.
+      const row = pickInstance(rows, ref, (d) => d.id, (d) => d.name, "pgai mon instances list", (d) => !disconnecting(d.status));
+      if (disconnecting(row.status)) {
+        throw new Error(`${row.name} ${row.status === "deleted" ? "was deleted" : "is being deleted"}: nothing to change`);
+      }
+      let r: { vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status?: string };
+      try {
+        r = await cloudApi(opts.debug).setVcpus(row.id, vcpus);
+      } catch (err) {
+        if (httpStatus(err) === 403) {
+          printResult({ status: "action_required", name: row.name, id: row.id,
+            next: "Only an organization admin can change a monitoring instance: ask an admin to run it, or use an admin's API key." }, json);
+          process.exitCode = DEPLOY_EXIT.action_required;
+          return;
+        }
+        if (httpStatus(err) === 404 && /cloud_monitoring_set_vcpus/.test(errorText(err))) {
+          throw new Error("This platform cannot set vCPUs yet: set them in the console, or redeploy with --vcpus");
+        }
+        throw err;
+      }
+      const next = !r.changed
+        ? `${row.name} already has ${vcpus} vCPUs: nothing changed`
+        : r.aas_status === "no_labels"
+          ? "AAS (database load) is collected once the monitoring box has registered"
+          : "AAS (database load) is collected from the next minute; the Health Matrix fills in as data arrives";
+      const result = { status: monitoringStatus(row.status), name: row.name, id: row.id, vcpus: r.vcpus, previous_vcpus: r.previous_vcpus, changed: r.changed, next };
+      if (json) printResult(result, true);
+      else console.log(`${row.name}: ${r.vcpus} vCPUs${r.changed ? ` (was ${r.previous_vcpus ?? "not set"})` : ""}. ${next}.`);
+    } catch (err) {
+      failCloud(err, json);
     }
   });
 
