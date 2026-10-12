@@ -9,6 +9,10 @@
   `status` words (`ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required`, `failed`)
   with exit codes 0 / 1 / 3, and `instances list | watch (status) | delete` by id or name. Progress goes
   to stderr; stdout is the result. The console-path `pgai mon deploy` of the DBLab deploy release is gone.
+- `pgai mon instances set <id-or-name> --vcpus <n>`: add or change a monitoring instance's vCPUs after
+  deploy (an org admin), so AAS is collected for an instance created without them. `mon deploy` on a
+  database already monitored sets missing vCPUs from `--vcpus` (or asks at a terminal) and says when
+  there is no AAS without them. `mon instances list` shows `vcpus`.
 - `pgai mon deploy --vcpus <n>`: the database server's vCPUs, which AAS (database load) needs. At a terminal a
   missing value is asked for; without one, the run says there will be no AAS data. MCP `deploy_monitoring` takes `vcpus`.
 - `pgai mon deploy <database-url>`: put a database under PostgresAI Cloud monitoring in one command.

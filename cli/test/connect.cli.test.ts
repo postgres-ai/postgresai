@@ -35,13 +35,15 @@ const BILLED = {
   price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false,
 };
 
-async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] | (() => unknown[]) = [ROW]) {
+async function withApi(fn: (env: Record<string, string>, calls: string[]) => Promise<void>, rows: unknown[] | (() => unknown[]) = [ROW],
+  extra: Record<string, () => Response> = {}) {
   const calls: string[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
       calls.push(`${path} ${req.headers.get("access-token")} ${await req.text()}`);
+      for (const [rpc, reply] of Object.entries(extra)) if (path.endsWith(`/rpc/${rpc}`)) return reply();
       if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json(typeof rows === "function" ? rows() : rows);
       if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json(BILLED);
       if (path.endsWith("/rpc/cloud_monitoring_disconnect")) return Response.json({ id: "i-1", status: "deleting_launched" });
@@ -125,7 +127,7 @@ describe("pgai init", () => {
       // The URL carries the admin password: it is not shown as typed.
       expect(r.screen).not.toContain(":pw@");
       expect(r.screen).not.toContain("ClickHouse");
-    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed" }]);
+    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", vcpus: 2 }]);
   });
 
   test("Ctrl-C or Ctrl-D at a prompt: nothing connected, exit 130", async () => {
@@ -141,7 +143,7 @@ describe("pgai init", () => {
       const r = await runTty(["init"], env, [[URL_PROMPT, "postgresql://postgres:pw@db.example.com:5432/app\r"], [/box: starting/, "\x03"]]);
       expect(Date.now() - started).toBeLessThan(4000);
       expect(r.status).not.toBe(0);
-    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", status: "launch_requested", dashboard_url: null }]);
+    }, [{ ...ROW, name: "db.example.com/app", provider: "self-managed", status: "launch_requested", dashboard_url: null, vcpus: 2 }]);
   });
 
   test("the ClickHouse key is not shown as it is typed (and is checked: ClickHouse rejects this one)", async () => {
@@ -253,6 +255,62 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
     } finally {
       ch.stop(true);
     }
+  });
+
+  describe("mon instances set --vcpus (#904): the database server's vCPUs after deploy", () => {
+    const SET = (reply: Response) => ({ cloud_monitoring_set_vcpus: () => reply });
+    test("by name: the platform sets them; the result says AAS is collected now", async () => {
+      await withApi(async (env, calls) => {
+        const r = await run(["mon", "instances", "set", NAME, "--vcpus", "4", "--json"], env);
+        expect(r.status).toBe(0);
+        expect(r.json()).toMatchObject({ status: "ready", name: NAME, id: "i-1", vcpus: 4, previous_vcpus: null, changed: true });
+        expect(r.json().next).toMatch(/AAS/);
+        expect(calls.at(-1)).toBe('/rpc/cloud_monitoring_set_vcpus test-key {"instance_id":"i-1","vcpus":4}');
+      }, [ROW], SET(Response.json({ instance_id: "i-1", vcpus: 4, previous_vcpus: null, changed: true, aas_status: "ready" })));
+    });
+    test("a bad value is refused before any call, exit 1", async () => {
+      await withApi(async (env, calls) => {
+        for (const bad of ["0", "1025", "x"]) {
+          const r = await run(["mon", "instances", "set", NAME, "--vcpus", bad, "--json"], env);
+          expect(r.status).toBe(1);
+          expect(r.json().next).toMatch(/--vcpus must be a whole number from 1 to 1024/);
+        }
+        expect(calls).toEqual([]);
+      });
+    });
+    test("not an org admin: action required, exit 3", async () => {
+      await withApi(async (env) => {
+        const r = await run(["mon", "instances", "set", NAME, "--vcpus", "4", "--json"], env);
+        expect(r.status).toBe(3);
+        expect(r.json().next).toBe("Only an organization admin can change a monitoring instance: ask an admin to run it, or use an admin's API key.");
+      }, [ROW], SET(Response.json({ code: "PT403", message: "Permission Denied", details: "Only organization admins can change a monitoring instance." }, { status: 403 })));
+    });
+    test("an organization (box) key: the lookup is refused; action required with the platform's reason, exit 3", async () => {
+      await withApi(async (env, calls) => {
+        const r = await run(["mon", "instances", "set", NAME, "--vcpus", "4", "--json"], env);
+        expect(r.status).toBe(3);
+        expect(r.json().status).toBe("action_required");
+        expect(r.json().next).toContain("This API key belongs to the organization, not to a person.");
+        expect(calls.some((c) => c.includes("set_vcpus"))).toBe(false);
+      }, [ROW], { cloud_monitoring_list: () => Response.json({ code: "PT403", message: "Forbidden",
+        details: "This API key belongs to the organization, not to a person.", hint: "Sign in with pgai auth login, or use a personal API key." }, { status: 403 }) });
+    });
+    test("an instance being deleted, by its id: failed with that reason, exit 1, nothing set", async () => {
+      await withApi(async (env, calls) => {
+        const r = await run(["mon", "instances", "set", "i-1", "--vcpus", "4", "--json"], env);
+        expect(r.status).toBe(1);
+        expect(r.json().next).toBe(`${NAME} is being deleted: nothing to change`);
+        expect(calls.some((c) => c.includes("set_vcpus"))).toBe(false);
+      }, [{ ...ROW, status: "deleting_launched" }]);
+    });
+
+    test("an unknown instance: failed, exit 1", async () => {
+      await withApi(async (env) => {
+        const r = await run(["mon", "instances", "set", "nope", "--vcpus", "4", "--json"], env);
+        expect(r.status).toBe(1);
+        expect(r.json().next).toBe("No instance nope. See: pgai mon instances list");
+      });
+    });
   });
 
   test("mon instances delete needs --yes when not interactive", async () => {
