@@ -869,11 +869,13 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   const ref = extractProjectRefFromUrl(url);
   if (!ref) return { status: "action_required", provider, name: databaseName(url), next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>)" };
   // One name for the direct and the pooler URL of a project.
-  const u = new URL(url);
-  const project = `postgresql://db.${ref}.supabase.co:5432${u.pathname === "/" ? "/postgres" : u.pathname}`;
+  const db = decodeURIComponent(new URL(url).pathname.replace(/^\//, "")) || "postgres";
+  const project = `postgresql://db.${ref}.supabase.co:5432/${encodeURIComponent(db)}`;
   const name = databaseName(project);
   const cluster = clusterOf(project)!;
   const stop = (next: string, more: Partial<ConnectResult> = {}): ConnectResult => ({ status: "action_required", provider, name, ...more, next });
+  // The box prepares and monitors the project's postgres database (prepare-db --supabase).
+  if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
   if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
   const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster);
   if (row) {
@@ -913,6 +915,7 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     ...(b.accepted ? { accept_price: true } : {}),
     ...(opts.coupon ? { promo_code: opts.coupon } : {}),
     ...(opts.vcpus ? { vcpus: opts.vcpus } : {}),
+    ...(opts.location ? { server_location: opts.location } : {}),
   }).catch((err) => {
     if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
     if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
@@ -971,8 +974,9 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
     // The box is already requested: a failed poll keeps the last known state.
     const listed = await deps.list().catch(() => undefined);
     const now = listed?.find((d) => d.id === row.id);
-    if (listed && !now && undoRole) {
-      await undoRole();
+    // A box this run created that is gone (its role, if this run made one, is dropped).
+    if (listed && !now && fresh) {
+      if (undoRole) await undoRole();
       return { status: "failed", provider, name, id: row.id, ...billing, next: "The monitoring box was removed before it became active: see pgai mon instances list, then re-run pgai mon deploy" };
     }
     row = now ?? row;
