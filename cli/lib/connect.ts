@@ -882,7 +882,15 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     const note = opts.name && row.name !== opts.name ? `; --name ignored: this database is already monitored as ${row.name}` : "";
     return follow(row, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
   }
-  const started = await deps.supabaseStart(project);
+  let started: Awaited<ReturnType<ConnectDeps["supabaseStart"]>>;
+  try {
+    started = await deps.supabaseStart(project);
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+    // Another Supabase organization is connected to this org: the platform says which.
+    if (err instanceof HttpStatusError && err.status === 409) return stop(errorText(err));
+    throw err;
+  }
   if ("auth_url" in started) {
     const approve = `Open ${started.auth_url} in a browser and approve PostgresAI's access to Supabase`;
     if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
@@ -911,7 +919,7 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   // vCPUs: the platform reads the project's compute size; --vcpus overrides it.
   const created = await deps.supabaseConnect({
     project_ref: ref,
-    ...(opts.name ? { project_name: opts.name } : {}),
+    ...(opts.name ? { name: opts.name } : {}),
     ...(b.accepted ? { accept_price: true } : {}),
     ...(opts.coupon ? { promo_code: opts.coupon } : {}),
     ...(opts.vcpus ? { vcpus: opts.vcpus } : {}),
