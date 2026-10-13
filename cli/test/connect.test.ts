@@ -1775,10 +1775,13 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect((await connect(SB, { waitMs: 0 }, member.deps)).status).toBe("action_required");
   });
 
-  test("--location goes to the platform with the box", async () => {
+  test("--location is refused before anything is called: the platform picks the Supabase box's location", async () => {
     const { deps, calls } = make();
-    await connect(SB, { waitMs: 0, location: "hel1" }, deps);
-    expect(calls.at(-1)).toBe(`connect ${JSON.stringify({ project_ref: REF, server_location: "hel1" })}`);
+    expect(await connect(SB, { waitMs: 0, location: "hel1" }, deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it",
+    });
+    expect(calls).toEqual([]);
   });
 
   test("a box removed before it became active: failed, not still in progress", async () => {
