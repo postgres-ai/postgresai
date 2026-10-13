@@ -1638,7 +1638,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     const statuses = over.statuses ?? [];
     let polled = 0;
     const f = fake({ rows: [undefined, sbRow("launch_requested"), sbRow("active")], ...over });
-    f.deps.quote = async (coupon, cluster) => { f.calls.push(`quote ${cluster}${coupon ? ` ${coupon}` : ""}`); return { ...FREE_QUOTE, ...(coupon ? { promo: { code: coupon, valid: true } } : {}) }; };
+    f.deps.quote = async (coupon, cluster) => { f.calls.push(`quote${cluster ? ` ${cluster}` : ""}${coupon ? ` ${coupon}` : ""}`); return { ...FREE_QUOTE, ...(coupon ? { promo: { code: coupon, valid: true } } : {}) }; };
     f.deps.supabaseStart = over.supabaseStart ?? (async (dbUrl) => { f.calls.push(`start ${dbUrl}`); return { connected: true, project_ref: REF }; });
     f.deps.supabaseStatus = over.supabaseStatus ?? (async (id) => { f.calls.push(`status ${id}`); return statuses[Math.min(polled++, statuses.length - 1)] as never; });
     f.deps.supabaseConnect = over.supabaseConnect ?? (async (body) => { f.calls.push(`connect ${JSON.stringify(body)}`); return { id: "i-1", name: SB_NAME, status: "launch_requested" }; });
@@ -1649,6 +1649,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     f.deps.supabaseStart = async (dbUrl) => { f.calls.push(`start ${dbUrl}`); return { auth_url: AUTH, session_id: "sess-1" }; };
   };
 
+  // The price is the org's (a Supabase provision bills every box), not a per-cluster one: no db_server.
   test("an org already connected to Supabase: price, then the box; the database is never logged in to", async () => {
     const { deps, calls } = make();
     const result = await connect(SB, { waitMs: 0 }, deps);
@@ -1656,7 +1657,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       status: "in_progress", provider: "supabase", name: SB_NAME, id: "i-1", dashboard_url: null, host_metrics: false,
       ...FREE, next: "pgai mon instances watch i-1",
     });
-    expect(calls).toEqual(["list", `start ${SB_PUBLIC}`, `quote db.${REF}.supabase.co:5432`, `connect ${JSON.stringify({ project_ref: REF })}`]);
+    expect(calls).toEqual(["list", `start ${SB_PUBLIC}`, "quote", `connect ${JSON.stringify({ project_ref: REF })}`]);
   });
 
   test("a pooler URL names the same project: the project ref from the user name", async () => {
@@ -1675,7 +1676,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect(f.calls.slice(0, 10)).toEqual([
       "list", `start ${SB_PUBLIC}`, `open ${AUTH}`,
       "status sess-1", "sleep", "status sess-1", "sleep", "status sess-1",
-      `quote db.${REF}.supabase.co:5432 WELCOME`,
+      "quote WELCOME",
       `connect ${JSON.stringify({ project_ref: REF, name: "orders", promo_code: "WELCOME", vcpus: 2 })}`,
     ]);
     // The link is printed too (another machine, a browser that did not open), and is its own field for a script.
