@@ -908,7 +908,8 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   }
   let quote: Quote;
   try {
-    quote = await deps.quote(opts.coupon, cluster);
+    // The org's price, not a cluster's: the Supabase provision bills every box.
+    quote = await deps.quote(opts.coupon);
   } catch (err) {
     if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
     throw err;
