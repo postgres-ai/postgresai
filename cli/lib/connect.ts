@@ -963,6 +963,9 @@ interface Followed {
   note: string;
 }
 
+/** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
+export const STILL_IN_PROGRESS = "Still in progress";
+
 /** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
 async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
   const { provider, name, fresh, billing, billingUrl, checkup, undoRole, note } = f;
@@ -984,6 +987,11 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
         final.next += "; for CPU, memory and disk, delete the instance (pgai mon instances delete) and deploy again with --clickhouse-key <key-id>:<key-secret>";
       }
       const { next, ...rest } = final;
+      // The wait ran out with the box still starting: not done (exit 3); it goes on on the platform.
+      if (final.status === "in_progress" && opts.waitMs > 0) {
+        return { ...rest, status: "action_required", ...billing, ...(checkup ? { checkup } : {}),
+          next: `${STILL_IN_PROGRESS} (box: ${boxWords(boxState(row))}) when the wait ended: resume with ${next}${note}` };
+      }
       return { ...rest, ...billing, ...(checkup ? { checkup } : {}), next: next + note };
     }
     await deps.sleep(POLL_MS);

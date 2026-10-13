@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4232,7 +4232,8 @@ function cloudApi(debug?: boolean) {
   return { apiKey, apiBaseUrl: urls.apiBaseUrl, ...platformDeps({ apiKey, ...urls, orgScope: getActiveOrgScope(), debug }) };
 }
 
-function emitConnect(result: ConnectResult, json?: boolean): void {
+/** `done`: mon deploy's event stream ends with a done event (the outcome, for an agent reading stderr alone). */
+function emitConnect(result: ConnectResult, json?: boolean, done = false): void {
   // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
   // the express checkup was shown as it finished.
   if (!jsonOutput(json)) {
@@ -4243,6 +4244,7 @@ function emitConnect(result: ConnectResult, json?: boolean): void {
     for (const line of lines) out(line);
   } else {
     printResult(result, json);
+    if (done) writeEvent({ event: "done", status: result.status, ...(result.id ? { id: result.id } : {}), next: result.next });
   }
   process.exitCode = CONNECT_EXIT[result.status];
 }
@@ -4283,14 +4285,14 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
   } catch (err) {
-    return emitConnect({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
+    return emitConnect({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json, true);
   }
   // With JSON output, stderr is the event stream: every line of it is a JSON event
   // (console.error and console.warn too, since the preAction hook).
   const json = jsonOutput(opts.json);
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
-    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
+    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json, true);
   }
   // What --provider names, when it is one; else the host's.
   const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
@@ -4298,19 +4300,19 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     minutes = waitMinutes(opts.wait, 20);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
   }
   let vcpus: number | undefined;
   try {
     vcpus = vcpusArg(opts.vcpus);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
   }
   // The step view, once shown: a refusal must stop it, or it redraws over the reason and keeps the process alive.
   let shownView: (() => StepView | undefined) | undefined;
   try {
     if (!opts.selfHosted && !signedIn(opts)) {
-      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json, true);
     }
     const api = cloudApi(opts.debug);
     // A person at a terminal gets the step view on stderr (after the price); piped, a line per step; --json, JSON events.
@@ -4404,17 +4406,17 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     const view = steps.view();
     if (view) {
       if (result.status === "ready") view.complete();
-      else if (result.status !== "in_progress") view.fail();
+      else if (result.status !== "in_progress" && !result.next.startsWith(STILL_IN_PROGRESS)) view.fail();
       view.stop();
     }
-    emitConnect(result, opts.json);
+    emitConnect(result, opts.json, true);
   } catch (err) {
     const view = shownView?.();
     if (view) {
       view.fail();
       view.stop();
     }
-    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
   }
 }
 
@@ -4447,12 +4449,14 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "it elsewhere; \"auth_url\" in the JSON event) and waits for the approval, up to 10 minutes.",
     "With --wait 0, and for agents, it stops there (exit 3) with the link in \"next\".",
     "",
-    "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
+    "Exit codes: 0 ready (or in progress with --no-wait), 1 failed, 3 action required (see",
+    "\"next\"), also when the wait ends before the box is ready.",
     "",
     "JSON output (--json): stdout is the result; stderr is one JSON event a",
     "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\"|\"debug\",\"message\":...}",
     "for any other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that",
     "child's lines (the logins it prints are masked: pgai mon show-grafana-credentials shows them).",
+    "The last event is {\"event\":\"done\",\"status\":...,\"next\":...}.",
     "",
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed; not needed",
