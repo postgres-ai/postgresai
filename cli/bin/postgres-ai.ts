@@ -4203,6 +4203,22 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
   }
 }
 
+/** Opens a page in the default browser; the caller has printed the URL, for when none opens. */
+function openInBrowser(url: string): void {
+  const openCommand = process.platform === "darwin" ? "open" :
+                     process.platform === "win32" ? "start" :
+                     "xdg-open";
+  // A missing/unspawnable opener (e.g. no xdg-open on a minimal Linux, or
+  // "start" being a cmd.exe builtin rather than an executable on Windows)
+  // emits an async "error" event; without a handler it would crash the
+  // process. Swallow it: the URL is already printed for manual use.
+  const browserProcess = spawn(openCommand, [url], { detached: true, stdio: "ignore" });
+  browserProcess.on("error", () => {
+    // Ignore: fall back to the printed URL
+  });
+  browserProcess.unref();
+}
+
 // ---- pgai mon deploy / mon instances list / watch / delete (postgres-ai/internal#354) ----
 // The surface pgai dblab deploy shares (lib/deploy-surface, postgresai#412): JSON
 // with --json (status, dashboard_url, next); exit codes 0 ready or in progress,
@@ -4367,6 +4383,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         },
+        // Supabase's consent page, for a person at a terminal (the link is printed too).
+        ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
         progress: steps.progress,
         aborted: () => stopping,
       });
@@ -4423,6 +4441,12 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
     "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
+    "Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API (the",
+    "database password is not needed and not sent). The first time, the organization connects",
+    "Supabase: deploy opens the consent page in the browser (the link is printed too, to open",
+    "it elsewhere; \"auth_url\" in the JSON event) and waits for the approval, up to 10 minutes.",
+    "With --wait 0, and for agents, it stops there (exit 3) with the link in \"next\".",
+    "",
     "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
     "",
     "JSON output (--json): stdout is the result; stderr is one JSON event a",
@@ -4441,6 +4465,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "Examples:",
     "  pgai mon deploy 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
     "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai mon deploy '<url>'",
+    "  pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres'",
     "  pgai mon deploy '<url>' --self-hosted",
   ].join("\n"))
   .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {
@@ -6474,19 +6499,7 @@ async function runAuthLogin(opts: AuthLoginOptions) {
       console.log(`\nOpening browser for authentication...`);
       console.log(`If browser does not open automatically, visit:\n${authUrl}\n`);
 
-      // Open browser (cross-platform)
-      const openCommand = process.platform === "darwin" ? "open" :
-                         process.platform === "win32" ? "start" :
-                         "xdg-open";
-      // A missing/unspawnable opener (e.g. no xdg-open on a minimal Linux, or
-      // "start" being a cmd.exe builtin rather than an executable on Windows)
-      // emits an async "error" event; without a handler it would crash the whole
-      // login flow. Swallow it — the URL is already printed above for manual use.
-      const browserProcess = spawn(openCommand, [authUrl], { detached: true, stdio: "ignore" });
-      browserProcess.on("error", () => {
-        // Ignore: fall back to the manually printed URL
-      });
-      browserProcess.unref();
+      openInBrowser(authUrl);
 
       // Step 4: Wait for callback
       console.log("Waiting for authorization...");
