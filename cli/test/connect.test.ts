@@ -1722,6 +1722,21 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect(late.calls.filter((c) => c.startsWith("connect"))).toEqual([]);
   });
 
+  test("the consent link expires before --wait ends: polling stops at expires_at, and says to re-run for a new link", async () => {
+    const T0 = Date.parse("2026-10-13T12:00:00Z");
+    let t = T0;
+    const f = make({ statuses: [{ status: "pending" }], now: () => (t += 20_000) });
+    f.deps.supabaseStart = async (dbUrl) => {
+      f.calls.push(`start ${dbUrl}`);
+      return { auth_url: AUTH, session_id: "sess-1", expires_at: new Date(T0 + 30_000).toISOString() };
+    };
+    expect(await connect(SB, { waitMs: 600_000 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one",
+    });
+    expect(f.calls).toEqual(["list", `start ${SB_PUBLIC}`, `open ${AUTH}`, "status sess-1"]);
+  });
+
   test("Ctrl-C while waiting for the browser: cancelled, nothing created", async () => {
     let stop = false;
     const f = make({ statuses: [{ status: "pending" }], aborted: () => stop });
