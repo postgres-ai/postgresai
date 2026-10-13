@@ -140,7 +140,7 @@ export interface ConnectDeps {
    * Supabase (v1.cloud_monitoring_supabase_*): the org's connection, or the consent page that makes one;
    * whether that consent came back; the box for a project of the connected org.
    */
-  supabaseStart(dbUrl: string): Promise<{ connected: true; project_ref: string } | { auth_url: string; session_id: string }>;
+  supabaseStart(dbUrl: string): Promise<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>;
   supabaseStatus(sessionId: string): Promise<{ status: "pending" | "connected" | "error"; error?: string }>;
   supabaseConnect(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** Opens a page in this machine's browser (a person at a terminal only). */
@@ -897,12 +897,16 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
     progress("preparing", `Connect Supabase to PostgresAI: approve access in the browser (open ${started.auth_url} if it did not open). Waiting...`, { auth_url: started.auth_url });
     deps.openUrl?.(started.auth_url);
+    // A declined consent is never reported: the session stays pending until it expires.
+    const expires = started.expires_at ? Date.parse(started.expires_at) : NaN;
     for (const deadline = deps.now() + Math.min(opts.waitMs, OAUTH_WAIT_MS); ;) {
       if (deps.aborted?.()) throw new CancelledError();
       const s = await deps.supabaseStatus(started.session_id);
       if (s.status === "connected") break;
       if (s.status === "error") return stop(`Supabase did not connect (${s.error ?? "no reason given"}): re-run to try again`);
-      if (deps.now() >= deadline) return stop(`${approve}, then re-run`);
+      const now = deps.now();
+      if (now >= expires) return stop("The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one");
+      if (now >= deadline) return stop(`${approve}, then re-run`);
       await deps.sleep(OAUTH_POLL_MS);
     }
   }
@@ -1334,7 +1338,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
       expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),
     quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
     billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,
-    supabaseStart: (dbUrl: string) => rpc<{ connected: true; project_ref: string } | { auth_url: string; session_id: string }>("cloud_monitoring_supabase_start", { db_url: dbUrl }),
+    supabaseStart: (dbUrl: string) => rpc<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>("cloud_monitoring_supabase_start", { db_url: dbUrl }),
     supabaseStatus: (sessionId: string) => rpc<{ status: "pending" | "connected" | "error"; error?: string }>("cloud_monitoring_supabase_status", { session_id: sessionId }),
     supabaseConnect: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_supabase_connect", body),
     handoffUrl: async (provider: "rds") => {
