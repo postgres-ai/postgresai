@@ -928,8 +928,11 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   }).catch((err) => {
     if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
     if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
+    // An org billed by a partner (or a box that exists already): the platform says what to do.
+    if (err instanceof HttpStatusError && err.status === 409) return { refused: errorText(err) };
     throw err;
   });
+  if (typeof created === "object" && "refused" in created) return stop(created.refused);
   if (created === "payment") return { status: "action_required", provider, name, ...b.billingPage };
   if (created === "declined") return { status: "action_required", provider, name, ...b.billingPage, next: b.billingPage.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
   if (created === "price") return stop("The price changed since it was shown: re-run pgai mon deploy to see it", b.billing);
