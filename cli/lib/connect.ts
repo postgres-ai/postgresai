@@ -878,7 +878,8 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
   if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
   if (opts.location) return stop("--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it");
-  const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster);
+  // A row of another database there (deployed as self-managed) is not this box.
+  const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster && (!d.database || d.database === "postgres"));
   if (row) {
     const note = opts.name && row.name !== opts.name ? `; --name ignored: this database is already monitored as ${row.name}` : "";
     return follow(row, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
@@ -943,6 +944,8 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   if (created.status === "failed") return { status: "failed", provider, name, id: created.id, ...b.billing, next: `${created.error} Re-run pgai mon deploy later.` };
   progress("checkup", "The checkup runs on the box: it prepares the database through the Supabase Management API", { id: created.id });
   const box: Database = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: false };
+  // Ctrl-C while the box was requested: it exists now, so the run detaches (it keeps going on PostgresAI).
+  if (deps.aborted?.()) return { ...connectStatus(box, provider, true), ...b.billing };
   return follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "" }, opts, deps, progress);
 }
 
