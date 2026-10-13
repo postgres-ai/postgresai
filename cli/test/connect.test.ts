@@ -1757,6 +1757,29 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect((await connect(SB, { waitMs: 0 }, gone.deps)).next).toBe("Add a payment method at https://console.postgres.ai/acme/billing, then re-run.");
   });
 
+  test("the box monitors the project's postgres database: another database is refused before anything is called", async () => {
+    const f = make({ rows: [sbRow("active")] });
+    expect(await connect(`postgresql://postgres:p@db.${REF}.supabase.co:5432/orders`, { waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: `db.${REF}.supabase.co/orders`,
+      next: "PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database",
+    });
+    expect(f.calls).toEqual([]);
+  });
+
+  test("--location goes to the platform with the box", async () => {
+    const { deps, calls } = make();
+    await connect(SB, { waitMs: 0, location: "hel1" }, deps);
+    expect(calls.at(-1)).toBe(`connect ${JSON.stringify({ project_ref: REF, server_location: "hel1" })}`);
+  });
+
+  test("a box removed before it became active: failed, not still in progress", async () => {
+    const { deps } = make({ rows: [undefined, undefined] });
+    expect(await connect(SB, { waitMs: 60_000 }, deps)).toEqual({
+      status: "failed", provider: "supabase", name: SB_NAME, id: "i-1", ...FREE,
+      next: "The monitoring box was removed before it became active: see pgai mon instances list, then re-run pgai mon deploy",
+    });
+  });
+
   test("a URL that names no Supabase project, and --reset-password: refused before anything is called", async () => {
     const f = make();
     expect(await connect("postgresql://postgres:p@10.0.0.5:5432/postgres", { provider: "supabase", waitMs: 0 }, f.deps)).toEqual({
