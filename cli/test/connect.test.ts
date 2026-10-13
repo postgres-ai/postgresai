@@ -1776,6 +1776,13 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect((await connect(SB, { waitMs: 0 }, member.deps)).status).toBe("action_required");
   });
 
+  test("the platform refuses the box (an org billed by a partner): its words, exit 3", async () => {
+    const partner = make({ supabaseConnect: async () => { throw new HttpStatusError("cloud monitoring supabase connect: HTTP 409\nThis organization is billed by a partner.\nDeploy monitoring from the console.", 409); } });
+    expect(await connect(SB, { waitMs: 0 }, partner.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, next: "This organization is billed by a partner.\nDeploy monitoring from the console.",
+    });
+  });
+
   test("--location is refused before anything is called: the platform picks the Supabase box's location", async () => {
     const { deps, calls } = make();
     expect(await connect(SB, { waitMs: 0, location: "hel1" }, deps)).toEqual({
