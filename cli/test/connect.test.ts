@@ -1673,6 +1673,22 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect(t).toBeGreaterThanOrEqual(20 * 60_000);
   });
 
+  test("another database of the project, monitored on its own, is not this deploy's box: provisions", async () => {
+    const { deps, calls } = make({ rows: [{ ...sbRow("active"), id: "i-orders", database: "orders" }, sbRow("launch_requested")] });
+    const result = await connect(SB, { waitMs: 0 }, deps);
+    expect(result).toMatchObject({ status: "in_progress", id: "i-1" });
+    expect(calls).toContain(`connect ${JSON.stringify({ project_ref: REF })}`);
+  });
+
+  test("Ctrl-C while the box request is in flight: the box exists, so the run detaches without polling", async () => {
+    let stop = false;
+    const f = make();
+    f.deps.supabaseConnect = async () => { stop = true; return { id: "i-1", name: SB_NAME, status: "launch_requested" }; };
+    f.deps.aborted = () => stop;
+    expect(await connect(SB, { waitMs: 60_000 }, f.deps)).toMatchObject({ status: "in_progress", id: "i-1", next: "pgai mon instances watch i-1" });
+    expect(f.calls.filter((c) => c === "sleep")).toEqual([]);
+  });
+
   test("a pooler URL names the same project: the project ref from the user name", async () => {
     const { deps, calls } = make();
     const result = await connect(`postgresql://postgres.${REF}:secretpw@aws-0-eu-central-1.pooler.supabase.com:6543/postgres`, { waitMs: 0 }, deps);
