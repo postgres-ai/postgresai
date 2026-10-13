@@ -27,6 +27,12 @@ describe("pgai mon deploy", () => {
     expect(r.stdout).toContain("--coupon <code>");
   });
 
+  test("the help says how a wait that ends before the box is ready exits, and names the last JSON event", async () => {
+    const help = (await run(["mon", "deploy", "--help"])).stdout.replace(/\s+/g, " ");
+    expect(help).toContain("Exit codes: 0 ready (or in progress with --no-wait), 1 failed, 3 action required (see \"next\"), also when the wait ends before the box is ready.");
+    expect(help).toContain("The last event is {\"event\":\"done\",\"status\":...,\"next\":...}.");
+  });
+
   // postgresai#412: one surface with pgai dblab deploy.
   test("the options both deploy commands share read the same in both helps", async () => {
     const shared = (help: string) => help.split("\n").filter((l) => /^ {2}(--db-url|--name|--location|--wait|--no-wait|-y, --yes|--json|--debug)\b/.test(l))

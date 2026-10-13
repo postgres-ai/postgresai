@@ -654,8 +654,10 @@ describe("mon deploy", () => {
       },
       sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
     });
+    // The wait ran out with the box still starting: not done (exit 3), and how to follow it.
     expect(await connect(CH, { waitMs: 100 }, deps)).toEqual({
-      status: "in_progress", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, checkup: CHECKUP, ...FREE, next: "pgai mon instances watch i-1",
+      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, checkup: CHECKUP, ...FREE,
+      next: "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1",
     });
     expect(polls).toBeGreaterThan(2);
   });
@@ -1658,6 +1660,17 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       ...FREE, next: "pgai mon instances watch i-1",
     });
     expect(calls).toEqual(["list", `start ${SB_PUBLIC}`, "quote", `connect ${JSON.stringify({ project_ref: REF })}`]);
+  });
+
+  // Live on the preview (2026-10-13): the box stayed launch_requested and deploy ended with exit 0 after its wait.
+  test("the box still launch_requested when the wait ends: action required (exit 3), resume with instances watch", async () => {
+    let t = 0;
+    const { deps } = make({ rows: [undefined, sbRow("launch_requested")], now: () => t, sleep: async (ms) => { t += ms; } });
+    expect(await connect(SB, { waitMs: 20 * 60_000 }, deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE,
+      next: "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1",
+    });
+    expect(t).toBeGreaterThanOrEqual(20 * 60_000);
   });
 
   test("a pooler URL names the same project: the project ref from the user name", async () => {
