@@ -1676,7 +1676,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       "list", `start ${SB_PUBLIC}`, `open ${AUTH}`,
       "status sess-1", "sleep", "status sess-1", "sleep", "status sess-1",
       `quote db.${REF}.supabase.co:5432 WELCOME`,
-      `connect ${JSON.stringify({ project_ref: REF, project_name: "orders", promo_code: "WELCOME", vcpus: 2 })}`,
+      `connect ${JSON.stringify({ project_ref: REF, name: "orders", promo_code: "WELCOME", vcpus: 2 })}`,
     ]);
     // The link is printed too (another machine, a browser that did not open), and is its own field for a script.
     expect(events[0]).toMatchObject({ event: "preparing", auth_url: AUTH,
@@ -1764,6 +1764,15 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       next: "PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database",
     });
     expect(f.calls).toEqual([]);
+  });
+
+  test("the platform refuses the project (another Supabase organization is connected) or the user (not an admin): its words, exit 3", async () => {
+    const other = make({ supabaseStart: async () => { throw new HttpStatusError("cloud monitoring supabase start: HTTP 409\nSupabase project x is not in Acme.\nUse a project of that Supabase organization.", 409); } });
+    expect(await connect(SB, { waitMs: 0 }, other.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, next: "Supabase project x is not in Acme.\nUse a project of that Supabase organization.",
+    });
+    const member = make({ supabaseStart: async () => { throw new HttpStatusError("cloud monitoring supabase start: HTTP 403\nnot an admin", 403); } });
+    expect((await connect(SB, { waitMs: 0 }, member.deps)).status).toBe("action_required");
   });
 
   test("--location goes to the platform with the box", async () => {
