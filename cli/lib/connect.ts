@@ -877,6 +877,7 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   // The box prepares and monitors the project's postgres database (prepare-db --supabase).
   if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
   if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
+  if (opts.location) return stop("--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it");
   const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster);
   if (row) {
     const note = opts.name && row.name !== opts.name ? `; --name ignored: this database is already monitored as ${row.name}` : "";
@@ -923,7 +924,6 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     ...(b.accepted ? { accept_price: true } : {}),
     ...(opts.coupon ? { promo_code: opts.coupon } : {}),
     ...(opts.vcpus ? { vcpus: opts.vcpus } : {}),
-    ...(opts.location ? { server_location: opts.location } : {}),
   }).catch((err) => {
     if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
     if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
