@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- The CLI and MCP server work on a slow link. When the TCP connect to postgres.ai took longer than
+  Node's per-address limit (250 ms on Node 20–24, 500 ms from Node 25) — a VPN, mobile, satellite, a
+  congested Wi-Fi — every request failed with a bare `fetch failed` while curl worked. The CLI now
+  allows 2 s per address on Node, unless the user set
+  `--network-family-autoselection-attempt-timeout` themselves. (#421)
+
 - `pgai joe` works against an *inverted* Joe instance — one whose platform agent
   polls the job channel and has no URL for the platform to dial. Every verb used
   to fail with `HTTP 426 Upgrade Required`, because the run rpc will only enqueue
