@@ -130,6 +130,9 @@ export interface DeployOptions {
   max_instances: number;
   instances_used: number;
   locations: string[];
+  /** The cloud these sizes, prices and locations are for, and the clouds offered (platform-all#925). */
+  cloud?: string;
+  clouds?: { code: string; label: string; available: boolean }[];
   ssh_keys: { id: string; name: string | null }[];
   is_admin: boolean;
   /** null when the platform could not read Stripe: the deploy's own PT402 decides then. */
@@ -140,6 +143,13 @@ export interface DeployOptions {
 /** `pgai dblab deploy --provider`: where the database runs (as `pgai mon deploy` names it). */
 export type DblabProvider = "rds" | "supabase" | "self-managed";
 export const DBLAB_PROVIDERS: DblabProvider[] = ["rds", "supabase", "self-managed"];
+
+/** `pgai dblab deploy --cloud`: where the DBLab server runs (platform-all#925). */
+export type DblabCloud = "hetzner" | "aws" | "gcp";
+export const DBLAB_CLOUDS: DblabCloud[] = ["hetzner", "aws", "gcp"];
+const CLOUD_NAMES: Record<DblabCloud, string> = { hetzner: "Hetzner", aws: "AWS", gcp: "Google Cloud" };
+export const cloudName = (cloud: string | null | undefined): string =>
+  CLOUD_NAMES[(cloud ?? "hetzner") as DblabCloud] ?? String(cloud);
 
 /** The provider the platform recorded for a source (platform-all#893). */
 export type SourceProvider = "generic" | "rds" | "aurora" | "supabase";
@@ -197,6 +207,8 @@ export interface CloudInstance {
   size: string | null;
   disk_gib: number | null;
   location: string | null;
+  cloud?: string | null;
+  ssh_user?: string | null;
   server_ip: string | null;
   is_job_backed: boolean;
   joe_instance_id: number | null;
@@ -211,10 +223,13 @@ export interface DeployReply {
   deploy_status: string;
   monthly_price_cents: number;
   provider?: string | null;
+  cloud?: string | null;
+  location?: string | null;
 }
 
-export const getDeployOptions = (p: ApiParams): Promise<DeployOptions> =>
-  callDeployRpc<DeployOptions>(p, "dblab_cloud_deploy_options", {}, "Read deploy options");
+/** Hetzner's options unless another cloud is named; an older platform knows no cloud argument. */
+export const getDeployOptions = (p: ApiParams, cloud?: DblabCloud): Promise<DeployOptions> =>
+  callDeployRpc<DeployOptions>(p, "dblab_cloud_deploy_options", cloud && cloud !== "hetzner" ? { cloud } : {}, "Read deploy options");
 
 export const listCloudInstances = async (p: ApiParams, instanceId?: number): Promise<CloudInstance[]> =>
   (await callDeployRpc<CloudInstance[] | null>(
@@ -228,7 +243,7 @@ export const deployDblab = (
   p: ApiParams,
   args: {
     name: string; dbUrl: string; size: string; diskGib: number; sshKeyIds: string[]; location?: string;
-    provider?: DblabProvider;
+    provider?: DblabProvider; cloud?: DblabCloud;
   },
 ): Promise<DeployReply> =>
   callDeployRpc<DeployReply>(
@@ -242,6 +257,8 @@ export const deployDblab = (
       ssh_key_ids: args.sshKeyIds,
       ...(args.location ? { location: args.location } : {}),
       ...(args.provider ? { provider: args.provider } : {}),
+      // Hetzner is the default: an older platform without the argument still answers.
+      ...(args.cloud && args.cloud !== "hetzner" ? { cloud: args.cloud } : {}),
     },
     "Deploy DBLab",
   );
