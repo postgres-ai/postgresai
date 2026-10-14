@@ -309,8 +309,16 @@ export const MONITORING_STEPS: StepDef[] = [
   { key: "ready", label: "Ready" },
 ];
 
+/** pgai mon deploy's steps for Supabase: the box prepares the database and runs the checkup, not the CLI. */
+export const SUPABASE_STEPS: StepDef[] = [
+  { key: "preparing", label: "Connect Supabase" },
+  { key: "provisioning", label: "Create the monitoring box" },
+  { key: "box", label: "Prepare the database and install monitoring (about 5 min)" },
+  { key: "ready", label: "Ready" },
+];
+
 /** The step list of pgai mon deploy for a provider. */
-export const monitoringSteps = (_provider: string): StepDef[] => MONITORING_STEPS;
+export const monitoringSteps = (provider: string): StepDef[] => provider === "supabase" ? SUPABASE_STEPS : MONITORING_STEPS;
 
 /** DBLab deploy steps, in the order the box reports them. */
 export const DBLAB_STEPS: StepDef[] = [
