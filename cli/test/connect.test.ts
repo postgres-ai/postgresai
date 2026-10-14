@@ -3,6 +3,7 @@ import {
 import { Client, type ClientConfig } from "pg";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
+import { StepView, monitoringSteps } from "../lib/deploy";
 import { resolveAdminConnection } from "../lib/init";
 import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
@@ -1671,6 +1672,25 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       next: "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1",
     });
     expect(t).toBeGreaterThanOrEqual(20 * 60_000);
+  });
+
+  // REV r1 (note_4008991901): the CLI neither prepares the database nor runs the checkup here; the box does both, later.
+  test("at a terminal the steps are Supabase's: no step is done before the box does it", async () => {
+    const out: string[] = [];
+    const view = new StepView("Deploying", monitoringSteps("supabase"), false, (s) => out.push(s), () => 0);
+    const steps = stepProgress({ json: false, tty: true, makeView: () => view, writeLine: (s) => out.push(`${s}\n`), writeEvent: () => {} });
+    const { deps } = make({ rows: [undefined, sbRow("launch_requested")], progress: steps.progress, now: () => 0 });
+    await connect(SB, { waitMs: 0 }, deps);
+    expect(out.join("")).toBe([
+      "Estimated cost: free (1 of 1 free slots)",
+      "Deploying",
+      "Connect Supabase: done (0s)",
+      "Create the monitoring box: started",
+      "The checkup runs on the box: it prepares the database through the Supabase Management API",
+      "Create the monitoring box: done (0s)",
+      "Prepare the database and install monitoring (about 5 min): started",
+      "",
+    ].join("\n"));
   });
 
   test("another database of the project, monitored on its own, is not this deploy's box: provisions", async () => {

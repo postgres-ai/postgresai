@@ -42,7 +42,7 @@ import {
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
-import { MONITORING_STEPS, StepView } from "../lib/deploy";
+import { monitoringSteps, StepView } from "../lib/deploy";
 import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, monitoringStatus, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
   enqueueQuery,
@@ -4320,7 +4320,7 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     let createdId: string | undefined;
     let stopping = false;
     const steps = stepProgress({
-      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, MONITORING_STEPS, true),
+      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, monitoringSteps(provider), true),
       writeLine: (line) => console.error(line), writeEvent, onId: (id) => { createdId = id; },
     });
     shownView = () => steps.view() as StepView | undefined;

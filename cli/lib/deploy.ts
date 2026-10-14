@@ -309,6 +309,9 @@ export const MONITORING_STEPS: StepDef[] = [
   { key: "ready", label: "Ready" },
 ];
 
+/** The step list of pgai mon deploy for a provider. */
+export const monitoringSteps = (_provider: string): StepDef[] => MONITORING_STEPS;
+
 /** DBLab deploy steps, in the order the box reports them. */
 export const DBLAB_STEPS: StepDef[] = [
   { key: "create_server", label: "Create server" },
