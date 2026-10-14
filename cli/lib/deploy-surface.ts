@@ -146,12 +146,17 @@ export function nameFromDatabase(url: string): string {
 }
 
 /** The options both deploy commands take, with the same names and words. */
-export function sharedDeployOptions(cmd: Command, waitDefaultMinutes: number, nameHelp: string): Command {
+export function sharedDeployOptions(
+  cmd: Command,
+  waitDefaultMinutes: number,
+  nameHelp: string,
+  locationHelp = "Hetzner location: fsn1, nbg1 or hel1 (default: any with capacity)",
+): Command {
   return cmd
     .argument("[database-url]", "the database: postgresql://user:password@host:5432/dbname")
     .option("--db-url <url>", "the database URL (the same as the argument)")
     .option("--name <name>", nameHelp)
-    .option("--location <location>", "Hetzner location: fsn1, nbg1 or hel1 (default: any with capacity)")
+    .option("--location <location>", locationHelp)
     .option("--wait <minutes>", "how long to wait for it to be ready (0 = do not wait)", String(waitDefaultMinutes))
     .option("--no-wait", "return once the deploy has started (the same as --wait 0)")
     .option("-y, --yes", "never prompt: accept the price and every confirmation")
