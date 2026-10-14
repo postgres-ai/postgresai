@@ -551,7 +551,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         // JSON on stdout, so the steps go to stderr as events, one JSON object a line
         // (and a check that cannot run, D004 without pg_stat_statements preloaded, a log event).
         const events = stderr.trim().split("\n").map((l) => JSON.parse(l).event);
-        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "checkup", "checkup", "box"]);
+        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "checkup", "checkup", "box", "done"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
