@@ -62,6 +62,7 @@ import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
 import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
+import { raiseConnectAttemptTimeout } from "../lib/connect-timeout";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
 import { Writable } from "stream";
@@ -8872,6 +8873,9 @@ mcp
 // skip the auto-parse so importing doesn't kick off the whole command tree.
 // `import.meta.main` is honored both under bun and in the node-targeted build.
 if (import.meta.main) {
+  // Before any request: Node's 250 ms per-address connect cutoff fails every
+  // call on a slow link (#421).
+  raiseConnectAttemptTimeout();
   // Bare `pgai` (no args at all): keep the long-standing nicety of showing help
   // and exiting 0. Without a default `help` command, Commander would otherwise
   // print help to stderr and exit 1 here. Unknown commands still flow through
