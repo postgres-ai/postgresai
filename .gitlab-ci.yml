@@ -1038,6 +1038,33 @@ cli:node:full:dind:
     - node ./cli/dist/bin/postgres-ai.js mon health --wait 120
     - node ./cli/dist/bin/postgres-ai.js mon show-grafana-credentials
     - echo ""
+    - echo "=== Reporter first run (initial delay, data wait, reports with data) ==="
+    # `targets add` above restarted postgres-reports; its first run starts
+    # 180 s later, once every target has data. Wait for it to finish.
+    - |
+      for i in $(seq 1 80); do
+        docker logs postgres-reports 2>&1 | grep -qE "postgres-reports: (sleeping|run failed)" && break
+        sleep 10
+      done
+      docker logs -t postgres-reports 2>&1 | grep -E "postgres-reports:|Discovered clusters|No clusters found|Generated report: .*(A002|A003)" || true
+      docker logs postgres-reports 2>&1 | grep -q "postgres-reports: sleeping" || (echo "FAIL: no successful first reporter run" && docker logs --tail 80 postgres-reports && exit 1)
+    - |
+      docker exec -i postgres-reports python - <<'PY'
+      import glob, json, sys
+      files = sorted(glob.glob("/app/*A002.json") + glob.glob("/app/*A003.json"))
+      ok = bool(files)
+      for f in files:
+          results = json.load(open(f)).get("results", {})
+          sizes = {node: len(r.get("data") or {}) for node, r in results.items()}
+          print(f, "nodes/data entries:", sizes)
+          ok = ok and bool(sizes) and all(sizes.values())
+      a002 = [json.load(open(f))["results"] for f in files if f.endswith("A002.json")]
+      for r in a002:
+          for node, v in r.items():
+              print("A002", node, (v.get("data") or {}).get("version", {}).get("version"))
+      sys.exit(0 if ok else "FAIL: first reports have no data")
+      PY
+    - echo ""
     - echo "=== Testing VM Basic Auth ==="
     # Read VM auth credentials from .env (CLI uses CWD when docker-compose.yml is present)
     - |
@@ -1075,6 +1102,7 @@ cli:node:full:dind:
   after_script:
     - docker ps -a || true
     - docker logs sink-prometheus 2>&1 || true
+    - docker logs -t postgres-reports 2>&1 | tail -200 || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
