@@ -4331,11 +4331,19 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       console.error(`\nStopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch ${createdId}`);
       process.exit(130);
     };
+    // The box request is sent once the "provisioning" step starts.
+    let requested = false;
     const onSigint = (): void => {
       if (createdId) return resume();
       if (stopping) process.exit(130);
       stopping = true;
-      console.error("\nCancelling: nothing has been created yet (Ctrl-C again to quit now).");
+      const reply = requested
+        ? "Stopping: the monitoring box is already requested; deploy stops watching when the request ends (Ctrl-C again to quit now)."
+        : "Cancelling: nothing has been created yet (Ctrl-C again to quit now).";
+      // Through the step view, if shown: else it draws over the reply.
+      const view = steps.view();
+      if (view) view.log(reply);
+      else console.error(`\n${reply}`);
     };
     process.on("SIGINT", onSigint);
     let result: ConnectResult;
@@ -4387,7 +4395,10 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
         },
         // Supabase's consent page, for a person at a terminal (the link is printed too).
         ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
-        progress: steps.progress,
+        progress: (e) => {
+          if (e.event === "provisioning") requested = true;
+          steps.progress(e);
+        },
         aborted: () => stopping,
       });
     } catch (err) {
