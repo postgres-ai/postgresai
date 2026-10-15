@@ -1,6 +1,12 @@
 """Tests for reporter.wait_ready: the first run waits for every target's data."""
+import runpy
+import sys
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+from reporter import wait_ready as wait_ready_module
+from reporter.postgres_reports import PostgresReportGenerator
 from reporter.wait_ready import read_targets, targets_with_data, wait_ready
 
 CLI_SOURCES = """# PGWatch Sources Configuration - prometheus Instance
@@ -115,3 +121,45 @@ def test_no_targets_does_not_wait():
     clock = FakeClock()
     assert wait_ready(lambda q: {}, [], 1800, 15, clock.sleep, clock.clock) is True
     assert clock.sleeps == []
+
+
+@pytest.mark.unit
+def test_read_targets_unquotes_before_it_strips_comments(tmp_path):
+    # js-yaml writes a name with " #" in quotes.
+    path = tmp_path / "sources.yml"
+    path.write_text("- name: 'a #b'\n  is_enabled: true\n- name: c  # note\n  is_enabled: true\n")
+    assert read_targets(str(path)) == [("default", "a #b"), ("default", "c")]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry", ["main", "python -m"])
+def test_main_passes_url_timeout_and_poll(entry, tmp_path, monkeypatch, capsys):
+    """`python -m reporter.wait_ready URL SOURCES TIMEOUT POLL`, as
+    postgres-reports.sh runs it: the URL goes to the generator, the wait
+    uses query_instant, gives up after TIMEOUT and sleeps POLL between checks."""
+    sources = tmp_path / "sources.yml"
+    sources.write_text("- name: n1\n  is_enabled: true\n  custom_tags:\n    cluster: c1\n")
+    clock = FakeClock()
+    monkeypatch.setattr(wait_ready_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(wait_ready_module.time, "monotonic", clock.clock)
+    generator = MagicMock(spec=PostgresReportGenerator)
+    generator.query_instant.side_effect = prom({})
+    generator.query_range.side_effect = AssertionError("query_range is not the readiness query")
+    argv = ["x", "http://prom.test:9090", str(sources), "60", "5"]
+
+    with patch("reporter.postgres_reports.PostgresReportGenerator", return_value=generator) as cls:
+        if entry == "main":
+            assert wait_ready_module.main(argv) == 0
+        else:
+            monkeypatch.setattr(sys, "argv", argv)
+            with pytest.raises(SystemExit) as exit_info:
+                runpy.run_module("reporter.wait_ready", run_name="__main__")
+            assert exit_info.value.code == 0
+
+    cls.assert_called_once_with("http://prom.test:9090", postgres_sink_url=None)
+    assert clock.sleeps == [5.0] * 12
+    assert generator.query_instant.call_count == 13 * 2
+    assert generator.query_range.call_count == 0
+    out = capsys.readouterr().out
+    assert "waiting for data: c1/n1; next check in 5s" in out
+    assert "no data after 60s for: c1/n1; running anyway" in out

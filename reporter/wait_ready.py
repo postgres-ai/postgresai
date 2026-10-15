@@ -21,10 +21,14 @@ Target = Tuple[str, str]
 
 
 def _scalar(raw: str) -> str:
-    value = raw.split(" #", 1)[0].strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        value = value[1:-1]
-    return value
+    value = raw.strip()
+    # A quoted scalar may hold " #" (js-yaml quotes such a name): unquote first,
+    # strip a trailing comment only from a plain scalar.
+    if value[:1] in ("'", '"'):
+        end = value.find(value[0], 1)
+        if end > 0:
+            return value[1:end]
+    return value.split(" #", 1)[0].strip()
 
 
 def read_targets(path: str) -> List[Target]:
@@ -75,8 +79,10 @@ def targets_with_data(query: Callable[[str], dict]) -> Set[Target]:
 
 
 def wait_ready(query: Callable[[str], dict], targets: List[Target], timeout_s: float,
-               poll_s: float, sleep=time.sleep, clock=time.monotonic) -> bool:
+               poll_s: float, sleep=None, clock=None) -> bool:
     """Poll until every target has data. True when ready, False on timeout."""
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
     if not targets:
         print("postgres-reports: no enabled targets in the sources file; not waiting", flush=True)
         return True
