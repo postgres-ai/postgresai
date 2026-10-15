@@ -474,7 +474,8 @@ export class StepView {
       const icon =
         st === "done" ? `${GREEN}✓${RESET}`
         : st === "failed" ? `${RED}✗${RESET}`
-        : st === "running" ? FRAMES[this.frame % FRAMES.length]
+        // Stopped (the wait ended, or Ctrl-C detached): the step goes on, but nothing animates it here.
+        : st === "running" ? (this.stopped ? "…" : FRAMES[this.frame % FRAMES.length])
         : `${DIM}·${RESET}`;
       const label = st === "pending" ? `${DIM}${s.label}${RESET}` : s.label;
       lines.push(`  ${icon} ${label}${dur ? ` ${DIM}${dur}${RESET}` : ""}`);
