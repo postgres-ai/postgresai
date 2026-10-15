@@ -1068,9 +1068,10 @@ cli:node:full:dind:
     - echo "=== Reporter non-happy paths (branch script, short delays via env) ==="
     # Each case runs the branch's postgres-reports.sh in its own reporter
     # container on the stack network: (a) a target with no data -> wait,
-    # then the time limit; (b) no target has data -> no upload of the
-    # 'local' fallback; (c) upload to a stub platform API; (d) a failed run
-    # is retried. The stub logs each RPC (no tokens).
+    # then the time limit; `targets remove` does not restart the reporter;
+    # (e) no sources file -> no wait; (b) no target has data -> no upload of
+    # the 'local' fallback; (c) upload to a stub platform API; (d) a failed
+    # run is retried. The stub logs each RPC (no tokens).
     - |
       cat > /tmp/stub_api.py <<'PY'
       import json
@@ -1143,7 +1144,17 @@ cli:node:full:dind:
       require /tmp/rep-a-unreachable.log "waiting for data: .*default/unreachable-test; next check in 15s"
       require /tmp/rep-a-unreachable.log "no data after 60s for: default/unreachable-test; running anyway"
       require /tmp/rep-a-unreachable.log "postgres-reports: sleeping 86400s"
-      node ./cli/dist/bin/postgres-ai.js mon targets remove unreachable-test 2>&1 | grep -v " Container " || true
+      # `targets remove` must not restart postgres-reports: its start time stays.
+      started_before=$(docker inspect -f '{{.State.StartedAt}}' postgres-reports)
+      node ./cli/dist/bin/postgres-ai.js mon targets remove unreachable-test
+      started_after=$(docker inspect -f '{{.State.StartedAt}}' postgres-reports)
+      echo "postgres-reports StartedAt before remove: $started_before; after remove: $started_after"
+      [ "$started_before" = "$started_after" ] || { echo "FAIL: targets remove restarted postgres-reports"; exit 1; }
+      echo "(e) no sources file: no enabled targets, no wait"
+      run_case rep-e-no-targets "postgres-reports: (sleeping|run failed)" 1 300 \
+        -e REPORTER_SOURCES_PATH=/nonexistent -e REPORTER_READINESS_TIMEOUT_SECONDS=60
+      require /tmp/rep-e-no-targets.log "postgres-reports: no enabled targets in the sources file; not waiting"
+      require /tmp/rep-e-no-targets.log "postgres-reports: sleeping 86400s"
       echo "(b) no target has data (empty Prometheus), upload enabled"
       run_case rep-b-no-data "postgres-reports: (sleeping|run failed)" 1 180 \
         -e PROMETHEUS_URL=http://empty-vm:9090 -e REPORTER_READINESS_TIMEOUT_SECONDS=20 -e REPORTER_READINESS_POLL_SECONDS=10 $UPLOAD
