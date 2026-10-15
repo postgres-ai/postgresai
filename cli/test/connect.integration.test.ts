@@ -579,7 +579,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
     const PROMPT = /Provision [^\n]+\? \(y\/N\): $/;
 
-    async function atPrompt(answer: string, o: { args?: string[]; create?: () => Response; timeoutMs?: number; vcpus?: string[] } = {}) {
+    async function atPrompt(answer: string, o: { args?: string[]; create?: (term: Bun.Terminal) => Response | Promise<Response>; timeoutMs?: number; vcpus?: string[] } = {}) {
       const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-prompt-"));
       const calls: string[] = [];
       const bodies: Record<string, unknown>[] = [];
@@ -591,13 +591,14 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           if (path.endsWith("/rpc/cloud_monitoring_connect")) bodies.push(JSON.parse(await req.text()));
           if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
           if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
-          if (o.create && path.endsWith("/rpc/cloud_monitoring_connect")) return o.create();
+          if (o.create && path.endsWith("/rpc/cloud_monitoring_connect")) return o.create(terminal!);
           return new Response("not found", { status: 404 });
         },
       });
       let out = "";
       let typed = false;
       let vcpusAsked = 0;
+      let terminal: Bun.Terminal | undefined;
       try {
         const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", ADMIN!, ...(o.args ?? [])], {
           cwd: home,
@@ -621,6 +622,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
             },
           },
         });
+        terminal = proc.terminal;
         // A run that never ends is killed: status null.
         const status = await Promise.race([proc.exited, Bun.sleep(o.timeoutMs ?? 60_000).then(() => { proc.kill(); return null; })]);
         return { status, raw: out, screen: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, ""), calls, bodies };
@@ -668,6 +670,32 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         // Nothing redraws over it: no cursor-up after the reason.
         expect(r.raw.slice(at)).not.toMatch(/\x1b\[\d+A/);
         expect(r.screen.trimEnd()).toMatch(/Unknown location "xyz"\. Choose one of: fsn1, nbg1, hel1\.\n.*Nothing was created\.$/s);
+      } finally {
+        await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+        await c.query("drop role if exists postgres_ai_mon").catch(() => {});
+        await c.end();
+      }
+    }, 60_000);
+
+    // REV r3 (MR !472): self-managed exited 0 with the box still starting, and gave no Resume line.
+    test("Ctrl-C while the box request is in flight: it detaches with the Resume line, exit 130", async () => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      try {
+        const r = await atPrompt("y\r", {
+          args: ["--vcpus", "2"], timeoutMs: 30_000,
+          create: async (term) => {
+            term.write("\x03");
+            // The platform answers after the reply to Ctrl-C.
+            await Bun.sleep(500);
+            return Response.json({ id: "i-9", name: "x", provider: "self-managed", status: "launch_requested" });
+          },
+        });
+        expect(r.status).toBe(130);
+        expect(r.screen).toContain("Stopping: the monitoring box is already requested");
+        expect(r.screen.trimEnd()).toEndWith("Stopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch i-9");
       } finally {
         await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
         await c.query("drop role if exists postgres_ai_mon").catch(() => {});
