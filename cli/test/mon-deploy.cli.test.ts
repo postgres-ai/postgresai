@@ -25,6 +25,7 @@ describe("pgai mon deploy", () => {
     expect(r.stdout).toContain("Usage: postgres-ai mon deploy [options] [database-url]");
     expect(r.stdout).toContain("--yes");
     expect(r.stdout).toContain("--coupon <code>");
+    expect(r.stdout.replace(/\s+/g, " ")).toContain("generic (direct PostgreSQL URL; alias: self-managed)");
   });
 
   // postgresai#412: one surface with pgai dblab deploy.

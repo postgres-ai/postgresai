@@ -1003,6 +1003,21 @@ describe("CLI commands", () => {
     expect(r.stdout).toMatch(/-- 03\.permissions/);
   });
 
+  test("cli: prepare-db --provider generic is the self-managed plan, without an unknown-provider warning", () => {
+    const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw", "--provider", "generic"]);
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/Unknown provider/);
+    expect(r.stdout).toMatch(/provider: self-managed/);
+    expect(r.stdout).toMatch(/-- 01\.role/);
+  });
+
+  test("cli: prepare-db --provider is case- and space-insensitive", () => {
+    const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw", "--provider", " Generic "]);
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/Unknown provider/);
+    expect(r.stdout).toMatch(/provider: self-managed/);
+  });
+
   test("cli: prepare-db warns about unknown provider", () => {
     const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw", "--provider", "unknown-cloud"]);
     expect(r.status).toBe(0);

@@ -743,7 +743,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
             properties: {
               ...ORG_ID_TOOL_PROPERTY,
               database_url: { type: "string", description: "postgresql:// URL with the password in it (admin, or the postgres_ai_mon role)" },
-              provider: { type: "string", description: "clickhouse | rds | supabase | self-managed (default: detected from the host)" },
+              provider: { type: "string", description: "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)" },
               clickhouse_key: { type: "string", description: "ClickHouse Cloud API key as <key-id>:<key-secret> (Basic Service API Reader), for CPU, memory and disk" },
               yes: { type: "boolean", description: "Accept the price of a billed box. Without it, a billed box is not provisioned: the result has status action_required and the price; ask the user, then call again with yes: true" },
               coupon: { type: "string", description: "Stripe promotion code for the organization's monitoring subscription (applies when it is first created)" },

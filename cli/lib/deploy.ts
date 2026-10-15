@@ -140,9 +140,9 @@ export interface DeployOptions {
   org_alias?: string | null;
 }
 
-/** `pgai dblab deploy --provider`: where the database runs (as `pgai mon deploy` names it). */
-export type DblabProvider = "rds" | "supabase" | "self-managed";
-export const DBLAB_PROVIDERS: DblabProvider[] = ["rds", "supabase", "self-managed"];
+/** `pgai dblab deploy --provider`: where the database runs (as `pgai mon deploy` names it; self-managed is an alias of generic). */
+export type DblabProvider = "generic" | "rds" | "supabase" | "self-managed";
+export const DBLAB_PROVIDERS: DblabProvider[] = ["generic", "rds", "supabase", "self-managed"];
 
 /** `pgai dblab deploy --cloud`: where the DBLab server runs (platform-all#925). */
 export type DblabCloud = "hetzner" | "aws" | "gcp";

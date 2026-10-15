@@ -4,6 +4,12 @@
 
 ### Added
 
+- `--provider generic` names the direct PostgreSQL path in `pgai mon deploy`, `pgai dblab deploy`,
+  `prepare-db` and `unprepare-db` (postgresai!480). It is an alias of `self-managed`: both spellings
+  work, and results still report `self-managed`. `--provider` now ignores case and surrounding spaces
+  in every command that takes it, so `prepare-db --provider Generic` no longer warns "Unknown provider".
+  The direct path needs a direct endpoint, not a pooler.
+
 - `pgai mon deploy` and `pgai dblab deploy` share one surface (postgresai#412): the URL as the argument or
   `--db-url`, `--name`, `--location`, `--wait <minutes>` / `--no-wait`, `--yes`, `--json`, one set of
   `status` words (`ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required`, `failed`)
