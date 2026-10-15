@@ -4,6 +4,12 @@
 
 ### Added
 
+- `pgai mon deploy` for Supabase from the CLI (https://gitlab.com/postgres-ai/platform-all/-/work_items/890): no
+  password; the CLI opens the Supabase consent page (the link is printed too, `auth_url` in the JSON events) and
+  waits for the approval, then the box prepares the database through the Supabase Management API. Agents and
+  `--wait 0` get `action_required` (exit 3) with the link in `next`. A wait that ends before the box is ready is
+  `action_required` (exit 3) with the resume command; with `--json` the event stream ends with a `done` event.
+
 - `--provider generic` names the direct PostgreSQL path in `pgai mon deploy`, `pgai dblab deploy`,
   `prepare-db` and `unprepare-db` (postgresai!480). It is an alias of `self-managed`: both spellings
   work, and results still report `self-managed`. `--provider` now ignores case and surrounding spaces
@@ -26,7 +32,7 @@
   SQL is printed), provisions the monitoring box, waits, and prints the project's Health Matrix
   (`health_url`, the next step) and Grafana, signed in with the PostgresAI account (`dashboard_url`). ClickHouse,
   RDS and Supabase are detected from the host; `--clickhouse-key <id>:<secret>` adds CPU, memory and
-  disk; RDS and Supabase point to their console flow; `--self-hosted` runs `mon local-install`.
+  disk; RDS points to its console flow; `--self-hosted` runs `mon local-install`.
   JSON (`status`, `health_url`, `dashboard_url`, `next`) when stdout is not a TTY; exit 0 / 1 / 3 (action required),
   and 130 for a `pgai init` cancelled at a prompt.
   An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.

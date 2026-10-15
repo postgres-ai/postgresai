@@ -184,7 +184,9 @@ The result is JSON on stdout. Act on `status` and `next`:
   - It names a price and `--yes`: quote the price to the user. Re-run with
     `--yes` only if they agree.
   - It needs a payment method: give the user the console link from `next`.
-  - It says "Finish in the console" (Supabase and Amazon RDS): give the user
+  - It is a Supabase consent link: give the user that link to open and approve,
+    then re-run the deploy.
+  - It says "Finish in the console" (Amazon RDS): give the user
     that link. When they say it is done, find the instance with
     `pgai mon instances list --org <alias> --json` and `watch` it.
   - It returns `sql` (the URL is not an admin URL): give the user that SQL to

@@ -226,7 +226,7 @@ After provisioning, the monitoring server connects from its own IP address, show
 the Console (Monitoring, then the instance). A database that must stay behind an IP allowlist
 needs AWS PrivateLink (RDS) or self-hosted monitoring (`--self-hosted`).
 
-Without `--provider`, RDS and Supabase hostnames still go to their console integration.
+Without `--provider`, RDS hostnames still go to their console integration, and Supabase hostnames to the Supabase consent flow (`pgai mon deploy` for Supabase).
 `generic` does not configure AWS PrivateLink, open a firewall, or remove TLS, permission, or
 payment checks. A private endpoint needs a network path, or monitoring hosted in that network
 (`--self-hosted`).
@@ -342,7 +342,7 @@ do `pgai dblab deploy` and `pgai dblab instances`:
 | `status` | Meaning | Exit code |
 |---|---|---|
 | `ready` | monitoring works; `health_url` (when the project is found) and `dashboard_url` are set | 0 |
-| `in_progress` | the monitoring box is being set up (`pgai mon deploy --no-wait`; also when the `--wait` of `pgai mon instances watch` or `pgai dblab deploy` ran out); follow it with `pgai mon instances watch <id>` | 0 |
+| `in_progress` | the monitoring box is being set up (`pgai mon deploy --no-wait`; also when the `--wait` of `pgai mon instances watch` or `pgai dblab deploy` ran out); follow it with the `next` command (`pgai mon instances watch <id>`; for DBLab, `pgai dblab instances watch <id>`) | 0 |
 | `deleting` | a delete is in progress, also the result of `pgai mon instances delete` | 0 |
 | `deleted` | it is gone | 0 |
 | `inactive` | deactivated (billing) | 1 |
@@ -579,7 +579,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
+- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. Supabase needs no password (PostgresAI prepares the database through the Supabase Management API): the first time, the result is `action_required` with a consent link in `next`; the user opens and approves it, then the tool is called again. Elsewhere `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
 
 #### `attachments` parameter (issue/comment tools)
 

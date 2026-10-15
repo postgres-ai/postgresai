@@ -2497,7 +2497,7 @@ describe("MCP deploy_monitoring", () => {
         const path = new URL(req.url).pathname;
         if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
         if (path.endsWith("/rpc/cloud_monitoring_supabase_start")) {
-          bodies.push(await req.json());
+          bodies.push((await req.json()) as Record<string, unknown>);
           return Response.json({ auth_url: "https://api.supabase.com/v1/oauth/authorize?state=s", session_id: "sess-1" });
         }
         return new Response("not found", { status: 404 });
