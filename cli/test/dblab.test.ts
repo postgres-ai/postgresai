@@ -916,18 +916,15 @@ describe("async handle", () => {
       }
     );
     expect(out).toEqual({ ok: true });
-    expect(waits).toEqual([1000, 2000]);
+    // Half-second looks first: on a held channel the answer is usually ready
+    // about a second in (platform-all#933).
+    expect(waits).toEqual([500, 500]);
   });
 
   test("the ladder doubles to a 15s ceiling and stays there", async () => {
     scriptFetch({
       dblab_call_result: [
-        { body: { status: "queued" } },
-        { body: { status: "queued" } },
-        { body: { status: "queued" } },
-        { body: { status: "queued" } },
-        { body: { status: "queued" } },
-        { body: { status: "queued" } },
+        ...Array.from({ length: 10 }, () => ({ body: { status: "queued" } })),
         { body: { status: "done", outcome: "ok", result: { ok: true } } },
       ],
     });
@@ -935,7 +932,7 @@ describe("async handle", () => {
     await awaitDblabCall({ job_id: "job-810", expires_in_s: 900 }, clock.params);
     // Past the ceiling, not just up to it: any ceiling from 2s to 120s passes
     // an assertion that stops at rung 1.
-    expect(clock.waits).toEqual([1000, 2000, 4000, 8000, 15000, 15000]);
+    expect(clock.waits).toEqual([500, 500, 500, 500, 1000, 2000, 4000, 8000, 15000, 15000]);
   });
 });
 
@@ -1022,6 +1019,7 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
       clock.params
     );
     expect(out).toEqual({ ok: true });
+    // A failed poll waits on the doubling rungs, not the 500 ms looks.
     expect(clock.waits).toEqual([1000]);
   });
 
@@ -1034,6 +1032,7 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
       await awaitDblabCall<{ ok: boolean }>({ job_id: "job-810", expires_in_s: 900 }, clock.params)
     ).toEqual({ ok: true });
     expect(calls.length).toBe(2);
+    // A failed poll waits on the doubling rungs, not the 500 ms looks.
     expect(clock.waits).toEqual([1000]);
   });
 
@@ -1044,7 +1043,19 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
       await awaitDblabCall<{ ok: boolean }>({ job_id: "job-810", expires_in_s: 900 }, clock.params)
     ).toEqual({ ok: true });
     expect(calls.length).toBe(2);
+    // A failed poll waits on the doubling rungs, not the 500 ms looks.
     expect(clock.waits).toEqual([1000]);
+  });
+
+  test("five instant failures take the 15s budget, not 2s of 500 ms looks (postgresai!479 REV)", async () => {
+    // A proxy answering 502 at once, or a short PostgREST restart, must not
+    // abandon a call that is still in flight after a couple of seconds.
+    scriptFetch({ dblab_call_result: [{ status: 502, body: { m: "bad gw" } }] });
+    const clock = fakeClock();
+    await expect(awaitDblabCall({ job_id: "job-810", expires_in_s: 900 }, clock.params)).rejects.toThrow(
+      /5 polls in a row failed/
+    );
+    expect(clock.waits).toEqual([1000, 2000, 4000, 8000]);
   });
 
   test("five failures in a row give up, naming the job and refusing to repeat the command", async () => {
@@ -1313,11 +1324,12 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
     });
     const clock = fakeClock();
     await expect(
-      awaitDblabCall({ job_id: "job-810", expires_in_s: 4 }, clock.params)
+      awaitDblabCall({ job_id: "job-810", expires_in_s: 1 }, clock.params)
     ).rejects.toThrow(/timed out/);
-    // 1000 + 2000 waited; the next rung (4000) would cross the 4000ms budget.
-    expect(clock.waits).toEqual([1000, 2000]);
-    expect(calls.length).toBe(3);
+    // 500 waited after the queued poll; the transient 503 does not reset the
+    // clock, and its 1000 ms retry would cross the 1000ms budget.
+    expect(clock.waits).toEqual([500]);
+    expect(calls.length).toBe(2);
   });
 
   test("an absent expires_in_s takes the 15-minute fallback, not the hour ceiling", async () => {
@@ -1343,7 +1355,8 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
   test("the wait is announced ONCE, with the estimate when the handle carries one", async () => {
     scriptFetch({
       dblab_call_result: [
-        { body: { status: "queued" } },
+        ...Array.from({ length: 4 }, () => ({ body: { status: "queued" } })),
+        { body: { status: "running" } },
         { body: { status: "running" } },
         DONE_OK,
       ],
@@ -1355,8 +1368,19 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
     ]);
   });
 
+  test("an answer inside two seconds is not announced at all (platform-all#933)", async () => {
+    scriptFetch({
+      dblab_call_result: [{ body: { status: "queued" } }, { body: { status: "running" } }, DONE_OK],
+    });
+    const clock = fakeClock();
+    await awaitDblabCall({ job_id: "job-810", expires_in_s: 120, first_answer_estimate_s: 1 }, clock.params);
+    expect(clock.announced()).toEqual([]);
+  });
+
   test("with no estimate the announce drops the clause rather than printing undefined", async () => {
-    scriptFetch({ dblab_call_result: [{ body: { status: "queued" } }, DONE_OK] });
+    scriptFetch({
+      dblab_call_result: [...Array.from({ length: 5 }, () => ({ body: { status: "queued" } })), DONE_OK],
+    });
     const clock = fakeClock();
     await awaitDblabCall({ job_id: "job-810", expires_in_s: 120 }, clock.params);
     expect(clock.announced()).toEqual([
@@ -1489,13 +1513,13 @@ describe("async handle — the poll leg: retries, give-ups and bounds", () => {
   });
 
   test("a delay landing EXACTLY on the deadline is not taken", async () => {
-    // 1000 + 2000 waited, next rung 4000, deadline 7000 -> 7000 >= 7000 stops.
+    // 4 x 500 waited, next rung 1000, deadline 3000 -> 3000 >= 3000 stops.
     scriptFetch({ dblab_call_result: [{ body: { status: "queued" } }] });
     const clock = fakeClock();
     await expect(
-      awaitDblabCall({ job_id: "job-810", expires_in_s: 7 }, clock.params)
+      awaitDblabCall({ job_id: "job-810", expires_in_s: 3 }, clock.params)
     ).rejects.toThrow(/timed out/);
-    expect(clock.waits).toEqual([1000, 2000]);
+    expect(clock.waits).toEqual([500, 500, 500, 500]);
   });
 
   test("a 202 whose body is unusable still says the call may run — the 202 proved it", async () => {

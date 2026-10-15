@@ -12,7 +12,7 @@
  * (v1.instance_query_enqueue / v1.instance_query_result).
  */
 
-import { resolveBaseUrls } from "./util";
+import { asyncPollDelayMs, resolveBaseUrls, SLOW_ANSWER_MS } from "./util";
 import { orgScopeHeaders, getActiveOrgScope } from "./org-scope";
 import { listProjects, isNumericProjectRef } from "./joe";
 
@@ -244,18 +244,6 @@ export function isTerminal(status: string): boolean {
   return TERMINAL.has(status);
 }
 
-/**
- * Poll delays, in ms.
- *
- * The platform half fixes 1s then 2s (platform-all!809). That is right for the first few — a rig at a
- * 5s server interval answers inside the first three — but flat 2s against the
- * 600000 ms DEFAULT pacing is ~300 requests for one answer, each a full
- * api_token_check doing a bcrypt per candidate token in the org. Doubling to a
- * 15s ceiling keeps the early polls fast and makes the long wait ~45.
- */
-function pollDelay(attempt: number): number {
-  return Math.min(1000 * 2 ** attempt, 15000);
-}
 
 /**
  * Poll until the job stops moving or the deadline passes.
@@ -278,17 +266,26 @@ export async function awaitQueryResult(
     // Injectable so a test can drive the deadline deterministically instead of
     // depending on real elapsed time.
     now?: () => number;
+    // Called once, when there is still no answer after SLOW_ANSWER_MS -- so a
+    // caller says why it is waiting only when there is a wait to explain.
+    onSlow?: () => void;
   },
 ): Promise<PromQLJobResult> {
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const deadline = now() + opts.timeoutMs;
+  const started = now();
+  const deadline = started + opts.timeoutMs;
+  let announced = false;
 
   for (let attempt = 0; ; attempt++) {
     const res = await readQueryResult(apiKey, jobId, opts);
     if (isTerminal(res.status)) return res;
+    if (!announced && opts.onSlow && now() - started >= SLOW_ANSWER_MS) {
+      announced = true;
+      opts.onSlow();
+    }
 
-    const delay = pollDelay(attempt);
+    const delay = asyncPollDelayMs(attempt);
     if (now() + delay >= deadline) return res;
     await sleep(delay);
   }

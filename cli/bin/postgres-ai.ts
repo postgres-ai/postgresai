@@ -6932,6 +6932,9 @@ withOrgOptions(program.command("promql"))
   .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
   .option("--json", "output the raw result payload")
   .action(async (expr: string, opts: PromQLOptions) => {
+    // The job id once there is one, so an error before the slow-answer line
+    // still names the job (postgresai!479 REV).
+    let queuedJobId: string | null = null;
     try {
       const rootOpts = program.opts<CliOptions>();
       const cfg = config.readConfig();
@@ -6998,6 +7001,7 @@ withOrgOptions(program.command("promql"))
       }
 
       const { jobId, firstAnswerEstimateS } = await enqueueQuery(apiKey, enqueue, { apiBaseUrl });
+      queuedJobId = jobId;
 
       // Size the wait from what the server SAID rather than from a constant
       // that is only right for one configuration. The estimate is the
@@ -7012,17 +7016,21 @@ withOrgOptions(program.command("promql"))
 
       // One line, not three: the id makes the answer recoverable if the user
       // interrupts, and the pacing is why the wait is long. Both on stderr so
-      // --json stdout stays machine-readable.
-      console.error(
-        firstAnswerEstimateS === null
-          ? `Queued as job ${jobId}; waiting up to ${formatSeconds(timeoutS)} for the instance's next poll.`
-          : `Queued as job ${jobId}; this instance polls roughly every ${formatSeconds(firstAnswerEstimateS)} ` +
-              `(jittered, so sometimes longer). Waiting up to ${formatSeconds(timeoutS)}.`,
-      );
+      // --json stdout stays machine-readable. Only once the answer is slow: on
+      // a held (long-poll) channel it usually arrives in about a second, and
+      // "polls roughly every 30s" is then simply untrue (platform-all#933).
+      const announce = () =>
+        console.error(
+          firstAnswerEstimateS === null
+            ? `Queued as job ${jobId}; waiting up to ${formatSeconds(timeoutS)} for the instance's next poll.`
+            : `Queued as job ${jobId}; this instance polls roughly every ${formatSeconds(firstAnswerEstimateS)} ` +
+                `(jittered, so sometimes longer). Waiting up to ${formatSeconds(timeoutS)}.`,
+        );
 
       const res = await awaitQueryResult(apiKey, jobId, {
         apiBaseUrl,
         timeoutMs: timeoutS * 1000,
+        onSlow: announce,
       });
 
       if (!isTerminal(res.status)) {
@@ -7060,6 +7068,7 @@ withOrgOptions(program.command("promql"))
       console.log(renderPromQL(res.result));
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
+      if (queuedJobId) console.error(`Job ${queuedJobId} was queued; it was not re-sent.`);
       process.exitCode = 1;
     }
   });

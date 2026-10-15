@@ -452,7 +452,7 @@ describe("runCommand — the job-channel route end to end", () => {
         delays.push(ms);
       },
     });
-    expect(delays.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 15000]);
+    expect(delays.slice(0, 9)).toEqual([500, 500, 500, 500, 1000, 2000, 4000, 8000, 15000]);
   });
 
   test("a queued command says so once, on stderr", async () => {
@@ -515,6 +515,28 @@ describe("runCommand — the job-channel route end to end", () => {
     expect(outcome.budgetExpired).toBe(true);
     expect(outcome.commandId).toBe("4711");
     expect(outcome.budgetMs).toBe(3_600_000);
+  });
+
+  test("five instant 502s on the job channel wait the 15s budget, not 2s (postgresai!479 REV)", async () => {
+    const delays: number[] = [];
+    let clock = 0;
+    installFetch({
+      joe_command_run: () => json(JOE_ASYNC_HANDLE, 202),
+      joe_command_output: () => new Response("Bad Gateway", { status: 502 }),
+    });
+    const outcome = await runCommand({
+      apiKey: "k",
+      apiBaseUrl: BASE,
+      instanceId: 2,
+      command: "explain select 1",
+      now: () => clock,
+      sleep: async (ms) => {
+        delays.push(ms);
+        clock += ms;
+      },
+    });
+    expect(outcome.budgetExpired).toBe(true);
+    expect(delays).toEqual([1000, 2000, 4000, 8000]);
   });
 
   test("the five-failure bound is the job channel's: the DIAL path still polls out its budget", async () => {
