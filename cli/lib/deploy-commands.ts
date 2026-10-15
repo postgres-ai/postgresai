@@ -268,7 +268,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
     .option("--size <size>", "server size (S, M, L)", "S")
     .option("--disk <gib>", "disk size in GiB", "50")
     .option("--ssh-key <name|id...>", "org SSH key(s) for reaching the server and its clones (required)")
-    .option("--provider <provider>", "where the database runs: rds, supabase or self-managed (default: detected)")
+    .option("--provider <provider>", "where the database runs: generic (direct PostgreSQL URL; alias: self-managed), rds or supabase (default: detected)")
     .option("--cloud <cloud>", "where the DBLab server runs: hetzner, aws or gcp (default: hetzner); --location is then its region")
     .addHelpText("after", [
       "",

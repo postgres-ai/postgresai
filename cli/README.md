@@ -208,6 +208,29 @@ machine instead. When stdout is not a terminal the result is JSON with `status`,
 `dashboard_url` and `next`. Then: `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`,
 and `pgai mon instances set <id-or-name> --vcpus <n>` to add or change the database server's vCPUs later (an org admin; AAS starts within a minute).
 
+To use a direct PostgreSQL connection, explicitly select `--provider generic`:
+
+```bash
+pgai mon deploy "$DATABASE_URL" --provider generic --org <alias> --json --no-wait
+```
+
+This is the existing `--provider self-managed` path under a clearer name; both spellings work,
+and the result's `provider` remains `self-managed` for compatibility. It works with any reachable
+PostgreSQL endpoint where the supplied user can create the monitoring role and grant privileges.
+Use a direct endpoint, not a pooler.
+
+The endpoint must be reachable from this machine, which prepares the database, and from
+PostgresAI. Before provisioning, PostgresAI tests the connection from its platform, whose
+address is not published, so the port must accept connections from the internet at that point.
+After provisioning, the monitoring server connects from its own IP address, shown on its page in
+the Console (Monitoring, then the instance). A database that must stay behind an IP allowlist
+needs AWS PrivateLink (RDS) or self-hosted monitoring (`--self-hosted`).
+
+Without `--provider`, RDS and Supabase hostnames still go to their console integration.
+`generic` does not configure AWS PrivateLink, open a firewall, or remove TLS, permission, or
+payment checks. A private endpoint needs a network path, or monitoring hosted in that network
+(`--self-hosted`).
+
 `pgai mon deploy` and `pgai dblab deploy` share their options and results: the database URL as the
 argument (or `--db-url`), `--name` (default: from the database), `--location` (a Hetzner location;
 default: any with capacity), `--wait <minutes>` / `--no-wait`, `--yes` (never prompt), `--json`, the
@@ -229,7 +252,7 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 
 | Option | |
 |---|---|
-| `--provider <provider>` | `clickhouse`, `rds`, `supabase` or `self-managed`; default: detected from the host |
+| `--provider <provider>` | `generic` (direct PostgreSQL; `self-managed` remains an alias), `clickhouse`, `rds` or `supabase`; default: detected from the host |
 | `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
 | `--reset-password` | `postgres_ai_mon` exists and its password is lost: set a new one (see below) |
@@ -404,8 +427,9 @@ PGPASSWORD=<password> pgai dblab deploy 'postgresql://<user>@<host>:5432/<db>' -
 ```
 
 The same options as `pgai mon deploy` (`--db-url`, `--name`, `--location`, `--wait`, `--no-wait`, `--yes`, `--json`),
-plus `--size S|M|L` (default `S`), `--disk <GiB>` (default 50) and `--ssh-key` (required: one of the organization's
-SSH keys, for reaching the server and its clones). `--name` defaults to the database's name; `--wait` to 120 minutes.
+plus `--size S|M|L` (default `S`), `--disk <GiB>` (default 50), `--ssh-key` (required: one of the organization's
+SSH keys, for reaching the server and its clones) and `--provider generic|rds|supabase` (default: detected; `self-managed`
+remains an alias of `generic`). `--name` defaults to the database's name; `--wait` to 120 minutes.
 It shows the estimated monthly cost before asking; with no payment method it stops with the billing page (exit 3).
 `pgai dblab instances list | watch (status) | delete` take an id or a name.
 

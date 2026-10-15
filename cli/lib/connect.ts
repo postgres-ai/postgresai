@@ -214,6 +214,16 @@ const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
 const POLL_MS = 15_000;
 export const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
 
+/**
+ * --provider as given, trimmed and case-insensitive (as pgai dblab deploy reads it).
+ * Generic names the direct PostgreSQL setup path, not who operates the database:
+ * it keeps the established value, self-managed, in results and preparation.
+ */
+export const providerArg = (provider: string | undefined): string | undefined => {
+  const p = provider?.trim().toLowerCase();
+  return p === "generic" ? "self-managed" : p;
+};
+
 /** `new URL`, or undefined for text that is not a URL (URL.canParse needs Node 18.17). */
 export function parseUrl(url: string): URL | undefined {
   try {
@@ -553,8 +563,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const started = deps.now();
   const progress = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}) =>
     deps.progress({ event, elapsed_s: Math.round((deps.now() - started) / 1000), message, ...more });
-  const provider = (opts.provider ?? detectCloudProvider(url)) as Provider;
-  if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
+  const provider = (providerArg(opts.provider) ?? detectCloudProvider(url)) as Provider;
+  if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: generic, ${PROVIDERS.join(", ")}`);
   // Before any name is taken from the URL (the MCP path does not go through the CLI's argument check).
   assertEncodedUserinfo(url);
   checkUrlParams(url, opts.agent);

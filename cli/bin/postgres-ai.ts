@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -1557,7 +1557,7 @@ program
   .option("--monitoring-user <name>", "Monitoring role name to create/update", DEFAULT_MONITORING_USER)
   .option("--password <password>", "Monitoring role password (overrides PGAI_MON_PASSWORD)")
   .option("--skip-optional-permissions", "Skip optional permissions (RDS/self-managed extras)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider: generic (alias: self-managed), supabase or clickhouse. Affects which steps are executed.")
   .option("--verify", "Verify that monitoring role/permissions are in place (no changes)", false)
   .option("--reset-password", "Reset monitoring role password only (no other changes)", false)
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
@@ -2374,7 +2374,7 @@ program
   .option("--admin-password <password>", "Admin connection password (otherwise uses PGPASSWORD if set)")
   .option("--monitoring-user <name>", "Monitoring role name to remove", DEFAULT_MONITORING_USER)
   .option("--keep-role", "Keep the monitoring role (only revoke permissions and drop objects)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider: generic (alias: self-managed), supabase or clickhouse. Affects which steps are executed.")
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
   .option("--force", "Skip confirmation prompt", false)
   .option("--json", "Output result as JSON (machine-readable)", false)
@@ -4278,7 +4278,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
   }
   // What --provider names, when it is one; else the host's.
-  const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
+  const explicit = providerArg(opts.provider);
+  const provider = PROVIDERS.find((p) => p === explicit) ?? detectCloudProvider(url);
   let minutes: number;
   try {
     minutes = waitMinutes(opts.wait, 20);
@@ -4406,7 +4407,7 @@ const mon = program.command("mon").description("monitoring services management")
 
 sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)")
   .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
-  .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
+  .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
   .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
@@ -4418,6 +4419,11 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, run the express checkup while it starts, wait, print the Health Matrix",
     "(health_url) and Grafana, signed in with your PostgresAI account (dashboard_url).",
+    "",
+    "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
+    "PostgresAI tests the connection from an unpublished address, so the port must accept connections",
+    "from the internet; after it, the monitoring box connects from the IP shown on its Console page.",
+    "Behind an IP allowlist, use AWS PrivateLink (RDS) or --self-hosted.",
     "",
     "Billing is per Postgres cluster observed: another database in a cluster the organization already",
     "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",

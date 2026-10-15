@@ -127,6 +127,9 @@ describe("ClickHouse provider", () => {
   test.each([
     [undefined, `postgres://postgres:pass@${host}:5432/postgres`, { provider: "clickhouse", detected: true }],
     ["self-managed", `postgres://postgres:pass@${host}:5432/postgres`, { provider: "self-managed", detected: false }],
+    ["generic", "postgresql://u@db.example.com/db", { provider: "self-managed", detected: false }],
+    [" Generic ", "postgresql://u@db.example.com/db", { provider: "self-managed", detected: false }],
+    ["SUPABASE", "postgresql://u@db.example.com/db", { provider: "supabase", detected: false }],
     [undefined, "postgresql://u@db.example.com/db", { provider: "self-managed", detected: false }],
     [undefined, undefined, { provider: "self-managed", detected: false }],
   ] as const)("resolveProvider(%j, %j)", (explicit, conn, expected) => {

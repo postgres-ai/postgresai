@@ -466,7 +466,7 @@ describe("pgai dblab deploy: the surface it shares with pgai mon deploy", () => 
     }
   });
 
-  test.each([["--no-wait"], ["--wait", "0"]])("%s: in_progress at once, with how to follow it, exit 0", async (...flag) => {
+  test.each([{ flag: ["--no-wait"] }, { flag: ["--wait", "0"] }])("$flag: in_progress at once, with how to follow it, exit 0", async ({ flag }) => {
     const api = await startFakeApi();
     try {
       const r = await runCli([...DEPLOY, "--yes", "--json", ...flag], api.env);
@@ -636,13 +636,26 @@ describe("pgai dblab deploy --provider", () => {
     }
   });
 
+  test("--provider generic names the direct path, as pgai mon deploy does", async () => {
+    const api = await startFakeApi({ probe: probe({ provider: "generic", detected_by: "flag" }) });
+    try {
+      const r = await runCli([...DEPLOY, "--provider", " Generic ", "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_source_probe")[0].body).toEqual({ db_url: "postgresql://u:secret@db.example:5432/app", provider: "generic" });
+      expect(api.fn("dblab_instance_deploy")[0].body.provider).toBe("generic");
+      expect(r.stderr).toContain('"Source: PostgreSQL (from --provider)"');
+    } finally {
+      api.stop();
+    }
+  });
+
   test("an unknown provider is refused before anything is called, exit 1", async () => {
     const api = await startFakeApi();
     try {
       for (const bad of ["clickhouse", "foo"]) {
         const r = await runCli([...DEPLOY, "--provider", bad, "--yes"], api.env);
         expect(r.status).toBe(1);
-        expect(JSON.parse(r.stdout).next).toBe("--provider must be one of: rds, supabase, self-managed");
+        expect(JSON.parse(r.stdout).next).toBe("--provider must be one of: generic, rds, supabase, self-managed");
       }
       expect(api.calls).toHaveLength(0);
     } finally {
