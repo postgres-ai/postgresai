@@ -1,9 +1,10 @@
 """Tests for config/scripts/postgres-reports.sh daemon-loop branches.
 
 These tests exercise the real shell script with a stubbed ``python`` on PATH.
-The stub records the arguments it was invoked with and exits non-zero, which
-(under ``set -e``) terminates the daemon loop after exactly one cycle — no
-real sleeps, no real reporter run.
+The stub records the arguments it was invoked with and exits non-zero; the
+script then sleeps the retry back-off, and a stubbed ``sleep`` that exits
+non-zero ends it (``set -e``) after exactly one cycle — no real sleeps, no
+real reporter run.
 
 Covered branches:
 
@@ -52,6 +53,9 @@ def run_one_cycle(tmp_path: Path, config_content=None):
         f"exit {STUB_EXIT_CODE}\n"
     )
     stub.chmod(0o755)
+    sleep_stub = stub_dir / "sleep"
+    sleep_stub.write_text(f"#!/usr/bin/env bash\nexit {STUB_EXIT_CODE}\n")
+    sleep_stub.chmod(0o755)
 
     config_path = tmp_path / ".pgwatch-config"
     if config_content is not None:
@@ -66,6 +70,7 @@ def run_one_cycle(tmp_path: Path, config_content=None):
             "STUB_ARGS_FILE": str(args_file),
             "REPORTER_PGWATCH_CONFIG_PATH": str(config_path),
             "REPORTER_INITIAL_DELAY_SECONDS": "0",
+            "REPORTER_READINESS_TIMEOUT_SECONDS": "0",
             # Large on purpose: if a cycle ever finishes without invoking the
             # reporter (the pre-fix bug), the loop sleeps and the test fails
             # via timeout instead of silently passing on a later cycle.
@@ -168,6 +173,9 @@ def run_one_cycle_logging_calls(tmp_path: Path, config_content: str, env_overrid
         f"exit {STUB_EXIT_CODE}\n"
     )
     stub.chmod(0o755)
+    sleep_stub = stub_dir / "sleep"
+    sleep_stub.write_text(f"#!/usr/bin/env bash\nexit {STUB_EXIT_CODE}\n")
+    sleep_stub.chmod(0o755)
     config_path = tmp_path / ".pgwatch-config"
     config_path.write_text(config_content)
     env = os.environ.copy()
@@ -179,6 +187,7 @@ def run_one_cycle_logging_calls(tmp_path: Path, config_content: str, env_overrid
             "REPORTER_PGWATCH_CONFIG_PATH": str(config_path),
             "REPORTER_API_URL": "https://api.example.test/api/general",
             "REPORTER_INITIAL_DELAY_SECONDS": "0",
+            "REPORTER_READINESS_TIMEOUT_SECONDS": "0",
             "REPORTER_INTERVAL_SECONDS": "86400",
             "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "all_reports_%Y%m%d_%H%M%S.json"),
         }
@@ -305,8 +314,8 @@ def _first_sleep(tmp_path: Path, delay_env):
 
 @pytest.mark.unit
 def test_first_run_waits_three_minutes_by_default(tmp_path):
-    """The first run is 3 minutes after start, not 30: the data it reads is
-    collected, scraped and queryable within ~105 s (see the script header)."""
+    """The first run starts 3 minutes after start, not 30, then waits for
+    data (see the readiness tests below)."""
     proc, slept = _first_sleep(tmp_path, None)
 
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
@@ -320,3 +329,85 @@ def test_first_run_delay_env_override(tmp_path):
 
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
     assert slept == ["1800"]
+
+
+def run_loop(tmp_path: Path, stop_after_sleeps: int, python_exit: int, env_extra=None):
+    """Run the script with a ``python`` stub that logs each call and exits
+    ``python_exit``, and a ``sleep`` stub that logs its argument and ends the
+    script at sleep number ``stop_after_sleeps``."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    sleeps = tmp_path / "sleeps.txt"
+    (stub_dir / "python").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$STUB_CALLS"\n'
+        f"exit {python_exit}\n"
+    )
+    (stub_dir / "sleep").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$1" >> "$STUB_SLEEPS"\n'
+        f'[ "$(wc -l < "$STUB_SLEEPS")" -ge {stop_after_sleeps} ] && exit {STUB_EXIT_CODE}\n'
+        "exit 0\n"
+    )
+    for name in ("python", "sleep"):
+        (stub_dir / name).chmod(0o755)
+    env = os.environ.copy()
+    for key in ("REPORTER_INITIAL_DELAY_SECONDS", "REPORTER_READINESS_TIMEOUT_SECONDS",
+                "REPORTER_READINESS_POLL_SECONDS", "REPORTER_RETRY_SECONDS",
+                "REPORTER_INTERVAL_SECONDS", "REPORTER_SOURCES_PATH", "PROMETHEUS_URL"):
+        env.pop(key, None)
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "STUB_CALLS": str(calls),
+            "STUB_SLEEPS": str(sleeps),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(tmp_path / ".pgwatch-config"),
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "r.json"),
+        }
+    )
+    env.update(env_extra or {})
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=TIMEOUT_SECONDS,
+    )
+    read = lambda p: p.read_text().splitlines() if p.exists() else []
+    return proc, read(calls), read(sleeps)
+
+
+@pytest.mark.unit
+def test_first_run_waits_for_data_once_then_runs_daily(tmp_path):
+    """After the initial delay the first run waits for every target's data
+    (default: poll 15 s, give up at 30 min); later runs do not wait."""
+    proc, calls, sleeps = run_loop(tmp_path, stop_after_sleeps=3, python_exit=0)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert sleeps == ["180", "86400", "86400"]
+    assert calls[0] == (
+        "-m reporter.wait_ready http://sink-prometheus:9090 "
+        "/postgres_ai_configs/pgwatch-prometheus/sources.yml 1800 15"
+    )
+    assert [c.split()[1] for c in calls[1:]] == ["reporter.postgres_reports"] * 2
+    assert "readiness_timeout_seconds=1800" in proc.stdout
+
+
+@pytest.mark.unit
+def test_readiness_wait_can_be_turned_off(tmp_path):
+    proc, calls, _ = run_loop(tmp_path, stop_after_sleeps=2, python_exit=0,
+                              env_extra={"REPORTER_READINESS_TIMEOUT_SECONDS": "0"})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert [c.split()[1] for c in calls] == ["reporter.postgres_reports"]
+
+
+@pytest.mark.unit
+def test_failed_run_is_retried_after_a_back_off(tmp_path):
+    """A failed run does not exit the script (a container restart would run
+    again within minutes); it sleeps 30 min and retries. A failed readiness
+    check does not stop the first run."""
+    proc, calls, sleeps = run_loop(tmp_path, stop_after_sleeps=3, python_exit=1)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert sleeps == ["180", "1800", "1800"]
+    assert [c.split()[1] for c in calls] == ["reporter.wait_ready"] + ["reporter.postgres_reports"] * 2
+    assert "run failed; retrying in 1800s" in proc.stderr
