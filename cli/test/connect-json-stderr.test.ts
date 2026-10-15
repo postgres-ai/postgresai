@@ -173,6 +173,20 @@ test("the wait ends with the box still starting: exit 3, the result on stdout, a
   }
 }, 60_000);
 
+// The help says: no done event after an error in the options (an error event, exit 1).
+// A bad --wait, --vcpus or URL used to end with a done event and no error event.
+test.each([
+  [[URL_, "--wait", "abc"]],
+  [[URL_, "--vcpus", "abc"]],
+  [["mysql://u@h/db"]],
+])("an error in the options, %p: one error event, no done event, exit 1", async (args) => {
+  const r = await run(["mon", "deploy", ...args, "--json"]);
+  expect(r.status).toBe(1);
+  const out = JSON.parse(r.stdout) as { status: string; next: string };
+  expect(out.status).toBe("failed");
+  expect(expectJsonLines(r.lines)).toEqual([{ event: "log", level: "error", message: out.next }]);
+});
+
 // A person at a terminal: Commander's errors are text, with the help after them,
 // as before. --json given as the value of --wait (deploy's) or of --api-key
 // (the root's) does not ask for JSON.
