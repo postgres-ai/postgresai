@@ -3767,7 +3767,16 @@ async function applyMonitoringTargetsConfig(): Promise<number> {
   if (generateCode !== 0) return generateCode;
 
   console.log("Restarting pgwatch collectors to pick up target changes...");
-  return runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
+  const upCode = await runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
+  if (upCode !== 0) return upCode;
+
+  // The reporter runs once a day after its first run. A restart runs it again
+  // after its initial delay and readiness wait, so a new target gets its first
+  // report then, not the next day.
+  if ((await runCompose(["restart", "postgres-reports"])) !== 0) {
+    console.error("⚠ Could not restart postgres-reports; the target's first report comes with its next daily run");
+  }
+  return 0;
 }
 
 /**

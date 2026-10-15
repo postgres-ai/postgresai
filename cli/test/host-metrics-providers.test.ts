@@ -213,7 +213,17 @@ test("Supabase: with host metrics off, a dotted target name is still added and p
   expect(added.exitCode, added.out).toBe(0);
   expect(readFileSync(`${projectDir}/instances.yml`, "utf8")).toContain("- name: prod.main\n");
   expect(scrapeFiles()).toEqual([]);
-  expect(readFileSync(log, "utf8")).toBe("run --rm sources-generator\nup -d --force-recreate pgwatch-prometheus pgwatch-postgres\n");
+  expect(readFileSync(log, "utf8")).toBe("run --rm sources-generator\nup -d --force-recreate pgwatch-prometheus pgwatch-postgres\nrestart postgres-reports\n");
+});
+
+// The reporter's daily timer would otherwise give a target added later its
+// first report a day after it is added.
+test("targets add and remove restart postgres-reports after the collectors", () => {
+  const restarts = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("restart "));
+  expect(run(["add", rds, "rds1"]).exitCode).toBe(0);
+  expect(restarts()).toEqual(["restart postgres-reports"]);
+  expect(run(["remove", "rds1"]).exitCode).toBe(0);
+  expect(restarts()).toEqual(["restart postgres-reports", "restart postgres-reports"]);
 });
 
 test("Supabase: host metrics turned off in .env, a dotted name is added and the other target's job removed", () => {
