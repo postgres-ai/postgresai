@@ -32,7 +32,7 @@
   An existing `postgres_ai_mon` keeps its password: `PGAI_MON_PASSWORD` is checked by logging in.
   Another database on a server PostgresAI already monitors for the organization needs no
   `PGAI_MON_PASSWORD`: with `sslmode=require` or `verify-*` in the URL, PostgresAI fills in the
-  password it keeps for that server, and the express checkup is skipped (it never runs as the admin).
+  password it keeps for that server.
   On a server without TLS, `mon deploy` says the kept password cannot be used there and names the way
   out, to an agent too (`PGAI_MON_PASSWORD`, TLS, or the instances to delete before
   `--reset-password`, quoted for the shell).
@@ -61,9 +61,8 @@
   re-run of `targets add <url>` without a name then adds a second target.
   Also `pgai init` (first run at a terminal), `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`, and the MCP
   tool `deploy_monitoring`.
-  While the box starts, `mon deploy` runs the express checkup as `postgres_ai_mon`, prints its findings
-  (JSON: `checkup`) and saves it as the database's first report (`pgai reports list`); where PostgresAI
-  keeps the role's password it is skipped (no `checkup` key, no first report). Each step and
+  `mon deploy` runs no checkup of its own: the box runs the first one about 30 minutes after it starts
+  (`first_checkup_eta`) and saves it as the database's first report (`pgai reports list`). Each step and
   each change of the box's state is shown once, with the time since the start (JSON: one event a line
   on stderr; any other text there, such as an error, a warning, `--debug` or a line of
   `mon local-install`, is `{"event":"log","level":"error"|"warn"|"info"|"debug","message":...}`, with
