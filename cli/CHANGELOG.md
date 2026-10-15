@@ -4,6 +4,12 @@
 
 ### Added
 
+- `--provider generic` names the direct PostgreSQL path in `pgai mon deploy`, `pgai dblab deploy`,
+  `prepare-db` and `unprepare-db` (postgresai!480). It is an alias of `self-managed`: both spellings
+  work, and results still report `self-managed`. `--provider` now ignores case and surrounding spaces
+  in every command that takes it, so `prepare-db --provider Generic` no longer warns "Unknown provider".
+  The direct path needs a direct endpoint, not a pooler.
+
 - `pgai mon deploy` and `pgai dblab deploy` share one surface (postgresai#412): the URL as the argument or
   `--db-url`, `--name`, `--location`, `--wait <minutes>` / `--no-wait`, `--yes`, `--json`, one set of
   `status` words (`ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required`, `failed`)
@@ -171,6 +177,12 @@
   receiving staff-internal issues they would render as ordinary ones.
 
 ### Fixed
+
+- The CLI and MCP server work on a slow link. When the TCP connect to postgres.ai took longer than
+  Node's per-address limit (250 ms on Node 20–24, 500 ms from Node 25) — a VPN, mobile, satellite, a
+  congested Wi-Fi — every request failed with a bare `fetch failed` while curl worked. The CLI now
+  allows 2 s per address on Node, unless the user set
+  `--network-family-autoselection-attempt-timeout` themselves. (#421)
 
 - `pgai joe` works against an *inverted* Joe instance — one whose platform agent
   polls the job channel and has no URL for the platform to dial. Every verb used

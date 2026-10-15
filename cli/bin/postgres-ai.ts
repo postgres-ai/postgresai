@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -62,6 +62,7 @@ import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
 import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
+import { raiseConnectAttemptTimeout } from "../lib/connect-timeout";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
 import { Writable } from "stream";
@@ -1556,7 +1557,7 @@ program
   .option("--monitoring-user <name>", "Monitoring role name to create/update", DEFAULT_MONITORING_USER)
   .option("--password <password>", "Monitoring role password (overrides PGAI_MON_PASSWORD)")
   .option("--skip-optional-permissions", "Skip optional permissions (RDS/self-managed extras)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider: generic (alias: self-managed), supabase or clickhouse. Affects which steps are executed.")
   .option("--verify", "Verify that monitoring role/permissions are in place (no changes)", false)
   .option("--reset-password", "Reset monitoring role password only (no other changes)", false)
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
@@ -2373,7 +2374,7 @@ program
   .option("--admin-password <password>", "Admin connection password (otherwise uses PGPASSWORD if set)")
   .option("--monitoring-user <name>", "Monitoring role name to remove", DEFAULT_MONITORING_USER)
   .option("--keep-role", "Keep the monitoring role (only revoke permissions and drop objects)", false)
-  .option("--provider <provider>", "Database provider (e.g., supabase, clickhouse). Affects which steps are executed.")
+  .option("--provider <provider>", "Database provider: generic (alias: self-managed), supabase or clickhouse. Affects which steps are executed.")
   .option("--print-sql", "Print SQL plan and exit (no changes applied)", false)
   .option("--force", "Skip confirmation prompt", false)
   .option("--json", "Output result as JSON (machine-readable)", false)
@@ -4295,7 +4296,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json, true);
   }
   // What --provider names, when it is one; else the host's.
-  const provider = PROVIDERS.find((p) => p === opts.provider) ?? detectCloudProvider(url);
+  const explicit = providerArg(opts.provider);
+  const provider = PROVIDERS.find((p) => p === explicit) ?? detectCloudProvider(url);
   let minutes: number;
   try {
     minutes = waitMinutes(opts.wait, 20);
@@ -4438,7 +4440,7 @@ const mon = program.command("mon").description("monitoring services management")
 
 sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)")
   .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
-  .option("--provider <provider>", "clickhouse | rds | supabase | self-managed (default: detected from the host)")
+  .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
   .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
@@ -4450,6 +4452,11 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, run the express checkup while it starts, wait, print the Health Matrix",
     "(health_url) and Grafana, signed in with your PostgresAI account (dashboard_url).",
+    "",
+    "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
+    "PostgresAI tests the connection from an unpublished address, so the port must accept connections",
+    "from the internet; after it, the monitoring box connects from the IP shown on its Console page.",
+    "Behind an IP allowlist, use AWS PrivateLink (RDS) or --self-hosted.",
     "",
     "Billing is per Postgres cluster observed: another database in a cluster the organization already",
     "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",
@@ -6962,6 +6969,9 @@ withOrgOptions(program.command("promql"))
   .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
   .option("--json", "output the raw result payload")
   .action(async (expr: string, opts: PromQLOptions) => {
+    // The job id once there is one, so an error before the slow-answer line
+    // still names the job (postgresai!479 REV).
+    let queuedJobId: string | null = null;
     try {
       const rootOpts = program.opts<CliOptions>();
       const cfg = config.readConfig();
@@ -7028,6 +7038,7 @@ withOrgOptions(program.command("promql"))
       }
 
       const { jobId, firstAnswerEstimateS } = await enqueueQuery(apiKey, enqueue, { apiBaseUrl });
+      queuedJobId = jobId;
 
       // Size the wait from what the server SAID rather than from a constant
       // that is only right for one configuration. The estimate is the
@@ -7042,17 +7053,21 @@ withOrgOptions(program.command("promql"))
 
       // One line, not three: the id makes the answer recoverable if the user
       // interrupts, and the pacing is why the wait is long. Both on stderr so
-      // --json stdout stays machine-readable.
-      console.error(
-        firstAnswerEstimateS === null
-          ? `Queued as job ${jobId}; waiting up to ${formatSeconds(timeoutS)} for the instance's next poll.`
-          : `Queued as job ${jobId}; this instance polls roughly every ${formatSeconds(firstAnswerEstimateS)} ` +
-              `(jittered, so sometimes longer). Waiting up to ${formatSeconds(timeoutS)}.`,
-      );
+      // --json stdout stays machine-readable. Only once the answer is slow: on
+      // a held (long-poll) channel it usually arrives in about a second, and
+      // "polls roughly every 30s" is then simply untrue (platform-all#933).
+      const announce = () =>
+        console.error(
+          firstAnswerEstimateS === null
+            ? `Queued as job ${jobId}; waiting up to ${formatSeconds(timeoutS)} for the instance's next poll.`
+            : `Queued as job ${jobId}; this instance polls roughly every ${formatSeconds(firstAnswerEstimateS)} ` +
+                `(jittered, so sometimes longer). Waiting up to ${formatSeconds(timeoutS)}.`,
+        );
 
       const res = await awaitQueryResult(apiKey, jobId, {
         apiBaseUrl,
         timeoutMs: timeoutS * 1000,
+        onSlow: announce,
       });
 
       if (!isTerminal(res.status)) {
@@ -7090,6 +7105,7 @@ withOrgOptions(program.command("promql"))
       console.log(renderPromQL(res.result));
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
+      if (queuedJobId) console.error(`Job ${queuedJobId} was queued; it was not re-sent.`);
       process.exitCode = 1;
     }
   });
@@ -8903,6 +8919,9 @@ mcp
 // skip the auto-parse so importing doesn't kick off the whole command tree.
 // `import.meta.main` is honored both under bun and in the node-targeted build.
 if (import.meta.main) {
+  // Before any request: Node's 250 ms per-address connect cutoff fails every
+  // call on a slow link (#421).
+  raiseConnectAttemptTimeout();
   // Bare `pgai` (no args at all): keep the long-standing nicety of showing help
   // and exiting 0. Without a default `help` command, Commander would otherwise
   // print help to stderr and exit 1 here. Unknown commands still flow through

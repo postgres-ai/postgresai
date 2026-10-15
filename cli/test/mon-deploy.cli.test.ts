@@ -25,6 +25,7 @@ describe("pgai mon deploy", () => {
     expect(r.stdout).toContain("Usage: postgres-ai mon deploy [options] [database-url]");
     expect(r.stdout).toContain("--yes");
     expect(r.stdout).toContain("--coupon <code>");
+    expect(r.stdout.replace(/\s+/g, " ")).toContain("generic (direct PostgreSQL URL; alias: self-managed)");
   });
 
   test("the help says how a wait that ends before the box is ready exits, and names the last JSON event", async () => {

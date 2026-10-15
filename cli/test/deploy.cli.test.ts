@@ -37,8 +37,9 @@ type Body = Record<string, unknown>;
 
 // The platform functions' argument names (db/api/v1/functions/*.sql in platform-all).
 const RPC_ARGS: Record<string, string[]> = {
-  dblab_cloud_deploy_options: ["org_id"],
-  dblab_instance_deploy: ["org_id", "name", "db_url", "size", "disk_gib", "ssh_key_ids", "location", "provider", "supabase_source_id"],
+  dblab_cloud_deploy_options: ["org_id", "cloud"],
+  dblab_instance_deploy: ["org_id", "name", "db_url", "size", "disk_gib", "ssh_key_ids", "location", "provider", "supabase_source_id",
+    "cloud", "privatelink"],
   dblab_cloud_source_probe: ["org_id", "db_url", "provider"],
   dblab_cloud_instances: ["org_id", "p_instance_id"],
   dblab_instance_destroy: ["instance_id"],
@@ -53,6 +54,8 @@ async function startFakeApi(opts: {
   rows?: Body[];
   /** v1.dblab_cloud_source_probe's reply; absent: the platform has no probe (404). */
   probe?: Body;
+  /** Extra keys of v1.dblab_instance_deploy's reply (e.g. the cloud and location it chose). */
+  deployReply?: Body;
 } = {}) {
   const calls: { fn: string; body: Body; headers: Record<string, string> }[] = [];
   let poll = 0;
@@ -89,7 +92,7 @@ async function startFakeApi(opts: {
           });
         case "dblab_instance_deploy":
           if (opts.deployError) return json(opts.deployError.body, opts.deployError.status);
-          return json({ id: 41, project_id: 9, project_name: body.name, deploy_status: "launching", monthly_price_cents: 5650 });
+          return json({ id: 41, project_id: 9, project_name: body.name, deploy_status: "launching", monthly_price_cents: 5650, ...opts.deployReply });
         case "dblab_cloud_instances": {
           if (opts.rows) return json(body.p_instance_id ? opts.rows.filter((r) => r.id === body.p_instance_id) : opts.rows);
           const p = progress[Math.min(poll++, progress.length - 1)];
@@ -463,7 +466,7 @@ describe("pgai dblab deploy: the surface it shares with pgai mon deploy", () => 
     }
   });
 
-  test.each([["--no-wait"], ["--wait", "0"]])("%s: in_progress at once, with how to follow it, exit 0", async (...flag) => {
+  test.each([{ flag: ["--no-wait"] }, { flag: ["--wait", "0"] }])("$flag: in_progress at once, with how to follow it, exit 0", async ({ flag }) => {
     const api = await startFakeApi();
     try {
       const r = await runCli([...DEPLOY, "--yes", "--json", ...flag], api.env);
@@ -633,13 +636,26 @@ describe("pgai dblab deploy --provider", () => {
     }
   });
 
+  test("--provider generic names the direct path, as pgai mon deploy does", async () => {
+    const api = await startFakeApi({ probe: probe({ provider: "generic", detected_by: "flag" }) });
+    try {
+      const r = await runCli([...DEPLOY, "--provider", " Generic ", "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_source_probe")[0].body).toEqual({ db_url: "postgresql://u:secret@db.example:5432/app", provider: "generic" });
+      expect(api.fn("dblab_instance_deploy")[0].body.provider).toBe("generic");
+      expect(r.stderr).toContain('"Source: PostgreSQL (from --provider)"');
+    } finally {
+      api.stop();
+    }
+  });
+
   test("an unknown provider is refused before anything is called, exit 1", async () => {
     const api = await startFakeApi();
     try {
       for (const bad of ["clickhouse", "foo"]) {
         const r = await runCli([...DEPLOY, "--provider", bad, "--yes"], api.env);
         expect(r.status).toBe(1);
-        expect(JSON.parse(r.stdout).next).toBe("--provider must be one of: rds, supabase, self-managed");
+        expect(JSON.parse(r.stdout).next).toBe("--provider must be one of: generic, rds, supabase, self-managed");
       }
       expect(api.calls).toHaveLength(0);
     } finally {
@@ -678,8 +694,29 @@ describe("pgai dblab deploy --provider", () => {
       const r = await runCli([...DEPLOY, "--yes"], api.env);
       expect(r.status).toBe(1);
       expect(JSON.parse(r.stdout).next).toBe(
-        "Cannot connect to the source database: connection timed out\nHint: The RDS instance must be publicly accessible.");
+        "Cannot connect to the source database: connection timed out\nHint: The RDS instance must be publicly accessible."
+        + "\nA private RDS deploys over PrivateLink in the Console: https://console.postgres.ai/acme/instances/deploy?source=rds&network=private");
       expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  // platform-all#925: a private RDS is deployed over PrivateLink, from the Console.
+  test("an RDS whose name resolves to a private address goes to the PrivateLink wizard, exit 3", async () => {
+    const api = await startFakeApi({ probe: probe({ reachable: false, error: "connection timed out" }) });
+    try {
+      const r = await runCli(["dblab", "deploy", "postgresql://u:secret@10.77.1.5:5432/app", "--name", "app-db", "--ssh-key", "laptop",
+        "--provider", "rds", "--yes", "--json"], { ...api.env, PGAI_UI_BASE_URL: "https://console.example" });
+      expect(r.status).toBe(3);
+      expect(JSON.parse(r.stdout)).toMatchObject({
+        status: "action_required",
+        next: "This RDS is not reachable from the internet. If it is private, deploy it over PrivateLink in the Console: "
+          + "https://console.example/acme/instances/deploy?source=rds&network=private",
+      });
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+      // No price first: it would be this cloud's, and the private deploy runs on AWS (design review).
+      expect(r.stderr).not.toContain("Estimated cost");
     } finally {
       api.stop();
     }
@@ -695,6 +732,132 @@ describe("pgai dblab deploy --provider", () => {
       const r = await runTty(["dblab", "instances", "list"], api.env);
       expect(r.status).toBe(0);
       expect(r.screen).toContain("S 50GiB 203.0.113.9 from Supabase · Shop");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+describe("pgai dblab deploy --cloud (platform-all#925)", () => {
+  const AWS_OPTIONS = {
+    cloud: "aws",
+    sizes: [{ code: "S", vcpus: 2, ram_gib: 8, monthly_price_cents: 9900, available: true }],
+    locations: ["us-east-1", "us-east-2"],
+    clouds: [
+      { code: "hetzner", label: "Hetzner", available: true },
+      { code: "aws", label: "AWS", available: true },
+      { code: "gcp", label: "Google Cloud", available: false },
+    ],
+  };
+
+  test("without --cloud nothing new is sent, so an older platform still answers", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCli([...DEPLOY, "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_deploy_options")[0].body).toEqual({});
+      expect(api.fn("dblab_instance_deploy")[0].body).not.toHaveProperty("cloud");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("--cloud aws: that cloud's price before the confirmation, and the cloud sent to the deploy", async () => {
+    const api = await startFakeApi({ options: AWS_OPTIONS });
+    try {
+      const r = await runCli([...DEPLOY, "--cloud", "AWS", "--location", "us-east-2", "--yes", "--json"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_deploy_options")[0].body).toEqual({ cloud: "aws" });
+      expect(api.fn("dblab_instance_deploy")[0].body).toMatchObject({ cloud: "aws", location: "us-east-2" });
+      const events = r.stderr.trim().split("\n").map((l) => JSON.parse(l));
+      expect(events).toContainEqual({ event: "billing", message: "Estimated cost: $106.50/month (size S on AWS, 50 GiB), prorated." });
+    } finally {
+      api.stop();
+    }
+  });
+
+  // REV r1: --no-wait --json (the agents' path) carries where it runs too.
+  test("--no-wait --json: the result names the cloud and location", async () => {
+    const api = await startFakeApi({ options: AWS_OPTIONS, deployReply: { cloud: "aws", location: "eu-central-1" } });
+    try {
+      const r = await runCli([...DEPLOY, "--cloud", "aws", "--yes", "--json", "--no-wait"], api.env);
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout)).toMatchObject({ status: "in_progress", id: 41, cloud: "aws", location: "eu-central-1" });
+    } finally {
+      api.stop();
+    }
+  });
+
+  // REV r1: an explicit --cloud hetzner is today's request, so an older platform still answers it.
+  test("--cloud hetzner sends no cloud", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCli([...DEPLOY, "--cloud", "hetzner", "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_cloud_deploy_options")[0].body).toEqual({});
+      expect(api.fn("dblab_instance_deploy")[0].body).not.toHaveProperty("cloud");
+    } finally {
+      api.stop();
+    }
+  });
+
+  // AW7: with no --location the platform picks the region (the source's); the progress names it.
+  test("the progress names the cloud and the location the platform chose", async () => {
+    const api = await startFakeApi({ options: AWS_OPTIONS, deployReply: { cloud: "aws", location: "eu-central-1" } });
+    try {
+      const r = await runTty([...DEPLOY, "--cloud", "aws", "--yes"], api.env);
+      expect(r.status).toBe(0);
+      expect(r.screen).toContain('Deploying DBLab "app-db" (id 41) on AWS, eu-central-1');
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("an unknown cloud, a cloud that is off, or another cloud's location: refused before any deploy, exit 1", async () => {
+    const api = await startFakeApi({ options: AWS_OPTIONS });
+    try {
+      const bad = await runCli([...DEPLOY, "--cloud", "azure", "--yes"], api.env);
+      expect(bad.status).toBe(1);
+      expect(JSON.parse(bad.stdout).next).toBe("--cloud must be one of: hetzner, aws, gcp");
+      expect(api.calls).toHaveLength(0);
+
+      const off = await runCli([...DEPLOY, "--cloud", "gcp", "--yes"], api.env);
+      expect(off.status).toBe(1);
+      expect(JSON.parse(off.stdout).next).toBe("Google Cloud is not available.");
+
+      const where = await runCli([...DEPLOY, "--cloud", "aws", "--location", "fsn1", "--yes"], api.env);
+      expect(where.status).toBe(1);
+      expect(JSON.parse(where.stdout).next).toBe('Unknown location "fsn1" for AWS. Choose one of: us-east-1, us-east-2.');
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("the result names the cloud and region the server runs in", async () => {
+    const api = await startFakeApi({
+      options: { ...AWS_OPTIONS, cloud: "gcp", locations: ["us-central1"], clouds: AWS_OPTIONS.clouds.map((c) => ({ ...c, available: true })) },
+      progress: [{ deploy_status: "ready", deploy_step: "ready", server_ip: "203.0.113.11", cloud: "gcp", location: "us-central1" }],
+    });
+    try {
+      const r = await runCli([...DEPLOY, "--cloud", "gcp", "--yes", "--json"], api.env);
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout)).toMatchObject({ status: "ready", id: 41, cloud: "gcp", location: "us-central1", server_ip: "203.0.113.11" });
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("instances list names an AWS or GCP server's cloud and region", async () => {
+    const api = await startFakeApi({
+      rows: [{ id: 42, project_id: 9, project_name: "app-db", created_at: "", is_cloud: true, deploy_status: "ready",
+        deploy_step: "ready", deploy_error: null, deploy_updated_at: null, size: "S", disk_gib: 50, location: "europe-west3",
+        cloud: "gcp", ssh_user: "root", server_ip: "203.0.113.10", is_job_backed: true, joe_instance_id: null }],
+    });
+    try {
+      const r = await runTty(["dblab", "instances", "list"], api.env);
+      expect(r.status).toBe(0);
+      expect(r.screen).toContain("S 50GiB Google Cloud europe-west3 203.0.113.10");
     } finally {
       api.stop();
     }

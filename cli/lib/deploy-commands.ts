@@ -6,6 +6,7 @@
 
 import type { Command } from "commander";
 import { createInterface } from "readline";
+import { lookup } from "dns/promises";
 import { writeEvent } from "./json-stderr";
 import { HttpStatusError } from "./util";
 import {
@@ -23,12 +24,15 @@ import {
   resolveSshKeys,
   watchDblabDeploy,
   DBLAB_PROVIDERS,
+  DBLAB_CLOUDS,
+  cloudName,
   hasPassword,
   probeSource,
   sourceLine,
   sourceName,
   type ApiParams,
   type DblabProvider,
+  type DblabCloud,
   type ProbeReply,
   type CloudInstance,
   type WatchOutcome,
@@ -101,6 +105,25 @@ function emit(deps: DeployCliDeps, result: DblabResult, json: boolean | undefine
   process.exitCode = DEPLOY_EXIT[result.status];
 }
 
+/**
+ * A private RDS: its name resolves to a private (RFC 1918) address. A timeout alone is not proof (a
+ * public RDS behind a closed security group times out too): that stays a failure, with a hint.
+ */
+async function looksPrivate(dbUrl: string): Promise<boolean> {
+  let host = "";
+  try {
+    host = new URL(dbUrl).hostname;
+  } catch {
+    return false;
+  }
+  try {
+    const { address } = await lookup(host, { family: 4 });
+    return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address);
+  } catch {
+    return false;
+  }
+}
+
 const failed = (deps: DeployCliDeps, err: unknown, json: boolean | undefined): void =>
   emit(deps, { status: "failed", next: err instanceof Error ? err.message : String(err) }, json);
 
@@ -131,7 +154,7 @@ function sshHint(inst: CloudInstance): string {
   if (!inst.server_ip) return "";
   return [
     `Connect to a clone through SSH (clones listen on the server's localhost), e.g. port 6000:`,
-    `  ssh -N -L 6000:127.0.0.1:6000 root@${inst.server_ip}`,
+    `  ssh -N -L 6000:127.0.0.1:6000 ${inst.ssh_user ?? "root"}@${inst.server_ip}`,
     `  psql "host=127.0.0.1 port=6000 user=<user> dbname=<db>"`,
   ].join("\n");
 }
@@ -160,7 +183,10 @@ function dblabResult(outcome: WatchOutcome, id: number): DblabResult {
   const inst = outcome.instance;
   // A failed or deleted deploy's server is gone; its IP may already be someone else's (as in list).
   const ipShown = inst?.server_ip && inst.deploy_status !== "destroyed" && inst.deploy_status !== "failed";
-  const base = { id, name: inst?.project_name, ...(ipShown ? { server_ip: inst!.server_ip } : {}) };
+  const base = {
+    id, name: inst?.project_name, ...(ipShown ? { server_ip: inst!.server_ip } : {}),
+    ...(inst?.cloud ? { cloud: inst.cloud, location: inst.location } : {}),
+  };
   switch (outcome.kind) {
     case "ready":
       return { ...base, status: "ready", next: `PGAI_CLONE_DB_PASSWORD=<password> pgai dblab clone create --project ${inst!.project_name} --db-user <user>` };
@@ -206,8 +232,11 @@ async function followDblab(
   json: boolean | undefined,
   minutes: number,
   deps: DeployCliDeps,
+  where?: { cloud?: string | null; location?: string | null },
 ): Promise<void> {
-  const view = viewFor(`Deploying DBLab "${name}" (id ${id})`, DBLAB_STEPS, tty, json);
+  // Where it runs, as the platform chose it (e.g. the source's region): "on AWS, eu-central-1".
+  const on = where?.location ? ` on ${cloudName(where.cloud || "hetzner")}, ${where.location}` : "";
+  const view = viewFor(`Deploying DBLab "${name}" (id ${id})${on}`, DBLAB_STEPS, tty, json);
   view.start();
   const outcome = await withDetach(view, `pgai dblab instances watch ${id}`, () =>
     watchDblabDeploy(api, id, view, { pollMs: pollMs(), maxMs: minutes * 60_000 }));
@@ -232,12 +261,15 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
   const tty = deps.isTty ?? isTtyDefault;
 
   sharedDeployOptions(deps.withOrgOptions(dblab.command("deploy")), 120,
-    "instance name: lowercase letters, digits, hyphens (default: from the database's name)")
+    "instance name: lowercase letters, digits, hyphens (default: from the database's name)",
+    "Hetzner location: fsn1, nbg1 or hel1 (default: any with capacity); with --cloud aws or gcp, a region "
+      + "(default: the source's region, else us-east-1 / us-central1)")
     .description("deploy DBLab + Joe in PostgresAI cloud, then follow it until it is ready")
     .option("--size <size>", "server size (S, M, L)", "S")
     .option("--disk <gib>", "disk size in GiB", "50")
     .option("--ssh-key <name|id...>", "org SSH key(s) for reaching the server and its clones (required)")
-    .option("--provider <provider>", "where the database runs: rds, supabase or self-managed (default: detected)")
+    .option("--provider <provider>", "where the database runs: generic (direct PostgreSQL URL; alias: self-managed), rds or supabase (default: detected)")
+    .option("--cloud <cloud>", "where the DBLab server runs: hetzner, aws or gcp (default: hetzner); --location is then its region")
     .addHelpText("after", [
       "",
       "The password: in the URL, or set PGPASSWORD.",
@@ -246,7 +278,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
     ].join("\n"))
     .action(async (urlArg: string | undefined, opts: {
       dbUrl?: string; name?: string; size: string; disk: string; sshKey?: string[]; location?: string;
-      provider?: string; wait?: string | boolean; yes?: boolean; debug?: boolean; json?: boolean;
+      provider?: string; cloud?: string; wait?: string | boolean; yes?: boolean; debug?: boolean; json?: boolean;
     }, cmd: Command) => {
       // The URL is the argument or --db-url: without either, Commander's own error for a missing argument.
       if (!urlArg?.trim() && !opts.dbUrl?.trim()) return cmd.error("error: missing required argument 'database-url'");
@@ -256,6 +288,10 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         if (provider && !DBLAB_PROVIDERS.includes(provider)) {
           throw new Error(`--provider must be one of: ${DBLAB_PROVIDERS.join(", ")}`);
         }
+        const cloud = opts.cloud?.trim().toLowerCase() as DblabCloud | undefined;
+        if (cloud !== undefined && !DBLAB_CLOUDS.includes(cloud)) {
+          throw new Error(`--cloud must be one of: ${DBLAB_CLOUDS.join(", ")}`);
+        }
         const name = opts.name?.trim() || nameFromDatabase(url);
         const minutes = waitMinutes(opts.wait, 120);
         const api = deps.resolveApi(!!opts.debug);
@@ -263,7 +299,13 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         if (!Number.isFinite(diskGib) || String(diskGib) !== opts.disk.trim()) {
           throw new Error("--disk must be a whole number of GiB");
         }
-        const options = await getDeployOptions(api);
+        const options = await getDeployOptions(api, cloud);
+        // A cloud this environment does not offer, before anything is asked.
+        const offered = cloud ? options.clouds?.find((c) => c.code === cloud) : undefined;
+        if (cloud && offered && !offered.available) throw new Error(`${cloudName(cloud)} is not available.`);
+        if (cloud && opts.location && options.locations?.length && !options.locations.includes(opts.location)) {
+          throw new Error(`Unknown location "${opts.location}" for ${cloudName(cloud)}. Choose one of: ${options.locations.join(", ")}.`);
+        }
         const notAdmin = (): void => emit(deps, { status: "action_required", name, next: notAdminNext }, opts.json);
         if (options.is_admin === false) return notAdmin();
         // Supabase without its password: the Console connects the account and makes a read-only user.
@@ -279,15 +321,8 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           }, opts.json);
         }
         const cents = estimateMonthlyCents(options, opts.size, diskGib);
-        const price = cents === null ? null : `${formatCents(cents)}/month (size ${opts.size.toUpperCase()}, ${diskGib} GiB), prorated.`;
-        // Always shown before asking, on stderr: stdout is the result.
-        if (price) {
-          if (jsonOutput(opts.json)) writeEvent({ event: "billing", message: estimateLine(price) });
-          else console.error(estimateLine(price));
-        }
-        const noCard = (): void =>
-          emit(deps, { status: "action_required", name, next: noCardNext(billingPage(deps.uiBaseUrl?.(), options.org_alias)) }, opts.json);
-        if (options.has_payment_method === false) return noCard();
+        const on = cloud ? ` on ${cloudName(cloud)}` : "";
+        const price = cents === null ? null : `${formatCents(cents)}/month (size ${opts.size.toUpperCase()}${on}, ${diskGib} GiB), prorated.`;
         // The source as the deploy will see it, before anything is asked or paid for.
         let probe: ProbeReply | null = null;
         try {
@@ -296,10 +331,34 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           if (err instanceof HttpStatusError && err.status === 403) return notAdmin();
           // Not testable now (e.g. too many tests): the deploy checks the source itself.
         }
+        // A private RDS (platform-all#925): reached over PrivateLink, which the Console sets up.
+        if (probe && !probe.reachable && (probe.provider === "rds" || probe.provider === "aurora")
+            && await looksPrivate(dbUrl)) {
+          const console_ = `${(deps.uiBaseUrl?.() ?? "https://console.postgres.ai").replace(/\/+$/, "")}/${options.org_alias ?? "<org>"}`;
+          return emit(deps, {
+            status: "action_required",
+            name,
+            next: "This RDS is not reachable from the internet. If it is private, deploy it over PrivateLink in the Console: "
+              + `${console_}/instances/deploy?source=rds&network=private`,
+          }, opts.json);
+        }
         if (probe && !probe.reachable) {
           // The advice on its own line, as the platform's refusals print it.
-          throw new Error(`Cannot connect to the source database: ${probe.error ?? "unknown error"}${probe.hint ? `\nHint: ${probe.hint}` : ""}`);
+          const viaPrivateLink = (probe.provider === "rds" || probe.provider === "aurora")
+            && /timeout|timed out/i.test(probe.error ?? "")
+            ? `\nA private RDS deploys over PrivateLink in the Console: ${(deps.uiBaseUrl?.() ?? "https://console.postgres.ai").replace(/\/+$/, "")}/${options.org_alias ?? "<org>"}/instances/deploy?source=rds&network=private`
+            : "";
+          throw new Error(`Cannot connect to the source database: ${probe.error ?? "unknown error"}${probe.hint ? `\nHint: ${probe.hint}` : ""}${viaPrivateLink}`);
         }
+        // Always shown before asking, on stderr: stdout is the result. After the source checks: a private
+        // RDS goes to the PrivateLink wizard, where it runs on AWS, not at this price.
+        if (price) {
+          if (jsonOutput(opts.json)) writeEvent({ event: "billing", message: estimateLine(price) });
+          else console.error(estimateLine(price));
+        }
+        const noCard = (): void =>
+          emit(deps, { status: "action_required", name, next: noCardNext(billingPage(deps.uiBaseUrl?.(), options.org_alias)) }, opts.json);
+        if (options.has_payment_method === false) return noCard();
         if (probe) {
           if (jsonOutput(opts.json)) writeEvent({ event: "source", message: sourceLine(probe) });
           else console.error(sourceLine(probe));
@@ -326,7 +385,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         let reply;
         try {
           reply = await deployDblab(api, {
-            name, dbUrl, size: opts.size, diskGib, sshKeyIds, location: opts.location, provider,
+            name, dbUrl, size: opts.size, diskGib, sshKeyIds, location: opts.location, provider, cloud,
           });
         } catch (err) {
           // The platform's own check (PT402), when the options could not tell.
@@ -335,12 +394,16 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           throw err;
         }
         if (minutes === 0) {
-          const started: DblabResult = { status: "in_progress", id: reply.id, name: reply.project_name, next: `pgai dblab instances watch ${reply.id}` };
+          const started: DblabResult = {
+            status: "in_progress", id: reply.id, name: reply.project_name,
+            ...(reply.cloud ? { cloud: reply.cloud, location: reply.location ?? null } : {}),
+            next: `pgai dblab instances watch ${reply.id}`,
+          };
           if (!jsonOutput(opts.json)) console.error(`Deploy started: id ${reply.id}. Follow it: ${started.next}`);
           emit(deps, started, opts.json);
           return;
         }
-        await followDblab(api, reply.id, reply.project_name, tty(), opts.json, minutes, deps);
+        await followDblab(api, reply.id, reply.project_name, tty(), opts.json, minutes, deps, reply);
       } catch (err) {
         failed(deps, err, opts.json);
       }
@@ -373,7 +436,8 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           // A failed or deleted deploy's server is gone; its IP may already be someone else's.
           const ip = r.server_ip && r.deploy_status !== "destroyed" && r.deploy_status !== "failed" ? ` ${r.server_ip}` : "";
           const source = sourceName(r.source_provider, r.source_name);
-          const extra = r.is_cloud ? ` ${r.size ?? ""} ${r.disk_gib ?? ""}GiB${ip}${source ? ` from ${source}` : ""}` : "";
+          const where = r.cloud && r.cloud !== "hetzner" ? ` ${cloudName(r.cloud)} ${r.location ?? ""}` : "";
+          const extra = r.is_cloud ? ` ${r.size ?? ""} ${r.disk_gib ?? ""}GiB${where}${ip}${source ? ` from ${source}` : ""}` : "";
           console.log(`${String(r.id).padEnd(6)} ${r.project_name.padEnd(28)} ${String(status).padEnd(14)}${extra}`);
           if (r.deploy_error && r.deploy_status !== "ready") {
             const summary = failureSummary(r.deploy_error);
@@ -405,7 +469,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         const ended = terminalOutcome(inst);
         if (ended && ended.kind !== "gone") return reportEnd(deps, ended, inst.id, opts.json);
         if (minutes === 0) return reportEnd(deps, { kind: "timeout", instance: inst }, inst.id, opts.json);
-        await followDblab(api, inst.id, inst.project_name, tty(), opts.json, minutes, deps);
+        await followDblab(api, inst.id, inst.project_name, tty(), opts.json, minutes, deps, inst);
       } catch (err) {
         failed(deps, err, opts.json);
       }

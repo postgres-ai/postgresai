@@ -42,6 +42,8 @@ import {
   isUnknownRpcSignature,
   positiveSeconds,
   asyncPollDelayMs,
+  asyncRetryDelayMs,
+  SLOW_ANSWER_MS,
 } from "./util";
 import { listProjects, isNumericProjectRef, type ProjectListItem } from "./joe";
 import { buildAuthHeaders } from "./org-scope";
@@ -261,7 +263,8 @@ const DBLAB_ASYNC_MAX_WAIT_MS = 60 * 60 * 1000;
 /**
  * Consecutive unanswered polls tolerated before the wait is abandoned.
  *
- * Five spans the first four rungs of the ladder, so the budget is 15s when the
+ * Five spans the first four doubling rungs (a failed poll never waits on the
+ * half-second looks, see asyncRetryDelayMs), so the budget is 15s when the
  * failures come back instantly and 140s when each burns its 25s timeout —
  * measured, not the one figure it looks like. That is short for a proxy that
  * answers 502 at once, and a 429 is spent from the same budget as an outage;
@@ -427,7 +430,8 @@ export async function awaitDblabCall<T>(
     (positiveSeconds(handle.expires_in_s) ?? 0) * 1000 || DBLAB_ASYNC_FALLBACK_WAIT_MS,
     DBLAB_ASYNC_MAX_WAIT_MS
   );
-  const deadline = now() + waitMs;
+  const started = now();
+  const deadline = started + waitMs;
   const estimate = positiveSeconds(handle.first_answer_estimate_s);
   let announced = false;
 
@@ -495,8 +499,10 @@ export async function awaitDblabCall<T>(
     // Say once why nothing is happening: the box only learns about the job on
     // its NEXT poll, and the estimate is a MEAN — jitter spreads it ±20%. Not
     // on a transient: that means the PLATFORM is unreachable, and naming the
-    // instance would point the operator at the wrong system.
-    if (!announced && outcome.kind === "result") {
+    // instance would point the operator at the wrong system. Not in the first
+    // couple of seconds either: on a held channel most answers arrive in about
+    // one, and a progress line for that is noise (platform-all#933).
+    if (!announced && outcome.kind === "result" && now() - started >= SLOW_ANSWER_MS) {
       announced = true;
       console.error(
         `Waiting for the DBLab instance to pick up the call (job ${jobId}` +
@@ -505,7 +511,7 @@ export async function awaitDblabCall<T>(
       );
     }
 
-    const delay = asyncPollDelayMs(attempt);
+    const delay = outcome.kind === "transient" ? asyncRetryDelayMs(failures) : asyncPollDelayMs(attempt);
     if (now() + delay >= deadline) {
       throw new Error(
         `${operation}: timed out waiting for the DBLab instance (job ${jobId}, last status ${lastStatus}). ` +

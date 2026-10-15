@@ -388,6 +388,57 @@ describe("mon deploy", () => {
     expect(calls).toEqual([]);
   });
 
+  test.each([
+    "postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app",
+    "postgresql://u:p@db.xyz.supabase.co:5432/postgres",
+  ])("generic explicitly selects the existing direct path for %s", async (url) => {
+    for (const provider of ["generic", "self-managed"]) {
+      const { deps, calls } = fake();
+      const result = await connect(url, { provider, waitMs: 0 }, deps);
+      expect(result.status).toBe("in_progress");
+      expect(result.provider).toBe("self-managed");
+      expect(calls).toContain("check self-managed");
+      expect(calls).toContain("prepare self-managed");
+      expect(calls.some((c) => c.startsWith("create "))).toBe(true);
+    }
+  });
+
+  test("generic is trimmed and case-insensitive, as dblab deploy's --provider is", async () => {
+    const { deps, calls } = fake();
+    const result = await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app",
+      { provider: " Generic ", waitMs: 0 }, deps);
+    expect(result.provider).toBe("self-managed");
+    expect(calls).toContain("check self-managed");
+  });
+
+  test("generic still refuses a failed TLS verification before changes, and says why", async () => {
+    const { deps, calls } = fake({ verifyTls: async () => {
+      throw Object.assign(new Error("certificate rejected"), { code: "CERT_HAS_EXPIRED" });
+    } });
+    const result = await connect("postgresql://u:p@db.example.com:5432/app?sslmode=require&channel_binding=require",
+      { provider: "generic", waitMs: 0 }, deps);
+    expect(result).toEqual({
+      status: "action_required", provider: "self-managed", name: "db.example.com/app",
+      next: "Could not verify the TLS certificate for channel_binding=require (certificate rejected). "
+        + "Provide sslrootcert=<CA file> with sslmode=verify-full, or explicitly accept the downgrade by removing channel_binding=require from the URL",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("generic does not bypass permission or payment refusal", async () => {
+    const url = "postgresql://u:p@db.example.com:5432/app";
+    const permission = fake({ prepare: async () => ({ sql: "-- required grants", next: "Run the SQL" }) });
+    expect(await connect(url, { provider: "generic", waitMs: 0 }, permission.deps)).toEqual({
+      status: "action_required", provider: "self-managed", name: "db.example.com/app", sql: "-- required grants", next: "Run the SQL",
+    });
+    expect(permission.calls.some((c) => c.startsWith("create "))).toBe(false);
+    const payment = fake({ quote: async () => ({ ...FREE_QUOTE, billed: true, requires_payment_method: true }) });
+    const refused = await connect(url, { provider: "generic", waitMs: 0 }, payment.deps);
+    expect(refused).toMatchObject({ status: "action_required", requires_payment_method: true });
+    expect(refused.next).toStartWith("Add a payment method at ");
+    expect(payment.calls).toEqual(["list", "check self-managed"]);
+  });
+
   test("a URL that cannot create the role: the SQL and the next step, nothing provisioned", async () => {
     const { deps, calls } = fake({ prepare: async () => ({ sql: "-- 01.role\ncreate role ...", next: "Run the SQL" }) });
     expect(await connect(CH, { waitMs: 0 }, deps)).toEqual({

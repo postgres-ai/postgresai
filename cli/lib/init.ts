@@ -56,7 +56,11 @@ export function resolveProvider(
   explicit: string | undefined,
   conn: string | undefined,
 ): { provider: string; detected: boolean } {
-  if (explicit !== undefined) return { provider: explicit, detected: false };
+  // generic: the direct PostgreSQL path of pgai mon deploy, prepared as self-managed.
+  if (explicit !== undefined) {
+    const p = explicit.trim().toLowerCase();
+    return { provider: p === "generic" ? "self-managed" : p, detected: false };
+  }
   const provider = conn === undefined ? null : detectProvider(conn);
   return { provider: provider ?? "self-managed", detected: provider !== null };
 }

@@ -30,6 +30,12 @@ git submodule update --remote .cursor
 - `/pgai:issues [id]` — Work with Issues from console.postgres.ai
 - `/pgai:checkup <connection>` — Run health checks
 
+The `postgresai` skill (`.claude/skills/postgresai/SKILL.md`) is for users'
+agents: it deploys monitoring and relays what PostgresAI produces (the
+deploy's checkup, reports, issues), with no research of its own. Keep it in
+sync when `mon deploy`, `reports`, `issues` or `auth login` change their
+output, or when the box's reporter changes its schedule.
+
 ## CLI
 
 ```bash

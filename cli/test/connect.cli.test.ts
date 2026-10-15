@@ -351,8 +351,14 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
       expect(r.status).toBe(1);
       expect(r.json()).toMatchObject({ status: "failed", provider: "clickhouse", name: "10.0.0.5/app" });
     }
+    // Trimmed and case-insensitive, as pgai dblab deploy's --provider is.
+    expect((await run(["mon", "deploy", url, "--provider", " ClickHouse ", "--wait", "soon"], env)).json())
+      .toMatchObject({ status: "failed", provider: "clickhouse" });
+    const rds = "postgresql://postgres:pw@db.abc.us-east-1.rds.amazonaws.com:5432/app";
+    expect((await run(["mon", "deploy", rds, "--provider", "GENERIC", "--wait", "soon"], env)).json())
+      .toMatchObject({ status: "failed", provider: "self-managed" });
     expect((await run(["mon", "deploy", url, "--provider", "oracle"], env)).json()).toEqual({
-      status: "failed", provider: "self-managed", name: "10.0.0.5/app", next: "--provider must be one of: clickhouse, rds, supabase, self-managed",
+      status: "failed", provider: "self-managed", name: "10.0.0.5/app", next: "--provider must be one of: generic, clickhouse, rds, supabase, self-managed",
     });
   });
 
