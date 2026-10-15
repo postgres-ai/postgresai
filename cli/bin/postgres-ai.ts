@@ -4413,6 +4413,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       process.removeListener("SIGINT", onSigint);
     }
     // Ctrl-C while the box was requested: connect returned at once; the deploy goes on.
+    // The self-managed path returns the box before any event names it.
+    if (stopping && !createdId && result.status === "in_progress") createdId = result.id;
     if (stopping && createdId) return resume();
     const view = steps.view();
     if (view) {
