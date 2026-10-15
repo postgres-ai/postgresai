@@ -32,7 +32,7 @@ git submodule update --remote .cursor
 
 The `postgresai` skill (`.claude/skills/postgresai/SKILL.md`) is for users'
 agents: it deploys monitoring and relays what PostgresAI produces (the
-deploy's checkup, reports, issues), with no research of its own. Keep it in
+box's reports and issues), with no research of its own. Keep it in
 sync when `mon deploy`, `reports`, `issues` or `auth login` change their
 output, or when the box's reporter changes its schedule.
 

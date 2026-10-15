@@ -19,10 +19,13 @@ Work on your own. Ask the user only when you are blocked:
 - which database to use: confirm it once, before anything else (step 1);
 - the database server's vCPU count, if you cannot find it (ask in the same
   question);
+- whether they have a PostgresAI coupon (promotion code; ask in the same
+  question);
 - the PostgresAI sign-in needs them (see step 2);
 - they belong to several PostgresAI organizations and you need to know which
   one;
-- monitoring costs money: quote the price and ask before accepting it;
+- monitoring costs money: warn them up front (step 1), then quote the price
+  the deploy shows and ask before accepting it;
 - a step changes their database or deletes something (see Rules).
 
 If the user declines monitoring, do not deploy it. Tell them what monitoring
@@ -31,8 +34,7 @@ would show, and stop.
 ## Rules
 
 - **No research of your own.** Your job is to deploy monitoring and relay what
-  PostgresAI produces: the deploy's checkup, PostgresAI's reports and the
-  issues it opens. Do not examine the database yourself: no `psql` or SQL, no
+  PostgresAI produces: PostgresAI's reports and the issues it opens. Do not examine the database yourself: no `psql` or SQL, no
   `pgai checkup`, no `pgai promql`, and no analysis beyond what PostgresAI
   reported. Applying a fix the user approved is not research (see Read-only).
 - **Read-only.** Never change the database yourself (DDL, settings, VACUUM,
@@ -90,13 +92,18 @@ production. Ask which one to use, and say in the same question that you will
 set up PostgresAI monitoring on it, which creates the `postgres_ai_mon` role,
 the `postgres_ai` schema and `pg_stat_statements`. Unless you already know it
 (see step 3), ask in the same question how many vCPUs the database server has,
-and say that "I don't know" is a fine answer. Use only the confirmed database
-from then on. If you find no URL, ask where it is.
+and say that "I don't know" is a fine answer. In the same question, warn that
+PostgresAI Cloud monitoring is a paid service, billed monthly per database
+cluster: the deploy shows the exact price (or that it is free) before anything
+is billed, and nothing is billed without their OK. Ask whether they have a
+PostgresAI coupon (a promotion code); "no" is a fine answer. Use only the
+confirmed database from then on. If you find no URL, ask where it is.
 
 If the user's request identifies exactly one candidate (its URL, variable, or
 host and database) and asks for PostgresAI monitoring, that is the
-confirmation. Still tell them what the setup will create before you deploy,
-and ask for the vCPU count if you do not know it.
+confirmation. Still tell them what the setup will create and that monitoring
+is paid before you deploy, ask whether they have a coupon, and ask for the
+vCPU count if you do not know it.
 
 To show a URL's parts without its password:
 
@@ -151,9 +158,8 @@ docker-compose service name, or a private address (`10.*`, `172.16-31.*`,
 `192.168.*`), do not deploy to the cloud. Tell the user PostgresAI Cloud
 cannot reach it, and offer `--self-hosted` (Docker on this machine) instead.
 A self-hosted deploy returns `ready` with Grafana at `dashboard_url`
-(`http://localhost:3000`) and `next` `pgai mon health`, but no `checkup` or
-Health Matrix: give the user the Grafana link, and say there are no findings
-to relay yet.
+(`http://localhost:3000`) and `next` `pgai mon health`, but no Health Matrix:
+give the user the Grafana link, and say there are no findings to relay yet.
 
 ```bash
 set -a; . ./.env 2>/dev/null; set +a; date -u +%FT%TZ >&2
@@ -163,6 +169,11 @@ pgai mon deploy "$DATABASE_URL" --org <alias> --json --no-wait
 If the URL is not in `.env` as `DATABASE_URL`, load it from where you found it,
 under its own name. Note the time printed first, on stderr: it is when the
 deploy started.
+
+If the user gave a coupon, add `--coupon <code>`. It applies when the
+organization's monitoring subscription is first created. An invalid code stops
+the deploy with `action_required` and changes nothing: tell the user what
+`next` says, and re-run with a corrected code or, if they agree, without it.
 
 Add `--vcpus <n>`, the database server's vCPU count. Take it from what you know
 (its instance class or server spec) or from the user's answer; never guess it.
@@ -181,8 +192,9 @@ The result is JSON on stdout. Act on `status` and `next`:
   minutes, and start step 4 meanwhile. The box usually becomes `ready` within
   about 20 minutes.
 - `action_required`: read `next`.
-  - It names a price and `--yes`: quote the price to the user. Re-run with
-    `--yes` only if they agree.
+  - It names a price and `--yes`: quote `price` to the user (and the coupon's
+    `description`, if one was applied). Re-run with `--yes` (and the same
+    `--coupon`) only if they agree.
   - It needs a payment method: give the user the console link from `next`.
   - It says "Finish in the console" (Supabase and Amazon RDS): give the user
     that link. When they say it is done, find the instance with
@@ -211,35 +223,37 @@ contains the deploy's `id`. The box appears there only once it is `ready`;
 until then, use the entry whose `name` is the deploy's `name`, if exactly one
 has it.
 
-- **At once: the first checkup.** While the box starts, the deploy checks the
-  database's configuration, bloat, indexes and transaction ID age, and saves
-  the result to PostgresAI: `checkup` in the deploy's result. Read
-  `checkup.findings` with status `warning` first. For the details of one
-  check, run `pgai reports data <checkup.report_id> --org <alias> --type json
-  --check-id <check_id>`. If `checkup` has no `report_id` (`upload_error`),
-  use each finding's `message`: nothing was saved, so no issues came from it.
-  If `checkup` holds an `error`, or the deploy skipped it, use the newest
-  report from `pgai reports list --org <alias> --project-id <project_id>
-  --json`.
-- **At once: issues.** `pgai issues list --org <alias> --json` lists the
+The deploy itself checks nothing: the findings come from the monitoring box.
+
+- **The first report.** The box runs its first checkup about 30 minutes after
+  it becomes ready and saves it to PostgresAI. Find it with `pgai reports list
+  --org <alias> --project-id <project_id> --json`: the box's reports have
+  `epoch` 1. Until it arrives, tell the user the box is collecting and when to
+  expect the first findings; if you can keep working, check every 5 minutes
+  until about 20 minutes after the expected time, otherwise offer to look
+  again later. Read a report's checks with `pgai reports data <report_id>
+  --org <alias> --type json`, warnings first; add `--check-id <check_id>` for
+  one check. The first report sees less than an hour of data and can be nearly
+  empty: say so if it is.
+- **Issues.** `pgai issues list --org <alias> --json` lists the
   organization's open issues, newest first; it does not say which database
   each one is for. Report those with `created_at` after the deploy started as
   what PostgresAI opened by itself, and say the list is organization-wide. If
   this database was monitored before, older open issues may be its own too:
-  PostgresAI reuses an open issue instead of opening a second one.
-- **For the user to look at:** the Health Matrix (`health_url`) shows the
-  checkup's results at once (unless its upload failed), and the dashboards (`dashboard_url`) fill in
-  within minutes of `ready`.
+  PostgresAI reuses an open issue instead of opening a second one. New issues
+  come with the box's reports, so look again after each one.
+- **For the user to look at:** the dashboards (`dashboard_url`) fill in within
+  minutes of `ready`, and the Health Matrix (`health_url`) after the first
+  report.
 
-The box's own reports add query analysis and wait-event trends. Its first
-report comes about 30 minutes after the box becomes ready, sees less than an
-hour of data, and can be nearly empty. The complete report comes about 24 hours
-after that, and then one a day. Find them with `pgai reports list` as above: the
-box's reports have `epoch` 1, and the deploy's checkup has none.
+The box's reports add query analysis and wait-event trends. The complete report
+comes about 24 hours after the first one, and then one a day.
 
 ## 5. Report
 
-Tell the user, in plain words, worst first:
+If the box's first report has not arrived, say so: report what was set up,
+the links, and when the first findings are expected, and offer to look again
+then. Once findings are in, tell the user, in plain words, worst first:
 
 1. **What is wrong.** Name the table, index or setting.
 2. **Why it matters for their application.** For example: slow queries, bloat,
