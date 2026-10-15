@@ -4250,6 +4250,12 @@ function emitConnect(result: ConnectResult, json?: boolean, done = false): void 
   process.exitCode = CONNECT_EXIT[result.status];
 }
 
+/** An error in mon deploy's options, before the run starts: with JSON output, an error event and no done event (exit 1). */
+function optionError(result: ConnectResult, json?: boolean): void {
+  if (jsonOutput(json)) console.error(result.next);
+  emitConnect(result, json);
+}
+
 /** An error of mon instances list / status / delete, in the same shape as a mon deploy result. */
 function failCloud(err: unknown, json?: boolean): void {
   printResult({ status: "failed", next: errorText(err) }, json);
@@ -4286,14 +4292,14 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
   } catch (err) {
-    return emitConnect({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json, true);
+    return optionError({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
   }
   // With JSON output, stderr is the event stream: every line of it is a JSON event
   // (console.error and console.warn too, since the preAction hook).
   const json = jsonOutput(opts.json);
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
-    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json, true);
+    return optionError({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
   }
   // What --provider names, when it is one; else the host's.
   const explicit = providerArg(opts.provider);
@@ -4302,13 +4308,13 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     minutes = waitMinutes(opts.wait, 20);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
+    return optionError({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
   let vcpus: number | undefined;
   try {
     vcpus = vcpusArg(opts.vcpus);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
+    return optionError({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
   // The step view, once shown: a refusal must stop it, or it redraws over the reason and keeps the process alive.
   let shownView: (() => StepView | undefined) | undefined;
