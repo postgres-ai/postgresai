@@ -144,6 +144,11 @@ claude plugin marketplace add postgres-ai/postgresai
 claude plugin install pgai@postgresai
 ```
 
+Then ask Claude to check your database. The `postgresai` skill
+([SKILL.md](.claude/skills/postgresai/SKILL.md)) deploys PostgresAI
+monitoring and reports the problems with exact fixes. Other agents
+install the skill with `npx skills add postgres-ai/postgresai --skill postgresai`.
+
 Work with Issues from [console.postgres.ai](https://console.postgres.ai):
 
 ```
