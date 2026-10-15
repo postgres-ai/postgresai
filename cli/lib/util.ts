@@ -217,14 +217,38 @@ export function positiveSeconds(v: unknown): number | null {
 
 /**
  * Poll delays, in ms, for a platform async handle — the same ladder `pgai promql`
- * uses against the same job channel: fast at the start for a box on a short
- * interval, doubling to a 15s ceiling because each poll is a full
- * api_token_check (a bcrypt per candidate token in the org) and the fleet
- * default pacing is 600s.
+ * uses against the same job channel. Four looks half a second apart first: on a
+ * held (long-poll) channel the box takes the job within about half a second, so
+ * most answers are ready a second in, and a ladder starting at 1s then 3s would
+ * show them at 3s (platform-all#933). Then doubling from 1s to a 15s ceiling,
+ * because each poll is a full api_token_check (a bcrypt per candidate token in
+ * the org) and a channel that is not held can be paced at minutes.
  */
 export function asyncPollDelayMs(attempt: number): number {
-  return Math.min(1000 * 2 ** attempt, 15000);
+  if (attempt < FAST_POLLS) return FAST_POLL_MS;
+  return Math.min(1000 * 2 ** (attempt - FAST_POLLS), 15000);
 }
+
+const FAST_POLLS = 4;
+const FAST_POLL_MS = 500;
+
+/**
+ * The wait after the Nth consecutive FAILED poll (5xx, 429, transport error):
+ * 1s, 2s, 4s ... 15s, never the half-second looks. The give-up counters count
+ * failures, so five instant failures must still span 1+2+4+8 = 15s -- a short
+ * platform restart must not abandon a call that is still in flight
+ * (postgresai!479 REV).
+ */
+export function asyncRetryDelayMs(consecutiveFailures: number): number {
+  return Math.min(1000 * 2 ** Math.max(consecutiveFailures - 1, 0), 15000);
+}
+
+/**
+ * How long an answer may take before the CLI prints that it is waiting: on a
+ * held channel most answers arrive in about a second, and a progress line for
+ * that is noise (platform-all#933).
+ */
+export const SLOW_ANSWER_MS = 2000;
 
 /** Hard upper bound for a single platform request, even outside Joe polling. */
 export const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 25_000;

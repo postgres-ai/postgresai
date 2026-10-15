@@ -13,6 +13,7 @@ import {
   isUnknownRpcSignature,
   positiveSeconds,
   asyncPollDelayMs,
+  asyncRetryDelayMs,
 } from "./util";
 import { buildAuthHeaders, type OrgScope } from "./org-scope";
 
@@ -65,9 +66,10 @@ const JOE_ASYNC_MAX_WAIT_MS = 60 * 60 * 1000;
 /**
  * Consecutive unanswered polls tolerated on the job channel, where the window is
  * minutes rather than 25s: a platform answering every poll 5xx must not turn
- * into an hour-long hang. Five, as on the DBLab twin — on this ladder that is
- * 30s of pacing when the failures come back at once and ~155s when each burns
- * its 25s timeout. The dial path is unchanged: its budget already bounds it.
+ * into an hour-long hang. Five, as on the DBLab twin — a failed poll waits on
+ * the doubling rungs (asyncRetryDelayMs), so that is 15s of pacing when the
+ * failures come back at once and ~140s when each burns its 25s timeout. The
+ * dial path is unchanged: its budget already bounds it.
  */
 const JOE_ASYNC_MAX_POLL_FAILURES = 5;
 
@@ -684,7 +686,9 @@ export async function runCommand(params: RunCommandParams): Promise<RunCommandOu
         ) {
           return { commandId, status, output: null, budgetExpired: true, budgetMs };
         }
-        await sleep(pollDelayMs(attempt));
+        await sleep(
+          params.pollIntervalMs ?? (started.asyncWaitMs === null ? DEFAULT_POLL_INTERVAL_MS : asyncRetryDelayMs(transientFailures))
+        );
         continue;
       }
       // Terminal (PT400/PT401/PT403/PT404 and other non-retryable errors):

@@ -117,9 +117,9 @@ describe("awaitQueryResult", () => {
 
     expect(isTerminal(out.status)).toBe(true);
     expect(out.status).toBe("done");
-    // The first two are the contract's 1s and 2s, so a rig at a 5s server
-    // interval still answers inside the first few polls.
-    expect(slept).toEqual([1000, 2000]);
+    // Half-second looks first: on a held channel the answer is usually ready
+    // about a second in (platform-all#933).
+    expect(slept).toEqual([500, 500]);
   });
 
   test("the backoff is capped rather than polling 2s forever", async () => {
@@ -140,10 +140,51 @@ describe("awaitQueryResult", () => {
       },
     });
 
-    expect(slept.slice(0, 4)).toEqual([1000, 2000, 4000, 8000]);
+    expect(slept.slice(0, 8)).toEqual([500, 500, 500, 500, 1000, 2000, 4000, 8000]);
     expect(Math.max(...slept)).toBeLessThanOrEqual(15000);
     // Far fewer than the ~300 a flat 2s would need for the same wait.
     expect(slept.length).toBeLessThan(80);
+  });
+
+  test("onSlow fires once, only after two seconds without an answer (platform-all#933)", async () => {
+    stubFetch(() => ({ body: running }));
+    let clock = 0;
+    let slow = 0;
+    let slowAt = -1;
+    await awaitQueryResult("pai-token", "job-1", {
+      timeoutMs: 10_000,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      onSlow: () => {
+        slow++;
+        slowAt = clock;
+      },
+    });
+    expect(slow).toBe(1);
+    expect(slowAt).toBe(2000);
+  });
+
+  test("onSlow does not fire when the answer comes inside two seconds", async () => {
+    let n = 0;
+    stubFetch(() => {
+      n++;
+      return { body: n < 3 ? running : { ...running, status: "done", outcome: "ok" } };
+    });
+    let clock = 0;
+    let slow = 0;
+    await awaitQueryResult("pai-token", "job-1", {
+      timeoutMs: 600_000,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      onSlow: () => {
+        slow++;
+      },
+    });
+    expect(slow).toBe(0);
   });
 
   test("each terminal status stops the loop", async () => {
