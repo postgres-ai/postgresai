@@ -217,13 +217,14 @@ test("Supabase: with host metrics off, a dotted target name is still added and p
 });
 
 // The reporter's daily timer would otherwise give a target added later its
-// first report a day after it is added.
-test("targets add and remove restart postgres-reports after the collectors", () => {
+// first report a day after it is added. Remove does not restart it: discovery
+// sees a removed node for 3 h, so a run then would report it again.
+test("targets add restarts postgres-reports after the collectors; remove does not", () => {
   const restarts = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("restart "));
   expect(run(["add", rds, "rds1"]).exitCode).toBe(0);
   expect(restarts()).toEqual(["restart postgres-reports"]);
   expect(run(["remove", "rds1"]).exitCode).toBe(0);
-  expect(restarts()).toEqual(["restart postgres-reports", "restart postgres-reports"]);
+  expect(restarts()).toEqual(["restart postgres-reports"]);
 });
 
 test("Supabase: host metrics turned off in .env, a dotted name is added and the other target's job removed", () => {

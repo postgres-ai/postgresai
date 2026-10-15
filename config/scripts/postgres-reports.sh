@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 # First run: wait REPORTER_INITIAL_DELAY_SECONDS (180 s), then poll Prometheus
-# every REPORTER_READINESS_POLL_SECONDS (15 s) until each target in
+# every REPORTER_READINESS_POLL_SECONDS (15 s) until each enabled target in
 # instances.yml has `settings` and `db_stats` samples, at most
 # REPORTER_READINESS_TIMEOUT_SECONDS (30 min; 0 skips the wait). Collection
 # time has no fixed bound (some metrics run for minutes, a failed first

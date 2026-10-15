@@ -409,6 +409,7 @@ services:
       # - REPORTER_READINESS_TIMEOUT_SECONDS=1800 (0 = no wait for data)
       # - REPORTER_READINESS_POLL_SECONDS=15
       # - REPORTER_RETRY_SECONDS=1800 (after a failed run)
+      # - REPORTER_SOURCES_PATH=/postgres_ai_configs/pgwatch-prometheus/sources.yml
       # - REPORTER_INTERVAL_SECONDS=86400
       # - REPORTER_OUTPUT_TEMPLATE=/app/all_reports_%Y%m%d_%H%M%S.json
       # - REPORTER_API_URL=https://postgres.ai/api/general
