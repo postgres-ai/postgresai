@@ -319,11 +319,11 @@ do `pgai dblab deploy` and `pgai dblab instances`:
 | `status` | Meaning | Exit code |
 |---|---|---|
 | `ready` | monitoring works; `health_url` (when the project is found) and `dashboard_url` are set | 0 |
-| `in_progress` | the monitoring box is being set up (also when `--wait` ran out); follow it with `pgai mon instances watch <id>` | 0 |
+| `in_progress` | the monitoring box is being set up (`pgai mon deploy --no-wait`; also when the `--wait` of `pgai mon instances watch` or `pgai dblab deploy` ran out); follow it with `pgai mon instances watch <id>` | 0 |
 | `deleting` | a delete is in progress, also the result of `pgai mon instances delete` | 0 |
 | `deleted` | it is gone | 0 |
 | `inactive` | deactivated (billing) | 1 |
-| `action_required` | do what `next` says, then re-run | 3 |
+| `action_required` | do what `next` says, then re-run; also when the `--wait` of `pgai mon deploy` ran out with the box still starting (`next`: "Still in progress ... resume with pgai mon instances watch <id>") | 3 |
 | `failed` | `next` has the reason | 1 |
 
 `pgai init` exits with 130 when cancelled at a prompt (Ctrl-C, Ctrl-D).
