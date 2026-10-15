@@ -4218,8 +4218,7 @@ function cloudApi(debug?: boolean) {
 }
 
 function emitConnect(result: ConnectResult, json?: boolean): void {
-  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
-  // the express checkup was shown as it finished.
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql).
   if (!jsonOutput(json)) {
     // At a terminal: a few sentences (lib/connect resultLines); a refusal or a failure is its one line on stderr.
     if (result.sql) console.log(`${result.sql}\n`);
@@ -4419,7 +4418,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
     "the monitoring box, wait, print the Health Matrix (health_url) and Grafana, signed in with",
     "your PostgresAI account (dashboard_url). The box runs its first checkup about 30 minutes",
-    "after it starts (first_checkup_eta).",
+    "after it is ready (first_checkup_eta).",
     "",
     "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
     "PostgresAI tests the connection from an unpublished address, so the port must accept connections",

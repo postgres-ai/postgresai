@@ -61,7 +61,7 @@
   re-run of `targets add <url>` without a name then adds a second target.
   Also `pgai init` (first run at a terminal), `pgai mon instances list`, `pgai mon instances watch <id-or-name>`, `pgai mon instances delete <id-or-name>`, and the MCP
   tool `deploy_monitoring`.
-  `mon deploy` runs no checkup of its own: the box runs the first one about 30 minutes after it starts
+  `mon deploy` runs no checkup of its own: the box runs the first one about 30 minutes after it is ready
   (`first_checkup_eta`) and saves it as the database's first report (`pgai reports list`). Each step and
   each change of the box's state is shown once, with the time since the start (JSON: one event a line
   on stderr; any other text there, such as an error, a warning, `--debug` or a line of
@@ -87,6 +87,10 @@
 
 ### Changed
 
+- `pgai mon deploy` (and MCP `deploy_monitoring`) no longer runs the express checkup while the box
+  starts, as 0.18.0-dev builds did (postgresai#425): no `checkup` key in the result, no `checkup`
+  event on stderr, and no report uploaded by the deploy. The box's first report, about 30 minutes
+  after it is ready (`first_checkup_eta`), brings the first findings. `pgai checkup` is unchanged.
 - `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
   `checkup`, `mon deploy`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
   a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.

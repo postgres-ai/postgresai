@@ -42,7 +42,7 @@ test("after jsonConsole, a line that names its level keeps it: Debug is debug, W
       console.error("\nDebug: Response status: 200");
       console.error("Warning: Failed to read config from /x/config.json: bad JSON");
       console.warn("Debug: from warn");
-      // The express checkup's warnings name where they come from first.
+      // A check's warnings name where they come from first.
       console.error("[F001] Warning: largest-tables cross-reference failed: timeout");
       console.error("[F001] Error: Warning: not a warning");
     } finally {
