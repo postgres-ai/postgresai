@@ -4343,7 +4343,11 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     let requested = false;
     const onSigint = (): void => {
       if (createdId) return resume();
-      if (stopping) process.exit(130);
+      if (stopping) {
+        steps.view()?.stop();
+        if (requested) console.error("\nQuit. The monitoring box may exist: pgai mon instances list");
+        process.exit(130);
+      }
       stopping = true;
       const reply = requested
         ? "Stopping: the monitoring box is already requested; deploy stops watching when the request ends (Ctrl-C again to quit now)."
