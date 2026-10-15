@@ -376,7 +376,7 @@ services:
       - sink-postgres
     restart: unless-stopped
 
-  # PostgreSQL Reports Generator - Runs reports after 30 minutes
+  # PostgreSQL Reports Generator - first run 3 minutes after start, then daily
   postgres-reports:
     image: ${PGAI_REGISTRY:-postgresai}/reporter:${PGAI_TAG:?PGAI_TAG is required}
     container_name: postgres-reports
@@ -404,7 +404,7 @@ services:
       - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
       - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # Optional overrides:
-      # - REPORTER_INITIAL_DELAY_SECONDS=1800
+      # - REPORTER_INITIAL_DELAY_SECONDS=180
       # - REPORTER_INTERVAL_SECONDS=86400
       # - REPORTER_OUTPUT_TEMPLATE=/app/all_reports_%Y%m%d_%H%M%S.json
       # - REPORTER_API_URL=https://postgres.ai/api/general

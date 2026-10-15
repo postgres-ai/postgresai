@@ -2,7 +2,12 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-initial_delay_seconds="${REPORTER_INITIAL_DELAY_SECONDS:-1800}"
+# First run 3 minutes after start: the data it reads is there by then.
+# pgwatch fetches every metric once when it starts (each fetch <= 15 s,
+# statement_timeout_seconds), the second 30 s sample feeds rate(...[5m]),
+# VictoriaMetrics scrapes pgwatch every 30 s and hides the newest 30 s from
+# queries: 105 s worst case, plus one missed 30 s cycle, rounded up.
+initial_delay_seconds="${REPORTER_INITIAL_DELAY_SECONDS:-180}"
 interval_seconds="${REPORTER_INTERVAL_SECONDS:-86400}"
 
 prometheus_url="${PROMETHEUS_URL:-http://sink-prometheus:9090}"

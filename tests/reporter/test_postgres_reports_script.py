@@ -269,3 +269,54 @@ def test_nonempty_api_url_env_wins_over_config(tmp_path):
     args = calls[1][0]
     assert args[:2] == ["-m", "reporter.postgres_reports"]
     assert args[args.index("--api-url") + 1] == expected
+
+
+def _first_sleep(tmp_path: Path, delay_env):
+    """Run the script with a stubbed ``sleep`` that records its argument and
+    exits non-zero, so ``set -e`` stops the script at the first sleep."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    sleep_file = tmp_path / "sleep-args.txt"
+    stub = stub_dir / "sleep"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$@" > "$STUB_SLEEP_FILE"\n'
+        f"exit {STUB_EXIT_CODE}\n"
+    )
+    stub.chmod(0o755)
+
+    env = os.environ.copy()
+    env.pop("REPORTER_INITIAL_DELAY_SECONDS", None)
+    if delay_env is not None:
+        env["REPORTER_INITIAL_DELAY_SECONDS"] = delay_env
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "STUB_SLEEP_FILE": str(sleep_file),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(tmp_path / ".pgwatch-config"),
+        }
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+        timeout=TIMEOUT_SECONDS,
+    )
+    return proc, sleep_file.read_text().split() if sleep_file.exists() else None
+
+
+@pytest.mark.unit
+def test_first_run_waits_three_minutes_by_default(tmp_path):
+    """The first run is 3 minutes after start, not 30: the data it reads is
+    collected, scraped and queryable within ~105 s (see the script header)."""
+    proc, slept = _first_sleep(tmp_path, None)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert slept == ["180"]
+    assert "initial_delay_seconds=180," in proc.stdout
+
+
+@pytest.mark.unit
+def test_first_run_delay_env_override(tmp_path):
+    proc, slept = _first_sleep(tmp_path, "1800")
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert slept == ["1800"]

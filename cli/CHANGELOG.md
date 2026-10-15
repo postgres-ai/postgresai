@@ -82,6 +82,9 @@
 
 ### Changed
 
+- `mon deploy`: `first_checkup_eta` is 3 minutes after the box is ready, not 30, to match the
+  reporter's new first-run delay.
+
 - `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
   `checkup`, `mon deploy`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
   a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.

@@ -204,7 +204,10 @@ describe("mon deploy", () => {
       status: "ready", provider: "clickhouse", name: CH_NAME, id: "i-1",
       dashboard_url: "https://abc.pgai.watch", host_metrics: true, checkup: CHECKUP, ...FREE, next: "Open https://abc.pgai.watch",
     });
-    expect(Date.parse(first_checkup_eta!) - Date.now()).toBeGreaterThan(29 * 60_000);
+    // The reporter's first run: 3 minutes after the stack starts.
+    const eta = Date.parse(first_checkup_eta!) - Date.now();
+    expect(eta).toBeGreaterThan(2 * 60_000);
+    expect(eta).toBeLessThanOrEqual(3 * 60_000);
     expect(JSON.stringify(result)).not.toContain("adminpw");
     expect(JSON.stringify(result)).not.toContain("Sec4b1d");
   });

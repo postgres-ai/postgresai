@@ -208,9 +208,9 @@ export function priceText(q: Quote): string {
   return base;
 }
 
-// The reporter's first run is 30 minutes after the stack starts
+// The reporter's first run is 3 minutes after the stack starts
 // (REPORTER_INITIAL_DELAY_SECONDS in config/scripts/postgres-reports.sh).
-const FIRST_CHECKUP_DELAY_MS = 30 * 60_000;
+const FIRST_CHECKUP_DELAY_MS = 3 * 60_000;
 const POLL_MS = 15_000;
 export const PROVIDERS: Provider[] = ["clickhouse", "rds", "supabase", "self-managed"];
 
