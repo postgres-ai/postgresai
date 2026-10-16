@@ -7,14 +7,10 @@ grant connect on database {{DB_IDENT}} to {{ROLE_IDENT}};
 grant pg_monitor to {{ROLE_IDENT}};
 grant select on pg_catalog.pg_index to {{ROLE_IDENT}};
 
--- Required for cluster-wide pg_stat_statements collection.
--- pg_stat_statements is backed by shared memory and holds entries for every database
--- in the cluster, but a role without pg_read_all_stats sees other users' rows with
--- queryid and query text redacted to NULL -- which collapses the per-queryid grouping
--- in the pg_stat_statements metric. pg_monitor already implies pg_read_all_stats;
--- granting it explicitly documents the dependency and keeps the metric working if the
--- pg_monitor grant above is ever narrowed. Idempotent.
-grant pg_read_all_stats to {{ROLE_IDENT}};
+-- Cluster-wide pg_stat_statements collection needs pg_read_all_stats (without it, other
+-- users' rows have queryid and query text redacted to NULL). pg_monitor includes it, so it
+-- is not granted directly: on PostgreSQL 16+ that needs ADMIN OPTION on pg_read_all_stats,
+-- which Supabase's `postgres` role does not have (it has ADMIN OPTION on pg_monitor only).
 
 -- Create postgres_ai schema for our objects
 -- Using IF NOT EXISTS for idempotency - prepare-db can be run multiple times

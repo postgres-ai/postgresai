@@ -217,6 +217,19 @@ describe("init module", () => {
     expect(permStep!.sql.toLowerCase()).not.toMatch(/alter user/);
   });
 
+  test("buildInitPlan relies on pg_monitor for pg_read_all_stats (Supabase cannot grant it directly)", async () => {
+    const plan = await init.buildInitPlan({
+      database: "mydb",
+      monitoringUser: DEFAULT_MONITORING_USER,
+      monitoringPassword: "pw",
+      includeOptionalPermissions: false,
+      provider: "supabase",
+    });
+    const sql = plan.steps.find((s) => s.name === "03.permissions")!.sql;
+    expect(sql).toMatch(/^grant pg_monitor to /m);
+    expect(sql).not.toMatch(/^grant pg_read_all_stats/m);
+  });
+
   test("buildInitPlan includes role creation for unknown provider", async () => {
     const plan = await init.buildInitPlan({
       database: "mydb",

@@ -10,6 +10,8 @@ import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
 import { prepareDatabase } from "../lib/connect";
+import { buildInitPlan } from "../lib/init";
+import { applyInitPlanViaSupabase, type SupabaseClient } from "../lib/supabase";
 
 const TEST_TIMEOUT = 30000; // 30 seconds
 
@@ -575,6 +577,40 @@ where e.extname = 'pg_stat_statements'`)).rows).toEqual([{ nspname: "public" }])
         await c.end();
       }
     } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+  test("Supabase mode: 03.permissions applies as a role with ADMIN OPTION on pg_monitor only", async () => {
+    // The Supabase Management API runs queries as `postgres`: not a superuser, CREATEROLE,
+    // pg_monitor WITH ADMIN OPTION, no ADMIN OPTION on pg_read_all_stats. PG 15 lets
+    // CREATEROLE grant any role, so only PostgreSQL >= 16 reproduces it.
+    const binDir = findPgBinDirAtLeast(16);
+    if (!binDir) {
+      if (process.env.PGAI_TEST_REQUIRE_PG16 === "1") {
+        throw new Error("PGAI_TEST_REQUIRE_PG16=1 but no PostgreSQL >= 16 initdb/postgres found");
+      }
+      console.warn("skipped: Supabase grant test needs PostgreSQL >= 16 binaries");
+      return;
+    }
+    pg = await createTempPostgres(binDir);
+    const admin = new Client({ connectionString: pg.adminUri });
+    const supa = new Client({ connectionString: pg.adminUri.replace("postgres:postgrespw@", "supa_postgres:supa-pw@") });
+    try {
+      await admin.connect();
+      await admin.query("create role supa_postgres login createrole password 'supa-pw'");
+      await admin.query("grant pg_monitor to supa_postgres with admin option");
+      await admin.query("grant create on database testdb to supa_postgres");
+      await admin.query("create extension pg_stat_statements");
+      await supa.connect();
+      const plan = await buildInitPlan({ database: "testdb", monitoringUser: "postgres_ai_mon", monitoringPassword: "mon-pw", includeOptionalPermissions: false });
+      const client = { query: (sql: string) => supa.query(sql) } as unknown as SupabaseClient;
+      const { applied } = await applyInitPlanViaSupabase({ client, plan });
+      expect(applied).toContain("03.permissions");
+      const r = await admin.query("select pg_has_role('postgres_ai_mon', 'pg_monitor', 'usage') as monitor, pg_has_role('postgres_ai_mon', 'pg_read_all_stats', 'usage') as stats");
+      expect(r.rows[0]).toEqual({ monitor: true, stats: true });
+    } finally {
+      await supa.end().catch(() => {});
+      await admin.end().catch(() => {});
       await pg.cleanup();
     }
   }, { timeout: 60000 });
