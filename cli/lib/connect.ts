@@ -12,7 +12,7 @@ import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./
 import { callRpc, type ProjectListItem } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
 import { SUPABASE_API_BASE, extractProjectRefFromUrl } from "./supabase";
-import { HttpStatusError, requestTimeoutSignal } from "./util";
+import { HttpStatusError, requestTimeoutSignal, stripControlsToSpace } from "./util";
 
 // `pgai mon deploy <database-url>`: put a database under PostgresAI's care
 // (postgres-ai/internal#354). Each step is skipped when already done, so a
@@ -455,6 +455,12 @@ export interface StepViewLike {
  * terminal a step view that starts only after the price, since a prompt may
  * follow the price; with no price (a re-run, --self-hosted) no view at all.
  */
+// ESC or C1 sequences: CSI (colors, cursor, clear), OSC (titles, links) to its end, and two-byte ones (a reset).
+const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -\/]*[@-~]|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?|\x1b[ -~]?/g;
+
+/** Text from the platform, for a terminal: escape sequences dropped, other control characters a space; line breaks kept. */
+export const terminalText = (text: string): string => text.replace(ESCAPES, "").split("\n").map(stripControlsToSpace).join("\n");
+
 export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => StepViewLike; writeLine: (s: string) => void;
   writeEvent: (e: ProgressEvent) => void; onId?: (id: string) => void }) {
   let view: StepViewLike | undefined;
@@ -462,6 +468,7 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
   const progress = (e: ProgressEvent): void => {
     if (e.id) o.onId?.(e.id);
     if (o.json) return o.writeEvent(e);
+    e = { ...e, message: terminalText(e.message), ...(e.state ? { state: terminalText(e.state) } : {}) };
     if (!o.tty) return o.writeLine(progressText(e));
     if (e.event === "billing") {
       priced = true;
@@ -481,6 +488,10 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
 
 /** A result for a person at a terminal: a few sentences, links whole (JSON keeps every field). */
 export function resultLines(r: ConnectResult): string[] {
+  return personLines(r).map(terminalText);
+}
+
+function personLines(r: ConnectResult): string[] {
   const who = r.name || "this database";
   // What the next action carries after its first part ("; --name ignored ...", a prepare note).
   const extra = (r.next ?? "").split("; ").slice(1).join("; ");
