@@ -175,7 +175,11 @@ the key never passes through you.
 
 Then run `pgai orgs`. If it lists one organization, pass `--org <alias>` to
 every later command. If it lists several, ask the user which one. If it lists
-none, tell the user to create an organization at https://console.postgres.ai.
+none, ask the user what to call their organization, then create it with
+`pgai orgs create --name '<name>' --json` and use its `alias`. This needs a
+global user token, which `pgai auth login` picks by default when the user has
+no organization yet; with an organization API key it fails. If it fails, tell
+the user to create the organization at https://console.postgres.ai instead.
 
 ## 3. Deploy monitoring
 
