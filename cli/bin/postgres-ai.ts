@@ -60,7 +60,7 @@ import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUni
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
-import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
+import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, createOrg, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
 import { raiseConnectAttemptTimeout } from "../lib/connect-timeout";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
@@ -6892,7 +6892,7 @@ function interpretEscapes(str: string): string {
 }
 
 // Issues management
-program
+const orgsCommand = program
   .command("orgs")
   .description("list organizations this credential can reach")
   .option("--debug", "enable debug output")
@@ -6919,6 +6919,29 @@ program
         return;
       }
       printResult(orgs, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+
+orgsCommand.command("create")
+  .description("create an organization (requires a global user token; no org selection needed)")
+  .requiredOption("--name <name>", "organization display name")
+  .option("--alias <alias>", "unique organization alias (default: generated from name)")
+  .option("--json", "output the created organization as JSON")
+  .addHelpText("after", "\nExample: pgai orgs create --name 'My team' --alias my-team --json\nGet a global user token with 'pgai auth login': choose 'All my organizations (global token)'\n(preselected when you have no organization yet), or create one at\nhttps://console.postgres.ai/profile/global-tokens and run 'pgai auth --set-key <token>'.")
+  .action(async (opts: {name: string; alias?: string; json?: boolean}) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) throw new Error("API key is required. Run 'pgai auth login' first or set --api-key.");
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, config.readConfig());
+      const result = await createOrg({apiKey, apiBaseUrl, name: opts.name, alias: opts.alias});
+      // The parent `orgs` also defines --json and Commander hands it the flag
+      // even when it follows `create`, so read both.
+      printResult(result, opts.json || orgsCommand.opts<{json?: boolean}>().json);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

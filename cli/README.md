@@ -406,6 +406,7 @@ pgai reports list --org-id 5225      # by numeric id — same on every org-scope
 PGAI_ORG=acme pgai checkup ...       # for scripts and agents
 
 pgai orgs                            # which organizations can this token reach?
+pgai orgs create --name "My team" --alias my-team --json  # global user token required
 ```
 
 `--org` always means an alias and `--org-id` always means a numeric id.
@@ -711,6 +712,22 @@ postgresai auth --set-key <key>    # Store API key directly
 postgresai show-key                # Show stored key (masked)
 postgresai remove-key              # Remove stored key
 ```
+
+### Create an organization
+
+```bash
+pgai auth login                                   # choose "All my organizations (global token)"
+pgai orgs create --name "My team" --alias my-team --json
+```
+
+- Choose the name explicitly. An agent should ask the user to approve its proposed name first.
+- At login, choose "All my organizations (global token)". A token for one organization cannot create organizations.
+- This works before you belong to any organization. The consent page then offers only the global token.
+- Alternatively, create a global token at https://console.postgres.ai/profile/global-tokens, then run `pgai auth --set-key <token>` or set `PGAI_API_KEY`.
+- Organization and instance tokens cannot create organizations. The CLI refuses them before sending anything.
+- The alias is normalized like the Console does it: lowercase, and spaces and reserved characters become `-`. Omit `--alias` to derive it from the name. It must be ASCII because `--org` sends it as a header.
+- You become the owner and an Admin member. No organization selection is sent, and your saved configuration does not change. Use the returned alias with `--org` afterwards.
+- Requires the Platform change https://gitlab.com/postgres-ai/platform-all/-/merge_requests/1157 to be deployed.
 
 ## Configuration
 
