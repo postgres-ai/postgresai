@@ -88,6 +88,12 @@
 
 ### Changed
 
+- `mon deploy`: `first_checkup_eta` is 3 minutes after the box is ready, not 30: the earliest time
+  of the first checkup. The reporter then waits until every target has data (at most 30 minutes),
+  so on a slow first collection the report comes later than the ETA.
+- `mon targets add` restarts `postgres-reports`, so a target added later gets its first checkup
+  report after the reporter's initial delay and data wait, not the next day. `remove` does not.
+
 - `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
   `checkup`, `mon deploy`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
   a plaintext connection. `PGSSLMODE` still applies to a URL without `sslmode`.
