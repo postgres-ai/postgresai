@@ -11,7 +11,7 @@ import { assertEncodedUserinfo, estimateLine, monitoringStatus, noCardNext, notA
 import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
 import { callRpc, type ProjectListItem } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
-import { extractProjectRefFromUrl } from "./supabase";
+import { SUPABASE_API_BASE, extractProjectRefFromUrl } from "./supabase";
 import { HttpStatusError, requestTimeoutSignal } from "./util";
 
 // `pgai mon deploy <database-url>`: put a database under PostgresAI's care
@@ -866,6 +866,15 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   return follow(row, { provider, name, fresh, billing, billingUrl, checkup, undoRole, note }, opts, deps, progress);
 }
 
+const isSupabaseUrl = (link: string): boolean => {
+  try {
+    const u = new URL(link);
+    return u.origin === SUPABASE_API_BASE && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+};
+
 // How long deploy waits for the consent in the browser, and how often it asks.
 const OAUTH_WAIT_MS = 10 * 60_000;
 const OAUTH_POLL_MS = 2_000;
@@ -904,6 +913,8 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     throw err;
   }
   if ("auth_url" in started) {
+    // The link goes to the browser opener and the terminal: Supabase's own https page only.
+    if (!isSupabaseUrl(started.auth_url)) return { status: "failed", provider, name, next: `The platform sent a Supabase consent link that is not ${SUPABASE_API_BASE}: not opened. Re-run pgai mon deploy later.` };
     const approve = `Open ${started.auth_url} in a browser and approve PostgresAI's access to Supabase`;
     if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
     progress("preparing", `Connect Supabase to PostgresAI: approve access in the browser (open ${started.auth_url} if it did not open). Waiting...`, { auth_url: started.auth_url });
