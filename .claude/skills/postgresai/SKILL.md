@@ -259,13 +259,15 @@ has it.
 
 The deploy itself checks nothing: the findings come from the monitoring box.
 
-- **The first report.** The box runs its first checkup about 30 minutes after
-  it becomes ready and saves it to PostgresAI. Find it with `pgai reports list
+- **The first report.** The box runs its first checkup a few minutes after it
+  becomes ready (`first_checkup_eta` in the deploy's result is the earliest
+  time), once it has collected data from the database, which can take up to
+  about 30 minutes, and saves it to PostgresAI. Find it with `pgai reports list
   --org <alias> --project-id <project_id> --json`: the box's reports have
   `epoch` 1. Until it arrives, tell the user the box is collecting and when to
   expect the first findings; if you can keep working, check every 5 minutes
-  until about 20 minutes after the expected time, otherwise offer to look
-  again later. Read a report's checks with `pgai reports data <report_id>
+  until about 40 minutes after `ready`, otherwise offer to look again later.
+  Read a report's checks with `pgai reports data <report_id>
   --org <alias> --type json`, warnings first; add `--check-id <check_id>` for
   one check. The first report sees less than an hour of data and can be nearly
   empty: say so if it is.
