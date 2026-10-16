@@ -1785,6 +1785,26 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     expect(events.map((e) => e.event)).toContain("box");
   });
 
+  // REV r4/r5 potential: the link comes from the platform; only Supabase's own https page is opened or shown.
+  test("a consent link that is not https on api.supabase.com: failed, never opened, shown or waited for", async () => {
+    for (const bad of [
+      "http://api.supabase.com/v1/oauth/authorize?state=s", "https://api.supabase.com.evil.example/v1/oauth/authorize",
+      "https://evil.example/?https://api.supabase.com/", "https://user@evil.example/", "file:///etc/passwd",
+      "x-scheme://api.supabase.com/", "https://evil@api.supabase.com/", "https://api.supabase.com:8443/", "--help", "javascript:alert(1)", "https://api.supabase.com\x1b[2J/",
+    ]) {
+      for (const o of [{ waitMs: 60_000 }, { waitMs: 0 }, { waitMs: 0, agent: true }]) {
+        const events: ProgressEvent[] = [];
+        const f = make({ statuses: [{ status: "connected" }], progress: (e) => events.push(e) });
+        f.deps.supabaseStart = async () => ({ auth_url: bad, session_id: "sess-1" });
+        const result = await connect(SB, o, f.deps);
+        expect(result).toEqual({ status: "failed", provider: "supabase", name: SB_NAME,
+          next: "The platform sent a Supabase consent link that is not https://api.supabase.com: not opened. Re-run pgai mon deploy later." });
+        expect(f.calls).toEqual(["list"]);
+        expect(events).toEqual([]);
+      }
+    }
+  });
+
   test("an agent (or --wait 0): the consent link as the next step (exit 3), nothing waited for or created", async () => {
     for (const [o, next] of [
       [{ agent: true }, `Open ${AUTH} in a browser and approve PostgresAI's access to Supabase, then call deploy_monitoring again`],
