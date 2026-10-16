@@ -749,7 +749,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
               yes: { type: "boolean", description: "Accept the price of a billed box. Without it, a billed box is not provisioned: the result has status action_required and the price; ask the user, then call again with yes: true" },
               coupon: { type: "string", description: "Stripe promotion code for the organization's monitoring subscription (applies when it is first created)" },
               vcpus: { type: "integer", minimum: 1, maximum: 1024, description: "vCPUs of the database server. Without it there is no AAS (database load) data for this database: ask the user for it" },
-              monitoring_user: { type: "string", description: "Monitoring role to create or use (default postgres_ai_mon). A custom role always carries its own password: PostgresAI keeps only postgres_ai_mon's, so pass the role's own URL as database_url (an admin URL creates only postgres_ai_mon)" },
+              monitoring_user: { type: "string", description: "Monitoring role to create or use (default postgres_ai_mon). A custom role always carries its own password: PostgresAI keeps only postgres_ai_mon's, so pass the role's own URL as database_url (an admin URL creates only postgres_ai_mon). Not for Supabase, where PostgresAI creates postgres_ai_mon" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["database_url"],

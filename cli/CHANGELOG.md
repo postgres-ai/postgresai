@@ -9,6 +9,8 @@
   waits for the approval, then the box prepares the database through the Supabase Management API. Agents and
   `--wait 0` get `action_required` (exit 3) with the link in `next`. A wait that ends before the box is ready is
   `action_required` (exit 3) with the resume command; with `--json` the event stream ends with a `done` event.
+  `--monitoring-user` other than `postgres_ai_mon`, `--reset-password` and `--location` are refused there (PostgresAI
+  creates `postgres_ai_mon` through the Supabase Management API).
 
 - `--provider generic` names the direct PostgreSQL path in `pgai mon deploy`, `pgai dblab deploy`,
   `prepare-db` and `unprepare-db` (postgresai!480). It is an alias of `self-managed`: both spellings

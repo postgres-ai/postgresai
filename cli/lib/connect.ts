@@ -937,6 +937,10 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
   if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
   if (opts.location) return stop("--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it");
+  // The platform creates postgres_ai_mon there, and keeps its password: a custom role would not be used.
+  if (opts.monitoringUser !== undefined && opts.monitoringUser.trim() !== DEFAULT_MONITORING_USER) {
+    return stop(`${opts.agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates ${DEFAULT_MONITORING_USER} through the Supabase Management API`);
+  }
   // A row of another database there (deployed as self-managed) is not this box.
   const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster && (!d.database || d.database === "postgres"));
   if (row) {

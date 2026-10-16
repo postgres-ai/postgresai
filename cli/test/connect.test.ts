@@ -2106,6 +2106,26 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     });
     expect(f.calls).toEqual([]);
   });
+
+  // postgresai!483: the platform creates postgres_ai_mon on Supabase, so another role would never be used.
+  test.each([
+    ["a custom role", "my_mon", false],
+    ["a blank one", "  ", false],
+    ["a custom role, from an agent", "my_mon", true],
+  ] as const)("--monitoring-user, %s: refused before anything is called", async (_what, monitoringUser, agent) => {
+    const f = make();
+    expect(await connect(SB, { monitoringUser, agent, waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: `${agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API`,
+    });
+    expect(f.calls).toEqual([]);
+  });
+
+  test("--monitoring-user postgres_ai_mon (the CLI's default) is the role the platform creates: deploys", async () => {
+    const { deps, calls } = make();
+    expect(await connect(SB, { monitoringUser: " postgres_ai_mon ", waitMs: 0 }, deps)).toMatchObject({ status: "in_progress", id: "i-1" });
+    expect(calls).toContain(`connect ${JSON.stringify({ project_ref: REF })}`);
+  });
 });
 
 describe("prepareDatabase (a fake pg client)", () => {
