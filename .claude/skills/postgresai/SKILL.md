@@ -20,16 +20,22 @@ database".
 Work on your own. Ask the user only when you are blocked:
 
 - which database to use: confirm it once, before anything else (step 1);
-- the database server's vCPU count, if you cannot find it (ask in the same
-  question);
-- whether they have a PostgresAI coupon (promotion code; ask in the same
-  question);
+- the database server's vCPU count, if you cannot find it (step 1);
 - the PostgresAI sign-in needs them (see step 2);
 - they belong to several PostgresAI organizations and you need to know which
   one;
-- monitoring costs money: warn them up front (step 1), then quote the price
-  the deploy shows and ask before accepting it;
+- monitoring costs money: warn them up front (step 1); when the deploy shows
+  the price, ask whether they have a coupon, then ask before accepting the
+  price (step 3);
 - a step changes their database or deletes something (see Rules).
+
+Ask one question at a time, and never in the middle of other text: users miss
+questions buried in a long answer, and answer only one of several. If your
+agent has a tool for asking the user a question, use it. Otherwise make the
+question the last paragraph of your message, on its own and starting with
+**Question:**, and write nothing after it. Put what the user needs to know to
+answer (what the setup creates, that monitoring is paid) before the question.
+Ask the next question only after they have answered this one.
 
 If the user declines monitoring, do not deploy it. Tell them what monitoring
 would show, and stop.
@@ -104,22 +110,23 @@ Look for the connection URL: environment variables (`DATABASE_URL`,
 Never choose the database yourself, even when you find only one. Show the user
 each candidate without its password: where it came from (file and variable),
 host, port, database name, and whether it looks like development, staging or
-production. Ask which one to use, and say in the same question that you will
-set up PostgresAI monitoring on it, which creates the `postgres_ai_mon` role,
-the `postgres_ai` schema and `pg_stat_statements`. Unless you already know it
-(see step 3), ask in the same question how many vCPUs the database server has,
-and say that "I don't know" is a fine answer. In the same question, warn that
-PostgresAI Cloud monitoring is a paid service, billed monthly per database
-cluster: the deploy shows the exact price (or that it is free) before anything
-is billed, and nothing is billed without their OK. Ask whether they have a
-PostgresAI coupon (a promotion code); "no" is a fine answer. Use only the
+production. Before the question, say that you will set up PostgresAI
+monitoring on the chosen database, which creates the `postgres_ai_mon` role,
+the `postgres_ai` schema and `pg_stat_statements`, and that PostgresAI Cloud
+monitoring is a paid service, billed monthly per database cluster: the deploy
+shows the exact price (or that it is free) before anything is billed, and
+nothing is billed without their OK. Then ask one question: which database to
+set up monitoring on. Their answer is the consent to the setup. Use only the
 confirmed database from then on. If you find no URL, ask where it is.
+
+Then, unless you already know it (see step 3), ask how many vCPUs the database
+server has, as a question of its own, and say that "I don't know" is a fine
+answer.
 
 If the user's request identifies exactly one candidate (its URL, variable, or
 host and database) and asks for PostgresAI monitoring, that is the
 confirmation. Still tell them what the setup will create and that monitoring
-is paid before you deploy, ask whether they have a coupon, and ask for the
-vCPU count if you do not know it.
+is paid before you deploy, and ask for the vCPU count if you do not know it.
 
 To show a URL's parts without its password:
 
@@ -186,10 +193,11 @@ If the URL is not in `.env` as `DATABASE_URL`, load it from where you found it,
 under its own name. Note the time printed first, on stderr: it is when the
 deploy started.
 
-If the user gave a coupon, add `--coupon <code>`. It applies when the
-organization's monitoring subscription is first created. An invalid code stops
-the deploy with `action_required` and changes nothing: tell the user what
-`next` says, and re-run with a corrected code or, if they agree, without it.
+If the user gave a coupon (see `action_required` below), add `--coupon
+<code>`. It applies when the organization's monitoring subscription is first
+created. An invalid code stops the deploy with `action_required` and changes
+nothing: tell the user what `next` says, and re-run with a corrected code or,
+if they agree, without it.
 
 Add `--vcpus <n>`, the database server's vCPU count. Take it from what you know
 (its instance class or server spec) or from the user's answer; never guess it.
@@ -208,8 +216,11 @@ The result is JSON on stdout. Act on `status` and `next`:
   minutes, and start step 4 meanwhile. The box usually becomes `ready` within
   about 20 minutes.
 - `action_required`: read `next`.
-  - It names a price and `--yes`: quote `price` to the user (and the coupon's
-    `description`, if one was applied). Re-run with `--yes` (and the same
+  - It names a price and `--yes`: quote `price` to the user and ask whether
+    they have a PostgresAI coupon (a promotion code); "no" is a fine answer.
+    If they give one, re-run with `--coupon <code>` (no `--yes`) and quote the
+    new `price` and the coupon's `description`. Then, as a separate question,
+    ask whether they accept the price. Re-run with `--yes` (and the same
     `--coupon`) only if they agree.
   - It needs a payment method: give the user the console link from `next`.
   - It says "Finish in the console" (Supabase and Amazon RDS): give the user
@@ -268,8 +279,9 @@ comes about 24 hours after the first one, and then one a day.
 ## 5. Report
 
 If the box's first report has not arrived, say so: report what was set up,
-the links, and when the first findings are expected, and offer to look again
-then. Once findings are in, tell the user, in plain words, worst first:
+the links, and when the first findings are expected, and end with one
+question: whether to look again then. Once findings are in, tell the user, in
+plain words, worst first:
 
 1. **What is wrong.** Name the table, index or setting.
 2. **Why it matters for their application.** For example: slow queries, bloat,
@@ -285,6 +297,7 @@ Group minor items at the end, then list the issues PostgresAI opened. If you
 deployed without `--vcpus`, say again that AAS needs the vCPU count. Say what
 the monitoring setup created, and give the Health Matrix link (`health_url`)
 and the dashboard link (`dashboard_url`), whichever the deploy returned.
-Finish with when the complete report will be ready (about a day after the
-deploy), what it adds, and offer to read it with the user then. Offer to apply
-the fixes one at a time; apply none until the user agrees.
+Say when the complete report will be ready (about a day after the deploy),
+what it adds, and that you can read it with them then. End with one question,
+on its own after the report: whether to apply the first fix (name it). Apply
+fixes one at a time, and none until the user agrees.
