@@ -5509,6 +5509,13 @@ def main():
             if not clusters_to_process:
                 logger.warning("No clusters found, using default 'local'")
                 clusters_to_process = ['local']
+                if not args.no_upload:
+                    # No target has data yet (e.g. a first run before pgwatch's
+                    # first fetch). A report of the fallback cluster is empty and
+                    # would read as "no issues": keep it local, do not upload.
+                    logger.warning("No target has data in Prometheus; skipping the upload "
+                                   "of the 'local' fallback report. The next run retries.")
+                    args.no_upload = True
             else:
                 logger.info(f"Discovered clusters: {clusters_to_process}")
 

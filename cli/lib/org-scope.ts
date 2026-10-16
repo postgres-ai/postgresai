@@ -344,3 +344,61 @@ function trimmedEnv(name: string): string | undefined {
   const trimmed = raw.trim();
   return trimmed === "" ? undefined : trimmed;
 }
+
+
+/**
+ * Mirrors the platform's get_alias(): lowercase, reserved characters to '-',
+ * runs of '-' collapsed, leading and trailing '-' removed. The server applies
+ * it to every alias, so the CLI sends what will be stored.
+ */
+export function normalizeOrgAlias(value: string): string {
+  return value
+    .replace(/[ :/?#[\]@!$&()*+,;=.~"']/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+}
+
+/** User-level mutation: never inherits an existing organization selection. */
+export async function createOrg(params: ListOrgsParams & {name: string; alias?: string}): Promise<Record<string, unknown>> {
+  const name = params.name.trim();
+  const rawAlias = params.alias?.trim();
+  if (!name) throw new Error("Organization name must not be empty.");
+  if (rawAlias !== undefined && !rawAlias) throw new Error("Organization alias must not be empty.");
+  const alias = rawAlias === undefined ? undefined : normalizeOrgAlias(rawAlias);
+  // Without --alias the server derives the alias from the name; check that one too.
+  const effectiveAlias = normalizeOrgAlias(alias ?? name);
+  if (effectiveAlias === "") {
+    throw new Error("Organization alias must not be empty after normalization. Pass --alias with letters or digits.");
+  }
+  // The alias travels later as the x-pgai-org header (--org), which must be ASCII.
+  if (/[^\x21-\x7e]/.test(effectiveAlias)) {
+    throw new Error(alias === undefined
+      ? `The alias derived from the name ('${effectiveAlias}') is not ASCII. Pass --alias with ASCII letters, digits, '-' or '_'.`
+      : "Organization alias must use ASCII letters, digits, '-' or '_'.");
+  }
+  // Same wording as the server's PT403; fail before sending a token it will refuse.
+  if (!config.isGlobalTokenValue(params.apiKey)) {
+    throw new Error("Creating an organization requires a global user token. Sign in with pgai auth login.");
+  }
+  const response = await fetch(`${normalizeBaseUrl(params.apiBaseUrl)}/rpc/user_create_org`, {
+    method: "POST",
+    headers: {"access-token": params.apiKey, "Content-Type": "application/json", Connection: "close"},
+    body: JSON.stringify({name, alias: alias ?? null}),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(formatHttpError("create organization", response.status, text));
+  let result: unknown;
+  try {
+    result = JSON.parse(text);
+  } catch {
+    result = null;
+  }
+  if (!result || typeof result !== "object" || Array.isArray(result)
+    || !(result as Record<string, unknown>).id
+    || typeof (result as Record<string, unknown>).alias !== "string"
+    || (result as Record<string, unknown>).alias === "") {
+    throw new Error("Create organization returned an invalid response.");
+  }
+  return result as Record<string, unknown>;
+}

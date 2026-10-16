@@ -16,6 +16,17 @@
   in every command that takes it, so `prepare-db --provider Generic` no longer warns "Unknown provider".
   The direct path needs a direct endpoint, not a pooler.
 
+- `pgai mon deploy --monitoring-user <name>`: a monitoring role other than `postgres_ai_mon` (postgres-ai/internal#432),
+  as `pgai prepare-db` already allows. The role is created or checked under that name and the box logs in as it;
+  it carries its own password (PostgresAI keeps only `postgres_ai_mon`'s), so creating or resetting it needs
+  `PGAI_MON_PASSWORD`. `--reset-password` sets a new one, under the same server lock and checks as for
+  `postgres_ai_mon`. Refused: an empty name, one over 63 bytes (Postgres would truncate it), one with `'`, `$`,
+  `%`, backslash or a control character, and a role that is a superuser or has CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS,
+  is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles,
+  also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has
+  grants in the database beyond CONNECT, USAGE on schemas other than pg_toast, SELECT outside pg_catalog
+  and pg_toast, and the grants pgai makes, or holds any grant WITH GRANT OPTION or a membership WITH ADMIN OPTION. A custom role is used for one database per server.
+  The name is trimmed. MCP `deploy_monitoring` takes `monitoring_user`.
 - `pgai mon deploy` and `pgai dblab deploy` share one surface (postgresai#412): the URL as the argument or
   `--db-url`, `--name`, `--location`, `--wait <minutes>` / `--no-wait`, `--yes`, `--json`, one set of
   `status` words (`ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required`, `failed`)
@@ -93,6 +104,12 @@
   job; for an RDS instance endpoint, the instance, region and labels `rds-host-stats` reads from `.env`.
 
 ### Changed
+
+- `mon deploy`: `first_checkup_eta` is 3 minutes after the box is ready, not 30: the earliest time
+  of the first checkup. The reporter then waits until every target has data (at most 30 minutes),
+  so on a slow first collection the report comes later than the ETA.
+- `mon targets add` restarts `postgres-reports`, so a target added later gets its first checkup
+  report after the reporter's initial delay and data wait, not the next day. `remove` does not.
 
 - `sslmode` in a connection URL now wins over `PGSSLMODE`, as in libpq (`prepare-db`, `unprepare-db`,
   `checkup`, `mon deploy`). Before, an exported `PGSSLMODE=disable` turned `?sslmode=verify-full` into
@@ -184,6 +201,9 @@
 
 ### Fixed
 
+- `pgai mon deploy --self-hosted` (or `--provider self-managed`) through the Supabase pooler: the box's URL keeps
+  the project suffix of the URL's user (`postgres.<ref>` gives `postgres_ai_mon.<ref>`), so the pooler can route it
+  (postgres-ai/internal#432). A cloud deploy of a Supabase host is finished in the Console, not by this code.
 - The CLI and MCP server work on a slow link. When the TCP connect to postgres.ai took longer than
   Node's per-address limit (250 ms on Node 20–24, 500 ms from Node 25) — a VPN, mobile, satellite, a
   congested Wi-Fi — every request failed with a bare `fetch failed` while curl worked. The CLI now

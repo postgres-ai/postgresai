@@ -74,7 +74,7 @@ const ORG_AGNOSTIC_COMMANDS = [
   "mon targets test",
   "mon update",
   "mon update-config",
-  "orgs",
+  "orgs create",
   "prepare-db",
   "set-default-project",
   "set-storage-url",

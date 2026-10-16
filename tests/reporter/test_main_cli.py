@@ -514,3 +514,36 @@ def test_main_with_check_id_g001_generates_from_a003() -> None:
                 # Should generate A003 first, then G001 from it
                 mock_generator.generate_a003_settings_report.assert_called_once()
                 mock_generator.generate_g001_from_a003.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("clusters, uploads", [([], False), (['c1'], True)])
+def test_main_never_uploads_the_local_fallback(clusters, uploads, tmp_path, monkeypatch) -> None:
+    """No cluster in Prometheus: the 'local' fallback report is empty and would
+    read as "no issues". It is generated locally but not uploaded."""
+    monkeypatch.chdir(tmp_path)
+    test_args = [
+        'postgres_reports.py',
+        '--prometheus-url', 'http://prom.test',
+        '--postgres-sink-url', 'postgresql://user@host:5432/db',
+        '--api-url', 'https://api.test',
+        '--token', 'test-token',
+        '--project-name', 'p1',
+    ]
+    mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.pg_conn = None
+    mock_generator.test_connection.return_value = True
+    mock_generator.get_all_clusters.return_value = clusters
+    mock_generator.create_report.return_value = 'report-123'
+    mock_generator.generate_all_reports.return_value = {'F004': {'data': {}}}
+    mock_generator.generate_per_query_jsons.return_value = []
+
+    with patch.object(sys, 'argv', test_args):
+        with patch('reporter.postgres_reports.PostgresReportGenerator', return_value=mock_generator):
+            from reporter import postgres_reports
+            postgres_reports.main()
+
+    assert mock_generator.generate_all_reports.call_args[0][0] == (clusters[0] if clusters else 'local')
+    assert mock_generator.create_report.called is uploads
+    assert mock_generator.upload_report_file.called is uploads
+    assert (tmp_path / 'F004.json').exists()

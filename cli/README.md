@@ -255,7 +255,8 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 | `--provider <provider>` | `generic` (direct PostgreSQL; `self-managed` remains an alias), `clickhouse`, `rds` or `supabase`; default: detected from the host |
 | `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
-| `--reset-password` | `postgres_ai_mon` exists and its password is lost: set a new one (see below) |
+| `--reset-password` | the monitoring role exists and its password is lost: set a new one (see below) |
+| `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Ignored for a host handed to the Console |
 | `--db-url <url>` | the database URL, instead of the argument |
 | `--name <name>` | the instance's name (default: `host[:port]/database`); ignored, with a note, for a database already monitored |
 | `--location <location>` | Hetzner location `fsn1`, `nbg1` or `hel1` (default: any with capacity) |
@@ -277,8 +278,8 @@ and asks you to re-run with `--yes` to accept it.
 | `PGSSLMODE` | the `sslmode` for a URL without one (`sslmode` in the URL wins, as in libpq) |
 | `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` | instead of `--clickhouse-key`; read for ClickHouse hosts only |
 
-`postgres_ai_mon` is one role for the whole server, so `mon deploy` never changes the password of an
-existing one. If the role exists and you do not have its password (a deployment after
+The monitoring role (`postgres_ai_mon`, or `--monitoring-user`) is one role for the whole server, so
+`mon deploy` never changes the password of an existing one. If the role exists and you do not have its password (a deployment after
 `pgai mon instances delete`, say), `pgai mon deploy <admin-url> --reset-password` sets a new one
 (`PGAI_MON_PASSWORD`, else generated). It is refused while another database on the same server (the same host name, in this
 organization) is monitored with the role, while a box's server is not known (it was created before
@@ -287,7 +288,7 @@ already monitored. After the price is accepted, the run takes the platform's loc
 name and port, in this organization) until the box is requested. A second `--reset-password` for
 the same server exits 3 meanwhile. A run that stopped, or whose box request got no answer, frees the
 server 15 minutes after it took the lock. A platform without the lock answers "set
-`PGAI_MON_PASSWORD`" instead. Anything else that logs in as `postgres_ai_mon` (another organization,
+`PGAI_MON_PASSWORD`" instead. Anything else that logs in as the role (another organization,
 another host name for the same server, a deploy without `--reset-password` running at the same
 time) needs the new password.
 
@@ -406,6 +407,7 @@ pgai reports list --org-id 5225      # by numeric id — same on every org-scope
 PGAI_ORG=acme pgai checkup ...       # for scripts and agents
 
 pgai orgs                            # which organizations can this token reach?
+pgai orgs create --name "My team" --alias my-team --json  # global user token required
 ```
 
 `--org` always means an alias and `--org-id` always means a numeric id.
@@ -579,7 +581,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. Supabase needs no password (PostgresAI prepares the database through the Supabase Management API): the first time, the result is `action_required` with a consent link in `next`; the user opens and approves it, then the tool is called again. Elsewhere `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
+- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, monitoring_user?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. Supabase needs no password (PostgresAI prepares the database through the Supabase Management API): the first time, the result is `action_required` with a consent link in `next`; the user opens and approves it, then the tool is called again. Elsewhere `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
 
 #### `attachments` parameter (issue/comment tools)
 
@@ -711,6 +713,22 @@ postgresai auth --set-key <key>    # Store API key directly
 postgresai show-key                # Show stored key (masked)
 postgresai remove-key              # Remove stored key
 ```
+
+### Create an organization
+
+```bash
+pgai auth login                                   # choose "All my organizations (global token)"
+pgai orgs create --name "My team" --alias my-team --json
+```
+
+- Choose the name explicitly. An agent should ask the user to approve its proposed name first.
+- At login, choose "All my organizations (global token)". A token for one organization cannot create organizations.
+- This works before you belong to any organization. The consent page then offers only the global token.
+- Alternatively, create a global token at https://console.postgres.ai/profile/global-tokens, then run `pgai auth --set-key <token>` or set `PGAI_API_KEY`.
+- Organization and instance tokens cannot create organizations. The CLI refuses them before sending anything.
+- The alias is normalized like the Console does it: lowercase, and spaces and reserved characters become `-`. Omit `--alias` to derive it from the name. It must be ASCII because `--org` sends it as a header.
+- You become the owner and an Admin member. No organization selection is sent, and your saved configuration does not change. Use the returned alias with `--org` afterwards.
+- Requires the Platform change https://gitlab.com/postgres-ai/platform-all/-/merge_requests/1157 to be deployed.
 
 ## Configuration
 
