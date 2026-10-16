@@ -1,10 +1,12 @@
 import {
   describe, expect, spyOn, test } from "bun:test";
 import { Client, type ClientConfig } from "pg";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -93,6 +95,13 @@ describe("provider and name", () => {
     expect(parseClickhouseKey(undefined, {})).toBeUndefined();
     expect(() => parseClickhouseKey("no-colon", {})).toThrow("--clickhouse-key must be <key-id>:<key-secret>");
   });
+});
+
+test("first_checkup_eta uses the reporter's default initial delay", () => {
+  const script = readFileSync(resolve(import.meta.dir, "../../config/scripts/postgres-reports.sh"), "utf8");
+  const m = script.match(/\$\{REPORTER_INITIAL_DELAY_SECONDS:-(\d+)\}/);
+  expect(m).not.toBeNull();
+  expect(Number(m![1]) * 1000).toBe(FIRST_CHECKUP_DELAY_MS);
 });
 
 describe("mon deploy", () => {
@@ -191,7 +200,10 @@ describe("mon deploy", () => {
       status: "ready", provider: "clickhouse", name: CH_NAME, id: "i-1",
       dashboard_url: "https://abc.pgai.watch", host_metrics: true, ...FREE, next: "Open https://abc.pgai.watch",
     });
-    expect(Date.parse(first_checkup_eta!) - Date.now()).toBeGreaterThan(29 * 60_000);
+    // The reporter's first run: at the earliest 3 minutes after the stack starts.
+    const eta = Date.parse(first_checkup_eta!) - Date.now();
+    expect(eta).toBeGreaterThan(3 * 60_000 - 5_000);
+    expect(eta).toBeLessThanOrEqual(3 * 60_000);
     expect(JSON.stringify(result)).not.toContain("adminpw");
     expect(JSON.stringify(result)).not.toContain("Sec4b1d");
   });
@@ -740,6 +752,129 @@ describe("mon deploy", () => {
       next: "A new password for postgres_ai_mon would cut off the monitoring of abc123.us-east-1.aws.pg.clickhouse.cloud/orders on this server: set PGAI_MON_PASSWORD to its password instead, or pgai mon instances delete abc123.us-east-1.aws.pg.clickhouse.cloud/orders --yes first",
     });
     expect(calls).toEqual(["list"]);
+  });
+
+  // A custom role's generated password is never shown or kept: --reset-password is its way out.
+  test("--monitoring-user with --reset-password: the server's lock, then a reset of that role, never the stored password", async () => {
+    // A box elsewhere with a stored password: the platform keeps postgres_ai_mon's only, so it plays no part.
+    const elsewhere = row("active", { id: "i-9", name: "other.example.com/app", cluster: "other.example.com:5432", monitoring_password_stored: true });
+    const seen: unknown[] = [];
+    const { deps, calls } = fake({
+      rows: [elsewhere],
+      prepare: async (_url, provider, o) => { calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); seen.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; },
+    });
+    expect((await connect(CH, { monitoringUser: "my_mon", resetPassword: true, waitMs: 0 }, deps)).status).toBe("in_progress");
+    expect(seen).toEqual([{ resetPassword: true, monitoringUser: "my_mon", check: true }, { resetPassword: true, monitoringUser: "my_mon" }]);
+    expect(calls).toEqual([
+      "list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "prepare clickhouse",
+      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
+    ]);
+  });
+
+  test("--monitoring-user with --reset-password: refused while another database on the server is monitored, naming that role", async () => {
+    const other = row("active", { id: "i-7", name: `${SERVER}/orders`, cluster: `${SERVER}:5432`, monitoring_password_stored: true });
+    const { deps, calls } = fake({ rows: [other] });
+    expect((await connect(CH, { monitoringUser: "my_mon", resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      `A new password for my_mon would cut off the monitoring of ${SERVER}/orders on this server: set PGAI_MON_PASSWORD to its password instead, or pgai mon instances delete ${SERVER}/orders --yes first`);
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("--monitoring-user with --reset-password against a platform without the lock: names that role", async () => {
+    const { deps } = fake({ resetLock: async () => { throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 404)", 404); } });
+    expect((await connect(CH, { monitoringUser: "my_mon", resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      "This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to my_mon's password instead");
+  });
+
+  test.each(["", "   "])("--monitoring-user empty or blank (%p): refused before anything runs", async (blank) => {
+    for (const agent of [false, true]) {
+      const { deps, calls } = fake();
+      expect(await connect(CH, { monitoringUser: blank, waitMs: 0, agent }, deps)).toEqual({
+        status: "action_required", provider: "clickhouse", name: CH_NAME,
+        next: `${agent ? "monitoring_user" : "--monitoring-user"} is empty: pass a role name, or leave it out for postgres_ai_mon`,
+      });
+      expect(calls).toEqual([]);
+    }
+  });
+
+  test("--monitoring-user is trimmed", async () => {
+    const seen: unknown[] = [];
+    const { deps } = fake({ prepare: async (_url, _provider, o) => { seen.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; } });
+    await connect(CH, { monitoringUser: "  my_mon\t", waitMs: 0 }, deps);
+    for (const o of seen) expect(o).toMatchObject({ monitoringUser: "my_mon" });
+    // Trimmed to the default, it is the default.
+    const dflt: unknown[] = [];
+    await connect(CH, { monitoringUser: " postgres_ai_mon ", waitMs: 0 }, fake({ prepare: async (_url, _provider, o) => { dflt.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; } }).deps);
+    for (const o of dflt) expect(o).not.toHaveProperty("monitoringUser");
+  });
+
+  // The setup SQL puts the role inside quoted literals, dollar-quoted DO bodies and format() strings.
+  test.each(["o'brien", "a$$b", "a$b", "50%mon", "c\\y", "a\nb", "a\u007fb"])("--monitoring-user %p: refused before anything runs (it would break the setup SQL)", async (bad) => {
+    for (const agent of [false, true]) {
+      const { deps, calls } = fake();
+      expect(await connect(CH, { monitoringUser: bad, waitMs: 0, agent }, deps)).toEqual({
+        status: "action_required", provider: "clickhouse", name: CH_NAME,
+        next: `${agent ? "monitoring_user" : "--monitoring-user"} must not contain ', $, %, backslash or control characters`,
+      });
+      expect(calls).toEqual([]);
+    }
+  });
+
+  test("--monitoring-user with a host handed to the console: says the console does not use it", async () => {
+    const { deps, calls } = fake();
+    expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { monitoringUser: "my_mon", waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "rds", name: "db.abc.us-east-1.rds.amazonaws.com/app",
+      next: "Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds (--monitoring-user is not used there)",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("--monitoring-user postgres_ai_mon is the default: the stored password is used, and no role is passed on", async () => {
+    const stored = row("active", { id: "i-7", name: `${SERVER}/orders`, cluster: `${SERVER}:5432`, monitoring_password_stored: true });
+    const seen: unknown[] = [];
+    const { deps } = fake({ rows: [stored], prepare: async (_url, _provider, o) => { seen.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; } });
+    await connect(CH, { monitoringUser: "postgres_ai_mon", waitMs: 0 }, deps);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const o of seen) {
+      expect(o).toMatchObject({ storedPassword: true, others: [`${SERVER}/orders`] });
+      expect(o).not.toHaveProperty("monitoringUser");
+    }
+    // And --reset-password is the default role's, refused as before while another database is monitored.
+    expect((await connect(CH, { monitoringUser: "postgres_ai_mon", resetPassword: true, waitMs: 0 }, fake({ rows: [stored] }).deps)).next)
+      .toStartWith("A new password for postgres_ai_mon would cut off the monitoring of");
+  });
+
+  test("a refused launch drops the custom role this run created, never postgres_ai_mon", async () => {
+    const dropped: unknown[] = [];
+    const { deps } = fake({
+      prepare: async (_url, _provider, o) => (o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }),
+      create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect: HTTP 403", 403); },
+      unprepare: async (url, user) => { dropped.push([url, user]); return true; },
+    });
+    await expect(connect(CH, { monitoringUser: "my_mon", waitMs: 0 }, deps)).rejects.toThrow("HTTP 403");
+    expect(dropped).toEqual([[CH, "my_mon"]]);
+  });
+
+  test("--monitoring-user longer than 63 bytes (Postgres would truncate it): refused before anything runs", async () => {
+    const { deps, calls } = fake();
+    const long = "m".repeat(62) + "é";
+    expect(await connect(CH, { monitoringUser: long, waitMs: 0 }, deps)).toEqual({
+      status: "action_required", provider: "clickhouse", name: CH_NAME,
+      next: "--monitoring-user must be at most 63 bytes (Postgres truncates longer role names)",
+    });
+    expect(calls).toEqual([]);
+    expect((await connect(CH, { monitoringUser: "m".repeat(63), waitMs: 0 }, fake().deps)).status).not.toBe("action_required");
+  });
+
+  test("--monitoring-user: prepare gets the role, and never the platform's stored password (kept for postgres_ai_mon only)", async () => {
+    const stored = row("active", { id: "i-7", name: "abc123.us-east-1.aws.pg.clickhouse.cloud/orders", cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", monitoring_password_stored: true });
+    const seen: unknown[] = [];
+    const { deps } = fake({ rows: [stored], prepare: async (_url, _provider, o) => { seen.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; } });
+    await connect(CH, { monitoringUser: "my_mon", waitMs: 0 }, deps);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const o of seen) {
+      expect(o).toMatchObject({ monitoringUser: "my_mon" });
+      expect(o).not.toHaveProperty("storedPassword");
+    }
   });
 
   test("--reset-password with --self-hosted: refused, the org's cloud monitoring of this server is not checked there", async () => {
@@ -1604,8 +1739,8 @@ describe("prepareDatabase (a fake pg client)", () => {
   const SET_PASSWORD = "Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or give it a new one: pgai mon deploy <admin-url> --reset-password (anything else that logs in as postgres_ai_mon then needs the new password)";
   const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
 
-  /** `logins` answers each postgres_ai_mon login in turn (an error to throw, or "ok"); the last one repeats. */
-  function server(me: { name?: string; admin?: boolean; mon_exists: boolean; fails?: RegExp; ssl?: "on" | "off" }, logins: (Error | "ok")[] = ["ok"]) {
+  /** `logins` answers each login as `role` in turn (an error to throw, or "ok"); the last one repeats. */
+  function server(me: { name?: string; admin?: boolean; mon_exists: boolean; mon_privileged?: boolean; mon_groups?: string | null; mon_owns?: boolean; mon_grants?: string | null; fails?: RegExp; ssl?: "on" | "off" }, logins: (Error | "ok")[] = ["ok"], role = "postgres_ai_mon") {
     const ran: string[] = [];
     const sqls: string[] = [];
     const monLogins: string[] = [];
@@ -1619,13 +1754,15 @@ describe("prepareDatabase (a fake pg client)", () => {
         const u = config.connectionString ? new URL(config.connectionString) : undefined;
         for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) u?.searchParams.delete(key);
         const client = new Client({ ...config, connectionString: u?.toString() });
-        this.user = client.user ?? "";
+        // Supabase's pooler (Supavisor) routes on the user's ".<project-ref>" and logs in without it.
+        const pooled = !!u?.hostname.endsWith(".pooler.supabase.com");
+        this.user = pooled ? (client.user ?? "").replace(/\.[^.]*$/, "") : client.user ?? "";
         this.password = client.password ?? "";
-        if (this.user === "postgres_ai_mon" && config.connectionString) monUrls.push(config.connectionString);
+        if (this.user === role && config.connectionString) monUrls.push(config.connectionString);
       }
       async connect() {
         if (this.config.ssl && me.name === "no-tls") throw new Error("The server does not support SSL connections");
-        if (this.user === "postgres_ai_mon") {
+        if (this.user === role) {
           const answer = logins[Math.min(monLogins.length, logins.length - 1)];
           monLogins.push(this.password);
           if (answer !== "ok") throw answer;
@@ -1636,25 +1773,27 @@ describe("prepareDatabase (a fake pg client)", () => {
         this.statements.push(sql);
         if (/session_user as name/.test(sql)) {
           // Only the columns the SQL selects, each from what it is: a column dropped from the query is missing here too.
-          const row: Record<string, unknown> = { name: "postgres", db: "app", admin: true, iterations: "4096", ...me };
+          const row: Record<string, unknown> = { name: "postgres", db: "app", admin: true, iterations: "4096", mon_privileged: false, mon_groups: null, mon_owns: false, mon_grants: null, ...me };
           const selects: Record<string, RegExp> = {
             name: /session_user as name/, db: /current_database\(\) as db/, admin: /\) as admin\b/,
-            mon_exists: /rolname = 'postgres_ai_mon'\) as mon_exists/, iterations: /current_setting\('scram_iterations', true\) as iterations/,
+            mon_exists: new RegExp(`rolname = '${role}'\\) as mon_exists`), iterations: /current_setting\('scram_iterations', true\) as iterations/,
             ssl: /current_setting\('ssl'\) as ssl/,
+            mon_privileged: new RegExp(`rolname = '${role.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' and \\(rolsuper or rolcreatedb or rolcreaterole or rolreplication or rolbypassrls\\)\\) as mon_privileged`),
+            mon_groups: /\) as mon_groups\b/, mon_owns: /\) as mon_owns\b/, mon_grants: /\) as mon_grants\b/,
           };
           return { rows: [Object.fromEntries(Object.entries(selects).filter(([, re]) => re.test(sql)).map(([k]) => [k, row[k]]))] };
         }
-        if (this.user !== "postgres_ai_mon" && !/^set (statement_timeout|search_path) =/i.test(sql)) ran.push(sql.trim().split("\n")[0]);
-        if (this.user !== "postgres_ai_mon" && !/session_user as name/.test(sql) && !/^set (statement_timeout|search_path) =/i.test(sql)) sqls.push(sql);
+        if (this.user !== role && !/^set (statement_timeout|search_path) =/i.test(sql)) ran.push(sql.trim().split("\n")[0]);
+        if (this.user !== role && !/session_user as name/.test(sql) && !/^set (statement_timeout|search_path) =/i.test(sql)) sqls.push(sql);
         if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
         // The monitoring role's own session: every check of verifyInitSetup passes.
-        if (me.name === "postgres_ai_mon") return { rowCount: 1, rows: [{ ok: true, rolconfig: ["search_path=postgres_ai, public, pg_catalog"] }] };
+        if (me.name === role) return { rowCount: 1, rows: [{ ok: true, rolconfig: ["search_path=postgres_ai, public, pg_catalog"] }] };
         return { rows: [] };
       }
       async end() {}
     }
     const prepare = (opts: PrepareOptions = {}, url = opts.agent ? "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=require&application_name=pgai" : ADMIN) => prepareDatabase(url, "self-managed", { ...opts, Client: FakeClient as unknown as PrepareOptions["Client"] });
-    const unprepare = () => unprepareDatabase(ADMIN, { Client: FakeClient as unknown as PrepareOptions["Client"] });
+    const unprepare = (o: PrepareOptions = {}) => unprepareDatabase(ADMIN, { ...o, Client: FakeClient as unknown as PrepareOptions["Client"] });
     return { prepare, unprepare, ran, sqls, monLogins, monUrls, sessions };
   }
   const withMonPassword = async <T>(value: string | undefined, fn: () => Promise<T>) => {
@@ -1684,7 +1823,7 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(await withMonPassword(undefined, () => reused.prepare({ storedPassword: true }))).toHaveProperty("storedPassword", true);
     const failed = server({ name: "no-tls", mon_exists: false, fails: /create extension/ });
     await expect(withMonPassword(undefined, () => failed.prepare({}, "postgresql://postgres:adminpw@db.example.com:5432/app"))).rejects.toThrow('Failed at step "02.extensions"');
-    expect(failed.ran.at(-1)).toBe("drop role postgres_ai_mon");
+    expect(failed.ran.at(-1)).toBe('drop role "postgres_ai_mon"');
     expect(reused.sessions.length).toBe(1);
     expect(failed.sessions.length).toBe(2);
     for (const statements of [...reused.sessions, ...failed.sessions]) {
@@ -1712,10 +1851,133 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(s.monLogins.at(-1)).toBe(password);
   });
 
+  test("--monitoring-user, an existing role and --reset-password: that role gets the new PGAI_MON_PASSWORD, the box's URL carries it, and postgres_ai_mon is not touched", async () => {
+    const s = server({ mon_exists: true }, ["ok"], "my_mon");
+    const result = await withMonPassword("new-pw-1", () => s.prepare({ resetPassword: true, monitoringUser: "my_mon" }));
+    const password = new URL((result as { monitoringUrl: string }).monitoringUrl).password;
+    expect(password).toBe("new-pw-1");
+    expect(result).toEqual({ monitoringUrl: `postgresql://my_mon:${password}@db.example.com:5432/app?sslmode=require&application_name=pgai` });
+    expect(s.sqls.some((q) => /alter user "my_mon" with password 'SCRAM-SHA-256\$/.test(q))).toBe(true);
+    expect(s.monLogins.at(-1)).toBe(password);
+    expect(s.sessions.flat().join("\n")).not.toContain("postgres_ai_mon");
+  });
+
+  // PostgresAI keeps no password for a custom role: a generated one would be lost (the second database
+  // of the server would then stop at "already exists" with no way out).
+  const NEED_PW = "Set PGAI_MON_PASSWORD to a password for my_mon: PostgresAI keeps no password for a custom role, so a generated one would be lost";
+  test.each([
+    ["a new role", { mon_exists: false }, {}],
+    ["--reset-password", { mon_exists: true }, { resetPassword: true }],
+  ] as const)("--monitoring-user, %s, no PGAI_MON_PASSWORD: refused before anything runs", async (_what, me, o) => {
+    const s = server(me, ["ok"], "my_mon");
+    expect(await withMonPassword(undefined, () => s.prepare({ ...o, monitoringUser: "my_mon" }))).toEqual({ next: NEED_PW });
+    expect(await withMonPassword(undefined, () => s.prepare({ ...o, monitoringUser: "my_mon", check: true }))).toEqual({ next: NEED_PW });
+    expect(s.ran).toEqual([]);
+  });
+
+  test("--monitoring-user from an agent's admin URL, a new role: refused (an agent sets no password)", async () => {
+    const s = server({ mon_exists: false }, ["ok"], "my_mon");
+    expect(await s.prepare({ agent: true, monitoringUser: "my_mon" })).toEqual({
+      next: "my_mon is a custom role, and PostgresAI keeps no password for it: pass its URL as database_url, or run pgai mon deploy in a terminal with PGAI_MON_PASSWORD set",
+    });
+    expect(s.ran).toEqual([]);
+  });
+
+  test("--monitoring-user, the role exists and no PGAI_MON_PASSWORD: the hint resets it with PGAI_MON_PASSWORD, and there is no reset prompt", async () => {
+    const s = server({ mon_exists: true }, ["ok"], "my_mon");
+    expect(await withMonPassword(undefined, () => s.prepare({ monitoringUser: "my_mon" }))).toEqual({
+      next: "my_mon already exists on this server. Set PGAI_MON_PASSWORD to the password of my_mon, or give it a new one: PGAI_MON_PASSWORD=<new password> pgai mon deploy <admin-url> --monitoring-user my_mon --reset-password (anything else that logs in as my_mon then needs the new password)",
+    });
+    expect(s.ran).toEqual([]);
+  });
+
+  test.each([
+    ["an admin URL", { mon_exists: true, mon_privileged: true }, undefined],
+    ["the role's own URL", { name: "my_mon", mon_exists: true, mon_privileged: true }, "postgresql://my_mon:monpw@db.example.com:5432/app?sslmode=require"],
+  ] as const)("--monitoring-user naming a privileged role (%s): refused before anything runs", async (_what, me, url) => {
+    const s = server(me, ["ok"], "my_mon");
+    expect(await withMonPassword("pw-1", () => s.prepare({ monitoringUser: "my_mon" }, url))).toEqual({
+      next: "my_mon is a superuser, or has CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS: a monitoring role must not. Use another --monitoring-user",
+    });
+    expect(s.ran).toEqual([]);
+  });
+
+  // A role this run did not create may already do more than monitor: --reset-password would hand its
+  // credentials to the box, and the plan would change its search_path.
+  test.each([
+    ["a member of another role, --reset-password", { mon_exists: true, mon_groups: "app_rw, postgres" }, { resetPassword: true }, undefined,
+      "my_mon is a member of app_rw, postgres: a monitoring role may be a member of pg_monitor, pg_read_all_stats, pg_read_all_settings and pg_stat_scan_tables only. Use another --monitoring-user"],
+    ["an owner of objects, its own URL", { name: "my_mon", mon_exists: true, mon_owns: true }, {}, "postgresql://my_mon:monpw@db.example.com:5432/app?sslmode=require",
+      "my_mon owns objects on this server: a monitoring role must own nothing. Use another --monitoring-user"],
+    ["a role with write grants, --reset-password", { mon_exists: true, mon_grants: "table t, database app" }, { resetPassword: true }, undefined,
+      "my_mon has grants on table t, database app: a monitoring role may have only CONNECT, USAGE on schemas other than pg_toast, SELECT outside pg_catalog and pg_toast, and the grants pgai makes. Use another --monitoring-user"],
+  ] as const)("--monitoring-user naming %s: refused before anything runs", async (_what, me, o, url, next) => {
+    const s = server(me, ["ok"], "my_mon");
+    expect(await withMonPassword("pw-1", () => s.prepare({ ...o, monitoringUser: "my_mon" }, url))).toEqual({ next });
+    expect(s.ran).toEqual([]);
+  });
+
+  test("a role name with a double quote: quoted in the existence check, create, grants and search_path", async () => {
+    const role = 'My"Mon';
+    const s = server({ mon_exists: false }, ["ok"], role);
+    expect(await withMonPassword("pw-1", () => s.prepare({ monitoringUser: role }))).toHaveProperty("monitoringUrl");
+    const all = s.sessions.flat().join("\n");
+    expect(all).toContain(`rolname = 'My"Mon') as mon_exists`);
+    expect(all).toContain('create user "My""Mon" with password');
+    expect(all).toContain('grant pg_monitor to "My""Mon"');
+    expect(all).toContain('grant connect on database "app" to "My""Mon"');
+    expect(all).toContain('alter user "My""Mon" set search_path');
+  });
+
+  test("--monitoring-user and a failed plan: the role keeps the user's PGAI_MON_PASSWORD and is not dropped (postgres_ai_mon neither)", async () => {
+    const s = server({ name: "no-tls", mon_exists: false, fails: /create extension/ }, ["ok"], "my_mon");
+    await expect(withMonPassword("pw-1", () => s.prepare({ monitoringUser: "my_mon" }, "postgresql://postgres:adminpw@db.example.com:5432/app"))).rejects.toThrow('Failed at step "02.extensions"');
+    expect(s.ran.filter((q) => /^drop role/.test(q))).toEqual([]);
+  });
+
   test("--reset-password is not for an agent's URL", async () => {
     const s = server({ mon_exists: true });
     expect((await s.prepare({ agent: true, resetPassword: true }) as { next: string }).next).toStartWith("postgres_ai_mon already exists on this server. Pass its URL as database_url");
     expect(s.sqls).toEqual([]);
+  });
+
+  test("--monitoring-user: the role is created and granted under that name, and the box's URL logs in as it", async () => {
+    const s = server({ mon_exists: false }, ["ok"], "my_mon");
+    const result = await withMonPassword("pw-1", () => s.prepare({ monitoringUser: "my_mon" }));
+    expect(result).toEqual({ monitoringUrl: "postgresql://my_mon:pw-1@db.example.com:5432/app?sslmode=require&application_name=pgai" });
+    expect(s.sqls.join("\n")).toContain('create user "my_mon" with password');
+    expect(s.sessions.flat().join("\n")).not.toContain("postgres_ai_mon");
+  });
+
+  test("--monitoring-user with that role's own URL: checked as that role, and the box's URL keeps it", async () => {
+    const s = server({ name: "my_mon", mon_exists: true }, ["ok", pgError("28P01", "password authentication failed")], "my_mon");
+    const result = await s.prepare({ monitoringUser: "my_mon" }, "postgresql://my_mon:monpw@db.example.com:5432/app?sslmode=require");
+    expect(result).toEqual({ monitoringUrl: "postgresql://my_mon:monpw@db.example.com:5432/app?sslmode=require" });
+    expect(s.ran).toEqual([]);
+  });
+
+  test("a role name is quoted in the cleanup that drops it", async () => {
+    const s = server({ mon_exists: false }, ["ok"], 'Mon"Q');
+    expect(await s.unprepare({ monitoringUser: 'Mon"Q' })).toBe(true);
+    expect(s.ran).toEqual(['drop role "Mon""Q"']);
+  });
+
+  // Supabase's pooler routes on the user's ".<project-ref>": the box's URL must keep it.
+  const POOLER = "aws-0-us-east-1.pooler.supabase.com";
+  test.each([
+    ["an admin URL", { mon_exists: false }, ["ok"], "postgres.abcdefghij:adminpw", "pw-1"],
+    ["the role's own URL", { name: "postgres_ai_mon", mon_exists: true }, ["ok", pgError("28P01", "password authentication failed")], "postgres_ai_mon.abcdefghij:pw-1", undefined],
+  ] as const)("Supabase pooler, %s: the box's URL keeps the project suffix", async (_what, me, logins, userinfo, monPassword) => {
+    const s = server(me, [...logins]);
+    const result = await withMonPassword(monPassword, () => s.prepare({}, `postgresql://${userinfo}@${POOLER}:6543/postgres?sslmode=require`));
+    expect(result).toEqual({ monitoringUrl: `postgresql://postgres_ai_mon.abcdefghij:pw-1@${POOLER}:6543/app?sslmode=require` });
+    for (const u of s.monUrls) expect(new URL(u).username).toBe("postgres_ai_mon.abcdefghij");
+  });
+
+  test("Supabase pooler with --monitoring-user: the box logs in as <role>.<project-ref>", async () => {
+    const s = server({ mon_exists: false }, ["ok"], "my_mon");
+    const result = await withMonPassword("pw-1", () => s.prepare({ monitoringUser: "my_mon" }, `postgresql://postgres.abcdefghij:adminpw@${POOLER}:5432/postgres?sslmode=require`));
+    expect(result).toEqual({ monitoringUrl: `postgresql://my_mon.abcdefghij:pw-1@${POOLER}:5432/app?sslmode=require` });
   });
 
   test("an existing role, no PGAI_MON_PASSWORD, and the platform keeps the server's password: the plan keeps the password, and the box's URL carries none", async () => {
@@ -1960,7 +2222,7 @@ describe("prepareDatabase (a fake pg client)", () => {
   test("a plan that fails after the role was created with a generated password: the role is dropped again", async () => {
     const s = server({ mon_exists: false, fails: /create extension/ });
     await expect(withMonPassword(undefined, () => s.prepare())).rejects.toThrow('Failed at step "02.extensions": permission denied');
-    expect(s.ran.at(-1)).toBe("drop role postgres_ai_mon");
+    expect(s.ran.at(-1)).toBe('drop role "postgres_ai_mon"');
   });
 
   test("a plan that fails: a role with the user's PGAI_MON_PASSWORD, or one that does not log in with ours, is left alone", async () => {
@@ -2157,6 +2419,18 @@ describe("MCP deploy_monitoring", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("monitoring_user reaches mon deploy's checks", async () => {
+    const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
+    const result = await handleToolCall({ params: { name: "deploy_monitoring", arguments: { database_url: CH, monitoring_user: "m".repeat(64) } } }, opts);
+    expect(JSON.parse(result.content[0].text).next).toBe("monitoring_user must be at most 63 bytes (Postgres truncates longer role names)");
+  });
+
+  test("an empty monitoring_user is refused, not taken as the default", async () => {
+    const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
+    const result = await handleToolCall({ params: { name: "deploy_monitoring", arguments: { database_url: CH, monitoring_user: "" } } }, opts);
+    expect(JSON.parse(result.content[0].text).next).toBe("monitoring_user is empty: pass a role name, or leave it out for postgres_ai_mon");
   });
 
   test("a box still provisioning is answered at once (no wait); a failed one is an error result", async () => {

@@ -60,7 +60,7 @@ import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUni
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
-import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
+import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, createOrg, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
 import { raiseConnectAttemptTimeout } from "../lib/connect-timeout";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
@@ -3761,13 +3761,24 @@ async function selfRegisterAndPersist(
 /**
  * Regenerate pgwatch sources and recreate collectors so target changes take effect without `mon restart`.
  */
-async function applyMonitoringTargetsConfig(): Promise<number> {
+async function applyMonitoringTargetsConfig(restartReporter = false): Promise<number> {
   console.log("Applying monitoring target configuration...");
   const generateCode = await runCompose(["run", "--rm", "sources-generator"]);
   if (generateCode !== 0) return generateCode;
 
   console.log("Restarting pgwatch collectors to pick up target changes...");
-  return runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
+  const upCode = await runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
+  if (upCode !== 0) return upCode;
+
+  // The reporter runs once a day after its first run. A restart runs it again
+  // after its initial delay and readiness wait, so a new target gets its first
+  // report then, not the next day. Not on remove: discovery sees a removed
+  // node for 3 h more, so a run then would report it again.
+  if (!restartReporter) return 0;
+  if ((await runCompose(["restart", "postgres-reports"])) !== 0) {
+    console.error("⚠ Could not restart postgres-reports; the target's first report comes with its next daily run");
+  }
+  return 0;
 }
 
 /**
@@ -4248,7 +4259,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
 
 type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
-  yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
+  monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
 };
 
 /** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
@@ -4409,7 +4420,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
   .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
-  .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--reset-password", "the monitoring role exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--monitoring-user <name>", "monitoring role to create or use", DEFAULT_MONITORING_USER)
   .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
   .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal)")
   .addHelpText("after", [
@@ -6101,7 +6113,7 @@ export async function addTarget(
     }
 
     if (!apply) return true;
-    const applyCode = await applyMonitoringTargetsConfig();
+    const applyCode = await applyMonitoringTargetsConfig(true);
     if (applyCode !== 0) {
       console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
       process.exitCode = 1;
@@ -6891,7 +6903,7 @@ function interpretEscapes(str: string): string {
 }
 
 // Issues management
-program
+const orgsCommand = program
   .command("orgs")
   .description("list organizations this credential can reach")
   .option("--debug", "enable debug output")
@@ -6918,6 +6930,29 @@ program
         return;
       }
       printResult(orgs, opts.json);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
+
+orgsCommand.command("create")
+  .description("create an organization (requires a global user token; no org selection needed)")
+  .requiredOption("--name <name>", "organization display name")
+  .option("--alias <alias>", "unique organization alias (default: generated from name)")
+  .option("--json", "output the created organization as JSON")
+  .addHelpText("after", "\nExample: pgai orgs create --name 'My team' --alias my-team --json\nGet a global user token with 'pgai auth login': choose 'All my organizations (global token)'\n(preselected when you have no organization yet), or create one at\nhttps://console.postgres.ai/profile/global-tokens and run 'pgai auth --set-key <token>'.")
+  .action(async (opts: {name: string; alias?: string; json?: boolean}) => {
+    try {
+      const rootOpts = program.opts<CliOptions>();
+      const { apiKey } = getConfig(rootOpts);
+      if (!apiKey) throw new Error("API key is required. Run 'pgai auth login' first or set --api-key.");
+      const { apiBaseUrl } = resolveBaseUrls(rootOpts, config.readConfig());
+      const result = await createOrg({apiKey, apiBaseUrl, name: opts.name, alias: opts.alias});
+      // The parent `orgs` also defines --json and Commander hands it the flag
+      // even when it follows `create`, so read both.
+      printResult(result, opts.json || orgsCommand.opts<{json?: boolean}>().json);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exitCode = 1;

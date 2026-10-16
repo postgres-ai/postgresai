@@ -2,7 +2,20 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-initial_delay_seconds="${REPORTER_INITIAL_DELAY_SECONDS:-1800}"
+# First run: wait REPORTER_INITIAL_DELAY_SECONDS (180 s), then poll Prometheus
+# every REPORTER_READINESS_POLL_SECONDS (15 s) until each enabled target in
+# instances.yml has `settings` and `db_stats` samples, at most
+# REPORTER_READINESS_TIMEOUT_SECONDS (30 min; 0 skips the wait). Collection
+# time has no fixed bound (some metrics run for minutes, a failed first
+# connect retries after 120 s), so the wait checks the data, not the clock.
+# If no target has data the reporter does not upload; later runs retry.
+initial_delay_seconds="${REPORTER_INITIAL_DELAY_SECONDS:-180}"
+readiness_timeout_seconds="${REPORTER_READINESS_TIMEOUT_SECONDS:-1800}"
+readiness_poll_seconds="${REPORTER_READINESS_POLL_SECONDS:-15}"
+sources_path="${REPORTER_SOURCES_PATH:-/postgres_ai_configs/pgwatch-prometheus/sources.yml}"
+# A failed run (e.g. the platform is down) is retried after this, not daily
+# and not by a container restart every few minutes.
+retry_seconds="${REPORTER_RETRY_SECONDS:-1800}"
 interval_seconds="${REPORTER_INTERVAL_SECONDS:-86400}"
 
 prometheus_url="${PROMETHEUS_URL:-http://sink-prometheus:9090}"
@@ -98,16 +111,20 @@ if [[ -z "${project_name}" ]]; then
   fi
 fi
 
-echo "postgres-reports: initial_delay_seconds=${initial_delay_seconds}, interval_seconds=${interval_seconds}"
+echo "postgres-reports: initial_delay_seconds=${initial_delay_seconds}, interval_seconds=${interval_seconds}, readiness_timeout_seconds=${readiness_timeout_seconds}"
 sleep_seconds "$initial_delay_seconds"
+
+if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seconds > 0 )); then
+  # Always exits 0: on timeout the run goes ahead.
+  python -m reporter.wait_ready "${prometheus_url}" "${sources_path}" \
+    "${readiness_timeout_seconds}" "${readiness_poll_seconds}" || true
+fi
 
 while true; do
   output_path="$(date -u +"${output_template}")"
-
-  # Build optional args
-  use_current_time_arg=""
+  reporter_args=(--prometheus-url "${prometheus_url}" --output "${output_path}")
   if [[ "${use_current_time}" == "true" ]]; then
-    use_current_time_arg="--use-current-time"
+    reporter_args+=(--use-current-time)
   fi
 
   if api_key="$(read_api_key)"; then
@@ -119,32 +136,21 @@ while true; do
       # reports locally (like the no-api-key branch) and only skip the upload.
       echo "postgres-reports: ERROR project name is required for upload — set REPORTER_PROJECT_NAME or project_name in .pgwatch-config; skipping upload this cycle" >&2
       echo "postgres-reports: generating reports (no upload) -> ${output_path}"
-      python -m reporter.postgres_reports \
-        --prometheus-url "${prometheus_url}" \
-        --output "${output_path}" \
-        --no-upload \
-        ${use_current_time_arg}
+      reporter_args+=(--no-upload)
     else
       echo "postgres-reports: generating reports (upload enabled) -> ${output_path}"
-      python -m reporter.postgres_reports \
-        --prometheus-url "${prometheus_url}" \
-        --output "${output_path}" \
-        --api-url "${api_url}" \
-        --project-name "${project_name}" \
-        --token "${api_key}" \
-        ${use_current_time_arg}
+      reporter_args+=(--api-url "${api_url}" --project-name "${project_name}" --token "${api_key}")
     fi
   else
     echo "postgres-reports: generating reports (no upload) -> ${output_path}"
-    python -m reporter.postgres_reports \
-      --prometheus-url "${prometheus_url}" \
-      --output "${output_path}" \
-      --no-upload \
-      ${use_current_time_arg}
+    reporter_args+=(--no-upload)
   fi
 
-  echo "postgres-reports: sleeping ${interval_seconds}s"
-  sleep_seconds "${interval_seconds}"
+  if python -m reporter.postgres_reports "${reporter_args[@]}"; then
+    echo "postgres-reports: sleeping ${interval_seconds}s"
+    sleep_seconds "${interval_seconds}"
+  else
+    echo "postgres-reports: run failed; retrying in ${retry_seconds}s" >&2
+    sleep_seconds "${retry_seconds}"
+  fi
 done
-
-

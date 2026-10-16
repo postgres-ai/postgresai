@@ -446,6 +446,237 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
+  // internal#432: a custom monitoring role, end to end on a real server.
+  test("--monitoring-user: a name with a quote and a space is created, granted and logs in; a privileged role and a role without PGAI_MON_PASSWORD are refused; --reset-password rotates it", async () => {
+    const role = 'pgai My"Mon';
+    const qi = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const c = await admin();
+    const cleanup = async () => {
+      for (const r of [role, "pgai_mon_priv"]) {
+        await c.query(`drop owned by ${qi(r)} cascade`).catch(() => {});
+        await c.query(`drop role if exists ${qi(r)}`);
+      }
+    };
+    await cleanup();
+    await c.query("create role pgai_mon_priv login createrole password 'priv-pw'");
+    try {
+      // No PGAI_MON_PASSWORD: a generated password would be lost, so nothing is created.
+      expect(await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: role })).toEqual({
+        next: `Set PGAI_MON_PASSWORD to a password for ${role}: PostgresAI keeps no password for a custom role, so a generated one would be lost`,
+      });
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = $1", [role])).rows[0].n).toBe(0);
+
+      // Through platformDeps, as the CLI and MCP call it: the role reaches prepare and unprepare.
+      const deps = platformDeps({ apiKey: "unused", apiBaseUrl: "http://unused.invalid", uiBaseUrl: "http://unused.invalid" });
+      process.env.PGAI_MON_PASSWORD = "first pw%1";
+      const first = await deps.prepare(ADMIN!, "self-managed", { monitoringUser: role });
+      if (!("monitoringUrl" in first)) throw new Error(`expected a URL, got: ${JSON.stringify(first)}`);
+      expect(first.generated).toBeUndefined();
+      expect(decodeURIComponent(new URL(first.monitoringUrl).username)).toBe(role);
+      const m = new Client({ connectionString: first.monitoringUrl });
+      await m.connect();
+      expect((await m.query("select current_user as u, pg_has_role(current_user, 'pg_monitor', 'member') as mon, pg_has_role(current_user, 'pg_read_all_stats', 'member') as stats")).rows[0])
+        .toEqual({ u: role, mon: true, stats: true });
+      await m.end();
+
+      // A role that can do more than monitor is refused, and left as it was.
+      expect(await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: "pgai_mon_priv" })).toEqual({
+        next: "pgai_mon_priv is a superuser, or has CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS: a monitoring role must not. Use another --monitoring-user",
+      });
+      expect((await c.query("select rolconfig from pg_roles where rolname = 'pgai_mon_priv'")).rows[0].rolconfig).toBeNull();
+
+      // --reset-password: the new PGAI_MON_PASSWORD, and the old one stops working.
+      process.env.PGAI_MON_PASSWORD = "second pw";
+      const reset = await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: role, resetPassword: true });
+      if (!("monitoringUrl" in reset)) throw new Error(`expected a URL, got: ${JSON.stringify(reset)}`);
+      expect(decodeURIComponent(new URL(reset.monitoringUrl).password)).toBe("second pw");
+      const n = new Client({ connectionString: reset.monitoringUrl });
+      await n.connect();
+      await n.end();
+      await expect(new Client({ connectionString: first.monitoringUrl }).connect()).rejects.toThrow(/password authentication failed/);
+      expect(await deps.unprepare(ADMIN!, role)).toBe(true);
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = $1", [role])).rows[0].n).toBe(0);
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+      await cleanup();
+      await c.end();
+    }
+  });
+
+  test("--monitoring-user --reset-password: a CREATEDB role is refused", async () => {
+    const c = await admin();
+    await c.query("create role pgai_mon_createdb login createdb password 'old-pw'");
+    process.env.PGAI_MON_PASSWORD = "new-pw";
+    try {
+      expect(await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: "pgai_mon_createdb", resetPassword: true })).toEqual({
+        next: "pgai_mon_createdb is a superuser, or has CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS: a monitoring role must not. Use another --monitoring-user",
+      });
+      expect((await c.query("select rolconfig from pg_roles where rolname = 'pgai_mon_createdb'")).rows[0].rolconfig).toBeNull();
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+      await c.query("drop owned by pgai_mon_createdb cascade");
+      await c.query("drop role pgai_mon_createdb");
+      await c.end();
+    }
+  });
+
+  test.each(["grant", "membership"])("--monitoring-user --reset-password: an allowed %s with delegation rights is refused", async (kind) => {
+    const c = await admin();
+    const role = "pgai_mon_delegate";
+    await c.query(`create role ${role} login password 'old-pw'`);
+    if (kind === "grant") await c.query(`grant usage on schema public to ${role} with grant option`);
+    else await c.query(`grant pg_monitor to ${role} with admin option`);
+    const before = (await c.query("select rolpassword from pg_authid where rolname = $1", [role])).rows[0].rolpassword;
+    process.env.PGAI_MON_PASSWORD = "new-pw";
+    try {
+      expect(await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: role, resetPassword: true })).toHaveProperty("next", expect.stringContaining(kind === "grant" ? "has grants on schema public" : "WITH ADMIN OPTION"));
+      expect((await c.query("select a.rolpassword, r.rolconfig from pg_authid a join pg_roles r using (oid) where a.rolname = $1", [role])).rows[0]).toEqual({ rolpassword: before, rolconfig: null });
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+      await c.query(`drop owned by ${role} cascade`);
+      await c.query(`drop role ${role}`);
+      await c.end();
+    }
+  });
+
+  // A role this run did not create: a member of a superuser or of pg_execute_server_program, an
+  // owner of a table, a role that may write a table, create in the database or receive future
+  // grants, run a server-file function or read password verifiers, is refused on --reset-password,
+  // and keeps its password and settings.
+  test("--monitoring-user --reset-password: a role with other memberships, owned objects or grants beyond the plan's is refused and left as it was", async () => {
+    const c = await admin();
+    const roles = ["pgai_mon_sneaky", "pgai_mon_progx", "pgai_mon_owner", "pgai_mon_rw", "pgai_mon_dbcreate", "pgai_mon_defacl", "pgai_mon_loexport", "pgai_mon_readfile", "pgai_mon_authid", "pgai_mon_authpw", "pgai_mon_colwrite"];
+    const cleanup = async () => {
+      for (const r of roles) {
+        await c.query(`drop owned by ${r} cascade`).catch(() => {});
+        await c.query(`drop role if exists ${r}`);
+      }
+      await c.query("drop table if exists pgai_mon_rw_t");
+    };
+    await cleanup();
+    for (const r of roles) await c.query(`create role ${r} login password 'old-pw'`);
+    const adminUser = (await c.query("select current_user as u")).rows[0].u;
+    const db = (await c.query("select current_database() as d")).rows[0].d;
+    await c.query(`grant "${adminUser}" to pgai_mon_sneaky`);
+    await c.query("grant pg_execute_server_program to pgai_mon_progx");
+    await c.query("create table pgai_mon_owned_t (id int)");
+    await c.query("alter table pgai_mon_owned_t owner to pgai_mon_owner");
+    await c.query("create table pgai_mon_rw_t (a int)");
+    await c.query("grant select, insert, update, delete, truncate on pgai_mon_rw_t to pgai_mon_rw");
+    await c.query(`grant create on database "${db}" to pgai_mon_dbcreate`);
+    await c.query("alter default privileges in schema public grant insert on tables to pgai_mon_defacl");
+    await c.query("grant execute on function pg_catalog.lo_export(oid, text) to pgai_mon_loexport");
+    await c.query("grant execute on function pg_catalog.pg_read_file(text) to pgai_mon_readfile");
+    await c.query("grant select on pg_catalog.pg_authid to pgai_mon_authid");
+    await c.query("grant select (rolpassword) on pg_catalog.pg_authid to pgai_mon_authpw");
+    await c.query("grant insert (a) on pgai_mon_rw_t to pgai_mon_colwrite");
+    const onlyRead = "a monitoring role may have only CONNECT, USAGE on schemas other than pg_toast, SELECT outside pg_catalog and pg_toast, and the grants pgai makes. Use another --monitoring-user";
+    process.env.PGAI_MON_PASSWORD = "new-pw";
+    try {
+      expect(await Promise.all(roles.map((r) => prepareDatabase(ADMIN!, "self-managed", { monitoringUser: r, resetPassword: true })))).toEqual([
+        { next: `pgai_mon_sneaky is a member of pg_database_owner, ${adminUser}: a monitoring role may be a member of pg_monitor, pg_read_all_stats, pg_read_all_settings and pg_stat_scan_tables only. Use another --monitoring-user` },
+        { next: "pgai_mon_progx is a member of pg_execute_server_program: a monitoring role may be a member of pg_monitor, pg_read_all_stats, pg_read_all_settings and pg_stat_scan_tables only. Use another --monitoring-user" },
+        { next: "pgai_mon_owner owns objects on this server: a monitoring role must own nothing. Use another --monitoring-user" },
+        { next: `pgai_mon_rw has grants on table public.pgai_mon_rw_t: ${onlyRead}` },
+        { next: `pgai_mon_dbcreate has grants on database ${db}: ${onlyRead}` },
+        { next: `pgai_mon_defacl has grants on default privileges on new relations belonging to role ${adminUser} in schema public: ${onlyRead}` },
+        { next: `pgai_mon_loexport has grants on function lo_export(oid,text): ${onlyRead}` },
+        { next: `pgai_mon_readfile has grants on function pg_read_file(text): ${onlyRead}` },
+        { next: `pgai_mon_authid has grants on table pg_authid: ${onlyRead}` },
+        { next: `pgai_mon_authpw has grants on column rolpassword of table pg_authid: ${onlyRead}` },
+        { next: `pgai_mon_colwrite has grants on column a of table public.pgai_mon_rw_t: ${onlyRead}` },
+      ]);
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = any($1) and rolconfig is not null", [roles])).rows[0].n).toBe(0);
+      for (const r of roles) {
+        const url = new URL(ADMIN!);
+        url.username = r;
+        url.password = "old-pw";
+        const o = new Client({ connectionString: url.toString() });
+        await o.connect();
+        await o.end();
+      }
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+      await cleanup();
+      await c.end();
+    }
+  });
+
+  // Grants the in-database check cannot see: a grant made in another database of the server (the
+  // role connects there, CONNECT is PUBLIC), a server-file group reached through another group or
+  // through pg_monitor and pg_read_all_stats themselves (also for a role the plan has not yet made
+  // their member), and reads of pg_toast (the TOAST of
+  // pg_statistic and pg_authid). Each is refused on --reset-password, and the role keeps its password.
+  test("--monitoring-user --reset-password: grants in another database, groups reached through groups, and pg_toast access are refused", async () => {
+    const c = await admin();
+    const other = "pgai_mon_other";
+    const roles = ["pgai_mon_xdb_lo", "pgai_mon_xdb_authid", "pgai_mon_chain", "pgai_mon_toastns", "pgai_mon_toast", "pgai_mon_viamon", "pgai_mon_viastats", "pgai_mon_plain"];
+    const otherUrl = new URL(ADMIN!);
+    otherUrl.pathname = `/${other}`;
+    const cleanup = async () => {
+      await c.query("revoke pg_execute_server_program from pg_monitor").catch(() => {});
+      await c.query("revoke pg_read_server_files from pg_read_all_stats").catch(() => {});
+      await c.query(`drop database if exists ${other}`);
+      for (const r of roles) {
+        await c.query(`drop owned by ${r} cascade`).catch(() => {});
+        await c.query(`drop role if exists ${r}`);
+      }
+      await c.query("drop role if exists pgai_mon_mid");
+    };
+    await cleanup();
+    for (const r of roles) await c.query(`create role ${r} login password 'old-pw'`);
+    await c.query(`create database ${other}`);
+    const o = new Client({ connectionString: otherUrl.toString() });
+    await o.connect();
+    await o.query("grant execute on function pg_catalog.lo_export(oid, text) to pgai_mon_xdb_lo");
+    await o.query("grant select on pg_catalog.pg_authid to pgai_mon_xdb_authid");
+    await o.end();
+    await c.query("create role pgai_mon_mid");
+    await c.query("grant pg_execute_server_program to pgai_mon_mid");
+    await c.query("grant pgai_mon_mid to pgai_mon_chain");
+    await c.query("grant pg_monitor to pgai_mon_viamon");
+    await c.query("grant pg_read_all_stats to pgai_mon_viastats");
+    await c.query("grant usage on schema pg_toast to pgai_mon_toastns");
+    await c.query("grant select on pg_toast.pg_toast_2619 to pgai_mon_toast");
+    const groups = "a monitoring role may be a member of pg_monitor, pg_read_all_stats, pg_read_all_settings and pg_stat_scan_tables only. Use another --monitoring-user";
+    const onlyRead = "a monitoring role may have only CONNECT, USAGE on schemas other than pg_toast, SELECT outside pg_catalog and pg_toast, and the grants pgai makes. Use another --monitoring-user";
+    const thisDb = "a monitoring role may have grants in this database only. Use another --monitoring-user";
+    process.env.PGAI_MON_PASSWORD = "new-pw";
+    try {
+      const results = [];
+      const reset = (r: string) => prepareDatabase(ADMIN!, "self-managed", { monitoringUser: r, resetPassword: true });
+      for (const r of roles.slice(0, 5)) results.push(await reset(r));
+      // These two reach every member of pg_monitor, and so every role the plan grants it to.
+      await c.query("grant pg_execute_server_program to pg_monitor");
+      await c.query("grant pg_read_server_files to pg_read_all_stats");
+      for (const r of roles.slice(5)) results.push(await reset(r));
+      expect(results).toEqual([
+        { next: `pgai_mon_xdb_lo has grants in database ${other}: ${thisDb}` },
+        { next: `pgai_mon_xdb_authid has grants in database ${other}: ${thisDb}` },
+        { next: `pgai_mon_chain is a member of pg_execute_server_program, pgai_mon_mid: ${groups}` },
+        { next: `pgai_mon_toastns has grants on schema pg_toast: ${onlyRead}` },
+        { next: `pgai_mon_toast has grants on toast table pg_toast.pg_toast_2619: ${onlyRead}` },
+        { next: `pgai_mon_viamon is a member of pg_execute_server_program, pg_read_server_files: ${groups}` },
+        { next: `pgai_mon_viastats is a member of pg_read_server_files: ${groups}` },
+        // Not a member of pg_monitor yet: the plan grants it, and with it pg_execute_server_program.
+        { next: `pgai_mon_plain would become a member of pg_execute_server_program, pg_read_server_files through pg_monitor or pg_read_all_stats: ${groups}` },
+      ]);
+      expect((await c.query("select count(*)::int as n from pg_roles where rolname = any($1) and rolconfig is not null", [roles])).rows[0].n).toBe(0);
+      for (const r of roles) {
+        const url = new URL(ADMIN!);
+        url.username = r;
+        url.password = "old-pw";
+        const m = new Client({ connectionString: url.toString() });
+        await m.connect();
+        await m.end();
+      }
+    } finally {
+      delete process.env.PGAI_MON_PASSWORD;
+      await cleanup();
+      await c.end();
+    }
+  });
+
   // A run that fails after (or before) the prepare step must not block the
   // re-run: the same command again, against a platform and a ClickHouse Cloud
   // API that answer differently each time.
@@ -546,6 +777,54 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       }
     }, 120_000);
   });
+
+  test("pgai mon deploy, a box active at once (the real CLI, a fake platform): first_checkup_eta is the run's end + 3 min", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-eta-"));
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
+        if (path.endsWith("/rpc/cloud_monitoring_connect")) {
+          const dbUrl = new URL(JSON.parse(await req.text()).db_url);
+          return Response.json({ id: "i-eta", name: `${dbUrl.hostname}:${dbUrl.port}${dbUrl.pathname}`, provider: "self-managed", status: "active", dashboard_url: "https://grafana.test", host_metrics: false });
+        }
+        if (path.endsWith("/rpc/checkup_report_create")) return Response.json({ report_id: 1 });
+        if (path.endsWith("/rpc/checkup_report_file_post")) return Response.json({ report_chunck_id: 1 });
+        if (path.endsWith("/rpc/checkup_report_status_update")) return Response.json({});
+        if (path.endsWith("/rpc/orgs_list") || path.endsWith("/rpc/projects_list")) return Response.json([]);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), "mon", "deploy", ADMIN!, "--vcpus", "2", "--wait", "0"], {
+        cwd: home, stdout: "pipe", stderr: "pipe",
+        env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` },
+      });
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      const end = Date.now();
+      if (proc.exitCode !== 0) throw new Error(`exit ${proc.exitCode}\n${stdout}\n${stderr}`);
+      const { status, first_checkup_eta } = JSON.parse(stdout);
+      // The CI log shows the real CLI's ETA next to the time the run ended.
+      console.log(`mon deploy: status=${status} first_checkup_eta=${first_checkup_eta} run ended=${new Date(end).toISOString()}`);
+      expect(status).toBe("ready");
+      const ahead = Date.parse(first_checkup_eta) - end;
+      expect(ahead).toBeGreaterThan(3 * 60_000 - 5_000);
+      expect(ahead).toBeLessThanOrEqual(3 * 60_000);
+    } finally {
+      api.stop(true);
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      await c.end();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   // The price prompt needs a URL that can work: deploy checks it first.
   describe("pgai mon deploy at the price prompt (the real CLI in a terminal, a fake platform)", () => {
