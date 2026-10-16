@@ -4249,7 +4249,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
 
 type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
-  yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
+  monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
 };
 
 /** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
@@ -4410,7 +4410,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
   .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
-  .option("--reset-password", "postgres_ai_mon exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--reset-password", "the monitoring role exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
+  .option("--monitoring-user <name>", "monitoring role to create or use", DEFAULT_MONITORING_USER)
   .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
   .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal)")
   .addHelpText("after", [
