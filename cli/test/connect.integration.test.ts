@@ -805,6 +805,54 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }, 120_000);
   });
 
+  test("pgai mon deploy, a box active at once (the real CLI, a fake platform): first_checkup_eta is the run's end + 3 min", async () => {
+    const c = await admin();
+    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+    await c.query("drop schema if exists postgres_ai cascade");
+    await c.query("drop role if exists postgres_ai_mon");
+    const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-eta-"));
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false });
+        if (path.endsWith("/rpc/cloud_monitoring_connect")) {
+          const dbUrl = new URL(JSON.parse(await req.text()).db_url);
+          return Response.json({ id: "i-eta", name: `${dbUrl.hostname}:${dbUrl.port}${dbUrl.pathname}`, provider: "self-managed", status: "active", dashboard_url: "https://grafana.test", host_metrics: false });
+        }
+        if (path.endsWith("/rpc/checkup_report_create")) return Response.json({ report_id: 1 });
+        if (path.endsWith("/rpc/checkup_report_file_post")) return Response.json({ report_chunck_id: 1 });
+        if (path.endsWith("/rpc/checkup_report_status_update")) return Response.json({});
+        if (path.endsWith("/rpc/orgs_list") || path.endsWith("/rpc/projects_list")) return Response.json([]);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), "mon", "deploy", ADMIN!, "--vcpus", "2", "--wait", "0"], {
+        cwd: home, stdout: "pipe", stderr: "pipe",
+        env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` },
+      });
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      const end = Date.now();
+      if (proc.exitCode !== 0) throw new Error(`exit ${proc.exitCode}\n${stdout}\n${stderr}`);
+      const { status, first_checkup_eta } = JSON.parse(stdout);
+      // The CI log shows the real CLI's ETA next to the time the run ended.
+      console.log(`mon deploy: status=${status} first_checkup_eta=${first_checkup_eta} run ended=${new Date(end).toISOString()}`);
+      expect(status).toBe("ready");
+      const ahead = Date.parse(first_checkup_eta) - end;
+      expect(ahead).toBeGreaterThan(3 * 60_000 - 5_000);
+      expect(ahead).toBeLessThanOrEqual(3 * 60_000);
+    } finally {
+      api.stop(true);
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      await c.end();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   // The price prompt needs a URL that can work: deploy checks it first.
   describe("pgai mon deploy at the price prompt (the real CLI in a terminal, a fake platform)", () => {
     const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");

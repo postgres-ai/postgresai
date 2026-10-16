@@ -1,10 +1,12 @@
 import {
   describe, expect, spyOn, test } from "bun:test";
 import { Client, type ClientConfig } from "pg";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -107,6 +109,13 @@ describe("provider and name", () => {
   });
 });
 
+test("first_checkup_eta uses the reporter's default initial delay", () => {
+  const script = readFileSync(resolve(import.meta.dir, "../../config/scripts/postgres-reports.sh"), "utf8");
+  const m = script.match(/\$\{REPORTER_INITIAL_DELAY_SECONDS:-(\d+)\}/);
+  expect(m).not.toBeNull();
+  expect(Number(m![1]) * 1000).toBe(FIRST_CHECKUP_DELAY_MS);
+});
+
 describe("mon deploy", () => {
   test.each(["disable", "allow"])("channel_binding=require with sslmode=%s refuses before quoting or preparing, including agents", async (sslmode) => {
     for (const agent of [false, true]) {
@@ -204,7 +213,10 @@ describe("mon deploy", () => {
       status: "ready", provider: "clickhouse", name: CH_NAME, id: "i-1",
       dashboard_url: "https://abc.pgai.watch", host_metrics: true, checkup: CHECKUP, ...FREE, next: "Open https://abc.pgai.watch",
     });
-    expect(Date.parse(first_checkup_eta!) - Date.now()).toBeGreaterThan(29 * 60_000);
+    // The reporter's first run: at the earliest 3 minutes after the stack starts.
+    const eta = Date.parse(first_checkup_eta!) - Date.now();
+    expect(eta).toBeGreaterThan(3 * 60_000 - 5_000);
+    expect(eta).toBeLessThanOrEqual(3 * 60_000);
     expect(JSON.stringify(result)).not.toContain("adminpw");
     expect(JSON.stringify(result)).not.toContain("Sec4b1d");
   });
