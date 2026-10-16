@@ -5,7 +5,7 @@ import { createCheckupReport, uploadCheckupReportJson } from "./checkup-upload";
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
-  maskConnectionString, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
+  maskConnectionString, quoteIdent, quoteLiteral, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
 } from "./init";
 import { assertEncodedUserinfo, estimateLine, monitoringStatus, noCardNext, notAdminNext, type DeployStatus } from "./deploy-surface";
 import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
@@ -124,9 +124,9 @@ export interface ConnectDeps {
   links?(row: Database): Promise<Database>;
   create(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[] }): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
-  unprepare(url: string): Promise<boolean>;
+  unprepare(url: string, monitoringUser?: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   /** The express checkup over the monitoring role's URL, saved as a report of `project`. */
@@ -160,6 +160,8 @@ export interface ConnectOptions {
   selfHosted?: boolean;
   /** An existing postgres_ai_mon gets a new password (its old one is not needed). */
   resetPassword?: boolean;
+  /** --monitoring-user: the monitoring role (default postgres_ai_mon). */
+  monitoringUser?: string;
   waitMs: number;
   /** The URL comes from an agent (the MCP tool): nothing of this process's environment or files goes to the host it names. */
   agent?: boolean;
@@ -374,10 +376,19 @@ const shellWord = (s: string) => (/^[\w./:@%+=,-]+$/.test(s) ? s : `'${s.replace
 /** `pgai mon instances delete` for each database named. */
 const disconnectEach = (names: string[]) => names.map((n) => `pgai mon instances delete ${shellWord(n)} --yes`).join(" and ");
 
-/** postgres_ai_mon's URL for the prepared database, with the query parameters in `kept`. */
-function roleUrlFor(url: string, db: string, password: string, kept: string[]): string {
+/**
+ * The monitoring role's login through `url`: a URL user `<session user>.<suffix>` (the
+ * Supabase pooler's project ref, which the pooler routes on) keeps its suffix.
+ */
+function loginName(url: string, sessionUser: string, role: string): string {
+  const user = decodeURIComponent(new URL(url).username);
+  return user.startsWith(`${sessionUser}.`) ? role + user.slice(sessionUser.length) : role;
+}
+
+/** The monitoring role's URL (`user` logs in as it) for the prepared database, with the query parameters in `kept`. */
+function roleUrlFor(url: string, user: string, db: string, password: string, kept: string[]): string {
   const u = new URL(url);
-  u.username = DEFAULT_MONITORING_USER;
+  u.username = encodeURIComponent(user);
   u.password = encodeURIComponent(password);
   u.pathname = `/${encodeURIComponent(db)}`;
   for (const name of [...u.searchParams.keys()]) if (!kept.includes(name)) u.searchParams.delete(name);
@@ -387,10 +398,10 @@ function roleUrlFor(url: string, db: string, password: string, kept: string[]): 
 }
 
 /** The URL a box uses: only postgres_ai_mon's credentials, and the prepared database by name. */
-const monitoringUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, URL_PARAMS_KEPT.filter((p) => p !== "channel_binding"));
+const monitoringUrlFor = (url: string, user: string, db: string, password: string) => roleUrlFor(url, user, db, password, URL_PARAMS_KEPT.filter((p) => p !== "channel_binding"));
 
 /** The same login from this machine: with the given URL's TLS files (a private CA, say). */
-const loginUrlFor = (url: string, db: string, password: string) => roleUrlFor(url, db, password, [...URL_PARAMS_KEPT, ...URL_PARAMS_TLS]);
+const loginUrlFor = (url: string, user: string, db: string, password: string) => roleUrlFor(url, user, db, password, [...URL_PARAMS_KEPT, ...URL_PARAMS_TLS]);
 
 /** What to tell the user when the URL verifies the server with a CA file the box will not have. */
 export function caNote(url: string): string | undefined {
@@ -569,6 +580,21 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   assertEncodedUserinfo(url);
   checkUrlParams(url, opts.agent);
   const name = databaseName(url);
+  // The platform keeps postgres_ai_mon's password only; --reset-password locks the server for any role.
+  const asked = opts.monitoringUser?.trim();
+  if (opts.monitoringUser !== undefined && !asked) {
+    const flag = opts.agent ? "monitoring_user" : "--monitoring-user";
+    return { status: "action_required", provider, name, next: `${flag} is empty: pass a role name, or leave it out for ${DEFAULT_MONITORING_USER}` };
+  }
+  const monitoringUser = asked && asked !== DEFAULT_MONITORING_USER ? asked : undefined;
+  const role = monitoringUser ?? DEFAULT_MONITORING_USER;
+  // The setup SQL puts the role in quoted literals, dollar-quoted DO bodies and format() strings.
+  if (monitoringUser && /['$%\\\u0000-\u001f\u007f]/.test(monitoringUser)) {
+    return { status: "action_required", provider, name, next: `${opts.agent ? "monitoring_user" : "--monitoring-user"} must not contain ', $, %, backslash or control characters` };
+  }
+  if (monitoringUser && Buffer.byteLength(monitoringUser) > 63) {
+    return { status: "action_required", provider, name, next: `${opts.agent ? "monitoring_user" : "--monitoring-user"} must be at most 63 bytes (Postgres truncates longer role names)` };
+  }
   try {
     const collector = await collectorConnection(url, deps.verifyTls);
     const required = splitChannelBinding(url).value === "require";
@@ -585,7 +611,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
 
   if (!opts.selfHosted && (provider === "rds" || provider === "supabase")) {
-    return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}` };
+    const ignored = monitoringUser ? ` (${opts.agent ? "monitoring_user" : "--monitoring-user"} is not used there)` : "";
+    return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}${ignored}` };
   }
 
   if (opts.selfHosted && opts.resetPassword) {
@@ -666,16 +693,16 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     // A refused launch starts no box, so a role with a generated password is
     // dropped again: nobody has that password, and the re-run would stop at it.
-    const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url).catch(() => false); };
+    const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url, monitoringUser).catch(() => false); };
     let lockId: string | undefined;
-    // postgres_ai_mon is one role for the whole server: a new password cuts off what uses the old one.
+    // The role is one for the whole server: a new password cuts off what uses the old one.
     // Without a cluster, the server is not known.
     const unread = (d: Database) => !d.cluster;
     const onServer = (d: Database) => !!d.cluster && serverOf(d.cluster) === cluster;
     const othersOnServer = (list: Database[]) => list.filter((d) => !disconnecting(d.status) && (unread(d) || onServer(d)));
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
-    const storedPassword = rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
+    const storedPassword = !monitoringUser && rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
     const cutOff = (others: Database[]): ConnectResult => {
       const on = others.filter((d) => !unread(d)).map((d) => d.name).join(", ");
       const maybe = others.filter(unread).map((d) => d.name).join(", ");
@@ -685,7 +712,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         "set PGAI_MON_PASSWORD to its password instead",
         `${disconnectEach(others.map((d) => d.name))} first`,
       ];
-      return { status: "action_required", provider, name, next: `A new password for ${DEFAULT_MONITORING_USER} ${what}: ${instead.join(", or ")}` };
+      return { status: "action_required", provider, name, next: `A new password for ${role} ${what}: ${instead.join(", or ")}` };
     };
     const others = othersOnServer(rows).filter((d) => !unread(d)).map((d) => d.name);
     if (opts.resetPassword && othersOnServer(rows).length) return cutOff(othersOnServer(rows));
@@ -694,7 +721,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
-    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword, others } : {}) };
+    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword, others } : {}), ...(monitoringUser ? { monitoringUser } : {}) };
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true }).catch((err) => {
@@ -741,7 +768,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
           return { status: "action_required", provider, name, ...billing, next: `Another pgai mon deploy --reset-password for ${cluster} is running: wait for it to finish, then re-run (a run that stopped frees the server 15 minutes after it started)` };
         }
         if (err instanceof HttpStatusError && err.status === 404) {
-          return { status: "action_required", provider, name, ...billing, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${DEFAULT_MONITORING_USER}'s password instead` };
+          return { status: "action_required", provider, name, ...billing, next: `This platform cannot lock the server for --reset-password yet: set PGAI_MON_PASSWORD to ${role}'s password instead` };
         }
         throw err;
       }
@@ -895,6 +922,8 @@ export interface PrepareOptions {
   storedPassword?: boolean;
   /** The org's other databases on this server (named where they must be disconnected first). */
   others?: string[];
+  /** The monitoring role (default postgres_ai_mon). */
+  monitoringUser?: string;
   /** The pg client class (tests). */
   Client?: PgClientClass;
 }
@@ -914,19 +943,27 @@ async function openConnection(url: string, opts: PrepareOptions) {
 }
 
 /** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
-async function dropMonitoringRole(client: PgClient): Promise<boolean> {
+async function dropMonitoringRole(client: PgClient, role: string): Promise<boolean> {
+  const q = quoteIdent(role);
   // Alone first: a role with no grants yet needs no DROP OWNED, which a CREATEROLE admin may not run.
-  for (const sql of [`drop role ${DEFAULT_MONITORING_USER}`, `drop owned by ${DEFAULT_MONITORING_USER}; drop role ${DEFAULT_MONITORING_USER}`]) {
+  for (const sql of [`drop role ${q}`, `drop owned by ${q}; drop role ${q}`]) {
     if (await client.query(sql).then(() => true, () => false)) return true;
   }
   return false;
 }
 
+/** What the plan grants (pg_monitor and pg_read_all_stats), and what pg_monitor itself is a member of. */
+const MONITORING_GROUPS = ["pg_monitor", "pg_read_all_stats", "pg_read_all_settings", "pg_stat_scan_tables"];
+
+/** The functions the plan grants EXECUTE on (sql/04, sql/05, sql/06), as schema.name(argument types). */
+const MONITORING_FUNCTIONS = ["pg_catalog.pg_stat_file(text)", "pg_catalog.pg_stat_file(text, boolean)", "pg_catalog.pg_ls_dir(text)",
+  "pg_catalog.pg_ls_dir(text, boolean, boolean)", "rds_tools.pg_ls_multixactdir()", "postgres_ai.table_describe(text)"];
+
 /** Undoes a `generated` prepareDatabase over the same admin URL: drops the role that run created. */
 export async function unprepareDatabase(url: string, opts: PrepareOptions = {}): Promise<boolean> {
   const { client } = await openConnection(url, opts);
   try {
-    return await dropMonitoringRole(client);
+    return await dropMonitoringRole(client, opts.monitoringUser || DEFAULT_MONITORING_USER);
   } finally {
     await client.end();
   }
@@ -935,6 +972,7 @@ export async function unprepareDatabase(url: string, opts: PrepareOptions = {}):
 /** Creates (or checks) the monitoring role over the given URL. The admin URL is used for this run only. */
 export async function prepareDatabase(url: string, provider: Provider, opts: PrepareOptions = {}): Promise<Prepared> {
   const pgProvider = provider === "rds" ? "self-managed" : provider;
+  const role = opts.monitoringUser || DEFAULT_MONITORING_USER;
   const open = (u: string) => openConnection(u, opts);
   // Whether `u` logs in; false only when the server rejects the password.
   const logsIn = async (u: string): Promise<boolean> => {
@@ -966,42 +1004,91 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
                and pg_has_role(current_user, 'pg_read_all_stats', 'USAGE WITH ADMIN OPTION')))
            and has_database_privilege(current_user, current_database(), 'CREATE')
            and exists (select 1 from pg_extension where extname = 'pg_stat_statements')) as admin,
-         exists (select 1 from pg_roles where rolname = '${DEFAULT_MONITORING_USER}') as mon_exists,
+         exists (select 1 from pg_roles where rolname = ${quoteLiteral(role)}) as mon_exists,
+         exists (select 1 from pg_roles where rolname = ${quoteLiteral(role)} and (rolsuper or rolcreatedb or rolcreaterole or rolreplication or rolbypassrls)) as mon_privileged,
+         (select string_agg(g.rolname::text, ', ' order by g.rolname::text collate "C") from pg_roles m join pg_roles g
+            on g.oid <> m.oid and pg_has_role(m.oid, g.oid, 'MEMBER')
+          where m.rolname = ${quoteLiteral(role)} and g.rolname not in (${MONITORING_GROUPS.map(quoteLiteral).join(", ")})) as mon_groups,
+         (select string_agg(g.rolname::text, ', ' order by g.rolname::text collate "C") from pg_roles m
+          join pg_auth_members a on a.member = m.oid join pg_roles g on g.oid = a.roleid
+          where m.rolname = ${quoteLiteral(role)} and a.admin_option) as mon_admin_groups,
+         (select string_agg(g.rolname::text, ', ' order by g.rolname::text collate "C") from pg_roles g
+          where g.rolname not in (${[...MONITORING_GROUPS, role].map(quoteLiteral).join(", ")})
+            and (pg_has_role('pg_monitor', g.oid, 'MEMBER') or pg_has_role('pg_read_all_stats', g.oid, 'MEMBER'))) as mon_plan_groups,
+         exists (select 1 from pg_shdepend d join pg_roles m on m.oid = d.refobjid
+          where d.refclassid = 'pg_authid'::regclass and d.deptype = 'o' and m.rolname = ${quoteLiteral(role)}) as mon_owns,
+         (select string_agg(distinct db.datname::text, ', ') from pg_shdepend d join pg_roles m on m.oid = d.refobjid join pg_database db on db.oid = d.dbid
+          where d.refclassid = 'pg_authid'::regclass and d.deptype = 'a' and m.rolname = ${quoteLiteral(role)}
+            and db.datname <> current_database()) as mon_other_dbs,
+         (select string_agg(distinct pg_describe_object(d.classid, d.objid, d.objsubid), ', ') from pg_shdepend d join pg_roles m on m.oid = d.refobjid
+          where d.refclassid = 'pg_authid'::regclass and d.deptype = 'a' and m.rolname = ${quoteLiteral(role)}
+            and d.dbid in (0, (select oid from pg_database where datname = current_database()))
+            and not exists (select 1 from (
+                select relacl as acl, 'SELECT' as ok from pg_class where d.classid = 'pg_class'::regclass and d.objsubid = 0 and oid = d.objid
+                  and ((relnamespace not in ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace) and relkind <> 't') or oid = 'pg_catalog.pg_index'::regclass)
+                union all select attacl, 'SELECT' from pg_attribute where d.classid = 'pg_class'::regclass and attrelid = d.objid and attnum = d.objsubid
+                  and (select relnamespace not in ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace) and relkind <> 't' from pg_class where oid = d.objid)
+                union all select nspacl, 'USAGE' from pg_namespace where d.classid = 'pg_namespace'::regclass and oid = d.objid and nspname !~ '^pg_toast'
+                union all select proacl, 'EXECUTE' from pg_proc where d.classid = 'pg_proc'::regclass and oid = d.objid
+                  and pronamespace::regnamespace::text || '.' || proname || '(' || array_to_string(proargtypes::oid[]::regtype[], ', ') || ')'
+                    in (${MONITORING_FUNCTIONS.map(quoteLiteral).join(", ")})
+                union all select datacl, 'CONNECT' from pg_database where d.classid = 'pg_database'::regclass and oid = d.objid) o
+              where not exists (select 1 from aclexplode(o.acl) e where e.grantee = d.refobjid and (e.privilege_type <> o.ok or e.is_grantable)))) as mon_grants,
          current_setting('scram_iterations', true) as iterations, current_setting('ssl') as ssl
        from pg_roles where rolname = current_user`,
     )).rows[0];
+    const user = loginName(url, me.name, role);
+    // A custom role is the user's own: one that can do more than monitor is refused (its search_path
+    // would be changed, and its credentials sent to the platform). Other memberships may carry
+    // superuser or file access; owned objects may be the application's tables. Grants beyond the
+    // plan's may write data, read password verifiers (pg_authid, or its TOAST) or run file functions.
+    // Memberships count through any chain, also through pg_monitor and pg_read_all_stats, which the plan
+    // grants: a role it has not made their member yet would inherit what they are members of. A grant in another database
+    // cannot be judged from here (its catalog is not readable), so any is refused.
+    const custom = role !== DEFAULT_MONITORING_USER;
+    const unsafe = me.mon_privileged ? "is a superuser, or has CREATEDB, CREATEROLE, REPLICATION or BYPASSRLS: a monitoring role must not"
+      : me.mon_groups ? `is a member of ${me.mon_groups}: a monitoring role may be a member of ${MONITORING_GROUPS.slice(0, -1).join(", ")} and ${MONITORING_GROUPS.at(-1)} only`
+      : me.mon_admin_groups ? `is a member of ${me.mon_admin_groups} WITH ADMIN OPTION: a monitoring role must not have ADMIN OPTION`
+      : me.mon_plan_groups ? `would become a member of ${me.mon_plan_groups} through pg_monitor or pg_read_all_stats: a monitoring role may be a member of ${MONITORING_GROUPS.slice(0, -1).join(", ")} and ${MONITORING_GROUPS.at(-1)} only`
+      : me.mon_owns ? "owns objects on this server: a monitoring role must own nothing"
+      : me.mon_other_dbs ? `has grants in database ${me.mon_other_dbs}: a monitoring role may have grants in this database only`
+      : me.mon_grants ? `has grants on ${me.mon_grants}: a monitoring role may have only CONNECT, USAGE on schemas other than pg_toast, SELECT outside pg_catalog and pg_toast, and the grants pgai makes`
+      : "";
+    if (custom && unsafe) return { next: `${role} ${unsafe}. Use another ${opts.agent ? "monitoring_user" : "--monitoring-user"}` };
     const notes = [caNote(url)].filter((n): n is string => !!n);
     const noted = () => (notes.length ? { note: notes.join("; ") } : {});
     // A server that does not check passwords for this client (trust) accepts a random one too.
     const acceptsAnyPassword = async () =>
-      logsIn(loginUrlFor(url, me.db, (await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER })).password)).catch(() => false);
+      logsIn(loginUrlFor(url, user, me.db, (await resolveMonitoringPassword({ monitoringUser: role })).password)).catch(() => false);
     const unchecked = (what: string) => `this server accepts any password from this host, so ${what} was not checked; if no data arrives, delete the instance (pgai mon instances delete) and deploy again with the right password`;
-    if (me.name === DEFAULT_MONITORING_USER) {
+    if (me.name === role) {
       const v = await verifyInitSetup({ client, database: me.db, monitoringUser: me.name, includeOptionalPermissions: false, provider: pgProvider });
       if (v.ok) {
         // A URL without a password (PGPASSWORD, say): the box gets the one this client logged in with.
         const used = (client as { password?: unknown }).password;
         const inUrl = urlPassword(new URL(url));
         const password = inUrl || (typeof used === "string" ? used : "");
-        const putInUrl = `Put the password of ${DEFAULT_MONITORING_USER} in the URL: the monitoring box logs in with it`;
+        const putInUrl = `Put the password of ${role} in the URL: the monitoring box logs in with it`;
         if (!password) return { next: putInUrl };
         if (await acceptsAnyPassword()) {
           // What pg read from PGPASSWORD may be for another role or server: unchecked, it is not sent on.
           if (!inUrl) return { next: `This server accepts any password from this host, so the one from the environment was not checked and is not used. ${putInUrl}` };
           notes.push(unchecked("the password in the URL"));
         }
-        return { monitoringUrl: monitoringUrlFor(url, me.db, password), ...noted() };
+        return { monitoringUrl: monitoringUrlFor(url, user, me.db, password), ...noted() };
       }
     } else if (me.admin && pgProvider !== "supabase") {
       // The role is cluster-wide: another database here may use its password,
       // so it is never changed, and only a password that logs in is used.
-      const exists = `${DEFAULT_MONITORING_USER} already exists on this server`;
-      const setPassword = `Set PGAI_MON_PASSWORD to the password of ${DEFAULT_MONITORING_USER}, or give it a new one: pgai mon deploy <admin-url> --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new password)`;
+      const exists = `${role} already exists on this server`;
+      const setPassword = custom
+        ? `Set PGAI_MON_PASSWORD to the password of ${role}, or give it a new one: PGAI_MON_PASSWORD=<new password> pgai mon deploy <admin-url> --monitoring-user ${role} --reset-password (anything else that logs in as ${role} then needs the new password)`
+        : `Set PGAI_MON_PASSWORD to the password of ${role}, or give it a new one: pgai mon deploy <admin-url> --reset-password (anything else that logs in as ${role} then needs the new password)`;
       // The platform fills in the password it keeps for the box (it never sends it here), over TLS only:
       // what the URL lacks for that, and whether the server takes TLS at all (it refused it, or has ssl off).
-      const needs = storedPasswordNeeds(monitoringUrlFor(url, me.db, ""));
+      const needs = storedPasswordNeeds(monitoringUrlFor(url, user, me.db, ""));
       const noTls = refusedTls || (!usedSsl && me.ssl === "off");
-      const tlsOnly = `PostgresAI sends the password it keeps for ${DEFAULT_MONITORING_USER} only over TLS`;
+      const tlsOnly = `PostgresAI sends the password it keeps for ${role} only over TLS`;
       const others = opts.others?.length ? opts.others : undefined;
       // Nobody has the password (the first deploy generated it): only a new one, once nothing uses the old one.
       const disconnectOthers = others ? disconnectEach(others) : "pgai mon instances delete the server's other databases (pgai mon instances list)";
@@ -1017,54 +1104,60 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       if (reuse) {
         if (opts.check) return { checked: true };
         // The role is there: the plan grants this database and keeps its password (the one generated here is never set).
-        const { password: unused } = await resolveMonitoringPassword({ monitoringUser: DEFAULT_MONITORING_USER });
-        const plan = await buildInitPlan({ database: me.db, monitoringPassword: unused, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+        const { password: unused } = await resolveMonitoringPassword({ monitoringUser: role });
+        const plan = await buildInitPlan({ database: me.db, monitoringUser: role, monitoringPassword: unused, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
         await applyInitPlan({ client, plan });
-        return { monitoringUrl: monitoringUrlFor(url, me.db, ""), storedPassword: true as const, ...noted() };
+        return { monitoringUrl: monitoringUrlFor(url, user, me.db, ""), storedPassword: true as const, ...noted() };
       }
       if (me.mon_exists && opts.agent) return { next: `${exists}. Pass its URL as database_url, or run pgai mon deploy in a terminal with PGAI_MON_PASSWORD set to its password` };
       // A PGAI_MON_PASSWORD that does not log in, where the platform keeps the password: without it, that one
       // is used (over TLS only).
       const unset = !opts.storedPassword ? setPassword
         : noTls ? `This server takes no TLS, and ${tlsOnly}. ${noTlsWayOut}`
-        : !needs ? `Unset PGAI_MON_PASSWORD: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server`
-        : `Unset PGAI_MON_PASSWORD, and the URL needs ${needs}: PostgresAI keeps the password of ${DEFAULT_MONITORING_USER} for this server, and sends it only over TLS, to a URL with each parameter once`;
-      const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: DEFAULT_MONITORING_USER });
+        : !needs ? `Unset PGAI_MON_PASSWORD: PostgresAI keeps the password of ${role} for this server`
+        : `Unset PGAI_MON_PASSWORD, and the URL needs ${needs}: PostgresAI keeps the password of ${role} for this server, and sends it only over TLS, to a URL with each parameter once`;
       const reset = !!opts.resetPassword && me.mon_exists;
+      // PostgresAI keeps no password for a custom role: one it set is the user's (a generated one would be lost).
+      if (custom && (!me.mon_exists || reset) && !(opts.agent ? "" : process.env.PGAI_MON_PASSWORD?.trim())) {
+        return { next: opts.agent
+          ? `${role} is a custom role, and PostgresAI keeps no password for it: pass its URL as database_url, or run pgai mon deploy in a terminal with PGAI_MON_PASSWORD set`
+          : `Set PGAI_MON_PASSWORD to a password for ${role}: PostgresAI keeps no password for a custom role, so a generated one would be lost` };
+      }
+      const { password, generated } = await resolveMonitoringPassword({ passwordEnv: opts.agent ? undefined : process.env.PGAI_MON_PASSWORD, monitoringUser: role });
       if (me.mon_exists && !reset) {
-        if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}`, resettable: true };
+        if (!process.env.PGAI_MON_PASSWORD?.trim()) return { next: `${exists}. ${setPassword}`, ...(custom ? {} : { resettable: true as const }) };
         let accepted: boolean;
         try {
-          accepted = await logsIn(loginUrlFor(url, me.db, password));
+          accepted = await logsIn(loginUrlFor(url, user, me.db, password));
         } catch (err) {
           // pg_hba for this client, say: neither accepted nor rejected. With the platform's password, no login is needed.
           const orUnset = opts.storedPassword && !noTls ? ", or unset PGAI_MON_PASSWORD: PostgresAI keeps its password for this server" : "";
-          return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai mon deploy from a host that ${DEFAULT_MONITORING_USER} may connect from${orUnset}` };
+          return { next: `${exists}, and PGAI_MON_PASSWORD could not be checked from this host (${err instanceof Error ? err.message : String(err)}). Run pgai mon deploy from a host that ${role} may connect from${orUnset}` };
         }
         if (!accepted) return { next: `${exists} and PGAI_MON_PASSWORD is not its password. ${unset}` };
         if (await acceptsAnyPassword()) notes.push(unchecked("PGAI_MON_PASSWORD"));
       }
       if (opts.check) return { checked: true };
-      const monitoringUrl = monitoringUrlFor(url, me.db, password);
-      const loginUrl = loginUrlFor(url, me.db, password);
-      const plan = await buildInitPlan({ database: me.db, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: !reset });
+      const monitoringUrl = monitoringUrlFor(url, user, me.db, password);
+      const loginUrl = loginUrlFor(url, user, me.db, password);
+      const plan = await buildInitPlan({ database: me.db, monitoringUser: role, monitoringPassword: password, iterations: Number(me.iterations), includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: !reset });
       try {
         await applyInitPlan({ client, plan });
       } catch (err) {
         // A later step failed after the role was created with a generated password (it logs in,
         // so the role is this run's): nobody has that password, so the role is dropped again.
-        if (generated && !me.mon_exists && (await logsIn(loginUrl).catch(() => false))) await dropMonitoringRole(client);
+        if (generated && !me.mon_exists && (await logsIn(loginUrl).catch(() => false))) await dropMonitoringRole(client, role);
         throw err;
       }
       // Another session may have created the role meanwhile, with its own password.
       // Other login errors (pg_hba for this client, say) do not tell, so they pass.
-      if (!(await logsIn(loginUrl).catch(() => true))) return { next: `${DEFAULT_MONITORING_USER} was created by someone else meanwhile. ${setPassword}` };
+      if (!(await logsIn(loginUrl).catch(() => true))) return { next: `${role} was created by someone else meanwhile. ${setPassword}` };
       return { monitoringUrl, ...noted(), ...(generated && !me.mon_exists ? { generated: true as const } : {}) };
     }
-    const plan = await buildInitPlan({ database: me.db, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
+    const plan = await buildInitPlan({ database: me.db, monitoringUser: role, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
       sql: plan.steps.map((s) => `-- ${s.name}${s.optional ? " (optional: an error in this part can be ignored)" : ""}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
-      next: `Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai mon deploy again with the ${DEFAULT_MONITORING_USER} URL`,
+      next: `Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai mon deploy again with the ${role} URL`,
     };
   } finally {
     await client.end();
@@ -1213,8 +1306,8 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),
     resetUnlock: (lockId: string) => rpc("cloud_monitoring_reset_unlock", { lock_id: lockId }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[] } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
-    unprepare: (url: string) => unprepareDatabase(url, { agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    unprepare: (url: string, monitoringUser?: string) => unprepareDatabase(url, { agent: p.agent, monitoringUser }),
     clickhouseOrg: clickhouseOrgFor,
     checkup: (url: string, project: string) =>
       expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),

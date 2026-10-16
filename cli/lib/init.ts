@@ -276,7 +276,7 @@ function applyTemplate(sql: string, vars: Record<string, string>): string {
   });
 }
 
-function quoteIdent(ident: string): string {
+export function quoteIdent(ident: string): string {
   // Always quote. Escape embedded quotes by doubling.
   if (ident.includes("\0")) {
     throw new Error("Identifier cannot contain null bytes");
@@ -284,7 +284,7 @@ function quoteIdent(ident: string): string {
   return `"${ident.replace(/"/g, "\"\"")}"`;
 }
 
-function quoteLiteral(value: string): string {
+export function quoteLiteral(value: string): string {
   // Single-quote and escape embedded quotes by doubling.
   // This is used where Postgres grammar requires a literal (e.g., CREATE/ALTER ROLE PASSWORD).
   if (value.includes("\0")) {

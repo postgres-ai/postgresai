@@ -28,6 +28,23 @@ describe("pgai mon deploy", () => {
     expect(r.stdout.replace(/\s+/g, " ")).toContain("generic (direct PostgreSQL URL; alias: self-managed)");
   });
 
+  test("--monitoring-user reaches mon deploy (a blank one is refused)", async () => {
+    const help = (await run(["mon", "deploy", "--help"])).stdout;
+    expect(help).toContain("--monitoring-user <name>");
+    const r = await run(["mon", "deploy", "--json", "--self-hosted", "--monitoring-user", " ", "postgresql://u:p@db.example.com:5432/app"]);
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.stdout).next).toBe("--monitoring-user is empty: pass a role name, or leave it out for postgres_ai_mon");
+  });
+
+  test("--monitoring-user with a quote is refused; without the flag, --reset-password keeps its old refusal with --self-hosted", async () => {
+    const quoted = await run(["mon", "deploy", "--json", "--self-hosted", "--monitoring-user", "o'brien", "postgresql://u:p@db.example.com:5432/app"]);
+    expect(quoted.status).toBe(3);
+    expect(JSON.parse(quoted.stdout).next).toBe("--monitoring-user must not contain ', $, %, backslash or control characters");
+    const r = await run(["mon", "deploy", "--json", "--self-hosted", "--reset-password", "postgresql://u:p@db.example.com:5432/app"]);
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.stdout).next).toStartWith("--reset-password works with PostgresAI Cloud only");
+  });
+
   // postgresai#412: one surface with pgai dblab deploy.
   test("the options both deploy commands share read the same in both helps", async () => {
     const shared = (help: string) => help.split("\n").filter((l) => /^ {2}(--db-url|--name|--location|--wait|--no-wait|-y, --yes|--json|--debug)\b/.test(l))
