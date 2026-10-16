@@ -425,15 +425,28 @@ required tool argument instead of falling back to a stored default.
 ### DBLab in PostgresAI cloud: `pgai dblab deploy`
 
 ```bash
-PGPASSWORD=<password> pgai dblab deploy 'postgresql://<user>@<host>:5432/<db>' --ssh-key <key name or id>
+PGPASSWORD=<password> pgai dblab deploy 'postgresql://<user>@<host>:5432/<db>'
 ```
 
 The same options as `pgai mon deploy` (`--db-url`, `--name`, `--location`, `--wait`, `--no-wait`, `--yes`, `--json`),
-plus `--size S|M|L` (default `S`), `--disk <GiB>` (default 50), `--ssh-key` (required: one of the organization's
-SSH keys, for reaching the server and its clones) and `--provider generic|rds|supabase` (default: detected; `self-managed`
-remains an alias of `generic`). `--name` defaults to the database's name; `--wait` to 120 minutes.
+plus `--size S|M|L` (default `S`), `--disk <GiB>` (default 50), `--cloud hetzner|aws|gcp` and
+`--provider generic|rds|supabase` (default: detected; `self-managed` remains an alias of `generic`). `--name` defaults to
+the database's name; `--wait` to 120 minutes.
 It shows the estimated monthly cost before asking; with no payment method it stops with the billing page (exit 3).
 `pgai dblab instances list | watch (status) | delete` take an id or a name.
+
+The server gets no SSH keys of yours: clones are reached through an SSH tunnel as `dblab-tunnel`, a user that can only
+forward to the clone ports. Allow your key after the deploy (organization admins; it applies within a minute):
+
+```bash
+pgai dblab access add <id or name> --public-key-file ~/.ssh/id_ed25519.pub   # or --ssh-key <org key name or id>
+pgai dblab access list <id or name>      # the allowed keys, and the tunnel command
+pgai dblab access remove <id or name> --ssh-key <org key name or id>
+ssh -N -L 6000:127.0.0.1:6000 dblab-tunnel@<server ip>   # then: psql "host=127.0.0.1 port=6000 ..."
+```
+
+`--ssh-key` on `pgai dblab deploy` puts organization keys on the server itself, only in an environment that allows
+that.
 
 ### Start monitoring
 

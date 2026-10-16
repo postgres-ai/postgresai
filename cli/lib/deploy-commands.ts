@@ -7,6 +7,7 @@
 import type { Command } from "commander";
 import { createInterface } from "readline";
 import { lookup } from "dns/promises";
+import { readFileSync } from "fs";
 import { writeEvent } from "./json-stderr";
 import { HttpStatusError } from "./util";
 import {
@@ -23,6 +24,13 @@ import {
   listCloudInstances,
   resolveSshKeys,
   watchDblabDeploy,
+  customerSshKeysMode,
+  getTunnelAccess,
+  addTunnelKey,
+  removeTunnelKey,
+  setTunnelKeys,
+  tunnelCommand,
+  type TunnelAccess,
   DBLAB_PROVIDERS,
   DBLAB_CLOUDS,
   cloudName,
@@ -152,10 +160,15 @@ async function withDetach<T>(view: StepView, resumeHint: string, watch: () => Pr
 
 function sshHint(inst: CloudInstance): string {
   if (!inst.server_ip) return "";
+  const user = inst.ssh_user ?? "root";
   return [
+    // Clone access through the tunnel user: its keys are added after the deploy (platform-all#953).
+    ...(user === "dblab-tunnel"
+      ? [`Allow your SSH key to open a tunnel to the clones: pgai dblab access add ${inst.id} --public-key-file ~/.ssh/id_ed25519.pub`]
+      : []),
     `Connect to a clone through SSH (clones listen on the server's localhost), e.g. port 6000:`,
-    `  ssh -N -L 6000:127.0.0.1:6000 ${inst.ssh_user ?? "root"}@${inst.server_ip}`,
-    `  psql "host=127.0.0.1 port=6000 user=<user> dbname=<db>"`,
+    `  ${tunnelCommand(inst.server_ip, 6000, user)}`,
+    `  psql "host=127.0.0.1 port=6000 user=<clone user> dbname=<db>"`,
   ].join("\n");
 }
 
@@ -267,7 +280,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
     .description("deploy DBLab + Joe in PostgresAI cloud, then follow it until it is ready")
     .option("--size <size>", "server size (S, M, L)", "S")
     .option("--disk <gib>", "disk size in GiB", "50")
-    .option("--ssh-key <name|id...>", "org SSH key(s) for reaching the server and its clones (required)")
+    .option("--ssh-key <name|id...>", "org SSH key(s) for the server, where this environment allows them; clone access: pgai dblab access")
     .option("--provider <provider>", "where the database runs: generic (direct PostgreSQL URL; alias: self-managed), rds or supabase (default: detected)")
     .option("--cloud <cloud>", "where the DBLab server runs: hetzner, aws or gcp (default: hetzner); --location is then its region")
     .addHelpText("after", [
@@ -275,6 +288,7 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
       "The password: in the URL, or set PGPASSWORD.",
       "A Supabase project without its password: deploy it from the Console (Connect Supabase).",
       "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
+      "Clones are reached through an SSH tunnel as dblab-tunnel; allow your key after the deploy: pgai dblab access add --help",
     ].join("\n"))
     .action(async (urlArg: string | undefined, opts: {
       dbUrl?: string; name?: string; size: string; disk: string; sshKey?: string[]; location?: string;
@@ -308,6 +322,16 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         }
         const notAdmin = (): void => emit(deps, { status: "action_required", name, next: notAdminNext }, opts.json);
         if (options.is_admin === false) return notAdmin();
+        // Customer keys only where the platform allows them (platform-all#953); clone access comes after.
+        // Checked before the source is contacted: a refused flag needs no database.
+        const keys = opts.sshKey?.length ? opts.sshKey : [];
+        const keysMode = customerSshKeysMode(options);
+        if (keysMode === "off" && keys.length) {
+          throw new Error(
+            "DBLab servers in PostgresAI cloud get no SSH keys: deploy without --ssh-key, then allow your key "
+              + "to reach the clones: pgai dblab access add <id> --public-key-file ~/.ssh/id_ed25519.pub",
+          );
+        }
         // Supabase without its password: the Console connects the account and makes a read-only user.
         const dbUrl = withEnvPassword(url);
         const isSupabase = provider ? provider === "supabase" : detectCloudProvider(url) === "supabase";
@@ -363,16 +387,16 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
           if (jsonOutput(opts.json)) writeEvent({ event: "source", message: sourceLine(probe) });
           else console.error(sourceLine(probe));
         }
-        const keys = opts.sshKey?.length ? opts.sshKey : [];
-        if (!keys.length) {
+        // After the card: an org with neither hears about the card first.
+        if (keysMode === "required" && !keys.length) {
           throw new Error(
-            "--ssh-key is required: it is how you reach the server and its clones." +
+            "--ssh-key is required." +
               (options.ssh_keys.length
                 ? ` Org keys: ${options.ssh_keys.map((k) => k.name ?? k.id).join(", ")}.`
-                : " Add one in the Console (Organization > SSH keys) first."),
+                : " Add one in the Console first."),
           );
         }
-        const sshKeyIds = resolveSshKeys(options, keys);
+        const sshKeyIds = keys.length ? resolveSshKeys(options, keys) : [];
         if (!opts.yes) {
           if (!process.stdin.isTTY || jsonOutput(opts.json)) {
             return emit(deps, { status: "action_required", name, next: `Re-run with --yes to accept ${price ?? "the monthly cost"}` }, opts.json);
@@ -497,6 +521,112 @@ export function registerDblabDeployCommands(dblab: Command, deps: DeployCliDeps)
         await destroyDblab(api, inst.id);
         if (!jsonOutput(opts.json)) console.log(`Deleting ${label}. Follow it: pgai dblab instances list`);
         emit(deps, { status: "deleting", id: inst.id, name: inst.project_name, next: "pgai dblab instances list" }, opts.json);
+      } catch (err) {
+        failed(deps, err, opts.json);
+      }
+    });
+  registerDblabAccessCommands(dblab, deps);
+}
+
+/** What `pgai dblab access` prints: who can open a tunnel, and how. */
+function printAccess(a: TunnelAccess): void {
+  if (!a.keys.length) {
+    console.log("No SSH key can open a tunnel to the clones yet.");
+    console.log(a.can_edit
+      ? `Add yours: pgai dblab access add ${a.instance_id} --public-key-file ~/.ssh/id_ed25519.pub`
+      : "Ask an admin of this organization to add yours.");
+  } else {
+    console.log("SSH keys that can open a tunnel to the clones:");
+    for (const k of a.keys) console.log(`  ${k.name ?? "(unnamed)"}  ${k.id}`);
+    if (!a.can_edit) console.log("Only an organization admin can change them.");
+  }
+  if (a.host) {
+    console.log(`Connect to a clone, e.g. port ${a.ports.from}:`);
+    console.log(`  ${tunnelCommand(a.host, a.ports.from, a.ssh_user)}`);
+    console.log(`  psql "host=127.0.0.1 port=${a.ports.from} user=<clone user> dbname=<db>"`);
+  }
+}
+
+/** pgai dblab access: the SSH keys that can open a tunnel to a cloud DBLab's clones (platform-all#953). */
+function registerDblabAccessCommands(dblab: Command, deps: DeployCliDeps): void {
+  const access = dblab.command("access")
+    .description("SSH keys that can reach the clones of a DBLab in PostgresAI cloud (through the dblab-tunnel user)");
+
+  // The org key ids for --ssh-key values (names or ids), from the deploy options' key list.
+  const keyIds = async (api: ApiParams, wanted: string[]): Promise<string[]> =>
+    resolveSshKeys(await getDeployOptions(api), wanted);
+
+  const output = (a: TunnelAccess, json: boolean | undefined, said?: string): void => {
+    if (jsonOutput(json)) return deps.printResult(a, true);
+    if (said) console.log(said);
+    printAccess(a);
+  };
+
+  deps.withOrgOptions(access.command("list <id-or-name>"))
+    .description("show which SSH keys can open a tunnel to the clones, and the command to open it (JSON when piped)")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output")
+    .action(async (ref: string, opts: { debug?: boolean; json?: boolean }) => {
+      try {
+        const api = deps.resolveApi(!!opts.debug);
+        const inst = await dblabInstance(api, ref);
+        output(await getTunnelAccess(api, inst.id), opts.json);
+      } catch (err) {
+        failed(deps, err, opts.json);
+      }
+    });
+
+  deps.withOrgOptions(access.command("add <id-or-name>"))
+    .description("allow SSH keys to open a tunnel to the clones (org admins); applies within a minute")
+    .option("--public-key-file <path>", "a public key file, e.g. ~/.ssh/id_ed25519.pub; added to the org's keys if new")
+    .option("--name <name>", "the name for a new key (default: the key's comment)")
+    .option("--ssh-key <name|id...>", "keys the organization already has")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output")
+    .action(async (ref: string, opts: { publicKeyFile?: string; name?: string; sshKey?: string[]; debug?: boolean; json?: boolean }) => {
+      try {
+        if (!opts.publicKeyFile && !opts.sshKey?.length) {
+          throw new Error("Give --public-key-file <path> or --ssh-key <name|id>.");
+        }
+        const api = deps.resolveApi(!!opts.debug);
+        const inst = await dblabInstance(api, ref);
+        let result: TunnelAccess | null = null;
+        if (opts.publicKeyFile) {
+          const path = opts.publicKeyFile.replace(/^~(?=\/)/, process.env.HOME ?? "~");
+          let text: string;
+          try {
+            text = readFileSync(path, "utf8");
+          } catch (err) {
+            throw new Error(`Cannot read ${opts.publicKeyFile}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (/PRIVATE KEY/.test(text)) {
+            throw new Error(`${opts.publicKeyFile} is a private key. Give the public one (the .pub file).`);
+          }
+          result = await addTunnelKey(api, inst.id, text.trim(), opts.name?.trim() || undefined);
+        }
+        if (opts.sshKey?.length) {
+          const current = result ?? await getTunnelAccess(api, inst.id);
+          const wanted = await keyIds(api, opts.sshKey);
+          result = await setTunnelKeys(api, inst.id, Array.from(new Set([...current.keys.map((k) => k.id), ...wanted])));
+        }
+        output(result!, opts.json, `Clone access of DBLab "${inst.project_name}" (id ${inst.id}) changed; it applies within a minute.`);
+      } catch (err) {
+        failed(deps, err, opts.json);
+      }
+    });
+
+  deps.withOrgOptions(access.command("remove <id-or-name>"))
+    .description("stop SSH keys from opening a tunnel to the clones (org admins); the org keys stay")
+    .requiredOption("--ssh-key <name|id...>", "the keys to remove")
+    .option("--debug", "print HTTP requests (secrets masked)")
+    .option("--json", "JSON output")
+    .action(async (ref: string, opts: { sshKey: string[]; debug?: boolean; json?: boolean }) => {
+      try {
+        const api = deps.resolveApi(!!opts.debug);
+        const inst = await dblabInstance(api, ref);
+        let result: TunnelAccess | null = null;
+        for (const id of await keyIds(api, opts.sshKey)) result = await removeTunnelKey(api, inst.id, id);
+        output(result!, opts.json, `Clone access of DBLab "${inst.project_name}" (id ${inst.id}) changed; it applies within a minute.`);
       } catch (err) {
         failed(deps, err, opts.json);
       }
