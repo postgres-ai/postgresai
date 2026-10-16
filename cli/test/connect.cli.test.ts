@@ -390,6 +390,34 @@ describe("pgai mon deploy for Supabase, at a terminal", () => {
   const SB_NAME = `db.${REF}.supabase.co/postgres`;
   const FREE = { ...BILLED, billed: false, free_slots: { remaining: 1, total: 1 } };
 
+  // REV r4/r5 potential (CWE-150): a refusal's details and hint went to the terminal as sent.
+  test("a refusal with escape sequences in its details: shown as text, the terminal is not driven by it; exit 3", async () => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(req) {
+        const rpc = new URL(req.url).pathname.split("/").pop();
+        if (rpc === "cloud_monitoring_supabase_start") {
+          return Response.json({ code: "PT409", message: "Conflict", details: "Another Supabase organization\x1b[2J\x1b]8;;https://evil.example\x07 is connected.", hint: "\x1b[31mDisconnect it first.\x1bc" }, { status: 409 });
+        }
+        return Response.json([]);
+      },
+    });
+    let raw = "";
+    try {
+      const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", `postgresql://postgres@db.${REF}.supabase.co:5432/postgres`], {
+        env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", CI: "", TERM: "xterm", PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` }),
+        terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (raw += new TextDecoder().decode(bytes)) },
+      });
+      expect(await proc.exited).toBe(3);
+    } finally {
+      api.stop(true);
+    }
+    expect(raw).toContain("Another Supabase organization");
+    expect(raw).toContain("Disconnect it first.");
+    // (The CLI colors its own error lines red; the hint's color code is gone.)
+    for (const payload of ["\x1b[2J", "\x1b]8", "\x07", "\x1b[31mDisconnect", "\x1bc"]) expect(raw).not.toContain(payload);
+  }, 30_000);
+
   // Tester, MR !472 (note_4016823640, shots 8 and 9): the reply said "nothing has been created yet",
   // and the step view drew over it and showed its title two times.
   test("Ctrl-C while the box request is in flight: the reply says so, above one step view; then it detaches, exit 130", async () => {

@@ -1272,6 +1272,30 @@ describe("mon deploy", () => {
     expect(views).toBe(1);
   });
 
+  // REV r4/r5 potential (CWE-150): platform text (details, hints, a box state) reaches the terminal as text, never as escapes.
+  test("server text for a person: escape sequences and control characters are neutralised, line breaks kept", () => {
+    const ESC = "Refused\x1b[2J\x1b[31m by\x1b]8;;https://evil.example\x07 the\tplatform\r\x00\x7f\x9b2J\nHint: re-run";
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+    for (const status of ["action_required", "failed", "ready", "in_progress"] as const) {
+      const lines = resultLines({ status, provider: "supabase", name: "n", id: "i-1", next: ESC });
+      expect(lines.join("\n")).not.toMatch(controls);
+      expect(lines.join("\n")).toContain("Refused");
+    }
+    expect(resultLines({ status: "failed", provider: "supabase", name: "n", next: ESC })[0]).toMatch(/^Refused +by +the +platform *\nHint: re-run$/);
+    const ev = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}): ProgressEvent => ({ event, elapsed_s: 0, message, ...more });
+    for (const tty of [false, true]) {
+      const out: string[] = [];
+      const view = { start() {}, advance() {}, log(m: string) { out.push(m); }, setNote(m: string) { out.push(m); }, complete() {}, fail() {}, stop() {} };
+      const p = stepProgress({ json: false, tty, makeView: () => view, writeLine: (s) => out.push(s), writeEvent: () => {} });
+      p.progress(ev("preparing", `Note: ${ESC}`));
+      p.progress(ev("billing", `Estimated cost: ${ESC}`));
+      p.progress(ev("checkup", `Checkup: ${ESC}`));
+      p.progress(ev("box", `Monitoring box: ${ESC}`, { state: "\x1b[2Jstarting", id: "i-1" }));
+      expect(out.length).toBeGreaterThan(2);
+      for (const line of out) expect(line).not.toMatch(controls);
+    }
+  });
+
   test("REV r1: a note in the next action reaches a person at a terminal", () => {
     expect(resultLines({ status: "ready", provider: "self-managed", name: "n", id: "i-1", health_url: "https://h", dashboard_url: null,
       next: "Open https://h; --name ignored: this database is already monitored as n" }))
