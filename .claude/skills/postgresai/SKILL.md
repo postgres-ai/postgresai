@@ -35,7 +35,9 @@ agent has a tool for asking the user a question, use it. Otherwise make the
 question the last paragraph of your message, on its own and starting with
 **Question:**, and write nothing after it. Put what the user needs to know to
 answer (what the setup creates, that monitoring is paid) before the question.
-Ask the next question only after they have answered this one.
+Ask the next question only after they have answered this one. A question
+stays open until the reply answers it: never take a reply that skips it as
+"no" or as any other answer; ask it again.
 
 If the user declines monitoring, do not deploy it. Tell them what monitoring
 would show, and stop.
@@ -226,8 +228,11 @@ The result is JSON on stdout. Act on `status` and `next`:
     `--coupon`) only if they agree.
   - It needs a payment method: give the user the console link from `next`.
   - It says "Finish in the console" (Supabase and Amazon RDS): give the user
-    that link. When they say it is done, find the instance with
-    `pgai mon instances list --org <alias> --json` and `watch` it.
+    that link. The CLI shows no price here: the console page shows it before
+    anything is billed, and has a field for a promotion code, so tell them to
+    enter their coupon there if they have one. When they say it is done, find
+    the instance with `pgai mon instances list --org <alias> --json` and
+    `watch` it.
   - It returns `sql` (the URL is not an admin URL): give the user that SQL to
     run as an admin, then re-run the deploy with the `postgres_ai_mon` URL
     (its password in `.env`); or ask them for an admin URL.
