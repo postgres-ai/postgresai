@@ -223,6 +223,7 @@ reporter:tests:
   before_script:
     - python --version
     - pip install --upgrade pip
+    - echo 'Acquire::Retries "5"; Acquire::http::Timeout "15";' > /etc/apt/apt.conf.d/80-ci-retries
     - apt-get update
     - apt-get install -y --no-install-recommends postgresql postgresql-client && rm -rf /var/lib/apt/lists/*
     - pip install -r reporter/requirements-dev.txt
@@ -353,6 +354,7 @@ cli:node:tests:
     NPM_CONFIG_FUND: "false"
   before_script:
     - corepack enable || true
+    - echo 'Acquire::Retries "5"; Acquire::http::Timeout "15";' > /etc/apt/apt.conf.d/80-ci-retries
     - apt-get update
     - apt-get install -y --no-install-recommends postgresql postgresql-client unzip
     # PostgreSQL 17 from PGDG for tests that need scram_iterations (PG >= 16); the
@@ -424,6 +426,7 @@ cli:host-metrics-scrape:tests:
     GIT_STRATEGY: fetch
     PGAI_TEST_VM_BIN: /tmp/vm/victoria-metrics-prod
   before_script:
+    - echo 'Acquire::Retries "5"; Acquire::http::Timeout "15";' > /etc/apt/apt.conf.d/80-ci-retries
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
     - mkdir -p /tmp/vm
     - curl -fL https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.140.0/victoria-metrics-linux-amd64-v1.140.0.tar.gz -o /tmp/vm/vm.tar.gz
