@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkupLines, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, saveCheckupReport, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -17,17 +17,6 @@ const CH_NAME = "abc123.us-east-1.aws.pg.clickhouse.cloud/postgres";
 const MON = "postgresql://postgres_ai_mon:genpw@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require";
 const ORG = "11111111-2222-3333-4444-555555555555";
 const KEY = "AbCdEf0123456789XyZa:Sec4b1dTestSecret0123456789";
-// What the express checkup found, as connect returns it.
-const CHECKUP = {
-  checks: 4,
-  findings: [
-    { check_id: "H002", title: "Unused indexes", status: "warning", message: "3 unused indexes (1.20 MiB)" },
-    { check_id: "A002", title: "Postgres major version", status: "ok", message: "PostgreSQL 17" },
-  ],
-  info: ["A003", "A004"],
-  report_id: 7,
-};
-
 const FREE_QUOTE = {
   plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0,
   price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: false, requires_payment_method: false,
@@ -46,7 +35,6 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     unprepare: async () => { calls.push("unprepare"); return true; },
     localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
-    checkup: async (url, project) => { calls.push(`checkup ${url} as ${project}`); return CHECKUP; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
     handoffUrl: async (provider) => `https://console.postgres.ai/acme/monitoring/scale/create/${provider}`,
     // The billing step is its own describe below; here a box is on a free slot.
@@ -204,14 +192,13 @@ describe("mon deploy", () => {
       "check clickhouse",
       "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`,
-      // First value while the box starts: the express checkup, over the monitoring role.
-      `checkup ${MON} as ${CH_NAME}`,
+      // No checkup of its own: the box runs the first one (first_checkup_eta).
       "sleep", "list", "sleep", "list",
     ]);
     const { first_checkup_eta, ...rest } = result;
     expect(rest).toEqual({
       status: "ready", provider: "clickhouse", name: CH_NAME, id: "i-1",
-      dashboard_url: "https://abc.pgai.watch", host_metrics: true, checkup: CHECKUP, ...FREE, next: "Open https://abc.pgai.watch",
+      dashboard_url: "https://abc.pgai.watch", host_metrics: true, ...FREE, next: "Open https://abc.pgai.watch",
     });
     // The reporter's first run: at the earliest 3 minutes after the stack starts.
     const eta = Date.parse(first_checkup_eta!) - Date.now();
@@ -552,7 +539,7 @@ describe("mon deploy", () => {
     const result = await connect(CH, { waitMs: 0 }, deps);
     expect(result).toEqual({
       status: "in_progress", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null,
-      host_metrics: false, checkup: CHECKUP, ...FREE, next: "pgai mon instances watch i-1",
+      host_metrics: false, ...FREE, next: "pgai mon instances watch i-1",
     });
     expect(calls).not.toContain("sleep");
   });
@@ -565,7 +552,6 @@ describe("mon deploy", () => {
       // The launch, then 13 polls of launch_requested, registered, then active.
       rows: [undefined, ...Array(13).fill(row("launch_requested")), registered, registered, row("active")],
       now: () => t,
-      checkup: async () => { t += 14_000; return CHECKUP; },
       sleep: async (ms) => { t += ms; },
       progress: (e) => events.push(e),
     });
@@ -574,31 +560,19 @@ describe("mon deploy", () => {
       "Estimated cost: free (1 of 1 free slots) (+0s)",
       "Preparing postgresql://postgres:*****@abc123.us-east-1.aws.pg.clickhouse.cloud:5432/postgres?sslmode=require (+0s)",
       `Provisioning monitoring for ${CH_NAME} (+0s)`,
-      "Running the express checkup while the box starts (+0s)",
-      [
-        "Express checkup while the box starts (4 checks: 1 warning, 1 ok, 2 info) (+14s):",
-        "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
-        "  ok: A002",
-        "  info: A003 A004",
-        "Saved as report 7: pgai reports files 7",
-        "The full checkup (query analysis and trends) follows on the box.",
-      ].join("\n"),
-      "Monitoring box: starting (+14s)",
-      "Monitoring box: installing monitoring (+3m44s)",
-      "Monitoring box: ready (+4m14s)",
+      "Monitoring box: starting (+0s)",
+      "Monitoring box: installing monitoring (+3m30s)",
+      "Monitoring box: ready (+4m00s)",
     ]);
-    // For an agent the same steps, as events.
-    expect(events.map(({ message, checkup, ...e }) => e)).toEqual([
+    // For an agent the same steps, as events; no checkup of its own (the box runs the first one).
+    expect(events.map(({ message, ...e }) => e)).toEqual([
       { event: "billing", elapsed_s: 0 },
       { event: "preparing", elapsed_s: 0 },
       { event: "provisioning", elapsed_s: 0 },
-      { event: "checkup", elapsed_s: 0, id: "i-1" },
-      { event: "checkup", elapsed_s: 14 },
-      { event: "box", elapsed_s: 14, state: "launch_requested", id: "i-1" },
-      { event: "box", elapsed_s: 224, state: "registered", id: "i-1" },
-      { event: "box", elapsed_s: 254, state: "active", id: "i-1" },
+      { event: "box", elapsed_s: 0, state: "launch_requested", id: "i-1" },
+      { event: "box", elapsed_s: 210, state: "registered", id: "i-1" },
+      { event: "box", elapsed_s: 240, state: "active", id: "i-1" },
     ]);
-    expect(events[4].checkup).toEqual(CHECKUP);
   });
 
   test("a re-run of a connected database shows no progress", async () => {
@@ -608,40 +582,12 @@ describe("mon deploy", () => {
     expect(events).toEqual([]);
   });
 
-  test("the express summary adds up: warnings, ok, info and what could not run are all counted and named", () => {
-    expect(checkupLines({ ...CHECKUP, checks: 6, failed: ["F004", "I001"] })).toEqual([
-      "Express checkup while the box starts (6 checks: 1 warning, 1 ok, 2 info, 2 could not run):",
-      "  H002 Unused indexes: 3 unused indexes (1.20 MiB)",
-      "  ok: A002",
-      "  info: A003 A004",
-      "  could not run: F004 I001",
-      "Saved as report 7: pgai reports files 7",
-      "The full checkup (query analysis and trends) follows on the box.",
-    ]);
-  });
-
-  test("an express checkup that could not be saved says why; the summary is still shown", () => {
-    const { report_id, ...unsaved } = CHECKUP;
-    expect(checkupLines({ ...unsaved, upload_error: "Rate limit exceeded: only 1 report upload(s) allowed per 10 minutes." }).slice(-2)).toEqual([
-      "Not saved to PostgresAI: Rate limit exceeded: only 1 report upload(s) allowed per 10 minutes.",
-      "The full checkup (query analysis and trends) follows on the box.",
-    ]);
-  });
-
-  test("a failed express checkup does not stop mon deploy: its error is in the result", async () => {
-    const { deps } = fake({ checkup: async () => { throw new Error("permission denied for view pg_stat_statements"); } });
-    expect((await connect(CH, { waitMs: 0 }, deps)).checkup).toEqual({ error: "permission denied for view pg_stat_statements" });
-  });
-
-  test("the express checkup logs in from this machine: the URL's TLS files are kept for it, not sent to the box", async () => {
+  test("the URL's TLS files stay on this machine: not sent to the box", async () => {
     const tls = "postgresql://postgres:adminpw@db.example.com:5432/app?sslmode=verify-full&sslrootcert=%2Ftmp%2Fca.pem";
     const box = "postgresql://postgres_ai_mon:genpw@db.example.com:5432/app?sslmode=verify-full";
     const { deps, calls } = fake({ prepare: async () => ({ monitoringUrl: box }) });
     await connect(tls, { waitMs: 0 }, deps);
-    expect(calls.filter((c) => /^(create|checkup)/.test(c))).toEqual([
-      `create ${JSON.stringify({ db_url: box })}`,
-      `checkup ${box}&sslrootcert=%2Ftmp%2Fca.pem as ${CH_NAME}`,
-    ]);
+    expect(calls.filter((c) => c.startsWith("create"))).toEqual([`create ${JSON.stringify({ db_url: box })}`]);
   });
 
   test("ClickHouse without a key: connected, and told how to get host metrics", async () => {
@@ -682,11 +628,11 @@ describe("mon deploy", () => {
     try {
       const { deps, calls } = fake();
       expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("in_progress");
-      expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`, `checkup ${MON} as ${CH_NAME}`]);
+      expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`]);
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
-      expect(calls.at(-5)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
+      expect(calls.at(-4)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
     } finally {
       delete process.env.CLICKHOUSE_KEY_ID;
       delete process.env.CLICKHOUSE_KEY_SECRET;
@@ -715,7 +661,7 @@ describe("mon deploy", () => {
       sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
     });
     expect(await connect(CH, { waitMs: 100 }, deps)).toEqual({
-      status: "in_progress", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, checkup: CHECKUP, ...FREE, next: "pgai mon instances watch i-1",
+      status: "in_progress", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE, next: "pgai mon instances watch i-1",
     });
     expect(polls).toBeGreaterThan(2);
   });
@@ -743,7 +689,7 @@ describe("mon deploy", () => {
     process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
     try {
       expect((await connect(CH, { waitMs: 0, agent: true }, deps)).host_metrics).toBe(false);
-      expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, `checkup ${MON} as ${CH_NAME}`]);
+      expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`]);
       // The key the agent passes is used.
       await connect(CH, { clickhouseKey: KEY, waitMs: 0, agent: true }, deps);
       expect(calls).toContain("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa");
@@ -821,7 +767,7 @@ describe("mon deploy", () => {
     expect(seen).toEqual([{ resetPassword: true, monitoringUser: "my_mon", check: true }, { resetPassword: true, monitoringUser: "my_mon" }]);
     expect(calls).toEqual([
       "list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "prepare clickhouse",
-      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1", `checkup ${MON} as ${CH_NAME}`,
+      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
     ]);
   });
 
@@ -976,7 +922,6 @@ describe("mon deploy", () => {
       "list", "check clickhouse", "list", "check clickhouse",
       "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
-      `checkup ${MON} as ${CH_NAME}`,
     ]);
   });
 
@@ -1394,8 +1339,8 @@ describe("mon deploy", () => {
     expect(lines).toEqual(["Note: channel_binding upgraded", "Estimated cost: $512.00/month"]);
     p.progress(ev("preparing", "Preparing x"));
     expect(views).toBe(1);
-    p.progress(ev("checkup", "Running the express checkup while the box starts", { id: "i-1" }));
-    expect(lines).not.toContain("view: Running the express checkup while the box starts");
+    p.progress(ev("box", "Monitoring box: starting", { state: "launch_requested", id: "i-1" }));
+    expect(lines).not.toContain("view: Monitoring box: starting");
     const selfHosted = stepProgress({ json: false, tty: true, makeView: () => { views++; return view; }, writeLine: () => {}, writeEvent: () => {} });
     selfHosted.progress(ev("preparing", "Preparing y"));
     expect(views).toBe(1);
@@ -1555,7 +1500,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     f.deps.prepare = async (_u, provider, o) => { f.calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true }; };
     expect(await connect(SH, { waitMs: 60_000, yes: true }, f.deps)).toEqual({
       status: "action_required", provider: "self-managed", name: SH_NAME, id: "i-1",
-      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false, checkup: CHECKUP,
+      price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false,
       next: "The first charge failed (Payment Required: Stripe payment required for POST /subscriptions: Your card was declined.): the box is being removed and nothing is billed. Update the payment method at https://console.example/acme/billing, then re-run",
     });
     expect(f.calls.filter((c) => c === "unprepare")).toEqual(["unprepare"]);
@@ -1678,23 +1623,15 @@ describe("mon deploy on the paid path: the price before the box", () => {
     return o?.check ? { checked: true } : { monitoringUrl: NO_PW, storedPassword: true };
   };
 
-  test("a second database on a server the platform keeps the password of: no PGAI_MON_PASSWORD needed, the box's URL has none, no express checkup as the admin", async () => {
+  test("a second database on a server the platform keeps the password of: no PGAI_MON_PASSWORD needed, the box's URL has none", async () => {
     const { deps, calls } = make();
     const seen: (boolean | undefined)[] = [];
-    const events: ProgressEvent[] = [];
     deps.list = async () => { calls.push("list"); return calls.filter((c) => c === "list").length === 1 ? [row("active", FIRST)] : [row("active", FIRST), row("active", { name: SH_NAME, provider: "self-managed", host_metrics: false })]; };
     deps.prepare = storedPrepare(seen);
-    deps.progress = (e) => events.push(e);
     const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
     expect(result.status).toBe("ready");
     expect(seen).toEqual([true, true]);
     expect(calls).toContain(`create ${JSON.stringify({ db_url: NO_PW, accept_price: true })}`);
-    // The checkup runs only as postgres_ai_mon: not over the admin URL, and not at all without its password.
-    expect(calls.filter((c) => c.startsWith("checkup"))).toEqual([]);
-    expect(result).not.toHaveProperty("checkup");
-    expect(events.filter((e) => e.event === "checkup").map((e) => e.message)).toEqual([
-      "Express checkup skipped: it runs only as postgres_ai_mon, whose password PostgresAI keeps for this server. The full checkup follows on the box.",
-    ]);
   });
 
   test.each([
@@ -1760,18 +1697,6 @@ describe("mon deploy on the paid path: the price before the box", () => {
     deps.prepare = async (_u, _p, o) => { seen.push(o); return { next: "stop" }; };
     await connect(SH, { waitMs: 0, yes: true }, deps);
     expect(seen).toEqual([{ storedPassword: true, others: ["db.example.com/first", "db.example.com/third"], check: true }]);
-  });
-
-  test("the platform keeps the password, but prepare returns the role's own (PGAI_MON_PASSWORD, say): the express checkup runs as postgres_ai_mon", async () => {
-    const WITH_PASSWORD = "postgresql://postgres_ai_mon:its-password@db.example.com:5432/app";
-    const { deps, calls } = make({}, { list: async () => [row("active", FIRST)] });
-    const events: ProgressEvent[] = [];
-    deps.prepare = async (_u, _p, o) => (o?.check ? { checked: true } : { monitoringUrl: WITH_PASSWORD });
-    deps.progress = (e) => events.push(e);
-    const result = await connect(SH, { waitMs: 0, yes: true }, deps);
-    expect(calls.filter((c) => c.startsWith("checkup"))).toEqual([`checkup ${WITH_PASSWORD} as ${CH_NAME}`]);
-    expect(result.checkup).toEqual(CHECKUP);
-    expect(events.filter((e) => e.event === "checkup").map((e) => e.checkup)).toEqual([undefined, CHECKUP]);
   });
 
   const NONE_STORED = "Failed to cloud monitoring connect: Conflict\nThe URL has no password, and none is stored for postgres_ai_mon on db.example.com:5432 in this organization.";
@@ -2606,39 +2531,6 @@ test("sslmode in the URL wins over PGSSLMODE, as in libpq; PGSSLMODE applies to 
   } finally {
     delete process.env.PGSSLMODE;
   }
-});
-
-describe("saving the express checkup", () => {
-  const reports = { A002: { checkId: "A002" }, H002: { checkId: "H002" } };
-  const fakeRpc = (answer: (fn: string, body: Record<string, unknown>) => unknown) => {
-    const calls: string[] = [];
-    const rpc = async <T>(fn: string, body: Record<string, unknown>): Promise<T> => {
-      calls.push(`${fn}${body.status ? ` ${body.status}` : ""}${body.filename ? ` ${body.filename}` : ""}`);
-      const a = answer(fn, body);
-      if (a instanceof Error) throw a;
-      return a as T;
-    };
-    return { rpc, calls };
-  };
-  const ok = (fn: string) => (fn === "checkup_report_create" ? { report_id: 9 } : fn === "checkup_report_file_post" ? { report_chunck_id: 1 } : { status: "completed" });
-
-  test("created pending, a file per check, then completed", async () => {
-    const { rpc, calls } = fakeRpc(ok);
-    expect(await saveCheckupReport(rpc, "tok", "db/app", reports)).toBe(9);
-    expect(calls).toEqual(["checkup_report_create", "checkup_report_file_post A002.json", "checkup_report_file_post H002.json", "checkup_report_status_update completed"]);
-  });
-
-  test("a report not marked completed is not called saved", async () => {
-    const { rpc } = fakeRpc((fn) => (fn === "checkup_report_status_update" ? new Error("HTTP 500") : ok(fn)));
-    await expect(saveCheckupReport(rpc, "tok", "db/app", reports)).rejects.toThrow("HTTP 500");
-  });
-
-  test("an answer without an id is a failed upload, and the report is marked failed", async () => {
-    const { rpc, calls } = fakeRpc((fn) => (fn === "checkup_report_file_post" ? { message: "Upload rejected" } : ok(fn)));
-    await expect(saveCheckupReport(rpc, "tok", "db/app", reports)).rejects.toThrow("Upload rejected");
-    expect(calls.at(-1)).toBe("checkup_report_status_update failed");
-    await expect(saveCheckupReport(fakeRpc(() => ({})).rpc, "tok", "db/app", reports)).rejects.toThrow("checkup_report_create");
-  });
 });
 
 describe("mon instances delete: what happened to the billing", () => {

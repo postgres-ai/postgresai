@@ -196,10 +196,7 @@ pgai mon deploy 'postgresql://postgres:<password>@<host>:5432/postgres'
 ```
 
 It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
-prints the SQL), provisions monitoring in PostgresAI Cloud, runs the express checkup (the checks
-of `pgai checkup`, as `postgres_ai_mon`) while the box starts and prints its findings (in JSON:
-`checkup`; skipped where PostgresAI keeps the role's password: no `checkup` key, no first report),
-waits, and prints two links: the project's Health Matrix in the console
+prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints two links: the project's Health Matrix in the console
 (`<console>/<org>/projects/<project>/health`, the next step) and Grafana, which signs you in
 with your PostgresAI account (`https://<box>/login/generic_oauth?redirectTo=%2F`). Safe to re-run; a `--clickhouse-key` given on a
 re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
@@ -296,8 +293,7 @@ Another database on a server PostgresAI already monitors for the organization ne
 `sslmode=require` or `verify-*` in the URL, the role keeps its password, the box's URL carries
 none, and PostgresAI fills in the one it kept from the first `mon deploy` (only over TLS, each query
 parameter once, and only while a box on that server is not deleted, being deleted, or failed to
-delete). The express checkup is skipped then: it runs only as `postgres_ai_mon`, never as the
-admin. The full checkup follows on the box. On a server without TLS the kept password cannot be
+delete). On a server without TLS the kept password cannot be
 used: set `PGAI_MON_PASSWORD`, or turn TLS on; if nobody has the password, delete the server's
 other instances, then `--reset-password` with `PGAI_MON_PASSWORD` set to a new one, and deploy
 them again with it (`mon deploy` names them).
