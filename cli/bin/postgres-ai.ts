@@ -4229,8 +4229,7 @@ function cloudApi(debug?: boolean) {
 }
 
 function emitConnect(result: ConnectResult, json?: boolean): void {
-  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql);
-  // the express checkup was shown as it finished.
+  // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql).
   if (!jsonOutput(json)) {
     // At a terminal: a few sentences (lib/connect resultLines); a refusal or a failure is its one line on stderr.
     if (result.sql) console.log(`${result.sql}\n`);
@@ -4429,8 +4428,9 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
-    "the monitoring box, run the express checkup while it starts, wait, print the Health Matrix",
-    "(health_url) and Grafana, signed in with your PostgresAI account (dashboard_url).",
+    "the monitoring box, wait, print the Health Matrix (health_url) and Grafana, signed in with",
+    "your PostgresAI account (dashboard_url). The box runs its first checkup at first_checkup_eta",
+    "at the earliest (3 minutes after it is ready), once every target has data (at most 30 minutes).",
     "",
     "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
     "PostgresAI tests the connection from an unpublished address, so the port must accept connections",
@@ -4452,8 +4452,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed; not needed",
     "for another database on a server PostgresAI already monitors for the org, with",
-    "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps (over TLS only), and",
-    "the express checkup is skipped, as it runs only as postgres_ai_mon),",
+    "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps, over TLS only),",
     "PGPASSWORD (the password for a URL without one),",
     "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
     "",

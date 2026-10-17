@@ -321,7 +321,6 @@ export interface StepDef {
 export const MONITORING_STEPS: StepDef[] = [
   { key: "preparing", label: "Prepare the database" },
   { key: "provisioning", label: "Create the monitoring box" },
-  { key: "checkup", label: "Express checkup" },
   { key: "box", label: "Install monitoring (about 5 min)" },
   { key: "ready", label: "Ready" },
 ];
@@ -423,7 +422,7 @@ export class StepView {
     this.note = note;
   }
 
-  /** Text above the steps (the express checkup's findings): the animation is redrawn below it. */
+  /** Text above the steps (a note or a warning): the animation is redrawn below it. */
   log(text: string): void {
     const body = text.endsWith("\n") ? text : `${text}\n`;
     if (!this.tty || this.stopped) {
