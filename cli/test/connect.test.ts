@@ -1787,7 +1787,7 @@ describe("prepareDatabase (a fake pg client)", () => {
         if (this.user !== role && !/session_user as name/.test(sql) && !/^set (statement_timeout|search_path) =/i.test(sql)) sqls.push(sql);
         if (me.fails?.test(sql)) throw pgError("42501", "permission denied");
         // The monitoring role's own session: every check of verifyInitSetup passes.
-        if (me.name === role) return { rowCount: 1, rows: [{ ok: true, rolconfig: ["search_path=postgres_ai, public, pg_catalog"] }] };
+        if (me.name === role) return { rowCount: 1, rows: [{ ok: true, setting: "search_path=pg_catalog, postgres_ai, public, pg_temp" }] };
         return { rows: [] };
       }
       async end() {}

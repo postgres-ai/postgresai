@@ -623,6 +623,7 @@ export async function buildInitPlan(params: {
   const vars: Record<string, string> = {
     ROLE_IDENT: qRole,
     DB_IDENT: qDb,
+    ROLE_LITERAL: qRoleNameLit,
   };
 
   // Some providers (e.g., Supabase) manage users externally - skip role creation.
@@ -908,6 +909,37 @@ export async function applyUninitPlan(params: {
   return { applied, errors };
 }
 
+/** Split a stored search_path value into schema names: quoted names keep case, others fold to lower case. */
+function parseSearchPath(value: string): string[] {
+  const names: string[] = [];
+  let name = "";
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quoted) {
+      if (ch === '"' && value[i + 1] === '"') { name += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else name += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { names.push(name); name = ""; }
+    else if (!/\s/.test(ch)) name += ch.toLowerCase();
+  }
+  names.push(name);
+  return names;
+}
+
+/**
+ * Check the search_path setting ("search_path=...") against the exact path that
+ * 03.permissions.sql sets for this database. Returns the missing-requirement text, or null.
+ */
+export function roleSearchPathProblem(spLine: string, extSchema?: string | null): string | null {
+  const ext = extSchema && extSchema !== "pg_catalog" && extSchema !== "public" ? [extSchema] : [];
+  const expected = ["pg_catalog", "postgres_ai", ...ext, "public", "pg_temp"];
+  const actual = parseSearchPath(spLine.slice("search_path=".length));
+  if (actual.length === expected.length && actual.every((s, i) => s === expected[i])) return null;
+  return `role search_path is ${expected.join(", ")}`;
+}
+
 export async function verifyInitSetup(params: {
   client: PgClient;
   database: string;
@@ -1014,24 +1046,22 @@ export async function verifyInitSetup(params: {
     // Some providers don't allow setting search_path via ALTER USER - skip this check.
     // TODO: Make this more flexible by allowing users to specify which checks to skip via config.
     if (!SKIP_SEARCH_PATH_CHECK_PROVIDERS.includes(provider)) {
-      const rolcfgRes = await params.client.query("select rolconfig from pg_catalog.pg_roles where rolname = $1", [role]);
-      const rolconfig = rolcfgRes.rows?.[0]?.rolconfig;
-      const spLine = Array.isArray(rolconfig) ? rolconfig.find((v: any) => String(v).startsWith("search_path=")) : undefined;
+      // The role's path in this database: its own row if it sets search_path, else the role-wide row (setdatabase 0).
+      const spRes = await params.client.query(`
+        select cfg as setting
+        from pg_catalog.pg_db_role_setting s, pg_catalog.unnest(s.setconfig) as cfg
+        where s.setrole = (select oid from pg_catalog.pg_roles where rolname = $1)
+          and s.setdatabase in (0, (select oid from pg_catalog.pg_database where datname = pg_catalog.current_database()))
+          and pg_catalog.starts_with(cfg, 'search_path=')
+        order by s.setdatabase desc
+        limit 1
+      `, [role]);
+      const spLine = spRes.rows?.[0]?.setting;
       if (typeof spLine !== "string" || !spLine) {
         missingRequired.push("role search_path is set");
       } else {
-        // We accept any ordering as long as postgres_ai, public, and pg_catalog are included.
-        // Also verify search_path includes the pg_stat_statements schema if in a non-standard location.
-        const sp = spLine.toLowerCase();
-        if (!sp.includes("postgres_ai") || !sp.includes("public") || !sp.includes("pg_catalog")) {
-          missingRequired.push("role search_path includes postgres_ai, public and pg_catalog");
-        }
-        // If pg_stat_statements is in a non-standard schema (e.g., 'extensions' on Supabase), verify it's in search_path
-        if (extSchema && extSchema !== "pg_catalog" && extSchema !== "public") {
-          if (!sp.includes(extSchema.toLowerCase())) {
-            missingRequired.push(`role search_path includes ${extSchema} (pg_stat_statements location)`);
-          }
-        }
+        const problem = roleSearchPathProblem(spLine, extSchema);
+        if (problem) missingRequired.push(problem);
       }
     }
 

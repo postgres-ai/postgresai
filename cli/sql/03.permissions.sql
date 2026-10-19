@@ -55,27 +55,43 @@ begin
   end if;
 end $$;
 
--- [SEARCH_PATH_BLOCK_START] Keep search_path predictable; postgres_ai first so our objects are found.
--- Dynamically include the pg_stat_statements extension schema if it's in a non-standard location.
+-- [SEARCH_PATH_BLOCK_START] Resolve built-ins from pg_catalog first; keep pg_temp last.
+-- Do not include the role-named schema: it may be writable by that role.
+-- public stays for pg_stat_statements. Residual risk: a function in public with
+-- an exact-type match (e.g. public.quote_ident(name)) still beats pg_catalog.
+-- The path for this database includes its pg_stat_statements schema if it is in a non-standard location.
 do $$
 declare
   ext_schema text;
-  sp text;
+  role_path constant text := 'pg_catalog, postgres_ai, public, pg_temp';
+  db_path text := role_path;
 begin
+  -- This block runs as the admin: resolve its operators and functions from pg_catalog only
+  -- (CVE-2018-1058). The pin is inside the block: a DO block always runs in a transaction,
+  -- also in psql autocommit.
+  set local search_path = pg_catalog, pg_temp;
   -- Detect pg_stat_statements extension schema
   select n.nspname into ext_schema
   from pg_extension e
   join pg_namespace n on e.extnamespace = n.oid
   where e.extname = 'pg_stat_statements';
 
-  -- Build search_path: include extension schema if in non-standard location
   if ext_schema is not null and ext_schema not in ('pg_catalog', 'public') then
-    sp := 'postgres_ai, ' || quote_ident(ext_schema) || ', "$user", public, pg_catalog';
-  else
-    sp := 'postgres_ai, "$user", public, pg_catalog';
+    db_path := 'pg_catalog, postgres_ai, ' || quote_ident(ext_schema) || ', public, pg_temp';
   end if;
 
-  execute format('alter user {{ROLE_IDENT}} set search_path = %s', sp);
+  -- Role-wide value: for databases that prepare-db did not run in. All databases share
+  -- this one row, so write it only when it holds another value.
+  if not exists (
+    select from pg_catalog.pg_db_role_setting
+    where setrole = (select oid from pg_catalog.pg_roles where rolname = {{ROLE_LITERAL}})
+      and setdatabase = 0
+      and ('search_path=' || role_path) = any (setconfig)
+  ) then
+    execute format('alter user {{ROLE_IDENT}} set search_path = %s', role_path);
+  end if;
+  -- This database's value: other databases keep their own pg_stat_statements schema.
+  execute format('alter user {{ROLE_IDENT}} in database %I set search_path = %s', pg_catalog.current_database(), db_path);
 end $$;
 -- [SEARCH_PATH_BLOCK_END]
 

@@ -333,8 +333,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, extensions, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 1, rows: [{ setting: 'search_path=pg_catalog, postgres_ai, public, pg_temp' }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [] };
@@ -395,9 +395,9 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        // Return empty rolconfig - would fail without provider=supabase
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: null }] };
+        // No role search_path - would fail without provider=supabase
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 0, rows: [] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };
@@ -439,12 +439,14 @@ describe("init module", () => {
     });
     expect(r.ok).toBe(true);
     expect(r.missingRequired.length).toBe(0);
-    // Should not have queried for rolconfig since we skip search_path check
-    expect(calls.some((c) => c.includes("select rolconfig"))).toBe(false);
+    // Should not have queried the role search_path since we skip search_path check
+    expect(calls.some((c) => c.includes("pg_db_role_setting"))).toBe(false);
   });
 
   test("verifyInitSetup checks extensions schema when pg_stat_statements is there", async () => {
     const calls: string[] = [];
+    let rolePath: string | null = "pg_catalog, postgres_ai, extensions, public, pg_temp";
+    let extSchema = "extensions";
     const client = {
       query: async (sql: string, params?: any) => {
         calls.push(String(sql));
@@ -455,8 +457,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, extensions, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return rolePath === null ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [{ setting: `search_path=${rolePath}` }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };
@@ -478,7 +480,7 @@ describe("init module", () => {
         }
         // pg_stat_statements is in 'extensions' schema
         if (String(sql).includes("pg_extension e") && String(sql).includes("pg_stat_statements")) {
-          return { rowCount: 1, rows: [{ schema: "extensions" }] };
+          return { rowCount: 1, rows: [{ schema: extSchema }] };
         }
         // Check for USAGE on extensions schema
         if (String(sql).includes("has_schema_privilege") && params?.[1] === "extensions") {
@@ -502,6 +504,62 @@ describe("init module", () => {
     expect(r.missingRequired.length).toBe(0);
     // Should have queried for pg_stat_statements schema location
     expect(calls.some((c) => c.includes("pg_extension e") && c.includes("pg_stat_statements"))).toBe(true);
+
+    // Only the exact path that prepare-db sets passes.
+    const unsafePaths = [
+      'postgres_ai, extensions, "$user", public, pg_catalog', // old default
+      "postgres_ai, pg_catalog, extensions, public, pg_temp", // pg_catalog not first
+      "pg_catalog, postgres_ai, extensions, public", // pg_temp not last
+      'pg_catalog, "$user", postgres_ai, extensions, public, pg_temp', // "$user"
+      "pg_catalog, app_schema, postgres_ai, extensions, public, pg_temp", // extra schema
+      "pg_catalog, postgres_ai_x, extensions, public, pg_temp", // look-alike name
+      "pg_catalog, postgres_ai, public, pg_temp", // pg_stat_statements schema missing
+    ];
+    for (const p of unsafePaths) {
+      rolePath = p;
+      const unsafe = await init.verifyInitSetup({
+        client: client as any,
+        database: "mydb",
+        monitoringUser: DEFAULT_MONITORING_USER,
+        includeOptionalPermissions: false,
+      });
+      expect({ p, missing: unsafe.missingRequired }).toEqual({
+        p,
+        missing: ["role search_path is pg_catalog, postgres_ai, extensions, public, pg_temp"],
+      });
+    }
+
+    // PostgreSQL stores a mixed-case schema name quoted.
+    extSchema = "My Ext";
+    rolePath = 'pg_catalog, postgres_ai, "My Ext", public, pg_temp';
+    const quoted = await init.verifyInitSetup({
+      client: client as any,
+      database: "mydb",
+      monitoringUser: DEFAULT_MONITORING_USER,
+      includeOptionalPermissions: false,
+    });
+    expect(quoted.missingRequired).toEqual([]);
+
+    // Each database has its own role path. Here pg_stat_statements is in public:
+    // another database's extension schema is an extra schema. No role path is a missing item.
+    extSchema = "public";
+    const inPublicDb = async (p: string | null) => {
+      rolePath = p;
+      return (await init.verifyInitSetup({
+        client: client as any,
+        database: "mydb",
+        monitoringUser: DEFAULT_MONITORING_USER,
+        includeOptionalPermissions: false,
+      })).missingRequired;
+    };
+    expect(await inPublicDb("pg_catalog, postgres_ai, public, pg_temp")).toEqual([]);
+    for (const p of [
+      "pg_catalog, postgres_ai, extensions, public, pg_temp",
+      'pg_catalog, postgres_ai, "$user", public, pg_temp',
+    ]) {
+      expect({ p, missing: await inPublicDb(p) }).toEqual({ p, missing: ["role search_path is pg_catalog, postgres_ai, public, pg_temp"] });
+    }
+    expect(await inPublicDb(null)).toEqual(["role search_path is set"]);
   });
 
   test("verifyInitSetup reports missing extensions schema access", async () => {
@@ -513,8 +571,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 1, rows: [{ setting: 'search_path=pg_catalog, postgres_ai, public, pg_temp' }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };
@@ -573,10 +631,15 @@ describe("init module", () => {
 
     const permStep = plan.steps.find((s) => s.name === "03.permissions");
     expect(permStep).toBeTruthy();
-    // Should use dynamic DO block to set search_path based on detected extension schema
-    expect(permStep!.sql).toMatch(/alter\s+user.*set\s+search_path\s*=/i);
-    // Should detect pg_stat_statements extension schema dynamically
-    expect(permStep!.sql).toMatch(/quote_ident\(ext_schema\)/i);
+    // Role-wide: the base path. This database: the base path, or with its pg_stat_statements schema.
+    expect(permStep!.sql).toContain("role_path constant text := 'pg_catalog, postgres_ai, public, pg_temp';");
+    expect(permStep!.sql).toContain("db_path text := role_path;");
+    expect(permStep!.sql).toContain("db_path := 'pg_catalog, postgres_ai, ' || quote_ident(ext_schema) || ', public, pg_temp';");
+    expect(permStep!.sql).toContain(`execute format('alter user "${DEFAULT_MONITORING_USER}" set search_path = %s', role_path);`);
+    expect(permStep!.sql).toContain(
+      `execute format('alter user "${DEFAULT_MONITORING_USER}" in database %I set search_path = %s', pg_catalog.current_database(), db_path);`
+    );
+    expect(permStep!.sql).not.toContain('"$user"');
   });
 
   test("buildInitPlan includes dynamic extension schema grant", async () => {
@@ -607,8 +670,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, extensions, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 1, rows: [{ setting: 'search_path=pg_catalog, postgres_ai, public, pg_temp' }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };
@@ -665,8 +728,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 1, rows: [{ setting: 'search_path=pg_catalog, postgres_ai, public, pg_temp' }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };
@@ -728,8 +791,8 @@ describe("init module", () => {
         if (String(sql).toLowerCase() === "rollback;") {
           return { rowCount: 1, rows: [] };
         }
-        if (String(sql).includes("select rolconfig")) {
-          return { rowCount: 1, rows: [{ rolconfig: ['search_path=postgres_ai, "$user", public, pg_catalog'] }] };
+        if (String(sql).includes("pg_db_role_setting")) {
+          return { rowCount: 1, rows: [{ setting: 'search_path=pg_catalog, postgres_ai, public, pg_temp' }] };
         }
         if (String(sql).includes("from pg_catalog.pg_roles")) {
           return { rowCount: 1, rows: [{ rolname: DEFAULT_MONITORING_USER }] };

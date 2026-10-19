@@ -797,5 +797,33 @@ describe("Supabase module", () => {
       expect(result.ok).toBe(false);
       expect(result.missingRequired).toContain('role "postgres_ai_mon" does not exist');
     });
+
+    test("accepts only the search_path that prepare-db sets", async () => {
+      let rolePath = "";
+      let pathSql = "";
+      const client = {
+        query: async (sql: string) => {
+          if (sql.includes("pg_db_role_setting")) {
+            pathSql = sql;
+            return { rowCount: 1, rows: [{ setting: `search_path=${rolePath}` }] };
+          }
+          if (sql.includes("pg_extension e")) return { rowCount: 1, rows: [{ schema: "extensions" }] };
+          return { rowCount: 1, rows: [{ ok: true }] };
+        },
+      } as unknown as SupabaseClient;
+      const verify = async (path: string) => {
+        rolePath = path;
+        const r = await verifyInitSetupViaSupabase({ client, database: "postgres", monitoringUser: "postgres_ai_mon", includeOptionalPermissions: false });
+        return r.missingRequired;
+      };
+
+      expect(await verify("pg_catalog, postgres_ai, extensions, public, pg_temp")).toEqual([]);
+      expect(await verify('postgres_ai, extensions, "$user", public, pg_catalog')).toEqual([
+        "role search_path is pg_catalog, postgres_ai, extensions, public, pg_temp",
+      ]);
+      // The path for this database: its own row first, then the role-wide row (setdatabase 0).
+      expect(pathSql).toContain("setdatabase in (0, (select oid from pg_catalog.pg_database where datname = pg_catalog.current_database()))");
+      expect(pathSql).toContain("order by s.setdatabase desc");
+    });
   });
 });
