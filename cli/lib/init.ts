@@ -857,13 +857,16 @@ export async function buildUninitPlan(params: {
     sql: applyTemplate(loadSqlTemplate("uninit/01.helpers.sql"), vars),
   });
 
-  // Step 2: Drop view, revoke permissions, drop schema
+  // Revoke permissions while preserving a schema that may contain customer objects.
   steps.push({
     name: "02.revoke_permissions",
     sql: applyTemplate(loadSqlTemplate("uninit/02.permissions.sql"), vars),
   });
 
-  // Step 3: Drop the role (only if requested and provider allows it)
+  // Schema provenance is unknown: prepare-db may have reused a customer schema.
+  // Leave it in place; an owner can drop an empty schema explicitly.
+
+  // Drop the role only after every earlier cleanup step succeeded.
   if (dropRole && !SKIP_ROLE_CREATION_PROVIDERS.includes(provider)) {
     steps.push({
       name: "03.drop_role",
@@ -877,9 +880,16 @@ export async function buildUninitPlan(params: {
 export async function applyUninitPlan(params: {
   client: PgClient;
   plan: UninitPlan;
-}): Promise<{ applied: string[]; errors: string[] }> {
+}): Promise<{ applied: string[]; errors: string[]; warnings: string[] }> {
   const applied: string[] = [];
   const errors: string[] = [];
+  // Step 02 sends "unprepare-db:" WARNINGs for grants it cannot revoke.
+  // Other server WARNINGs are no-op revoke noise and are not shown.
+  const warnings: string[] = [];
+  const onNotice = (notice: { message?: string }) => {
+    if (notice.message?.startsWith("unprepare-db:")) warnings.push(notice.message);
+  };
+  params.client.on("notice", onNotice);
 
   // Helper to wrap a step execution in begin/commit
   const executeStep = async (step: InitStep): Promise<void> => {
@@ -897,8 +907,8 @@ export async function applyUninitPlan(params: {
     }
   };
 
-  // Apply steps in order - unlike init, uninit steps are not optional
-  // but we continue on errors to clean up as much as possible
+  // Stop on a cleanup failure: later steps (especially role deletion) can
+  // otherwise remove unrelated customer objects or hide incomplete revocation.
   for (const step of params.plan.steps) {
     try {
       await executeStep(step);
@@ -906,11 +916,13 @@ export async function applyUninitPlan(params: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`${step.name}: ${msg}`);
-      // Continue to try other steps
+      break;
     }
   }
+  params.client.off("notice", onNotice);
 
-  return { applied, errors };
+  // A dropped role holds no grants.
+  return { applied, errors, warnings: applied.includes("03.drop_role") ? [] : warnings };
 }
 
 export async function verifyInitSetup(params: {

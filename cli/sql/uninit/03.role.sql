@@ -1,6 +1,9 @@
 -- Drop the monitoring role created by prepare-db (template-filled by cli/lib/init.ts)
 -- This must run after revoking all permissions from the role.
 
+-- Objects in other schemas (for example, a planted public.format) must not run as the admin.
+set local search_path = pg_catalog, pg_temp;
+
 -- Use a DO block to handle the case where the role doesn't exist
 do $$ begin
   -- Reassign owned objects to current user before dropping

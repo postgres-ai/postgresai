@@ -2365,7 +2365,7 @@ program
 
 program
   .command("unprepare-db [conn]")
-  .description("remove monitoring setup: drop monitoring user, views, schema, and revoke permissions")
+  .description("remove monitoring setup: drop monitoring user and views, revoke permissions, preserve schema")
   .option("--db-url <url>", "PostgreSQL connection URL (admin) (deprecated; pass it as positional arg)")
   .option("-h, --host <host>", "PostgreSQL host (psql-like)")
   .option("-p, --port <port>", "PostgreSQL port (psql-like)")
@@ -2559,34 +2559,42 @@ program
         return;
       }
 
-      const { applied, errors } = await applyUninitPlan({ client, plan });
+      const { applied, errors, warnings } = await applyUninitPlan({ client, plan });
+      // Grants left on the kept role make the cleanup incomplete.
+      const success = errors.length === 0 && warnings.length === 0;
 
       if (jsonOutput) {
         outputJson({
-          success: errors.length === 0,
+          success,
           action: "unprepare",
           database,
           monitoringUser: opts.monitoringUser,
           dropRole,
           applied,
           errors,
+          warnings,
         });
-        if (errors.length > 0) {
-          process.exitCode = 1;
-        }
+      } else if (success) {
+        console.log("✓ unprepare-db completed");
+        console.log(`Applied ${applied.length} steps`);
       } else {
-        if (errors.length === 0) {
-          console.log("✓ unprepare-db completed");
-          console.log(`Applied ${applied.length} steps`);
-        } else {
-          console.error("⚠ unprepare-db completed with errors");
-          console.log(`Applied ${applied.length} steps`);
+        console.error(errors.length > 0 ? "⚠ unprepare-db completed with errors" : "⚠ unprepare-db completed, but grants are left on the role");
+        console.log(`Applied ${applied.length} steps`);
+        if (errors.length > 0) {
           console.error("Errors:");
           for (const err of errors) {
             console.error(`  - ${err}`);
           }
-          process.exitCode = 1;
         }
+        if (warnings.length > 0) {
+          console.error("Warnings:");
+          for (const w of warnings) {
+            console.error(`  - ${w}`);
+          }
+        }
+      }
+      if (!success) {
+        process.exitCode = 1;
       }
     } catch (error) {
       const errAny = error as any;
