@@ -757,8 +757,13 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(uploads).toEqual([]);
         expect(calls.filter((c) => c.includes("/rpc/checkup_report"))).toEqual([]);
         // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
-        const events = stderr.trim().split("\n").map((l) => JSON.parse(l).event);
-        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "box", "done"]);
+        const lines: { event: string; message?: string }[] = stderr.trim().split("\n").map((l) => JSON.parse(l));
+        // The TLS warnings (no sslmode: the certificate is not verified) are "preparing" events, each once, from the probe before the price.
+        const warnings = lines.filter((e) => e.event !== "log" && !!e.message?.startsWith("Warning: "));
+        expect(warnings[0]?.message).toStartWith("Warning: the database server certificate is not verified and this connection may fall back to plaintext.");
+        expect(new Set(warnings.map((e) => e.message)).size).toBe(warnings.length);
+        expect(lines.slice(0, warnings.length)).toEqual(warnings);
+        expect(lines.filter((e) => e.event !== "log" && !warnings.includes(e)).map((e) => e.event)).toEqual(["billing", "preparing", "provisioning", "box", "done"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.

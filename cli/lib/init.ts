@@ -3,6 +3,7 @@ import { SCRAM_DEFAULT_ITERATIONS, scramSha256Verifier } from "./scram";
 import { URL, fileURLToPath } from "url";
 import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import type { Client as PgClient } from "pg";
+import { parse as parseConnString } from "pg-connection-string";
 import * as fs from "fs";
 import * as path from "path";
 import { requireChannelBinding, splitChannelBinding } from "./instances";
@@ -151,13 +152,33 @@ function isSslNegotiationError(err: unknown): boolean {
 }
 
 /**
+ * The ssl setting and host pg uses: pg parses the connection string over the config, so its TLS
+ * parameters (ssl, sslrootcert, sslcert, sslkey) replace `config.ssl`. Falsy ssl: no TLS.
+ */
+function effectiveConfig(config: PgClientConfig): { ssl: unknown; host?: string } {
+  const host = config.host ?? process.env.PGHOST;
+  if (!config.connectionString) return { ssl: config.ssl, host };
+  try {
+    const parsed = parseConnString(config.connectionString);
+    // pg turns ssl=no-verify into TLS without a certificate check.
+    const ssl = parsed.ssl === "no-verify" ? { rejectUnauthorized: false } : parsed.ssl;
+    return { ssl: "ssl" in parsed ? ssl : config.ssl, host: parsed.host || host };
+  } catch {
+    // An unreadable sslrootcert: pg fails the same way before it connects.
+    return { ssl: config.ssl, host };
+  }
+}
+
+/**
  * Connect to PostgreSQL with sslmode=prefer-like behavior.
  * If sslFallbackEnabled is true, tries SSL first, then falls back to non-SSL on failure.
+ * `warn` gets the TLS warnings (default: stderr).
  */
 export async function connectWithSslFallback(
   ClientClass: new (config: PgClientConfig) => PgClient,
   adminConn: AdminConnection,
-  verbose?: boolean
+  verbose?: boolean,
+  warn: (message: string) => void = (message) => console.error(message),
 ): Promise<{ client: PgClient; usedSsl: boolean }> {
   const tryConnect = async (config: PgClientConfig): Promise<PgClient> => {
     const client = new ClientClass({ ...config, connectionTimeoutMillis: 10_000 } as any);
@@ -172,16 +193,32 @@ export async function connectWithSslFallback(
     return client;
   };
 
+  // Warn before sending an administrator password or running setup SQL.
+  // sslmode=require encrypts traffic but does not authenticate the server;
+  // prefer/allow can additionally fall back to plaintext.
+  const { ssl, host } = effectiveConfig(adminConn.clientConfig);
+  // A Unix socket has no TLS and does not leave the machine.
+  const socket = !!host?.startsWith("/");
+  if (!socket && !ssl) {
+    warn("Warning: this database connection uses plaintext, without TLS.");
+  } else if (!socket && typeof ssl === "object" && (ssl as TlsConnectionOptions).rejectUnauthorized === false) {
+    warn(
+      "Warning: the database server certificate is not verified" +
+      (adminConn.sslFallbackEnabled ? " and this connection may fall back to plaintext" : "") +
+      ". Use sslmode=verify-full with a trusted CA to authenticate the server.",
+    );
+  }
+
   // If SSL was explicitly set or no SSL configured, just try once
   if (!adminConn.sslFallbackEnabled) {
     const client = await tryConnect(adminConn.clientConfig);
-    return { client, usedSsl: !!adminConn.clientConfig.ssl };
+    return { client, usedSsl: !!ssl };
   }
 
   // sslmode=prefer behavior: try SSL first, fallback to non-SSL
   try {
     const client = await tryConnect(adminConn.clientConfig);
-    return { client, usedSsl: true };
+    return { client, usedSsl: !!ssl };
   } catch (sslErr) {
     if (!isSslNegotiationError(sslErr)) {
       // Not an SSL error, don't retry
@@ -192,11 +229,13 @@ export async function connectWithSslFallback(
       console.error("SSL connection failed, retrying without SSL...");
     }
 
-    // Retry without SSL
+    // Retry without SSL (TLS parameters in the URI keep TLS on)
     const noSslConfig: PgClientConfig = { ...adminConn.clientConfig, ssl: false };
+    const retrySsl = effectiveConfig(noSslConfig).ssl;
     try {
       const client = await tryConnect(noSslConfig);
-      return { client, usedSsl: false };
+      if (!retrySsl && !socket) warn("Warning: connected to the database without TLS after SSL negotiation failed.");
+      return { client, usedSsl: !!retrySsl };
     } catch (noSslErr) {
       // If non-SSL also fails, check if it's "SSL required" - throw that instead
       if (isSslNegotiationError(noSslErr)) {
