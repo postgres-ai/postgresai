@@ -15,7 +15,7 @@ import Ajv2020 from "ajv/dist/2020";
 
 import * as checkup from "../lib/checkup";
 import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loader";
-import { checkCurrentUserPermissions, formatPermissionCheckMessages } from "../lib/init";
+import { checkCurrentUserPermissions, connectWithSslFallback, formatPermissionCheckMessages, resolveAdminConnection } from "../lib/init";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
@@ -388,6 +388,31 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       expect(nodeResult.postgres_version).toHaveProperty("server_version_num");
       expect(nodeResult.postgres_version).toHaveProperty("server_major_ver");
       expect(nodeResult.postgres_version).toHaveProperty("server_minor_ver");
+    }
+  });
+
+  // internal#384: the CLI session pins search_path to pg_catalog, pg_temp.
+  // A003 and A007 must show the server's value, not the pin.
+  test("A003/A007 show the server search_path, not the CLI session pin", async () => {
+    const openCliSession = async (db: string) => {
+      const conn = `postgresql://postgres@localhost:${pg.port}/${db}?host=${encodeURIComponent(pg.socketDir)}&sslmode=disable`;
+      return (await connectWithSslFallback(Client as any, resolveAdminConnection({ conn }))).client as Client;
+    };
+    await client.query("create database search_path_db");
+    await client.query(`alter database search_path_db set search_path = "$user", app`);
+    const altered = await openCliSession("search_path_db");
+    const serverDefault = await openCliSession("postgres");
+    try {
+      const a003 = await checkup.generateA003(altered, "test-node");
+      const a007 = await checkup.generateA007(altered, "test-node");
+      const a007Default = await checkup.generateA007(serverDefault, "test-node");
+      expect((a003.results["test-node"].data as any).search_path.setting).toBe('"$user", app');
+      expect((a007.results["test-node"].data as any).search_path.value).toBe('"$user", app');
+      expect(a007Default.results["test-node"].data).not.toHaveProperty("search_path");
+    } finally {
+      await altered.end();
+      await serverDefault.end();
+      await client.query("drop database search_path_db");
     }
   });
 

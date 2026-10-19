@@ -162,6 +162,11 @@ export async function connectWithSslFallback(
   const tryConnect = async (config: PgClientConfig): Promise<PgClient> => {
     const client = new ClientClass({ ...config, connectionTimeoutMillis: 10_000 } as any);
     await client.connect();
+    // Admin connections run installer and checkup SQL. A database owner can put
+    // functions in public (or the role's schema) that shadow pg_catalog built-ins
+    // when the server's default search_path is used. Pin it before the first
+    // query that resolves SQL names, including on the plaintext fallback path.
+    await client.query("set search_path = pg_catalog, pg_temp");
     // Set a default statement timeout to prevent runaway queries
     await client.query("SET statement_timeout = '30s'");
     return client;

@@ -59,7 +59,7 @@ def test_settings_metric_uses_reset_val_for_overridden_settings(metrics_config: 
     assert "statement_timeout" in sql, "SQL should reference statement_timeout"
 
     # More specific check: ensure the CASE statement handles both settings
-    assert "name in ('lock_timeout', 'statement_timeout')" in sql, \
+    assert "name in ('lock_timeout', 'statement_timeout', 'search_path')" in sql, \
         "SQL should use IN clause to handle both lock_timeout and statement_timeout"
 
 
@@ -107,7 +107,7 @@ def test_settings_metric_numeric_value_uses_correct_source_for_overridden_settin
 
     # Count occurrences of the CASE expression for overridden settings
     # It should appear twice: once for tag_setting_value and once for numeric_value
-    case_expr = "case when name in ('lock_timeout', 'statement_timeout') then reset_val else setting end"
+    case_expr = "case when name in ('lock_timeout', 'statement_timeout', 'search_path') then reset_val else setting end"
     occurrences = sql.count(case_expr)
 
     assert occurrences >= 2, \
@@ -131,7 +131,7 @@ def test_settings_metric_is_default_uses_boot_val_for_overridden_settings(metric
     assert "boot_val" in sql, "SQL should reference boot_val column for is_default comparison"
 
     # Check for the specific pattern that handles overridden settings specially
-    assert "name in ('lock_timeout', 'statement_timeout')" in sql and "boot_val" in sql, \
+    assert "name in ('lock_timeout', 'statement_timeout', 'search_path')" in sql and "boot_val" in sql, \
         "SQL should use special handling for overridden settings in is_default calculation"
 
 

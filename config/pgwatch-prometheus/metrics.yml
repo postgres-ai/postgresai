@@ -366,26 +366,26 @@ metrics:
       This metric collects various PostgreSQL server settings and configurations.
       It provides insights into the server's configuration, including version, memory settings, and other important parameters.
       This metric is useful for monitoring server settings and ensuring optimal performance.
-      Note: For lock_timeout and statement_timeout, we use reset_val instead of setting because
-      pgwatch overrides these during metric collection, which would mask the actual configured values.
+      Note: For lock_timeout, statement_timeout and search_path, we use reset_val instead of setting because
+      pgwatch and the CLI override these during metric collection, which would mask the actual configured values.
     sqls:
       11: |-
         with base as ( /* pgwatch_generated */
           select
             name,
-            -- Use reset_val for lock_timeout/statement_timeout because pgwatch overrides them
-            -- during collection (lock_timeout=100ms, statement_timeout per-metric).
+            -- Use reset_val for settings the collector overrides in its session: pgwatch sets
+            -- lock_timeout=100ms and statement_timeout per-metric; the CLI pins search_path.
             case
-              when name in ('lock_timeout', 'statement_timeout') then reset_val
+              when name in ('lock_timeout', 'statement_timeout', 'search_path') then reset_val
               else setting
             end as effective_setting,
             unit,
             category,
             vartype,
-            -- For lock_timeout/statement_timeout, compare reset_val with boot_val
+            -- For these settings, compare reset_val with boot_val
             -- since source becomes 'session' during collection.
             case
-              when name in ('lock_timeout', 'statement_timeout') then (reset_val = boot_val)
+              when name in ('lock_timeout', 'statement_timeout', 'search_path') then (reset_val = boot_val)
               else (source = 'default')
             end as is_default_bool
           from pg_settings
