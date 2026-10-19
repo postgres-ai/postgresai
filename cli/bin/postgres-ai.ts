@@ -2839,7 +2839,11 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
 
     try {
       spinner.update("Connecting to Postgres");
-      const connResult = await connectWithSslFallback(Client, adminConn);
+      // A TLS warning on a line of its own: the spinner's line is cleared first (it redraws below).
+      const connResult = await connectWithSslFallback(Client, adminConn, false, (message) => {
+        if (spinnerEnabled) process.stdout.write("\r\x1b[2K");
+        console.error(message);
+      });
       client = connResult.client as Client;
 
       // Preflight: verify the connected user has sufficient permissions.

@@ -102,6 +102,9 @@ export interface Database {
  */
 export type Prepared = { monitoringUrl: string; note?: string; generated?: true; storedPassword?: true } | { next: string; sql?: string; resettable?: true } | { checked: true };
 
+/** Gets a session's TLS warning (connectWithSslFallback). */
+type Warn = (message: string) => void;
+
 export interface ConnectDeps {
   verifyTls?(url: string): Promise<void>;
   list(): Promise<Database[]>;
@@ -109,9 +112,9 @@ export interface ConnectDeps {
   links?(row: Database): Promise<Database>;
   create(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string }): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string; warn?: Warn }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
-  unprepare(url: string, monitoringUser?: string): Promise<boolean>;
+  unprepare(url: string, monitoringUser?: string, opts?: { warn?: Warn }): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
@@ -552,8 +555,18 @@ async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: Co
 
 export async function connect(url: string, opts: ConnectOptions, deps: ConnectDeps): Promise<ConnectResult> {
   const started = deps.now();
-  const progress = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}) =>
+  let step: ProgressEvent["event"] = "preparing";
+  const progress = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}) => {
+    if (event !== "billing") step = event;
     deps.progress({ event, elapsed_s: Math.round((deps.now() - started) / 1000), message, ...more });
+  };
+  // Each session warns about its TLS: said once a run, as progress (a raw stderr line breaks the step view).
+  const warned = new Set<string>();
+  const warn = (message: string) => {
+    if (warned.has(message)) return;
+    warned.add(message);
+    progress(step, message);
+  };
   const provider = (providerArg(opts.provider) ?? detectCloudProvider(url)) as Provider;
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: generic, ${PROVIDERS.join(", ")}`);
   // Before any name is taken from the URL (the MCP path does not go through the CLI's argument check).
@@ -674,7 +687,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
     // A refused launch starts no box, so a role with a generated password is
     // dropped again: nobody has that password, and the re-run would stop at it.
-    const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url, monitoringUser).catch(() => false); };
+    const undo = async (p: Prepared) => { if ("generated" in p && p.generated) await deps.unprepare(url, monitoringUser, { warn }).catch(() => false); };
     let lockId: string | undefined;
     // The role is one for the whole server: a new password cuts off what uses the old one.
     // Without a cluster, the server is not known.
@@ -702,7 +715,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
-    const prepOpts = { resetPassword: opts.resetPassword, ...(storedPassword ? { storedPassword, others } : {}), ...(monitoringUser ? { monitoringUser } : {}) };
+    const prepOpts = { resetPassword: opts.resetPassword, warn, ...(storedPassword ? { storedPassword, others } : {}), ...(monitoringUser ? { monitoringUser } : {}) };
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true }).catch((err) => {
@@ -1034,6 +1047,8 @@ export interface PrepareOptions {
   monitoringUser?: string;
   /** The pg client class (tests). */
   Client?: PgClientClass;
+  /** Gets the TLS warnings (default: stderr). */
+  warn?: Warn;
 }
 
 /** A session over `url`; `refusedTls`: the server refused TLS, and the session fell back to plaintext. */
@@ -1045,7 +1060,7 @@ async function openConnection(url: string, opts: PrepareOptions) {
     conn.clientConfig = { ...config, ...explicit };
   }
   const fallback = !opts.agent && !!conn.sslFallbackEnabled;
-  const { client, usedSsl } = await connectWithSslFallback(opts.Client ?? Client, { ...conn, sslFallbackEnabled: fallback });
+  const { client, usedSsl } = await connectWithSslFallback(opts.Client ?? Client, { ...conn, sslFallbackEnabled: fallback }, false, opts.warn);
   await client.query("set search_path = pg_catalog, pg_temp");
   return { client, usedSsl, refusedTls: fallback && !usedSsl };
 }
@@ -1368,8 +1383,8 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),
     resetUnlock: (lockId: string) => rpc("cloud_monitoring_reset_unlock", { lock_id: lockId }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
-    unprepare: (url: string, monitoringUser?: string) => unprepareDatabase(url, { agent: p.agent, monitoringUser }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string; warn?: Warn } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    unprepare: (url: string, monitoringUser?: string, o: { warn?: Warn } = {}) => unprepareDatabase(url, { ...o, agent: p.agent, monitoringUser }),
     clickhouseOrg: clickhouseOrgFor,
     quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
     billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,

@@ -212,6 +212,27 @@ describe("mon deploy", () => {
     expect(JSON.stringify(result)).not.toContain("Sec4b1d");
   });
 
+  test("TLS warnings of every session are progress events, each said once (the step view keeps them)", async () => {
+    const UNVERIFIED = "Warning: the database server certificate is not verified.";
+    const FELL_BACK = "Warning: connected to the database without TLS after SSL negotiation failed.";
+    const PLAINTEXT = "Warning: this database connection uses plaintext, without TLS.";
+    const events: string[] = [];
+    type Warn = { warn?: (m: string) => void };
+    const { deps } = fake({
+      // The probe, the prepare and its logins, then the drop after a refused launch: each opens a session and warns.
+      prepare: async (_url, _provider, o) => {
+        (o as Warn)?.warn?.(UNVERIFIED);
+        if (!o?.check) (o as Warn)?.warn?.(FELL_BACK);
+        return o?.check ? { checked: true } : { monitoringUrl: MON, generated: true };
+      },
+      create: async () => ({ id: "i-9", name: CH_NAME, status: "failed", error: "The monitoring box could not be launched (HTTP 422)." }),
+      unprepare: async (_url, _user, o) => { o?.warn?.(UNVERIFIED); o?.warn?.(PLAINTEXT); return true; },
+      progress: (e) => events.push(`${e.event}: ${e.message}`),
+    });
+    expect((await connect(CH, { clickhouseKey: KEY, waitMs: 60_000 }, deps)).status).toBe("failed");
+    expect(events.filter((e) => e.includes("Warning:"))).toEqual([`preparing: ${UNVERIFIED}`, `preparing: ${FELL_BACK}`, `provisioning: ${PLAINTEXT}`]);
+  });
+
   test.each(["sales data", "注文", "slash/name", "app"])("a retry finds a custom-named database by identity (%s)", async (db) => {
     const u = new URL(CH);
     u.pathname = `/${encodeURIComponent(db)}`;
@@ -770,7 +791,8 @@ describe("mon deploy", () => {
       prepare: async (_url, provider, o) => { calls.push(`${o?.check ? "check" : "prepare"} ${provider}`); seen.push(o); return o?.check ? { checked: true } : { monitoringUrl: MON }; },
     });
     expect((await connect(CH, { monitoringUser: "my_mon", resetPassword: true, waitMs: 0 }, deps)).status).toBe("in_progress");
-    expect(seen).toEqual([{ resetPassword: true, monitoringUser: "my_mon", check: true }, { resetPassword: true, monitoringUser: "my_mon" }]);
+    const warn = expect.any(Function);
+    expect(seen).toEqual([{ resetPassword: true, monitoringUser: "my_mon", check: true, warn }, { resetPassword: true, monitoringUser: "my_mon", warn }]);
     expect(calls).toEqual([
       "list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "prepare clickhouse",
       `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
@@ -905,7 +927,7 @@ describe("mon deploy", () => {
     let seen: unknown;
     const { deps } = fake({ rows: [row("deleting_launched")], prepare: async (url, provider, opts) => { seen = opts; return { monitoringUrl: MON }; } });
     await connect(CH, { resetPassword: true, waitMs: 0 }, deps);
-    expect(seen).toEqual({ resetPassword: true });
+    expect(seen).toEqual({ resetPassword: true, warn: expect.any(Function) });
   });
 
   const RESET_NEXT = "postgres_ai_mon already exists on this server. Set PGAI_MON_PASSWORD to the password of postgres_ai_mon, or give it a new one: pgai mon deploy <admin-url> --reset-password (anything else that logs in as postgres_ai_mon then needs the new password)";
@@ -923,7 +945,8 @@ describe("mon deploy", () => {
     });
     expect((await connect(CH, { waitMs: 0 }, deps)).status).toBe("in_progress");
     expect(questions).toEqual([RESET_PROMPT]);
-    expect(seen).toEqual([{ check: true }, { resetPassword: true, check: true }, { resetPassword: true }]);
+    const warn = expect.any(Function);
+    expect(seen).toEqual([{ check: true, warn }, { resetPassword: true, check: true, warn }, { resetPassword: true, warn }]);
     expect(calls).toEqual([
       "list", "check clickhouse", "list", "check clickhouse",
       "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "prepare clickhouse",
@@ -1717,7 +1740,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const seen: unknown[] = [];
     deps.prepare = async (_u, _p, o) => { seen.push(o); return { next: "stop" }; };
     await connect(SH, { waitMs: 0, yes: true, resetPassword: true }, deps);
-    expect(seen).toEqual([{ resetPassword: true, check: true }]);
+    expect(seen).toEqual([{ resetPassword: true, check: true, warn: expect.any(Function) }]);
   });
 
   test("the prepare step is told the server's other databases where the platform keeps the password, to name them in a refusal", async () => {
@@ -1726,7 +1749,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const seen: unknown[] = [];
     deps.prepare = async (_u, _p, o) => { seen.push(o); return { next: "stop" }; };
     await connect(SH, { waitMs: 0, yes: true }, deps);
-    expect(seen).toEqual([{ storedPassword: true, others: ["db.example.com/first", "db.example.com/third"], check: true }]);
+    expect(seen).toEqual([{ storedPassword: true, others: ["db.example.com/first", "db.example.com/third"], check: true, warn: expect.any(Function) }]);
   });
 
   const NONE_STORED = "Failed to cloud monitoring connect: Conflict\nThe URL has no password, and none is stored for postgres_ai_mon on db.example.com:5432 in this organization.";
@@ -2147,6 +2170,20 @@ describe("prepareDatabase (a fake pg client)", () => {
     for (const statements of [...reused.sessions, ...failed.sessions]) {
       expect(statements.filter((sql) => !/^set statement_timeout =/i.test(sql))[0]).toBe("set search_path = pg_catalog, pg_temp");
     }
+  });
+
+  test("the TLS warning goes to opts.warn, not to stderr (mon deploy's step view)", async () => {
+    const s = server({ mon_exists: false });
+    const warned: string[] = [];
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withMonPassword(undefined, () => s.prepare({ check: true, warn: (m: string) => warned.push(m) } as PrepareOptions, "postgresql://postgres:adminpw@db.example.com:5432/app"));
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/^Warning: the database server certificate is not verified/);
   });
 
   test("an existing role and a rejected PGAI_MON_PASSWORD: refused before anything runs", async () => {

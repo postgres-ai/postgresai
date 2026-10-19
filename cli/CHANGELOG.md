@@ -106,6 +106,12 @@
 
 ### Changed
 
+- `prepare-db`, `unprepare-db`, `checkup` and `pgai mon deploy` warn on stderr before an admin
+  connection that is plaintext, or TLS without a verified server certificate (no sslmode, `prefer`,
+  `allow`, `require`), and say when the session fell back to plaintext (postgresai#428). The warning
+  follows the TLS settings pg uses, URI parameters such as `sslrootcert` included; `verify-full`,
+  `verify-ca` and Unix sockets get none. In `pgai mon deploy` it is a step event, said once a run.
+
 - `pgai mon deploy` (and MCP `deploy_monitoring`) no longer runs the express checkup while the box
   starts, as 0.18.0-dev builds did (postgresai#425): no `checkup` key in the result, no `checkup`
   event on stderr, and no report uploaded by the deploy. The box's first report (`first_checkup_eta`)

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, afterEach, spyOn } from "bun:test";
 import path, { resolve } from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -1539,6 +1539,141 @@ describe("connectWithSslFallback", () => {
     expect(usedSsl).toBe(false);
     expect(clients.map((c) => !!c.ssl)).toEqual([true, false]);
     expect(clients[1].queries[0]).toBe(PIN);
+  });
+
+  // postgresai#428: the TLS warnings tell the transport pg uses, before the first connect sends a password.
+  describe("TLS warnings", () => {
+    const PLAINTEXT = /^Warning: this database connection uses plaintext/;
+    const UNVERIFIED = /^Warning: the database server certificate is not verified/;
+    const FELL_BACK = "Warning: connected to the database without TLS after SSL negotiation failed.";
+    const savedMode = process.env.PGSSLMODE;
+    let tmp: string;
+    beforeAll(() => {
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pgai-tls-"));
+      fs.writeFileSync(path.join(tmp, "ca.pem"), "-----BEGIN CERTIFICATE-----\n");
+    });
+    afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+    afterEach(() => {
+      if (savedMode === undefined) delete process.env.PGSSLMODE;
+      else process.env.PGSSLMODE = savedMode;
+    });
+
+    // What stderr gets, in order with each connect. `noTls`: the server refuses TLS (ssl=off).
+    async function run(opts: Parameters<typeof init.resolveAdminConnection>[0], env?: string, noTls = false) {
+      if (env === undefined) delete process.env.PGSSLMODE;
+      else process.env.PGSSLMODE = env;
+      const adminConn = init.resolveAdminConnection(opts);
+      const out: string[] = [];
+      class MockClient {
+        constructor(private readonly config: any) {}
+        async connect() {
+          out.push("connect");
+          if (noTls && this.config.ssl) throw new Error("The server does not support SSL connections");
+        }
+        async query() { return {}; }
+      }
+      const spy = spyOn(console, "error").mockImplementation((m?: unknown) => { out.push(String(m)); });
+      try {
+        const { usedSsl } = await init.connectWithSslFallback(MockClient as any, adminConn);
+        return { out, usedSsl };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    test("sslmode=disable: plaintext, said before the connect (URI, conninfo, PGSSLMODE with flags)", async () => {
+      for (const [opts, env] of [
+        [{ conn: "postgresql://u:p@db:5432/d?sslmode=disable" }, undefined],
+        [{ conn: "host=db dbname=d user=u sslmode=disable" }, undefined],
+        [{ host: "db", username: "u", dbname: "d" }, "disable"],
+      ] as const) {
+        const { out } = await run(opts, env);
+        expect(out).toHaveLength(2);
+        expect(out[0]).toMatch(PLAINTEXT);
+        expect(out[1]).toBe("connect");
+      }
+    });
+
+    test("sslmode=require: not verified, no fallback", async () => {
+      for (const [opts, env] of [
+        [{ conn: "postgresql://u:p@db:5432/d?sslmode=require" }, undefined],
+        [{ conn: "host=db dbname=d user=u" }, "require"],
+      ] as const) {
+        const { out } = await run(opts, env);
+        expect(out[0]).toMatch(UNVERIFIED);
+        expect(out[0]).not.toContain("fall back");
+        expect(out[1]).toBe("connect");
+      }
+    });
+
+    test("no sslmode, prefer, allow: not verified and may fall back", async () => {
+      for (const [opts, env] of [
+        [{ conn: "postgresql://u:p@db:5432/d" }, undefined],
+        [{ host: "db", username: "u", dbname: "d" }, undefined],
+        [{ conn: "postgresql://u:p@db:5432/d" }, "prefer"],
+        [{ conn: "host=db dbname=d user=u" }, "allow"],
+      ] as const) {
+        const { out } = await run(opts, env);
+        expect(out[0]).toMatch(UNVERIFIED);
+        expect(out[0]).toContain("may fall back to plaintext");
+        expect(out[1]).toBe("connect");
+      }
+    });
+
+    test("verify-full, verify-ca: no warning", async () => {
+      expect((await run({ conn: "postgresql://u:p@db:5432/d?sslmode=verify-full" })).out).toEqual(["connect"]);
+      expect((await run({ conn: "host=db dbname=d user=u" }, "verify-ca")).out).toEqual(["connect"]);
+    });
+
+    test("a server without TLS: the fallback is said once, after the plaintext connect", async () => {
+      const { out, usedSsl } = await run({ conn: "postgresql://u:p@db:5432/d" }, undefined, true);
+      expect(out.filter((l) => l === FELL_BACK)).toHaveLength(1);
+      expect(out.slice(-2)).toEqual(["connect", FELL_BACK]);
+      expect(usedSsl).toBe(false);
+    });
+
+    test("sslrootcert in the URI: pg verifies the server, so no warning", async () => {
+      const ca = encodeURIComponent(path.join(tmp, "ca.pem"));
+      expect((await run({ conn: `postgresql://u:p@db:5432/d?sslrootcert=${ca}` })).out).toEqual(["connect"]);
+      expect((await run({ conn: `postgresql://u:p@db:5432/d?sslmode=require&sslrootcert=${ca}` })).out).toEqual(["connect"]);
+    });
+
+    test("ssl=no-verify in the URI (pg: TLS without a certificate check): not verified, also over verify-full", async () => {
+      for (const conn of [
+        "postgresql://u:p@db:5432/d?ssl=no-verify",
+        "postgresql://u:p@db:5432/d?sslmode=require&ssl=no-verify",
+        "postgresql://u:p@db:5432/d?sslmode=verify-full&ssl=no-verify",
+      ]) {
+        const { out, usedSsl } = await run({ conn });
+        expect(out[0]).toMatch(UNVERIFIED);
+        expect(out[1]).toBe("connect");
+        expect(usedSsl).toBe(true);
+      }
+    });
+
+    test("a Unix socket (no TLS there, and no network): no warning, also after the fallback", async () => {
+      for (const opts of [
+        { conn: "host=/var/run/postgresql dbname=d user=u" },
+        { conn: "postgresql://u@%2Fvar%2Frun%2Fpostgresql/d" },
+        { conn: "postgresql:///d?host=/var/run/postgresql" },
+        { host: "/tmp", username: "u", dbname: "d" },
+      ]) {
+        const { out, usedSsl } = await run(opts, undefined, true);
+        expect(out).toEqual(["connect", "connect"]);
+        expect(usedSsl).toBe(false);
+      }
+    });
+
+    test("ssl=0 in the URI wins over verify-full: plaintext, and usedSsl is false", async () => {
+      for (const [conn, env] of [
+        ["postgresql://u:p@db:5432/d?sslmode=verify-full&ssl=0", undefined],
+        ["postgresql://u:p@db:5432/d?ssl=0", "verify-full"],
+      ] as const) {
+        const { out, usedSsl } = await run({ conn }, env);
+        expect(out[0]).toMatch(PLAINTEXT);
+        expect(usedSsl).toBe(false);
+      }
+    });
   });
 });
 
