@@ -47,6 +47,10 @@ sinkPostgres:
   database: measurements
   user: pgwatch
   resources: {}
+  networkPolicy:
+    enabled: true
+    # Extra ingress rules for explicitly approved clients outside this release.
+    additionalIngress: []
 
 postgresExporter:
   enabled: true

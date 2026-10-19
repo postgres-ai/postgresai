@@ -57,6 +57,8 @@ storage:
 
 **Customize**: `clusterName`, `monitoredDatabases`, `ingress.hosts`, and `storageClassName`.
 
+The sink PostgreSQL NetworkPolicy permits only Grafana and the pgwatch, Flask, reporter, and postgres-exporter pods from this release. Keep `sinkPostgres.networkPolicy.enabled: true` on a CNI that enforces NetworkPolicy. If you have an approved external client, add a narrowly scoped rule under `sinkPostgres.networkPolicy.additionalIngress`. This policy limits traffic but does not change existing `pg_hba.conf` on a persistent volume; migrate existing `trust` authentication to password authentication separately.
+
 ### 4. Create secret
 
 ```bash

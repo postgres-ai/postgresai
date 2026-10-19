@@ -128,10 +128,13 @@ class TestHelmVMAuth:
         )
         return chart_path
 
-    def _render_template(self, chart_path, set_values=None, release='test'):
+    def _render_template(self, chart_path, set_values=None, values_file=None,
+                         release='test'):
         """Render helm chart and return YAML docs."""
         cmd = ['helm', 'template', release, chart_path,
                '--set', 'secrets.createFromValues=true']
+        if values_file:
+            cmd.extend(['-f', str(values_file)])
         if set_values:
             for k, v in set_values.items():
                 cmd.extend(['--set', f'{k}={v}'])
@@ -376,6 +379,60 @@ class TestHelmVMAuth:
         assert 'valueFrom' in vm_pass_env
         assert 'secretKeyRef' in vm_pass_env['valueFrom']
         assert vm_pass_env['valueFrom']['secretKeyRef']['key'] == 'vm-auth-password'
+
+    SINK_POLICY_PEERS = [
+        {'podSelector': {
+            'matchLabels': {'app.kubernetes.io/name': 'postgres-ai-monitoring',
+                            'app.kubernetes.io/instance': 'test'},
+            'matchExpressions': [{
+                'key': 'app.kubernetes.io/component', 'operator': 'In',
+                'values': ['pgwatch-postgres', 'flask-api',
+                           'postgres-exporter', 'reporter']}]}},
+        {'podSelector': {
+            'matchLabels': {'app.kubernetes.io/name': 'grafana',
+                            'app.kubernetes.io/instance': 'test'}}},
+    ]
+
+    def test_sink_postgres_network_policy_restricts_ingress(self, helm_chart_path):
+        """By default the sink accepts only chart clients of the same release."""
+        docs = self._render_template(helm_chart_path)
+        policy = self._find_doc(docs, 'NetworkPolicy', 'sink-postgres')
+        assert policy is not None
+        spec = policy['spec']
+        assert spec['policyTypes'] == ['Ingress']
+        assert spec['podSelector'] == {'matchLabels': {
+            'app.kubernetes.io/name': 'postgres-ai-monitoring',
+            'app.kubernetes.io/instance': 'test',
+            'app.kubernetes.io/component': 'sink-postgres'}}
+        assert spec['ingress'] == [{
+            'from': self.SINK_POLICY_PEERS,
+            'ports': [{'protocol': 'TCP', 'port': 5432}]}]
+
+    def test_sink_postgres_network_policy_can_be_disabled(self, helm_chart_path):
+        """With the policy disabled, the chart renders no NetworkPolicy."""
+        docs = self._render_template(
+            helm_chart_path, {'sinkPostgres.networkPolicy.enabled': 'false'})
+        assert [d for d in docs if d.get('kind') == 'NetworkPolicy'] == []
+
+    def test_sink_postgres_network_policy_additional_ingress(self, helm_chart_path,
+                                                             tmp_path):
+        """An approved external client is added as a second ingress rule."""
+        rule = {
+            'from': [{
+                'namespaceSelector': {'matchLabels': {
+                    'kubernetes.io/metadata.name': 'analytics'}},
+                'podSelector': {'matchLabels': {'app': 'approved-client'}}}],
+            'ports': [{'protocol': 'TCP', 'port': 5432}],
+        }
+        values_file = tmp_path / 'values.yaml'
+        values_file.write_text(yaml.safe_dump(
+            {'sinkPostgres': {'networkPolicy': {'additionalIngress': [rule]}}}))
+        docs = self._render_template(helm_chart_path, values_file=values_file)
+        policy = self._find_doc(docs, 'NetworkPolicy', 'sink-postgres')
+        ingress = policy['spec']['ingress']
+        assert len(ingress) == 2
+        assert ingress[0]['from'] == self.SINK_POLICY_PEERS
+        assert ingress[1] == rule
 
 
 class TestTerraformVMAuth:
