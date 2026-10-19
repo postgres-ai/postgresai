@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test
 import path, { resolve } from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { EventEmitter } from "events";
 import { createCliSandbox } from "./cli-sandbox";
 
 // Import from source directly since we're using Bun
@@ -876,8 +877,7 @@ describe("init module", () => {
 
     const revokeStep = plan.steps.find((s) => s.name === "02.revoke_permissions");
     expect(revokeStep).toBeTruthy();
-    expect(revokeStep!.sql).toContain('"user ""with"" quotes"');
-    expect(revokeStep!.sql).toContain('"db ""name"""');
+    expect(revokeStep!.sql).toContain("'user \"with\" quotes'");
 
     const dropRoleStep = plan.steps.find((s) => s.name === "03.drop_role");
     expect(dropRoleStep).toBeTruthy();
@@ -895,7 +895,7 @@ describe("init module", () => {
     ).rejects.toThrow(/Identifier cannot contain null bytes/);
   });
 
-  test("applyUninitPlan continues on errors and reports them", async () => {
+  test("applyUninitPlan stops before role drop after an error", async () => {
     const plan = {
       monitoringUser: DEFAULT_MONITORING_USER,
       database: "mydb",
@@ -919,14 +919,41 @@ describe("init module", () => {
       },
     };
 
-    const result = await init.applyUninitPlan({ client: client as any, plan: plan as any });
+    const result = await init.applyUninitPlan({ client: Object.assign(new EventEmitter(), client) as any, plan: plan as any });
 
-    // Should have applied steps 1 and 3, with step 2 in errors
+    // Step 2 fails; role drop must not run.
     expect(result.applied).toContain("01.drop_helpers");
-    expect(result.applied).toContain("03.drop_role");
+    expect(result.applied).not.toContain("03.drop_role");
     expect(result.applied).not.toContain("02.revoke_permissions");
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]).toMatch(/02\.revoke_permissions.*division by zero/);
+  });
+
+  test("applyUninitPlan reports unprepare-db warnings only while the role stays", async () => {
+    const left = "unprepare-db: grant left; a superuser can run: revoke pg_read_all_stats from mon";
+    const client = Object.assign(new EventEmitter(), {
+      query: async (sql: string) => {
+        if (sql === "warn") {
+          client.emit("notice", { severity: "WARNING", message: left });
+          client.emit("notice", { severity: "WARNING", message: 'no privileges could be revoked for "pg_index"' });
+        }
+        return { rowCount: 1 };
+      },
+    });
+    const steps = [{ name: "02.revoke_permissions", sql: "warn" }];
+    const plan = (dropRole: boolean) => ({
+      monitoringUser: "mon",
+      database: "mydb",
+      dropRole,
+      steps: dropRole ? [...steps, { name: "03.drop_role", sql: "select 1" }] : steps,
+    });
+
+    const kept = await init.applyUninitPlan({ client: client as any, plan: plan(false) as any });
+    expect(kept).toEqual({ applied: ["02.revoke_permissions"], errors: [], warnings: [left] });
+    // A dropped role holds no grants.
+    const dropped = await init.applyUninitPlan({ client: client as any, plan: plan(true) as any });
+    expect(dropped.warnings).toEqual([]);
+    expect(client.listenerCount("notice")).toBe(0);
   });
 
   test("buildInitPlan includes 02.extensions step with pg_stat_statements", async () => {
@@ -1226,7 +1253,10 @@ describe("CLI commands", () => {
     expect(r.stdout).toMatch(/SQL plan \(offline; not connected\)/);
     expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
     expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
-    expect(r.stdout).toMatch(/drop schema if exists postgres_ai/i);
+    expect(r.stdout).not.toMatch(/drop schema if exists postgres_ai/i);
+    expect(r.stdout).toMatch(/revoke usage on schema postgres_ai from/i);
+    expect(r.stdout).toMatch(/'pg_read_all_stats'::regrole/);
+    expect(r.stdout).toMatch(/to_regprocedure\('pg_catalog\.pg_ls_dir\(text\)'\)/);
   });
 
   test("cli: unprepare-db --print-sql with --keep-role skips role drop", () => {
@@ -1238,6 +1268,7 @@ describe("CLI commands", () => {
     // Should have 01 and 02 steps
     expect(r.stdout).toMatch(/-- 01\.drop_helpers/);
     expect(r.stdout).toMatch(/-- 02\.revoke_permissions/);
+    expect(r.stdout).toMatch(/revoke usage on schema postgres_ai from/i);
   });
 
   test("cli: unprepare-db --print-sql with --provider supabase skips role step", () => {
@@ -1254,6 +1285,7 @@ describe("CLI commands", () => {
     expect(r.stdout).toMatch(/--keep-role/);
     expect(r.stdout).toMatch(/--print-sql/);
     expect(r.stdout).toMatch(/--force/);
+    expect(r.stdout).toMatch(/preserve schema/);
   });
 });
 

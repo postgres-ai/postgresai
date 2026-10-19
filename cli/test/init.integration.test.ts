@@ -519,6 +519,131 @@ where e.extname = 'pg_stat_statements'`)).rows).toEqual([{ nspname: "public" }])
     { timeout: TEST_TIMEOUT }
   );
 
+  // Grants prepare-db (any version) may give the monitoring role; unprepare must remove them.
+  const MON_GRANTS_SQL = `select
+    has_schema_privilege('postgres_ai_mon', 'postgres_ai', 'USAGE') as schema_usage,
+    pg_has_role('postgres_ai_mon', 'pg_read_all_stats', 'member') as read_all_stats,
+    has_function_privilege('postgres_ai_mon', 'pg_catalog.pg_stat_file(text)', 'EXECUTE') as stat_file,
+    has_function_privilege('postgres_ai_mon', 'pg_catalog.pg_stat_file(text, boolean)', 'EXECUTE') as stat_file_missing_ok,
+    has_function_privilege('postgres_ai_mon', 'pg_catalog.pg_ls_dir(text)', 'EXECUTE') as ls_dir,
+    has_function_privilege('postgres_ai_mon', 'pg_catalog.pg_ls_dir(text, boolean, boolean)', 'EXECUTE') as ls_dir_flags`;
+
+  function runCliUnprepare(args: string[]): { status: number | null; output: string } {
+    const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
+    const r = Bun.spawnSync(["bun", cliPath, "unprepare-db", ...args, "--force"]);
+    return { status: r.exitCode, output: new TextDecoder().decode(r.stdout) + new TextDecoder().decode(r.stderr) };
+  }
+
+  test("unprepare-db --keep-role preserves customer schema objects and revokes every prepare grant", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query("create schema postgres_ai");
+      await admin.query("create table postgres_ai.sentinel (id integer primary key)");
+      await admin.query("insert into postgres_ai.sentinel values (73)");
+
+      const prepared = runCliInit([pg.adminUri, "--password", "monpw"]);
+      expect(prepared.status).toBe(0);
+      // Older prepare-db versions granted pg_read_all_stats directly.
+      await admin.query("grant pg_read_all_stats to postgres_ai_mon");
+      expect(Object.values((await admin.query(MON_GRANTS_SQL)).rows[0]).every(Boolean)).toBe(true);
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const cleaned = runCliUnprepare([pg.adminUri, "--keep-role"]);
+        expect(cleaned.output).not.toMatch(/error/i);
+        expect(cleaned.status).toBe(0);
+      }
+
+      expect((await admin.query("select id from postgres_ai.sentinel")).rows).toEqual([{ id: 73 }]);
+      expect((await admin.query("select 1 from pg_catalog.pg_roles where rolname = 'postgres_ai_mon'")).rowCount).toBe(1);
+      expect(Object.values((await admin.query(MON_GRANTS_SQL)).rows[0]).some(Boolean)).toBe(false);
+      expect((await admin.query("select to_regclass('postgres_ai.pg_statistic') as view")).rows[0].view).toBeNull();
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("unprepare-db runs as a non-superuser admin with ADMIN OPTION on pg_monitor only", async () => {
+    // PG 16+ needs ADMIN OPTION to revoke a role and grant option to revoke EXECUTE.
+    const binDir = findPgBinDirAtLeast(16);
+    if (!binDir) {
+      if (process.env.PGAI_TEST_REQUIRE_PG16 === "1") {
+        throw new Error("PGAI_TEST_REQUIRE_PG16=1 but no PostgreSQL >= 16 initdb/postgres found");
+      }
+      console.warn("skipped: non-superuser unprepare test needs PostgreSQL >= 16 binaries");
+      return;
+    }
+    pg = await createTempPostgres(binDir);
+    const admin = new Client({ connectionString: pg.adminUri });
+    const admUri = pg.adminUri.replace("postgres:postgrespw@", "adm:adm-pw@");
+    try {
+      await admin.connect();
+      await admin.query("create role adm login createrole password 'adm-pw'");
+      await admin.query("grant pg_monitor to adm with admin option");
+      await admin.query("alter database testdb owner to adm");
+      await admin.query("create extension pg_stat_statements");
+
+      const prepared = runCliInit([admUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(prepared.status).toBe(0);
+      // Superuser grants that this admin cannot revoke (for example, an older install).
+      await admin.query("grant pg_read_all_stats to postgres_ai_mon");
+      await admin.query("grant execute on function pg_catalog.pg_ls_dir(text) to postgres_ai_mon");
+
+      // The other revokes still run. The user sees each grant that is left, and the exit code is 1.
+      // The server must send the WARNINGs even when the admin's setting hides them.
+      await admin.query("alter role adm set client_min_messages = error");
+      const kept = runCliUnprepare([admUri, "--keep-role"]);
+      expect(kept.output).toMatch(/grant left.*revoke pg_read_all_stats from postgres_ai_mon/);
+      expect(kept.output).toMatch(/grant left.*revoke execute on function pg_ls_dir\(text\) from postgres_ai_mon/);
+      expect(kept.status).toBe(1);
+      const state = await admin.query(`select
+        has_schema_privilege('postgres_ai_mon', 'postgres_ai', 'USAGE') as schema_usage,
+        pg_has_role('postgres_ai_mon', 'pg_monitor', 'member') as monitor,
+        pg_has_role('postgres_ai_mon', 'pg_read_all_stats', 'member') as read_all_stats,
+        has_function_privilege('postgres_ai_mon', 'pg_catalog.pg_ls_dir(text)', 'EXECUTE') as ls_dir,
+        to_regclass('postgres_ai.pg_statistic') is not null as view`);
+      expect(state.rows[0]).toEqual({ schema_usage: false, monitor: false, read_all_stats: true, ls_dir: true, view: false });
+
+      // PG 16+ keeps one membership row per grantor. The superuser must revoke
+      // the pg_monitor membership that adm granted, plus the grants adm left.
+      expect(runCliInit([admUri, "--password", "monpw", "--skip-optional-permissions"]).status).toBe(0);
+      const bySuperuser = runCliUnprepare([pg.adminUri, "--keep-role"]);
+      expect(bySuperuser.output).not.toMatch(/grant left/);
+      expect(bySuperuser.status).toBe(0);
+      expect(Object.values((await admin.query(MON_GRANTS_SQL)).rows[0]).some(Boolean)).toBe(false);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("unprepare-db never runs an operator or function planted in public", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      expect(runCliInit([pg.adminUri, "--password", "monpw"]).status).toBe(0);
+      // A role with CREATE on public can plant exact-type matches that win over pg_catalog.
+      await admin.query(`
+        create table public.planted_calls (name text);
+        create function public.oid_eq_regclass(oid, regclass) returns boolean language sql as
+          $$ insert into public.planted_calls values ('='); select $1 operator(pg_catalog.=) $2::oid $$;
+        create operator public.= (leftarg = oid, rightarg = regclass, function = public.oid_eq_regclass);
+        create function public.format(text, text) returns text language sql as
+          $$ insert into public.planted_calls values ('format'); select pg_catalog.format($1, $2) $$;`);
+
+      const cleaned = runCliUnprepare([pg.adminUri]);
+      expect(cleaned.status).toBe(0);
+      expect((await admin.query("select name from public.planted_calls")).rows).toEqual([]);
+      expect((await admin.query("select 1 from pg_catalog.pg_roles where rolname = 'postgres_ai_mon'")).rowCount).toBe(0);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
   // 15s timeout for PostgreSQL startup + two CLI init commands in slow CI
   test("--reset-password updates the monitoring role login password", async () => {
     pg = await createTempPostgres();
