@@ -11,8 +11,8 @@ license: Apache-2.0
 # Diagnose a Postgres database with PostgresAI
 
 You deploy PostgresAI monitoring for the user's database with the PostgresAI
-CLI, report what it finds and how to fix it, and tell the user when the complete
-report will be ready.
+CLI, report what it finds and how to fix it, and tell the user when the detailed
+reports and recommendations will be ready.
 
 If your agent names sessions or goals, name this one "Set up PostgresAI for my
 database".
@@ -119,9 +119,12 @@ monitoring on the chosen database, which creates the `postgres_ai_mon` role,
 the `postgres_ai` schema and `pg_stat_statements`, and that PostgresAI Cloud
 monitoring is a paid service, billed monthly per database cluster: the deploy
 shows the exact price (or that it is free) before anything is billed, and
-nothing is billed without their OK. Then ask one question: which database to
-set up monitoring on. Their answer is the consent to the setup. Use only the
-confirmed database from then on. If you find no URL, ask where it is.
+nothing is billed without their OK. Also say how long it takes: about 10
+minutes to set up, the first reports about 5 minutes after that, and detailed
+reports and recommendations, based on the monitoring data gathered, about 24
+hours later. Then ask one question: which database to set up monitoring on.
+Their answer is the consent to the setup. Use only the confirmed database from
+then on. If you find no URL, ask where it is.
 
 Then, unless you already know it (see step 3), ask how many vCPUs the database
 server has, as a question of its own, and say that "I don't know" is a fine
@@ -129,8 +132,9 @@ answer.
 
 If the user's request identifies exactly one candidate (its URL, variable, or
 host and database) and asks for PostgresAI monitoring, that is the
-confirmation. Still tell them what the setup will create and that monitoring
-is paid before you deploy, and ask for the vCPU count if you do not know it.
+confirmation. Still tell them what the setup will create, that monitoring
+is paid, and how long it takes, before you deploy, and ask for the vCPU count if
+you do not know it.
 
 To show a URL's parts without its password:
 
@@ -222,7 +226,7 @@ The result is JSON on stdout. Act on `status` and `next`:
 - `in_progress`: poll with
   `pgai mon instances watch <id> --org <alias> --json --no-wait` every few
   minutes, and start step 4 meanwhile. The box usually becomes `ready` within
-  about 20 minutes.
+  about 10 minutes.
 - `action_required`: read `next`.
   - It names a price and `--yes`: quote `price` to the user and ask whether
     they have a PostgresAI coupon (a promotion code); "no" is a fine answer.
@@ -265,14 +269,13 @@ has it.
 
 The deploy itself checks nothing: the findings come from the monitoring box.
 
-- **The first report.** The box runs its first checkup a few minutes after it
-  becomes ready (`first_checkup_eta` in the deploy's result is the earliest
-  time), once it has collected data from the database, which can take up to
-  about 30 minutes, and saves it to PostgresAI. Find it with `pgai reports list
+- **The first report.** The box runs its first checkup about 5 minutes after
+  it becomes ready (`first_checkup_eta` in the deploy's result is the earliest
+  time), and saves it to PostgresAI. Find it with `pgai reports list
   --org <alias> --project-id <project_id> --json`: the box's reports have
   `epoch` 1. Until it arrives, tell the user the box is collecting and when to
-  expect the first findings; if you can keep working, check every 5 minutes
-  until about 40 minutes after `ready`, otherwise offer to look again later.
+  expect the first findings; if you can keep working, check every 2 minutes
+  until about 15 minutes after `ready`, otherwise offer to look again later.
   Read a report's checks with `pgai reports data <report_id>
   --org <alias> --type json`, warnings first; add `--check-id <check_id>` for
   one check. The first report sees less than an hour of data and can be nearly
@@ -288,8 +291,9 @@ The deploy itself checks nothing: the findings come from the monitoring box.
   minutes of `ready`, and the Health Matrix (`health_url`) after the first
   report.
 
-The box's reports add query analysis and wait-event trends. The complete report
-comes about 24 hours after the first one, and then one a day.
+The detailed reports and recommendations, based on the monitoring data
+gathered (query analysis and wait-event trends), come about 24 hours after the
+deploy, and then one a day.
 
 ## 5. Report
 
@@ -312,10 +316,11 @@ Group minor items at the end, then list the issues PostgresAI opened. If you
 deployed without `--vcpus`, say again that AAS needs the vCPU count. Say what
 the monitoring setup created, and give the Health Matrix link (`health_url`)
 and the dashboard link (`dashboard_url`), whichever the deploy returned.
-Say when the complete report will be ready (about a day after the deploy),
-what it adds, and that you can read it with them then. End with one question,
-on its own after the report: whether to apply the first fix (name it). Apply
-fixes one at a time, and none until the user agrees.
+Say when the detailed reports and recommendations will be ready (about 24
+hours after the deploy), what they add, and that you can go through them
+together then. End with one question, on its own after the report: whether to
+apply the first fix (name it). Apply fixes one at a time, and none until the
+user agrees.
 
 ## Report a problem to PostgresAI
 
