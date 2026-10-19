@@ -3,6 +3,7 @@ import {
   DBLAB_STEPS,
   StepView,
   estimateMonthlyCents,
+  monitoringSteps,
   formatDuration,
   resolveSshKeys,
   watchDblabDeploy,
@@ -89,6 +90,19 @@ describe("StepView", () => {
     expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Install Joe/);
     expect(frame).toContain("· Ready");
     expect(frame).toContain("elapsed 10s");
+  });
+
+  // Tester, MR !472 (note_4016823640, shot 6): at exit 3 the step that goes on kept a spinner frame.
+  test("a stopped view animates nothing: the step that goes on gets … and its time", () => {
+    const out: string[] = [];
+    const v = new StepView("Deploying", monitoringSteps("supabase"), true, (s) => out.push(s), () => 0);
+    v.start();
+    v.advance("box");
+    v.stop();
+    const frame = v.render().join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(frame).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+    expect(frame).toContain("… Prepare the database and install monitoring (about 5 min) 0s");
+    expect(out.at(-2)).toContain("… Prepare the database");
   });
 
   test("tty mode redraws in place instead of appending", () => {

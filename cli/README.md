@@ -223,7 +223,7 @@ After provisioning, the monitoring server connects from its own IP address, show
 the Console (Monitoring, then the instance). A database that must stay behind an IP allowlist
 needs AWS PrivateLink (RDS) or self-hosted monitoring (`--self-hosted`).
 
-Without `--provider`, RDS and Supabase hostnames still go to their console integration.
+Without `--provider`, RDS hostnames still go to their console integration, and Supabase hostnames to the Supabase consent flow (`pgai mon deploy` for Supabase).
 `generic` does not configure AWS PrivateLink, open a firewall, or remove TLS, permission, or
 payment checks. A private endpoint needs a network path, or monitoring hosted in that network
 (`--self-hosted`).
@@ -253,7 +253,7 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 | `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
 | `--reset-password` | the monitoring role exists and its password is lost: set a new one (see below) |
-| `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Ignored for a host handed to the Console |
+| `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Ignored for a host handed to the Console (RDS); refused for Supabase, where PostgresAI creates `postgres_ai_mon` through the Supabase Management API |
 | `--db-url <url>` | the database URL, instead of the argument |
 | `--name <name>` | the instance's name (default: `host[:port]/database`); ignored, with a note, for a database already monitored |
 | `--location <location>` | Hetzner location `fsn1`, `nbg1` or `hel1` (default: any with capacity) |
@@ -339,11 +339,11 @@ do `pgai dblab deploy` and `pgai dblab instances`:
 | `status` | Meaning | Exit code |
 |---|---|---|
 | `ready` | monitoring works; `health_url` (when the project is found) and `dashboard_url` are set | 0 |
-| `in_progress` | the monitoring box is being set up (also when `--wait` ran out); follow it with `pgai mon instances watch <id>` | 0 |
+| `in_progress` | the monitoring box is being set up (`pgai mon deploy --no-wait`; also when the `--wait` of `pgai mon instances watch` or `pgai dblab deploy` ran out); follow it with the `next` command (`pgai mon instances watch <id>`; for DBLab, `pgai dblab instances watch <id>`) | 0 |
 | `deleting` | a delete is in progress, also the result of `pgai mon instances delete` | 0 |
 | `deleted` | it is gone | 0 |
 | `inactive` | deactivated (billing) | 1 |
-| `action_required` | do what `next` says, then re-run | 3 |
+| `action_required` | do what `next` says, then re-run; also when the `--wait` of `pgai mon deploy` ran out with the box still starting (`next`: "Still in progress ... resume with pgai mon instances watch <id>") | 3 |
 | `failed` | `next` has the reason | 1 |
 
 `pgai init` exits with 130 when cancelled at a prompt (Ctrl-C, Ctrl-D).
@@ -590,7 +590,7 @@ Tools exposed:
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
 - `download_file`: download a file from storage (args: `{ url, org_id, output_path?, debug? }`).
-- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, monitoring_user?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
+- `deploy_monitoring`: `pgai mon deploy` as a tool (args: `{ database_url, org_id, provider?, clickhouse_key?, yes?, coupon?, monitoring_user?, debug? }`). Returns the same JSON (`status`: `ready`, `in_progress`, `deleting`, `deleted`, `inactive`, `action_required` or `failed`; `health_url`; `dashboard_url`; `next`). For a billed box, the tool first returns the price with `action_required`; an explicit call with `yes: true` accepts it. `coupon` supplies a promotion code. It does not wait for the monitoring box: call it again to see the status. Supabase needs no password (PostgresAI prepares the database through the Supabase Management API): the first time, the result is `action_required` with a consent link in `next`; the user opens and approves it, then the tool is called again. Elsewhere `database_url` must carry its password, and only the query parameters `sslmode`, `channel_binding`, `application_name` (and `password`); `PGAI_MON_PASSWORD`, `PGPASSWORD` and `CLICKHOUSE_KEY_ID` + `CLICKHOUSE_KEY_SECRET` of the server process are not used, a TLS failure is not retried in plaintext, and `--self-hosted` is CLI-only. For another database on a server PostgresAI already monitors for the organization, an admin `database_url` with `sslmode=require` (or `verify-*`) is enough: PostgresAI fills in the password of `postgres_ai_mon` it keeps.
 
 #### `attachments` parameter (issue/comment tools)
 

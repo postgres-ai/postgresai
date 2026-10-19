@@ -369,3 +369,133 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
     }, [{ ...ROW, id: "i-0", status: "deleting_launched" }, ROW]);
   });
 });
+
+/** What a terminal shows at the end: the step view's cursor moves and erases applied to the raw output. */
+function screenOf(raw: string): string[] {
+  const rows = [""];
+  let r = 0, c = 0;
+  for (const [tok, arg, cmd] of raw.matchAll(/\x1b\[([0-9;?]*)([A-Za-z])|\r|\n|[^\x1b\r\n]/gu)) {
+    if (tok === "\r") c = 0;
+    else if (tok === "\n") rows[++r] ??= "";
+    else if (cmd === "A") r = Math.max(0, r - Number(arg || 1));
+    else if (cmd === "K") rows[r] = "";
+    else if (cmd === "J") { rows[r] = rows[r].slice(0, c); rows.length = r + 1; }
+    else if (!cmd) { rows[r] = rows[r].padEnd(c).slice(0, c) + tok + rows[r].slice(c + 1); c++; }
+  }
+  return rows.map((l) => l.trimEnd());
+}
+
+describe("pgai mon deploy for Supabase, at a terminal", () => {
+  const REF = "abcdefghijklmnopqrst";
+  const SB_NAME = `db.${REF}.supabase.co/postgres`;
+  const FREE = { ...BILLED, billed: false, free_slots: { remaining: 1, total: 1 } };
+
+  // REV r4/r5 potential (CWE-150): a refusal's details and hint went to the terminal as sent.
+  test("a refusal with escape sequences in its details: shown as text, the terminal is not driven by it; exit 3", async () => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(req) {
+        const rpc = new URL(req.url).pathname.split("/").pop();
+        if (rpc === "cloud_monitoring_supabase_start") {
+          return Response.json({ code: "PT409", message: "Conflict", details: "Another Supabase organization\x1b[2J\x1b]8;;https://evil.example\x07 is connected.", hint: "\x1b[31mDisconnect it first.\x1bc" }, { status: 409 });
+        }
+        return Response.json([]);
+      },
+    });
+    let raw = "";
+    try {
+      const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", `postgresql://postgres@db.${REF}.supabase.co:5432/postgres`], {
+        env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", CI: "", TERM: "xterm", PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` }),
+        terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (raw += new TextDecoder().decode(bytes)) },
+      });
+      expect(await proc.exited).toBe(3);
+    } finally {
+      api.stop(true);
+    }
+    expect(raw).toContain("Another Supabase organization");
+    expect(raw).toContain("Disconnect it first.");
+    // (The CLI colors its own error lines red; the hint's color code is gone.)
+    for (const payload of ["\x1b[2J", "\x1b]8", "\x07", "\x1b[31mDisconnect", "\x1bc"]) expect(raw).not.toContain(payload);
+  }, 30_000);
+
+  // Tester, MR !472 (note_4016823640, shots 8 and 9): the reply said "nothing has been created yet",
+  // and the step view drew over it and showed its title two times.
+  test("Ctrl-C while the box request is in flight: the reply says so, above one step view; then it detaches, exit 130", async () => {
+    let requested!: () => void;
+    const sent = new Promise<void>((ok) => { requested = ok; });
+    let answer!: () => void;
+    const answered = new Promise<void>((ok) => { answer = ok; });
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const rpc = new URL(req.url).pathname.split("/").pop();
+        if (rpc === "cloud_monitoring_supabase_start") return Response.json({ connected: true, project_ref: REF });
+        if (rpc === "cloud_monitoring_quote") return Response.json(FREE);
+        if (rpc === "cloud_monitoring_supabase_connect") {
+          requested();
+          await answered;
+          return Response.json({ id: "i-1", name: SB_NAME, status: "launch_requested" });
+        }
+        return Response.json([]);
+      },
+    });
+    let raw = "";
+    try {
+      const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", `postgresql://postgres@db.${REF}.supabase.co:5432/postgres`], {
+        env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", CI: "", TERM: "xterm", PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` }),
+        terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (raw += new TextDecoder().decode(bytes)) },
+      });
+      await sent;
+      proc.terminal!.write("\x03");
+      // The reply to Ctrl-C comes before the platform answers.
+      for (const t0 = Date.now(); !raw.includes("Ctrl-C again to quit now") && Date.now() - t0 < 5000;) await Bun.sleep(50);
+      await Bun.sleep(300);
+      answer();
+      expect(await proc.exited).toBe(130);
+    } finally {
+      answer();
+      api.stop(true);
+    }
+    const screen = screenOf(raw);
+    expect(screen.filter((l) => l.startsWith("Deploying monitoring for"))).toEqual([`Deploying monitoring for ${SB_NAME}`]);
+    expect(screen).toContain("Stopping: the monitoring box is already requested; deploy stops watching when the request ends (Ctrl-C again to quit now).");
+    expect(raw).not.toContain("nothing has been created");
+    expect(screen.join("\n")).toEndWith("Stopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch i-1\n");
+  }, 30_000);
+
+  // REV round 4 (MR !472): a second Ctrl-C quit with the cursor hidden and no word of the box it requested.
+  test("a second Ctrl-C while the box request is in flight: the cursor comes back, and it says where to find the box; exit 130", async () => {
+    let requested!: () => void;
+    const sent = new Promise<void>((ok) => { requested = ok; });
+    const api = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const rpc = new URL(req.url).pathname.split("/").pop();
+        if (rpc === "cloud_monitoring_supabase_start") return Response.json({ connected: true, project_ref: REF });
+        if (rpc === "cloud_monitoring_quote") return Response.json(FREE);
+        if (rpc === "cloud_monitoring_supabase_connect") {
+          requested();
+          await Bun.sleep(20_000);
+        }
+        return Response.json([]);
+      },
+    });
+    let raw = "";
+    try {
+      const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", `postgresql://postgres@db.${REF}.supabase.co:5432/postgres`], {
+        env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", CI: "", TERM: "xterm", PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` }),
+        terminal: { cols: 200, rows: 50, data: (_term, bytes) => void (raw += new TextDecoder().decode(bytes)) },
+      });
+      await sent;
+      proc.terminal!.write("\x03");
+      for (const t0 = Date.now(); !raw.includes("Ctrl-C again to quit now") && Date.now() - t0 < 5000;) await Bun.sleep(50);
+      proc.terminal!.write("\x03");
+      expect(await proc.exited).toBe(130);
+    } finally {
+      api.stop(true);
+    }
+    // The step view hid the cursor; it is shown again after the last hide.
+    expect(raw.lastIndexOf("\x1b[?25h")).toBeGreaterThan(raw.lastIndexOf("\x1b[?25l"));
+    expect(screenOf(raw).join("\n")).toEndWith("Quit. The monitoring box may exist: pgai mon instances list\n");
+  }, 30_000);
+});

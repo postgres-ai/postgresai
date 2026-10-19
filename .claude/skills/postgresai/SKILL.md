@@ -231,12 +231,14 @@ The result is JSON on stdout. Act on `status` and `next`:
     ask whether they accept the price. Re-run with `--yes` (and the same
     `--coupon`) only if they agree.
   - It needs a payment method: give the user the console link from `next`.
-  - It says "Finish in the console" (Supabase and Amazon RDS): give the user
-    that link. The CLI shows no price here: the console page shows it before
-    anything is billed, and has a field for a promotion code, so tell them to
-    enter their coupon there if they have one. When they say it is done, find
-    the instance with `pgai mon instances list --org <alias> --json` and
-    `watch` it.
+  - It is a Supabase consent link: give the user that link to open and approve,
+    then re-run the deploy (with the same `--coupon`, if they gave one). The
+    price comes after the approval, as above.
+  - It says "Finish in the console" (Amazon RDS): give the user that link. The
+    CLI shows no price here: the console page shows it before anything is
+    billed, and has a field for a promotion code, so tell them to enter their
+    coupon there if they have one. When they say it is done, find the instance
+    with `pgai mon instances list --org <alias> --json` and `watch` it.
   - It returns `sql` (the URL is not an admin URL): give the user that SQL to
     run as an admin, then re-run the deploy with the `postgres_ai_mon` URL
     (its password in `.env`); or ask them for an admin URL.

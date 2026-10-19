@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -42,7 +42,7 @@ import {
 } from "../lib/dblab";
 import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
-import { MONITORING_STEPS, StepView } from "../lib/deploy";
+import { monitoringSteps, StepView } from "../lib/deploy";
 import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, monitoringStatus, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
   enqueueQuery,
@@ -4223,6 +4223,22 @@ async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
   }
 }
 
+/** Opens a page in the default browser; the caller has printed the URL, for when none opens. */
+function openInBrowser(url: string): void {
+  const openCommand = process.platform === "darwin" ? "open" :
+                     process.platform === "win32" ? "start" :
+                     "xdg-open";
+  // A missing/unspawnable opener (e.g. no xdg-open on a minimal Linux, or
+  // "start" being a cmd.exe builtin rather than an executable on Windows)
+  // emits an async "error" event; without a handler it would crash the
+  // process. Swallow it: the URL is already printed for manual use.
+  const browserProcess = spawn(openCommand, [url], { detached: true, stdio: "ignore" });
+  browserProcess.on("error", () => {
+    // Ignore: fall back to the printed URL
+  });
+  browserProcess.unref();
+}
+
 // ---- pgai mon deploy / mon instances list / watch / delete (postgres-ai/internal#354) ----
 // The surface pgai dblab deploy shares (lib/deploy-surface, postgresai#412): JSON
 // with --json (status, dashboard_url, next); exit codes 0 ready or in progress,
@@ -4236,7 +4252,8 @@ function cloudApi(debug?: boolean) {
   return { apiKey, apiBaseUrl: urls.apiBaseUrl, ...platformDeps({ apiKey, ...urls, orgScope: getActiveOrgScope(), debug }) };
 }
 
-function emitConnect(result: ConnectResult, json?: boolean): void {
+/** `done`: mon deploy's event stream ends with a done event (the outcome, for an agent reading stderr alone). */
+function emitConnect(result: ConnectResult, json?: boolean, done = false): void {
   // For a person, the SQL goes out as it is (YAML would fold it, and it must run in psql).
   if (!jsonOutput(json)) {
     // At a terminal: a few sentences (lib/connect resultLines); a refusal or a failure is its one line on stderr.
@@ -4246,8 +4263,15 @@ function emitConnect(result: ConnectResult, json?: boolean): void {
     for (const line of lines) out(line);
   } else {
     printResult(result, json);
+    if (done) writeEvent({ event: "done", status: result.status, ...(result.id ? { id: result.id } : {}), next: result.next });
   }
   process.exitCode = CONNECT_EXIT[result.status];
+}
+
+/** An error in mon deploy's options, before the run starts: with JSON output, an error event and no done event (exit 1). */
+function optionError(result: ConnectResult, json?: boolean): void {
+  if (jsonOutput(json)) console.error(result.next);
+  emitConnect(result, json);
 }
 
 /** An error of mon instances list / status / delete, in the same shape as a mon deploy result. */
@@ -4286,14 +4310,14 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
   } catch (err) {
-    return emitConnect({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
+    return optionError({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
   }
   // With JSON output, stderr is the event stream: every line of it is a JSON event
   // (console.error and console.warn too, since the preAction hook).
   const json = jsonOutput(opts.json);
   const name = (() => { try { return databaseName(url); } catch { return ""; } })();
   if (!name || !/^postgres(ql)?:\/\//.test(url)) {
-    return emitConnect({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
+    return optionError({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
   }
   // What --provider names, when it is one; else the host's.
   const explicit = providerArg(opts.provider);
@@ -4302,19 +4326,19 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
   try {
     minutes = waitMinutes(opts.wait, 20);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    return optionError({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
   let vcpus: number | undefined;
   try {
     vcpus = vcpusArg(opts.vcpus);
   } catch (err) {
-    return emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    return optionError({ status: "failed", provider, name, next: errorText(err) }, opts.json);
   }
   // The step view, once shown: a refusal must stop it, or it redraws over the reason and keeps the process alive.
   let shownView: (() => StepView | undefined) | undefined;
   try {
     if (!opts.selfHosted && !signedIn(opts)) {
-      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json);
+      return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json, true);
     }
     const api = cloudApi(opts.debug);
     // A person at a terminal gets the step view on stderr (after the price); piped, a line per step; --json, JSON events.
@@ -4322,7 +4346,7 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     let createdId: string | undefined;
     let stopping = false;
     const steps = stepProgress({
-      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, MONITORING_STEPS, true),
+      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, monitoringSteps(provider), true),
       writeLine: (line) => console.error(line), writeEvent, onId: (id) => { createdId = id; },
     });
     shownView = () => steps.view() as StepView | undefined;
@@ -4333,11 +4357,23 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       console.error(`\nStopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch ${createdId}`);
       process.exit(130);
     };
+    // The box request is sent once the "provisioning" step starts.
+    let requested = false;
     const onSigint = (): void => {
       if (createdId) return resume();
-      if (stopping) process.exit(130);
+      if (stopping) {
+        steps.view()?.stop();
+        if (requested) console.error("\nQuit. The monitoring box may exist: pgai mon instances list");
+        process.exit(130);
+      }
       stopping = true;
-      console.error("\nCancelling: nothing has been created yet (Ctrl-C again to quit now).");
+      const reply = requested
+        ? "Stopping: the monitoring box is already requested; deploy stops watching when the request ends (Ctrl-C again to quit now)."
+        : "Cancelling: nothing has been created yet (Ctrl-C again to quit now).";
+      // Through the step view, if shown: else it draws over the reply.
+      const view = steps.view();
+      if (view) view.log(reply);
+      else console.error(`\n${reply}`);
     };
     process.on("SIGINT", onSigint);
     let result: ConnectResult;
@@ -4387,7 +4423,12 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         },
-        progress: steps.progress,
+        // Supabase's consent page, for a person at a terminal (the link is printed too).
+        ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
+        progress: (e) => {
+          if (e.event === "provisioning") requested = true;
+          steps.progress(e);
+        },
         aborted: () => stopping,
       });
     } catch (err) {
@@ -4402,21 +4443,23 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       process.removeListener("SIGINT", onSigint);
     }
     // Ctrl-C while the box was requested: connect returned at once; the deploy goes on.
+    // The self-managed path returns the box before any event names it.
+    if (stopping && !createdId && result.status === "in_progress") createdId = result.id;
     if (stopping && createdId) return resume();
     const view = steps.view();
     if (view) {
       if (result.status === "ready") view.complete();
-      else if (result.status !== "in_progress") view.fail();
+      else if (result.status !== "in_progress" && !result.next.startsWith(STILL_IN_PROGRESS)) view.fail();
       view.stop();
     }
-    emitConnect(result, opts.json);
+    emitConnect(result, opts.json, true);
   } catch (err) {
     const view = shownView?.();
     if (view) {
       view.fail();
       view.stop();
     }
-    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json);
+    emitConnect({ status: "failed", provider, name, next: errorText(err) }, opts.json, true);
   }
 }
 
@@ -4450,12 +4493,21 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
     "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
-    "Exit codes: 0 ready or in progress, 1 failed, 3 action required (see \"next\").",
+    "Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API (the",
+    "database password is not needed and not sent). The first time, the organization connects",
+    "Supabase: deploy opens the consent page in the browser (the link is printed too, to open",
+    "it elsewhere; \"auth_url\" in the JSON event) and waits for the approval, up to 10 minutes.",
+    "With --wait 0, and for agents, it stops there (exit 3) with the link in \"next\".",
+    "",
+    "Exit codes: 0 ready (or in progress with --no-wait), 1 failed, 3 action required (see",
+    "\"next\"), also when the wait ends before the box is ready.",
     "",
     "JSON output (--json): stdout is the result; stderr is one JSON event a",
     "line: the steps, and {\"event\":\"log\",\"level\":\"error\"|\"warn\"|\"info\"|\"debug\",\"message\":...}",
     "for any other text (an error, a warning, --debug); \"source\":\"mon local-install\" for that",
     "child's lines (the logins it prints are masked: pgai mon show-grafana-credentials shows them).",
+    "The last event of a run is {\"event\":\"done\",\"status\":...,\"next\":...}; not after Ctrl-C (exit 130)",
+    "or an error in the options or --org before the run starts (an error event, exit 1).",
     "",
     "Environment: PGAI_API_KEY (instead of signing in), PGAI_MON_PASSWORD (the password of",
     "postgres_ai_mon when the role already exists; it is checked, never changed; not needed",
@@ -4467,6 +4519,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "Examples:",
     "  pgai mon deploy 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
     "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai mon deploy '<url>'",
+    "  pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres'",
     "  pgai mon deploy '<url>' --self-hosted",
   ].join("\n"))
   .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {
@@ -6500,19 +6553,7 @@ async function runAuthLogin(opts: AuthLoginOptions) {
       console.log(`\nOpening browser for authentication...`);
       console.log(`If browser does not open automatically, visit:\n${authUrl}\n`);
 
-      // Open browser (cross-platform)
-      const openCommand = process.platform === "darwin" ? "open" :
-                         process.platform === "win32" ? "start" :
-                         "xdg-open";
-      // A missing/unspawnable opener (e.g. no xdg-open on a minimal Linux, or
-      // "start" being a cmd.exe builtin rather than an executable on Windows)
-      // emits an async "error" event; without a handler it would crash the whole
-      // login flow. Swallow it — the URL is already printed above for manual use.
-      const browserProcess = spawn(openCommand, [authUrl], { detached: true, stdio: "ignore" });
-      browserProcess.on("error", () => {
-        // Ignore: fall back to the manually printed URL
-      });
-      browserProcess.unref();
+      openInBrowser(authUrl);
 
       // Step 4: Wait for callback
       console.log("Waiting for authorization...");

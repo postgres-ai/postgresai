@@ -10,7 +10,7 @@
 
 import { redactPasswordsInSql, roleSearchPathProblem } from "./init";
 
-const SUPABASE_API_BASE = "https://api.supabase.com";
+export const SUPABASE_API_BASE = "https://api.supabase.com";
 
 /**
  * Supabase's connection pooler (Supavisor) listens on two ports:

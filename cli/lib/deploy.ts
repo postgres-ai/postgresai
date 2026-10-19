@@ -377,6 +377,17 @@ export const MONITORING_STEPS: StepDef[] = [
   { key: "ready", label: "Ready" },
 ];
 
+/** pgai mon deploy's steps for Supabase: the box prepares the database, not the CLI. */
+export const SUPABASE_STEPS: StepDef[] = [
+  { key: "preparing", label: "Connect Supabase" },
+  { key: "provisioning", label: "Create the monitoring box" },
+  { key: "box", label: "Prepare the database and install monitoring (about 5 min)" },
+  { key: "ready", label: "Ready" },
+];
+
+/** The step list of pgai mon deploy for a provider. */
+export const monitoringSteps = (provider: string): StepDef[] => provider === "supabase" ? SUPABASE_STEPS : MONITORING_STEPS;
+
 /** DBLab deploy steps, in the order the box reports them. */
 export const DBLAB_STEPS: StepDef[] = [
   { key: "create_server", label: "Create server" },
@@ -531,7 +542,8 @@ export class StepView {
       const icon =
         st === "done" ? `${GREEN}✓${RESET}`
         : st === "failed" ? `${RED}✗${RESET}`
-        : st === "running" ? FRAMES[this.frame % FRAMES.length]
+        // Stopped (the wait ended, or Ctrl-C detached): the step goes on, but nothing animates it here.
+        : st === "running" ? (this.stopped ? "…" : FRAMES[this.frame % FRAMES.length])
         : `${DIM}·${RESET}`;
       const label = st === "pending" ? `${DIM}${s.label}${RESET}` : s.label;
       lines.push(`  ${icon} ${label}${dur ? ` ${DIM}${dur}${RESET}` : ""}`);

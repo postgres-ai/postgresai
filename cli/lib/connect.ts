@@ -9,7 +9,8 @@ import { assertEncodedUserinfo, estimateLine, monitoringStatus, noCardNext, notA
 import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
 import { callRpc, type ProjectListItem } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
-import { HttpStatusError, requestTimeoutSignal } from "./util";
+import { SUPABASE_API_BASE, extractProjectRefFromUrl } from "./supabase";
+import { HttpStatusError, requestTimeoutSignal, stripControlsToSpace } from "./util";
 
 // `pgai mon deploy <database-url>`: put a database under PostgresAI's care
 // (postgres-ai/internal#354). Each step is skipped when already done, so a
@@ -29,6 +30,8 @@ export interface ProgressEvent {
   state?: string;
   /** event box: the instance, for following it later (pgai mon instances watch <id>). */
   id?: string;
+  /** Supabase: the page where the org approves PostgresAI's access (deploy waits for it). */
+  auth_url?: string;
 }
 
 export interface ConnectResult {
@@ -112,7 +115,16 @@ export interface ConnectDeps {
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
-  handoffUrl(provider: "rds" | "supabase"): Promise<string>;
+  handoffUrl(provider: "rds"): Promise<string>;
+  /**
+   * Supabase (v1.cloud_monitoring_supabase_*): the org's connection, or the consent page that makes one;
+   * whether that consent came back; the box for a project of the connected org.
+   */
+  supabaseStart(dbUrl: string): Promise<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>;
+  supabaseStatus(sessionId: string): Promise<{ status: "pending" | "connected" | "error"; error?: string }>;
+  supabaseConnect(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
+  /** Opens a page in this machine's browser (a person at a terminal only). */
+  openUrl?(url: string): void;
   /** What the next box costs, with the coupon checked. */
   /** `cluster`: lower(host):port of the URL, which the price is per. */
   quote(coupon?: string, cluster?: string): Promise<Quote>;
@@ -429,6 +441,12 @@ export interface StepViewLike {
  * terminal a step view that starts only after the price, since a prompt may
  * follow the price; with no price (a re-run, --self-hosted) no view at all.
  */
+// ESC or C1 sequences: CSI (colors, cursor, clear), OSC (titles, links) to its end, and two-byte ones (a reset).
+const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -\/]*[@-~]|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?|\x1b[ -~]?/g;
+
+/** Text from the platform, for a terminal: escape sequences dropped, other control characters a space; line breaks kept. */
+export const terminalText = (text: string): string => text.replace(ESCAPES, "").split("\n").map(stripControlsToSpace).join("\n");
+
 export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => StepViewLike; writeLine: (s: string) => void;
   writeEvent: (e: ProgressEvent) => void; onId?: (id: string) => void }) {
   let view: StepViewLike | undefined;
@@ -436,6 +454,7 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
   const progress = (e: ProgressEvent): void => {
     if (e.id) o.onId?.(e.id);
     if (o.json) return o.writeEvent(e);
+    e = { ...e, message: terminalText(e.message), ...(e.state ? { state: terminalText(e.state) } : {}) };
     if (!o.tty) return o.writeLine(progressText(e));
     if (e.event === "billing") {
       priced = true;
@@ -455,6 +474,10 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
 
 /** A result for a person at a terminal: a few sentences, links whole (JSON keeps every field). */
 export function resultLines(r: ConnectResult): string[] {
+  return personLines(r).map(terminalText);
+}
+
+function personLines(r: ConnectResult): string[] {
   const who = r.name || "this database";
   // What the next action carries after its first part ("; --name ignored ...", a prepare note).
   const extra = (r.next ?? "").split("; ").slice(1).join("; ");
@@ -535,6 +558,8 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: generic, ${PROVIDERS.join(", ")}`);
   // Before any name is taken from the URL (the MCP path does not go through the CLI's argument check).
   assertEncodedUserinfo(url);
+  // Supabase is never logged in to from here: its URL only names the project.
+  if (!opts.selfHosted && provider === "supabase") return deploySupabase(url, opts, deps, progress);
   checkUrlParams(url, opts.agent);
   const name = databaseName(url);
   // The platform keeps postgres_ai_mon's password only; --reset-password locks the server for any role.
@@ -567,7 +592,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" && !opts.agent ? process.env : {});
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
 
-  if (!opts.selfHosted && (provider === "rds" || provider === "supabase")) {
+  if (!opts.selfHosted && provider === "rds") {
     const ignored = monitoringUser ? ` (${opts.agent ? "monitoring_user" : "--monitoring-user"} is not used there)` : "";
     return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}${ignored}` };
   }
@@ -821,6 +846,138 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     undoRole = () => undo(made);
   }
 
+  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note }, opts, deps, progress);
+}
+
+const isSupabaseUrl = (link: string): boolean => {
+  try {
+    const u = new URL(link);
+    return u.origin === SUPABASE_API_BASE && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+};
+
+// How long deploy waits for the consent in the browser, and how often it asks.
+const OAUTH_WAIT_MS = 10 * 60_000;
+const OAUTH_POLL_MS = 2_000;
+
+/**
+ * A Supabase project: the platform creates postgres_ai_mon through the Supabase Management API,
+ * so the database is never logged in to from here. The org connects Supabase once, in the browser.
+ */
+async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
+  const provider = "supabase";
+  const ref = extractProjectRefFromUrl(url);
+  if (!ref) return { status: "action_required", provider, name: databaseName(url), next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>)" };
+  // One name for the direct and the pooler URL of a project.
+  const db = decodeURIComponent(new URL(url).pathname.replace(/^\//, "")) || "postgres";
+  const project = `postgresql://db.${ref}.supabase.co:5432/${encodeURIComponent(db)}`;
+  const name = databaseName(project);
+  const cluster = clusterOf(project)!;
+  const stop = (next: string, more: Partial<ConnectResult> = {}): ConnectResult => ({ status: "action_required", provider, name, ...more, next });
+  // The box prepares and monitors the project's postgres database (prepare-db --supabase).
+  if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
+  if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
+  if (opts.location) return stop("--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it");
+  // The platform creates postgres_ai_mon there, and keeps its password: a custom role would not be used.
+  if (opts.monitoringUser !== undefined && opts.monitoringUser.trim() !== DEFAULT_MONITORING_USER) {
+    return stop(`${opts.agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates ${DEFAULT_MONITORING_USER} through the Supabase Management API`);
+  }
+  // A row of another database there (deployed as self-managed) is not this box.
+  const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster && (!d.database || d.database === "postgres"));
+  if (row) {
+    const note = opts.name && row.name !== opts.name ? `; --name ignored: this database is already monitored as ${row.name}` : "";
+    return follow(row, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
+  }
+  let started: Awaited<ReturnType<ConnectDeps["supabaseStart"]>>;
+  try {
+    started = await deps.supabaseStart(project);
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+    // Another Supabase organization is connected to this org: the platform says which.
+    if (err instanceof HttpStatusError && err.status === 409) return stop(errorText(err));
+    throw err;
+  }
+  if ("auth_url" in started) {
+    // The link goes to the browser opener and the terminal: Supabase's own https page only.
+    if (!isSupabaseUrl(started.auth_url)) return { status: "failed", provider, name, next: `The platform sent a Supabase consent link that is not ${SUPABASE_API_BASE}: not opened. Re-run pgai mon deploy later.` };
+    const approve = `Open ${started.auth_url} in a browser and approve PostgresAI's access to Supabase`;
+    if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
+    progress("preparing", `Connect Supabase to PostgresAI: approve access in the browser (open ${started.auth_url} if it did not open). Waiting...`, { auth_url: started.auth_url });
+    deps.openUrl?.(started.auth_url);
+    // A declined consent is never reported: the session stays pending until it expires.
+    const expires = started.expires_at ? Date.parse(started.expires_at) : NaN;
+    for (const deadline = deps.now() + Math.min(opts.waitMs, OAUTH_WAIT_MS); ;) {
+      if (deps.aborted?.()) throw new CancelledError();
+      const s = await deps.supabaseStatus(started.session_id);
+      if (s.status === "connected") break;
+      if (s.status === "error") return stop(`Supabase did not connect (${s.error ?? "no reason given"}): re-run to try again`);
+      const now = deps.now();
+      if (now >= expires) return stop("The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one");
+      if (now >= deadline) return stop(`${approve}, then re-run`);
+      await deps.sleep(OAUTH_POLL_MS);
+    }
+  }
+  let quote: Quote;
+  try {
+    // The org's price, not a cluster's: the Supabase provision bills every box.
+    quote = await deps.quote(opts.coupon);
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+    throw err;
+  }
+  const b = await billingFor(quote, name, opts, deps, (price) => progress("billing", estimateLine(price)));
+  if (b.stop) return { status: "action_required", provider, name, ...b.stop };
+  if (deps.aborted?.()) throw new CancelledError();
+  progress("provisioning", `Provisioning monitoring for ${name}`);
+  // vCPUs: the platform reads the project's compute size; --vcpus overrides it.
+  const created = await deps.supabaseConnect({
+    project_ref: ref,
+    ...(opts.name ? { name: opts.name } : {}),
+    ...(b.accepted ? { accept_price: true } : {}),
+    ...(opts.coupon ? { promo_code: opts.coupon } : {}),
+    ...(opts.vcpus ? { vcpus: opts.vcpus } : {}),
+  }).catch((err) => {
+    if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
+    if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
+    // An org billed by a partner (or a box that exists already): the platform says what to do.
+    if (err instanceof HttpStatusError && err.status === 409) return { refused: errorText(err) };
+    throw err;
+  });
+  if (typeof created === "object" && "refused" in created) return stop(created.refused);
+  if (created === "payment") return { status: "action_required", provider, name, ...b.billingPage };
+  if (created === "declined") return { status: "action_required", provider, name, ...b.billingPage, next: b.billingPage.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
+  if (created === "price") return stop("The price changed since it was shown: re-run pgai mon deploy to see it", b.billing);
+  if (created.status === "failed") return { status: "failed", provider, name, id: created.id, ...b.billing, next: `${created.error} Re-run pgai mon deploy later.` };
+  const box: Database = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: false };
+  // Ctrl-C while the box was requested: it exists now, so the run detaches (it keeps going on PostgresAI).
+  if (deps.aborted?.()) return { ...connectStatus(box, provider, true), ...b.billing };
+  return follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "" }, opts, deps, progress);
+}
+
+type Progress = (event: ProgressEvent["event"], message: string, more?: Partial<ProgressEvent>) => void;
+
+/** What deploy knows of a box when it starts following it. */
+interface Followed {
+  provider: Provider;
+  name: string;
+  /** Provisioned by this run: the result gets the first checkup's ETA. */
+  fresh: boolean;
+  billing: Billing;
+  billingUrl?: string;
+  /** Drops the role this run created with a generated password, once its box is gone. */
+  undoRole?: () => Promise<unknown>;
+  /** Appended to the next action ("; --name ignored ..."). */
+  note: string;
+}
+
+/** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
+export const STILL_IN_PROGRESS = "Still in progress";
+
+/** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
+async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
+  const { provider, name, fresh, billing, billingUrl, undoRole, note } = f;
   // The box's state, each time it changes while deploy waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
@@ -839,14 +996,20 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         final.next += "; for CPU, memory and disk, delete the instance (pgai mon instances delete) and deploy again with --clickhouse-key <key-id>:<key-secret>";
       }
       const { next, ...rest } = final;
+      // The wait ran out with the box still starting: not done (exit 3); it goes on on the platform.
+      if (final.status === "in_progress" && opts.waitMs > 0) {
+        return { ...rest, status: "action_required", ...billing,
+          next: `${STILL_IN_PROGRESS} (box: ${boxWords(boxState(row))}) when the wait ended: resume with ${next}${note}` };
+      }
       return { ...rest, ...billing, next: next + note };
     }
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
     const listed = await deps.list().catch(() => undefined);
-    const now = listed?.find((d) => d.id === row!.id);
-    if (listed && !now && undoRole) {
-      await undoRole();
+    const now = listed?.find((d) => d.id === row.id);
+    // A box this run created that is gone (its role, if this run made one, is dropped).
+    if (listed && !now && fresh) {
+      if (undoRole) await undoRole();
       return { status: "failed", provider, name, id: row.id, ...billing, next: "The monitoring box was removed before it became active: see pgai mon instances list, then re-run pgai mon deploy" };
     }
     row = now ?? row;
@@ -1210,7 +1373,10 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     clickhouseOrg: clickhouseOrgFor,
     quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
     billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,
-    handoffUrl: async (provider: "rds" | "supabase") => {
+    supabaseStart: (dbUrl: string) => rpc<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>("cloud_monitoring_supabase_start", { db_url: dbUrl }),
+    supabaseStatus: (sessionId: string) => rpc<{ status: "pending" | "connected" | "error"; error?: string }>("cloud_monitoring_supabase_status", { session_id: sessionId }),
+    supabaseConnect: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_supabase_connect", body),
+    handoffUrl: async (provider: "rds") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);
       return `${p.uiBaseUrl}/${org?.alias ?? "<org>"}/monitoring/scale/create/${provider}`;

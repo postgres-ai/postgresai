@@ -758,7 +758,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(calls.filter((c) => c.includes("/rpc/checkup_report"))).toEqual([]);
         // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
         const events = stderr.trim().split("\n").map((l) => JSON.parse(l).event);
-        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "box"]);
+        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "box", "done"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
@@ -833,8 +833,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
   describe("pgai mon deploy at the price prompt (the real CLI in a terminal, a fake platform)", () => {
     const CLI = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
     const PROMPT = /Provision [^\n]+\? \(y\/N\): $/;
+    const SERVICE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
-    async function atPrompt(answer: string, o: { args?: string[]; create?: () => Response; timeoutMs?: number; vcpus?: string[] } = {}) {
+    async function atPrompt(answer: string, o: { args?: string[]; create?: (term: Bun.Terminal) => Response | Promise<Response>; timeoutMs?: number; vcpus?: string[] } = {}) {
       const home = mkdtempSync(resolve(tmpdir(), "pgai-connect-prompt-"));
       const calls: string[] = [];
       const bodies: Record<string, unknown>[] = [];
@@ -844,19 +845,24 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           const path = new URL(req.url).pathname;
           calls.push(path);
           if (path.endsWith("/rpc/cloud_monitoring_connect")) bodies.push(JSON.parse(await req.text()));
+          // ClickHouse Cloud, for --provider clickhouse: one org, one service on this server.
+          if (path === "/v1/organizations") return Response.json({ result: [{ id: "11111111-2222-3333-4444-555555555555" }] });
+          if (path.endsWith("/postgres")) return Response.json({ result: [{ id: SERVICE, name: "svc", state: "running" }] });
+          if (path.endsWith(`/postgres/${SERVICE}`)) return Response.json({ result: { id: SERVICE, name: "svc", state: "running", hostname: new URL(ADMIN!).hostname } });
           if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
           if (path.endsWith("/rpc/cloud_monitoring_quote")) return Response.json({ plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0, price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
-          if (o.create && path.endsWith("/rpc/cloud_monitoring_connect")) return o.create();
+          if (o.create && path.endsWith("/rpc/cloud_monitoring_connect")) return o.create(terminal!);
           return new Response("not found", { status: 404 });
         },
       });
       let out = "";
       let typed = false;
       let vcpusAsked = 0;
+      let terminal: Bun.Terminal | undefined;
       try {
         const proc = Bun.spawn([process.execPath, CLI, "mon", "deploy", ADMIN!, ...(o.args ?? [])], {
           cwd: home,
-          env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`, PGAI_NO_FEEDBACK_TIP: "1" },
+          env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: home, PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}`, CLICKHOUSE_API_URL: `http://127.0.0.1:${api.port}`, PGAI_NO_FEEDBACK_TIP: "1" },
           terminal: {
             cols: 400, rows: 50,
             data(term, bytes) {
@@ -876,6 +882,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
             },
           },
         });
+        terminal = proc.terminal;
         // A run that never ends is killed: status null.
         const status = await Promise.race([proc.exited, Bun.sleep(o.timeoutMs ?? 60_000).then(() => { proc.kill(); return null; })]);
         return { status, raw: out, screen: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, ""), calls, bodies };
@@ -923,6 +930,61 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         // Nothing redraws over it: no cursor-up after the reason.
         expect(r.raw.slice(at)).not.toMatch(/\x1b\[\d+A/);
         expect(r.screen.trimEnd()).toMatch(/Unknown location "xyz"\. Choose one of: fsn1, nbg1, hel1\.\n.*Nothing was created\.$/s);
+      } finally {
+        await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+        await c.query("drop role if exists postgres_ai_mon").catch(() => {});
+        await c.end();
+      }
+    }, 60_000);
+
+    // REV r3 (MR !472): self-managed exited 0 with the box still starting, and gave no Resume line.
+    test("Ctrl-C while the box request is in flight: it detaches with the Resume line, exit 130", async () => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      try {
+        const r = await atPrompt("y\r", {
+          args: ["--vcpus", "2"], timeoutMs: 30_000,
+          create: async (term) => {
+            term.write("\x03");
+            // The platform answers after the reply to Ctrl-C.
+            await Bun.sleep(500);
+            return Response.json({ id: "i-9", name: "x", provider: "self-managed", status: "launch_requested" });
+          },
+        });
+        expect(r.status).toBe(130);
+        expect(r.screen).toContain("Stopping: the monitoring box is already requested");
+        expect(r.screen.trimEnd()).toEndWith("Stopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch i-9");
+      } finally {
+        await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+        await c.query("drop role if exists postgres_ai_mon").catch(() => {});
+        await c.end();
+      }
+    }, 60_000);
+
+    // REV r4 (MR !472): ClickHouse returns from the same in-flight path; it had no test of its own.
+    test("ClickHouse: Ctrl-C while the box request is in flight detaches with the Resume line, exit 130", async () => {
+      const c = await admin();
+      await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
+      await c.query("drop schema if exists postgres_ai cascade");
+      await c.query("drop role if exists postgres_ai_mon");
+      try {
+        const r = await atPrompt("y\r", {
+          args: ["--provider", "clickhouse", "--clickhouse-key", "kid:Sec4b1dTestSecret", "--vcpus", "2"], timeoutMs: 30_000,
+          create: async (term) => {
+            term.write("\x03");
+            await Bun.sleep(500);
+            return Response.json({ id: "i-8", name: "x", provider: "clickhouse", status: "launch_requested" });
+          },
+        });
+        expect(r.calls).toContain("/v1/organizations");
+        expect(r.status).toBe(130);
+        expect(r.screen).toContain("Stopping: the monitoring box is already requested");
+        expect(r.screen.trimEnd()).toEndWith("Stopped watching. The deploy continues on PostgresAI.\nResume: pgai mon instances watch i-8");
+        // Detached at once: no checkup, no polling; the box keeps the role it was given.
+        expect(r.calls.at(-1)).toBe("/rpc/cloud_monitoring_connect");
+        expect((await c.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'")).rows[0].n).toBe(1);
       } finally {
         await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
         await c.query("drop role if exists postgres_ai_mon").catch(() => {});

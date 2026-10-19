@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
+import { StepView, monitoringSteps } from "../lib/deploy";
 import { resolveAdminConnection } from "../lib/init";
 import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
 
@@ -37,6 +38,9 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
     handoffUrl: async (provider) => `https://console.postgres.ai/acme/monitoring/scale/create/${provider}`,
+    supabaseStart: async () => { throw new Error("not a Supabase test"); },
+    supabaseStatus: async () => { throw new Error("not a Supabase test"); },
+    supabaseConnect: async () => { throw new Error("not a Supabase test"); },
     // The billing step is its own describe below; here a box is on a free slot.
     quote: async () => FREE_QUOTE,
     billingUrl: (alias) => `https://console.postgres.ai/${alias}/billing`,
@@ -374,7 +378,7 @@ describe("mon deploy", () => {
     });
   });
 
-  test("RDS and Supabase hand off to the console flow, touching nothing", async () => {
+  test("RDS hands off to the console flow, touching nothing", async () => {
     const { deps, calls } = fake();
     expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "rds", name: "db.abc.us-east-1.rds.amazonaws.com/app",
@@ -660,8 +664,10 @@ describe("mon deploy", () => {
       },
       sleep: (ms) => new Promise((r) => setTimeout(r, ms / 1000)),
     });
+    // The wait ran out with the box still starting: not done (exit 3), and how to follow it.
     expect(await connect(CH, { waitMs: 100 }, deps)).toEqual({
-      status: "in_progress", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE, next: "pgai mon instances watch i-1",
+      status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE,
+      next: "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1",
     });
     expect(polls).toBeGreaterThan(2);
   });
@@ -1346,6 +1352,30 @@ describe("mon deploy", () => {
     expect(views).toBe(1);
   });
 
+  // REV r4/r5 potential (CWE-150): platform text (details, hints, a box state) reaches the terminal as text, never as escapes.
+  test("server text for a person: escape sequences and control characters are neutralised, line breaks kept", () => {
+    const ESC = "Refused\x1b[2J\x1b[31m by\x1b]8;;https://evil.example\x07 the\tplatform\r\x00\x7f\x9b2J\nHint: re-run";
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+    for (const status of ["action_required", "failed", "ready", "in_progress"] as const) {
+      const lines = resultLines({ status, provider: "supabase", name: "n", id: "i-1", next: ESC });
+      expect(lines.join("\n")).not.toMatch(controls);
+      expect(lines.join("\n")).toContain("Refused");
+    }
+    expect(resultLines({ status: "failed", provider: "supabase", name: "n", next: ESC })[0]).toMatch(/^Refused +by +the +platform *\nHint: re-run$/);
+    const ev = (event: ProgressEvent["event"], message: string, more: Partial<ProgressEvent> = {}): ProgressEvent => ({ event, elapsed_s: 0, message, ...more });
+    for (const tty of [false, true]) {
+      const out: string[] = [];
+      const view = { start() {}, advance() {}, log(m: string) { out.push(m); }, setNote(m: string) { out.push(m); }, complete() {}, fail() {}, stop() {} };
+      const p = stepProgress({ json: false, tty, makeView: () => view, writeLine: (s) => out.push(s), writeEvent: () => {} });
+      p.progress(ev("preparing", `Note: ${ESC}`));
+      p.progress(ev("billing", `Estimated cost: ${ESC}`));
+      p.progress(ev("provisioning", `Warning: ${ESC}`));
+      p.progress(ev("box", `Monitoring box: ${ESC}`, { state: "\x1b[2Jstarting", id: "i-1" }));
+      expect(out.length).toBeGreaterThan(2);
+      for (const line of out) expect(line).not.toMatch(controls);
+    }
+  });
+
   test("REV r1: a note in the next action reaches a person at a terminal", () => {
     expect(resultLines({ status: "ready", provider: "self-managed", name: "n", id: "i-1", health_url: "https://h", dashboard_url: null,
       next: "Open https://h; --name ignored: this database is already monitored as n" }))
@@ -1731,6 +1761,294 @@ describe("mon deploy on the paid path: the price before the box", () => {
     f.deps.quote = quoted({}, f.calls);
     await connect(CH, { waitMs: 0 }, f.deps);
     expect(f.calls).toEqual(["list"]);
+  });
+});
+
+describe("mon deploy for Supabase: connect the org through the browser (platform-all#890)", () => {
+  const REF = "abcdefghijklmnopqrst";
+  const SB = `postgresql://postgres:secretpw@db.${REF}.supabase.co:5432/postgres`;
+  const SB_NAME = `db.${REF}.supabase.co/postgres`;
+  // What the platform gets to find the project: the URL without the login.
+  const SB_PUBLIC = `postgresql://db.${REF}.supabase.co:5432/postgres`;
+  const AUTH = "https://api.supabase.com/v1/oauth/authorize?client_id=c&state=s";
+  const sbRow = (status: string | null) => row(status, { name: SB_NAME, provider: "supabase", cluster: `db.${REF}.supabase.co:5432`, database: "postgres", host_metrics: false });
+  const make = (over: Parameters<typeof fake>[0] & { statuses?: { status: string; error?: string }[] } = {}) => {
+    const statuses = over.statuses ?? [];
+    let polled = 0;
+    const f = fake({ rows: [undefined, sbRow("launch_requested"), sbRow("active")], ...over });
+    f.deps.quote = async (coupon, cluster) => { f.calls.push(`quote${cluster ? ` ${cluster}` : ""}${coupon ? ` ${coupon}` : ""}`); return { ...FREE_QUOTE, ...(coupon ? { promo: { code: coupon, valid: true } } : {}) }; };
+    f.deps.supabaseStart = over.supabaseStart ?? (async (dbUrl) => { f.calls.push(`start ${dbUrl}`); return { connected: true, project_ref: REF }; });
+    f.deps.supabaseStatus = over.supabaseStatus ?? (async (id) => { f.calls.push(`status ${id}`); return statuses[Math.min(polled++, statuses.length - 1)] as never; });
+    f.deps.supabaseConnect = over.supabaseConnect ?? (async (body) => { f.calls.push(`connect ${JSON.stringify(body)}`); return { id: "i-1", name: SB_NAME, status: "launch_requested" }; });
+    f.deps.openUrl = over.openUrl ?? ((url) => { f.calls.push(`open ${url}`); });
+    return f;
+  };
+  const oauth = (f: ReturnType<typeof make>) => {
+    f.deps.supabaseStart = async (dbUrl) => { f.calls.push(`start ${dbUrl}`); return { auth_url: AUTH, session_id: "sess-1" }; };
+  };
+
+  // The price is the org's (a Supabase provision bills every box), not a per-cluster one: no db_server.
+  test("an org already connected to Supabase: price, then the box; the database is never logged in to", async () => {
+    const { deps, calls } = make();
+    const result = await connect(SB, { waitMs: 0 }, deps);
+    expect(result).toEqual({
+      status: "in_progress", provider: "supabase", name: SB_NAME, id: "i-1", dashboard_url: null, host_metrics: false,
+      ...FREE, next: "pgai mon instances watch i-1",
+    });
+    expect(calls).toEqual(["list", `start ${SB_PUBLIC}`, "quote", `connect ${JSON.stringify({ project_ref: REF })}`]);
+  });
+
+  // Live on the preview (2026-10-13): the box stayed launch_requested and deploy ended with exit 0 after its wait.
+  test("the box still launch_requested when the wait ends: action required (exit 3), resume with instances watch", async () => {
+    let t = 0;
+    const { deps } = make({ rows: [undefined, sbRow("launch_requested")], now: () => t, sleep: async (ms) => { t += ms; } });
+    expect(await connect(SB, { waitMs: 20 * 60_000 }, deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE,
+      next: "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1",
+    });
+    expect(t).toBeGreaterThanOrEqual(20 * 60_000);
+  });
+
+  // REV r1 (note_4008991901): the CLI neither prepares the database nor runs the checkup here; the box does both, later.
+  test("at a terminal the steps are Supabase's: no step is done before the box does it", async () => {
+    const out: string[] = [];
+    const view = new StepView("Deploying", monitoringSteps("supabase"), false, (s) => out.push(s), () => 0);
+    const steps = stepProgress({ json: false, tty: true, makeView: () => view, writeLine: (s) => out.push(`${s}\n`), writeEvent: () => {} });
+    const { deps } = make({ rows: [undefined, sbRow("launch_requested")], progress: steps.progress, now: () => 0 });
+    await connect(SB, { waitMs: 0 }, deps);
+    expect(out.join("")).toBe([
+      "Estimated cost: free (1 of 1 free slots)",
+      "Deploying",
+      "Connect Supabase: done (0s)",
+      "Create the monitoring box: started",
+      "Create the monitoring box: done (0s)",
+      "Prepare the database and install monitoring (about 5 min): started",
+      "",
+    ].join("\n"));
+  });
+
+  test("another database of the project, monitored on its own, is not this deploy's box: provisions", async () => {
+    const { deps, calls } = make({ rows: [{ ...sbRow("active"), id: "i-orders", database: "orders" }, sbRow("launch_requested")] });
+    const result = await connect(SB, { waitMs: 0 }, deps);
+    expect(result).toMatchObject({ status: "in_progress", id: "i-1" });
+    expect(calls).toContain(`connect ${JSON.stringify({ project_ref: REF })}`);
+  });
+
+  test("Ctrl-C while the box request is in flight: the box exists, so the run detaches without polling", async () => {
+    let stop = false;
+    const f = make();
+    f.deps.supabaseConnect = async () => { stop = true; return { id: "i-1", name: SB_NAME, status: "launch_requested" }; };
+    f.deps.aborted = () => stop;
+    expect(await connect(SB, { waitMs: 60_000 }, f.deps)).toMatchObject({ status: "in_progress", id: "i-1", next: "pgai mon instances watch i-1" });
+    expect(f.calls.filter((c) => c === "sleep")).toEqual([]);
+  });
+
+  test("a pooler URL names the same project: the project ref from the user name", async () => {
+    const { deps, calls } = make();
+    const result = await connect(`postgresql://postgres.${REF}:secretpw@aws-0-eu-central-1.pooler.supabase.com:6543/postgres`, { waitMs: 0 }, deps);
+    expect(result).toMatchObject({ status: "in_progress", provider: "supabase", name: SB_NAME });
+    expect(calls[1]).toBe(`start ${SB_PUBLIC}`);
+  });
+
+  test("no Supabase connection yet: the browser opens on the consent page, deploy waits for it, then provisions", async () => {
+    const events: ProgressEvent[] = [];
+    const f = make({ statuses: [{ status: "pending" }, { status: "pending" }, { status: "connected" }], progress: (e) => events.push(e) });
+    oauth(f);
+    const result = await connect(SB, { waitMs: 60_000, name: "orders", coupon: "WELCOME", vcpus: 2 }, f.deps);
+    expect(result).toMatchObject({ status: "ready", provider: "supabase", name: SB_NAME, id: "i-1" });
+    expect(f.calls.slice(0, 10)).toEqual([
+      "list", `start ${SB_PUBLIC}`, `open ${AUTH}`,
+      "status sess-1", "sleep", "status sess-1", "sleep", "status sess-1",
+      "quote WELCOME",
+      `connect ${JSON.stringify({ project_ref: REF, name: "orders", promo_code: "WELCOME", vcpus: 2 })}`,
+    ]);
+    // The link is printed too (another machine, a browser that did not open), and is its own field for a script.
+    expect(events[0]).toMatchObject({ event: "preparing", auth_url: AUTH,
+      message: `Connect Supabase to PostgresAI: approve access in the browser (open ${AUTH} if it did not open). Waiting...` });
+    expect(events.map((e) => e.event)).toContain("box");
+  });
+
+  // REV r4/r5 potential: the link comes from the platform; only Supabase's own https page is opened or shown.
+  test("a consent link that is not https on api.supabase.com: failed, never opened, shown or waited for", async () => {
+    for (const bad of [
+      "http://api.supabase.com/v1/oauth/authorize?state=s", "https://api.supabase.com.evil.example/v1/oauth/authorize",
+      "https://evil.example/?https://api.supabase.com/", "https://user@evil.example/", "file:///etc/passwd",
+      "x-scheme://api.supabase.com/", "https://evil@api.supabase.com/", "https://api.supabase.com:8443/", "--help", "javascript:alert(1)", "https://api.supabase.com\x1b[2J/",
+    ]) {
+      for (const o of [{ waitMs: 60_000 }, { waitMs: 0 }, { waitMs: 0, agent: true }]) {
+        const events: ProgressEvent[] = [];
+        const f = make({ statuses: [{ status: "connected" }], progress: (e) => events.push(e) });
+        f.deps.supabaseStart = async () => ({ auth_url: bad, session_id: "sess-1" });
+        const result = await connect(SB, o, f.deps);
+        expect(result).toEqual({ status: "failed", provider: "supabase", name: SB_NAME,
+          next: "The platform sent a Supabase consent link that is not https://api.supabase.com: not opened. Re-run pgai mon deploy later." });
+        expect(f.calls).toEqual(["list"]);
+        expect(events).toEqual([]);
+      }
+    }
+  });
+
+  test("an agent (or --wait 0): the consent link as the next step (exit 3), nothing waited for or created", async () => {
+    for (const [o, next] of [
+      [{ agent: true }, `Open ${AUTH} in a browser and approve PostgresAI's access to Supabase, then call deploy_monitoring again`],
+      [{}, `Open ${AUTH} in a browser and approve PostgresAI's access to Supabase, then re-run`],
+    ] as const) {
+      const f = make();
+      oauth(f);
+      expect(await connect(SB, { waitMs: 0, ...o }, f.deps)).toEqual({ status: "action_required", provider: "supabase", name: SB_NAME, next });
+      expect(f.calls).toEqual(["list", `start ${SB_PUBLIC}`]);
+    }
+  });
+
+  test("an agent's URL needs no password: it only names the project", async () => {
+    const { deps, calls } = make();
+    expect((await connect(`postgresql://postgres@db.${REF}.supabase.co:5432/postgres`, { waitMs: 0, agent: true }, deps)).status).toBe("in_progress");
+    expect(calls[1]).toBe(`start ${SB_PUBLIC}`);
+  });
+
+  test("Supabase refused, or nobody approved in time: what happened and the re-run, nothing created", async () => {
+    const refused = make({ statuses: [{ status: "error", error: "access_denied" }] });
+    oauth(refused);
+    expect(await connect(SB, { waitMs: 60_000 }, refused.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "Supabase did not connect (access_denied): re-run to try again",
+    });
+    expect(refused.calls).toEqual(["list", `start ${SB_PUBLIC}`, `open ${AUTH}`, "status sess-1"]);
+
+    let t = 0;
+    const late = make({ statuses: [{ status: "pending" }], now: () => (t += 20_000) });
+    oauth(late);
+    expect(await connect(SB, { waitMs: 60_000 }, late.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: `Open ${AUTH} in a browser and approve PostgresAI's access to Supabase, then re-run`,
+    });
+    expect(late.calls.filter((c) => c.startsWith("connect"))).toEqual([]);
+  });
+
+  test("the consent link expires before --wait ends: polling stops at expires_at, and says to re-run for a new link", async () => {
+    const T0 = Date.parse("2026-10-13T12:00:00Z");
+    let t = T0;
+    const f = make({ statuses: [{ status: "pending" }], now: () => (t += 20_000) });
+    f.deps.supabaseStart = async (dbUrl) => {
+      f.calls.push(`start ${dbUrl}`);
+      return { auth_url: AUTH, session_id: "sess-1", expires_at: new Date(T0 + 30_000).toISOString() };
+    };
+    expect(await connect(SB, { waitMs: 600_000 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one",
+    });
+    expect(f.calls).toEqual(["list", `start ${SB_PUBLIC}`, `open ${AUTH}`, "status sess-1"]);
+  });
+
+  test("Ctrl-C while waiting for the browser: cancelled, nothing created", async () => {
+    let stop = false;
+    const f = make({ statuses: [{ status: "pending" }], aborted: () => stop });
+    oauth(f);
+    f.deps.sleep = async () => { f.calls.push("sleep"); stop = true; };
+    await expect(connect(SB, { waitMs: 60_000 }, f.deps)).rejects.toBeInstanceOf(CancelledError);
+    expect(f.calls.filter((c) => c.startsWith("connect") || c.startsWith("quote"))).toEqual([]);
+  });
+
+  test("already monitored: its state, no browser and no price", async () => {
+    const { deps, calls } = make({ rows: [sbRow("active")] });
+    expect(await connect(SB, { waitMs: 0 }, deps)).toMatchObject({ status: "ready", provider: "supabase", id: "i-1" });
+    expect(calls).toEqual(["list"]);
+  });
+
+  test("a billed box: accepted (--yes) goes with accept_price; without it, or with no payment method, nothing is created", async () => {
+    const PAID = { ...FREE_QUOTE, billed: true, free_slots: { remaining: 0, total: 0 }, has_payment_method: true };
+    const yes = make();
+    yes.deps.quote = async () => PAID;
+    await connect(SB, { waitMs: 0, yes: true }, yes.deps);
+    expect(yes.calls.at(-1)).toBe(`connect ${JSON.stringify({ project_ref: REF, accept_price: true })}`);
+
+    const no = make();
+    no.deps.quote = async () => PAID;
+    expect((await connect(SB, { waitMs: 0 }, no.deps)).next).toBe("Re-run with --yes to accept $512.00/month per database cluster (scale plan)");
+    expect(no.calls.filter((c) => c.startsWith("connect"))).toEqual([]);
+
+    const card = make();
+    card.deps.quote = async () => ({ ...PAID, has_payment_method: false, requires_payment_method: true });
+    expect((await connect(SB, { waitMs: 0, yes: true }, card.deps)).next).toBe("Add a payment method at https://console.postgres.ai/acme/billing, then re-run.");
+    expect(card.calls.filter((c) => c.startsWith("connect"))).toEqual([]);
+
+    const gone = make({ supabaseConnect: async () => { throw new HttpStatusError("cloud monitoring supabase connect: HTTP 402\nno payment method", 402); } });
+    expect((await connect(SB, { waitMs: 0 }, gone.deps)).next).toBe("Add a payment method at https://console.postgres.ai/acme/billing, then re-run.");
+  });
+
+  test("the box monitors the project's postgres database: another database is refused before anything is called", async () => {
+    const f = make({ rows: [sbRow("active")] });
+    expect(await connect(`postgresql://postgres:p@db.${REF}.supabase.co:5432/orders`, { waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: `db.${REF}.supabase.co/orders`,
+      next: "PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database",
+    });
+    expect(f.calls).toEqual([]);
+  });
+
+  test("the platform refuses the project (another Supabase organization is connected) or the user (not an admin): its words, exit 3", async () => {
+    const other = make({ supabaseStart: async () => { throw new HttpStatusError("cloud monitoring supabase start: HTTP 409\nSupabase project x is not in Acme.\nUse a project of that Supabase organization.", 409); } });
+    expect(await connect(SB, { waitMs: 0 }, other.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, next: "Supabase project x is not in Acme.\nUse a project of that Supabase organization.",
+    });
+    const member = make({ supabaseStart: async () => { throw new HttpStatusError("cloud monitoring supabase start: HTTP 403\nnot an admin", 403); } });
+    expect((await connect(SB, { waitMs: 0 }, member.deps)).status).toBe("action_required");
+  });
+
+  test("the platform refuses the box (an org billed by a partner): its words, exit 3", async () => {
+    const partner = make({ supabaseConnect: async () => { throw new HttpStatusError("cloud monitoring supabase connect: HTTP 409\nThis organization is billed by a partner.\nDeploy monitoring from the console.", 409); } });
+    expect(await connect(SB, { waitMs: 0 }, partner.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME, next: "This organization is billed by a partner.\nDeploy monitoring from the console.",
+    });
+  });
+
+  test("--location is refused before anything is called: the platform picks the Supabase box's location", async () => {
+    const { deps, calls } = make();
+    expect(await connect(SB, { waitMs: 0, location: "hel1" }, deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a box removed before it became active: failed, not still in progress", async () => {
+    const { deps } = make({ rows: [undefined, undefined] });
+    expect(await connect(SB, { waitMs: 60_000 }, deps)).toEqual({
+      status: "failed", provider: "supabase", name: SB_NAME, id: "i-1", ...FREE,
+      next: "The monitoring box was removed before it became active: see pgai mon instances list, then re-run pgai mon deploy",
+    });
+  });
+
+  test("a URL that names no Supabase project, and --reset-password: refused before anything is called", async () => {
+    const f = make();
+    expect(await connect("postgresql://postgres:p@10.0.0.5:5432/postgres", { provider: "supabase", waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: "10.0.0.5/postgres",
+      next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>)",
+    });
+    expect(await connect(SB, { resetPassword: true, waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: "--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API",
+    });
+    expect(f.calls).toEqual([]);
+  });
+
+  // postgresai!483: the platform creates postgres_ai_mon on Supabase, so another role would never be used.
+  test.each([
+    ["a custom role", "my_mon", false],
+    ["a blank one", "  ", false],
+    ["a custom role, from an agent", "my_mon", true],
+  ] as const)("--monitoring-user, %s: refused before anything is called", async (_what, monitoringUser, agent) => {
+    const f = make();
+    expect(await connect(SB, { monitoringUser, agent, waitMs: 0 }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: SB_NAME,
+      next: `${agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API`,
+    });
+    expect(f.calls).toEqual([]);
+  });
+
+  test("--monitoring-user postgres_ai_mon (the CLI's default) is the role the platform creates: deploys", async () => {
+    const { deps, calls } = make();
+    expect(await connect(SB, { monitoringUser: " postgres_ai_mon ", waitMs: 0 }, deps)).toMatchObject({ status: "in_progress", id: "i-1" });
+    expect(calls).toContain(`connect ${JSON.stringify({ project_ref: REF })}`);
   });
 });
 
@@ -2417,6 +2735,35 @@ describe("MCP deploy_monitoring", () => {
       });
       expect((await call({ database_url: "postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app" })).next)
         .toBe("Finish in the console: https://console.example/acme/monitoring/scale/create/rds");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("Supabase without a connection: the consent link to open, then call again (no wait, not an error)", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        if (path.endsWith("/rpc/cloud_monitoring_supabase_start")) {
+          bodies.push((await req.json()) as Record<string, unknown>);
+          return Response.json({ auth_url: "https://api.supabase.com/v1/oauth/authorize?state=s", session_id: "sess-1" });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const opts = { apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}`, uiBaseUrl: "https://console.example" };
+    try {
+      const reply = await handleToolCall({ params: { name: "deploy_monitoring", arguments: { database_url: "postgresql://postgres:pw@db.abcdefghijklmnopqrst.supabase.co:5432/postgres" } } }, opts);
+      expect(reply.isError).toBe(false);
+      expect(JSON.parse(reply.content[0].text)).toEqual({
+        status: "action_required", provider: "supabase", name: "db.abcdefghijklmnopqrst.supabase.co/postgres",
+        next: "Open https://api.supabase.com/v1/oauth/authorize?state=s in a browser and approve PostgresAI's access to Supabase, then call deploy_monitoring again",
+      });
+      // The password never leaves this machine.
+      expect(bodies).toEqual([{ db_url: "postgresql://db.abcdefghijklmnopqrst.supabase.co:5432/postgres" }]);
     } finally {
       server.stop(true);
     }

@@ -28,6 +28,12 @@ describe("pgai mon deploy", () => {
     expect(r.stdout.replace(/\s+/g, " ")).toContain("generic (direct PostgreSQL URL; alias: self-managed)");
   });
 
+  test("the help says how a wait that ends before the box is ready exits, and names the last JSON event", async () => {
+    const help = (await run(["mon", "deploy", "--help"])).stdout.replace(/\s+/g, " ");
+    expect(help).toContain("Exit codes: 0 ready (or in progress with --no-wait), 1 failed, 3 action required (see \"next\"), also when the wait ends before the box is ready.");
+    expect(help).toContain("The last event of a run is {\"event\":\"done\",\"status\":...,\"next\":...}; not after Ctrl-C (exit 130) or an error in the options or --org before the run starts (an error event, exit 1).");
+  });
+
   test("--monitoring-user reaches mon deploy (a blank one is refused)", async () => {
     const help = (await run(["mon", "deploy", "--help"])).stdout;
     expect(help).toContain("--monitoring-user <name>");

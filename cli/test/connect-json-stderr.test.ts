@@ -143,6 +143,50 @@ test("a config file that cannot be read: its warning is a JSON event, from the f
   expect(JSON.parse(r.stdout).status).toBe("action_required");
 });
 
+// Live on the preview (2026-10-13): the box stayed launch_requested for the whole wait, and deploy
+// exited 0 with no last event. Now: exit 3, the result on stdout, and a last "done" event on stderr.
+test("the wait ends with the box still starting: exit 3, the result on stdout, a last done event", async () => {
+  const REF = "abcdefghijklmnopqrst";
+  const box = { id: "i-1", name: `db.${REF}.supabase.co/postgres`, cluster: `db.${REF}.supabase.co:5432`, provider: "supabase", status: "launch_requested", dashboard_url: null, host_metrics: false };
+  let created = false;
+  const api = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: (req) => {
+      const rpc = new URL(req.url).pathname.split("/").pop();
+      if (rpc === "cloud_monitoring_list") return Response.json(created ? [box] : []);
+      if (rpc === "cloud_monitoring_supabase_start") return Response.json({ connected: true, project_ref: REF });
+      if (rpc === "cloud_monitoring_quote") return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 50000, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
+      if (rpc === "cloud_monitoring_supabase_connect") { created = true; return Response.json({ id: box.id, name: box.name, status: "launch_requested" }); }
+      return Response.json([]);
+    },
+  });
+  try {
+    const r = await run(["mon", "deploy", `postgresql://postgres@db.${REF}.supabase.co:5432/postgres`, "--json", "--wait", "0.001"],
+      { PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: `http://127.0.0.1:${api.port}` });
+    const next = "Still in progress (box: starting) when the wait ended: resume with pgai mon instances watch i-1";
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.stdout)).toMatchObject({ status: "action_required", id: "i-1", next });
+    const events = expectJsonLines(r.lines);
+    expect(events.at(-1)).toEqual({ event: "done", status: "action_required", id: "i-1", next } as never);
+  } finally {
+    api.stop(true);
+  }
+}, 60_000);
+
+// The help says: no done event after an error in the options (an error event, exit 1).
+// A bad --wait, --vcpus or URL used to end with a done event and no error event.
+test.each([
+  [[URL_, "--wait", "abc"]],
+  [[URL_, "--vcpus", "abc"]],
+  [["mysql://u@h/db"]],
+])("an error in the options, %p: one error event, no done event, exit 1", async (args) => {
+  const r = await run(["mon", "deploy", ...args, "--json"]);
+  expect(r.status).toBe(1);
+  const out = JSON.parse(r.stdout) as { status: string; next: string };
+  expect(out.status).toBe("failed");
+  expect(expectJsonLines(r.lines)).toEqual([{ event: "log", level: "error", message: out.next }]);
+});
+
 // A person at a terminal: Commander's errors are text, with the help after them,
 // as before. --json given as the value of --wait (deploy's) or of --api-key
 // (the root's) does not ask for JSON.
