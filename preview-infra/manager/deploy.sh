@@ -130,15 +130,11 @@ cp "${PREVIEW_BASE_DIR}/shared/instances.yml" instances.yml 2>/dev/null || true
 # =============================================================================
 # GENERATE COMPOSE FILE
 # =============================================================================
+[ -n "${GRAFANA_PASSWORD:-}" ] || { log "ERROR: GRAFANA_PASSWORD is empty or missing in .env"; exit 1; }
 export BRANCH_SLUG COMMIT_SHA GRAFANA_PASSWORD PGAI_REGISTRY PGAI_TAG
-log "GRAFANA_PASSWORD from env: ${GRAFANA_PASSWORD}"
 envsubst '$BRANCH_SLUG $GRAFANA_PASSWORD $PGAI_REGISTRY $PGAI_TAG' \
   < "${PREVIEW_BASE_DIR}/shared/docker-compose.preview.template.yml" \
   > docker-compose.yml
-
-# Debug: verify password was substituted correctly
-COMPOSE_PASSWORD=$(grep GF_SECURITY_ADMIN_PASSWORD docker-compose.yml | head -1 | awk '{print $2}')
-log "GRAFANA_PASSWORD in compose: ${COMPOSE_PASSWORD}"
 
 # =============================================================================
 # STATE FILE (NO secrets - only metadata)
@@ -230,4 +226,4 @@ done
 log "SUCCESS: Preview deployed"
 log "URL: https://preview-${BRANCH_SLUG}.pgai.watch"
 log "Username: monitor"
-log "Password: ${GRAFANA_PASSWORD}"
+log "Password: retrieve from the preview VM's restricted .env file"
