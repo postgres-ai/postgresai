@@ -58,7 +58,7 @@ describe("init module", () => {
     expect(plan.database).toBe("mydb");
     const roleStep = plan.steps.find((s: { name: string }) => s.name === "01.role");
     expect(roleStep).toBeTruthy();
-    expect(roleStep!.sql).toMatch(/do\s+\$\$/i);
+    expect(roleStep!.sql).toMatch(/do\s+\$pgai_do_0\$/i);
     expect(roleStep!.sql).toMatch(/create\s+user/i);
     expect(roleStep!.sql).toMatch(/alter\s+user/i);
     expect(plan.steps.some((s: { optional?: boolean }) => s.optional)).toBe(false);
@@ -636,9 +636,9 @@ describe("init module", () => {
     expect(permStep!.sql).toContain("role_path constant text := 'pg_catalog, postgres_ai, public, pg_temp';");
     expect(permStep!.sql).toContain("db_path text := role_path;");
     expect(permStep!.sql).toContain("db_path := 'pg_catalog, postgres_ai, ' || quote_ident(ext_schema) || ', public, pg_temp';");
-    expect(permStep!.sql).toContain(`execute format('alter user "${DEFAULT_MONITORING_USER}" set search_path = %s', role_path);`);
+    expect(permStep!.sql).toContain(`execute format('alter user %I set search_path = %s', '${DEFAULT_MONITORING_USER}', role_path);`);
     expect(permStep!.sql).toContain(
-      `execute format('alter user "${DEFAULT_MONITORING_USER}" in database %I set search_path = %s', pg_catalog.current_database(), db_path);`
+      `execute format('alter user %I in database %I set search_path = %s', '${DEFAULT_MONITORING_USER}', pg_catalog.current_database(), db_path);`
     );
     expect(permStep!.sql).not.toContain('"$user"');
   });
@@ -654,7 +654,7 @@ describe("init module", () => {
     const permStep = plan.steps.find((s) => s.name === "03.permissions");
     expect(permStep).toBeTruthy();
     // Should include DO block that grants USAGE on extension schema
-    expect(permStep!.sql).toMatch(/do\s+\$\$/i);
+    expect(permStep!.sql).toMatch(/do\s+\$pgai_do_0\$/i);
     expect(permStep!.sql).toMatch(/pg_stat_statements/);
     expect(permStep!.sql).toMatch(/grant usage on schema/i);
   });

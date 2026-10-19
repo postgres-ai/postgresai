@@ -14,7 +14,7 @@ drop view if exists postgres_ai.pg_statistic;
 -- permissions (04, 05). A non-superuser admin cannot revoke a grant that a
 -- superuser made. Pass 1 revokes. Pass 2 sends one "grant left" WARNING for
 -- each grant that stays. The CLI shows these WARNINGs and exits 1.
-do $$
+do {{DO_QUOTE}}
 declare
   role_oid oid;
   stmt text;
@@ -80,7 +80,7 @@ begin
       end if;
     end loop;
   end loop;
-end $$;
+end {{DO_QUOTE}};
 
 -- Note: USAGE on public is typically granted by default; we don't revoke it
 -- to avoid breaking other applications that may rely on it.
