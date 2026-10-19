@@ -34,6 +34,10 @@ storage:
   storageClassName: ""
 
 global:
+  # Set this to the chart's Secret name when using existingSecret, nameOverride,
+  # or fullnameOverride. The chart rejects a mismatch before Grafana deploys.
+  # The Grafana subchart reads it for datasource credential environment variables.
+  postgresAiSecretName: ""
   clusterName: default
   nodeName: default
   customTags: {}
@@ -245,6 +249,18 @@ grafana:
     existingSecret: ""  # Set to: <your-release-name>-postgres-ai-monitoring-secrets (or configure manually)
     userKey: grafana-admin-user
     passwordKey: grafana-admin-password
+  # Keep datasource passwords in the Kubernetes Secret, not the datasource
+  # ConfigMap. Grafana expands the $PGAI_* variables in provisioning YAML.
+  envValueFrom:
+    PGAI_SINK_POSTGRES_PASSWORD:
+      secretKeyRef:
+        name: '{{ .Values.global.postgresAiSecretName | default (printf "%s-secrets" (ternary (.Release.Name | trunc 45 | trimSuffix "-") (printf "%s-postgres-ai-monitoring" .Release.Name | trunc 45 | trimSuffix "-") (contains "postgres-ai-monitoring" .Release.Name))) }}'
+        key: postgres-password
+    PGAI_VM_AUTH_PASSWORD:
+      secretKeyRef:
+        name: '{{ .Values.global.postgresAiSecretName | default (printf "%s-secrets" (ternary (.Release.Name | trunc 45 | trimSuffix "-") (printf "%s-postgres-ai-monitoring" .Release.Name | trunc 45 | trimSuffix "-") (contains "postgres-ai-monitoring" .Release.Name))) }}'
+        key: vm-auth-password
+        optional: true
   plugins:
     - yesoreyeram-infinity-datasource
 
