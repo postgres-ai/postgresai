@@ -137,6 +137,28 @@ index_pilot:install_sh:pg17:
     - name: postgres:17-alpine
       alias: postgres
 
+# Run on merge request pipelines too; the older installer jobs above only run
+# when CI_COMMIT_BRANCH is set, so they do not gate merge request changes.
+index_pilot:installer:sql-quoting:
+  stage: test
+  image: postgres:15-alpine
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+  variables:
+    POSTGRES_PASSWORD: "pw'; SELECT 1; --"
+  before_script:
+    - apk add --no-cache bash coreutils
+  script:
+    - bash "$CI_PROJECT_DIR/components/index_pilot/ci/test_installer_quoting.sh"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - components/index_pilot/**/*
+    - if: '$CI_COMMIT_BRANCH'
+      changes:
+        - components/index_pilot/**/*
+
 # Test on managed service simulation (non-superuser)
 index_pilot:test:nonsuperuser:
   stage: test

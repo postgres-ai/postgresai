@@ -163,6 +163,14 @@ psql_cmd() {
   psql "${QUIET_ARGS[@]}" -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${db}" "$@" -v ON_ERROR_STOP=on -At -c "${sql}"
 }
 
+# Read SQL from stdin so psql can quote variables with :'literal' or :"identifier".
+# Variable interpolation is not performed for SQL supplied with -c.
+psql_script() {
+  local db="$1"
+  shift
+  psql "${QUIET_ARGS[@]}" -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${db}" -v ON_ERROR_STOP=on -At "$@" -f -
+}
+
 ##
 # Description: Execute a SQL file via psql with standard flags.
 # Globals: QUIET_ARGS, DB_HOST, DB_PORT, DB_USER
@@ -188,10 +196,15 @@ ensure_control_db() {
     return 0
   fi
   local exists
-  exists=$(psql_cmd postgres "select 1 from pg_database where datname = '${CONTROL_DB}'") || true
+  exists=$(psql_script postgres -v "control_db=${CONTROL_DB}" <<'SQL'
+select 1 from pg_catalog.pg_database where datname = :'control_db';
+SQL
+  ) || true
   if [[ -z "${exists}" ]]; then
     print_info "Creating control database ${CONTROL_DB}"
-    psql_cmd postgres "create database ${CONTROL_DB};"
+    psql_script postgres -v "control_db=${CONTROL_DB}" <<'SQL'
+create database :"control_db";
+SQL
     print_ok "Control database created: ${CONTROL_DB}"
   else
     print_ok "Control database exists: ${CONTROL_DB}"
@@ -299,36 +312,54 @@ register_target() {
 
   print_info "Configuring FDW server '${server}' to ${fdw_host}:${DB_PORT} dbname=${TARGET_DB}"
   # Ensure current user has FDW usage (useful on managed services)
-  psql_cmd "${CONTROL_DB}" "grant usage on foreign data wrapper postgres_fdw to \"${DB_USER}\";" || true
+  psql_script "${CONTROL_DB}" -v "db_user=${DB_USER}" <<'SQL' || true
+grant usage on foreign data wrapper postgres_fdw to :"db_user";
+SQL
   if [[ "${FORCE}" == true ]]; then
-    psql_cmd "${CONTROL_DB}" "drop server if exists ${server} cascade;" || true
+    psql_script "${CONTROL_DB}" -v "server=${server}" <<'SQL' || true
+drop server if exists :"server" cascade;
+SQL
   fi
 
   # Create or replace server
-  psql_cmd "${CONTROL_DB}" "do \$\$ begin
-    if exists (select 1 from pg_foreign_server where srvname = '${server}') then
-      perform 1; -- exists, keep as-is
-    else
-      execute format('create server %I foreign data wrapper postgres_fdw options (host %L, port %L, dbname %L)', '${server}', '${fdw_host}', '${DB_PORT}', '${TARGET_DB}');
-    end if;
-  end \$\$;"
+  psql_script "${CONTROL_DB}" -v "server=${server}" -v "fdw_host=${fdw_host}" -v "db_port=${DB_PORT}" -v "target_db=${TARGET_DB}" <<'SQL'
+select pg_catalog.format('create server %I foreign data wrapper postgres_fdw options (host %L, port %L, dbname %L)',
+              :'server', :'fdw_host', :'db_port', :'target_db')
+where not exists (select 1 from pg_catalog.pg_foreign_server where srvname = :'server')
+\gexec
+SQL
 
   # Upsert into target_databases
-  psql_cmd "${CONTROL_DB}" "insert into index_pilot.target_databases(database_name, host, port, fdw_server_name, enabled)
-    values ('${TARGET_DB}', '${fdw_host}', ${DB_PORT}, '${server}', true)
-    on conflict (database_name) do update set host=excluded.host, port=excluded.port, fdw_server_name=excluded.fdw_server_name, enabled=true;"
+  psql_script "${CONTROL_DB}" -v "target_db=${TARGET_DB}" -v "fdw_host=${fdw_host}" -v "db_port=${DB_PORT}" -v "server=${server}" <<'SQL'
+insert into index_pilot.target_databases(database_name, host, port, fdw_server_name, enabled)
+values (:'target_db', :'fdw_host', :'db_port'::int, :'server', true)
+on conflict (database_name) do update set host=excluded.host, port=excluded.port, fdw_server_name=excluded.fdw_server_name, enabled=true;
+SQL
 
   # User mapping for current_user (managed-services friendly)
   if [[ -n "${DB_PASS}" ]]; then
     print_info "Ensuring user mapping for current_user on server ${server}"
-    psql_cmd "${CONTROL_DB}" "drop user mapping if exists for current_user server ${server};" || true
-    psql_cmd "${CONTROL_DB}" "create user mapping for current_user server ${server} options (user '${DB_USER}', password '${DB_PASS}');" || true
+    psql_script "${CONTROL_DB}" -v "server=${server}" <<'SQL' || true
+drop user mapping if exists for current_user server :"server";
+SQL
+    # Hex-encode before inserting into the stdin script: only [0-9a-f] can
+    # reach SQL text, and the password is never included in psql's argv.
+    # This works with psql versions that predate \getenv.
+    local password_hex
+    password_hex=$(printf '%s' "${DB_PASS}" | od -An -v -tx1 | tr -d '[:space:]')
+    psql_script "${CONTROL_DB}" -v "server=${server}" -v "db_user=${DB_USER}" <<SQL || true
+select pg_catalog.format('create user mapping for current_user server %I options (user %L, password %L)',
+                         :'server', :'db_user', pg_catalog.convert_from(pg_catalog.decode('${password_hex}', 'hex'), 'UTF8'))
+\gexec
+SQL
   else
     print_info "Skipping user mapping password setup (PGPASSWORD not set)"
   fi
 
   print_info "Testing secure FDW connection via internal helper"
-  if psql_cmd "${CONTROL_DB}" "select index_pilot._connect_securely('${TARGET_DB}'::name);" > /dev/null 2>&1; then
+  if psql_script "${CONTROL_DB}" -v "target_db=${TARGET_DB}" > /dev/null 2>&1 <<'SQL'; then
+select index_pilot._connect_securely(:'target_db'::pg_catalog.name);
+SQL
     print_ok "FDW connection OK for target database '${TARGET_DB}'"
   else
     print_err "FDW connection test failed. Verify user mapping and network access."
