@@ -1,5 +1,7 @@
 # postgresai
 
+@../AGENTS.md
+
 AI-native PostgreSQL observability — monitoring, health checks, and root cause analysis.
 
 ## Development Guidelines
