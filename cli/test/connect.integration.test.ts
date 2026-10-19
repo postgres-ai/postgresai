@@ -478,6 +478,9 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       expect((await m.query("select current_user as u, pg_has_role(current_user, 'pg_monitor', 'member') as mon, pg_has_role(current_user, 'pg_read_all_stats', 'member') as stats")).rows[0])
         .toEqual({ u: role, mon: true, stats: true });
       await m.end();
+      // The custom role gets the same search_path as postgres_ai_mon: built-ins first, no "$user".
+      expect((await c.query("select rolconfig from pg_roles where rolname = $1", [role])).rows[0].rolconfig)
+        .toEqual(["search_path=pg_catalog, postgres_ai, public, pg_temp"]);
 
       // A role that can do more than monitor is refused, and left as it was.
       expect(await prepareDatabase(ADMIN!, "self-managed", { monitoringUser: "pgai_mon_priv" })).toEqual({

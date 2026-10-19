@@ -8,7 +8,7 @@
  * Endpoint: POST /v1/projects/{ref}/database/query
  */
 
-import { redactPasswordsInSql } from "./init";
+import { redactPasswordsInSql, roleSearchPathProblem } from "./init";
 
 const SUPABASE_API_BASE = "https://api.supabase.com";
 
@@ -756,28 +756,28 @@ export async function verifyInitSetupViaSupabase(params: {
     }
   }
 
-  // Check search_path
-  const rolcfgRes = await params.client.query(
-    `SELECT rolconfig FROM pg_catalog.pg_roles WHERE rolname = '${escapeLiteral(role)}'`,
+  // Check search_path: the row for this database if it sets search_path, else the role-wide row (setdatabase 0)
+  const spRes = await params.client.query(
+    `select cfg as setting
+from pg_catalog.pg_db_role_setting s, pg_catalog.unnest(s.setconfig) as cfg
+where s.setrole = (select oid from pg_catalog.pg_roles where rolname = '${escapeLiteral(role)}')
+  and s.setdatabase in (0, (select oid from pg_catalog.pg_database where datname = pg_catalog.current_database()))
+  and pg_catalog.starts_with(cfg, 'search_path=')
+order by s.setdatabase desc
+limit 1`,
     true
   );
-  const rolconfig = rolcfgRes.rows?.[0]?.rolconfig as string[] | null;
-  const spLine = Array.isArray(rolconfig)
-    ? rolconfig.find((v: string) => String(v).startsWith("search_path="))
-    : undefined;
+  const spLine = spRes.rows?.[0]?.setting as string | undefined;
   if (typeof spLine !== "string" || !spLine) {
     missingRequired.push("role search_path is set");
   } else {
-    const sp = spLine.toLowerCase();
-    if (
-      !sp.includes("postgres_ai") ||
-      !sp.includes("public") ||
-      !sp.includes("pg_catalog")
-    ) {
-      missingRequired.push(
-        "role search_path includes postgres_ai, public and pg_catalog"
-      );
-    }
+    // prepare-db adds the pg_stat_statements schema (e.g. 'extensions') to the path
+    const extSchemaRes = await params.client.query(
+      "SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON e.extnamespace = n.oid WHERE e.extname = 'pg_stat_statements'",
+      true
+    );
+    const problem = roleSearchPathProblem(spLine, extSchemaRes.rows?.[0]?.schema as string | undefined);
+    if (problem) missingRequired.push(problem);
   }
 
   // Check helper functions - first verify they exist to avoid has_function_privilege errors

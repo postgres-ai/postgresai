@@ -724,6 +724,123 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
+  // Each database gets its own role search_path with its pg_stat_statements schema.
+  // The role-wide value (setdatabase 0) is the base path, for databases not prepared yet.
+  test("role search_path per database: public, extensions and \"My Ext\", both prepare orders", async () => {
+    pg = await createTempPostgres();
+    const third = 'My "DB"';
+    const uriFor = (db: string, user = `postgres:${pg.postgresPassword}`) =>
+      `postgresql://${user}@127.0.0.1:${pg.port}/${encodeURIComponent(db)}`;
+    const admin = async (db: string, ...sqls: string[]) => {
+      const c = new Client({ connectionString: uriFor(db) });
+      await c.connect();
+      try {
+        let rows: any[] = [];
+        for (const sql of sqls) rows = (await c.query(sql)).rows;
+        return rows;
+      } finally {
+        await c.end();
+      }
+    };
+    const base = "search_path=pg_catalog, postgres_ai, public, pg_temp";
+    const ext = "search_path=pg_catalog, postgres_ai, extensions, public, pg_temp";
+    const myExt = 'search_path=pg_catalog, postgres_ai, "My Ext", public, pg_temp';
+    const settings = () => admin("testdb", `select coalesce(d.datname, '') as db, s.setconfig
+      from pg_db_role_setting s left join pg_database d on d.oid = s.setdatabase
+      where s.setrole = (select oid from pg_roles where rolname = 'postgres_ai_mon') order by coalesce(d.datname::text, '') collate "C"`);
+    const prepare = (db: string) => expect({ db, ...runCliInit([uriFor(db), "--password", "monpw", "--skip-optional-permissions"]) })
+      .toMatchObject({ db, status: 0 });
+    const verify = (db: string, status: number, user?: string) => {
+      const r = runCliInit([uriFor(db, user), "--verify", "--skip-optional-permissions"]);
+      expect({ db, user, status: r.status, out: r.stdout + r.stderr }).toMatchObject({ db, user, status });
+      return r.stdout + r.stderr;
+    };
+    try {
+      await admin("testdb", "create extension pg_stat_statements", "create database extdb", 'create database "My ""DB"""');
+      await admin("extdb", "create schema extensions", "create extension pg_stat_statements with schema extensions");
+      await admin(third, 'create schema "My Ext"', 'create extension pg_stat_statements with schema "My Ext"');
+
+      prepare("testdb");
+      prepare("extdb");
+      expect(await settings()).toEqual([
+        { db: "", setconfig: [base] },
+        { db: "extdb", setconfig: [ext] },
+        { db: "testdb", setconfig: [base] },
+      ]);
+      verify("testdb", 0);
+      verify("extdb", 0);
+
+      await admin("testdb", "alter role postgres_ai_mon reset all",
+        "alter role postgres_ai_mon in database testdb reset all", "alter role postgres_ai_mon in database extdb reset all");
+      prepare("extdb");
+      prepare("testdb");
+      prepare(third);
+      expect(await settings()).toEqual([
+        { db: "", setconfig: [base] },
+        { db: third, setconfig: [myExt] },
+        { db: "extdb", setconfig: [ext] },
+        { db: "testdb", setconfig: [base] },
+      ]);
+      for (const db of ["testdb", "extdb", third]) {
+        verify(db, 0);
+        verify(db, 0, "postgres_ai_mon:monpw");
+      }
+
+      // A row for this database without search_path: the role-wide value applies.
+      await admin("testdb", "alter role postgres_ai_mon in database testdb reset search_path",
+        "alter role postgres_ai_mon in database testdb set work_mem = '8MB'");
+      verify("testdb", 0);
+      // A role-wide value from an older prepare-db: verify fails, prepare-db sets the base path again.
+      await admin("testdb", "alter role postgres_ai_mon set search_path = pg_catalog, postgres_ai, extensions, public, pg_temp");
+      expect(verify("testdb", 1)).toContain("role search_path is pg_catalog, postgres_ai, public, pg_temp");
+      prepare("testdb");
+      expect((await settings()).filter((r) => r.db === "" || r.db === "testdb")).toEqual([
+        { db: "", setconfig: [base] },
+        { db: "testdb", setconfig: ["work_mem=8MB", base] },
+      ]);
+      verify("testdb", 0);
+
+      // pg_stat_statements moved after prepare-db: verify fails until prepare-db runs again.
+      await admin("extdb", "alter extension pg_stat_statements set schema public");
+      expect(verify("extdb", 1)).toContain("role search_path is pg_catalog, postgres_ai, public, pg_temp");
+      prepare("extdb");
+      verify("extdb", 0);
+    } finally {
+      await pg.cleanup();
+    }
+  }, { timeout: 120000 });
+
+  // CVE-2018-1058 class: the search_path block runs as the admin. An exact-type operator
+  // or function in public must not run. Run 2 reads the role-wide row (setdatabase = 0).
+  // Run 3 is the printed SQL in psql autocommit (--print-sql, mon deploy with no admin URL).
+  test("search_path block ignores public.=(oid, integer) and public.format(text, name, text), CLI and psql", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    try {
+      await c.query(`create table public.hijack (what text);
+        create function public.oid_eq_int(oid, integer) returns boolean language plpgsql as
+          $f$ begin insert into public.hijack values ('='); return $1 = $2::oid; end $f$;
+        create operator public.= (leftarg = oid, rightarg = integer, function = public.oid_eq_int);
+        create function public.format(text, name, text) returns text language plpgsql as
+          $f$ begin insert into public.hijack values ('format'); return pg_catalog.format($1, $2, $3); end $f$;`);
+      for (let run = 1; run <= 2; run++) {
+        expect({ run, status: runCliInit([pg.adminUri, "--password", "monpw", "--skip-optional-permissions"]).status })
+          .toEqual({ run, status: 0 });
+      }
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: "monpw", includeOptionalPermissions: false });
+      const step = plan.steps.find((s) => s.name === "03.permissions")!;
+      const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", pg.adminUri], {
+        stdin: new TextEncoder().encode(step.sql),
+      });
+      expect(psql.exitCode).toBe(0);
+      expect((await c.query("select what from public.hijack")).rows).toEqual([]);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   // Security regression for #387: explain_generic was a SECURITY DEFINER helper that
   // ran caller-supplied SQL through EXPLAIN. The planner folds IMMUTABLE/STABLE functions
   // at plan time in the definer's (superuser) context, making it an RCE/data-exfil vector.
