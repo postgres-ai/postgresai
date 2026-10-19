@@ -1926,7 +1926,8 @@ describe("prepareDatabase (a fake pg client)", () => {
     expect(all).toContain('create user "My""Mon" with password');
     expect(all).toContain('grant pg_monitor to "My""Mon"');
     expect(all).toContain('grant connect on database "app" to "My""Mon"');
-    expect(all).toContain('alter user "My""Mon" set search_path');
+    expect(all).toContain(`format('alter user %I set search_path = %s', 'My"Mon', role_path)`);
+    expect(all).toContain(`format('alter user %I in database %I set search_path = %s', 'My"Mon', pg_catalog.current_database(), db_path)`);
   });
 
   test("--monitoring-user and a failed plan: the role keeps the user's PGAI_MON_PASSWORD and is not dropped (postgres_ai_mon neither)", async () => {

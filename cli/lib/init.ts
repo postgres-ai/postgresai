@@ -290,12 +290,24 @@ export function quoteIdent(ident: string): string {
 }
 
 export function quoteLiteral(value: string): string {
-  // Single-quote and escape embedded quotes by doubling.
-  // This is used where Postgres grammar requires a literal (e.g., CREATE/ALTER ROLE PASSWORD).
+  // Escape independently of the session's standard_conforming_strings setting.
+  // E-strings are needed when the value contains a backslash.
   if (value.includes("\0")) {
     throw new Error("Literal cannot contain null bytes");
   }
-  return `'${value.replace(/'/g, "''")}'`;
+  const escapedQuotes = value.replace(/'/g, "''");
+  return value.includes("\\")
+    ? `E'${escapedQuotes.replace(/\\/g, "\\\\")}'`
+    : `'${escapedQuotes}'`;
+}
+
+function safeDoDelimiter(...values: string[]): string {
+  // A role/database name is allowed to contain $$ or a dollar-quote tag.
+  // Choose a tag absent from every interpolated value before forming DO SQL.
+  for (let n = 0; ; n++) {
+    const tag = `$pgai_do_${n}$`;
+    if (values.every(value => !value.includes(tag))) return tag;
+  }
 }
 
 export function redactPasswordsInSql(sql: string): string {
@@ -622,6 +634,7 @@ export async function buildInitPlan(params: {
   const iterations = Math.max(SCRAM_DEFAULT_ITERATIONS, serverIterations);
   const qPwVerifier = quoteLiteral(scramSha256Verifier(params.monitoringPassword, { iterations }));
   const qRoleNameLit = quoteLiteral(monitoringUser);
+  const doQuote = safeDoDelimiter(qRole, qDb, qRoleNameLit, qPwVerifier);
 
   const steps: InitStep[] = [];
 
@@ -629,6 +642,7 @@ export async function buildInitPlan(params: {
     ROLE_IDENT: qRole,
     DB_IDENT: qDb,
     ROLE_LITERAL: qRoleNameLit,
+    DO_QUOTE: doQuote,
   };
 
   // Some providers (e.g., Supabase) manage users externally - skip role creation.
@@ -639,7 +653,7 @@ export async function buildInitPlan(params: {
     // We:
     // - create role if missing (and handle duplicate_object in case another session created it concurrently),
     // - then ALTER ROLE to ensure the password is set to the desired value.
-    const roleStmt = `do $$ begin
+    const roleStmt = `do ${doQuote} begin
   if not exists (select 1 from pg_catalog.pg_roles where rolname = ${qRoleNameLit}) then
     begin
       create user ${qRole} with password ${qPwVerifier};
@@ -648,7 +662,7 @@ export async function buildInitPlan(params: {
     end;
   end if;${params.keepExistingPassword ? "" : `
   alter user ${qRole} with password ${qPwVerifier};`}
-end $$;`;
+end ${doQuote};`;
 
     const roleSql = applyTemplate(loadSqlTemplate("01.role.sql"), { ...vars, ROLE_STMT: roleStmt });
     steps.push({ name: "01.role", sql: roleSql });
@@ -843,6 +857,7 @@ export async function buildUninitPlan(params: {
   const qRole = quoteIdent(monitoringUser);
   const qDb = quoteIdent(database);
   const qRoleLiteral = quoteLiteral(monitoringUser);
+  const doQuote = safeDoDelimiter(qRole, qDb, qRoleLiteral);
 
   const steps: InitStep[] = [];
 
@@ -850,6 +865,7 @@ export async function buildUninitPlan(params: {
     ROLE_IDENT: qRole,
     DB_IDENT: qDb,
     ROLE_LITERAL: qRoleLiteral,
+    DO_QUOTE: doQuote,
   };
 
   // Step 1: Drop helper functions

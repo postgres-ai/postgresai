@@ -328,6 +328,39 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
+  test("init and uninit safely quote unusual monitoring role names", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    // Quote, backslash and dollar-quote delimiters; then multi-byte Unicode (Cyrillic, CJK, combining mark).
+    const roles: Array<[string, string]> = [
+      [String.raw`pgai'audit\\$$$pgai_do_0$`, "do $pgai_do_1$"],
+      ["pgai_мониторинг_監視_e\u0301", "do $pgai_do_0$"],
+    ];
+    try {
+      await admin.connect();
+      await admin.query("set standard_conforming_strings = off");
+      const { buildInitPlan, applyInitPlan, buildUninitPlan, applyUninitPlan } = await import("../lib/init");
+      for (const [role, doTag] of roles) {
+        const plan = await buildInitPlan({
+          database: "testdb", monitoringUser: role,
+          monitoringPassword: "temporary-test-only", includeOptionalPermissions: false,
+        });
+        expect(plan.steps[0].sql).toContain(doTag);
+        await applyInitPlan({ client: admin, plan });
+        const created = await admin.query("select count(*)::int as n from pg_catalog.pg_roles where rolname = $1", [role]);
+        expect(created.rows[0].n).toBe(1);
+        const uninit = await buildUninitPlan({ database: "testdb", monitoringUser: role });
+        const cleanup = await applyUninitPlan({ client: admin, plan: uninit });
+        expect(cleanup.errors).toEqual([]);
+        const remaining = await admin.query("select count(*)::int as n from pg_catalog.pg_roles where rolname = $1", [role]);
+        expect(remaining.rows[0].n).toBe(0);
+      }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   test("role SQL authenticates with SCRAM even when password_encryption is md5", async () => {
     pg = await createTempPostgres();
     const admin = new Client({ connectionString: pg.adminUri });

@@ -40,7 +40,7 @@ grant usage on schema public to {{ROLE_IDENT}};
 -- Grant access to the schema where pg_stat_statements is installed.
 -- Some providers (e.g., Supabase) install extensions in a separate 'extensions' schema
 -- rather than pg_catalog. This DO block detects the schema and grants USAGE if needed.
-do $$
+do {{DO_QUOTE}}
 declare
   ext_schema text;
 begin
@@ -51,16 +51,16 @@ begin
 
   -- Only grant if extension exists and is in a non-standard schema
   if ext_schema is not null and ext_schema not in ('pg_catalog', 'public') then
-    execute format('grant usage on schema %I to {{ROLE_IDENT}}', ext_schema);
+    execute format('grant usage on schema %I to %I', ext_schema, {{ROLE_LITERAL}});
   end if;
-end $$;
+end {{DO_QUOTE}};
 
 -- [SEARCH_PATH_BLOCK_START] Resolve built-ins from pg_catalog first; keep pg_temp last.
 -- Do not include the role-named schema: it may be writable by that role.
 -- public stays for pg_stat_statements. Residual risk: a function in public with
 -- an exact-type match (e.g. public.quote_ident(name)) still beats pg_catalog.
 -- The path for this database includes its pg_stat_statements schema if it is in a non-standard location.
-do $$
+do {{DO_QUOTE}}
 declare
   ext_schema text;
   role_path constant text := 'pg_catalog, postgres_ai, public, pg_temp';
@@ -88,11 +88,9 @@ begin
       and setdatabase = 0
       and ('search_path=' || role_path) = any (setconfig)
   ) then
-    execute format('alter user {{ROLE_IDENT}} set search_path = %s', role_path);
+    execute format('alter user %I set search_path = %s', {{ROLE_LITERAL}}, role_path);
   end if;
   -- This database's value: other databases keep their own pg_stat_statements schema.
-  execute format('alter user {{ROLE_IDENT}} in database %I set search_path = %s', pg_catalog.current_database(), db_path);
-end $$;
+  execute format('alter user %I in database %I set search_path = %s', {{ROLE_LITERAL}}, pg_catalog.current_database(), db_path);
+end {{DO_QUOTE}};
 -- [SEARCH_PATH_BLOCK_END]
-
-

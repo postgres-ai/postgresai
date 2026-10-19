@@ -5,7 +5,7 @@
 set local search_path = pg_catalog, pg_temp;
 
 -- Use a DO block to handle the case where the role doesn't exist
-do $$ begin
+do {{DO_QUOTE}} begin
   -- Reassign owned objects to current user before dropping
   -- This handles any objects that might have been created by the role
   begin
@@ -27,4 +27,4 @@ do $$ begin
   exception when undefined_object then
     null; -- Role doesn't exist, that's fine
   end;
-end $$;
+end {{DO_QUOTE}};
