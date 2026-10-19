@@ -1,7 +1,5 @@
 import { Client } from "pg";
 import { parse as parseConnString, parseIntoClientConfig } from "pg-connection-string";
-import { generateAllReports } from "./checkup";
-import { createCheckupReport, uploadCheckupReportJson } from "./checkup-upload";
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
@@ -22,23 +20,9 @@ export type Provider = "clickhouse" | "rds" | "supabase" | "self-managed";
 /** One vocabulary with pgai dblab deploy (lib/deploy-surface). */
 export type Status = DeployStatus;
 
-/**
- * The express checkup run while the box starts: what it found, or why it could not run.
- * Every check is in one of findings (warning, ok), info (an inventory, no verdict) or failed.
- * report_id: saved as that report (pgai reports files <id>); upload_error: why it was not.
- */
-export type CheckupResult = {
-  checks: number;
-  findings: { check_id: string; title: string; status: string; message: string }[];
-  info: string[];
-  failed?: string[];
-  report_id?: number;
-  upload_error?: string;
-} | { error: string };
-
 /** A step of mon deploy, once each: a line for a person, a JSON event for an agent. */
 export interface ProgressEvent {
-  event: "billing" | "preparing" | "provisioning" | "checkup" | "box";
+  event: "billing" | "preparing" | "provisioning" | "box";
   /** Seconds since mon deploy started. */
   elapsed_s: number;
   message: string;
@@ -46,7 +30,6 @@ export interface ProgressEvent {
   state?: string;
   /** event box: the instance, for following it later (pgai mon instances watch <id>). */
   id?: string;
-  checkup?: CheckupResult;
   /** Supabase: the page where the org approves PostgresAI's access (deploy waits for it). */
   auth_url?: string;
 }
@@ -61,7 +44,6 @@ export interface ConnectResult {
   dashboard_url?: string | null;
   host_metrics?: boolean;
   first_checkup_eta?: string;
-  checkup?: CheckupResult;
   /** A new box: what it costs ("$512.00/month per database cluster (scale plan)", "free (1 of 2 free slots)", "included: same database cluster as ..."). */
   price?: string;
   requires_payment_method?: boolean;
@@ -132,8 +114,6 @@ export interface ConnectDeps {
   unprepare(url: string, monitoringUser?: string): Promise<boolean>;
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
-  /** The express checkup over the monitoring role's URL, saved as a report of `project`. */
-  checkup(url: string, project: string): Promise<CheckupResult>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   handoffUrl(provider: "rds"): Promise<string>;
   /**
@@ -445,13 +425,6 @@ export function connectStatus(row: Database, provider = row.provider as Provider
   return { ...base, status, next: `pgai mon instances watch ${row.id}` };
 }
 
-/** The monitoring URL with the admin URL's TLS files: for a login from this machine, never for the box. */
-function withLocalTls(monitoringUrl: string, url: string): string {
-  const u = new URL(monitoringUrl);
-  for (const [k, v] of new URL(url).searchParams) if (URL_PARAMS_TLS.includes(k)) u.searchParams.set(k, v);
-  return u.toString();
-}
-
 /** What renders progress: JSON events, plain lines, or a step view at a terminal. */
 export interface StepViewLike {
   start(): void;
@@ -493,7 +466,7 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
       view.start();
     }
     view.advance(e.event);
-    if ((e.event === "checkup" && !/^Running /.test(e.message)) || /^(Note|Warning):/.test(e.message)) view.log(e.message);
+    if (/^(Note|Warning):/.test(e.message)) view.log(e.message);
     if (e.event === "box" && e.state) view.setNote(`box: ${boxWords(e.state)}`);
   };
   return { progress, view: () => view };
@@ -527,24 +500,6 @@ function personLines(r: ConnectResult): string[] {
     default:
       return [r.next];
   }
-}
-
-/** The express checkup for a person: a line per warning, then the other checks by id, and where it was saved. */
-export function checkupLines(c: CheckupResult): string[] {
-  if ("error" in c) return [`Express checkup could not run: ${c.error}`];
-  const warnings = c.findings.filter((f) => f.status === "warning");
-  const ok = c.findings.filter((f) => f.status === "ok");
-  const failed = c.failed ?? [];
-  const counts = [`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`, `${ok.length} ok`, `${c.info.length} info`, ...(failed.length ? [`${failed.length} could not run`] : [])];
-  return [
-    `Express checkup while the box starts (${c.checks} checks: ${counts.join(", ")}):`,
-    ...warnings.map((f) => `  ${f.check_id} ${f.title}: ${f.message}`),
-    ...(ok.length ? [`  ok: ${ok.map((f) => f.check_id).join(" ")}`] : []),
-    ...(c.info.length ? [`  info: ${c.info.join(" ")}`] : []),
-    ...(failed.length ? [`  could not run: ${failed.join(" ")}`] : []),
-    c.report_id ? `Saved as report ${c.report_id}: pgai reports files ${c.report_id}` : `Not saved to PostgresAI: ${c.upload_error}`,
-    "The full checkup (query analysis and trends) follows on the box.",
-  ];
 }
 
 /** A progress event as a person reads it: the time since the start ends its first line (before a colon). */
@@ -659,7 +614,6 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   let row = findDatabase(rows);
   const fresh = !row;
   let note = "";
-  let checkup: CheckupResult | undefined;
   let billing: Billing = {};
   let billingPage: Billing & { next: string } | undefined;
   let accepted = false;
@@ -890,20 +844,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     if (deps.aborted?.()) return { ...connectStatus(row, provider, true), ...billing };
     const made = prepared;
     undoRole = () => undo(made);
-    if ((prepared as { storedPassword?: true }).storedPassword) {
-      // The password stays with the platform, and the checkup never runs as the admin: its SQL resolves
-      // names with the database's search_path, where the database's owner can put functions. (The
-      // prepare step's plan runs as the admin with that search_path too: postgres-ai/internal#384.)
-      progress("checkup", `Express checkup skipped: it runs only as ${DEFAULT_MONITORING_USER}, whose password PostgresAI keeps for this server. The full checkup follows on the box.`, { id: created.id });
-    } else {
-      // First value while the box starts (minutes): the express checkup, as the monitoring role.
-      progress("checkup", "Running the express checkup while the box starts", { id: created.id });
-      checkup = await deps.checkup(withLocalTls((prepared as { monitoringUrl: string }).monitoringUrl, url), created.name).catch((err) => ({ error: errorText(err) }));
-      progress("checkup", checkupLines(checkup).join("\n"), { checkup });
-    }
   }
 
-  return follow(row, { provider, name, fresh, billing, billingUrl, checkup, undoRole, note }, opts, deps, progress);
+  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note }, opts, deps, progress);
 }
 
 const isSupabaseUrl = (link: string): boolean => {
@@ -1007,7 +950,6 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
   if (created === "declined") return { status: "action_required", provider, name, ...b.billingPage, next: b.billingPage.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
   if (created === "price") return stop("The price changed since it was shown: re-run pgai mon deploy to see it", b.billing);
   if (created.status === "failed") return { status: "failed", provider, name, id: created.id, ...b.billing, next: `${created.error} Re-run pgai mon deploy later.` };
-  progress("checkup", "The checkup runs on the box: it prepares the database through the Supabase Management API", { id: created.id });
   const box: Database = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: false };
   // Ctrl-C while the box was requested: it exists now, so the run detaches (it keeps going on PostgresAI).
   if (deps.aborted?.()) return { ...connectStatus(box, provider, true), ...b.billing };
@@ -1024,7 +966,6 @@ interface Followed {
   fresh: boolean;
   billing: Billing;
   billingUrl?: string;
-  checkup?: CheckupResult;
   /** Drops the role this run created with a generated password, once its box is gone. */
   undoRole?: () => Promise<unknown>;
   /** Appended to the next action ("; --name ignored ..."). */
@@ -1036,13 +977,13 @@ export const STILL_IN_PROGRESS = "Still in progress";
 
 /** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
 async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
-  const { provider, name, fresh, billing, billingUrl, checkup, undoRole, note } = f;
+  const { provider, name, fresh, billing, billingUrl, undoRole, note } = f;
   // The box's state, each time it changes while deploy waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
     if (row.billing_error && disconnecting(row.status)) {
       if (undoRole) await undoRole();
-      return { status: "action_required", provider, name, id: row.id, ...billing, ...(checkup ? { checkup } : {}),
+      return { status: "action_required", provider, name, id: row.id, ...billing,
         next: `The first charge failed (${row.billing_error}): the box is being removed and nothing is billed. Update the payment method${billingUrl ? ` at ${billingUrl}` : ""}, then re-run` };
     }
     const result = connectStatus(row, provider, fresh);
@@ -1057,10 +998,10 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
       const { next, ...rest } = final;
       // The wait ran out with the box still starting: not done (exit 3); it goes on on the platform.
       if (final.status === "in_progress" && opts.waitMs > 0) {
-        return { ...rest, status: "action_required", ...billing, ...(checkup ? { checkup } : {}),
+        return { ...rest, status: "action_required", ...billing,
           next: `${STILL_IN_PROGRESS} (box: ${boxWords(boxState(row))}) when the wait ended: resume with ${next}${note}` };
       }
-      return { ...rest, ...billing, ...(checkup ? { checkup } : {}), next: next + note };
+      return { ...rest, ...billing, next: next + note };
     }
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
@@ -1331,52 +1272,6 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
   }
 }
 
-/**
- * The express checkup (pgai checkup's checks) over `url`: the warnings, then what passed; the plain
- * inventories by id. `save` stores the reports and returns the report id; its error is in the result.
- */
-export async function expressCheckup(url: string, opts: PrepareOptions & { save?: (reports: Record<string, unknown>) => Promise<number> } = {}): Promise<CheckupResult> {
-  const { client } = await openConnection(url, opts);
-  let reports: Awaited<ReturnType<typeof generateAllReports>>;
-  const failed: string[] = [];
-  try {
-    reports = await generateAllReports(client as Parameters<typeof generateAllReports>[0], "node-01", undefined, (f) => failed.push(f.checkId));
-  } finally {
-    await client.end();
-  }
-  const all = Object.values(reports).map((r) => ({ check_id: r.checkId, title: r.checkTitle, status: r.summary!.status, message: r.summary!.message }));
-  const findings = all.filter((f) => f.status !== "info").sort((a, b) => Number(b.status === "warning") - Number(a.status === "warning"));
-  const result = { checks: all.length + failed.length, findings, info: all.filter((f) => f.status === "info").map((f) => f.check_id), ...(failed.length ? { failed } : {}) };
-  if (!opts.save) return result;
-  try {
-    return { ...result, report_id: await opts.save(reports) };
-  } catch (err) {
-    return { ...result, upload_error: errorText(err) };
-  }
-}
-
-/**
- * Saves checkup reports as one report of `project`, the way the box's reporter does: created
- * pending, a file per check, then completed (failed when a file did not upload).
- */
-export async function saveCheckupReport(rpc: <T>(fn: string, body: Record<string, unknown>) => Promise<T>, accessToken: string, project: string, reports: Record<string, unknown>): Promise<number> {
-  const { reportId } = await createCheckupReport(rpc, { apiKey: accessToken, project });
-  const setStatus = (status: string) => rpc("checkup_report_status_update", { access_token: accessToken, report_id: reportId, status });
-  try {
-    for (const [checkId, report] of Object.entries(reports)) {
-      await uploadCheckupReportJson(rpc, {
-        apiKey: accessToken, reportId, filename: `${checkId}.json`, checkId,
-        jsonText: JSON.stringify(report, null, 2),
-      });
-    }
-  } catch (err) {
-    await setStatus("failed").catch(() => {});
-    throw err;
-  }
-  await setStatus("completed");
-  return reportId;
-}
-
 /** The ClickHouse Cloud organization that runs the service at `host`, found with the key itself. */
 export async function clickhouseOrgFor(host: string, keyId: string, keySecret: string) {
   const apiUrl = process.env.CLICKHOUSE_API_URL || "https://api.clickhouse.cloud";
@@ -1476,8 +1371,6 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string, monitoringUser?: string) => unprepareDatabase(url, { agent: p.agent, monitoringUser }),
     clickhouseOrg: clickhouseOrgFor,
-    checkup: (url: string, project: string) =>
-      expressCheckup(url, { agent: p.agent, save: (reports) => saveCheckupReport(rpc, p.apiKey, project, reports) }),
     quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
     billingUrl: (orgAlias: string) => `${p.uiBaseUrl}/${orgAlias}/billing`,
     supabaseStart: (dbUrl: string) => rpc<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>("cloud_monitoring_supabase_start", { db_url: dbUrl }),

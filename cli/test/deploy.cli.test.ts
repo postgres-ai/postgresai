@@ -43,6 +43,10 @@ const RPC_ARGS: Record<string, string[]> = {
   dblab_cloud_source_probe: ["org_id", "db_url", "provider"],
   dblab_cloud_instances: ["org_id", "p_instance_id"],
   dblab_instance_destroy: ["instance_id"],
+  dblab_tunnel_access: ["org_id", "p_instance_id"],
+  dblab_tunnel_keys_set: ["org_id", "p_instance_id", "ssh_key_ids"],
+  dblab_tunnel_key_add: ["org_id", "p_instance_id", "public_key", "name"],
+  dblab_tunnel_key_remove: ["org_id", "p_instance_id", "ssh_key_id"],
 };
 
 /** Fake platform for the deploy rpcs. `progress` is served one entry per poll. */
@@ -56,9 +60,14 @@ async function startFakeApi(opts: {
   probe?: Body;
   /** Extra keys of v1.dblab_instance_deploy's reply (e.g. the cloud and location it chose). */
   deployReply?: Body;
+  /** The DBLab's clone-access keys (platform-all#953). */
+  tunnelKeys?: { id: string; name: string }[];
+  /** The caller is a member, not an admin: the access is read-only. */
+  member?: boolean;
 } = {}) {
   const calls: { fn: string; body: Body; headers: Record<string, string> }[] = [];
   let poll = 0;
+  let tunnelKeys: { id: string; name: string }[] = opts.tunnelKeys ?? [];
   const progress = opts.progress ?? [
     { deploy_status: "launching", deploy_step: "create_server" },
     { deploy_status: "installing", deploy_step: "install_joe", server_ip: "203.0.113.9" },
@@ -107,6 +116,21 @@ async function startFakeApi(opts: {
         case "dblab_cloud_source_probe":
           if (opts.probe) return json(opts.probe);
           break;
+        // Clone access (platform-all#953): the reply is the access after the change.
+        case "dblab_tunnel_access":
+        case "dblab_tunnel_keys_set":
+        case "dblab_tunnel_key_add":
+        case "dblab_tunnel_key_remove": {
+          if (fn === "dblab_tunnel_keys_set") {
+            const names = new Map([["0199-key", "laptop"], ...tunnelKeys.map((k) => [k.id, k.name] as [string, string])]);
+            tunnelKeys = (body.ssh_key_ids as string[]).map((id) => ({ id, name: names.get(id) ?? id }));
+          }
+          if (fn === "dblab_tunnel_key_add") tunnelKeys = [...tunnelKeys, { id: "0199-new", name: (body.name as string) ?? "me@laptop" }];
+          if (fn === "dblab_tunnel_key_remove") tunnelKeys = tunnelKeys.filter((k) => k.id !== body.ssh_key_id);
+          return json({ instance_id: body.p_instance_id, ssh_user: "dblab-tunnel", host: "203.0.113.9",
+            ports: { from: 6000, to: 6100 }, ready: true, can_edit: !opts.member,
+            keys: tunnelKeys.map((k) => ({ ...k, added_at: null })) });
+        }
       }
       return new Response("not found", { status: 404 });
     },
@@ -870,6 +894,170 @@ describe("pgai dblab instances watch: a failed deploy's server IP is not shown (
     try {
       const r = await runCli(["dblab", "instances", "watch", "47", "--json"], api.env);
       expect(JSON.parse(r.stdout)).not.toHaveProperty("server_ip");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+// platform-all#953: servers in PostgresAI cloud get no customer keys; clone access is added afterwards.
+describe("pgai dblab deploy without customer SSH keys", () => {
+  const NO_KEY = ["dblab", "deploy", "--name", "app-db", "--db-url", "postgresql://u:secret@db.example:5432/app", "--yes", "--json"];
+  const TUNNEL_PROGRESS = [
+    { deploy_status: "launching", deploy_step: "create_server", ssh_user: "dblab-tunnel" },
+    { deploy_status: "ready", deploy_step: "ready", server_ip: "203.0.113.9", ssh_user: "dblab-tunnel" },
+  ];
+
+  test("off: deploys with no key, sends none, and the ready hint names the tunnel user and pgai dblab access", async () => {
+    const api = await startFakeApi({ options: { customer_ssh_keys: "off", ssh_keys: [] }, progress: TUNNEL_PROGRESS });
+    try {
+      const r = await runTty(NO_KEY.filter((a) => a !== "--json"), api.env);
+      expect(r.status).toBe(0);
+      const deploy = api.fn("dblab_instance_deploy");
+      expect(deploy).toHaveLength(1);
+      expect("ssh_key_ids" in deploy[0].body).toBe(false);
+      expect(r.screen).toContain("pgai dblab access add 41 --public-key-file ~/.ssh/id_ed25519.pub");
+      expect(r.screen).toContain("ssh -N -L 6000:127.0.0.1:6000 dblab-tunnel@203.0.113.9");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("off: --ssh-key is refused before anything is asked, naming pgai dblab access", async () => {
+    const api = await startFakeApi({
+      options: { customer_ssh_keys: "off" },
+      probe: { reachable: true, provider: "generic", detected_by: "default", postgres_major: 16, supported: true },
+    });
+    try {
+      const r = await runCli([...NO_KEY, "--ssh-key", "laptop"], api.env);
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).toContain("get no SSH keys");
+      expect(r.stdout + r.stderr).toContain("pgai dblab access add");
+      expect(api.fn("dblab_instance_deploy")).toHaveLength(0);
+      // Refused before the source database is contacted.
+      expect(api.fn("dblab_cloud_source_probe")).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("optional: no key is fine; a key is sent", async () => {
+    const api = await startFakeApi({ options: { customer_ssh_keys: "optional" }, progress: TUNNEL_PROGRESS });
+    try {
+      expect((await runCli(NO_KEY, api.env)).status).toBe(0);
+      expect("ssh_key_ids" in api.fn("dblab_instance_deploy")[0].body).toBe(false);
+      expect((await runCli([...NO_KEY, "--name", "app-db2", "--ssh-key", "laptop"], api.env)).status).toBe(0);
+      expect(api.fn("dblab_instance_deploy")[1].body.ssh_key_ids).toEqual(["0199-key"]);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("required (or a platform that predates the switch): no key is refused", async () => {
+    const api = await startFakeApi({ options: { customer_ssh_keys: "required" } });
+    try {
+      const r = await runCli(NO_KEY, api.env);
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).toContain("--ssh-key is required. Org keys: laptop.");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+describe("pgai dblab access", () => {
+  const ROWS = [{ id: 41, project_name: "app-db", is_cloud: true, deploy_status: "ready", server_ip: "203.0.113.9", ssh_user: "dblab-tunnel" }];
+
+  test("list: the keys and the tunnel command; none: how to add one", async () => {
+    const api = await startFakeApi({ rows: ROWS, tunnelKeys: [{ id: "0199-key", name: "laptop" }] });
+    try {
+      const r = await runTty(["dblab", "access", "list", "app-db"], api.env);
+      expect(r.status).toBe(0);
+      expect(r.screen).toContain("laptop  0199-key");
+      expect(r.screen).toContain("ssh -N -L 6000:127.0.0.1:6000 dblab-tunnel@203.0.113.9");
+      expect(api.fn("dblab_tunnel_access")[0].body).toEqual({ p_instance_id: 41 });
+    } finally {
+      api.stop();
+    }
+    const empty = await startFakeApi({ rows: ROWS });
+    try {
+      const r = await runTty(["dblab", "access", "list", "41"], empty.env);
+      expect(r.screen).toContain("No SSH key can open a tunnel to the clones yet.");
+      expect(r.screen).toContain("pgai dblab access add 41 --public-key-file ~/.ssh/id_ed25519.pub");
+      const j = await runCli(["dblab", "access", "list", "41"], empty.env);
+      expect(JSON.parse(j.stdout).keys).toEqual([]);
+    } finally {
+      empty.stop();
+    }
+  });
+
+  test("list as a member: no command they can't run; told who can change it", async () => {
+    const none = await startFakeApi({ rows: ROWS, member: true });
+    try {
+      const r = await runTty(["dblab", "access", "list", "41"], none.env);
+      expect(r.screen).toContain("Ask an admin of this organization to add yours.");
+      expect(r.screen).not.toContain("pgai dblab access add");
+    } finally {
+      none.stop();
+    }
+    const some = await startFakeApi({ rows: ROWS, member: true, tunnelKeys: [{ id: "0199-key", name: "laptop" }] });
+    try {
+      const r = await runTty(["dblab", "access", "list", "41"], some.env);
+      expect(r.screen).toContain("laptop  0199-key");
+      expect(r.screen).toContain("Only an organization admin can change them.");
+      expect(r.screen).toContain('psql "host=127.0.0.1 port=6000 user=<clone user> dbname=<db>"');
+    } finally {
+      some.stop();
+    }
+  });
+
+  test("add --public-key-file: sends the key text; a private key file is refused locally", async () => {
+    const api = await startFakeApi({ rows: ROWS });
+    const dir = mkdtempSync(resolve(tmpdir(), "pgai-access-"));
+    const pub = resolve(dir, "id_ed25519.pub");
+    const priv = resolve(dir, "id_ed25519");
+    await Bun.write(pub, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFExvmPf29KRq3Lm2ECFjIhlyRs9OI7f9h3X56nT6YIm me@laptop\n");
+    // A private key file's shape, split so secret scanners do not read it as one.
+    const marker = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+    await Bun.write(priv, `-----BEGIN ${marker}-----\nxxx\n-----END ${marker}-----\n`);
+    try {
+      const r = await runCli(["dblab", "access", "add", "app-db", "--public-key-file", pub, "--json"], api.env);
+      expect(r.status).toBe(0);
+      const add = api.fn("dblab_tunnel_key_add");
+      expect(add[0].body.public_key).toBe("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFExvmPf29KRq3Lm2ECFjIhlyRs9OI7f9h3X56nT6YIm me@laptop");
+      expect(add[0].body.p_instance_id).toBe(41);
+      expect(JSON.parse(r.stdout).keys).toHaveLength(1);
+
+      const p = await runCli(["dblab", "access", "add", "app-db", "--public-key-file", priv], api.env);
+      expect(p.status).toBe(1);
+      expect(p.stdout + p.stderr).toContain("is a private key");
+      expect(api.fn("dblab_tunnel_key_add")).toHaveLength(1);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("add --ssh-key keeps the keys already there; remove takes one away", async () => {
+    const api = await startFakeApi({ rows: ROWS, tunnelKeys: [{ id: "0199-other", name: "other" }] });
+    try {
+      expect((await runCli(["dblab", "access", "add", "app-db", "--ssh-key", "laptop"], api.env)).status).toBe(0);
+      expect(api.fn("dblab_tunnel_keys_set")[0].body.ssh_key_ids).toEqual(["0199-other", "0199-key"]);
+      const r = await runCli(["dblab", "access", "remove", "app-db", "--ssh-key", "laptop"], api.env);
+      expect(r.status).toBe(0);
+      expect(api.fn("dblab_tunnel_key_remove")[0].body).toEqual({ p_instance_id: 41, ssh_key_id: "0199-key" });
+      expect(JSON.parse(r.stdout).keys.map((k: { name: string }) => k.name)).toEqual(["other"]);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("add with neither a file nor a key: a usage error, nothing sent", async () => {
+    const api = await startFakeApi({ rows: ROWS });
+    try {
+      const r = await runCli(["dblab", "access", "add", "app-db"], api.env);
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).toContain("Give --public-key-file <path> or --ssh-key <name|id>.");
+      expect(api.calls.filter((c) => c.fn.startsWith("dblab_tunnel"))).toHaveLength(0);
     } finally {
       api.stop();
     }

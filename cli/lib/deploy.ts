@@ -134,6 +134,12 @@ export interface DeployOptions {
   cloud?: string;
   clouds?: { code: string; label: string; available: boolean }[];
   ssh_keys: { id: string; name: string | null }[];
+  /**
+   * Whether this environment puts customer SSH keys on DBLab servers (platform-all#953): "off" (clone
+   * access is added after the deploy, with pgai dblab access), "optional" or "required". A platform
+   * that predates it sends nothing: keys were required then.
+   */
+  customer_ssh_keys?: "off" | "optional" | "required";
   is_admin: boolean;
   /** null when the platform could not read Stripe: the deploy's own PT402 decides then. */
   has_payment_method?: boolean | null;
@@ -254,7 +260,8 @@ export const deployDblab = (
       db_url: args.dbUrl,
       size: args.size,
       disk_gib: args.diskGib,
-      ssh_key_ids: args.sshKeyIds,
+      // None when the platform puts no customer keys on the server (platform-all#953).
+      ...(args.sshKeyIds.length ? { ssh_key_ids: args.sshKeyIds } : {}),
       ...(args.location ? { location: args.location } : {}),
       ...(args.provider ? { provider: args.provider } : {}),
       // Hetzner is the default: an older platform without the argument still answers.
@@ -308,6 +315,51 @@ export function resolveSshKeys(opts: DeployOptions, wanted: string[]): string[] 
   return out;
 }
 
+/** The keys mode an options reply implies; absent means an older platform that required keys. */
+export const customerSshKeysMode = (opts: DeployOptions): "off" | "optional" | "required" =>
+  opts.customer_ssh_keys === "off" || opts.customer_ssh_keys === "optional" || opts.customer_ssh_keys === "required"
+    ? opts.customer_ssh_keys
+    : "required";
+
+// ---------------------------------------------------------------------------
+// Clone access (platform-all#953)
+// ---------------------------------------------------------------------------
+
+/** v1.dblab_tunnel_access: who can open a tunnel to a cloud DBLab's clones, as dblab-tunnel. */
+export interface TunnelAccess {
+  instance_id: number;
+  ssh_user: string;
+  host: string | null;
+  ports: { from: number; to: number };
+  ready: boolean;
+  can_edit: boolean;
+  keys: { id: string; name: string | null; added_at: string | null }[];
+}
+
+export const getTunnelAccess = (p: ApiParams, instanceId: number): Promise<TunnelAccess> =>
+  callDeployRpc<TunnelAccess>(p, "dblab_tunnel_access", { p_instance_id: instanceId }, "Read clone access");
+
+/** Adds one public key; it becomes an org key if the org does not have it. */
+export const addTunnelKey = (p: ApiParams, instanceId: number, publicKey: string, name?: string): Promise<TunnelAccess> =>
+  callDeployRpc<TunnelAccess>(
+    p,
+    "dblab_tunnel_key_add",
+    { p_instance_id: instanceId, public_key: publicKey, ...(name ? { name } : {}) },
+    "Add clone access",
+  );
+
+/** Replaces the keys that can open a tunnel. */
+export const setTunnelKeys = (p: ApiParams, instanceId: number, sshKeyIds: string[]): Promise<TunnelAccess> =>
+  callDeployRpc<TunnelAccess>(p, "dblab_tunnel_keys_set", { p_instance_id: instanceId, ssh_key_ids: sshKeyIds }, "Change clone access");
+
+/** Removes one key from this DBLab's clone access; the org key stays. */
+export const removeTunnelKey = (p: ApiParams, instanceId: number, sshKeyId: string): Promise<TunnelAccess> =>
+  callDeployRpc<TunnelAccess>(p, "dblab_tunnel_key_remove", { p_instance_id: instanceId, ssh_key_id: sshKeyId }, "Remove clone access");
+
+/** The tunnel command for a clone port. */
+export const tunnelCommand = (host: string, port: number, user = "dblab-tunnel"): string =>
+  `ssh -N -L ${port}:127.0.0.1:${port} ${user}@${host}`;
+
 // ---------------------------------------------------------------------------
 // Progress view
 // ---------------------------------------------------------------------------
@@ -321,12 +373,11 @@ export interface StepDef {
 export const MONITORING_STEPS: StepDef[] = [
   { key: "preparing", label: "Prepare the database" },
   { key: "provisioning", label: "Create the monitoring box" },
-  { key: "checkup", label: "Express checkup" },
   { key: "box", label: "Install monitoring (about 5 min)" },
   { key: "ready", label: "Ready" },
 ];
 
-/** pgai mon deploy's steps for Supabase: the box prepares the database and runs the checkup, not the CLI. */
+/** pgai mon deploy's steps for Supabase: the box prepares the database, not the CLI. */
 export const SUPABASE_STEPS: StepDef[] = [
   { key: "preparing", label: "Connect Supabase" },
   { key: "provisioning", label: "Create the monitoring box" },
@@ -434,7 +485,7 @@ export class StepView {
     this.note = note;
   }
 
-  /** Text above the steps (the express checkup's findings): the animation is redrawn below it. */
+  /** Text above the steps (a note or a warning): the animation is redrawn below it. */
   log(text: string): void {
     const body = text.endsWith("\n") ? text : `${text}\n`;
     if (!this.tty || this.stopped) {

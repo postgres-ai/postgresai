@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
-import { connect, platformDeps, expressCheckup, prepareDatabase, unprepareDatabase } from "../lib/connect";
+import { connect, platformDeps, prepareDatabase, unprepareDatabase } from "../lib/connect";
 
 // `pgai mon deploy`'s prepare step against a real Postgres, with a superuser URL
 // like the one ClickHouse Managed Postgres hands out. CI: the
@@ -677,24 +677,6 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
     }
   });
 
-  test("the express checkup runs as postgres_ai_mon on the prepared database", async () => {
-    const c = await admin();
-    await c.query("drop owned by postgres_ai_mon cascade").catch(() => {});
-    await c.query("drop schema if exists postgres_ai cascade");
-    await c.query("drop role if exists postgres_ai_mon");
-    await c.end();
-    const prepared = await prepareDatabase(ADMIN!, "self-managed");
-    if (!("monitoringUrl" in prepared)) throw new Error(`expected a URL, got: ${JSON.stringify(prepared)}`);
-    const result = await expressCheckup(prepared.monitoringUrl);
-    if ("error" in result) throw new Error(result.error);
-    expect(result.checks).toBeGreaterThan(15);
-    // A002 is ok on PG 17+, info (no verdict) on PG 15-16: either way it is counted once.
-    if (!result.info.includes("A002")) expect(result.findings.find((f) => f.check_id === "A002")).toMatchObject({ status: "ok", message: expect.stringMatching(/^PostgreSQL \d+$/) });
-    expect([...result.findings.map((f) => f.check_id), ...result.info].filter((id) => id === "A002")).toEqual(["A002"]);
-    // Inventories ("382 settings collected") are not findings.
-    expect(result.findings.every((f) => f.status !== "info")).toBe(true);
-  });
-
   // A run that fails after (or before) the prepare step must not block the
   // re-run: the same command again, against a platform and a ClickHouse Cloud
   // API that answer differently each time.
@@ -737,7 +719,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
             rows.push(row);
             return Response.json(row);
           }
-          // The express checkup, saved as a report of the database's project.
+          // mon deploy runs no checkup of its own (the box runs the first one): any report upload is recorded, and must not happen.
           if (path.endsWith("/rpc/checkup_report_create")) { uploads.push({ create: JSON.parse(await req.text()).project }); return Response.json({ report_id: 41 }); }
           if (path.endsWith("/rpc/checkup_report_file_post")) { const b = JSON.parse(await req.text()); uploads.push({ file: `${b.checkup_report_id}/${b.filename}` }); return Response.json({ report_chunck_id: uploads.length }); }
           if (path.endsWith("/rpc/checkup_report_status_update")) { const b = JSON.parse(await req.text()); uploads.push({ status: `${b.report_id} ${b.status}` }); return Response.json({ report_id: b.report_id, status: b.status }); }
@@ -767,22 +749,13 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
         expect(await roles()).toBe(0);
 
         launch = "accept";
-        // While the box starts, the express checkup ran as postgres_ai_mon against this server.
-        const { checkup, ...launched } = await run();
-        expect(launched).toEqual({ exit: 0, status: "in_progress", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, price: "free (1 of 1 free slots)", requires_payment_method: false, next: "pgai mon instances watch i-1" });
-        expect(checkup.checks).toBe(19);
-        expect([...checkup.findings.map((f: { check_id: string }) => f.check_id), ...checkup.info]).toContain("A002");
-        // Every check is counted once: warning, ok, info, or could not run.
-        expect(checkup.findings.length + checkup.info.length + (checkup.failed?.length ?? 0)).toBe(19);
-        // Saved right away: pgai reports list shows it while the box starts.
-        expect(checkup.report_id).toBe(41);
-        expect(uploads[0]).toEqual({ create: name });
-        expect(uploads.filter((u) => u.file).length).toBe(19 - (checkup.failed?.length ?? 0));
-        expect(uploads.at(-1)).toEqual({ status: "41 completed" });
-        // JSON on stdout, so the steps go to stderr as events, one JSON object a line
-        // (and a check that cannot run, D004 without pg_stat_statements preloaded, a log event).
+        // No express checkup while the box starts: no checkup in the result, no report uploaded.
+        expect(await run()).toEqual({ exit: 0, status: "in_progress", provider: "clickhouse", name, id: "i-1", dashboard_url: null, host_metrics: true, price: "free (1 of 1 free slots)", requires_payment_method: false, next: "pgai mon instances watch i-1" });
+        expect(uploads).toEqual([]);
+        expect(calls.filter((c) => c.includes("/rpc/checkup_report"))).toEqual([]);
+        // JSON on stdout, so the steps go to stderr as events, one JSON object a line.
         const events = stderr.trim().split("\n").map((l) => JSON.parse(l).event);
-        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "checkup", "checkup", "box", "done"]);
+        expect(events.filter((e) => e !== "log")).toEqual(["billing", "preparing", "provisioning", "box", "done"]);
         expect(await roles()).toBe(1);
 
         // The re-run finds its row by name: nothing is prepared or provisioned again; the key it is given is checked.
