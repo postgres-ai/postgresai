@@ -1,4 +1,16 @@
 {{- if .Values.grafana.enabled }}
+{{- $actualSecretName := include "postgres-ai-monitoring.secretName" . }}
+{{- range $envName := list "PGAI_SINK_POSTGRES_PASSWORD" "PGAI_VM_AUTH_PASSWORD" }}
+{{- $envRef := get ($.Values.grafana.envValueFrom | default dict) $envName | default dict }}
+{{- $secretRef := get $envRef "secretKeyRef" | default dict }}
+{{- $refName := tpl (get $secretRef "name" | default "" | toString) $ }}
+{{- if not $refName }}
+{{- fail (printf "Grafana env %s has no Secret name: grafana.envValueFrom.%s.secretKeyRef.name is missing. helm upgrade --reuse-values keeps the old release values and drops this chart default; use --reset-then-reuse-values (Helm >= 3.14) or pass your values file again" $envName $envName) }}
+{{- end }}
+{{- if ne $refName $actualSecretName }}
+{{- fail (printf "Grafana env %s reads Secret %q, but the chart uses Secret %q; set global.postgresAiSecretName to %q" $envName $refName $actualSecretName $actualSecretName) }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,7 +35,7 @@ data:
         basicAuth: true
         basicAuthUser: {{ .Values.victoriaMetrics.auth.username | quote }}
         secureJsonData:
-          basicAuthPassword: {{ .Values.secrets.vmAuth.password | quote }}
+          basicAuthPassword: $PGAI_VM_AUTH_PASSWORD
         {{- end }}
       - name: SinkPostgres
         type: postgres
@@ -39,7 +51,7 @@ data:
           # is not in Grafana's official dropdown yet; this value overrides it.
           postgresVersion: 1700
         secureJsonData:
-          password: {{ .Values.secrets.postgres.password }}
+          password: $PGAI_SINK_POSTGRES_PASSWORD
       {{- if .Values.flask.enabled }}
       - name: Flask API
         type: yesoreyeram-infinity-datasource

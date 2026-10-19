@@ -128,9 +128,9 @@ class TestHelmVMAuth:
         )
         return chart_path
 
-    def _render_template(self, chart_path, set_values=None):
+    def _render_template(self, chart_path, set_values=None, release='test'):
         """Render helm chart and return YAML docs."""
-        cmd = ['helm', 'template', 'test', chart_path,
+        cmd = ['helm', 'template', release, chart_path,
                '--set', 'secrets.createFromValues=true']
         if set_values:
             for k, v in set_values.items():
@@ -244,6 +244,126 @@ class TestHelmVMAuth:
         ds_yaml = ds_cm['data']['datasources.yaml']
         assert 'basicAuth: true' in ds_yaml
         assert 'basicAuthUser' in ds_yaml
+
+    def test_grafana_datasource_passwords_use_secret_env_refs(self, helm_chart_path):
+        """Grafana datasource ConfigMap must never contain rendered passwords."""
+        docs = self._render_template(
+            helm_chart_path,
+            {'victoriaMetrics.auth.enabled': 'true',
+             'secrets.postgres.password': 'unique-sink-secret',
+             'secrets.vmAuth.password': 'unique-vm-secret'},
+        )
+        ds_cm = self._find_doc(docs, 'ConfigMap', 'grafana-datasources')
+        ds_yaml = ds_cm['data']['datasources.yaml']
+        assert 'unique-sink-secret' not in ds_yaml
+        assert 'unique-vm-secret' not in ds_yaml
+        assert 'password: $PGAI_SINK_POSTGRES_PASSWORD' in ds_yaml
+        assert 'basicAuthPassword: $PGAI_VM_AUTH_PASSWORD' in ds_yaml
+
+        grafana = self._find_doc(docs, 'Deployment', 'grafana')
+        assert grafana is not None
+        container = next(c for c in grafana['spec']['template']['spec']['containers']
+                         if c['name'] == 'grafana')
+        env = {entry['name']: entry for entry in container.get('env', [])}
+        assert env['PGAI_SINK_POSTGRES_PASSWORD']['valueFrom']['secretKeyRef'] == {
+            'name': 'test-postgres-ai-monitoring-secrets',
+            'key': 'postgres-password',
+        }
+        vm_ref = env['PGAI_VM_AUTH_PASSWORD']['valueFrom']['secretKeyRef']
+        assert vm_ref['name'] == 'test-postgres-ai-monitoring-secrets'
+        assert vm_ref['key'] == 'vm-auth-password'
+        assert vm_ref.get('optional') is True
+
+    @pytest.mark.parametrize('release,set_values,secret_name', [
+        ('myrel', {}, 'myrel-postgres-ai-monitoring-secrets'),
+        ('pg-postgres-ai-monitoring', {}, 'pg-postgres-ai-monitoring-secrets'),
+        ('abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr', {},
+         'abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr-secrets'),
+        ('a-long-release-name-prod-postgres-ai-monitoring', {},
+         'a-long-release-name-prod-postgres-ai-monitori-secrets'),
+        ('a-very-long-release-name-for-tests', {},
+         'a-very-long-release-name-for-tests-postgres-a-secrets'),
+        ('test', {'nameOverride': 'custom',
+                  'global.postgresAiSecretName': 'test-custom-secrets'},
+         'test-custom-secrets'),
+        ('test', {'fullnameOverride': 'mon',
+                  'global.postgresAiSecretName': 'mon-secrets'}, 'mon-secrets'),
+        ('test', {'existingSecret.name': 'my-secret',
+                  'global.postgresAiSecretName': 'my-secret'}, 'my-secret'),
+    ])
+    def test_grafana_secret_refs_match_chart_secret(self, helm_chart_path, release,
+                                                    set_values, secret_name):
+        """Grafana env refs point at the chart Secret; no ConfigMap holds a password."""
+        sentinels = {'victoriaMetrics.auth.enabled': 'true',
+                     'secrets.postgres.password': 'unique-sink-secret',
+                     'secrets.vmAuth.password': 'unique-vm-secret'}
+        docs = self._render_template(helm_chart_path, {**sentinels, **set_values},
+                                     release=release)
+        if 'existingSecret.name' not in set_values:
+            secret = self._find_doc(docs, 'Secret', secret_name)
+            assert secret['metadata']['name'] == secret_name
+        for doc in docs:
+            if doc.get('kind') == 'ConfigMap':
+                rendered = yaml.safe_dump(doc)
+                assert 'unique-sink-secret' not in rendered
+                assert 'unique-vm-secret' not in rendered
+        grafana = self._find_doc(docs, 'Deployment', 'grafana')
+        container = next(c for c in grafana['spec']['template']['spec']['containers']
+                         if c['name'] == 'grafana')
+        env = {entry['name']: entry for entry in container.get('env', [])}
+        for name in ('PGAI_SINK_POSTGRES_PASSWORD', 'PGAI_VM_AUTH_PASSWORD'):
+            assert env[name]['valueFrom']['secretKeyRef']['name'] == secret_name
+
+    def test_grafana_disabled_skips_secret_ref_guard(self, helm_chart_path):
+        """With Grafana off, nameOverride renders: no datasource ConfigMap, no guard."""
+        docs = self._render_template(helm_chart_path,
+                                     {'grafana.enabled': 'false',
+                                      'nameOverride': 'custom'})
+        assert self._find_doc(docs, 'ConfigMap', 'grafana-datasources') is None
+        assert self._find_doc(docs, 'Deployment', 'grafana') is None
+
+    @pytest.mark.parametrize('set_value,env_name,ref_name,chart_secret', [
+        ('nameOverride=custom', 'PGAI_SINK_POSTGRES_PASSWORD',
+         'test-postgres-ai-monitoring-secrets', 'test-custom-secrets'),
+        ('fullnameOverride=mon', 'PGAI_SINK_POSTGRES_PASSWORD',
+         'test-postgres-ai-monitoring-secrets', 'mon-secrets'),
+        ('existingSecret.name=my-secret', 'PGAI_SINK_POSTGRES_PASSWORD',
+         'test-postgres-ai-monitoring-secrets', 'my-secret'),
+        ('grafana.envValueFrom.PGAI_SINK_POSTGRES_PASSWORD.secretKeyRef.name=wrong',
+         'PGAI_SINK_POSTGRES_PASSWORD', 'wrong', 'test-postgres-ai-monitoring-secrets'),
+        ('grafana.envValueFrom.PGAI_VM_AUTH_PASSWORD.secretKeyRef.name=wrong',
+         'PGAI_VM_AUTH_PASSWORD', 'wrong', 'test-postgres-ai-monitoring-secrets'),
+    ])
+    def test_grafana_secret_ref_mismatch_fails(self, helm_chart_path, set_value,
+                                               env_name, ref_name, chart_secret):
+        """The chart refuses to render Grafana env refs to a Secret it does not use."""
+        failed = subprocess.run(
+            ['helm', 'template', 'test', helm_chart_path,
+             '--set', 'secrets.createFromValues=true', '--set', set_value],
+            capture_output=True, text=True,
+        )
+        assert failed.returncode != 0
+        assert (f'Grafana env {env_name} reads Secret "{ref_name}", '
+                f'but the chart uses Secret "{chart_secret}"; '
+                f'set global.postgresAiSecretName to "{chart_secret}"') in failed.stderr
+
+    @pytest.mark.parametrize('set_value,env_name', [
+        ('grafana.envValueFrom=null', 'PGAI_SINK_POSTGRES_PASSWORD'),
+        ('grafana.envValueFrom.PGAI_VM_AUTH_PASSWORD=null', 'PGAI_VM_AUTH_PASSWORD'),
+    ])
+    def test_grafana_secret_ref_missing_names_reuse_values(self, helm_chart_path,
+                                                           set_value, env_name):
+        """helm upgrade --reuse-values drops grafana.envValueFrom; the error says so."""
+        failed = subprocess.run(
+            ['helm', 'template', 'test', helm_chart_path,
+             '--set', 'secrets.createFromValues=true', '--set', set_value],
+            capture_output=True, text=True,
+        )
+        assert failed.returncode != 0
+        missing = f'grafana.envValueFrom.{env_name}.secretKeyRef.name is missing'
+        assert missing in failed.stderr
+        assert '--reset-then-reuse-values' in failed.stderr
+        assert 'global.postgresAiSecretName' not in failed.stderr
 
     def test_vm_password_from_secret_ref(self, helm_chart_path):
         """VM_AUTH_PASSWORD env var should come from secretKeyRef, not plaintext."""
