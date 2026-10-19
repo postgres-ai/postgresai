@@ -206,6 +206,10 @@
 
 ### Fixed
 
+- `prepare-db` removes `postgres_ai.explain_generic(text,text,text)`, a retired SECURITY DEFINER helper that
+  older CLI versions installed (#426). Only its owner or a superuser can drop it; otherwise `prepare-db` names it
+  in text and JSON, and `--verify` exits 1 while it or a SECURITY DEFINER `postgres_ai.table_describe(text)`
+  (0.14.0 to 0.17.0) is installed. `--verify` lists a missing `table_describe` instead of failing with 42883.
 - `pgai mon deploy --self-hosted` (or `--provider self-managed`) through the Supabase pooler: the box's URL keeps
   the project suffix of the URL's user (`postgres.<ref>` gives `postgres_ai_mon.<ref>`), so the pooler can route it
   (postgres-ai/internal#432). A cloud deploy of a Supabase host is finished in the Console, not by this code.

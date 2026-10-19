@@ -973,6 +973,29 @@ export function roleSearchPathProblem(spLine: string, extSchema?: string | null)
   return `role search_path is ${expected.join(", ")}`;
 }
 
+/**
+ * Security #387: step 06.helpers drops the retired SECURITY DEFINER explain_generic and
+ * replaces table_describe with a SECURITY INVOKER version, but only their owner (or a
+ * superuser) can. Report each legacy definer helper that survived, for any transport.
+ */
+export async function legacyHelperWarnings(client: {
+  query: (sql: string) => Promise<{ rows?: Array<Record<string, unknown>> }>;
+}): Promise<string[]> {
+  // Qualified names and an oid = oid comparison: no shadowing object in public can match.
+  const r = await client.query(`select
+  pg_catalog.to_regprocedure('postgres_ai.explain_generic(text,text,text)') is not null as explain_generic,
+  coalesce((select p.prosecdef from pg_catalog.pg_proc p
+    where p.oid = pg_catalog.to_regprocedure('postgres_ai.table_describe(text)')::oid), false) as table_describe`);
+  const row = r.rows?.[0];
+  const legacy = [
+    row?.explain_generic ? "postgres_ai.explain_generic(text, text, text)" : null,
+    row?.table_describe ? "postgres_ai.table_describe(text)" : null,
+  ].filter((f): f is string => f !== null);
+  return legacy.map(
+    (f) => `legacy SECURITY DEFINER helper ${f} is still installed; its owner or a superuser must drop it, then re-run prepare-db`
+  );
+}
+
 export async function verifyInitSetup(params: {
   client: PgClient;
   database: string;
@@ -1098,12 +1121,15 @@ export async function verifyInitSetup(params: {
       }
     }
 
-    // Check for helper functions
+    // Check for helper functions. has_function_privilege raises on a missing function: ok is null then.
     const tableDescribeFnRes = await params.client.query(
-      "select has_function_privilege($1, 'postgres_ai.table_describe(text)', 'EXECUTE') as ok",
+      `select case when pg_catalog.to_regprocedure('postgres_ai.table_describe(text)') is not null
+        then has_function_privilege($1, 'postgres_ai.table_describe(text)', 'EXECUTE') end as ok`,
       [role]
     );
-    if (!tableDescribeFnRes.rows?.[0]?.ok) {
+    if (tableDescribeFnRes.rows?.[0]?.ok === null) {
+      missingRequired.push("function postgres_ai.table_describe(text) exists");
+    } else if (!tableDescribeFnRes.rows?.[0]?.ok) {
       missingRequired.push("EXECUTE on postgres_ai.table_describe(text)");
     }
 
