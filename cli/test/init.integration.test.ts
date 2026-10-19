@@ -757,6 +757,146 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
+  test("prepare-db removes legacy explain_generic idempotently", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+
+    try {
+      await c.connect();
+      // Harmless stubs model the 0.15.0 layout: both helpers SECURITY DEFINER,
+      // table_describe with search_path pg_catalog, public.
+      await c.query(`
+        create schema postgres_ai;
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+        create function postgres_ai.table_describe(in table_name text, out result text)
+        language sql security definer set search_path = pg_catalog, public as $$ select 'legacy'::text $$;
+      `);
+      const signature = "postgres_ai.explain_generic(text,text,text)";
+      const legacy = await c.query("select to_regprocedure($1) as helper", [signature]);
+      expect(legacy.rows[0].helper).not.toBeNull();
+
+      for (let run = 0; run < 2; run++) {
+        const r = runCliInit([pg.adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+        expect(r.status).toBe(0);
+        const result = await c.query("select to_regprocedure($1) as helper", [signature]);
+        expect(result.rows[0].helper).toBeNull();
+        const describe = await c.query(
+          "select prosecdef, proconfig from pg_proc where oid = 'postgres_ai.table_describe(text)'::regprocedure"
+        );
+        expect(describe.rows).toEqual([{ prosecdef: false, proconfig: ["search_path=pg_catalog, pg_temp"] }]);
+      }
+
+      const verified = runCliInit([pg.adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(verified.status).toBe(0);
+      expect(verified.stdout).toMatch(/prepare-db verify: OK/i);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  test("prepare-db reports legacy explain_generic when another role owns it", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+
+    try {
+      await c.connect();
+      // Another admin created the schema and the legacy helpers; this admin is a
+      // CREATEROLE non-superuser that owns none of them, so it cannot drop or replace them.
+      await c.query(`
+        create extension if not exists pg_stat_statements;
+        create role legacy_owner nologin;
+        create role second_admin login createrole password 'adminpw';
+        grant pg_monitor, pg_read_all_stats to second_admin with admin option;
+        grant create on database testdb to second_admin;
+        create schema postgres_ai authorization legacy_owner;
+        grant usage, create on schema postgres_ai to second_admin with grant option;
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+        alter function postgres_ai.explain_generic(text, text, text) owner to legacy_owner;
+        create function postgres_ai.table_describe(in table_name text, out result text)
+        language sql security definer set search_path = pg_catalog, public as $$ select 'legacy'::text $$;
+        alter function postgres_ai.table_describe(text) owner to legacy_owner;
+      `);
+      const adminUri = pg.adminUri.replace("postgres:postgrespw@", "second_admin:adminpw@");
+
+      // Every release that installed explain_generic also installed table_describe with
+      // the same owner, so step 06.helpers fails. The error must name the legacy helper.
+      const stillInstalled = /explain_generic\(text, text, text\) is still installed/;
+      const describeInstalled = /table_describe\(text\) is still installed/;
+      const warning = (f: string) =>
+        `legacy SECURITY DEFINER helper ${f} is still installed; its owner or a superuser must drop it, then re-run prepare-db`;
+      const failed = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(failed.status).toBe(1);
+      expect(failed.stderr).toMatch(/Failed at step "06\.helpers"/);
+      expect(failed.stderr).toMatch(stillInstalled);
+      expect(failed.stderr).toMatch(describeInstalled);
+
+      const failedJson = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions", "--json"]);
+      expect(failedJson.status).toBe(1);
+      const failure = JSON.parse(failedJson.stdout);
+      expect(failure.error.step).toBe("06.helpers");
+      expect(failure.warnings).toEqual([
+        warning("postgres_ai.explain_generic(text, text, text)"),
+        warning("postgres_ai.table_describe(text)"),
+      ]);
+
+      // The owner drops only explain_generic. The legacy definer table_describe stays,
+      // so --verify must still fail and name it.
+      await c.query(`
+        set role legacy_owner;
+        drop function postgres_ai.explain_generic(text, text, text);
+        reset role;
+      `);
+      const describeLeft = runCliInit([adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(describeLeft.status).toBe(1);
+      expect(describeLeft.stderr).toMatch(describeInstalled);
+
+      // With only explain_generic left to another owner, prepare-db warns and continues.
+      await c.query(`
+        drop function postgres_ai.table_describe(text);
+        create function postgres_ai.explain_generic(text, text, text)
+        returns text language sql security definer as $$ select 'legacy'::text $$;
+        alter function postgres_ai.explain_generic(text, text, text) owner to legacy_owner;
+      `);
+      // A missing table_describe is listed as missing, not raised as 42883.
+      const describeGone = runCliInit([adminUri, "--verify", "--skip-optional-permissions", "--json"]);
+      expect(describeGone.status).toBe(1);
+      expect(JSON.parse(describeGone.stdout).missingRequired).toEqual(expect.arrayContaining([
+        "function postgres_ai.table_describe(text) exists",
+        warning("postgres_ai.explain_generic(text, text, text)"),
+      ]));
+      expect(describeGone.stdout + describeGone.stderr).not.toMatch(describeInstalled);
+      const r = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(r.status).toBe(0);
+      expect(r.stderr).toMatch(stillInstalled);
+
+      const json = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions", "--json"]);
+      expect(json.status).toBe(0);
+      expect(JSON.parse(json.stdout).warnings.some((w: string) => stillInstalled.test(w))).toBe(true);
+
+      const verified = runCliInit([adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(verified.status).toBe(1);
+      expect(verified.stderr).toMatch(/verify failed: missing required items/i);
+      expect(verified.stderr).toMatch(stillInstalled);
+
+      const verifiedJson = runCliInit([adminUri, "--verify", "--skip-optional-permissions", "--json"]);
+      expect(verifiedJson.status).toBe(1);
+      const verification = JSON.parse(verifiedJson.stdout);
+      expect(verification).toMatchObject({ success: false, verified: false });
+      expect(verification.missingRequired.some((m: string) => stillInstalled.test(m))).toBe(true);
+      const helpers = await c.query(
+        "select to_regprocedure('postgres_ai.explain_generic(text,text,text)') as legacy, to_regprocedure('postgres_ai.table_describe(text)') as describe"
+      );
+      expect(helpers.rows[0].legacy).not.toBeNull();
+      expect(helpers.rows[0].describe).not.toBeNull();
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   // Each database gets its own role search_path with its pg_stat_statements schema.
   // The role-wide value (setdatabase 0) is the base path, for databases not prepared yet.
   test("role search_path per database: public, extensions and \"My Ext\", both prepare orders", async () => {

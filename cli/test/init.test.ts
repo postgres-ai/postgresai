@@ -1090,6 +1090,7 @@ describe("CLI commands", () => {
     const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/SQL plan \(offline; not connected\)/);
+    expect(r.stdout).toContain("drop function if exists postgres_ai.explain_generic(text, text, text);");
     expect(r.stdout).toMatch(new RegExp(`grant connect on database "mydb" to "${DEFAULT_MONITORING_USER}"`, "i"));
     expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
     expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
@@ -1099,6 +1100,7 @@ describe("CLI commands", () => {
     const r = runCli(["prepare-db", "--print-sql", "-d", "mydb", "--password", "monpw", "--provider", "supabase"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/provider: supabase/);
+    expect(r.stdout).toContain("drop function if exists postgres_ai.explain_generic(text, text, text);");
     // Should not have 01.role step
     expect(r.stdout).not.toMatch(/-- 01\.role/);
     // Should have 02.extensions and 03.permissions steps

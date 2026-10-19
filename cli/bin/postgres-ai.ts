@@ -56,7 +56,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1793,6 +1793,11 @@ program
             monitoringUser: opts.monitoringUser,
             includeOptionalPermissions,
           });
+          const legacyFailures = await legacyHelperWarnings(supabaseClient);
+          if (legacyFailures.length > 0) {
+            v.missingRequired.push(...legacyFailures);
+            v.ok = false;
+          }
           if (v.ok) {
             if (jsonOutput) {
               const result: Record<string, unknown> = {
@@ -1921,6 +1926,7 @@ program
           client: supabaseClient,
           plan: effectivePlan,
         });
+        const legacyWarnings = await legacyHelperWarnings(supabaseClient);
 
         if (jsonOutput) {
           const result: Record<string, unknown> = {
@@ -1931,9 +1937,12 @@ program
             monitoringUser: opts.monitoringUser,
             applied,
             skippedOptional,
-            warnings: skippedOptional.length > 0
-              ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
-              : [],
+            warnings: [
+              ...(skippedOptional.length > 0
+                ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
+                : []),
+              ...legacyWarnings,
+            ],
           };
           if (passwordGenerated) {
             result.generatedPassword = monPassword;
@@ -1948,6 +1957,7 @@ program
             console.error("⚠ Some optional steps were skipped (not supported or insufficient privileges):");
             for (const s of skippedOptional) console.error(`- ${s}`);
           }
+          for (const w of legacyWarnings) console.error(`⚠ ${w}`);
           if (process.stdout.isTTY) {
             console.log(`Applied ${applied.length} steps`);
           }
@@ -2112,6 +2122,11 @@ program
           includeOptionalPermissions,
           provider,
         });
+        const legacyFailures = await legacyHelperWarnings(client);
+        if (legacyFailures.length > 0) {
+          v.missingRequired.push(...legacyFailures);
+          v.ok = false;
+        }
         if (v.ok) {
           if (jsonOutput) {
             outputJson({
@@ -2237,6 +2252,7 @@ program
       }
 
       const { applied, skippedOptional } = await applyInitPlan({ client, plan: effectivePlan });
+      const legacyWarnings = await legacyHelperWarnings(client);
 
       if (jsonOutput) {
         const result: Record<string, unknown> = {
@@ -2247,9 +2263,12 @@ program
           monitoringUser: opts.monitoringUser,
           applied,
           skippedOptional,
-          warnings: skippedOptional.length > 0
-            ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
-            : [],
+          warnings: [
+            ...(skippedOptional.length > 0
+              ? ["Some optional steps were skipped (not supported or insufficient privileges)"]
+              : []),
+            ...legacyWarnings,
+          ],
         };
         if (passwordGenerated) {
           result.generatedPassword = monPassword;
@@ -2261,6 +2280,7 @@ program
           console.error("⚠ Some optional steps were skipped (not supported or insufficient privileges):");
           for (const s of skippedOptional) console.error(`- ${s}`);
         }
+        for (const w of legacyWarnings) console.error(`⚠ ${w}`);
         // Keep output compact but still useful
         if (process.stdout.isTTY) {
           console.log(`Applied ${applied.length} steps`);
@@ -2285,6 +2305,11 @@ program
         typeof message === "string" ? message.match(/Failed at step "([^"]+)":/i) : null;
       const failedStep = stepMatch?.[1];
 
+      // A failed step leaves the legacy helper in place: name it. Never mask the original error.
+      const legacyWarnings = failedStep && client
+        ? await legacyHelperWarnings(client).catch(() => [] as string[])
+        : [];
+
       // Build error object for JSON output
       const errorObj: {
         message: string;
@@ -2306,6 +2331,7 @@ program
           success: false,
           mode: "direct",
           error: errorObj,
+          ...(legacyWarnings.length > 0 ? { warnings: legacyWarnings } : {}),
         });
         process.exitCode = 1;
       } else {
@@ -2324,6 +2350,7 @@ program
             console.error(`  Hint: ${errAny.hint}`);
           }
         }
+        for (const w of legacyWarnings) console.error(`⚠ ${w}`);
         if (errAny && typeof errAny === "object" && typeof errAny.code === "string") {
           if (errAny.code === "42501") {
             if (failedStep === "01.role") {

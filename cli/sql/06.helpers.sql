@@ -1,5 +1,18 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
 
+-- Remove the retired helper from databases prepared by older CLI versions.
+-- Only its owner or a superuser can drop it: anyone else gets a warning here. Releases
+-- installed table_describe with the same owner, so replacing it below then fails.
+do {{DO_QUOTE}}
+begin
+  -- Runs as the admin: resolve names from pg_catalog only (CVE-2018-1058).
+  set local search_path = pg_catalog, pg_temp;
+  drop function if exists postgres_ai.explain_generic(text, text, text);
+exception when insufficient_privilege then
+  raise warning 'postgres_ai: legacy SECURITY DEFINER helper was NOT removed: %', sqlerrm
+    using hint = 'Its owner or a superuser must drop it, then re-run prepare-db.';
+end {{DO_QUOTE}};
+
 /*
  * table_describe
  *
