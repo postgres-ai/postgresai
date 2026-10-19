@@ -186,8 +186,16 @@ function runCliInit(
   args: string[],
   env: Record<string, string> = {}
 ): { status: number | null; stdout: string; stderr: string } {
+  return runCli("prepare-db", args, env);
+}
+
+function runCli(
+  command: string,
+  args: string[],
+  env: Record<string, string> = {}
+): { status: number | null; stdout: string; stderr: string } {
   const cliPath = path.resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
-  const result = Bun.spawnSync(["bun", cliPath, "prepare-db", ...args], {
+  const result = Bun.spawnSync(["bun", cliPath, command, ...args], {
     env: { ...process.env, ...env },
   });
   return {
@@ -243,6 +251,45 @@ where e.extname = 'pg_stat_statements'`)).rows).toEqual([{ nspname: "public" }])
       await pg.cleanup();
     }
   }, { timeout: 60000 });
+
+  // internal#384: a database owner plants exact-match overloads in public. With
+  // the server's default search_path they win over the pg_catalog built-ins and
+  // run as the admin. adminUri has no sslmode, so the CLI takes the plaintext
+  // retry after the server refuses TLS.
+  test("prepare-db, checkup and unprepare-db never call overloads planted in public", async () => {
+    pg = await createTempPostgres();
+    const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "postgresai-cfg-"));
+    try {
+      const c = new Client({ connectionString: pg.adminUri });
+      await c.connect();
+      try {
+        for (const fn of ["format(text, text)", "quote_ident(name)"]) {
+          await c.query(`create function public.${fn} returns text language plpgsql as $$
+begin
+  raise exception 'planted public overload called';
+end;
+$$`);
+        }
+      } finally {
+        await c.end();
+      }
+
+      const env = { XDG_CONFIG_HOME: configHome };
+      const runs: Array<[string, string[]]> = [
+        ["prepare-db", [pg.adminUri, "--password", "monpw", "--skip-optional-permissions"]],
+        ["checkup", [pg.adminUri, "--no-upload", "--json"]],
+        ["unprepare-db", [pg.adminUri, "--force"]],
+      ];
+      const results = runs.map(([command, args]) => {
+        const r = runCli(command, args, env);
+        return { command, status: r.status, planted: `${r.stdout}${r.stderr}`.includes("planted public overload called") };
+      });
+      expect(results).toEqual(runs.map(([command]) => ({ command, status: 0, planted: false })));
+    } finally {
+      fs.rmSync(configHome, { recursive: true, force: true });
+      await pg.cleanup();
+    }
+  }, { timeout: 120000 });
 
   test("supports URI / conninfo / psql-like connection styles", async () => {
     pg = await createTempPostgres();

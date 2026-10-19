@@ -1399,6 +1399,49 @@ describe("connectWithSslFallback", () => {
     await init.connectWithSslFallback(MockClient as any, adminConn);
 
     expect(queriesSent.some((q) => /SET\s+statement_timeout/i.test(q))).toBe(true);
+    expect(queriesSent[0]).toBe("set search_path = pg_catalog, pg_temp");
+  });
+
+  // internal#384: the pin must not depend on TLS. Each client records its own
+  // queries; a client with TLS on fails like a server that refuses TLS.
+  const PIN = "set search_path = pg_catalog, pg_temp";
+  function makeTlsRefusingClient(clients: { ssl: unknown; queries: string[] }[]) {
+    return class {
+      private rec: { ssl: unknown; queries: string[] };
+      constructor(config: any) {
+        this.rec = { ssl: config.ssl, queries: [] };
+        clients.push(this.rec);
+      }
+      async connect() {
+        if (this.rec.ssl) throw new Error("The server does not support SSL connections");
+      }
+      async query(sql: string) {
+        this.rec.queries.push(sql);
+        return {};
+      }
+    };
+  }
+
+  test("pins search_path first on a plaintext connection (sslmode=disable)", async () => {
+    const clients: { ssl: unknown; queries: string[] }[] = [];
+    const adminConn = init.resolveAdminConnection({ conn: "postgresql://u:p@localhost:5432/d?sslmode=disable" });
+
+    const { usedSsl } = await init.connectWithSslFallback(makeTlsRefusingClient(clients) as any, adminConn);
+
+    expect(usedSsl).toBe(false);
+    expect(clients.map((c) => !!c.ssl)).toEqual([false]);
+    expect(clients[0].queries[0]).toBe(PIN);
+  });
+
+  test("pins search_path first on the plaintext retry after the server refuses TLS", async () => {
+    const clients: { ssl: unknown; queries: string[] }[] = [];
+    const adminConn = init.resolveAdminConnection({ conn: "postgresql://u:p@localhost:5432/d" });
+
+    const { usedSsl } = await init.connectWithSslFallback(makeTlsRefusingClient(clients) as any, adminConn);
+
+    expect(usedSsl).toBe(false);
+    expect(clients.map((c) => !!c.ssl)).toEqual([true, false]);
+    expect(clients[1].queries[0]).toBe(PIN);
   });
 });
 
