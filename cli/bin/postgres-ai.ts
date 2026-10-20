@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status } from "../lib/connect";
+import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4323,6 +4323,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
 type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
   monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
+  supabaseProject?: string;
 };
 
 /** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
@@ -4337,22 +4338,27 @@ function detachOnCtrlC(resume: string, view?: StepView): () => void {
 }
 
 async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
-  let url: string;
-  try {
-    url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
-  } catch (err) {
-    return optionError({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
+  // What --provider names, when it is one.
+  const explicit = providerArg(opts.provider);
+  // --provider supabase (or --supabase-project) without a URL: the project is picked from the org's list (postgresai#438).
+  const projectMode = !urlArg?.trim() && !opts.dbUrl?.trim() && (explicit === "supabase" || (!explicit && !!opts.supabaseProject?.trim()));
+  let url = "";
+  if (!projectMode) {
+    try {
+      url = databaseUrlArg(urlArg, opts.dbUrl, "pgai mon deploy");
+    } catch (err) {
+      return optionError({ status: "failed", provider: "self-managed", name: "", next: errorText(err) }, opts.json);
+    }
   }
   // With JSON output, stderr is the event stream: every line of it is a JSON event
   // (console.error and console.warn too, since the preAction hook).
   const json = jsonOutput(opts.json);
-  const name = (() => { try { return databaseName(url); } catch { return ""; } })();
-  if (!name || !/^postgres(ql)?:\/\//.test(url)) {
+  const name = projectMode ? "" : (() => { try { return databaseName(url); } catch { return ""; } })();
+  if (!projectMode && (!name || !/^postgres(ql)?:\/\//.test(url))) {
     return optionError({ status: "failed", provider: "self-managed", name, next: "Pass a URL: pgai mon deploy postgresql://user:password@host:5432/dbname" }, opts.json);
   }
-  // What --provider names, when it is one; else the host's.
-  const explicit = providerArg(opts.provider);
-  const provider = PROVIDERS.find((p) => p === explicit) ?? detectCloudProvider(url);
+  // Else the host's provider.
+  const provider = projectMode ? "supabase" : PROVIDERS.find((p) => p === explicit) ?? detectCloudProvider(url);
   let minutes: number;
   try {
     minutes = waitMinutes(opts.wait, 20);
@@ -4372,12 +4378,13 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       return emitConnect({ status: "action_required", provider, name, next: "Sign in: pgai auth login (agents: set PGAI_API_KEY), then re-run" }, opts.json, true);
     }
     const api = cloudApi(opts.debug);
+    let shownName = name;
     // A person at a terminal gets the step view on stderr (after the price); piped, a line per step; --json, JSON events.
     const tty = !json && !!process.stderr.isTTY && !process.env.CI && process.env.TERM !== "dumb";
     let createdId: string | undefined;
     let stopping = false;
     const steps = stepProgress({
-      json, tty, makeView: () => new StepView(`Deploying monitoring for ${name}`, monitoringSteps(provider), true),
+      json, tty, makeView: () => new StepView(`Deploying monitoring for ${shownName || "the Supabase project"}`, monitoringSteps(provider), true),
       writeLine: (line) => console.error(line), writeEvent, onId: (id) => { createdId = id; },
     });
     shownView = () => steps.view() as StepView | undefined;
@@ -4454,10 +4461,35 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         },
+        // --provider supabase without --supabase-project: a person at a terminal picks the project
+        // (elsewhere the result carries the list).
+        ...(interactive(opts.json) ? { chooseSupabaseProject: async (projects: SupabaseProject[], org: string) => {
+          const selectable = projects.filter((x) => x.selectable);
+          // Names come from Supabase: shown without escape sequences, like every platform text.
+          console.error(terminalText(`\nProjects in the Supabase organization "${org}":`));
+          for (const line of supabaseProjectRows(projects, true)) console.error(terminalText(line));
+          if (!selectable.length) return undefined;
+          process.exitCode = 130;
+          try {
+            for (let tries = 0; tries < 3; tries++) {
+              const answer = (await question(`Project to monitor (1-${selectable.length}, Enter to cancel): `)).trim();
+              if (!answer) return undefined;
+              const i = Number(answer);
+              if (Number.isInteger(i) && i >= 1 && i <= selectable.length) return selectable[i - 1]!.ref;
+              console.error(`Type a number from 1 to ${selectable.length}.`);
+            }
+            return undefined;
+          } finally {
+            process.exitCode = undefined;
+            closeReadline();
+          }
+        } } : {}),
         // Supabase's consent page, for a person at a terminal (the link is printed too).
         ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
         progress: (e) => {
           if (e.event === "provisioning") requested = true;
+          // Supabase without a URL: the project picked names the step view.
+          if (e.project) shownName = terminalText(e.project);
           steps.progress(e);
         },
         aborted: () => stopping,
@@ -4505,7 +4537,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
   .option("--reset-password", "the monitoring role exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
   .option("--monitoring-user <name>", "monitoring role to create or use", DEFAULT_MONITORING_USER)
   .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
-  .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal)")
+  .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal; Supabase: from the project's compute size)")
+  .option("--supabase-project <name|project-id>", "the Supabase project to monitor (its exact name, or its project ID), instead of a URL; implies --provider supabase")
   .addHelpText("after", [
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
@@ -4529,6 +4562,11 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "Supabase: deploy opens the consent page in the browser (the link is printed too, to open",
     "it elsewhere; \"auth_url\" in the JSON event) and waits for the approval, up to 10 minutes.",
     "With --wait 0, and for agents, it stops there (exit 3) with the link in \"next\".",
+    "No URL needed: pgai mon deploy --provider supabase lists the projects of the connected",
+    "Supabase organization to pick one at a terminal; --supabase-project <name|project-id> picks it",
+    "for agents and scripts. Without either, and not at a terminal, it stops (exit 3) with the list",
+    "(\"projects\" in the JSON result). Paused and not-ready projects are listed but can't be",
+    "picked; an already-monitored one returns its monitoring.",
     "",
     "Exit codes: 0 ready (or in progress with --no-wait), 1 failed, 3 action required (see",
     "\"next\"), also when the wait ends before the box is ready.",
@@ -4550,12 +4588,18 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "Examples:",
     "  pgai mon deploy 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
     "  CLICKHOUSE_KEY_ID=... CLICKHOUSE_KEY_SECRET=... pgai mon deploy '<url>'",
+    "  pgai mon deploy --provider supabase",
+    "  pgai mon deploy --supabase-project <name|project-id> --yes --json",
     "  pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres'",
     "  pgai mon deploy '<url>' --self-hosted",
   ].join("\n"))
   .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {
-    // The URL is the argument or --db-url: without either, Commander's own error for a missing argument.
-    if (!urlArg?.trim() && !opts.dbUrl?.trim()) return cmd.error("error: missing required argument 'database-url'");
+    // The URL is the argument or --db-url (not needed for a Supabase project, postgresai#438):
+    // without any, Commander's own error for a missing argument.
+    const supabase = providerArg(opts.provider) === "supabase" || (!opts.provider && !!opts.supabaseProject?.trim());
+    if (!urlArg?.trim() && !opts.dbUrl?.trim() && !supabase) {
+      return cmd.error("error: missing required argument 'database-url' (or --provider supabase to pick a Supabase project)");
+    }
     return runConnect(urlArg, opts);
   });
 

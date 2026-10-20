@@ -4,6 +4,16 @@
 
 ### Added
 
+- `pgai mon deploy --provider supabase` without a database URL (https://gitlab.com/postgres-ai/postgresai/-/work_items/438),
+  like the Console: it connects the Supabase organization if needed, then lists its projects. At a terminal you pick
+  one from a numbered list; agents and scripts pass `--supabase-project <name or project ID>` (it implies
+  `--provider supabase`). Without either, with `--yes`, or not at a terminal, it stops (exit 3) with the list in the JSON result
+  (`supabase_org`, and `projects` with `ref`, `name`, `region`, `status`, `selectable`, `reason`, `monitored`).
+  Paused and not-ready projects are listed but can't be picked; an already-monitored project returns its
+  monitoring. A URL still works as before. Wording: the consent failure now reads "Supabase did not connect:
+  <why>. Re-run to try again", and the missing-URL error mentions `--provider supabase`.
+  The `postgresai` agent skill asks which Supabase project from this list instead of reading `DATABASE_URL`.
+
 - `pgai mon deploy` for Supabase from the CLI (https://gitlab.com/postgres-ai/platform-all/-/work_items/890): no
   password; the CLI opens the Supabase consent page (the link is printed too, `auth_url` in the JSON events) and
   waits for the approval, then the box prepares the database through the Supabase Management API. Agents and

@@ -175,6 +175,60 @@ describe("pgai init", () => {
   });
 });
 
+describe("pgai mon deploy --provider supabase: pick the project, no URL (postgresai#438)", () => {
+  const REF = "aaaaaaaaaaaaaaaaaaaa";
+  const projects = [
+    { ref: "bbbbbbbbbbbbbbbbbbbb", name: "old demo", region: "eu-west-1", status: "inactive", postgres_version: "15.1", selectable: false, reason: "paused", monitored: null },
+    { ref: REF, name: "shop prod", region: "us-east-1", status: "active", postgres_version: "17.6", selectable: true, reason: null, monitored: null },
+  ];
+  const listed = { cloud_monitoring_supabase_projects: () => Response.json({ connected: true, supabase_org_name: "Acme", synced: true, projects }) };
+
+  test("not at a terminal: the list in the result, exit 3, nothing created", async () => {
+    await withApi(async (env, calls) => {
+      const r = await run(["mon", "deploy", "--provider", "supabase", "--json"], env);
+      expect(r.status).toBe(3);
+      expect(r.json()).toEqual({
+        status: "action_required", provider: "supabase", name: "", supabase_org: "Acme", projects,
+        next: "Choose the Supabase project to monitor, then re-run with --supabase-project <name or project ID>",
+      });
+      expect(calls.map((c) => c.split(" ")[0])).toEqual(["/rpc/cloud_monitoring_supabase_projects"]);
+    }, [], listed);
+  });
+
+  // REV round 1: a number picks among several; a wrong answer asks again.
+  test("at a terminal with two projects: a wrong answer asks again, 2 picks the second", async () => {
+    const two = [
+      { ref: "aaaaaaaaaaaaaaaaaaaa", name: "alpha", region: "us-east-1", status: "active", postgres_version: "17", selectable: true, reason: null, monitored: null },
+      { ref: "cccccccccccccccccccc", name: "gamma", region: "eu-west-1", status: "active", postgres_version: "17", selectable: true, reason: null, monitored: null },
+    ];
+    const extra = {
+      cloud_monitoring_supabase_projects: () => Response.json({ connected: true, supabase_org_name: "Acme", synced: true, projects: two }),
+      cloud_monitoring_quote: () => Response.json({ plan: "scale", org_alias: "acme", billed: true, free_slots: { remaining: 0, total: 0 }, subscription: false, quantity: 0,
+        price: { amount: 51200, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false }),
+    };
+    await withApi(async (env, calls) => {
+      const r = await runTty(["mon", "deploy", "--provider", "supabase"], env, [
+        ["Project to monitor (1-2, Enter to cancel): ", "9\r"],
+        ["Project to monitor (1-2, Enter to cancel): ", "2\r"],
+        ["Provision gamma (Supabase)? (y/N): ", "n\r"],
+      ]);
+      expect(r.screen).toContain("Type a number from 1 to 2.");
+      // The price was asked for the second project; declined, nothing created.
+      expect(calls.some((c) => c.includes("/rpc/cloud_monitoring_supabase_connect"))).toBe(false);
+      expect(r.screen).toContain("Provision gamma (Supabase)? (y/N): ");
+    }, [], extra);
+  });
+
+  test("at a terminal: the projects, a number to pick, Enter cancels", async () => {
+    await withApi(async (env) => {
+      const r = await runTty(["mon", "deploy", "--provider", "supabase"], env, [["Project to monitor (1-1, Enter to cancel): ", "\r"]]);
+      expect(r.status).toBe(3);
+      expect(r.screen).toContain('Projects in the Supabase organization "Acme":\n   - old demo   eu-west-1  bbbbbbbbbbbbbbbbbbbb  paused\n  1. shop prod  us-east-1  aaaaaaaaaaaaaaaaaaaa\n');
+      expect(r.screen).toContain("No project chosen: re-run and pick one, or pass --supabase-project <name or project ID>");
+    }, [], listed);
+  });
+});
+
 describe("pgai mon deploy / mon instances list / status / delete", () => {
   test("not signed in and not interactive: action required, exit 3", async () => {
     const r = await run(["mon", "deploy", CH], {});

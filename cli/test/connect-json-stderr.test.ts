@@ -200,7 +200,7 @@ async function runTty(args: string[], env: Record<string, string> = {}) {
   });
   return { status: await proc.exited, screen: clean(out) };
 }
-const NO_URL = "error: missing required argument 'database-url'";
+const NO_URL = "error: missing required argument 'database-url' (or --provider supabase to pick a Supabase project)";
 const TTY_TEXT: [string[], string][] = [
   [["mon", "deploy"], NO_URL],
   [["mon", "deploy", "--wait", "--json"], NO_URL],
@@ -223,7 +223,7 @@ test.each([[["mon", "deploy", "--json"]], [["--bogus", "mon", "deploy", "--json"
   const r = await runTty(args);
   expect(r.status).toBe(1);
   expect(expectJsonLines(r.screen.split("\n").filter((l) => l !== ""))).toEqual([
-    { event: "log", level: "error", message: expect.stringMatching(/^error: (missing required argument 'database-url'|unknown option '--bogus')$/) },
+    { event: "log", level: "error", message: expect.stringMatching(/^error: (missing required argument 'database-url' \(or --provider supabase to pick a Supabase project\)|unknown option '--bogus')$/) },
   ]);
   expect(r.screen).not.toContain("Usage:");
 });
