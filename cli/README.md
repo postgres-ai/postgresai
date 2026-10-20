@@ -224,6 +224,12 @@ the Console (Monitoring, then the instance). A database that must stay behind an
 needs AWS PrivateLink (RDS) or self-hosted monitoring (`--self-hosted`).
 
 Without `--provider`, RDS hostnames still go to their console integration, and Supabase hostnames to the Supabase consent flow (`pgai mon deploy` for Supabase).
+
+A Supabase project needs no URL at all: `pgai mon deploy --provider supabase` connects the Supabase organization
+if needed and lists its projects. At a terminal you pick one; agents and scripts pass
+`--supabase-project <name or project ID>`. Without either, with `--yes`, or not at a terminal, it stops (exit 3) with the list
+in the JSON result (`projects`, each with `selectable` and `reason`). The vCPUs come from the project's compute size.
+
 `generic` does not configure AWS PrivateLink, open a firewall, or remove TLS, permission, or
 payment checks. A private endpoint needs a network path, or monitoring hosted in that network
 (`--self-hosted`).

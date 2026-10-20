@@ -19,8 +19,12 @@ database".
 
 Work on your own. Ask the user only when you are blocked:
 
-- which database to use: confirm it once, before anything else (step 1);
-- the database server's vCPU count, if you cannot find it (step 1);
+- who runs the database (Supabase, Amazon RDS, ClickHouse or their own
+  server), unless they said so or the host shows it (step 1);
+- which database to use: confirm it once, before anything else (step 1); for
+  Supabase, which project, from the list PostgresAI returns (see "Supabase");
+- the database server's vCPU count, if you cannot find it (step 1; not for
+  Supabase);
 - the PostgresAI sign-in needs them (see step 2);
 - they belong to several PostgresAI organizations and you need to know which
   one;
@@ -106,7 +110,58 @@ lists every option.
 
 ## 1. Find the database
 
-Look for the connection URL: environment variables (`DATABASE_URL`,
+**Who runs it.** The setup differs by provider, so know it first. If the user
+named it, use that. If the database host shows it (`.supabase.co` or
+`.pooler.supabase.com`, or a `SUPABASE_URL` as in "Supabase first" below:
+Supabase; `.rds.amazonaws.com`: Amazon RDS; `.clickhouse.cloud`: ClickHouse),
+use that. Otherwise, before anything else,
+ask one question and show the user these options as a list to choose from
+(the options of your question tool, or a numbered list right under the
+**Question:** line), so they can answer with a number:
+
+1. Supabase
+2. Amazon RDS or Aurora
+3. ClickHouse Managed Postgres
+4. Self-managed: their own server, VM or Docker, or another cloud (Google
+   Cloud SQL, Azure, Neon and others)
+
+Then:
+
+- **Supabase**: follow "Supabase first" below.
+- **RDS**, **ClickHouse**: find the URL as below, and add `--provider rds` or
+  `--provider clickhouse` to the deploy in step 3. For ClickHouse, the CPU,
+  memory and disk charts need a ClickHouse Cloud API key with the Basic
+  Service API Reader role: offer it as optional. Give the user the link to
+  create it, https://console.clickhouse.cloud (their organization → API
+  Keys), and ask them to put it in `.env` as `CLICKHOUSE_KEY_ID` and
+  `CLICKHOUSE_KEY_SECRET` (never in the chat).
+- **Self-managed**: find the URL as below, and add `--provider generic` to
+  the deploy.
+
+If the answer and the host disagree (the user says self-managed, the host is
+`*.supabase.co`), tell the user and ask which is right.
+
+**Supabase first.** Check for hosted Supabase before you look for a URL: a
+`SUPABASE_URL` or `NEXT_PUBLIC_SUPABASE_URL` of the form
+`https://<ref>.supabase.co` (you may read these two values; they hold no
+secret), or a database host ending in `.supabase.co` or
+`.pooler.supabase.com` (look at the host only, as below). A
+`supabase/config.toml` alone, or a `SUPABASE_URL` on another host, is local or
+self-hosted Supabase: use the usual URL steps below. For hosted Supabase, this
+replaces the rest of step 1:
+
+1. Do not show, parse or ask about `DATABASE_URL` or any other database URL,
+   and do not ask for the vCPUs. PostgresAI needs neither: it lists the
+   projects of the user's Supabase organization.
+2. The `<ref>` in `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` names the
+   project the app uses, the likely choice. If the user's project is not in
+   the list PostgresAI returns, go back to the usual URL steps.
+3. Tell the user what the setup creates and that monitoring is paid and how
+   long it takes (as below), then go to step 2 and run the command in the
+   "Supabase" section below. It creates nothing. The question to ask comes from its
+   result: which project, from the list it returns.
+
+Otherwise, look for the connection URL: environment variables (`DATABASE_URL`,
 `POSTGRES_URL`, `PG*`), `.env*` files (list the variable names only, such as
 `grep -o '^[A-Z_]*=' .env`), `docker-compose*.yml`, and framework config (Rails
 `database.yml`, Django `settings.py`, Prisma `schema.prisma`, and so on).
@@ -128,7 +183,8 @@ then on. If you find no URL, ask where it is.
 
 Then, unless you already know it (see step 3), ask how many vCPUs the database
 server has, as a question of its own, and say that "I don't know" is a fine
-answer.
+answer. Not for Supabase: PostgresAI reads the vCPUs from the project's compute
+size.
 
 If the user's request identifies exactly one candidate (its URL, variable, or
 host and database) and asks for PostgresAI monitoring, that is the
@@ -201,6 +257,8 @@ set -a; . ./.env 2>/dev/null; set +a; date -u +%FT%TZ >&2
 pgai mon deploy "$DATABASE_URL" --org <alias> --json --no-wait
 ```
 
+For Supabase, there is no URL: see "Supabase" below for the command.
+
 If the URL is not in `.env` as `DATABASE_URL`, load it from where you found it,
 under its own name. Note the time printed first, on stderr: it is when the
 deploy started.
@@ -238,6 +296,8 @@ The result is JSON on stdout. Act on `status` and `next`:
   - It is a Supabase consent link: give the user that link to open and approve,
     then re-run the deploy (with the same `--coupon`, if they gave one). The
     price comes after the approval, as above.
+  - It carries `projects` (Supabase, no project picked yet): ask which project
+    to monitor (see "Supabase" below), then re-run with `--supabase-project <ref>`.
   - It says "Finish in the console" (Amazon RDS): give the user that link. The
     CLI shows no price here: the console page shows it before anything is
     billed, and has a field for a promotion code, so tell them to enter their
@@ -256,6 +316,42 @@ The result is JSON on stdout. Act on `status` and `next`:
   the user what `next` says.
 - `failed`, `inactive`, `deleting` or `deleted`: tell the user the status, and
   `next` unless it is `none`.
+
+## Supabase
+
+What you need to know to set up monitoring for a Supabase project:
+
+- **No URL, no password.** Run
+  `pgai mon deploy --provider supabase --org <alias> --json --no-wait` (no
+  `--yes`, no URL). PostgresAI creates `postgres_ai_mon`, the `postgres_ai` schema and
+  `pg_stat_statements` through the Supabase Management API; the database
+  password is never needed or sent.
+- **Connect Supabase once.** The first time, `next` is a Supabase consent link.
+  The user opens it, picks the Supabase organization that owns the project,
+  and approves. Then re-run the same command. A PostgresAI organization is
+  connected to one Supabase organization: a project of another one is refused
+  (the user can disconnect Supabase in the console first, or use another
+  PostgresAI organization).
+- **Pick the project.** The result is `action_required` with `projects` (and
+  `supabase_org`). Show the user the projects with `"selectable": true` by
+  name and region; mention the others and why, in words (`reason`: `paused`,
+  `not_ready:<status>` such as "starting", or `monitored`). If `SUPABASE_URL` named a project in
+  step 1, name it as the likely choice, but ask; never pick for them. Then
+  re-run with `--supabase-project <ref>` (the project's `ref`, its project ID)
+  and `--no-wait`, still no `--yes`: the price comes next, as in step 3.
+- **Paused projects** can't be monitored: the user resumes the project in
+  Supabase first. A project "not ready" can be retried once Supabase shows it
+  as active.
+- **Already monitored**: the deploy returns that project's box (no second one,
+  nothing billed); report its links.
+- **vCPUs** come from the project's compute size: don't ask, and don't pass
+  `--vcpus` unless the user wants to override it.
+- **Who can do it**: an admin of the PostgresAI organization, with a personal
+  sign-in (`pgai auth login`, or a personal API key). An organization API key is
+  refused.
+- **Where the monitoring box runs**: PostgresAI Cloud, in Europe (Germany or
+  Finland). Tell the user before they accept the price, since query texts and
+  statistics are stored there.
 
 ## 4. Collect what PostgresAI has produced so far
 

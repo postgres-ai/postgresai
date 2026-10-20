@@ -32,6 +32,8 @@ export interface ProgressEvent {
   id?: string;
   /** Supabase: the page where the org approves PostgresAI's access (deploy waits for it). */
   auth_url?: string;
+  /** Supabase without a URL: the project picked, as the step view names it. */
+  project?: string;
 }
 
 export interface ConnectResult {
@@ -50,7 +52,32 @@ export interface ConnectResult {
   coupon?: { code: string; valid: boolean; description?: string; error?: string };
   next: string;
   sql?: string;
+  /** --provider supabase without a URL: the Supabase organization connected to the org. */
+  supabase_org?: string;
+  /** --provider supabase without a URL: the projects to pick from (postgresai#438). */
+  projects?: SupabaseProject[];
 }
+
+/** A project of the Supabase organization connected to the org (v1.cloud_monitoring_supabase_projects). */
+export interface SupabaseProject {
+  ref: string;
+  name: string;
+  region: string | null;
+  /** active, inactive (paused), unhealthy, coming_up, unknown, ... */
+  status: string;
+  postgres_version: string | null;
+  /** Active and not monitored yet. */
+  selectable: boolean;
+  /** Why it can't be picked: monitored, paused or not_ready:<status> (null when selectable). */
+  reason: string | null;
+  /** The monitoring box it already has. */
+  monitored: { id: string; name: string | null; status: string | null } | null;
+}
+
+/** v1.cloud_monitoring_supabase_projects: the org's Supabase projects, or the consent page when it is not connected. */
+export type SupabaseProjects =
+  | { connected: true; supabase_org_name: string; synced: boolean; projects: SupabaseProject[] }
+  | { connected: false; auth_url: string; session_id: string; expires_at?: string };
 
 /** v1.cloud_monitoring_quote: what the next box costs the org. Amounts in cents. */
 export interface Quote {
@@ -126,6 +153,10 @@ export interface ConnectDeps {
   supabaseStart(dbUrl: string): Promise<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>;
   supabaseStatus(sessionId: string): Promise<{ status: "pending" | "connected" | "error"; error?: string }>;
   supabaseConnect(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
+  /** --provider supabase without a URL: the org's projects (synced first), or the consent page (postgresai#438). */
+  supabaseProjects?(): Promise<SupabaseProjects>;
+  /** Asks a person at a terminal to pick a project (its ref); undefined when skipped or nobody can be asked. */
+  chooseSupabaseProject?(projects: SupabaseProject[], org: string): Promise<string | undefined>;
   /** Opens a page in this machine's browser (a person at a terminal only). */
   openUrl?(url: string): void;
   /** What the next box costs, with the coupon checked. */
@@ -170,6 +201,8 @@ export interface ConnectOptions {
   location?: string;
   /** --vcpus: the database server's vCPUs; AAS is collected only with them. */
   vcpus?: number;
+  /** --supabase-project: the Supabase project (ref or name) to monitor, instead of its URL (postgresai#438). */
+  supabaseProject?: string;
 }
 
 /**
@@ -501,7 +534,8 @@ function personLines(r: ConnectResult): string[] {
     case "deleted":
       return [`Deleting the monitoring of ${who}.${billing ? ` Billing: ${billing}.` : ""}${r.next && r.next !== "none" ? ` ${r.next}` : ""}`];
     default:
-      return [r.next];
+      // Supabase without a URL: the projects one per line under the reason (JSON has them in `projects`).
+      return r.projects?.length ? [r.next, ...supabaseProjectRows(r.projects)] : [r.next];
   }
 }
 
@@ -547,7 +581,7 @@ async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: Co
   if (q.requires_payment_method) return { billing, billingPage, billingUrl, accepted: false, stop: billingPage };
   // The price on its own line first: a prompt may wrap or be cut where it is shown.
   show(billing.price!);
-  if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${name}? (y/N): `))) {
+  if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${terminalText(name)}? (y/N): `))) {
     return stop(opts.agent ? `Call deploy_monitoring again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
   }
   return { billing, billingPage, billingUrl, accepted: q.billed };
@@ -567,8 +601,18 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     warned.add(message);
     progress(step, message);
   };
-  const provider = (providerArg(opts.provider) ?? detectCloudProvider(url)) as Provider;
+  // --supabase-project names a Supabase project: no URL is needed (postgresai#438).
+  const project = opts.supabaseProject?.trim();
+  const provider = (providerArg(opts.provider) ?? (!url && project ? "supabase" : detectCloudProvider(url))) as Provider;
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: generic, ${PROVIDERS.join(", ")}`);
+  if (project !== undefined && provider !== "supabase") {
+    return { status: "action_required", provider, name: url ? databaseName(url) : "", next: "--supabase-project applies to Supabase only: leave it out, or use --provider supabase" };
+  }
+  if (!url) {
+    if (provider !== "supabase") return { status: "action_required", provider, name: "", next: "Pass the database URL: pgai mon deploy postgresql://user:password@host:5432/dbname (Supabase: --provider supabase)" };
+    if (opts.selfHosted) return { status: "action_required", provider, name: "", next: "--self-hosted needs the database URL: pass the project's connection string" };
+    return deploySupabaseProject(undefined, opts, deps, progress);
+  }
   // Before any name is taken from the URL (the MCP path does not go through the CLI's argument check).
   assertEncodedUserinfo(url);
   // Supabase is never logged in to from here: its URL only names the project.
@@ -882,30 +926,25 @@ const OAUTH_POLL_MS = 2_000;
 async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
   const provider = "supabase";
   const ref = extractProjectRefFromUrl(url);
-  if (!ref) return { status: "action_required", provider, name: databaseName(url), next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>)" };
+  if (!ref) return { status: "action_required", provider, name: databaseName(url), next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>), or pass --provider supabase without a URL to pick the project" };
   // One name for the direct and the pooler URL of a project.
   const db = decodeURIComponent(new URL(url).pathname.replace(/^\//, "")) || "postgres";
-  const project = `postgresql://db.${ref}.supabase.co:5432/${encodeURIComponent(db)}`;
-  const name = databaseName(project);
-  const cluster = clusterOf(project)!;
+  const name = databaseName(supabaseProjectUrl(ref, db));
   const stop = (next: string, more: Partial<ConnectResult> = {}): ConnectResult => ({ status: "action_required", provider, name, ...more, next });
   // The box prepares and monitors the project's postgres database (prepare-db --supabase).
   if (db !== "postgres") return stop("PostgresAI monitors a Supabase project through its postgres database: use the URL of the postgres database");
-  if (opts.resetPassword) return stop("--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API");
-  if (opts.location) return stop("--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it");
-  // The platform creates postgres_ai_mon there, and keeps its password: a custom role would not be used.
-  if (opts.monitoringUser !== undefined && opts.monitoringUser.trim() !== DEFAULT_MONITORING_USER) {
-    return stop(`${opts.agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates ${DEFAULT_MONITORING_USER} through the Supabase Management API`);
-  }
-  // A row of another database there (deployed as self-managed) is not this box.
-  const row = (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster && (!d.database || d.database === "postgres"));
+  const refused = supabaseOptionsRefused(opts);
+  if (refused) return stop(refused);
+  // Both the URL and --supabase-project: they must name the same project, which the list decides.
+  if (opts.supabaseProject?.trim()) return deploySupabaseProject(ref, opts, deps, progress);
+  const row = await boxOnProject(ref, deps);
   if (row) {
     const note = opts.name && row.name !== opts.name ? `; --name ignored: this database is already monitored as ${row.name}` : "";
     return follow(row, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
   }
   let started: Awaited<ReturnType<ConnectDeps["supabaseStart"]>>;
   try {
-    started = await deps.supabaseStart(project);
+    started = await deps.supabaseStart(supabaseProjectUrl(ref));
   } catch (err) {
     if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
     // Another Supabase organization is connected to this org: the platform says which.
@@ -913,25 +952,200 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     throw err;
   }
   if ("auth_url" in started) {
-    // The link goes to the browser opener and the terminal: Supabase's own https page only.
-    if (!isSupabaseUrl(started.auth_url)) return { status: "failed", provider, name, next: `The platform sent a Supabase consent link that is not ${SUPABASE_API_BASE}: not opened. Re-run pgai mon deploy later.` };
-    const approve = `Open ${started.auth_url} in a browser and approve PostgresAI's access to Supabase`;
-    if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
-    progress("preparing", `Connect Supabase to PostgresAI: approve access in the browser (open ${started.auth_url} if it did not open). Waiting...`, { auth_url: started.auth_url });
-    deps.openUrl?.(started.auth_url);
-    // A declined consent is never reported: the session stays pending until it expires.
-    const expires = started.expires_at ? Date.parse(started.expires_at) : NaN;
-    for (const deadline = deps.now() + Math.min(opts.waitMs, OAUTH_WAIT_MS); ;) {
-      if (deps.aborted?.()) throw new CancelledError();
-      const s = await deps.supabaseStatus(started.session_id);
-      if (s.status === "connected") break;
-      if (s.status === "error") return stop(`Supabase did not connect (${s.error ?? "no reason given"}): re-run to try again`);
-      const now = deps.now();
-      if (now >= expires) return stop("The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one");
-      if (now >= deadline) return stop(`${approve}, then re-run`);
-      await deps.sleep(OAUTH_POLL_MS);
-    }
+    const waited = await supabaseConsent(started, opts, deps, progress, stop);
+    if (waited) return waited;
   }
+  return supabaseBox(ref, name, opts, deps, progress, stop);
+}
+
+/**
+ * The box that already monitors a Supabase project's postgres database, if any: also one the
+ * platform does not link to the project (made through the generic path). A row of another
+ * database there (deployed as self-managed) is not this box.
+ */
+async function boxOnProject(ref: string, deps: ConnectDeps): Promise<Database | undefined> {
+  const cluster = clusterOf(supabaseProjectUrl(ref))!;
+  return (await deps.list()).find((d) => !disconnecting(d.status) && d.cluster && serverOf(d.cluster) === cluster && (!d.database || d.database === "postgres"));
+}
+
+/** The URL that names a Supabase project's database: what the platform finds it by, and the instance name's source. */
+function supabaseProjectUrl(ref: string, db = "postgres"): string {
+  return `postgresql://db.${ref}.supabase.co:5432/${encodeURIComponent(db)}`;
+}
+
+/** Options that do not apply to a Supabase project, or undefined. */
+function supabaseOptionsRefused(opts: ConnectOptions): string | undefined {
+  if (opts.resetPassword) return "--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API";
+  if (opts.location) return "--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it";
+  // The platform creates postgres_ai_mon there, and keeps its password: a custom role would not be used.
+  if (opts.monitoringUser !== undefined && opts.monitoringUser.trim() !== DEFAULT_MONITORING_USER) {
+    return `${opts.agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates ${DEFAULT_MONITORING_USER} through the Supabase Management API`;
+  }
+  return undefined;
+}
+
+/**
+ * The org approves PostgresAI's access to Supabase in the browser: a person at a terminal waits for it;
+ * an agent, or --wait 0, stops with the link. undefined once connected, else the result to return.
+ */
+async function supabaseConsent(started: { auth_url: string; session_id: string; expires_at?: string }, opts: ConnectOptions, deps: ConnectDeps,
+  progress: Progress, stop: (next: string, more?: Partial<ConnectResult>) => ConnectResult): Promise<ConnectResult | undefined> {
+  // The link goes to the browser opener and the terminal: Supabase's own https page only.
+  if (!isSupabaseUrl(started.auth_url)) return { ...stop(""), status: "failed", next: `The platform sent a Supabase consent link that is not ${SUPABASE_API_BASE}: not opened. Re-run pgai mon deploy later.` };
+  const approve = `Open ${started.auth_url} in a browser and approve PostgresAI's access to Supabase`;
+  if (opts.agent || opts.waitMs <= 0) return stop(`${approve}, then ${opts.agent ? "call deploy_monitoring again" : "re-run"}`);
+  progress("preparing", `Connect Supabase to PostgresAI: approve access in the browser (open ${started.auth_url} if it did not open). Waiting...`, { auth_url: started.auth_url });
+  deps.openUrl?.(started.auth_url);
+  // A declined consent is never reported: the session stays pending until it expires.
+  const expires = started.expires_at ? Date.parse(started.expires_at) : NaN;
+  for (const deadline = deps.now() + Math.min(opts.waitMs, OAUTH_WAIT_MS); ;) {
+    if (deps.aborted?.()) throw new CancelledError();
+    const s = await deps.supabaseStatus(started.session_id);
+    if (s.status === "connected") return undefined;
+    if (s.status === "error") return stop(`Supabase did not connect: ${(s.error ?? "no reason given").replace(/\.$/, "")}. Re-run to try again`);
+    const now = deps.now();
+    if (now >= expires) return stop("The Supabase consent link expired before it was approved: re-run pgai mon deploy for a new one");
+    if (now >= deadline) return stop(`${approve}, then re-run`);
+    await deps.sleep(OAUTH_POLL_MS);
+  }
+}
+
+/** A Supabase project status in words. */
+export function supabaseStatusWords(status: string): string {
+  if (status === "inactive" || status === "paused") return "paused";
+  if (status === "coming_up") return "starting";
+  if (status === "unknown") return "in an unknown state";
+  return status.replace(/_/g, " ");
+}
+
+/** Why a project can't be picked, in words ("" when it can). */
+function supabaseWhy(p: SupabaseProject): string {
+  if (p.reason === "monitored") return `already monitored${p.monitored?.name ? ` as ${p.monitored.name}` : ""}`;
+  if (p.reason === "paused") return "paused";
+  if (p.reason?.startsWith("not_ready:")) return `not ready (${supabaseStatusWords(p.reason.slice("not_ready:".length))})`;
+  return "";
+}
+
+/**
+ * The projects as aligned rows for a person: name, region, project ID, and why one can't be
+ * picked. `numbered`: the pickable ones get 1, 2, ... (the picker); the others "-".
+ */
+export function supabaseProjectRows(projects: SupabaseProject[], numbered = false): string[] {
+  const nameW = Math.max(...projects.map((p) => p.name.length));
+  const regionW = Math.max(...projects.map((p) => (p.region ?? "").length));
+  const numW = String(projects.filter((p) => p.selectable).length).length;
+  let n = 0;
+  return projects.map((p) => {
+    const why = supabaseWhy(p);
+    const mark = numbered ? `${(p.selectable ? `${++n}.` : "-").padStart(numW + 1)} ` : "";
+    return `  ${mark}${p.name.padEnd(nameW)}  ${(p.region ?? "").padEnd(regionW)}  ${p.ref}${why ? `  ${why}` : ""}`.trimEnd();
+  });
+}
+
+/** The project --supabase-project names: by ref, else by its exact name (any case); a name several projects share is refused. */
+export function matchSupabaseProject(projects: SupabaseProject[], wanted: string): { project: SupabaseProject } | { none: true } | { ambiguous: SupabaseProject[] } {
+  const value = wanted.trim();
+  const byRef = projects.find((p) => p.ref === value);
+  if (byRef) return { project: byRef };
+  const byName = projects.filter((p) => p.name.toLowerCase() === value.toLowerCase());
+  if (byName.length === 1) return { project: byName[0]! };
+  if (byName.length > 1) return { ambiguous: byName };
+  return { none: true };
+}
+
+/**
+ * --provider supabase without a URL (postgresai#438): connect Supabase if needed, list the org's
+ * projects, pick one (--supabase-project, or a person at a terminal), then the box, as for a URL.
+ * `urlRef`: a URL was given too, and the project picked must be that one.
+ */
+async function deploySupabaseProject(urlRef: string | undefined, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
+  const provider = "supabase";
+  let name = urlRef ? databaseName(supabaseProjectUrl(urlRef)) : "";
+  const stop = (next: string, more: Partial<ConnectResult> = {}): ConnectResult => ({ status: "action_required", provider, name, ...more, next });
+  const refused = supabaseOptionsRefused(opts);
+  if (refused) return stop(refused);
+  const urlHint = "pass the project's URL instead (pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres')";
+  if (!deps.supabaseProjects) return stop(`Picking a Supabase project needs a newer pgai: ${urlHint}`);
+  const listed = async (): Promise<SupabaseProjects | ConnectResult> => {
+    try {
+      return await deps.supabaseProjects!();
+    } catch (err) {
+      if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+      // An API from before postgresai#438 has no such rpc.
+      if (err instanceof HttpStatusError && err.status === 404) return stop(`This PostgresAI API cannot list Supabase projects yet: ${urlHint}`);
+      throw err;
+    }
+  };
+  let list = await listed();
+  if ("status" in list) return list;
+  if (!list.connected) {
+    const waited = await supabaseConsent(list, opts, deps, progress, stop);
+    if (waited) return waited;
+    list = await listed();
+    if ("status" in list) return list;
+    // Approved, yet not connected: the grant went missing between the two calls.
+    if (!list.connected) return stop("Supabase did not stay connected after the approval: re-run pgai mon deploy --provider supabase");
+  }
+  const org = list.supabase_org_name;
+  const projects = list.projects;
+  const shown = { supabase_org: org, projects };
+  // Supabase did not answer the sync: the stored list, which may be out of date.
+  if (!list.synced && !projects.length) return stop("Supabase did not answer the project list: re-run in a minute");
+  const stale = list.synced ? "" : " (Supabase did not answer just now: the list may be out of date)";
+  const inOrg = `organization "${org}"`;
+  const useFlag = "--supabase-project <name or project ID>";
+  if (!projects.length) return stop(`There are no projects in the Supabase ${inOrg}: create one there, then re-run`, shown);
+  const wanted = opts.supabaseProject?.trim();
+  let picked: SupabaseProject | undefined;
+  if (wanted) {
+    const m = matchSupabaseProject(projects, wanted);
+    if ("none" in m) return stop(`No Supabase project "${wanted}" in ${inOrg}: re-run with ${useFlag} of one of its projects`, shown);
+    if ("ambiguous" in m) return stop(`Several projects in ${inOrg} are called "${wanted}": re-run with the project ID instead`, { supabase_org: org, projects: m.ambiguous });
+    picked = m.project;
+  } else {
+    // Nothing to pick: say why before any prompt.
+    if (!projects.some((p) => p.selectable)) {
+      return stop(projects.some((p) => p.monitored)
+        ? `Every active project in ${inOrg} is already monitored: see pgai mon instances list (a paused project can be monitored once it is resumed in Supabase)`
+        : `No active project in ${inOrg}: resume one in Supabase, then re-run`, shown);
+    }
+    const ask = !opts.agent && !opts.yes ? deps.chooseSupabaseProject : undefined;
+    if (!ask) return stop(`Choose the Supabase project to monitor, then re-run with ${useFlag}${stale}`, shown);
+    const ref = await ask(projects, org);
+    if (deps.aborted?.()) throw new CancelledError();
+    if (!ref) return stop(`No project chosen: re-run and pick one, or pass ${useFlag}`, shown);
+    picked = projects.find((p) => p.ref === ref);
+  }
+  if (!picked) return stop(`No project chosen: re-run and pick one, or pass ${useFlag}`, shown);
+  if (urlRef && picked.ref !== urlRef) {
+    const urlProject = projects.find((p) => p.ref === urlRef);
+    return stop(`--supabase-project is ${picked.name}, but the database URL is for ${urlProject ? urlProject.name : `project ${urlRef}`}: pass only one of them`);
+  }
+  name = databaseName(supabaseProjectUrl(picked.ref));
+  // Already monitored: that box, as on a re-run with the URL; no second box.
+  if (picked.monitored) {
+    const box = (await deps.list()).find((d) => d.id === picked!.monitored!.id);
+    if (box && !disconnecting(box.status)) {
+      const note = opts.name && box.name !== opts.name ? `; --name ignored: this database is already monitored as ${box.name}` : "";
+      return follow(box, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
+    }
+    return stop(`${picked.name} is already monitored${picked.monitored.name ? ` as ${picked.monitored.name}` : ""}: see pgai mon instances list`);
+  }
+  if (picked.reason === "paused") return stop(`${picked.name} is paused: resume it in Supabase, then re-run`);
+  if (!picked.selectable) return stop(`${picked.name} is not ready in Supabase (${supabaseStatusWords(picked.status)}): re-run when it is active`);
+  // A box on the project's database that the platform does not link to the project: that one, not a second.
+  const existing = await boxOnProject(picked.ref, deps);
+  if (existing) {
+    const note = opts.name && existing.name !== opts.name ? `; --name ignored: this database is already monitored as ${existing.name}` : "";
+    return follow(existing, { provider, name, fresh: false, billing: {}, note }, opts, deps, progress);
+  }
+  return supabaseBox(picked.ref, name, opts, deps, progress, stop, `${picked.name} (Supabase)`);
+}
+
+/** The price, then the box for a project of the connected Supabase organization, then following it. */
+async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress,
+  stop: (next: string, more?: Partial<ConnectResult>) => ConnectResult, label?: string): Promise<ConnectResult> {
+  const provider = "supabase";
   let quote: Quote;
   try {
     // The org's price, not a cluster's: the Supabase provision bills every box.
@@ -940,10 +1154,10 @@ async function deploySupabase(url: string, opts: ConnectOptions, deps: ConnectDe
     if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
     throw err;
   }
-  const b = await billingFor(quote, name, opts, deps, (price) => progress("billing", estimateLine(price)));
+  const b = await billingFor(quote, label ?? name, opts, deps, (price) => progress("billing", estimateLine(price), label ? { project: label } : {}));
   if (b.stop) return { status: "action_required", provider, name, ...b.stop };
   if (deps.aborted?.()) throw new CancelledError();
-  progress("provisioning", `Provisioning monitoring for ${name}`);
+  progress("provisioning", `Provisioning monitoring for ${label ?? name}`, label ? { project: label } : {});
   // vCPUs: the platform reads the project's compute size; --vcpus overrides it.
   const created = await deps.supabaseConnect({
     project_ref: ref,
@@ -1391,6 +1605,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     supabaseStart: (dbUrl: string) => rpc<{ connected: true; project_ref: string } | { auth_url: string; session_id: string; expires_at?: string }>("cloud_monitoring_supabase_start", { db_url: dbUrl }),
     supabaseStatus: (sessionId: string) => rpc<{ status: "pending" | "connected" | "error"; error?: string }>("cloud_monitoring_supabase_status", { session_id: sessionId }),
     supabaseConnect: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_supabase_connect", body),
+    supabaseProjects: () => rpc<SupabaseProjects>("cloud_monitoring_supabase_projects", {}),
     handoffUrl: async (provider: "rds") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);

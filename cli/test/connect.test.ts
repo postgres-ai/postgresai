@@ -7,7 +7,8 @@ import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { StepView, monitoringSteps } from "../lib/deploy";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent, type SupabaseProject, type SupabaseProjects, supabaseProjectRows } from "../lib/connect";
+import { notAdminNext as notAdminNextText } from "../lib/deploy-surface";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
 // outside effect faked and recorded. Whole results are compared, so a change
@@ -1934,7 +1935,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     oauth(refused);
     expect(await connect(SB, { waitMs: 60_000 }, refused.deps)).toEqual({
       status: "action_required", provider: "supabase", name: SB_NAME,
-      next: "Supabase did not connect (access_denied): re-run to try again",
+      next: "Supabase did not connect: access_denied. Re-run to try again",
     });
     expect(refused.calls).toEqual(["list", `start ${SB_PUBLIC}`, `open ${AUTH}`, "status sess-1"]);
 
@@ -2045,7 +2046,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     const f = make();
     expect(await connect("postgresql://postgres:p@10.0.0.5:5432/postgres", { provider: "supabase", waitMs: 0 }, f.deps)).toEqual({
       status: "action_required", provider: "supabase", name: "10.0.0.5/postgres",
-      next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>)",
+      next: "Not a Supabase project URL: use the project's connection string (db.<project-ref>.supabase.co, or the pooler with user postgres.<project-ref>), or pass --provider supabase without a URL to pick the project",
     });
     expect(await connect(SB, { resetPassword: true, waitMs: 0 }, f.deps)).toEqual({
       status: "action_required", provider: "supabase", name: SB_NAME,
@@ -2072,6 +2073,233 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     const { deps, calls } = make();
     expect(await connect(SB, { monitoringUser: " postgres_ai_mon ", waitMs: 0 }, deps)).toMatchObject({ status: "in_progress", id: "i-1" });
     expect(calls).toContain(`connect ${JSON.stringify({ project_ref: REF })}`);
+  });
+});
+
+describe("mon deploy --provider supabase without a URL: pick the project (postgresai#438)", () => {
+  const A = "aaaaaaaaaaaaaaaaaaaa";
+  const B = "bbbbbbbbbbbbbbbbbbbb";
+  const C = "cccccccccccccccccccc";
+  const D = "dddddddddddddddddddd";
+  const A_NAME = `db.${A}.supabase.co/postgres`;
+  const AUTH = "https://api.supabase.com/v1/oauth/authorize?client_id=c&state=s";
+  const proj = (ref: string, name: string, status: string, extra: Partial<SupabaseProject> = {}): SupabaseProject => ({
+    ref, name, region: "us-east-1", status, postgres_version: "17.6",
+    selectable: status === "active", reason: status === "active" ? null : status === "inactive" ? "paused" : `not_ready:${status}`,
+    monitored: null, ...extra,
+  });
+  const PROJECTS = [
+    proj(C, "analytics", "unhealthy"),
+    proj(B, "old demo", "inactive"),
+    proj(A, "shop prod", "active"),
+  ];
+  const LIST = { connected: true as const, supabase_org_name: "Acme", synced: true, projects: PROJECTS };
+  const sbRow = (status: string | null, id = "i-1") => row(status, { id, name: A_NAME, provider: "supabase", cluster: `db.${A}.supabase.co:5432`, database: "postgres", host_metrics: false });
+  const make = (over: Parameters<typeof fake>[0] & { lists?: SupabaseProjects[]; statuses?: { status: string; error?: string }[] } = {}) => {
+    const lists = over.lists ?? [LIST];
+    const statuses = over.statuses ?? [];
+    let listed = 0;
+    let polled = 0;
+    const f = fake({ rows: [undefined, sbRow("launch_requested"), sbRow("active")], ...over });
+    f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+    f.deps.supabaseStart = async (u) => { f.calls.push(`start ${u}`); return { connected: true, project_ref: A }; };
+    f.deps.supabaseProjects = over.supabaseProjects ?? (async () => { f.calls.push("projects"); return lists[Math.min(listed++, lists.length - 1)]!; });
+    f.deps.supabaseStatus = over.supabaseStatus ?? (async (id) => { f.calls.push(`status ${id}`); return statuses[Math.min(polled++, statuses.length - 1)] as never; });
+    f.deps.supabaseConnect = over.supabaseConnect ?? (async (body) => { f.calls.push(`connect ${JSON.stringify(body)}`); return { id: "i-1", name: A_NAME, status: "launch_requested" }; });
+    f.deps.openUrl = (url) => { f.calls.push(`open ${url}`); };
+    return f;
+  };
+  const shown = { supabase_org: "Acme", projects: PROJECTS };
+
+  // S1: a person at a terminal picks from the list; the database is never logged in to.
+  test("at a terminal: the list, the pick, the price, then the box", async () => {
+    const f = make();
+    f.deps.chooseSupabaseProject = async (projects, org) => { f.calls.push(`choose ${org} ${projects.map((p) => p.ref).join(",")}`); return A; };
+    const result = await connect("", { provider: "supabase", waitMs: 0 }, f.deps);
+    expect(result).toEqual({ status: "in_progress", provider: "supabase", name: A_NAME, id: "i-1", dashboard_url: null, host_metrics: false, ...FREE, next: "pgai mon instances watch i-1" });
+    expect(f.calls).toEqual(["projects", `choose Acme ${C},${B},${A}`, "list", "quote", `connect ${JSON.stringify({ project_ref: A })}`]);
+  });
+
+  // S2: the org is not connected yet: consent in the browser, then the list.
+  test("not connected: the consent page, then the list, then the pick", async () => {
+    let t = 0;
+    const f = make({ lists: [{ connected: false, auth_url: AUTH, session_id: "sess-1" }, LIST], statuses: [{ status: "pending" }, { status: "connected" }], now: () => t, sleep: async (ms) => { t += ms; } });
+    f.deps.chooseSupabaseProject = async () => A;
+    expect((await connect("", { provider: "supabase", waitMs: 60_000 }, f.deps)).status).toBe("ready");
+    expect(f.calls.slice(0, 8)).toEqual(["projects", `open ${AUTH}`, "status sess-1", "status sess-1", "projects", "list", "quote", `connect ${JSON.stringify({ project_ref: A })}`]);
+  });
+
+  // S3: agents and scripts name the project: by ref, or by its exact name in any case.
+  test("--supabase-project by ref or by name: no prompt, the same box", async () => {
+    for (const wanted of [A, "Shop Prod"]) {
+      const f = make();
+      f.deps.chooseSupabaseProject = async () => { throw new Error("asked"); };
+      const result = await connect("", { supabaseProject: wanted, waitMs: 0, yes: true }, f.deps);
+      expect([result.status, result.name]).toEqual(["in_progress", A_NAME]);
+      expect(f.calls).toEqual(["projects", "list", "quote", `connect ${JSON.stringify({ project_ref: A })}`]);
+    }
+  });
+
+  // S4a: no terminal and no --supabase-project: the list to choose from, nothing created.
+  test("an agent, or --json, without --supabase-project: the list (exit 3), nothing created", async () => {
+    for (const opts of [{ agent: true }, { yes: true }, {}]) {
+      const f = make();
+      expect(await connect("", { provider: "supabase", waitMs: 0, ...opts }, f.deps)).toEqual({
+        status: "action_required", provider: "supabase", name: "", ...shown,
+        next: "Choose the Supabase project to monitor, then re-run with --supabase-project <name or project ID>",
+      });
+      expect(f.calls).toEqual(["projects"]);
+    }
+  });
+
+  // S4b: an agent on an org not connected yet gets the consent link first.
+  test("an agent, not connected: the consent link (exit 3); the re-run lists", async () => {
+    const f = make({ lists: [{ connected: false, auth_url: AUTH, session_id: "sess-1" }] });
+    expect(await connect("", { provider: "supabase", waitMs: 60_000, agent: true }, f.deps)).toEqual({
+      status: "action_required", provider: "supabase", name: "",
+      next: `Open ${AUTH} in a browser and approve PostgresAI's access to Supabase, then call deploy_monitoring again`,
+    });
+    expect(f.calls).toEqual(["projects"]);
+  });
+
+  // S5, S6, S9, S13: refused, and nothing created.
+  test("unknown, paused, not ready, ambiguous, no active project, URL and project disagree: action required, nothing created", async () => {
+    const cases: [Partial<Parameters<typeof connect>[1]> & { url?: string }, SupabaseProjects, string][] = [
+      [{ supabaseProject: "nope" }, LIST, 'No Supabase project "nope" in organization "Acme": re-run with --supabase-project <name or project ID> of one of its projects'],
+      [{ supabaseProject: B }, LIST, "old demo is paused: resume it in Supabase, then re-run"],
+      [{ supabaseProject: "analytics" }, LIST, "analytics is not ready in Supabase (unhealthy): re-run when it is active"],
+      [{ supabaseProject: "starting one" }, { ...LIST, projects: [proj(D, "starting one", "coming_up")] }, "starting one is not ready in Supabase (starting): re-run when it is active"],
+      [{ supabaseProject: "twin" }, { ...LIST, projects: [proj(A, "twin", "active"), proj(D, "Twin", "active")] },
+        'Several projects in organization "Acme" are called "twin": re-run with the project ID instead'],
+      [{ provider: "supabase" }, { ...LIST, projects: [proj(B, "old demo", "inactive")] },
+        'No active project in organization "Acme": resume one in Supabase, then re-run'],
+      [{ provider: "supabase" }, { ...LIST, projects: [] }, 'There are no projects in the Supabase organization "Acme": create one there, then re-run'],
+      [{ url: `postgresql://postgres:p@db.${C}.supabase.co:5432/postgres`, supabaseProject: A }, LIST,
+        "--supabase-project is shop prod, but the database URL is for analytics: pass only one of them"],
+    ];
+    for (const [{ url, ...opts }, list, next] of cases) {
+      const f = make({ lists: [list] });
+      const result = await connect(url ?? "", { waitMs: 0, yes: true, ...opts }, f.deps);
+      expect([result.status, result.next]).toEqual(["action_required", next]);
+      expect(f.calls).toEqual(["projects"]);
+    }
+  });
+
+  // The price prompt names the project: a name from Supabase reaches the terminal without its escapes.
+  test("the price prompt shows the project name without terminal escapes", async () => {
+    const asked: string[] = [];
+    const f = make({ lists: [{ ...LIST, projects: [proj(A, "shop\x1b[2J prod", "active")] }] });
+    f.deps.quote = async () => ({ ...FREE_QUOTE, billed: true });
+    f.deps.confirm = async (q) => { asked.push(q); return false; };
+    await connect("", { supabaseProject: A, waitMs: 0 }, f.deps);
+    expect(asked).toEqual(["Provision shop prod (Supabase)? (y/N): "]);
+  });
+
+  // S7: a project that already has a box: that box, no second one, nothing billed.
+  test("an already-monitored project: follows its box, no new box", async () => {
+    const monitored = { ...LIST, projects: [proj(A, "shop prod", "active", { selectable: false, reason: "monitored", monitored: { id: "i-9", name: "shop prod (Supabase)", status: "active" } })] };
+    const f = make({ lists: [monitored], rows: [sbRow("active", "i-9")] });
+    const result = await connect("", { supabaseProject: A, waitMs: 0 }, f.deps);
+    expect([result.status, result.id]).toEqual(["ready", "i-9"]);
+    expect(f.calls).toEqual(["projects", "list"]);
+  });
+
+  // S10: an org member who is not an admin; an API from before postgresai#438.
+  test("not an org admin, or an API without the list: action required", async () => {
+    const member = make({ supabaseProjects: async () => { throw new HttpStatusError("cloud monitoring supabase projects: HTTP 403\nnot an admin", 403); } });
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, member.deps)).next).toBe(notAdminNextText);
+    const old = make({ supabaseProjects: async () => { throw new HttpStatusError("cloud monitoring supabase projects: HTTP 404\nCould not find the function", 404); } });
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, old.deps)).next).toBe(
+      "This PostgresAI API cannot list Supabase projects yet: pass the project's URL instead (pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres')");
+  });
+
+  // S15: the consent ran out before it was approved.
+  test("the consent expired: action required, re-run", async () => {
+    let t = 0;
+    const f = make({ lists: [{ connected: false, auth_url: AUTH, session_id: "sess-1" }], statuses: [{ status: "error", error: "The Supabase sign-in expired before it finished." }], now: () => t, sleep: async (ms) => { t += ms; } });
+    expect((await connect("", { provider: "supabase", waitMs: 60_000 }, f.deps)).next).toBe(
+      "Supabase did not connect: The Supabase sign-in expired before it finished. Re-run to try again");
+  });
+
+  test("--supabase-project with another provider, and Enter at the prompt: refused, nothing created", async () => {
+    const f = make();
+    expect((await connect("", { provider: "rds", supabaseProject: A, waitMs: 0 }, f.deps)).next).toBe("--supabase-project applies to Supabase only: leave it out, or use --provider supabase");
+    f.deps.chooseSupabaseProject = async () => undefined;
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, f.deps)).next).toBe("No project chosen: re-run and pick one, or pass --supabase-project <name or project ID>");
+    expect(f.calls).toEqual(["projects"]);
+  });
+
+  // REV round 1: a box on the project's database that the platform does not link to the project
+  // (made through the generic path) is followed, not doubled by a second billed box.
+  test("a box on the project's database, not linked to it: followed, no second box", async () => {
+    const unlinked = row("active", { id: "i-7", name: "generic-box", provider: "self-managed", cluster: `db.${A}.supabase.co:5432`, database: "postgres" });
+    for (const opts of [{ supabaseProject: A }, { supabaseProject: A, url: `postgresql://postgres:p@db.${A}.supabase.co:5432/postgres` }]) {
+      const { url, ...rest } = opts as { supabaseProject: string; url?: string };
+      const f = make({ rows: [unlinked] });
+      const result = await connect(url ?? "", { waitMs: 0, yes: true, ...rest }, f.deps);
+      expect([result.status, result.id]).toEqual(["ready", "i-7"]);
+      expect(f.calls.some((c) => c.startsWith("connect "))).toBe(false);
+    }
+  });
+
+  // REV round 1: --yes and agents never get a prompt.
+  test("--yes or an agent without --supabase-project: the list, never the picker", async () => {
+    for (const opts of [{ yes: true }, { agent: true }]) {
+      const f = make();
+      f.deps.chooseSupabaseProject = async () => { throw new Error("asked"); };
+      expect((await connect("", { provider: "supabase", waitMs: 0, ...opts }, f.deps)).status).toBe("action_required");
+    }
+  });
+
+  // REV round 1: Supabase did not answer the project list.
+  test("the list could not be synced: empty → retry later; otherwise the list says it may be out of date", async () => {
+    const empty = make({ lists: [{ ...LIST, synced: false, projects: [] }] });
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, empty.deps)).next).toBe(
+      "Supabase did not answer the project list: re-run in a minute");
+    const stale = make({ lists: [{ ...LIST, synced: false }] });
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, stale.deps)).next).toBe(
+      "Choose the Supabase project to monitor, then re-run with --supabase-project <name or project ID> (Supabase did not answer just now: the list may be out of date)");
+  });
+
+  // Design review: nothing to pick at a terminal says why, before any prompt.
+  test("every active project already monitored: why, no prompt, nothing created", async () => {
+    const monitored = { ...LIST, projects: [proj(B, "old demo", "inactive"), proj(A, "shop prod", "active", { selectable: false, reason: "monitored", monitored: { id: "i-9", name: "shop", status: "active" } })] };
+    const f = make({ lists: [monitored] });
+    f.deps.chooseSupabaseProject = async () => { throw new Error("asked"); };
+    expect((await connect("", { provider: "supabase", waitMs: 0 }, f.deps)).next).toBe(
+      'Every active project in organization "Acme" is already monitored: see pgai mon instances list (a paused project can be monitored once it is resumed in Supabase)');
+    expect(f.calls).toEqual(["projects"]);
+  });
+
+  // Design review: the step view names the project picked, not a host the user never typed.
+  test("the price and provisioning events name the project picked", async () => {
+    const events: ProgressEvent[] = [];
+    const f = make({ progress: (e) => events.push(e) });
+    await connect("", { supabaseProject: A, waitMs: 0 }, f.deps);
+    expect(events.filter((e) => e.event !== "box").map((e) => [e.event, e.message, e.project])).toEqual([
+      ["billing", "Estimated cost: free (1 of 1 free slots)", "shop prod (Supabase)"],
+      ["provisioning", "Provisioning monitoring for shop prod (Supabase)", "shop prod (Supabase)"],
+    ]);
+  });
+
+  // Design review: a person reads the list one project per line, aligned, statuses in words.
+  test("a person reads the projects as aligned rows", () => {
+    const projects = [...PROJECTS, proj(D, "new", "coming_up")];
+    expect(supabaseProjectRows(projects)).toEqual([
+      `  analytics  us-east-1  ${C}  not ready (unhealthy)`,
+      `  old demo   us-east-1  ${B}  paused`,
+      `  shop prod  us-east-1  ${A}`,
+      `  new        us-east-1  ${D}  not ready (starting)`,
+    ]);
+    expect(supabaseProjectRows(projects, true)).toEqual([
+      `   - analytics  us-east-1  ${C}  not ready (unhealthy)`,
+      `   - old demo   us-east-1  ${B}  paused`,
+      `  1. shop prod  us-east-1  ${A}`,
+      `   - new        us-east-1  ${D}  not ready (starting)`,
+    ]);
+    expect(resultLines({ status: "action_required", provider: "supabase", name: "", supabase_org: "Acme", projects: PROJECTS, next: "Choose" })).toEqual([
+      "Choose", `  analytics  us-east-1  ${C}  not ready (unhealthy)`, `  old demo   us-east-1  ${B}  paused`, `  shop prod  us-east-1  ${A}`,
+    ]);
   });
 });
 
