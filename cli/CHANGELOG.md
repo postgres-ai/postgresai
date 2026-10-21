@@ -222,6 +222,12 @@
 
 ### Fixed
 
+- `pgai mon deploy` / `mon instances watch` / `list`: when a box is removed because Stripe refused the promo code at
+  the first charge (for example, a code made for another organization), `next` now says to re-run without `--coupon`
+  or with a code this organization can use, instead of "Update the payment method"
+  (https://gitlab.com/postgres-ai/platform-all/-/work_items/971). The platform now rejects such a code at the quote,
+  before anything is created.
+
 - `prepare-db` removes `postgres_ai.explain_generic(text,text,text)`, a retired SECURITY DEFINER helper that
   older CLI versions installed (#426). Only its owner or a superuser can drop it; otherwise `prepare-db` names it
   in text and JSON, and `--verify` exits 1 while it or a SECURITY DEFINER `postgres_ai.table_describe(text)`

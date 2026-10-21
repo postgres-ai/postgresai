@@ -266,6 +266,16 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
     }, () => [{ ...ROW, status: listed++ ? "deleting_launched" : "registered", billing_error: "Your card was declined." }]);
   }, 20_000);
 
+  test("a retry whose box is removed because Stripe refused the promo code: change the code, exit 3 (platform-all#971)", async () => {
+    const refused = "Bad Request: Stripe POST /subscriptions returned 400: This promotion code is not specified for use with this customer.";
+    let listed = 0;
+    await withApi(async (env) => {
+      const r = await run(["mon", "deploy", CH, "--json"], env);
+      expect(r.status).toBe(3);
+      expect(r.json().next).toBe(`The first charge failed (${refused}): the box is being removed and nothing is billed. The promo code cannot be used by this organization: re-run without --coupon, or with a code this organization can use`);
+    }, () => [{ ...ROW, status: listed++ ? "deleting_launched" : "registered", billing_error: refused }]);
+  }, 20_000);
+
   test("mon instances list and status", async () => {
     await withApi(async (env) => {
       // The same words as mon instances status and mon deploy: the platform's "active" is "ready".

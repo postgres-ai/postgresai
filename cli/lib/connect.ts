@@ -440,6 +440,14 @@ export function caNote(url: string): string | undefined {
   return `the monitoring box has no copy of the CA in sslrootcert: with sslmode=${q.get("sslmode")} it connects only to a server certificate signed by a public CA (else use sslmode=require)`;
 }
 
+/** Why the box is removed for its first charge, and the fix: a promo code Stripe refused needs another code, not another card. */
+function chargeFailed(error: string, rerun: string, billingUrl?: string, couponFlag = "--coupon"): string {
+  const fix = /promotion code|coupon/i.test(error)
+    ? `The promo code cannot be used by this organization: ${rerun} without ${couponFlag}, or with a code this organization can use`
+    : `Update the payment method${billingUrl ? ` at ${billingUrl}` : ""}, then ${rerun}`;
+  return `The first charge failed (${error}): the box is being removed and nothing is billed. ${fix}`;
+}
+
 /** A platform row as a result with its next action; `fresh` (provisioned just now) adds the first-checkup ETA. */
 export function connectStatus(row: Database, provider = row.provider as Provider, fresh = false): ConnectResult {
   const base = { provider, name: row.name, id: row.id, ...(row.health_url ? { health_url: row.health_url } : {}), dashboard_url: row.dashboard_url, host_metrics: row.host_metrics };
@@ -447,7 +455,7 @@ export function connectStatus(row: Database, provider = row.provider as Provider
   // Removed because its first charge failed: the user's to fix, whichever command reads it (deploy, watch, list).
   if (row.billing_error && (status === "deleting" || status === "deleted")) {
     return { ...base, status: "action_required",
-      next: `The first charge failed (${row.billing_error}): the box is being removed and nothing is billed. Update the payment method, then re-run pgai mon deploy.` };
+      next: `${chargeFailed(row.billing_error, "re-run pgai mon deploy")}.` };
   }
   if (status === "ready") {
     return {
@@ -1211,7 +1219,7 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
     if (row.billing_error && disconnecting(row.status)) {
       if (undoRole) await undoRole();
       return { status: "action_required", provider, name, id: row.id, ...billing,
-        next: `The first charge failed (${row.billing_error}): the box is being removed and nothing is billed. Update the payment method${billingUrl ? ` at ${billingUrl}` : ""}, then re-run` };
+        next: chargeFailed(row.billing_error, "re-run", billingUrl, opts.agent ? "coupon" : "--coupon") };
     }
     const result = connectStatus(row, provider, fresh);
     const state = boxState(row);
