@@ -21,8 +21,9 @@ Work on your own. Ask the user only when you are blocked:
 
 - who runs the database (Supabase, Amazon RDS, ClickHouse or their own
   server), unless they said so or the host shows it (step 1);
-- which database to use: confirm it once, before anything else (step 1); for
-  Supabase, which project, from the list PostgresAI returns (see "Supabase");
+- which database to use: always ask, before anything else, even when you
+  found one (step 1); for Supabase, which project, from the list
+  PostgresAI returns (see "Supabase");
 - the database server's vCPU count, if you cannot find it (step 1; not for
   Supabase);
 - the PostgresAI sign-in needs them (see step 2);
@@ -166,7 +167,8 @@ Otherwise, look for the connection URL: environment variables (`DATABASE_URL`,
 `grep -o '^[A-Z_]*=' .env`), `docker-compose*.yml`, and framework config (Rails
 `database.yml`, Django `settings.py`, Prisma `schema.prisma`, and so on).
 
-Never choose the database yourself, even when you find only one. Show the user
+Never choose the database yourself, even when you find only one: a URL in
+`.env` or config is a candidate, not the user's choice. Show the user
 each candidate without its password: where it came from (file and variable),
 host, port, database name, and whether it looks like development, staging or
 production. Before the question, say that you will set up PostgresAI
@@ -186,11 +188,16 @@ server has, as a question of its own, and say that "I don't know" is a fine
 answer. Not for Supabase: PostgresAI reads the vCPUs from the project's compute
 size.
 
-If the user's request identifies exactly one candidate (its URL, variable, or
-host and database) and asks for PostgresAI monitoring, that is the
-confirmation. Still tell them what the setup will create, that monitoring
-is paid, and how long it takes, before you deploy, and ask for the vCPU count if
-you do not know it.
+The only exception: the user's own message gives the URL, the variable name,
+or the host and database, and asks for PostgresAI monitoring on it. That is
+the confirmation. A candidate you found yourself is never confirmed, even when
+it is the only one, or matches a provider the user named (such as Supabase),
+or the user says "my database". Still tell them what the setup will create,
+that monitoring is paid, and how long it takes, before you deploy, and ask for
+the vCPU count if you do not know it.
+
+Do not run `pgai mon deploy` with a database URL or `--supabase-project` until
+the user has answered which database.
 
 To show a URL's parts without its password:
 
@@ -336,7 +343,8 @@ What you need to know to set up monitoring for a Supabase project:
   `supabase_org`). Show the user the projects with `"selectable": true` by
   name and region; mention the others and why, in words (`reason`: `paused`,
   `not_ready:<status>` such as "starting", or `monitored`). If `SUPABASE_URL` named a project in
-  step 1, name it as the likely choice, but ask; never pick for them. Then
+  step 1, name it as the likely choice, but ask; never pick for them, even
+  when only one project is selectable. Then
   re-run with `--supabase-project <ref>` (the project's `ref`, its project ID)
   and `--no-wait`, still no `--yes`: the price comes next, as in step 3.
 - **Paused projects** can't be monitored: the user resumes the project in
