@@ -293,6 +293,9 @@ The result is JSON on stdout. Act on `status` and `next`:
     ask whether they accept the price. Re-run with `--yes` (and the same
     `--coupon`) only if they agree.
   - It needs a payment method: give the user the console link from `next`.
+  - It says the promo code cannot be used by this organization: tell the user,
+    and ask for another code or whether to go on without one. Re-run with the
+    new `--coupon`, or without it (no `--yes`), and quote the new `price` first.
   - It is a Supabase consent link: give the user that link to open and approve,
     then re-run the deploy (with the same `--coupon`, if they gave one). The
     price comes after the approval, as above.

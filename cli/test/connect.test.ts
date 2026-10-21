@@ -1306,6 +1306,13 @@ describe("mon deploy", () => {
     expect(r.next).toBe("The first charge failed (Your card was declined.): the box is being removed and nothing is billed. Update the payment method, then re-run pgai mon deploy.");
   });
 
+  test("a first charge refused for the promo code says to change the code, not the payment method (platform-all#971)", () => {
+    const refused = "Bad Request: Stripe POST /subscriptions returned 400: This promotion code is not specified for use with this customer.";
+    const r = connectStatus(row("deleting_launched", { billing_error: refused }));
+    expect(r.status).toBe("action_required");
+    expect(r.next).toBe(`The first charge failed (${refused}): the box is being removed and nothing is billed. The promo code cannot be used by this organization: re-run pgai mon deploy without --coupon, or with a code this organization can use.`);
+  });
+
   test("at a terminal the result is a few sentences, the links whole, not a dump of fields", () => {
     const ready = { status: "ready" as const, provider: "self-managed" as const, name: "db.example.com/app", id: "i-1",
       health_url: "https://console.example/acme/projects/app/health", dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F",
