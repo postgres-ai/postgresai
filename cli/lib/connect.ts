@@ -23,6 +23,10 @@ export type Status = DeployStatus;
 /** A step of mon deploy, once each: a line for a person, a JSON event for an agent. */
 export interface ProgressEvent {
   event: "billing" | "preparing" | "provisioning" | "box";
+  /** Where the box runs (the "Monitoring box: <cloud>, <location>" line, platform-all#972). */
+  cloud?: string;
+  location?: string;
+  location_reason?: string;
   /** Seconds since mon deploy started. */
   elapsed_s: number;
   message: string;
@@ -41,6 +45,14 @@ export interface ConnectResult {
   provider: Provider;
   name: string;
   id?: string;
+  /** Where a new box runs: aws | hetzner, its region, and why (platform-all#972). */
+  cloud?: string;
+  location?: string;
+  location_reason?: string;
+  /** Why there, in words ("same region as your database"). */
+  location_reason_text?: string;
+  /** Not deployed for want of --yes: where else the box can run, each available cloud's locations. */
+  choices?: Record<string, string[]>;
   /** The project's Health Matrix in the console. */
   health_url?: string;
   dashboard_url?: string | null;
@@ -120,6 +132,9 @@ export interface Database {
   billing_error?: string | null;
   /** The database server's vCPUs; AAS is collected only with them (null: not set). */
   vcpus?: number | null;
+  /** Where a box in PostgresAI cloud runs: aws | hetzner and its region (null: self-hosted). */
+  cloud?: string | null;
+  location?: string | null;
 }
 
 /**
@@ -159,6 +174,11 @@ export interface ConnectDeps {
   chooseSupabaseProject?(projects: SupabaseProject[], org: string): Promise<string | undefined>;
   /** Opens a page in this machine's browser (a person at a terminal only). */
   openUrl?(url: string): void;
+  /**
+   * v1.monitoring_deploy_options (platform-all#972): where the box would run for this database
+   * and --cloud/--location, decided by the platform (the Console asks the same).
+   */
+  deployOptions?(args: { db_host?: string; supabase_project_ids?: string[]; cloud?: string; location?: string; check_stock?: boolean }): Promise<DeployOptions>;
   /** What the next box costs, with the coupon checked. */
   /** `cluster`: lower(host):port of the URL, which the price is per. */
   quote(coupon?: string, cluster?: string): Promise<Quote>;
@@ -166,6 +186,12 @@ export interface ConnectDeps {
   billingUrl(orgAlias: string): string;
   /** Asks a person; false when nobody can be asked. */
   confirm(question: string): Promise<boolean>;
+  /**
+   * A person at a terminal, without --yes, --cloud or --location: deploy where the platform put the box
+   * (true), not at all (false), or at the cloud and location they picked from `options`. Absent when
+   * nobody can be asked: the result then carries the choices.
+   */
+  choosePlace?(options: DeployOptions, name: string): Promise<boolean | { cloud: string; location: string }>;
   /** Asks a person for the database server's vCPUs; undefined when skipped or nobody can be asked. */
   askVcpus?(question: string): Promise<number | undefined>;
   /** Sets an instance's vCPUs (v1.cloud_monitoring_set_vcpus, #904). */
@@ -197,7 +223,9 @@ export interface ConnectOptions {
   coupon?: string;
   /** --name: the instance's name (default: host[:port]/database). */
   name?: string;
-  /** --location: the Hetzner location (default: any with capacity). */
+  /** --cloud: aws or hetzner (default: the platform's choice for the database, platform-all#972). */
+  cloud?: string;
+  /** --location: a region of the box's cloud (default: the platform's choice). */
   location?: string;
   /** --vcpus: the database server's vCPUs; AAS is collected only with them. */
   vcpus?: number;
@@ -221,6 +249,20 @@ export const NO_VCPUS_NOTE = "Note: no vCPUs given, so you get no AAS (database 
 
 const money = (cents: number, currency: string) =>
   currency.toLowerCase() === "usd" ? `$${(cents / 100).toFixed(2)}` : `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
+
+/** v1.monitoring_deploy_options: the clouds, their locations, and the box the deploy would get. */
+export interface DeployOptions {
+  clouds: { code: string; label: string; offered?: boolean; available: boolean }[];
+  locations: Record<string, { code: string; label: string; world_part: string }[]>;
+  choice: { cloud: string; cloud_label: string; location: string; location_label: string | null; reason: string; reason_text: string } | null;
+  error: { code: string; message: string; detail: string | null; hint: string | null } | null;
+}
+
+/** Where a new box runs, as the result and the progress event carry it. */
+type Place = { cloud: string; location: string; location_reason: string; location_reason_text: string };
+
+/** placeBox's answer: the place, and the platform's options it came from (the choices). */
+type Placed = { place: Place; options: DeployOptions };
 
 /** The quote as one line: free, included (a cluster already billed), the price per cluster, or the price after the coupon. */
 export function priceText(q: Quote): string {
@@ -521,6 +563,9 @@ export function resultLines(r: ConnectResult): string[] {
   return personLines(r).map(terminalText);
 }
 
+/** A box's cloud as users read it (the platform's labels). */
+const cloudWord = (cloud: string): string => ({ aws: "AWS", hetzner: "Hetzner" } as Record<string, string>)[cloud] ?? cloud;
+
 function personLines(r: ConnectResult): string[] {
   const who = r.name || "this database";
   // What the next action carries after its first part ("; --name ignored ...", a prepare note).
@@ -533,6 +578,7 @@ function personLines(r: ConnectResult): string[] {
         ...(r.health_url ? [`  Health Matrix: ${r.health_url}`] : []),
         ...(r.dashboard_url ? [`  Grafana:       ${r.dashboard_url}`] : []),
         ...(r.price ? [`  Price:         ${r.price}`] : []),
+        ...(r.cloud ? [`  Runs on:       ${cloudWord(r.cloud)}, ${r.location}`] : []),
         ...(!r.health_url && !r.dashboard_url && r.next && r.next !== "none" ? [`Next: ${r.next}`] : []),
         ...(extra && (r.health_url || r.dashboard_url) ? [`Note: ${extra}`] : []),
       ];
@@ -543,7 +589,9 @@ function personLines(r: ConnectResult): string[] {
       return [`Deleting the monitoring of ${who}.${billing ? ` Billing: ${billing}.` : ""}${r.next && r.next !== "none" ? ` ${r.next}` : ""}`];
     default:
       // Supabase without a URL: the projects one per line under the reason (JSON has them in `projects`).
-      return r.projects?.length ? [r.next, ...supabaseProjectRows(r.projects)] : [r.next];
+      if (r.projects?.length) return [r.next, ...supabaseProjectRows(r.projects)];
+      // Not deployed for want of --yes: where else it can run, a line per cloud (JSON has them in `choices`).
+      return r.choices ? [r.next, ...Object.entries(r.choices).map(([cloud, codes]) => `  --cloud ${cloud} --location ${codes.join("|")}`)] : [r.next];
   }
 }
 
@@ -573,7 +621,8 @@ type Billing = Pick<ConnectResult, "price" | "requires_payment_method" | "coupon
  * missing payment method, and `stop` when something comes first (a coupon
  * that does not apply, no payment method, a billed box not accepted).
  */
-async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void): Promise<{ billing: Billing; billingPage: Billing & { next: string }; billingUrl: string; accepted: boolean; stop?: Billing & { next: string } }> {
+async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: ConnectDeps, show: (price: string) => void,
+  ask?: (price: string) => Promise<Decision>): Promise<{ billing: Billing; billingPage: Billing & { next: string }; billingUrl: string; accepted: boolean; stop?: Partial<ConnectResult> & { next: string }; placed?: Placed }> {
   const billing: Billing = { price: priceText(q), requires_payment_method: q.requires_payment_method };
   if (opts.coupon) {
     billing.coupon = q.promo?.valid
@@ -589,6 +638,13 @@ async function billingFor(q: Quote, name: string, opts: ConnectOptions, deps: Co
   if (q.requires_payment_method) return { billing, billingPage, billingUrl, accepted: false, stop: billingPage };
   // The price on its own line first: a prompt may wrap or be cut where it is shown.
   show(billing.price!);
+  // The platform placed the box: one question for any box, free or billed (A17).
+  if (ask) {
+    const d = await ask(billing.price!);
+    if (!d.go) return { billing, billingPage, billingUrl, accepted: false, stop: { ...billing, ...d.stop } };
+    return { billing, billingPage, billingUrl, accepted: q.billed, placed: d.place };
+  }
+  // A platform from before --cloud: a billed box only, as before.
   if (q.billed && !opts.yes && !(await deps.confirm(`Provision ${terminalText(name)}? (y/N): `))) {
     return stop(opts.agent ? `Call deploy_monitoring again with yes: true to accept ${billing.price}` : `Re-run with --yes to accept ${billing.price}`);
   }
@@ -683,6 +739,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   let billingPage: Billing & { next: string } | undefined;
   let accepted = false;
   let billingUrl: string | undefined;
+  let place: Place | undefined;
   // Drops the role this run created with a generated password, once its box is gone.
   let undoRole: (() => Promise<unknown>) | undefined;
   // The key is checked first, on a re-run too: a rejected key or a stopped service changes nothing.
@@ -782,6 +839,11 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         }
         return { status: "action_required", provider, name, ...refusal };
       }
+      // Where the box runs, before the price and before the role is created: a
+      // cloud or location the platform refuses changes nothing (platform-all#972).
+      const where = { db_host: new URL(url).hostname };
+      const placed = await placeBox(deps, opts, where, progress);
+      place = placed?.place;
       let quote: Quote;
       try {
         quote = await deps.quote(opts.coupon, clusterOf(url));
@@ -790,8 +852,11 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         if (err instanceof HttpStatusError && err.status === 403) return { status: "action_required", provider, name, next: notAdminNext };
         throw err;
       }
-      const b = await billingFor(quote, name, opts, deps, (price) => progress("billing", estimateLine(price)));
-      if (b.stop) return { status: "action_required", provider, name, ...b.stop };
+      const b = await billingFor(quote, name, opts, deps, (price) => progress("billing", estimateLine(price)),
+        placed && ((price) => decide(placed, name, price, opts, deps, where, progress)));
+      // Where the box would run goes with every result from here on.
+      if (b.stop) return { status: "action_required", provider, name, ...place, ...b.stop };
+      if (b.placed) place = b.placed.place;
       if (deps.aborted?.()) throw new CancelledError();
       ({ billing, billingPage, billingUrl, accepted } = b);
       // ClickHouse's vCPUs come from ClickHouse Cloud; elsewhere only the user knows them.
@@ -862,9 +927,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         ...(opts.coupon ? { promo_code: opts.coupon } : {}),
         // The price shown was accepted: without it the platform creates no billed box.
         ...(accepted ? { accept_price: true } : {}),
-        // pgai mon deploy --name / --location (postgresai#412).
+        // pgai mon deploy --name (postgresai#412); where the box runs, as the platform answered above.
         ...(opts.name ? { project_name: opts.name } : {}),
-        ...(opts.location ? { server_location: opts.location } : {}),
+        ...(place ? { cloud: place.cloud, server_location: place.location }
+          : opts.location ? { server_location: opts.location } : {}),
         // The database server's vCPUs: without them AAS is never collected.
         ...(vcpus ? { vcpus } : {}),
       }).catch(async (err) => {
@@ -911,7 +977,131 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     undoRole = () => undo(made);
   }
 
-  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note }, opts, deps, progress);
+  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note, place }, opts, deps, progress);
+}
+
+/**
+ * Where a new box runs: the platform's answer for this database and --cloud/--location
+ * (v1.monitoring_deploy_options, platform-all#972), shown as "Monitoring box: AWS, us-east-2
+ * (same region as your database)". A refusal is thrown (exit 1) before anything is created.
+ * A platform from before --cloud has no answer: the box goes where it puts it.
+ */
+async function placeBox(deps: ConnectDeps, opts: ConnectOptions, where: { db_host?: string; supabase_project_ids?: string[] },
+  progress: Progress): Promise<Placed | undefined> {
+  if (!deps.deployOptions) return undefined;
+  const cloud = opts.cloud?.trim().toLowerCase() || undefined;
+  const location = opts.location?.trim() || undefined;
+  const flag = (f: string) => (opts.agent ? f : `--${f}`);
+  let options: DeployOptions;
+  try {
+    options = await deps.deployOptions({ ...where, ...(cloud ? { cloud } : {}), ...(location ? { location } : {}), check_stock: true });
+  } catch (err) {
+    if (httpStatus(err) !== 404) throw err;
+    if (cloud) throw new Error(`This PostgresAI platform does not take ${flag("cloud")} yet: re-run without it. Nothing was created.`);
+    // A database URL still sends --location as server_location; a Supabase box would drop it.
+    if (location && where.supabase_project_ids) {
+      throw new Error(`This PostgresAI platform does not take ${flag("location")} for Supabase yet: re-run without it. Nothing was created.`);
+    }
+    return undefined;
+  }
+  if (!options.choice) {
+    const said = options.error?.detail ?? options.error?.message ?? "The platform did not say where the monitoring box can run.";
+    // A location of another cloud: name the flag that picks that cloud.
+    const elsewhere = location
+      ? options.clouds.find((c) => c.available && c.code !== cloud && options.locations[c.code]?.some((l) => l.code === location))
+      : undefined;
+    const available = options.clouds.filter((c) => c.available).map((c) => c.code);
+    const how = elsewhere ? ` ${cloud ? "Use" : "Add"} ${flag("cloud")} ${elsewhere.code}.`
+      : /^(Monitoring on .* is not (available here|offered yet)|Unknown cloud)/.test(said) && available.length
+        ? ` Re-run with ${flag("cloud")} ${available.length === 1 ? available[0] : `set to one of: ${available.join(", ")}`}.` : "";
+    throw new Error(`${said}${how} Nothing was created.`);
+  }
+  const c = options.choice;
+  progress("preparing", `Monitoring box: ${c.cloud_label}, ${c.location} (${c.reason_text})`, { cloud: c.cloud, location: c.location, location_reason: c.reason });
+  return { place: { cloud: c.cloud, location: c.location, location_reason: c.reason, location_reason_text: c.reason_text }, options };
+}
+
+/**
+ * The terminal's question once the place and price are shown (A17): deploy here (y), not at all
+ * (n, Enter), or choose another cloud and location from the platform's options (c). `ask` reads an
+ * answer, `say` prints a line; three wrong answers are a no.
+ */
+export async function pickPlace(options: DeployOptions, name: string, ask: (question: string) => Promise<string>,
+  say: (line: string) => void): Promise<boolean | { cloud: string; location: string }> {
+  const number = async (what: string, n: number): Promise<number | undefined> => {
+    for (let tries = 0; tries < 3; tries++) {
+      const answer = (await ask(`${what} (1-${n}, Enter to cancel): `)).trim();
+      if (!answer) return undefined;
+      const i = Number(answer);
+      if (Number.isInteger(i) && i >= 1 && i <= n) return i - 1;
+      say(`Type a number from 1 to ${n}.`);
+    }
+    return undefined;
+  };
+  for (let tries = 0; tries < 3; tries++) {
+    const answer = (await ask(`Deploy ${terminalText(name)} here? [y]es / [c]hoose another location / [N]o: `)).trim().toLowerCase();
+    if (answer === "y" || answer === "yes") return true;
+    if (!answer || answer === "n" || answer === "no") return false;
+    if (answer !== "c" && answer !== "choose") { say("Type y, c or n."); continue; }
+    const clouds = options.clouds.filter((c) => c.available && options.locations[c.code]?.length);
+    say("Clouds:");
+    clouds.forEach((c, i) => say(`  ${i + 1}. ${c.label}`));
+    const ci = await number("Cloud", clouds.length);
+    if (ci === undefined) return false;
+    const cloud = clouds[ci]!;
+    const locations = options.locations[cloud.code]!;
+    say(`Locations on ${cloud.label}:`);
+    let part = "";
+    locations.forEach((l, i) => {
+      if (l.world_part !== part) say(`  ${(part = l.world_part)}`);
+      say(`    ${i + 1}. ${l.code}${l.label ? `  ${terminalText(l.label)}` : ""}`);
+    });
+    const li = await number("Location", locations.length);
+    if (li === undefined) return false;
+    return { cloud: cloud.code, location: locations[li]!.code };
+  }
+  return false;
+}
+
+/** What deploy does once the box's place and price are shown: go (maybe elsewhere), or stop with what to do. */
+type Decision = { go: true; place?: Placed } | { go: false; stop: Partial<ConnectResult> & { next: string } };
+
+/**
+ * Whether the box is made, and where (A17, platform-all#972), once its place and price are shown:
+ * --yes deploys there; a person at a terminal is asked, and without --cloud/--location may pick
+ * another place, which the platform places again; anyone else (piped, --json, an agent) gets the
+ * place, the price and the choices back, and nothing is created.
+ */
+async function decide(placed: Placed, name: string, price: string, opts: ConnectOptions, deps: ConnectDeps,
+  where: { db_host?: string; supabase_project_ids?: string[] }, progress: Progress): Promise<Decision> {
+  if (opts.yes) return { go: true };
+  const { place, options } = placed;
+  const label = options.choice?.cloud_label ?? cloudWord(place.cloud);
+  const explicit = !!(opts.cloud?.trim() || opts.location?.trim());
+  const nothing = "Nothing was created";
+  if (deps.choosePlace) {
+    if (explicit) {
+      return await deps.confirm(`Deploy ${terminalText(name)} on ${label}, ${place.location}? [y/N] `)
+        ? { go: true } : { go: false, stop: { next: `${nothing}: re-run with --yes to deploy on ${label}, ${place.location}` } };
+    }
+    const answer = await deps.choosePlace(options, name);
+    if (answer === true) return { go: true };
+    if (answer === false) return { go: false, stop: { next: `${nothing}: re-run to deploy, with --cloud and --location to choose where` } };
+    // Still the summary before the deploy: plain lines, so no step view starts before a later question (vCPUs).
+    const summary: Progress = (_event, message, more) => progress("billing", message, more);
+    const again = await placeBox(deps, { ...opts, cloud: answer.cloud, location: answer.location }, where, summary);
+    if (!again) throw new Error(`The platform did not place the box on ${answer.cloud}, ${answer.location}. ${nothing}.`);
+    summary("billing", `Next time, to skip this question: --cloud ${again.place.cloud} --location ${again.place.location} --yes`);
+    return { go: true, place: again };
+  }
+  // The clouds the picker offers: available, with a location.
+  const choices = Object.fromEntries(options.clouds.filter((c) => c.available && options.locations[c.code]?.length)
+    .map((c) => [c.code, options.locations[c.code]!.map((l) => l.code)]));
+  const here = `${label}, ${place.location} (${place.location_reason_text})`;
+  const next = opts.agent
+    ? `Show the user where the monitoring box would run (${here}) and the price (${price}), then call deploy_monitoring again with yes: true, or with cloud and location from choices and yes: true. ${nothing}.`
+    : `The monitoring box would run on ${here} for ${price}: re-run with --yes to deploy there, or with --cloud and --location (choices below) and --yes. ${nothing}.`;
+  return { go: false, stop: { location_reason_text: place.location_reason_text, choices, next } };
 }
 
 const isSupabaseUrl = (link: string): boolean => {
@@ -984,7 +1174,6 @@ function supabaseProjectUrl(ref: string, db = "postgres"): string {
 /** Options that do not apply to a Supabase project, or undefined. */
 function supabaseOptionsRefused(opts: ConnectOptions): string | undefined {
   if (opts.resetPassword) return "--reset-password does not apply to Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API";
-  if (opts.location) return "--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it";
   // The platform creates postgres_ai_mon there, and keeps its password: a custom role would not be used.
   if (opts.monitoringUser !== undefined && opts.monitoringUser.trim() !== DEFAULT_MONITORING_USER) {
     return `${opts.agent ? "monitoring_user" : "--monitoring-user"} does not apply to Supabase: PostgresAI creates ${DEFAULT_MONITORING_USER} through the Supabase Management API`;
@@ -1154,6 +1343,10 @@ async function deploySupabaseProject(urlRef: string | undefined, opts: ConnectOp
 async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress,
   stop: (next: string, more?: Partial<ConnectResult>) => ConnectResult, label?: string): Promise<ConnectResult> {
   const provider = "supabase";
+  // Where the box runs: by default the project's own region on AWS (platform-all#972).
+  const where = { supabase_project_ids: [ref] };
+  const placed = await placeBox(deps, opts, where, progress);
+  let place = placed?.place;
   let quote: Quote;
   try {
     // The org's price, not a cluster's: the Supabase provision bills every box.
@@ -1162,8 +1355,10 @@ async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps
     if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
     throw err;
   }
-  const b = await billingFor(quote, label ?? name, opts, deps, (price) => progress("billing", estimateLine(price), label ? { project: label } : {}));
-  if (b.stop) return { status: "action_required", provider, name, ...b.stop };
+  const b = await billingFor(quote, label ?? name, opts, deps, (price) => progress("billing", estimateLine(price), label ? { project: label } : {}),
+    placed && ((price) => decide(placed, label ?? name, price, opts, deps, where, progress)));
+  if (b.stop) return { status: "action_required", provider, name, ...place, ...b.stop };
+  if (b.placed) place = b.placed.place;
   if (deps.aborted?.()) throw new CancelledError();
   progress("provisioning", `Provisioning monitoring for ${label ?? name}`, label ? { project: label } : {});
   // vCPUs: the platform reads the project's compute size; --vcpus overrides it.
@@ -1173,6 +1368,7 @@ async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps
     ...(b.accepted ? { accept_price: true } : {}),
     ...(opts.coupon ? { promo_code: opts.coupon } : {}),
     ...(opts.vcpus ? { vcpus: opts.vcpus } : {}),
+    ...(place ? { cloud: place.cloud, location: place.location } : {}),
   }).catch((err) => {
     if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
     if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
@@ -1188,7 +1384,7 @@ async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps
   const box: Database = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: false };
   // Ctrl-C while the box was requested: it exists now, so the run detaches (it keeps going on PostgresAI).
   if (deps.aborted?.()) return { ...connectStatus(box, provider, true), ...b.billing };
-  return follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "" }, opts, deps, progress);
+  return follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "", place }, opts, deps, progress);
 }
 
 type Progress = (event: ProgressEvent["event"], message: string, more?: Partial<ProgressEvent>) => void;
@@ -1205,6 +1401,8 @@ interface Followed {
   undoRole?: () => Promise<unknown>;
   /** Appended to the next action ("; --name ignored ..."). */
   note: string;
+  /** Where the box runs (placeBox), for the result. */
+  place?: Place;
 }
 
 /** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
@@ -1212,7 +1410,9 @@ export const STILL_IN_PROGRESS = "Still in progress";
 
 /** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
 async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
-  const { provider, name, fresh, billing, billingUrl, undoRole, note } = f;
+  const { provider, name, fresh, billingUrl, undoRole, note } = f;
+  // The result carries where a new box runs, next to its billing.
+  const billing = { ...f.billing, ...f.place };
   // The box's state, each time it changes while deploy waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
@@ -1614,6 +1814,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     supabaseStatus: (sessionId: string) => rpc<{ status: "pending" | "connected" | "error"; error?: string }>("cloud_monitoring_supabase_status", { session_id: sessionId }),
     supabaseConnect: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_supabase_connect", body),
     supabaseProjects: () => rpc<SupabaseProjects>("cloud_monitoring_supabase_projects", {}),
+    deployOptions: (args: Parameters<NonNullable<ConnectDeps["deployOptions"]>>[0]) => rpc<DeployOptions>("monitoring_deploy_options", args),
     handoffUrl: async (provider: "rds") => {
       const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
       const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);

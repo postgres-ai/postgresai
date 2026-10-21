@@ -124,6 +124,9 @@ export async function handleToolCall(
         yes: args.yes === true,
         vcpus: args.vcpus === undefined || args.vcpus === null ? undefined : vcpusArg(String(args.vcpus)),
         monitoringUser: args.monitoring_user === undefined || args.monitoring_user === null ? undefined : String(args.monitoring_user),
+        // Where the box runs (platform-all#972): the user's pick from a previous result's choices.
+        cloud: args.cloud === undefined || args.cloud === null ? undefined : String(args.cloud),
+        location: args.location === undefined || args.location === null ? undefined : String(args.location),
         waitMs: 0,
         agent: true,
       }, {
@@ -746,7 +749,9 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
               database_url: { type: "string", description: "postgresql:// URL with the password in it (admin, or the postgres_ai_mon role)" },
               provider: { type: "string", description: "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)" },
               clickhouse_key: { type: "string", description: "ClickHouse Cloud API key as <key-id>:<key-secret> (Basic Service API Reader), for CPU, memory and disk" },
-              yes: { type: "boolean", description: "Accept the price of a billed box. Without it, a billed box is not provisioned: the result has status action_required and the price; ask the user, then call again with yes: true" },
+              yes: { type: "boolean", description: "Deploy: accept where the box runs and its price. Without it no box is provisioned, free or billed (on a platform without cloud choice, only a billed one waits for it): the result has status action_required with cloud, location, location_reason_text, price and choices (each cloud's locations); show them to the user, then call again with yes: true (and cloud/location if they chose another place)" },
+              cloud: { type: "string", description: "Where the monitoring box runs: aws or hetzner (default: the database's cloud, else the platform's default). One of the result's choices" },
+              location: { type: "string", description: "A location of that cloud, from the result's choices (default: the database's region, else the cloud's default)" },
               coupon: { type: "string", description: "Stripe promotion code for the organization's monitoring subscription (applies when it is first created)" },
               vcpus: { type: "integer", minimum: 1, maximum: 1024, description: "vCPUs of the database server. Without it there is no AAS (database load) data for this database: ask the user for it" },
               monitoring_user: { type: "string", description: "Monitoring role to create or use (default postgres_ai_mon). A custom role always carries its own password: PostgresAI keeps only postgres_ai_mon's, so pass the role's own URL as database_url (an admin URL creates only postgres_ai_mon). Not for Supabase, where PostgresAI creates postgres_ai_mon" },

@@ -7,7 +7,7 @@ import { handleToolCall } from "../lib/mcp-server";
 import { HttpStatusError } from "../lib/util";
 import { StepView, monitoringSteps } from "../lib/deploy";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent, type SupabaseProject, type SupabaseProjects, supabaseProjectRows } from "../lib/connect";
+import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, pickPlace, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent, type SupabaseProject, type SupabaseProjects, supabaseProjectRows } from "../lib/connect";
 import { notAdminNext as notAdminNextText } from "../lib/deploy-surface";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
@@ -2032,13 +2032,43 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
     });
   });
 
-  test("--location is refused before anything is called: the platform picks the Supabase box's location", async () => {
-    const { deps, calls } = make();
-    expect(await connect(SB, { waitMs: 0, location: "hel1" }, deps)).toEqual({
-      status: "action_required", provider: "supabase", name: SB_NAME,
-      next: "--location does not apply to Supabase yet (PostgresAI picks the box's location): re-run without it",
-    });
-    expect(calls).toEqual([]);
+  // platform-all#972: the platform places the box (by default in the project's own region on AWS);
+  // --cloud/--location are asked of it, before the price, and go with the box request.
+  test("--cloud/--location: the platform places the Supabase box, shown before the price, sent with the request", async () => {
+    const f = make();
+    const lines: string[] = [];
+    f.deps.progress = (e) => lines.push(e.message);
+    f.deps.deployOptions = async (args) => {
+      f.calls.push(`options ${JSON.stringify(args)}`);
+      return { clouds: [], locations: {}, error: null,
+        choice: { cloud: "hetzner", cloud_label: "Hetzner", location: "hel1", location_label: "FI Helsinki", reason: "explicit", reason_text: "as chosen" } };
+    };
+    const result = await connect(SB, { waitMs: 0, cloud: "Hetzner", location: "hel1", yes: true }, f.deps);
+    expect(result).toMatchObject({ status: "in_progress", cloud: "hetzner", location: "hel1", location_reason: "explicit" });
+    expect(f.calls).toEqual(["list", `start ${SB_PUBLIC}`,
+      `options ${JSON.stringify({ supabase_project_ids: [REF], cloud: "hetzner", location: "hel1", check_stock: true })}`,
+      "quote", `connect ${JSON.stringify({ project_ref: REF, cloud: "hetzner", location: "hel1" })}`]);
+    expect(lines.indexOf("Monitoring box: Hetzner, hel1 (as chosen)")).toBeLessThan(lines.findIndex((l) => l.startsWith("Estimated cost")));
+  });
+
+  // A17: the same question for a Supabase box; nobody to ask: the choices come back, no box.
+  test("without --yes and nobody to ask: the Supabase box is not requested, the choices come back", async () => {
+    const f = make();
+    f.deps.deployOptions = async () => ({ clouds: [{ code: "aws", label: "AWS", available: true }, { code: "hetzner", label: "Hetzner", available: true }],
+      locations: { aws: [{ code: "eu-central-1", label: "Europe (Frankfurt)", world_part: "Europe" }], hetzner: [{ code: "fsn1", label: "DE Falkenstein", world_part: "Europe" }] },
+      error: null, choice: { cloud: "aws", cloud_label: "AWS", location: "eu-central-1", location_label: null, reason: "supabase_project", reason_text: "the Supabase project's region" } });
+    const result = await connect(SB, { waitMs: 0 }, f.deps);
+    expect(result).toMatchObject({ status: "action_required", cloud: "aws", location: "eu-central-1", location_reason: "supabase_project", choices: { aws: ["eu-central-1"], hetzner: ["fsn1"] } });
+    expect(f.calls.some((c) => c.startsWith("connect "))).toBe(false);
+  });
+
+  // A platform from before --cloud places a Supabase box itself: a --location it would drop is refused.
+  test("a platform from before --cloud: --location for Supabase is refused, nothing is created", async () => {
+    const f = make();
+    f.deps.deployOptions = async () => { throw Object.assign(new Error("Not Found"), { status: 404 }); };
+    await expect(connect(SB, { waitMs: 0, location: "eu-west-1" }, f.deps)).rejects.toThrow(
+      "This PostgresAI platform does not take --location for Supabase yet: re-run without it. Nothing was created.");
+    expect(f.calls.some((c) => c.startsWith("connect "))).toBe(false);
   });
 
   test("a box removed before it became active: failed, not still in progress", async () => {
@@ -3041,6 +3071,40 @@ describe("MCP deploy_monitoring", () => {
     }
   });
 
+  test("cloud and location reach the platform's placing; without yes the place and choices come back (A17)", async () => {
+    const asked: Record<string, unknown>[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/rpc/cloud_monitoring_list")) return Response.json([]);
+        if (path.endsWith("/rpc/cloud_monitoring_supabase_start")) return Response.json({ connected: true, project_ref: "abcdefghijklmnopqrst" });
+        if (path.endsWith("/rpc/monitoring_deploy_options")) {
+          asked.push((await req.json()) as Record<string, unknown>);
+          return Response.json({ clouds: [{ code: "aws", label: "AWS", available: true }, { code: "hetzner", label: "Hetzner", available: true }],
+            locations: { aws: [{ code: "eu-central-1", label: "Europe (Frankfurt)", world_part: "Europe" }], hetzner: [{ code: "fsn1", label: "DE Falkenstein", world_part: "Europe" }] },
+            choice: { cloud: "hetzner", cloud_label: "Hetzner", location: "fsn1", location_label: "DE Falkenstein", reason: "explicit", reason_text: "your choice" }, error: null });
+        }
+        if (path.endsWith("/rpc/cloud_monitoring_quote")) {
+          return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 2 }, subscription: false, quantity: 0,
+            price: { amount: 50000, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const opts = { apiKey: "k", apiBaseUrl: `http://127.0.0.1:${server.port}`, uiBaseUrl: "https://console.example" };
+    try {
+      const reply = await handleToolCall({ params: { name: "deploy_monitoring", arguments: {
+        database_url: "postgresql://postgres:pw@db.abcdefghijklmnopqrst.supabase.co:5432/postgres", cloud: "hetzner", location: "fsn1" } } }, opts);
+      const result = JSON.parse(reply.content[0].text);
+      expect(asked[0]).toMatchObject({ cloud: "hetzner", location: "fsn1" });
+      expect(result).toMatchObject({ status: "action_required", cloud: "hetzner", location: "fsn1", choices: { aws: ["eu-central-1"], hetzner: ["fsn1"] } });
+      expect(result.next).toContain("call deploy_monitoring again with yes: true");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("monitoring_user reaches mon deploy's checks", async () => {
     const opts = { apiKey: "k", apiBaseUrl: "http://127.0.0.1:9", uiBaseUrl: "https://console.example" };
     const result = await handleToolCall({ params: { name: "deploy_monitoring", arguments: { database_url: CH, monitoring_user: "m".repeat(64) } } }, opts);
@@ -3183,5 +3247,205 @@ describe("errorText", () => {
   test("an error with a message, and a non-error, as before", () => {
     expect(errorText(new Error("boom"))).toBe("boom");
     expect(errorText("plain")).toBe("plain");
+  });
+});
+
+describe("where the box runs: the platform decides (platform-all#972)", () => {
+  // A Postgres on EC2 (an RDS URL is finished in the console, before any of this).
+  const RDS = "postgresql://postgres:adminpw@ec2-3-15-1-2.us-east-2.compute.amazonaws.com:5432/app";
+  const choice = (cloud: string, location: string, reason: string, reason_text: string) => ({
+    clouds: [{ code: "aws", label: "AWS", available: true }, { code: "hetzner", label: "Hetzner", available: true }],
+    locations: { aws: [{ code: "us-east-1", label: "US East", world_part: "North America" }], hetzner: [{ code: "fsn1", label: "DE Falkenstein", world_part: "Europe" }] },
+    choice: { cloud, cloud_label: cloud === "aws" ? "AWS" : "Hetzner", location, location_label: null, reason, reason_text },
+    error: null,
+  });
+
+  test("asked with the host only, before the price and the role; shown, then sent with the box request", async () => {
+    const lines: string[] = [];
+    const f = fake({ progress: (e) => lines.push(e.message) });
+    f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+    f.deps.deployOptions = async (args) => { f.calls.push(`options ${JSON.stringify(args)}`); return choice("aws", "us-east-2", "source_region", "same region as your database"); };
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2, yes: true }, f.deps);
+    expect(f.calls.slice(0, 4)).toEqual(["list", "check self-managed",
+      `options ${JSON.stringify({ db_host: "ec2-3-15-1-2.us-east-2.compute.amazonaws.com", check_stock: true })}`, "quote"]);
+    expect(f.calls.find((c) => c.startsWith("options"))).not.toContain("adminpw");
+    expect(f.calls.find((c) => c.startsWith("create "))).toContain(`"cloud":"aws","server_location":"us-east-2"`);
+    expect(lines[0]).toBe("Monitoring box: AWS, us-east-2 (same region as your database)");
+    expect(result).toMatchObject({ status: "in_progress", cloud: "aws", location: "us-east-2", location_reason: "source_region" });
+  });
+
+  test("a refusal is exit 1 before the price and before the role: nothing is created", async () => {
+    const f = fake();
+    f.deps.deployOptions = async () => ({ ...choice("aws", "", "", ""), choice: null,
+      error: { code: "PT400", message: "Bad Request", detail: 'AWS has no location "fsn1" (it is a Hetzner location). Choose one of: us-east-1.', hint: "Nothing was created." } });
+    await expect(connect(RDS, { waitMs: 0, location: "fsn1" }, f.deps)).rejects.toThrow(
+      'AWS has no location "fsn1" (it is a Hetzner location). Choose one of: us-east-1. Add --cloud hetzner. Nothing was created.');
+    expect(f.calls).toEqual(["list", "check self-managed"]);
+  });
+
+  test("a cloud not available here names --cloud", async () => {
+    const f = fake();
+    f.deps.deployOptions = async () => ({ ...choice("aws", "", "", ""), choice: null,
+      clouds: [{ code: "aws", label: "AWS", available: false }, { code: "hetzner", label: "Hetzner", available: true }],
+      error: { code: "PT400", message: "Bad Request", detail: "Monitoring on AWS is not available here (it is the default). Choose one of: Hetzner.", hint: null } });
+    await expect(connect(RDS, { waitMs: 0 }, f.deps)).rejects.toThrow(
+      "Monitoring on AWS is not available here (it is the default). Choose one of: Hetzner. Re-run with --cloud hetzner. Nothing was created.");
+  });
+
+  test("a stop after the place (no payment method) still says where the box would run", async () => {
+    const f = fake();
+    f.deps.quote = async () => ({ ...FREE_QUOTE, billed: true, free_slots: { remaining: 0, total: 0 }, has_payment_method: false, requires_payment_method: true,
+      price: { amount: 51200, currency: "usd", interval: "month" }, org_alias: "acme" } as never);
+    f.deps.deployOptions = async () => choice("aws", "us-east-2", "source_region", "same region as your database");
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2, yes: true }, f.deps);
+    expect(result).toMatchObject({ status: "action_required", cloud: "aws", location: "us-east-2", location_reason: "source_region" });
+    expect(f.calls.some((c) => c.startsWith("create "))).toBe(false);
+  });
+
+  test("a platform from before --cloud: the box goes where it puts it; --cloud itself is refused", async () => {
+    const notFound = Object.assign(new Error("Not Found"), { status: 404 });
+    const f = fake();
+    f.deps.deployOptions = async () => { throw notFound; };
+    expect((await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps)).status).toBe("in_progress");
+    expect(f.calls.find((c) => c.startsWith("create "))).not.toContain('"cloud"');
+    const g = fake();
+    g.deps.deployOptions = async () => { throw notFound; };
+    await expect(connect(RDS, { waitMs: 0, cloud: "hetzner" }, g.deps)).rejects.toThrow("This PostgresAI platform does not take --cloud yet");
+  });
+
+  // A17: without --yes, nobody deploys where the platform put the box without being asked.
+  const both = () => ({ ...choice("aws", "us-east-1", "default", "default: we could not tell where your database runs"),
+    locations: {
+      aws: [{ code: "us-east-1", label: "US East (N. Virginia)", world_part: "North America" }, { code: "eu-central-1", label: "Europe (Frankfurt)", world_part: "Europe" }],
+      hetzner: [{ code: "fsn1", label: "DE Falkenstein", world_part: "Europe" }, { code: "ash", label: "US Ashburn", world_part: "North America" }],
+    } });
+
+  test("nobody to ask (piped, --json): the place, the price and the choices come back, nothing is created", async () => {
+    const f = fake();
+    f.deps.quote = async () => { f.calls.push("quote"); return FREE_QUOTE; };
+    f.deps.deployOptions = async () => both();
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps);
+    expect(result).toMatchObject({
+      status: "action_required", cloud: "aws", location: "us-east-1", location_reason: "default",
+      location_reason_text: "default: we could not tell where your database runs",
+      choices: { aws: ["us-east-1", "eu-central-1"], hetzner: ["fsn1", "ash"] },
+    });
+    expect(result.next).toContain("re-run with --yes to deploy there, or with --cloud and --location (choices below) and --yes. Nothing was created.");
+    expect(f.calls.some((c) => c.startsWith("prepare ") || c.startsWith("create "))).toBe(false);
+    expect(resultLines(result)).toContain("  --cloud hetzner --location fsn1|ash");
+  });
+
+  test("an agent is told to show the user the place and price, and how to call again", async () => {
+    const f = fake();
+    f.deps.quote = async () => FREE_QUOTE;
+    f.deps.deployOptions = async () => both();
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2, agent: true }, f.deps);
+    expect(result.status).toBe("action_required");
+    expect(result.next).toMatch(/^Show the user where the monitoring box would run \(AWS, us-east-1 \(default: .*\)\) and the price \(free .*\), then call deploy_monitoring again with yes: true, or with cloud and location from choices and yes: true\. Nothing was created\.$/);
+  });
+
+  test("a person who says yes deploys where shown, free box included", async () => {
+    const f = fake();
+    f.deps.quote = async () => FREE_QUOTE;
+    f.deps.deployOptions = async () => both();
+    f.deps.choosePlace = async () => true;
+    expect((await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps)).status).toBe("in_progress");
+    expect(f.calls.find((c) => c.startsWith("create "))).toContain(`"cloud":"aws","server_location":"us-east-1"`);
+  });
+
+  test("a person who picks another place: the platform places it again, and that is what is created", async () => {
+    const lines: string[] = [];
+    const f = fake({ progress: (e) => lines.push(e.message) });
+    f.deps.quote = async () => FREE_QUOTE;
+    const asked: unknown[] = [];
+    f.deps.deployOptions = async (args) => {
+      asked.push(args);
+      return args.cloud === "hetzner" ? choice("hetzner", "fsn1", "explicit", "your choice") : both();
+    };
+    f.deps.choosePlace = async () => ({ cloud: "hetzner", location: "fsn1" });
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps);
+    expect(asked[1]).toMatchObject({ cloud: "hetzner", location: "fsn1", check_stock: true });
+    expect(f.calls.find((c) => c.startsWith("create "))).toContain(`"cloud":"hetzner","server_location":"fsn1"`);
+    expect(result).toMatchObject({ status: "in_progress", cloud: "hetzner", location: "fsn1", location_reason: "explicit" });
+    expect(lines).toContain("Monitoring box: Hetzner, fsn1 (your choice)");
+    expect(lines).toContain("Next time, to skip this question: --cloud hetzner --location fsn1 --yes");
+  });
+
+  // REV r3 on !510: the picked place is confirmed on a plain line, and no step view starts before the vCPUs question.
+  test("after a pick at a terminal: the new place and the hint are plain lines, the step view waits for the vCPUs answer", async () => {
+    const out: string[] = [];
+    let started = 0;
+    const view = { start: () => { started++; }, advance: () => {}, log: () => {}, setNote: () => {}, complete: () => {}, fail: () => {}, stop: () => {} };
+    const steps = stepProgress({ json: false, tty: true, makeView: () => view, writeLine: (l) => out.push(l), writeEvent: () => {} });
+    const f = fake({ progress: steps.progress });
+    f.deps.quote = async () => FREE_QUOTE;
+    f.deps.deployOptions = async (args) => args.cloud === "hetzner" ? choice("hetzner", "fsn1", "explicit", "your choice") : both();
+    f.deps.choosePlace = async () => ({ cloud: "hetzner", location: "fsn1" });
+    let viewsAtVcpus = -1;
+    f.deps.askVcpus = async () => { viewsAtVcpus = started; return 2; };
+    await connect(RDS, { waitMs: 0 }, f.deps);
+    expect(viewsAtVcpus).toBe(0);
+    expect(out).toContain("Monitoring box: Hetzner, fsn1 (your choice)");
+    expect(out).toContain("Next time, to skip this question: --cloud hetzner --location fsn1 --yes");
+  });
+
+  test("choices list the clouds the picker offers: none without locations", async () => {
+    const f = fake();
+    f.deps.quote = async () => FREE_QUOTE;
+    f.deps.deployOptions = async () => ({ ...both(), clouds: [...both().clouds, { code: "gcp", label: "Google Cloud", available: true }] });
+    expect((await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps)).choices).toEqual({ aws: ["us-east-1", "eu-central-1"], hetzner: ["fsn1", "ash"] });
+  });
+
+  test("a person who says no: nothing is created", async () => {
+    const f = fake();
+    f.deps.quote = async () => FREE_QUOTE;
+    f.deps.deployOptions = async () => both();
+    f.deps.choosePlace = async () => false;
+    const result = await connect(RDS, { waitMs: 0, vcpus: 2 }, f.deps);
+    expect(result).toMatchObject({ status: "action_required", cloud: "aws", location: "us-east-1" });
+    expect(result.next).toBe("Nothing was created: re-run to deploy, with --cloud and --location to choose where");
+    expect(f.calls.some((c) => c.startsWith("prepare ") || c.startsWith("create "))).toBe(false);
+  });
+
+  test("with --cloud/--location a person is asked once, with no picker; a billed box is accepted by that answer", async () => {
+    const f = fake();
+    const questions: string[] = [];
+    f.deps.quote = async () => ({ ...FREE_QUOTE, billed: true, free_slots: { remaining: 0, total: 0 }, price: { amount: 50000, currency: "usd", interval: "month" } } as never);
+    f.deps.deployOptions = async () => choice("hetzner", "fsn1", "explicit", "your choice");
+    f.deps.choosePlace = async () => { throw new Error("no picker with --cloud/--location"); };
+    f.deps.confirm = async (q) => { questions.push(q); return true; };
+    await connect(RDS, { waitMs: 0, vcpus: 2, cloud: "hetzner", location: "fsn1" }, f.deps);
+    expect(questions).toEqual(["Deploy ec2-3-15-1-2.us-east-2.compute.amazonaws.com/app on Hetzner, fsn1? [y/N] "]);
+    expect(f.calls.find((c) => c.startsWith("create "))).toContain(`"accept_price":true`);
+  });
+});
+
+describe("pickPlace: the terminal's question (A17)", () => {
+  const options = {
+    clouds: [{ code: "aws", label: "AWS", available: true }, { code: "hetzner", label: "Hetzner", available: true }, { code: "gcp", label: "Google Cloud", available: false }],
+    locations: { aws: [{ code: "us-east-1", label: "US East", world_part: "North America" }], hetzner: [{ code: "fsn1", label: "DE Falkenstein", world_part: "Europe" }, { code: "ash", label: "US Ashburn", world_part: "North America" }] },
+    choice: null, error: null,
+  };
+  const run = async (answers: string[]) => {
+    const said: string[] = [];
+    const asked: string[] = [];
+    const r = await pickPlace(options, "db", async (q) => { asked.push(q); return answers.shift() ?? ""; }, (l) => said.push(l));
+    return { r, said, asked };
+  };
+  test("y deploys here; Enter and n do not", async () => {
+    expect((await run(["y"])).r).toBe(true);
+    expect((await run([""])).r).toBe(false);
+    expect((await run(["n"])).r).toBe(false);
+    expect((await run(["y"])).asked[0]).toBe("Deploy db here? [y]es / [c]hoose another location / [N]o: ");
+  });
+  test("c lists the available clouds, then that cloud's locations by world part", async () => {
+    const { r, said } = await run(["c", "2", "2"]);
+    expect(r).toEqual({ cloud: "hetzner", location: "ash" });
+    expect(said).toEqual(["Clouds:", "  1. AWS", "  2. Hetzner", "Locations on Hetzner:", "  Europe", "    1. fsn1  DE Falkenstein", "  North America", "    2. ash  US Ashburn"]);
+  });
+  test("a wrong number is asked again; Enter at a list cancels", async () => {
+    expect((await run(["c", "9", "1", "1"])).r).toEqual({ cloud: "aws", location: "us-east-1" });
+    expect((await run(["c", ""])).r).toBe(false);
+    expect((await run(["x", "x", "x"])).r).toBe(false);
   });
 });

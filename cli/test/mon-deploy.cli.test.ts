@@ -60,8 +60,14 @@ describe("pgai mon deploy", () => {
     expect(shared(mon)).toEqual(["--db-url <url>", "--name <name>", "--location <location>", "--wait <minutes>", "--no-wait", "-y, --yes", "--json", "--debug"]);
     expect(shared(dblab)).toEqual(shared(mon));
     const words = (help: string, flag: string) => help.slice(help.indexOf(flag)).split("\n").slice(0, 2).join(" ").replace(/\s+/g, " ");
-    for (const flag of ["--db-url <url>", "--location <location>", "--no-wait", "-y, --yes", "--json"]) {
+    for (const flag of ["--db-url <url>", "--no-wait", "-y, --yes", "--json"]) {
       expect(words(dblab, flag).split(flag)[1].trim().slice(0, 40)).toBe(words(mon, flag).split(flag)[1].trim().slice(0, 40));
+    }
+    // --location is a region of the box's --cloud in both; their defaults differ
+    // (a monitoring box follows the database's cloud, platform-all#972).
+    for (const help of [mon, dblab]) {
+      expect(words(help, "--location <location>")).toContain("region");
+      expect(help).toContain("--cloud <cloud>");
     }
   });
 

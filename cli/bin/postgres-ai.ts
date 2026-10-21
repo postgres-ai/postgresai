@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
+import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4322,7 +4322,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
 
 type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
-  monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; location?: string; vcpus?: string;
+  monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; cloud?: string; location?: string; vcpus?: string;
   supabaseProject?: string;
 };
 
@@ -4484,6 +4484,17 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         } } : {}),
+        // Where the box runs, for a person at a terminal without --yes (A17, platform-all#972):
+        // deploy where shown, or pick another cloud and location (elsewhere the result carries the choices).
+        ...(interactive(opts.json) ? { choosePlace: async (options: DeployOptions, name: string) => {
+          process.exitCode = 130;
+          try {
+            return await pickPlace(options, name, question, (line) => console.error(line));
+          } finally {
+            process.exitCode = undefined;
+            closeReadline();
+          }
+        } } : {}),
         // Supabase's consent page, for a person at a terminal (the link is printed too).
         ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
         progress: (e) => {
@@ -4529,7 +4540,9 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
 // Monitoring services management
 const mon = program.command("mon").description("monitoring services management");
 
-sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)")
+sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)",
+  "the box's region on its cloud (default: the database's region when that cloud has it; see below)",
+  "where the monitoring box runs: aws or hetzner (default: the database's cloud, else aws)")
   .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
   .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
@@ -4547,6 +4560,17 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "your PostgresAI account (dashboard_url). The box runs its first checkup at first_checkup_eta",
     "at the earliest (3 minutes after it is ready), once every target has data (at most 30 minutes).",
     "",
+    "Where the box runs: the platform decides, as the console does, and deploy prints it before the",
+    "price (\"Monitoring box: AWS, us-east-2 (same region as your database)\"). Without --cloud and",
+    "--location: the database's cloud and region (a Supabase project's region, an RDS, Aurora, EC2,",
+    "Neon or Supabase pooler host), else AWS us-east-1. --location is a region of that cloud; a cloud",
+    "that is not available, or a location it does not have, is refused before anything is created.",
+    "Without --yes, deploy asks before it creates a box in PostgresAI Cloud, free or billed: \"Deploy",
+    "<db> here? [y]es / [c]hoose another location / [N]o\" (with --cloud/--location: \"Deploy <db> on",
+    "<cloud>, <location>? [y/N]\"). Not at a terminal (piped, --json, agents) it stops (exit 3) with the",
+    "place, the price and the choices (\"choices\" in the JSON result): re-run with --yes, and with",
+    "--cloud/--location to pick another place.",
+    "",
     "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
     "PostgresAI tests the connection from an unpublished address, so the port must accept connections",
     "from the internet; after it, the monitoring box connects from the IP shown on its Console page.",
@@ -4554,7 +4578,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "",
     "Billing is per Postgres cluster observed: another database in a cluster the organization already",
     "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",
-    "box is provisioned only when accepted: at the prompt, or with --yes. With no payment method",
+    "box is provisioned only when accepted: at the prompt above, or with --yes. With no payment method",
     "it stops (exit 3) and names the console page to add one. --coupon applies a promotion code.",
     "",
     "Supabase: PostgresAI creates postgres_ai_mon through the Supabase Management API (the",
@@ -4591,6 +4615,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "  pgai mon deploy --provider supabase",
     "  pgai mon deploy --supabase-project <name|project-id> --yes --json",
     "  pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres'",
+    "  pgai mon deploy '<url>' --cloud hetzner --location nbg1",
     "  pgai mon deploy '<url>' --self-hosted",
   ].join("\n"))
   .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {

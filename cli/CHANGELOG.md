@@ -4,6 +4,20 @@
 
 ### Added
 
+- `pgai mon deploy --cloud aws|hetzner` (https://gitlab.com/postgres-ai/platform-all/-/issues/972): the platform decides
+  where the monitoring box runs, as the Console does: the database's cloud and region (a Supabase project's region,
+  an RDS, Aurora, EC2 or pooler host), else AWS us-east-1. Deploy prints `Monitoring box: <cloud>, <location> (<why>)`
+  before the price, and the result carries `cloud`, `location` and `location_reason`. `--location` is a location of
+  that cloud (an AWS region, or `fsn1`, `nbg1`, `hel1`, `ash`, `hil` on Hetzner). A cloud that is not available, or a
+  location of another cloud, is refused before anything is created, with the flag to use. `--location` now works for
+  Supabase too.
+- `pgai mon deploy` asks before it creates a box in PostgresAI Cloud, free or billed (a platform without the cloud
+  choice still asks only for a billed box): at a terminal "Deploy <db> here? [y]es / [c]hoose
+  another location / [N]o" (`c` lists the clouds and their locations), or "Deploy <db> on <cloud>, <location>? [y/N]"
+  with `--cloud`/`--location`. Not at a terminal (piped, `--json`, the MCP tool) and without `--yes`, nothing is
+  created: it stops (exit 3) with the place, `location_reason_text`, the price and `choices`. Before, a box on a free
+  slot was created without a question. The MCP tool `deploy_monitoring` gains `cloud` and `location`.
+
 - `pgai mon deploy --provider supabase` without a database URL (https://gitlab.com/postgres-ai/postgresai/-/work_items/438),
   like the Console: it connects the Supabase organization if needed, then lists its projects. At a terminal you pick
   one from a numbered list; agents and scripts pass `--supabase-project <name or project ID>` (it implies
@@ -19,7 +33,7 @@
   waits for the approval, then the box prepares the database through the Supabase Management API. Agents and
   `--wait 0` get `action_required` (exit 3) with the link in `next`. A wait that ends before the box is ready is
   `action_required` (exit 3) with the resume command; with `--json` the event stream ends with a `done` event.
-  `--monitoring-user` other than `postgres_ai_mon`, `--reset-password` and `--location` are refused there (PostgresAI
+  `--monitoring-user` other than `postgres_ai_mon` and `--reset-password` are refused there (PostgresAI
   creates `postgres_ai_mon` through the Supabase Management API).
 
 - `--provider generic` names the direct PostgreSQL path in `pgai mon deploy`, `pgai dblab deploy`,

@@ -60,7 +60,7 @@ would show, and stop.
   `pg_stat_statements` extension, and keeps the role's password in PostgresAI.
   The user's yes in step 1 is consent to this. Tell the user in your report
   what was created.
-- **Never without the user's OK:** `--yes` (accepts a price), `--reset-password`
+- **Never without the user's OK:** `--yes` (deploys where shown and accepts the price), `--reset-password`
   (cuts off anything else that logs in as `postgres_ai_mon`),
   `pgai mon instances delete`, `--self-hosted` (starts a Docker stack on this
   machine).
@@ -278,6 +278,16 @@ same moment, on average. Compared with the vCPU count, it shows how loaded the
 database is: well below it is fine; above it, queries are queuing. It can be
 set later with `pgai mon instances set <id> --vcpus <n> --org <alias>`.
 
+Where the monitoring box runs is PostgresAI's choice: AWS in the database's own
+region when its host or Supabase project shows it, else AWS us-east-1. Without
+`--yes` nothing is created, free or billed: the result is `action_required`
+with `cloud`, `location`, `location_reason_text` (why there), `price` and
+`choices` (each cloud's locations). Tell the user where the box would run and
+why, and that they can pick another cloud or location from `choices`. Pass
+`--cloud aws|hetzner` and `--location <region>` only for the place the user
+picked; a cloud or region PostgresAI refuses ends the deploy with `failed` and a
+`next` that lists the choices, and nothing is created.
+
 The result is JSON on stdout. Act on `status` and `next`:
 
 - `ready`: done. Take `health_url` and `dashboard_url` from this result.
@@ -286,6 +296,11 @@ The result is JSON on stdout. Act on `status` and `next`:
   minutes, and start step 4 meanwhile. The box usually becomes `ready` within
   about 10 minutes.
 - `action_required`: read `next`.
+  - It carries `choices` (where the box would run, not deployed yet): say where
+    (`cloud`, `location`, `location_reason_text`) and the `price`, ask whether
+    that place is fine or which of `choices` they want, and handle the price as
+    below. Re-run with `--yes` (plus `--cloud`/`--location` if they chose) only
+    when they agree to both.
   - It names a price and `--yes`: quote `price` to the user and ask whether
     they have a PostgresAI coupon (a promotion code); "no" is a fine answer.
     If they give one, re-run with `--coupon <code>` (no `--yes`) and quote the
