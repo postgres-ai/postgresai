@@ -235,8 +235,8 @@ payment checks. A private endpoint needs a network path, or monitoring hosted in
 (`--self-hosted`).
 
 `pgai mon deploy` and `pgai dblab deploy` share their options and results: the database URL as the
-argument (or `--db-url`), `--name` (default: from the database), `--location` (a Hetzner location;
-default: any with capacity), `--wait <minutes>` / `--no-wait`, `--yes` (never prompt), `--json`, the
+argument (or `--db-url`), `--name` (default: from the database), `--cloud` and `--location` (where the box
+runs; see the table), `--wait <minutes>` / `--no-wait`, `--yes` (never prompt), `--json`, the
 `status` words and exit codes below, and `instances list | watch | delete`, which take an id or a name
 (a name two instances have is refused, with their ids). `watch` is also `status`.
 
@@ -262,11 +262,12 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 | `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Ignored for a host handed to the Console (RDS); refused for Supabase, where PostgresAI creates `postgres_ai_mon` through the Supabase Management API |
 | `--db-url <url>` | the database URL, instead of the argument |
 | `--name <name>` | the instance's name (default: `host[:port]/database`); ignored, with a note, for a database already monitored |
-| `--location <location>` | Hetzner location `fsn1`, `nbg1` or `hel1` (default: any with capacity) |
+| `--cloud <cloud>` | `mon deploy`: `aws` or `hetzner`; default: the database's cloud (its RDS, Aurora, EC2 or Supabase region), else AWS. `dblab deploy`: `hetzner`, `aws` or `gcp` (default `hetzner`) |
+| `--location <location>` | a location of that cloud: an AWS region, or a Hetzner location (`fsn1`, `nbg1`, `hel1`, `ash`, `hil`). `mon deploy` default: the database's region, else us-east-1 on AWS; a location of another cloud is refused before anything is created |
 | `--vcpus <n>` | `mon deploy` only: the database server's vCPUs. Without it there is no AAS (database load) data; at a terminal you are asked. On a database already monitored, it sets missing vCPUs (a set value is changed with `mon instances set`) |
 | `--wait <minutes>` | how long to wait for the monitoring box; `0` does not wait (default 20) |
 | `--no-wait` | the same as `--wait 0` |
-| `-y, --yes` | never prompt; accept a billed box's price (`mon deploy` does not start the browser sign-in; `mon instances delete` does not ask) |
+| `-y, --yes` | never prompt: deploy where shown and accept the price (`mon deploy` does not start the browser sign-in; `mon instances delete` does not ask). Without it, `mon deploy` asks before creating any box, free or billed, and at a terminal lets you choose another cloud and location; not at a terminal it stops (exit 3) with the place, the price and `choices` |
 | `--coupon <code>` | promotion code for the organization's monitoring subscription |
 | `--json` | JSON output, also on a terminal |
 

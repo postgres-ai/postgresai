@@ -157,6 +157,8 @@ test("the wait ends with the box still starting: exit 3, the result on stdout, a
       if (rpc === "cloud_monitoring_supabase_start") return Response.json({ connected: true, project_ref: REF });
       if (rpc === "cloud_monitoring_quote") return Response.json({ plan: "scale", org_alias: "acme", billed: false, free_slots: { remaining: 1, total: 1 }, subscription: false, quantity: 0, price: { amount: 50000, currency: "usd", interval: "month" }, has_payment_method: true, requires_payment_method: false });
       if (rpc === "cloud_monitoring_supabase_connect") { created = true; return Response.json({ id: box.id, name: box.name, status: "launch_requested" }); }
+      // A platform from before --cloud (platform-all#972): no deploy options.
+      if (rpc === "monitoring_deploy_options") return new Response("not found", { status: 404 });
       return Response.json([]);
     },
   });

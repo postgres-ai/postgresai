@@ -463,6 +463,8 @@ describe("pgai mon deploy for Supabase, at a terminal", () => {
         if (rpc === "cloud_monitoring_supabase_start") {
           return Response.json({ code: "PT409", message: "Conflict", details: "Another Supabase organization\x1b[2J\x1b]8;;https://evil.example\x07 is connected.", hint: "\x1b[31mDisconnect it first.\x1bc" }, { status: 409 });
         }
+        // A platform from before --cloud (platform-all#972): no deploy options.
+        if (rpc === "monitoring_deploy_options") return new Response("not found", { status: 404 });
         return Response.json([]);
       },
     });
@@ -500,6 +502,8 @@ describe("pgai mon deploy for Supabase, at a terminal", () => {
           await answered;
           return Response.json({ id: "i-1", name: SB_NAME, status: "launch_requested" });
         }
+        // A platform from before --cloud (platform-all#972): no deploy options.
+        if (rpc === "monitoring_deploy_options") return new Response("not found", { status: 404 });
         return Response.json([]);
       },
     });
@@ -541,6 +545,8 @@ describe("pgai mon deploy for Supabase, at a terminal", () => {
           requested();
           await Bun.sleep(20_000);
         }
+        // A platform from before --cloud (platform-all#972): no deploy options.
+        if (rpc === "monitoring_deploy_options") return new Response("not found", { status: 404 });
         return Response.json([]);
       },
     });
