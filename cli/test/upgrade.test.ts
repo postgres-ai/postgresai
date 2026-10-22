@@ -816,6 +816,25 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
   }, { timeout: TEST_TIMEOUT });
 
+  test("PGAI_SKIP_COMPOSE_REFRESH=1 keeps the deployed compose (pre-baked image, platform-all#980)", () => {
+    const testDir = resolve(tempDir, "skip-refresh-baked-image");
+    fs.mkdirSync(testDir, { recursive: true });
+
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+
+    runCliInDir(["mon", "update-config"], testDir, {
+      NODE_ENV: "test",
+      PGAI_TAG: undefined,
+      PGAI_COMPOSE_SOURCE: targetComposePath,
+      PGAI_SKIP_COMPOSE_REFRESH: "1",
+    });
+
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(listBackups(testDir)).toEqual([]);
+  }, { timeout: TEST_TIMEOUT });
+
   test("git checkouts are left untouched (compose managed by git pull)", () => {
     const testDir = resolve(tempDir, "git-checkout-no-refresh");
     fs.mkdirSync(testDir, { recursive: true });

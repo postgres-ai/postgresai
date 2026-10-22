@@ -1199,6 +1199,10 @@ function composeContentEqual(a: string, b: string): boolean {
 async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string | null): Promise<boolean> {
   // Git checkouts manage docker-compose.yml via the repo itself (`git pull`).
   if (fs.existsSync(path.resolve(projectDir, ".git"))) return false;
+  // A pre-baked monitoring image already carries the compose for exactly this
+  // version (platform-all#980): its deploy sets this to skip the fetch, so a
+  // slow or unreachable gitlab.com cannot stall the install.
+  if (process.env.PGAI_SKIP_COMPOSE_REFRESH === "1") return false;
 
   const composeFile = path.resolve(projectDir, "docker-compose.yml");
   // Nothing deployed yet -> the green-field bootstrap path handles fetching it.
