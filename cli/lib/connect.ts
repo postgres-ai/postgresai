@@ -154,7 +154,7 @@ export interface ConnectDeps {
   links?(row: Database): Promise<Database>;
   create(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
-  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string; warn?: Warn }): Promise<Prepared>;
+  prepare(url: string, provider: Provider, opts?: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; otherRefs?: string[]; monitoringUser?: string; warn?: Warn }): Promise<Prepared>;
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string, monitoringUser?: string, opts?: { warn?: Warn }): Promise<boolean>;
   localStackRunning(): boolean;
@@ -444,6 +444,10 @@ function storedPasswordNeeds(monitoringUrl: string): string | undefined {
 
 /** A word for the user's shell: quoted unless plain (a name made in the console is free text). */
 const shellWord = (s: string) => (/^[\w./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+/** What `pgai mon instances delete` takes for `d`: its name, or its id when another live box has that name. */
+const deleteRef = (d: Database, list: Database[]) =>
+  (list.some((o) => o.id !== d.id && !disconnecting(o.status) && o.name === d.name) ? d.id : d.name);
 
 /** `pgai mon instances delete` for each database named. */
 const disconnectEach = (names: string[]) => names.map((n) => `pgai mon instances delete ${shellWord(n)} --yes`).join(" and ");
@@ -774,7 +778,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
   }
   if (row && opts.resetPassword) {
-    return { status: "action_required", provider, name, id: row.id, next: `${name} is already monitored, and its monitoring uses the current password: pgai mon instances delete ${name} --yes first` };
+    return { status: "action_required", provider, name, id: row.id, next: `${name} is already monitored, and its monitoring uses the current password: ${disconnectEach([deleteRef(row, rows)])} first` };
   }
   if (row && key) {
     const found = await findOrg();
@@ -802,29 +806,37 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     // Without a cluster, the server is not known.
     const unread = (d: Database) => !d.cluster;
     const onServer = (d: Database) => !!d.cluster && serverOf(d.cluster) === cluster;
-    const othersOnServer = (list: Database[]) => list.filter((d) => !disconnecting(d.status) && (unread(d) || onServer(d)));
+    // What may log in as the role: not a box being destroyed or gone, a deleted self-hosted one
+    // (deactivated: inactive), or a launch that failed before its box registered (it never connected).
+    // Only the raw status failed is a launch outcome: error is a running box whose health check failed.
+    const usesRole = (d: Database) =>
+      !["deleting", "deleted", "inactive"].includes(stateOf(d.status)) && !(d.status === "failed" && !d.registered_at);
+    const othersOnServer = (list: Database[]) => list.filter((d) => usesRole(d) && (unread(d) || onServer(d)));
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
     const storedPassword = !monitoringUser && rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
-    const cutOff = (others: Database[]): ConnectResult => {
-      const on = others.filter((d) => !unread(d)).map((d) => d.name).join(", ");
-      const maybe = others.filter(unread).map((d) => d.name).join(", ");
+    const cutOff = (others: Database[], list: Database[]): ConnectResult => {
+      const label = (d: Database) => (deleteRef(d, list) === d.id ? `${d.name} (id ${d.id})` : d.name);
+      const on = others.filter((d) => !unread(d)).map(label).join(", ");
+      const maybe = others.filter(unread).map(label).join(", ");
       const what = [on && `would cut off the monitoring of ${on} on this server`, maybe && `may cut off the monitoring of ${maybe} (the platform could not read its URL, so its server is not known)`].filter(Boolean).join(", and ");
       const instead = [
         ...(storedPassword ? ["deploy without --reset-password (PostgresAI keeps its password for this server, and sends it only over TLS)"] : []),
         "set PGAI_MON_PASSWORD to its password instead",
-        `${disconnectEach(others.map((d) => d.name))} first`,
+        `${disconnectEach(others.map((d) => deleteRef(d, list)))} first`,
       ];
       return { status: "action_required", provider, name, next: `A new password for ${role} ${what}: ${instead.join(", or ")}` };
     };
-    const others = othersOnServer(rows).filter((d) => !unread(d)).map((d) => d.name);
-    if (opts.resetPassword && othersOnServer(rows).length) return cutOff(othersOnServer(rows));
+    const onThisServer = othersOnServer(rows).filter((d) => !unread(d));
+    const others = onThisServer.map((d) => d.name);
+    const otherRefs = onThisServer.map((d) => deleteRef(d, rows));
+    if (opts.resetPassword && othersOnServer(rows).length) return cutOff(othersOnServer(rows), rows);
     // What the box costs, before anything is touched: a billed box is accepted
     // (--yes, or at the prompt), and needs the org's payment method.
     if (opts.coupon !== undefined && !opts.coupon.trim()) {
       return { status: "action_required", provider, name, next: `${opts.agent ? "coupon" : "--coupon"} is empty: pass a promotion code, or leave ${opts.agent ? "coupon" : "--coupon"} out` };
     }
-    const prepOpts = { resetPassword: opts.resetPassword, warn, ...(storedPassword ? { storedPassword, others } : {}), ...(monitoringUser ? { monitoringUser } : {}) };
+    const prepOpts = { resetPassword: opts.resetPassword, warn, ...(storedPassword ? { storedPassword, others, otherRefs } : {}), ...(monitoringUser ? { monitoringUser } : {}) };
     if (!opts.selfHosted) {
       // A URL that cannot work is told so before any price is asked (nothing is changed here).
       const probe = await deps.prepare(url, provider, { ...prepOpts, check: true }).catch((err) => {
@@ -896,9 +908,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (lockId) {
         const now = await deps.list();
         const same = findDatabase(now);
-        if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${name} is already monitored, and its monitoring uses the current password: pgai mon instances delete ${name} --yes first` };
+        if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${name} is already monitored, and its monitoring uses the current password: ${disconnectEach([deleteRef(same, now)])} first` };
         const others = othersOnServer(now);
-        if (others.length) return { ...cutOff(others), ...billing };
+        if (others.length) return { ...cutOff(others, now), ...billing };
       }
       if (deps.aborted?.()) throw new CancelledError();
       progress("preparing", `Preparing ${maskConnectionString(url)}`);
@@ -1465,6 +1477,8 @@ export interface PrepareOptions {
   storedPassword?: boolean;
   /** The org's other databases on this server (named where they must be disconnected first). */
   others?: string[];
+  /** What pgai mon instances delete takes for each of `others` (an id where a name is shared). */
+  otherRefs?: string[];
   /** The monitoring role (default postgres_ai_mon). */
   monitoringUser?: string;
   /** The pg client class (tests). */
@@ -1636,7 +1650,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
       const tlsOnly = `PostgresAI sends the password it keeps for ${role} only over TLS`;
       const others = opts.others?.length ? opts.others : undefined;
       // Nobody has the password (the first deploy generated it): only a new one, once nothing uses the old one.
-      const disconnectOthers = others ? disconnectEach(others) : "pgai mon instances delete the server's other databases (pgai mon instances list)";
+      const disconnectOthers = others ? disconnectEach(opts.otherRefs ?? others) : "pgai mon instances delete the server's other databases (pgai mon instances list)";
       const reconnectOthers = `(and deploy ${others ? others.join(", ") : "them"} again with it)`;
       const noTlsWayOut = opts.agent
         ? `Pass its URL as database_url, or run pgai mon deploy in a terminal with PGAI_MON_PASSWORD set to its password. If nobody has it, in a terminal: ${disconnectOthers}, then pgai mon deploy <admin-url> --reset-password with PGAI_MON_PASSWORD set to a new one ${reconnectOthers}`
@@ -1805,7 +1819,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),
     resetUnlock: (lockId: string) => rpc("cloud_monitoring_reset_unlock", { lock_id: lockId }),
-    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; monitoringUser?: string; warn?: Warn } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
+    prepare: (url: string, provider: Provider, o: { resetPassword?: boolean; check?: boolean; storedPassword?: boolean; others?: string[]; otherRefs?: string[]; monitoringUser?: string; warn?: Warn } = {}) => prepareDatabase(url, provider, { ...o, agent: p.agent }),
     unprepare: (url: string, monitoringUser?: string, o: { warn?: Warn } = {}) => unprepareDatabase(url, { ...o, agent: p.agent, monitoringUser }),
     clickhouseOrg: clickhouseOrgFor,
     quote: (coupon?: string, cluster?: string) => rpc<Quote>("cloud_monitoring_quote", { ...(coupon ? { promo_code: coupon } : {}), ...(cluster ? { db_server: cluster } : {}) }),
