@@ -723,6 +723,30 @@ cli:npm:publish:
       when: never
     - if: '$CI_COMMIT_TAG'
 
+# Pre-baked monitoring VM image for this version (platform-all#980): a manual
+# button on tag pipelines. It starts the build in postgres-ai/postgres_ai-ansible
+# (private; the cloud tokens live only there): bake, smoke test, promote,
+# cleanup. Cloud deploys use the image once app.settings.monitoring_postgresai_version
+# is switched to this version, by hand. Tags never promoted get no image.
+images:promote:
+  stage: release
+  interruptible: false
+  needs:
+    - job: cli:npm:publish
+      artifacts: false
+  variables:
+    PROMOTE_VERSION: "${CI_COMMIT_TAG}"
+  trigger:
+    project: postgres-ai/postgres_ai-ansible
+    branch: main
+    strategy: depend
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^helm-v/'
+      when: never
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
+
 .docker-publish-base: &docker-publish-base
   stage: publish
   interruptible: false  # Never cancel publish jobs
