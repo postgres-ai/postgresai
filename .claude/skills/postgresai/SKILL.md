@@ -17,22 +17,59 @@ reports and recommendations will be ready.
 If your agent names sessions or goals, name this one "Set up PostgresAI for my
 database".
 
-Work on your own. Ask the user only when you are blocked:
+Work on your own. Follow this flow, in this order, and skip no step. Each
+[?] is one question to the user; ask nothing else unless you are blocked.
+Number every list of choices you give the user, so they can reply with just
+the number. The sections below say how to do each step.
 
-- who runs the database (Supabase, Amazon RDS, ClickHouse or their own
-  server), unless they said so or the host shows it (step 1);
-- which database to use: always ask, before anything else, even when you
-  found one (step 1); for Supabase, which project, from the list
-  PostgresAI returns (see "Supabase");
-- the database server's vCPU count, if you cannot find it (step 1; not for
-  Supabase);
-- the PostgresAI sign-in needs them (see step 2);
-- they belong to several PostgresAI organizations and you need to know which
-  one;
-- monitoring costs money: warn them up front (step 1); when the deploy shows
-  the price, ask whether they have a coupon, then ask before accepting the
-  price (step 3);
-- a step changes their database or deletes something (see Rules).
+```
+Start: user pastes prompt (console → Create organization → "Set up with your AI agent")
+        │
+0. [?] Organization (question zero): if not already in the context of a specific organization → create / pick the organization first
+        │
+1. [?] Where is your database?   ← asked first: the price can depend on it
+        ├── Supabase ......... connect via OAuth
+        ├── RDS / Aurora ..... connect via PrivateLink
+        ├── ClickHouse ....... (connection method TBD)
+        └── Generic Postgres . login + password
+        │
+2. [?] Money question — the main gate (not ready to pay → stop here). Show the FINAL price (incl. coupons):
+        "Your PostgresAI subscription costs $512/month for one cluster. Answer YES, or enter a coupon if you have one."
+        ├── YES ............................................ price confirmed → 3
+        └── coupon → validate
+              ├── invalid → fail fast, say why → ask again
+              └── valid → new (discounted) price → check card on file:
+                    ├── card on file → [?] ask again: confirm the new price (even if $0)
+                    └── no card ...... [?] ask again TOGETHER with the link to add a payment method
+                                         (show new price + link in one message; adding the card = confirmation — saves one "OK")
+                                         e.g. "Coupon applied — the price is now $256/month. Add your card here: <link>"
+                                         (if the user replies "wait, wrong coupon" → agent handles it: back to the coupon question)
+        │
+3. (auto) Payment method check (YES path)
+        ├── card already on file → use it, continue silently (no card re-confirmation — decided)
+        └── no card → [?] link to add a card, wait
+        │
+4. (auto) Check connection
+        ├── FAIL → stop, explain clearly → back to 1
+        └── OK
+        │   (all paths converge here)
+5. (auto) Deploy monitoring   ← FIRST action that creates anything
+        (region = DB's cloud region, fallback default — no question)
+        ├── FAIL → stop, show error clearly (never silent)
+        └── OK
+        │
+6. (auto) After deploy OK → clear success message, e.g.
+        "Success, congrats — health data collection has started. Let's come back in a few minutes."
+        Then wait for a CLEAR "ready" signal so the agent knows exactly when it's time to discuss health — e.g. the "initial checkup" overview has arrived (it already contains everything, with links). Open: how the overview is delivered to the agent.
+        Before that signal: do NOT interpret or explain any data, even if some arrived early (e.g. early checkup results).
+        After the signal → report issues by severity (worst first)
+```
+
+For RDS and Aurora, the connection goes through the console page the deploy
+gives (see step 4–5).
+
+A step that changes their database or deletes something also needs their OK
+(see Rules).
 
 Ask one question at a time, and never in the middle of other text: users miss
 questions buried in a long answer, and answer only one of several. If your
@@ -59,16 +96,16 @@ would show, and stop.
 - **Monitoring setup.** `pgai mon deploy` creates a role `postgres_ai_mon` (with
   `pg_monitor`), a schema `postgres_ai` with helper views and functions, and the
   `pg_stat_statements` extension, and keeps the role's password in PostgresAI.
-  The user's yes in step 1 is consent to this. Tell the user in your report
+  The user's YES in step 2 is consent to this. Tell the user in your report
   what was created.
-- **Never without the user's OK:** `--yes` (deploys where shown and accepts the price), `--reset-password`
+- **Never without the user's OK:** `--yes` (accepts the price: only after their YES in step 2), `--reset-password`
   (cuts off anything else that logs in as `postgres_ai_mon`),
   `pgai mon instances delete`, `--self-hosted` (starts a Docker stack on this
   machine).
 - **Setup first.** Until the deploy returns `ready` or `in_progress`, work only
-  on setting up monitoring: do not stop to read, analyse or report health data
-  on the way. Once it is set up, offer to wait for PostgresAI's first findings
-  (step 4 says when they come), and then go through them with the user.
+  on setting up monitoring. Then, until the initial checkup arrives (step 6),
+  do not read, interpret or explain any health data, even if some arrived
+  early.
 - **Deleting monitoring.** Before you ask for the OK to run `pgai mon instances
   delete`, tell the user what it does and what it leaves. It stops monitoring
   and deletes the monitoring box. If this was the last database cluster on the
@@ -97,7 +134,8 @@ would show, and stop.
   edits the file, run the check below on the file you load (`.env` or
   another); it prints only line numbers. If it prints any, ask the user to put
   those values in single quotes, and do not load that file, or run anything
-  that loads it, until they have.
+  that loads it, until they have. Watch for the fix as in "When the user
+  leaves the terminal", with the check: the command below prints nothing.
 
 ```bash
 grep -nE "^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(\"[^\"]*[\$\`\\\\]|[^'\"].*[[:space:]&;|<>()\$\`\\\\])" .env | cut -d: -f1
@@ -109,95 +147,104 @@ grep -nE "^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(\"[^\"]*[\$\
 everywhere, including in the commands that `next` names. `pgai <command> --help`
 lists every option.
 
-## 1. Find the database
 
-**Who runs it.** The setup differs by provider, so know it first. If the user
-named it, use that. If the database host shows it (`.supabase.co` or
-`.pooler.supabase.com`, or a `SUPABASE_URL` as in "Supabase first" below:
-Supabase; `.rds.amazonaws.com`: Amazon RDS; `.clickhouse.cloud`: ClickHouse),
-use that. Otherwise, before anything else,
-ask one question and show the user these options as a list to choose from
-(the options of your question tool, or a numbered list right under the
-**Question:** line), so they can answer with a number:
+## When the user leaves the terminal
+
+When you send the user out of the terminal (to a browser, a console page, or a
+file to edit), they get no prompt back from there, and you get no message when
+they are done. Never make them come back and say "done": watch for it
+yourself and go on by yourself. Each step below that sends them away names a
+read-only check that tells you they are done.
+
+1. Start a watcher with your agent's background mode (a command that keeps
+   running while you work; a plain `nohup ... &` is killed in some agents when
+   the command returns). It runs the check every 15 seconds, for up to 10
+   minutes:
+
+   ```bash
+   for i in $(seq 40); do <check> && exit 0; sleep 15; done; exit 1
+   ```
+
+2. Send the user a message with what to do and the full link itself (never
+   "the link above": the user does not see command output), and say you go
+   on by yourself when they are done. If your agent wakes you when a
+   background command ends (Claude Code does), end your turn with this
+   message: you are woken when the watcher ends. Otherwise keep your turn and
+   check every 10 to 15 seconds whether it has ended.
+3. The watcher ends with 0: the user is done. Say so in one line and go on.
+   It ends with 1 (10 minutes): ask whether they are still on it, and start it
+   again if they are.
+
+A check only reads: it never changes anything, and never prints a secret
+(load `.env` in it as in Rules, when it needs it).
+
+## 0. Sign in and pick the organization
+
+Skip the sign-in if `PGAI_API_KEY` is set in the environment or in `.env`
+(check the names only), or if `pgai orgs` already works.
+
+On the user's own computer, first tell them a browser window will open and that
+they need to approve the sign-in there. Then run `pgai auth login` with a
+timeout of more than 2 minutes: it waits 2 minutes for the browser.
+
+On a remote machine (SSH, a container, a cloud sandbox) the browser sign-in
+cannot finish. Ask the user to create an API key at https://console.postgres.ai
+(their organization → Access tokens) and to either run
+`npx postgresai auth login --set-key <key>` in a terminal on this machine or
+add `PGAI_API_KEY=<key>` to `.env` (check that `.env` is in `.gitignore`), so
+the key never passes through you. Watch for it as in "When the user leaves the
+terminal", with the check `set -a; . ./.env 2>/dev/null; set +a; pgai orgs
+>/dev/null 2>&1`.
+
+If the user's prompt names the organization (it came from the console's "Set
+up with your AI agent"), use it. Otherwise run `pgai orgs`: one organization,
+use it; several, ask which one (a numbered list); none, ask what to call it and create it with
+`pgai orgs create --name '<name>' --json`. This needs a global user token,
+which `pgai auth login` picks by default when the user has no organization
+yet; with an organization API key it fails: then tell the user to create the
+organization at https://console.postgres.ai. Pass `--org <alias>` to every
+later command.
+
+## 1. Where the database is
+
+Ask one question, with these options as a list to choose from (the options of
+your question tool, or a numbered list right under the **Question:** line):
 
 1. Supabase
 2. Amazon RDS or Aurora
 3. ClickHouse Managed Postgres
-4. Self-managed: their own server, VM or Docker, or another cloud (Google
-   Cloud SQL, Azure, Neon and others)
+4. Another Postgres: their own server, VM or Docker, or another cloud (Google
+   Cloud SQL, Azure, Neon and others), with a login and password
 
-Then:
+If the user already said so, do not ask. If the answer and a host you found
+disagree (the user says self-managed, the host is `*.supabase.co`), tell the
+user and ask which is right.
 
-- **Supabase**: follow "Supabase first" below.
-- **RDS**, **ClickHouse**: find the URL as below, and add `--provider rds` or
-  `--provider clickhouse` to the deploy in step 3. For ClickHouse, the CPU,
-  memory and disk charts need a ClickHouse Cloud API key with the Basic
-  Service API Reader role: offer it as optional. Give the user the link to
-  create it, https://console.clickhouse.cloud (their organization → API
-  Keys), and ask them to put it in `.env` as `CLICKHOUSE_KEY_ID` and
-  `CLICKHOUSE_KEY_SECRET` (never in the chat).
-- **Self-managed**: find the URL as below, and add `--provider generic` to
-  the deploy.
+- **Supabase**: connect through Supabase's sign-in, and pick the project: see
+  "Supabase" below. No URL or password.
+- **RDS or Aurora**, **another Postgres**: find the database as below. Add
+  `--provider rds` or `--provider generic` to the deploy.
+- **ClickHouse**: find the database as below, and add `--provider clickhouse`.
+  The CPU, memory and disk charts need a ClickHouse Cloud API key with the
+  Basic Service API Reader role: offer it as optional, with the link
+  https://console.clickhouse.cloud (their organization → API Keys), and ask
+  them to put it in `.env` as `CLICKHOUSE_KEY_ID` and `CLICKHOUSE_KEY_SECRET`
+  (never in the chat).
 
-If the answer and the host disagree (the user says self-managed, the host is
-`*.supabase.co`), tell the user and ask which is right.
-
-**Supabase first.** Check for hosted Supabase before you look for a URL: a
-`SUPABASE_URL` or `NEXT_PUBLIC_SUPABASE_URL` of the form
-`https://<ref>.supabase.co` (you may read these two values; they hold no
-secret), or a database host ending in `.supabase.co` or
-`.pooler.supabase.com` (look at the host only, as below). A
-`supabase/config.toml` alone, or a `SUPABASE_URL` on another host, is local or
-self-hosted Supabase: use the usual URL steps below. For hosted Supabase, this
-replaces the rest of step 1:
-
-1. Do not show, parse or ask about `DATABASE_URL` or any other database URL,
-   and do not ask for the vCPUs. PostgresAI needs neither: it lists the
-   projects of the user's Supabase organization.
-2. The `<ref>` in `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` names the
-   project the app uses, the likely choice. If the user's project is not in
-   the list PostgresAI returns, go back to the usual URL steps.
-3. Tell the user what the setup creates and that monitoring is paid and how
-   long it takes (as below), then go to step 2 and run the command in the
-   "Supabase" section below. It creates nothing. The question to ask comes from its
-   result: which project, from the list it returns.
-
-Otherwise, look for the connection URL: environment variables (`DATABASE_URL`,
-`POSTGRES_URL`, `PG*`), `.env*` files (list the variable names only, such as
-`grep -o '^[A-Z_]*=' .env`), `docker-compose*.yml`, and framework config (Rails
-`database.yml`, Django `settings.py`, Prisma `schema.prisma`, and so on).
+**Which database.** Look for the connection URL: environment variables
+(`DATABASE_URL`, `POSTGRES_URL`, `PG*`), `.env*` files (list the variable
+names only, such as `grep -o '^[A-Z_]*=' .env`), `docker-compose*.yml`, and
+framework config (Rails `database.yml`, Django `settings.py`, Prisma
+`schema.prisma`, and so on).
 
 Never choose the database yourself, even when you find only one: a URL in
-`.env` or config is a candidate, not the user's choice. Show the user
-each candidate without its password: where it came from (file and variable),
-host, port, database name, and whether it looks like development, staging or
-production. Before the question, say that you will set up PostgresAI
-monitoring on the chosen database, which creates the `postgres_ai_mon` role,
-the `postgres_ai` schema and `pg_stat_statements`, and that PostgresAI Cloud
-monitoring is a paid service, billed monthly per database cluster: the deploy
-shows the exact price (or that it is free) before anything is billed, and
-nothing is billed without their OK. Also say how long it takes: about 10
-minutes to set up, the first reports about 5 minutes after that, and detailed
-reports and recommendations, based on the monitoring data gathered, about 24
-hours later. Then ask one question: which database to set up monitoring on.
-Their answer is the consent to the setup. Use only the confirmed database from
-then on. If you find no URL, ask where it is.
-
-Then, unless you already know it (see step 3), ask how many vCPUs the database
-server has, as a question of its own, and say that "I don't know" is a fine
-answer. Not for Supabase: PostgresAI reads the vCPUs from the project's compute
-size.
-
-The only exception: the user's own message gives the URL, the variable name,
-or the host and database, and asks for PostgresAI monitoring on it. That is
-the confirmation. A candidate you found yourself is never confirmed, even when
-it is the only one, or matches a provider the user named (such as Supabase),
-or the user says "my database". Still tell them what the setup will create,
-that monitoring is paid, and how long it takes, before you deploy, and ask for
-the vCPU count if you do not know it.
-
-Do not run `pgai mon deploy` with a database URL or `--supabase-project` until
-the user has answered which database.
+`.env` or config is a candidate, not the user's choice. Show the user the
+candidates as a numbered list, each without its password: where it came from (file and variable), host,
+port, database name, and whether it looks like development, staging or
+production. Then ask one question: which database to set up monitoring on.
+If you find no URL, ask for one: a login and password in a URL in `.env`,
+never in the chat. The only exception: the user's own message gives the URL,
+the variable name, or the host and database.
 
 To show a URL's parts without its password:
 
@@ -217,58 +264,24 @@ console.log("server/db:", host, " user:", user);'
 ```
 
 For another file or variable, use it in place of `./.env` and `DATABASE_URL`.
-
 An admin URL (a superuser, or the provider's admin user) is best: the deploy
 uses it once to create its own role.
 
-An idle development database shows only configuration problems; say so in the
-report.
-
-## 2. Sign in to PostgresAI
-
-Skip this if `PGAI_API_KEY` is set in the environment or in `.env` (check the
-names only), or if `pgai orgs` already works.
-
-On the user's own computer, first tell them a browser window will open and that
-they need to approve the sign-in there. Then run `pgai auth login` with a
-timeout of more than 2 minutes: it waits 2 minutes for the browser.
-
-On a remote machine (SSH, a container, a cloud sandbox) the browser sign-in
-cannot finish. Ask the user to create an API key at https://console.postgres.ai
-(their organization → Access tokens) and to either run
-`npx postgresai auth login --set-key <key>` in a terminal on this machine or
-add `PGAI_API_KEY=<key>` to `.env` (check that `.env` is in `.gitignore`), so
-the key never passes through you.
-
-Then run `pgai orgs`. If it lists one organization, pass `--org <alias>` to
-every later command. If it lists several, ask the user which one. If it lists
-none, ask the user what to call their organization, then create it with
-`pgai orgs create --name '<name>' --json` and use its `alias`. This needs a
-global user token, which `pgai auth login` picks by default when the user has
-no organization yet; with an organization API key it fails. If it fails, tell
-the user to create the organization at https://console.postgres.ai instead.
-
-## 3. Deploy monitoring
-
-PostgresAI Cloud monitoring connects to the database over the internet. If the
-host is `localhost`, `127.*`, `::1`, `host.docker.internal`, a `*.internal` or
+PostgresAI Cloud connects to the database over the internet. If the host is
+`localhost`, `127.*`, `::1`, `host.docker.internal`, a `*.internal` or
 docker-compose service name, or a private address (`10.*`, `172.16-31.*`,
-`192.168.*`), do not deploy to the cloud. Tell the user PostgresAI Cloud
-cannot reach it, and offer `--self-hosted` (Docker on this machine) instead.
-A self-hosted deploy returns `ready` with Grafana at `dashboard_url`
-(`http://localhost:3000`) and `next` `pgai mon health`, but no Health Matrix:
-give the user the Grafana link, and say there are no findings to relay yet.
+`192.168.*`), tell the user PostgresAI Cloud cannot reach it, and offer
+`--self-hosted` (Docker on this machine) instead. A self-hosted deploy returns
+`ready` with Grafana at `dashboard_url` (`http://localhost:3000`) but no
+Health Matrix: give the user the Grafana link.
 
-```bash
-set -a; . ./.env 2>/dev/null; set +a; date -u +%FT%TZ >&2
-pgai mon deploy "$DATABASE_URL" --org <alias> --json --no-wait
-```
+## 2–3. The price and the payment method
 
-For Supabase, there is no URL: see "Supabase" below for the command.
-
-If the URL is not in `.env` as `DATABASE_URL`, load it from where you found it,
-under its own name. Note the time printed first, on stderr: it is when the
-deploy started.
+The price comes from the deploy run without `--yes`, which needs the database
+from step 1. Without `--yes` it creates nothing; it checks the connection
+and returns `action_required` with the `price` (for the command, see step 4–5;
+leave out `--yes`). If it cannot connect, say why (`next`) and go back to
+step 1. Always show the final price, with any coupon.
 
 If the user gave a coupon (see `action_required` below), add `--coupon
 <code>`. It applies when the organization's monitoring subscription is first
@@ -276,66 +289,71 @@ created. An invalid code stops the deploy with `action_required` and changes
 nothing: tell the user what `next` says, and re-run with a corrected code or,
 if they agree, without it.
 
-Add `--vcpus <n>`, the database server's vCPU count. Take it from what you know
-(its instance class or server spec) or from the user's answer; never guess it.
-If neither you nor the user knows it, deploy without it and tell the user, in
-plain words: there will be no AAS data until the vCPU count is set. AAS
-(average active sessions) is how many queries are running or waiting at the
-same moment, on average. Compared with the vCPU count, it shows how loaded the
-database is: well below it is fine; above it, queries are queuing. It can be
-set later with `pgai mon instances set <id> --vcpus <n> --org <alias>`.
+Act on the result:
 
-Where the monitoring box runs is PostgresAI's choice: AWS in the database's own
-region when its host or Supabase project shows it, else AWS us-east-1. Without
-`--yes` nothing is created, free or billed: the result is `action_required`
-with `cloud`, `location`, `location_reason_text` (why there), `price` and
-`choices` (each cloud's locations). Tell the user where the box would run and
-why, and that they can pick another cloud or location from `choices`. Pass
-`--cloud aws|hetzner` and `--location <region>` only for the place the user
-picked; a cloud or region PostgresAI refuses ends the deploy with `failed` and a
-`next` that lists the choices, and nothing is created.
-
-The result is JSON on stdout. Act on `status` and `next`:
-
-- `ready`: done. Take `health_url` and `dashboard_url` from this result.
-- `in_progress`: poll with
-  `pgai mon instances watch <id> --org <alias> --json --no-wait` every few
-  minutes, and start step 4 meanwhile. The box usually becomes `ready` within
-  about 10 minutes.
-- `action_required`: read `next`.
-  - It carries `choices` (where the box would run, not deployed yet): say where
-    (`cloud`, `location`, `location_reason_text`) and the `price`, ask whether
-    that place is fine or which of `choices` they want, and handle the price as
-    below. Re-run with `--yes` (plus `--cloud`/`--location` if they chose) only
-    when they agree to both.
   - It names a price and `--yes`: quote `price` to the user and ask whether
     they have a PostgresAI coupon (a promotion code); "no" is a fine answer.
     If they give one, re-run with `--coupon <code>` (no `--yes`) and quote the
     new `price` and the coupon's `description`. Then, as a separate question,
     ask whether they accept the price. Re-run with `--yes` (and the same
     `--coupon`) only if they agree.
-  - It needs a payment method: give the user the console link from `next`.
+  - It needs a payment method: first quote `price` and get the user's YES (or
+    a coupon) as above. Only then give the console link from `next`, and
+    watch for it as in "When the user leaves the terminal", with the check:
+    the same deploy without `--yes` no longer says a payment method is needed.
   - It says the promo code cannot be used by this organization: tell the user,
     and ask for another code or whether to go on without one. Re-run with the
     new `--coupon`, or without it (no `--yes`), and quote the new `price` first.
-  - It is a Supabase consent link: give the user that link to open and approve,
-    then re-run the deploy (with the same `--coupon`, if they gave one). The
-    price comes after the approval, as above.
-  - It carries `projects` (Supabase, no project picked yet): ask which project
-    to monitor (see "Supabase" below), then re-run with `--supabase-project <ref>`.
-  - It says "Finish in the console" (Amazon RDS): give the user that link. The
-    CLI shows no price here: the console page shows it before anything is
-    billed, and has a field for a promotion code, so tell them to enter their
-    coupon there if they have one. When they say it is done, find the instance
-    with `pgai mon instances list --org <alias> --json` and `watch` it.
+
+## 4–5. Check the connection, then deploy
+
+One command does both. It checks the connection first and creates nothing if
+that fails; then it creates the monitoring role, the schema and the box. The
+box runs in the database's cloud region (else PostgresAI's default): do not
+ask about it.
+
+```bash
+set -a; . ./.env 2>/dev/null; set +a; date -u +%FT%TZ >&2
+pgai mon deploy "$DATABASE_URL" --org <alias> --provider <provider> \
+  --coupon <code> --yes --json --no-wait
+```
+
+Leave out `--coupon` if they gave none. Add `--vcpus <n>` only if you know the
+server's vCPU count (its instance class or server spec); never guess it, and
+do not ask. Note the time printed first, on stderr: it is when the deploy
+started. For Supabase, there is no URL: see "Supabase" below.
+
+`--yes` accepts the price without showing it again, so run it only right
+after the user's YES in step 2, with the same database and `--coupon`. If
+either changed, go back to "2–3" for the new price first.
+
+The result is JSON on stdout. Act on `status` and `next`, and never stay
+silent about a failure:
+
+- `ready`: done. Take `health_url` and `dashboard_url` from this result.
+- `in_progress`: poll with
+  `pgai mon instances watch <id> --org <alias> --json --no-wait` every few
+  minutes, and start step 6 meanwhile. The box usually becomes `ready` within
+  about 10 minutes.
+- `failed` before anything was created (cannot connect, wrong password, a bad
+  URL): stop, say what went wrong in plain words (`next`), and go back to
+  step 1.
+- `action_required`: read `next`.
+  - It says "Finish in the console" (Amazon RDS): give the user that link.
+    Watch for it as in "When the user leaves the terminal", with the check:
+    `pgai mon instances list --org <alias> --json` shows this database. Then
+    `watch` that instance.
   - It returns `sql` (the URL is not an admin URL): give the user that SQL to
     run as an admin, then re-run the deploy with the `postgres_ai_mon` URL
     (its password in `.env`); or ask them for an admin URL.
   - The role `postgres_ai_mon` exists and its password is unknown: ask the user
     to put it in `.env` as `PGAI_MON_PASSWORD` (never in the chat), or to
-    approve `--reset-password`.
+    approve `--reset-password`. If they put it in `.env`, watch for it as in
+    "When the user leaves the terminal", with the check
+    `grep -q '^PGAI_MON_PASSWORD=' .env`, then re-run the deploy.
+  - A payment method or a coupon: back to "2–3".
   - Otherwise, do what `next` says, within the Rules above.
-- `failed` with no `id` (a timeout, a bad URL, a connection error): run
+- `failed` with no `id` (a timeout): run
   `pgai mon instances list --org <alias> --json`. If it shows this database,
   `watch` it; otherwise re-run the same deploy once. If that fails too, tell
   the user what `next` says.
@@ -347,27 +365,31 @@ The result is JSON on stdout. Act on `status` and `next`:
 What you need to know to set up monitoring for a Supabase project:
 
 - **No URL, no password.** Run
-  `pgai mon deploy --provider supabase --org <alias> --json --no-wait` (no
-  `--yes`, no URL). PostgresAI creates `postgres_ai_mon`, the `postgres_ai` schema and
+  `pgai mon deploy --provider supabase --org <alias> --json --wait 5` (no
+  `--yes`, no URL), as in "Wait for the Supabase approval" below. PostgresAI creates `postgres_ai_mon`, the `postgres_ai` schema and
   `pg_stat_statements` through the Supabase Management API; the database
   password is never needed or sent.
-- **Connect Supabase once.** The first time, `next` is a Supabase consent link.
-  The user opens it, picks the Supabase organization that owns the project,
-  and approves. Then re-run the same command. A PostgresAI organization is
+- **Connect Supabase once.** The first time, the deploy prints a Supabase
+  consent link. The user opens it, picks the Supabase organization that owns
+  the project, and approves. The deploy waits for that and then goes on by
+  itself. A PostgresAI organization is
   connected to one Supabase organization: a project of another one is refused
   (the user can disconnect Supabase in the console first, or use another
   PostgresAI organization).
 - **Pick the project.** The result is `action_required` with `projects` (and
-  `supabase_org`). Show the user the projects with `"selectable": true` by
-  name and region; mention the others and why, in words (`reason`: `paused`,
-  `not_ready:<status>` such as "starting", or `monitored`). If `SUPABASE_URL` named a project in
-  step 1, name it as the likely choice, but ask; never pick for them, even
+  `supabase_org`). Show the user the projects with `"selectable": true` as a
+  numbered list, by name and region; mention the others and why, in words (`reason`: `paused`,
+  `not_ready:<status>` such as "starting", or `monitored`). If `SUPABASE_URL` named a project (step 1),
+  name it as the likely choice, but ask; never pick for them, even
   when only one project is selectable. Then
   re-run with `--supabase-project <ref>` (the project's `ref`, its project ID)
-  and `--no-wait`, still no `--yes`: the price comes next, as in step 3.
+  and `--no-wait` (and `--coupon`), still no `--yes`: the price comes next,
+  as in "2–3". Add `--yes` only after the user's YES.
 - **Paused projects** can't be monitored: the user resumes the project in
   Supabase first. A project "not ready" can be retried once Supabase shows it
-  as active.
+  as active. Watch for it as in "When the user leaves the terminal", with the
+  check: the project list (the same command, without `--supabase-project`)
+  shows that project with `"selectable": true`.
 - **Already monitored**: the deploy returns that project's box (no second one,
   nothing billed); report its links.
 - **vCPUs** come from the project's compute size: don't ask, and don't pass
@@ -375,49 +397,91 @@ What you need to know to set up monitoring for a Supabase project:
 - **Who can do it**: an admin of the PostgresAI organization, with a personal
   sign-in (`pgai auth login`, or a personal API key). An organization API key is
   refused.
-- **Where the monitoring box runs**: PostgresAI Cloud, in Europe (Germany or
-  Finland). Tell the user before they accept the price, since query texts and
-  statistics are stored there.
 
-## 4. Collect what PostgresAI has produced so far
 
-PostgresAI delivers in stages. Relay what has arrived.
+### Wait for the Supabase approval
 
-For `reports list` you need this database's `project_id`: in
-`pgai projects --org <alias> --json`, the entry whose `monitoring_instance_ids`
-contains the deploy's `id`. The box appears there only once it is `ready`;
-until then, use the entry whose `name` is the deploy's `name`, if exactly one
-has it.
+This is "When the user leaves the terminal", with the deploy itself as the
+watcher. Never wait for the user to say "done": watch the deploy yourself,
+and go on when it ends. With
+`--wait 5` (not `--no-wait`) the deploy keeps one consent session, checks it
+every few seconds, and goes on by itself once the user approves; it stops
+after 5 minutes. A re-run starts a new session and a new link, so do not
+re-run it to check.
 
-The deploy itself checks nothing: the findings come from the monitoring box.
+Do these steps in order:
 
-- **The first report.** The box runs its first checkup about 5 minutes after
-  it becomes ready (`first_checkup_eta` in the deploy's result is the earliest
-  time), and saves it to PostgresAI. Find it with `pgai reports list
-  --org <alias> --project-id <project_id> --json`: the box's reports have
-  `epoch` 1. Until it arrives, tell the user the box is collecting and when to
-  expect the first findings; if you can keep working, check every 2 minutes
-  until about 15 minutes after `ready`, otherwise offer to look again later.
-  Read a report's checks with `pgai reports data <report_id>
-  --org <alias> --type json`, warnings first; add `--check-id <check_id>` for
-  one check. The first report sees less than an hour of data and can be nearly
-  empty: say so if it is.
-- **Issues.** `pgai issues list --org <alias> --json` lists the
-  organization's open issues, newest first; it does not say which database
-  each one is for. Report those with `created_at` after the deploy started as
-  what PostgresAI opened by itself, and say the list is organization-wide. If
-  this database was monitored before, older open issues may be its own too:
-  PostgresAI reuses an open issue instead of opening a second one. New issues
-  come with the box's reports, so look again after each one.
-- **For the user to look at:** the dashboards (`dashboard_url`) fill in within
-  minutes of `ready`, and the Health Matrix (`health_url`) after the first
-  report.
+1. Start the deploy with your agent's background mode: a command that keeps
+   running while you read its output (a plain `nohup ... &` is killed in some
+   agents when the command returns).
+2. Read its stderr until a line with `auth_url` (a JSON event) appears; it
+   takes a few seconds.
+3. Send the user a message that contains the full URL itself, such as:
+   "Open https://api.supabase.com/... , pick the Supabase organization that
+   owns the project, and approve. I go on by myself once you do." The user
+   does not see command output: never write "the link above", and never leave
+   the link only in a command's output. Send it even when the CLI says it
+   opened the browser: the browser may not have opened, or opened on another
+   machine. Send this message before you start checking, and only once. If
+   your agent wakes you when a background command ends (Claude Code does), end
+   your turn with this message: you are woken when the deploy ends. Otherwise
+   keep your turn and start checking.
+4. Every 10 to 15 seconds, check whether the command has ended. When it has,
+   its stdout is the result: read it whole and act on it as in "4–5. Check the
+   connection, then deploy" (most often, the project list: "Pick the
+   project").
+5. If 5 minutes pass with no approval, the result says to approve, then
+   re-run. Tell the user the link was not approved in time, and ask whether
+   to try again.
+
+For a deploy with a URL, use that same command (its URL, `--coupon`) with
+`--wait 5`.
+
+If your agent has no background mode, run the deploy in the foreground with
+a timeout of more than 5 minutes. On the user's own computer, the CLI opens
+the consent page in the browser itself: tell the user before you run it. On a
+remote machine, give the user the link from `next` of a `--no-wait` run, and
+ask them to tell you when they have approved.
+
+## 6. After the deploy: success, then wait for the initial checkup
+
+When the deploy is `ready` or `in_progress`, send a clear success message,
+such as: "Success, congrats: health data collection has started. Let's come
+back in a few minutes." Give the dashboard link (`dashboard_url`), and say
+what the setup created (see Rules).
+
+**The ready signal** is the initial checkup: the box's first report, which
+PostgresAI saves about 5 minutes after the box is ready (`first_checkup_eta`
+in the deploy's result is the earliest time). It has the overview, with
+links. Look for it with `pgai reports list --org <alias> --project-id
+<project_id> --json`: the box's reports have `epoch` 1. The `project_id` is
+the entry in `pgai projects --org <alias> --json` whose
+`monitoring_instance_ids` contains the deploy's `id` (until the box is ready,
+the entry whose `name` is the deploy's `name`, if exactly one has it). If you
+can keep working, check every 2 minutes until about 15 minutes after `ready`;
+otherwise offer to look again later.
+
+**Before the signal**, do not interpret or explain any data, even if some
+arrived early: no early check results, no issues, no dashboard readings. Say
+only that collection is running and when the initial checkup is expected.
+
+**After the signal**, read the report's checks with `pgai reports data
+<report_id> --org <alias> --type json`, warnings first (`--check-id
+<check_id>` for one check), and the issues PostgresAI opened: `pgai issues
+list --org <alias> --json` lists the organization's open issues, newest first,
+and does not say which database each one is for. Report those with
+`created_at` after the deploy started, and say the list is organization-wide.
+If this database was monitored before, older open issues may be its own too:
+PostgresAI reuses an open issue instead of opening a second one. The first
+report sees less than an hour of data and can be nearly empty: say so if it
+is. Then report as below, worst first, with the Health Matrix link
+(`health_url`).
 
 The detailed reports and recommendations, based on the monitoring data
 gathered (query analysis and wait-event trends), come about 24 hours after the
 deploy, and then one a day.
 
-## 5. Report
+### Report
 
 If the box's first report has not arrived, say so: report what was set up,
 the links, and when the first findings are expected, and end with one
