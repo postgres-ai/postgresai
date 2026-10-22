@@ -1061,6 +1061,43 @@ describe("mon deploy", () => {
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"]);
   });
 
+  test("--reset-password: a deleted self-hosted box and launches that failed before their box registered use no role", async () => {
+    const gone = [
+      row("deactivated", { id: "i-8", name: "old_e2e", provider: "self-managed", cluster: null, registered_at: "2026-10-08T18:40:30Z" }),
+      row("failed", { id: "i-9", name: "Monitoring 16bb1d", provider: "self-managed" }),
+      row("failed", { id: "i-10", name: `${SERVER}/orders`, cluster: `${SERVER}:5432` }),
+    ];
+    const { deps, calls } = fake();
+    let listed = 0;
+    deps.list = async () => { calls.push("list"); return listed++ < 2 ? gone : [...gone, row("launch_requested")]; };
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).status).toBe("in_progress");
+    expect(calls).toContain("prepare clickhouse");
+    // One that failed after its box registered may still log in.
+    const ran = fake({ rows: [row("failed", { id: "i-9", name: "Monitoring 16bb1d", provider: "self-managed", registered_at: "2026-10-08T18:40:30Z" })] });
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, ran.deps)).next)
+      .toStartWith("A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d");
+    // A running box whose health check failed (error) may still log in, registered or not.
+    const sick = fake({ rows: [row("error", { id: "i-9", name: "Monitoring 16bb1d", provider: "self-managed" })] });
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, sick.deps)).next)
+      .toStartWith("A new password for postgres_ai_mon may cut off the monitoring of Monitoring 16bb1d");
+    expect(sick.calls).not.toContain("prepare clickhouse");
+  });
+
+  test("--reset-password: boxes that share a name are told apart by id, and deleted by id", async () => {
+    const twin = (id: string) => row("active", { id, name: "orders (copy)", provider: "self-managed" });
+    const { deps } = fake();
+    deps.list = async () => [twin("i-8"), twin("i-9"), row("deleting", { id: "i-10", name: "Monitoring 16bb1d" }), row("active", { id: "i-11", name: "Monitoring 16bb1d" })];
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      "A new password for postgres_ai_mon may cut off the monitoring of orders (copy) (id i-8), orders (copy) (id i-9), Monitoring 16bb1d (the platform could not read its URL, so its server is not known): set PGAI_MON_PASSWORD to its password instead, or pgai mon instances delete i-8 --yes and pgai mon instances delete i-9 --yes and pgai mon instances delete 'Monitoring 16bb1d' --yes first");
+  });
+
+  test("--reset-password on a database already monitored under a name another box has: deleted by id", async () => {
+    const { deps } = fake();
+    deps.list = async () => [row("active", { cluster: `${SERVER}:5432`, database: "postgres" }), row("active", { id: "i-2" })];
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      `${CH_NAME} is already monitored, and its monitoring uses the current password: pgai mon instances delete i-1 --yes first`);
+  });
+
   test("--reset-password against a platform without the lock: nothing reset, PGAI_MON_PASSWORD instead", async () => {
     const { deps, calls } = fake({ resetLock: async () => { throw new HttpStatusError("Failed to cloud monitoring reset lock (HTTP 404)", 404); } });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
@@ -1757,7 +1794,13 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const seen: unknown[] = [];
     deps.prepare = async (_u, _p, o) => { seen.push(o); return { next: "stop" }; };
     await connect(SH, { waitMs: 0, yes: true }, deps);
-    expect(seen).toEqual([{ storedPassword: true, others: ["db.example.com/first", "db.example.com/third"], check: true, warn: expect.any(Function) }]);
+    expect(seen).toEqual([{ storedPassword: true, others: ["db.example.com/first", "db.example.com/third"], otherRefs: ["db.example.com/first", "db.example.com/third"], check: true, warn: expect.any(Function) }]);
+    // A name two live boxes share: named for the redeploy, deleted by id.
+    const twin = row("active", { ...third, id: "i-10" });
+    deps.list = async () => [row("active", FIRST), third, twin];
+    seen.length = 0;
+    await connect(SH, { waitMs: 0, yes: true }, deps);
+    expect(seen[0]).toMatchObject({ others: ["db.example.com/first", "db.example.com/third", "db.example.com/third"], otherRefs: ["db.example.com/first", "i-9", "i-10"] });
   });
 
   const NONE_STORED = "Failed to cloud monitoring connect: Conflict\nThe URL has no password, and none is stored for postgres_ai_mon on db.example.com:5432 in this organization.";
@@ -2663,6 +2706,10 @@ describe("prepareDatabase (a fake pg client)", () => {
     // sslmode=disable where the server has ssl off: the same.
     const off = server({ mon_exists: true, ssl: "off" });
     expect(await withMonPassword(undefined, () => off.prepare(OTHERS, `${PLAIN}?sslmode=disable`))).toEqual({ next });
+    // Deleted by what pgai mon instances delete takes, deployed again by name.
+    expect(await withMonPassword(undefined, () => s.prepare({ ...OTHERS, otherRefs: ["i-7"] }, PLAIN))).toEqual({
+      next: next.replace("instances delete db.example.com/first --yes", "instances delete i-7 --yes"),
+    });
     // Without the names (a direct call), the step is still named.
     expect(((await withMonPassword(undefined, () => s.prepare({ storedPassword: true }, PLAIN))) as { next: string }).next).toEndWith(
       "If nobody has the password: pgai mon instances delete the server's other databases (pgai mon instances list), then re-run with --reset-password and PGAI_MON_PASSWORD set to a new one (and deploy them again with it)",
