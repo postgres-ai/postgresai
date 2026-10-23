@@ -311,6 +311,11 @@ metrics:
       This metric collects replication statistics from the `pg_stat_replication` view.
       It provides insights into the status of replication connections, including lag times and states.
       This metric is useful for monitoring replication health and performance.
+      Per standby it also reports `backend_xmin_reported_int` / `backend_xmin_age_tx`
+      (the primary-side signal that the standby runs with hot_standby_feedback=on,
+      and how far back it pins the primary's cleanup horizon) and `reply_time_lag_ms`
+      (time since the standby last replied, to tell a silent standby apart from a
+      slow one; available on PostgreSQL 12+).
     sqls:
       11: |
         select /* pgwatch_generated */
@@ -326,6 +331,46 @@ metrics:
           (extract(epoch from write_lag) * 1000)::int8 as write_lag_ms,
           (extract(epoch from flush_lag) * 1000)::int8 as flush_lag_ms,
           (extract(epoch from replay_lag) * 1000)::int8 as replay_lag_ms,
+          -- backend_xmin is non-null only while the standby sends hot standby
+          -- feedback, so this is the primary-side signal for
+          -- hot_standby_feedback=on on that standby. Caveat: a standby with
+          -- feedback on but no active read queries can report null, so 0 means
+          -- "no feedback observed", not "hot_standby_feedback=off" for certain.
+          case when backend_xmin is not null then 1 else 0 end as backend_xmin_reported_int,
+          coalesce(age(backend_xmin), 0)::int8 as backend_xmin_age_tx,
+          state,
+          sync_state,
+          case when sync_state in ('sync', 'quorum') then 1 else 0 end as is_sync_int,
+          case when pg_is_in_recovery() then 1 else 0 end as in_recovery_int
+        from
+          pg_stat_replication
+        where
+          coalesce(application_name, '') not in ('pg_basebackup', 'pg_rewind');
+      12: |
+        select /* pgwatch_generated */
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          application_name as tag_application_name,
+          usename as tag_usename,
+          concat(coalesce(client_addr::text, client_hostname), '_', client_port::text) as tag_client_info,
+          coalesce(pg_wal_lsn_diff(case when pg_is_in_recovery() then pg_last_wal_receive_lsn() else pg_current_wal_lsn() end, sent_lsn)::int8, 0) as sent_lag_b,
+          coalesce(pg_wal_lsn_diff(case when pg_is_in_recovery() then pg_last_wal_receive_lsn() else pg_current_wal_lsn() end, write_lsn)::int8, 0) as write_lag_b,
+          coalesce(pg_wal_lsn_diff(case when pg_is_in_recovery() then pg_last_wal_receive_lsn() else pg_current_wal_lsn() end, flush_lsn)::int8, 0) as flush_lag_b,
+          coalesce(pg_wal_lsn_diff(case when pg_is_in_recovery() then pg_last_wal_receive_lsn() else pg_current_wal_lsn() end, replay_lsn)::int8, 0) as replay_lag_b,
+          (extract(epoch from write_lag) * 1000)::int8 as write_lag_ms,
+          (extract(epoch from flush_lag) * 1000)::int8 as flush_lag_ms,
+          (extract(epoch from replay_lag) * 1000)::int8 as replay_lag_ms,
+          -- backend_xmin is non-null only while the standby sends hot standby
+          -- feedback, so this is the primary-side signal for
+          -- hot_standby_feedback=on on that standby. Caveat: a standby with
+          -- feedback on but no active read queries can report null, so 0 means
+          -- "no feedback observed", not "hot_standby_feedback=off" for certain.
+          case when backend_xmin is not null then 1 else 0 end as backend_xmin_reported_int,
+          coalesce(age(backend_xmin), 0)::int8 as backend_xmin_age_tx,
+          -- Time since the standby last replied. A frozen lag with a growing
+          -- reply_time_lag_ms means the standby stopped answering, not that
+          -- replay is merely slow.
+          greatest(0, coalesce((extract(epoch from (now() - reply_time)) * 1000)::int8, 0)) as reply_time_lag_ms,
           state,
           sync_state,
           case when sync_state in ('sync', 'quorum') then 1 else 0 end as is_sync_int,
@@ -1772,8 +1817,18 @@ metrics:
           (sent_lsn - '0/0') % (2^52)::bigint as sent_lsn,
           (write_lsn - '0/0') % (2^52)::bigint as write_lsn,
           (flush_lsn - '0/0') % (2^52)::bigint as flush_lsn,
+          (replay_lsn - '0/0') % (2^52)::bigint as replay_lsn
+        from pg_stat_replication
+      12: |
+        select (extract(epoch from now()) * 1e9)::int8 as epoch_ns, /* pgwatch_generated */
+          current_database() as tag_datname,
+          application_name as tag_application_name,
+          (pg_current_wal_lsn() - '0/0') % (2^52)::bigint as current_wal_lsn,
+          (sent_lsn - '0/0') % (2^52)::bigint as sent_lsn,
+          (write_lsn - '0/0') % (2^52)::bigint as write_lsn,
+          (flush_lsn - '0/0') % (2^52)::bigint as flush_lsn,
           (replay_lsn - '0/0') % (2^52)::bigint as replay_lsn,
-          extract(seconds from (now() - reply_time)) reply_time_lag
+          greatest(0, coalesce(extract(epoch from (now() - reply_time)), 0)) as reply_time_lag
         from pg_stat_replication
     gauges:
       - current_wal_lsn

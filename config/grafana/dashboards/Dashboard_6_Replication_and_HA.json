@@ -1,83 +1,2022 @@
 {
-    "annotations": {
-      "list": [
-        {
-          "builtIn": 1,
-          "datasource": {
-            "type": "grafana",
-            "uid": "-- Grafana --"
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Physical streaming replication as the selected node sees it: cluster-wide per-standby lag, a selected standby's lag across all four stages (sent, write, flush, replay) in bytes and time, WAL generation, and whether each standby sends hot standby feedback.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": 9,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 101,
+      "panels": [],
+      "title": "Replication overview",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Number of walsender connections currently visible in pg_stat_replication on this node (pg_basebackup / pg_rewind sessions excluded). A drop to 0 means every standby has disconnected \u2014 the row simply disappears from pg_stat_replication, it does not linger with a large lag. This overview stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          "enable": true,
-          "hide": true,
-          "iconColor": "rgba(0, 211, 255, 1)",
-          "name": "Annotations & Alerts",
-          "type": "dashboard"
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "id": 102,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "count(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "standbys",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Connected standbys",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Worst replay lag over the same trailing `$__rate_interval` window as *Replay lag per standby (time)*, so it matches that graph's right-hand endpoint. This is the user-visible staleness of a read replica. Empty on an idle, fully caught-up primary because PostgreSQL reverts these interval columns to NULL rather than zero. This overview stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "orange",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 103,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max(max_over_time(pgwatch_replication_replay_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) / 1000",
+          "legendFormat": "max replay lag",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Replay lag now (time)",
+      "type": "stat",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Worst replay lag over the same trailing `$__rate_interval` window as *Replay lag per standby (bytes)*, so it matches that graph's right-hand endpoint. This is the distance in WAL bytes between `pg_current_wal_lsn()` here and any standby's `replay_lsn`. Bytes and time should agree unless the time columns went NULL on an idle system while the byte distance stayed real. This overview stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 134217728
+              },
+              {
+                "color": "orange",
+                "value": 1073741824
+              },
+              {
+                "color": "red",
+                "value": 10737418240
+              }
+            ]
+          },
+          "unit": "bytes",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 104,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max(max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "legendFormat": "max replay lag",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Replay lag now (bytes)",
+      "type": "stat",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Standbys whose `sync_state` is `sync` or `quorum`. 0 with a non-empty `synchronous_standby_names` means the intended synchronous standby is not currently eligible, and commits may be waiting. This overview stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 105,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "sum(pgwatch_replication_is_sync_int{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "sync standbys",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Synchronous standbys",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Standbys currently reporting a non-null `backend_xmin` in pg_stat_replication. A non-null `backend_xmin` is primary-side evidence that the standby runs with `hot_standby_feedback = on`. A standby with feedback on but no active read query can report null, so 0 means \"no feedback observed\", not certainly \"feedback is off\". This overview stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "not collected / no standbys"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 106,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "sum(pgwatch_replication_backend_xmin_reported_int{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "with feedback",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Standbys with feedback",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Current WAL timeline of this node. A timeline increment means a promotion happened \u2014 after a failover every standby that was not rewound or re-cloned will stop following this node.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "not collected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 107,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max(pgwatch_wal_timeline{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "timeline",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Timeline",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 210,
+      "panels": [],
+      "title": "Replay lag per standby",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "`pg_current_wal_lsn() \u2212 replay_lsn` per standby: the WAL each standby still has to apply. This cluster-wide comparison stays unchanged when the Standby selector changes; the selector controls the detail and per-standby health rows below. Standby identity is `application_name`; client address and port are intentionally aggregated so reconnects continue the same line. Plotted as the maximum over a trailing `$__rate_interval` window so short stalls survive downsampling.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 211,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Replay lag per standby (bytes)",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "`pg_stat_replication.replay_lag` per standby: how long the standby took to confirm it had applied recently flushed WAL \u2014 the delay `synchronous_commit = remote_apply` would have paid. Plotted as the maximum over a trailing `$__rate_interval` window so short stalls survive downsampling. This cluster-wide comparison stays unchanged when the Standby selector changes. Standby identity is `application_name`; client address and port are intentionally aggregated so reconnects continue the same line. **Gaps are meaningful**: PostgreSQL reverts these columns to NULL once a standby is fully caught up on an idle primary, so a gap means 'caught up and idle'. Also inflated by `recovery_min_apply_delay`, which is deliberate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "id": 212,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (application_name) (max_over_time(pgwatch_replication_replay_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval])) / 1000",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Replay lag per standby (time)",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 220,
+      "panels": [],
+      "title": "Lag by stage (select one standby)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Select one standby to see where its WAL is stuck: the replay gap is split at `pg_current_wal_lsn() \u2192 sent_lsn \u2192 write_lsn \u2192 flush_lsn \u2192 replay_lsn` into four additive stage bands. The tall stacked band names the bottleneck: band 2 \u2192 network or walreceiver; band 3 \u2192 standby WAL disk; band 4 \u2192 apply. Band 1 is WAL written since the last status message, so judge whether it grows. The whole displayed range must contain exactly one `application_name`. Two physical senders sharing a name are treated as one and may blend; use unique `application_name` values.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "noValue": "select one standby to analyze replication stages"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 221,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(clamp_min(max_over_time(pgwatch_replication_sent_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]), 0)) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "1. in flight: pg_current_wal_lsn \u2212 sent_lsn",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(clamp_min(max_over_time((pgwatch_replication_write_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"} - pgwatch_replication_sent_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"})[$__rate_interval]), 0)) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "2. sent, not written: sent_lsn \u2212 write_lsn (network / walreceiver)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(clamp_min(max_over_time((pgwatch_replication_flush_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"} - pgwatch_replication_write_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"})[$__rate_interval]), 0)) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "3. written, not flushed: write_lsn \u2212 flush_lsn (standby fsync)",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(clamp_min(max_over_time((pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"} - pgwatch_replication_flush_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"})[$__rate_interval]), 0)) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "4. flushed, not replayed: flush_lsn \u2212 replay_lsn (standby apply)",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Replay lag by stage (bytes)",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Select one standby to compare `write_lag`, `flush_lag`, and `replay_lag`: these are cumulative, not additive commit costs, so they are deliberately not stacked or differenced. Gaps mean fully caught up and idle. The whole displayed range must contain exactly one `application_name`. Two physical senders sharing a name are treated as one and may blend; use unique `application_name` values.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "select one standby to analyze replication stages"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 222,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(max_over_time(pgwatch_replication_write_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]) / 1000) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "write_lag \u2014 what synchronous_commit=remote_write would cost",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(max_over_time(pgwatch_replication_flush_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]) / 1000) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "flush_lag \u2014 what synchronous_commit=on would cost",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(max_over_time(pgwatch_replication_replay_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]) / 1000) and on() (count(count by (application_name) (max_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__range]))) == 1)",
+          "legendFormat": "replay_lag \u2014 what synchronous_commit=remote_apply would cost",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Replay lag by stage (time)",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "id": 230,
+      "panels": [],
+      "title": "WAL generation and replay lag",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Left axis: how fast this node advances `pg_current_wal_lsn()` \u2014 the load every standby must keep up with. Right axis: the worst replay lag across all standbys. This cluster-wide correlation stays unchanged when the Standby selector changes. Lag rising only with WAL generation suggests a standby undersized for the write rate; episodes while WAL generation is flat point to the standby. Note that `irate` on the LSN fabricates one spike at a timeline switch; ignore that point.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "binBps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "id": 231,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "sum(irate(pgwatch_wal_xlog_location_b{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__rate_interval]))",
+          "legendFormat": "WAL generated",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max_over_time((max(pgwatch_replication_replay_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\"}))[$__rate_interval]) / 1000",
+          "legendFormat": "worst replay lag",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "WAL generation rate vs replay lag",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Share of each hour each standby spent staler than `$lag_alert_s` seconds, counted from 1-minute samples. This is the number to compare against whatever staleness the application actually tolerates, and the one to alert on \u2014 instantaneous lag panels hide short, frequent stalls. Each point is 'minutes staler than `$lag_alert_s` in the preceding hour'. Minutes where the standby reported nothing (disconnected, or NULL on idle) are not counted; pair it with *Connected standbys*. Standby identity is `application_name`; client address and port are intentionally aggregated before thresholding so reconnects contribute to one series. This panel stays cluster-wide when the Standby selector changes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "m",
+          "max": 60,
+          "noValue": "no standbys connected"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "id": 233,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "sum_over_time(((max by (application_name) (pgwatch_replication_replay_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\"})) > bool ($lag_alert_s * 1000))[1h:1m])",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Minutes per hour above the replay-lag threshold",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "id": 240,
+      "panels": [],
+      "title": "Hot standby feedback and xmin horizon",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "1 while the selected standby reports a non-null `backend_xmin` in pg_stat_replication, 0 otherwise. A steady 1 proves hot standby feedback is on; a steady 0 across busy periods is strong evidence it is off, though a standby with no active read can report null. With feedback off, snapshot recovery conflicts are enabled; with it on, the standby pins this node's cleanup horizon and may increase bloat. Standby identity is `application_name`; client address and port are intentionally aggregated across reconnects. This per-standby health panel follows the Standby selector; the overview and summary rows stay cluster-wide.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "not collected / no standbys",
+          "decimals": 0,
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
+      "id": 241,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (application_name) (max_over_time(pgwatch_replication_backend_xmin_reported_int{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Hot standby feedback per standby",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "`age(backend_xmin)` for the selected standby: how far back a feedback-sending standby holds this node's cleanup horizon. Zero means the standby is not currently pinning anything. Large and growing means a long-running standby query is blocking vacuum here; dashboard 07 shows the same replication-sourced xmin horizon pressure. Standby identity is `application_name`; client address and port are intentionally aggregated across reconnects. This per-standby health panel follows the Standby selector; the overview and summary rows stay cluster-wide.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix:tx",
+          "noValue": "not collected / no standbys"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
+      "id": 242,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (application_name) (max_over_time(pgwatch_replication_backend_xmin_age_tx{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Standby xmin age, in transactions",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Age of `reply_time` for the selected standby. A healthy standby stays in the low tens of seconds; frozen replay lag while this climbs means the standby stopped answering rather than replaying slowly. **Requires PostgreSQL 12+**, so this panel is empty on PG11. The dashed line is `wal_sender_timeout` on this node (primary), read from the raw millisecond setting with an explicit unit. Standby identity is `application_name`; client address and port are intentionally aggregated across reconnects. This per-standby health panel follows the Standby selector; the overview and summary rows stay cluster-wide.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisSoftMin": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "not collected / no standbys"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "id": 243,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (application_name) (max_over_time(pgwatch_replication_reply_time_lag_ms{cluster=\"$cluster_name\", node_name=\"$node_name\", application_name=~\"$replica\"}[$__rate_interval])) / 1000",
+          "legendFormat": "{{application_name}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max(last_over_time(pgwatch_settings_numeric_value{cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=\"wal_sender_timeout\", unit=\"ms\"}[$__range])) / 1000 > 0",
+          "legendFormat": "wal_sender_timeout on this node (primary)",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Time since the standby last replied",
+      "type": "timeseries",
+      "interval": "1m"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "id": 250,
+      "panels": [],
+      "title": "Standby connections and primary settings",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "One row per walsender connection visible in `pg_stat_replication`, with `application_name`, `usename`, client address and port, and last replay lag in bytes. This is intentionally the one per-connection panel: physical connection identity is `application_name` plus `client_info`, because two simultaneous senders sharing an application name must remain distinguishable. `state` and `sync_state` are carried as labels, so they appear as columns here. Use this cluster-wide table to identify every physical connection in the graphs; it stays unchanged when the Standby selector changes. The client port, state, and sync state can each start a new series when they change.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 134217728
+              },
+              {
+                "color": "red",
+                "value": 1073741824
+              }
+            ]
+          },
+          "noValue": "no standbys connected"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Replay lag"
+              },
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 83
+      },
+      "id": 251,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"}[$__range])",
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "title": "Standby connections",
+      "type": "table",
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(application_name|usename|client_info|state|sync_state|Value)$"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "application_name": 0,
+              "usename": 1,
+              "client_info": 2,
+              "state": 3,
+              "sync_state": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "application_name": "application_name",
+              "usename": "usename",
+              "client_info": "client",
+              "state": "state",
+              "sync_state": "sync_state",
+              "Value": "Replay lag"
+            }
+          }
         }
       ]
     },
-    "editable": true,
-    "fiscalYearStartMonth": 0,
-    "graphTooltip": 0,
-    "id": 9,
-    "links": [
-      {
-        "asDropdown": true,
-        "icon": "external link",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [
-          "postgres-ai"
-        ],
-        "targetBlank": false,
-        "title": "Dashboards",
-        "tooltip": "",
-        "type": "dashboards"
-      }
-    ],
-    "panels": [
-      {
-        "fieldConfig": {
-          "defaults": {},
-          "overrides": []
-        },
-        "gridPos": {
-          "h": 8,
-          "w": 12,
-          "x": 0,
-          "y": 0
-        },
-        "id": 1,
-        "options": {
-          "code": {
-            "language": "plaintext",
-            "showLineNumbers": false,
-            "showMiniMap": false
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "These are `$node_name`'s (the primary's) replication settings, as last sampled in the selected range. `synchronous_standby_names` decides which standby the `sync_state` column above reflects; `wal_keep_size` and `max_slot_wal_keep_size` bound how far a standby may fall behind before it can no longer catch up. Standby-side settings such as `hot_standby_feedback`, `max_standby_streaming_delay`, and `recovery_min_apply_delay` must be read on the standby itself; the per-standby **Hot standby feedback** panel is the only primary-side evidence for feedback. `wal_keep_size` and `max_slot_wal_keep_size` require PostgreSQL 13+; below that version, those rows are absent.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          "content": "# Coming soon...",
-          "mode": "markdown"
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
-        "pluginVersion": "12.0.2",
-        "title": "",
-        "type": "text"
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 83
+      },
+      "id": 252,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(pgwatch_settings_configured{cluster=\"$cluster_name\", node_name=\"$node_name\", setting_name=~\"wal_level|max_wal_senders|max_replication_slots|wal_keep_size|max_slot_wal_keep_size|wal_sender_timeout|synchronous_commit|synchronous_standby_names\"}[$__range])",
+          "legendFormat": "{{setting_name}} = {{setting_value}}",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "title": "Replication settings on the primary (sending side)",
+      "type": "table",
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(setting_name|setting_value|unit|category)$"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "setting_name": 0,
+              "setting_value": 1,
+              "unit": 2,
+              "category": 3
+            },
+            "renameByName": {
+              "setting_name": "setting",
+              "setting_value": "value",
+              "unit": "unit",
+              "category": "category"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "setting",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 91
+      },
+      "id": 125,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<h1>\n  Brought to you by <a href=\"https://postgres.ai\">PostgresAI</a>\n  <img src=\"https://postgres.ai/img/logo.svg\" alt=\"Postgres.AI\" style=\"height: 2em; vertical-align: middle; margin-left: 0.3em;\">\n</h1>\n",
+        "mode": "html"
+      },
+      "pluginVersion": "12.0.2",
+      "title": "",
+      "type": "text"
+    }
+  ],
+  "preload": false,
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "postgres-ai",
+    "replication",
+    "ha"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "default",
+          "value": "default"
+        },
+        "definition": "label_values(pgwatch_db_size_size_b,cluster)",
+        "label": "Cluster name",
+        "name": "cluster_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pgwatch_db_size_size_b,cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "node-01",
+          "value": "node-01"
+        },
+        "definition": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\"},node_name)",
+        "label": "Node name",
+        "name": "node_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pgwatch_db_size_size_b{cluster=\"$cluster_name\"},node_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "name": "replica",
+        "type": "query",
+        "label": "Standby name",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "P7A0D6631BB10B34F"
+        },
+        "definition": "label_values(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"},application_name)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pgwatch_replication_replay_lag_b{cluster=\"$cluster_name\", node_name=\"$node_name\"},application_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "multi": true,
+        "includeAll": true,
+        "allValue": null,
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "refresh": 1,
+        "sort": 1,
+        "regex": "",
+        "options": [],
+        "hide": 0
+      },
+      {
+        "current": {
+          "text": "60",
+          "value": "60"
+        },
+        "label": "Replay lag threshold, s",
+        "name": "lag_alert_s",
+        "options": [
+          {
+            "selected": false,
+            "text": "1",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "5",
+            "value": "5"
+          },
+          {
+            "selected": false,
+            "text": "10",
+            "value": "10"
+          },
+          {
+            "selected": false,
+            "text": "30",
+            "value": "30"
+          },
+          {
+            "selected": true,
+            "text": "60",
+            "value": "60"
+          },
+          {
+            "selected": false,
+            "text": "300",
+            "value": "300"
+          },
+          {
+            "selected": false,
+            "text": "600",
+            "value": "600"
+          }
+        ],
+        "query": "1, 5, 10, 30, 60, 300, 600",
+        "type": "custom"
       }
-    ],
-    "preload": false,
-    "schemaVersion": 41,
-    "tags": [
-      "postgres-ai",
-      "replication",
-      "ha"
-    ],
-    "templating": {
-      "list": []
-    },
-    "time": {
-      "from": "now-1h",
-      "to": "now"
-    },
-    "timepicker": {},
-    "timezone": "browser",
-    "title": "06. Replication and HA",
-    "uid": "9086b3ba-a250-429e-a968-9eabee4fb68a",
-    "version": 1
-  }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "06. Replication and HA",
+  "uid": "9086b3ba-a250-429e-a968-9eabee4fb68a",
+  "version": 3
+}
