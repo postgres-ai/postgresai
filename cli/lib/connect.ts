@@ -22,7 +22,7 @@ export type Status = DeployStatus;
 
 /** A step of mon deploy, once each: a line for a person, a JSON event for an agent. */
 export interface ProgressEvent {
-  event: "billing" | "preparing" | "provisioning" | "box";
+  event: "billing" | "preparing" | "provisioning" | "box" | "allow_ip";
   /** Where the box runs (the "Monitoring box: <cloud>, <location>" line, platform-all#972). */
   cloud?: string;
   location?: string;
@@ -38,6 +38,14 @@ export interface ProgressEvent {
   auth_url?: string;
   /** Supabase without a URL: the project picked, as the step view names it. */
   project?: string;
+  /** event allow_ip (platform-all#987): the box's IP, reserved before the box, to allow on the database. */
+  ip?: string;
+  cidr?: string;
+  host?: string;
+  port?: number;
+  reserved_until?: string;
+  /** event box, waiting_for_access: why the database refused the box's IP the last time. */
+  error?: string;
 }
 
 export interface ConnectResult {
@@ -68,6 +76,22 @@ export interface ConnectResult {
   supabase_org?: string;
   /** --provider supabase without a URL: the projects to pick from (postgresai#438). */
   projects?: SupabaseProject[];
+  /**
+   * step allow_ip (platform-all#987): the box's IP is reserved and the box waits for the
+   * database to allow it: ip (cidr) on host:port, held until reserved_until; last_error is
+   * why the database refused the box the last time, if it did.
+   */
+  step?: "allow_ip";
+  ip?: string;
+  cidr?: string;
+  host?: string;
+  port?: number;
+  reserved_until?: string;
+  last_error?: string;
+  /** Why PostgresAI's own connection failed when the IP was reserved (none: it was asked for first). */
+  precheck_error?: string;
+  /** The IP the box connects to the database from (ready results and reservations). */
+  egress_ip?: string;
 }
 
 /** A project of the Supabase organization connected to the org (v1.cloud_monitoring_supabase_projects). */
@@ -137,6 +161,14 @@ export interface Database {
   /** Where a box in PostgresAI cloud runs: aws | hetzner and its region (null: self-hosted). */
   cloud?: string | null;
   location?: string | null;
+  /** The IP the box connects from: reserved before the box, or its own (platform-all#987). */
+  egress_ip?: string | null;
+  /** How long an IP reservation without a box is held. */
+  reserved_until?: string | null;
+  /** Why the database refused the box the last time. */
+  last_error?: string | null;
+  /** Why PostgresAI could not reach the database before the IP was reserved. */
+  precheck_error?: string | null;
 }
 
 /** We hold a ClickHouse Cloud key for the box. A platform before #992 sends no host_metrics_source and sets host_metrics only for a key; null means nobody feeds host metrics. */
@@ -210,6 +242,11 @@ export interface ConnectDeps {
   progress(event: ProgressEvent): void;
   /** Ctrl-C was pressed: stop before the box is requested; once it is, detach. */
   aborted?(): boolean;
+  /**
+   * A person at a terminal (platform-all#987): the box's IP is reserved; continue once the
+   * database allows it, or stop (it stays reserved). Absent when nobody can be asked.
+   */
+  allowIp?(lines: string[]): Promise<"continue" | "stop">;
 }
 
 export interface ConnectOptions {
@@ -237,6 +274,10 @@ export interface ConnectOptions {
   vcpus?: number;
   /** --supabase-project: the Supabase project (ref or name) to monitor, instead of its URL (postgresai#438). */
   supabaseProject?: string;
+  /** --ip-first: reserve the box's IP and stop before the box, even when PostgresAI can reach the database (platform-all#987). */
+  ipFirst?: boolean;
+  /** --ip-allowed: the reserved IP is allowed on the database; create the box with it. */
+  ipAllowed?: boolean;
 }
 
 /**
@@ -512,12 +553,15 @@ export function connectStatus(row: Database, provider = row.provider as Provider
   if (status === "ready") {
     return {
       ...base, status,
+      ...(row.egress_ip ? { egress_ip: row.egress_ip } : {}),
       ...(fresh ? { first_checkup_eta: new Date(Date.now() + FIRST_CHECKUP_DELAY_MS).toISOString() } : {}),
       next: row.health_url || row.dashboard_url ? `Open ${row.health_url || row.dashboard_url}` : `pgai mon instances watch ${row.id}`,
     };
   }
   if (status === "deleting" || status === "deleted" || status === "inactive") return { ...base, status, next: "none" };
   if (status === "failed") return { ...base, status, next: `pgai mon instances delete ${row.id} --yes, then pgai mon deploy again` };
+  // platform-all#987: list and watch show a reservation as the step it waits on (exit 3), not as in progress.
+  if (row.status === "ip_reserved" && row.egress_ip) return { ...allowIpResult(row, provider, row.name, { waitMs: 0 }, ""), ...base, status: "action_required", step: "allow_ip" };
   return { ...base, status, next: `pgai mon instances watch ${row.id}` };
 }
 
@@ -547,10 +591,14 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
   writeEvent: (e: ProgressEvent) => void; onId?: (id: string) => void }) {
   let view: StepViewLike | undefined;
   let priced = false;
+  // platform-all#987: the database's last refusal of the box's IP, shown once each time it changes.
+  let refused = "";
   const progress = (e: ProgressEvent): void => {
-    if (e.id) o.onId?.(e.id);
+    // The reserved IP's event names no box yet: only a box request makes Ctrl-C detach.
+    if (e.id && e.event !== "allow_ip") o.onId?.(e.id);
     if (o.json) return o.writeEvent(e);
-    e = { ...e, message: terminalText(e.message), ...(e.state ? { state: terminalText(e.state) } : {}) };
+    e = { ...e, message: terminalText(e.message), ...(e.state ? { state: terminalText(e.state) } : {}),
+      ...(e.ip ? { ip: terminalText(e.ip) } : {}), ...(e.error ? { error: terminalText(e.error) } : {}) };
     if (!o.tty) return o.writeLine(progressText(e));
     if (e.event === "billing") {
       priced = true;
@@ -563,10 +611,24 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
     }
     view.advance(e.event);
     if (/^(Note|Warning):/.test(e.message)) view.log(e.message);
-    if (e.event === "box" && e.state) view.setNote(`box: ${boxWords(e.state)}`);
+    if (e.event === "box" && e.state) {
+      view.setNote(e.state === "waiting_for_access" && e.ip ? `box: waiting for database access from ${e.ip}` : `box: ${boxWords(e.state)}`);
+      if (e.state === "waiting_for_access" && e.ip && e.error && e.error !== refused) {
+        refused = e.error;
+        view.log(`The database refused ${e.ip}: ${e.error}. The box keeps trying: allow ${e.ip}/32 on the database.`);
+      }
+    }
     if (e.message === STILL_CREATING) view.setNote(`still creating: PostgresAI is slow to answer (checking for up to ${LOOKUP_MS / 60_000} min)`);
   };
-  return { progress, view: () => view };
+  // After a prompt drawn over a stopped view (the reserved IP, platform-all#987), the next step gets a new view.
+  return { progress, view: () => view, reset: () => { view = undefined; } };
+}
+
+/** How the step list ends: a run stopped at the reserved IP (platform-all#987) or still in progress is left waiting, not failed. */
+export function stepViewEnd(r: ConnectResult): "complete" | "fail" | "stop" {
+  if (r.status === "ready") return "complete";
+  if (r.status === "in_progress" || r.step === "allow_ip" || r.next.startsWith(STILL_IN_PROGRESS)) return "stop";
+  return "fail";
 }
 
 /** A result for a person at a terminal: a few sentences, links whole (JSON keeps every field). */
@@ -590,6 +652,7 @@ function personLines(r: ConnectResult): string[] {
         ...(r.dashboard_url ? [`  Grafana:       ${r.dashboard_url}`] : []),
         ...(r.price ? [`  Price:         ${r.price}`] : []),
         ...(r.cloud ? [`  Runs on:       ${cloudWord(r.cloud)}, ${r.location}`] : []),
+        ...(r.egress_ip ? [`  Connects from: ${r.egress_ip}`] : []),
         ...(!r.health_url && !r.dashboard_url && r.next && r.next !== "none" ? [`Next: ${r.next}`] : []),
         ...(extra && (r.health_url || r.dashboard_url) ? [`Note: ${extra}`] : []),
       ];
@@ -599,6 +662,18 @@ function personLines(r: ConnectResult): string[] {
     case "deleted":
       return [`Deleting the monitoring of ${who}.${billing ? ` Billing: ${billing}.` : ""}${r.next && r.next !== "none" ? ` ${r.next}` : ""}`];
     default:
+      // platform-all#987: the IP to allow, then how to go on.
+      if (r.step === "allow_ip") {
+        // After [s]top at the prompt (which showed the IP and why): only how to go on.
+        if (r.next.startsWith("Stopped.")) return [r.next];
+        return [
+          `Monitoring box IP: ${r.ip}${r.cloud ? ` (${cloudWord(r.cloud)}, ${r.location})` : ""}${r.reserved_until ? `, held until ${heldUntil(r.reserved_until)}` : ""}`,
+          r.last_error ? `The box could not connect: ${r.last_error}`
+            : r.precheck_error ? `PostgresAI could not connect to ${r.host}:${r.port} (${r.precheck_error}).`
+            : "The IP was reserved first, as asked.",
+          r.next,
+        ];
+      }
       // Supabase without a URL: the projects one per line under the reason (JSON has them in `projects`).
       if (r.projects?.length) return [r.next, ...supabaseProjectRows(r.projects)];
       // Not deployed for want of --yes: where else it can run, a line per cloud (JSON has them in `choices`).
@@ -622,6 +697,9 @@ const boxState = (row: Database) => (row.status === "launch_requested" && row.re
 export function boxWords(state: string | null | undefined): string {
   if (!state || state === "starting" || state === "launch_requested") return "starting";
   if (state === "registered") return "installing monitoring";
+  if (state === "waiting_for_access") return "waiting for database access";
+  if (state === "ip_reserving") return "reserving its IP";
+  if (state === "ip_reserved") return "waiting for its IP to be allowed";
   return monitoringStatus(state).replace("_", " ");
 }
 
@@ -682,6 +760,10 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   if (!PROVIDERS.includes(provider)) throw new Error(`--provider must be one of: generic, ${PROVIDERS.join(", ")}`);
   if (project !== undefined && provider !== "supabase") {
     return { status: "action_required", provider, name: url ? databaseName(url) : "", next: "--supabase-project applies to Supabase only: leave it out, or use --provider supabase" };
+  }
+  // platform-all#987: before the Supabase branches, which would ignore the flags and create the box.
+  if ((opts.ipFirst || opts.ipAllowed) && (opts.selfHosted || provider === "supabase")) {
+    return { status: "action_required", provider, name: url ? databaseName(url) : "", next: `${opts.agent ? "ip_first / ip_allowed apply" : "--ip-first and --ip-allowed apply"} to PostgresAI Cloud monitoring of a database URL only` };
   }
   if (!url) {
     if (provider !== "supabase") return { status: "action_required", provider, name: "", next: "Pass the database URL: pgai mon deploy postgresql://user:password@host:5432/dbname (Supabase: --provider supabase)" };
@@ -745,12 +827,31 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   };
   const rows = opts.selfHosted ? [] : await deps.list();
   // The box a request without an answer made: a row of this database that was not there before, live or not.
-  const known = new Set(rows.map((d) => d.id));
+  // platform-all#987: a Continue gives the box to the reservation's own row, which reads reserved
+  // until the platform commits it. A row this run knew as a reservation (before the request, or
+  // from its own first reply) counts once it has left the reservation; a new one, reserved or
+  // not, is what the request made.
+  const known = new Map(rows.map((d) => [d.id, d.status] as const));
   const findMade = (list: Database[]) => {
-    const fresh = list.filter((d) => !known.has(d.id));
+    const fresh = list.filter((d) => !known.has(d.id) || (reservedStatus(known.get(d.id)) && !reservedStatus(d.status)));
     return fresh.find(byCluster) ?? fresh.find(byName);
   };
   let row = findDatabase(rows);
+  // platform-all#987: this database's IP is reserved. Without --ip-allowed it is shown again
+  // (the same IP; no second one is ever reserved); with it, or once a person at the terminal
+  // continues, the deploy below gives the reservation its box.
+  let continuing = false;
+  // The reservation being continued: not another database on this server (its role is this one's).
+  let ownId: string | undefined;
+  if (row && reservedStatus(row.status)) {
+    if (!opts.ipAllowed) {
+      const asked = await allowIpStep(row, { provider, name, url, opts, deps, progress });
+      if (asked !== "continue") return asked;
+    }
+    continuing = true;
+    ownId = row.id;
+    row = undefined;
+  }
   const fresh = !row;
   let note = "";
   let billing: Billing = {};
@@ -825,7 +926,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     // Only the raw status failed is a launch outcome: error is a running box whose health check failed.
     const usesRole = (d: Database) =>
       !["deleting", "deleted", "inactive"].includes(stateOf(d.status)) && !(d.status === "failed" && !d.registered_at);
-    const othersOnServer = (list: Database[]) => list.filter((d) => usesRole(d) && (unread(d) || onServer(d)));
+    const othersOnServer = (list: Database[]) => list.filter((d) => d.id !== ownId && usesRole(d) && (unread(d) || onServer(d)));
     // The platform keeps postgres_ai_mon's password for a server it monitors a database on, for this org,
     // and fills it in while a box there is not being destroyed (a delete that failed counts as one).
     const storedPassword = !monitoringUser && rows.some((d) => d.monitoring_password_stored && !/delet/.test(d.status ?? "") && onServer(d)) || undefined;
@@ -914,14 +1015,15 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       lockId = lock.lock_id;
     }
     let prepared: Prepared;
-    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "payment" | "declined" | "price" | "stored" | "unanswered";
+    // `result`: the allow_ip result when the run stopped at the reserved IP (platform-all#987).
+    let created: (Awaited<ReturnType<ConnectDeps["create"]>> & { result?: ConnectResult }) | "payment" | "declined" | "price" | "stored" | "unanswered";
     // No answer to the box request: it may still be created with this URL.
     let unanswered = false;
     try {
       // What another run connected on this server before this one got the lock.
       if (lockId) {
         const now = await deps.list();
-        const same = findDatabase(now);
+        const same = findDatabase(now.filter((d) => d.id !== ownId));
         if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${same.name} is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: ${disconnectEach([deleteRef(same, now)])}` };
         const others = othersOnServer(now);
         if (others.length) return { ...cutOff(others, now), ...billing };
@@ -934,6 +1036,16 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         throw new CancelledError();
       }
       if ("next" in prepared) {
+        // platform-all#987: two runs continued this reservation at once, and the other made the
+        // role: this one follows the box that run creates (it may take a moment to ask for it).
+        if ((continuing || opts.ipAllowed) && /created by someone else meanwhile/.test(prepared.next)) {
+          for (let tries = 0; tries < 10; tries++) {
+            const box = findDatabase(await deps.list());
+            if (!box) break;
+            if (!reservedStatus(box.status)) return follow(box, { provider, name, fresh, billing, billingUrl, undoRole, note, place, url }, opts, deps, progress);
+            await deps.sleep(2_000);
+          }
+        }
         const { resettable, ...refusal } = prepared;
         return { status: "action_required", provider, name, ...billing, ...refusal };
       }
@@ -946,8 +1058,14 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         return { status: "ready", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
       }
       progress("provisioning", `Provisioning monitoring for ${name}`);
-      created = await deps.create({
-        db_url: prepared.monitoringUrl,
+      const monitoringUrl = prepared.monitoringUrl;
+      const request = (ipAllowed: boolean) => deps.create({
+        db_url: monitoringUrl,
+        // platform-all#987: a database PostgresAI can't reach the way an IP allowlist refuses gets
+        // its box's IP reserved and shown (step allow_ip) instead of a refusal.
+        allow_ip_fallback: true,
+        ...(opts.ipFirst ? { ip_first: true } : {}),
+        ...(ipAllowed ? { ip_allowed: true } : {}),
         ...(provider === "clickhouse" ? { provider } : {}),
         ...(key && ch ? { clickhouse_org_id: ch.orgId, clickhouse_key_id: key.keyId, clickhouse_key_secret: key.keySecret } : {}),
         ...(opts.coupon ? { promo_code: opts.coupon } : {}),
@@ -959,7 +1077,40 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
           : opts.location ? { server_location: opts.location } : {}),
         // The database server's vCPUs: without them AAS is never collected.
         ...(vcpus ? { vcpus } : {}),
+      });
+      // platform-all#987: SI refused the box of a continued reservation. The platform keeps the
+      // reservation (its IP is the one already allowed) and says why: shown with the IP, not followed.
+      const refused = async (c: Awaited<ReturnType<typeof request>>) => {
+        const row = (await waitForIp(c.id, deps)) ?? ({ id: c.id, name: c.name, status: c.status } as Database);
+        const why = [c.error, (c as { billing_warning?: string }).billing_warning].filter(Boolean).join(" ");
+        return { ...c, status: "allow_ip", result: { ...allowIpResult(row, provider, name, opts, url), next: `${why} Then: ${continueCommand(opts, url)}` } };
+      };
+      const continued = async () => {
+        const c = await request(true);
+        return reservedStatus(c.status) && c.error ? refused(c) : c;
+      };
+      created = await request(continuing || !!opts.ipAllowed).then(async (c) => {
+        // Known now: a Continue of it without an answer is looked for on this row.
+        if (reservedStatus(c.status)) known.set(c.id, c.status);
+        if (reservedStatus(c.status) && c.error) return refused(c);
+        if (!reservedStatus(c.status)) return c;
+        // The IP is reserved and the box waits for it to be allowed: shown, then continued at
+        // the terminal, or the run stops there (the reservation stays).
+        const reservation = await waitForIp(c.id, deps);
+        if (!reservation || !reservedStatus(reservation.status)) return { ...c, status: reservation?.status ?? "failed", error: reservation ? undefined : "The IP reservation did not report back in time; see pgai mon instances list." };
+        // Continuing (--ip-allowed, or Enter on a reservation still being reserved): once its IP is
+        // known the box is asked for, as the user already said the database allows it. Only after
+        // the first answer was "still reserving": a reserved answer to a Continue is its refusal.
+        if (continuing && c.status === "ip_reserving" && reservation.status === "ip_reserved") return continued();
+        const asked = await allowIpStep(reservation, { provider, name, url, opts, deps, progress });
+        if (asked !== "continue") return { ...c, status: "allow_ip", result: asked };
+        return continued();
       }).catch(async (err) => {
+        // platform-all#987: two runs continued the same reservation at once: this one follows the box.
+        if ((continuing || opts.ipAllowed) && err instanceof HttpStatusError && err.status === 409 && /already monitored/.test(err.message)) {
+          const box = findDatabase(await deps.list());
+          if (box && !reservedStatus(box.status)) return { id: box.id, name: box.name, status: box.status ?? "launch_requested" };
+        }
         // A 4xx, or a 5xx the function raised (its SQLSTATE: the transaction rolled back), is a
         // refusal; after anything else (no answer) a box may be starting with this URL.
         if (err instanceof HttpStatusError && (err.status < 500 || err.sqlstate)) await undo(prepared);
@@ -1008,6 +1159,14 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
           ? `${gone}: pass its URL as database_url, or run pgai mon deploy <admin-url> --reset-password in a terminal`
           : `${gone}: re-run with --reset-password (anything else that logs in as ${DEFAULT_MONITORING_USER} then needs the new one), or set PGAI_MON_PASSWORD to its password` };
       }
+      // platform-all#987: stopped at the reserved IP (not continued, or nobody to ask). No box got
+      // the URL, so a role with a generated password is dropped: the re-run makes it again.
+      if (created.status === "allow_ip" && created.result) {
+        // Only while it still waits: another run may have continued it into a box with this role.
+        const now = findDatabase(await deps.list().catch(() => [] as Database[]));
+        if (!now || reservedStatus(now.status)) await undo(prepared);
+        return { ...created.result, ...billing };
+      }
       // Before the lock goes: the next run may be creating the role this drops.
       if (created.status === "failed") {
         await undo(prepared);
@@ -1026,7 +1185,87 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     undoRole = () => undo(made);
   }
 
-  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note, place }, opts, deps, progress);
+  return follow(row, { provider, name, fresh, billing, billingUrl, undoRole, note, place, url }, opts, deps, progress);
+}
+
+/** A row of pgai mon instances list: its status in deploy's words, and a reservation's step (platform-all#987). */
+export function listedDatabase(d: Database): Database & { status: Status; step?: "allow_ip" } {
+  return { ...d, status: stateOf(d.status), ...(d.status === "ip_reserved" ? { step: "allow_ip" as const } : {}) };
+}
+
+/** platform-all#987: an IP reserved before its box, waiting to be allowed (or being reserved). */
+export const reservedStatus = (status: string | null | undefined) => status === "ip_reserving" || status === "ip_reserved";
+
+/** How often, and how long, deploy waits for a reserved IP to be reported (20-60 s is usual). */
+const IP_POLL_MS = 3_000;
+const IP_WAIT_MS = 120_000;
+
+/** The reservation once its IP is known (or it failed); undefined when it did not report in time. */
+async function waitForIp(id: string, deps: ConnectDeps): Promise<Database | undefined> {
+  for (const deadline = deps.now() + IP_WAIT_MS; ;) {
+    const row = (await deps.list().catch(() => [] as Database[])).find((d) => d.id === id);
+    if (row && row.status !== "ip_reserving") return row;
+    if (deps.now() >= deadline) return undefined;
+    await deps.sleep(IP_POLL_MS);
+  }
+}
+
+/** The command that continues a reservation, with the URL's password masked. */
+const continueCommand = (opts: ConnectOptions, url: string) =>
+  opts.agent ? "call deploy_monitoring again with ip_allowed: true"
+  : `pgai mon deploy ${url ? quoteArg(maskConnectionString(url)) : "<database URL>"} --yes --ip-allowed`;
+
+const quoteArg = (s: string) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+const heldUntil = (iso?: string | null) => (iso ? iso.replace(/T(\d\d:\d\d).*$/, " $1 UTC") : "");
+
+/** The allow_ip result: what to allow, where, and how to go on (exit 3). */
+export function allowIpResult(row: Database, provider: Provider, name: string, opts: ConnectOptions, url: string, stopped = false): ConnectResult {
+  const [host, port] = row.cluster ? [row.cluster.replace(/:\d+$/, ""), Number(row.cluster.match(/:(\d+)$/)?.[1] ?? 5432)] : [undefined, undefined];
+  const ip = row.egress_ip ?? undefined;
+  const cidr = ip ? `${ip}/32` : undefined;
+  const allow = `Allow inbound TCP ${port ?? 5432} from ${cidr} on ${host ?? "the database"}`;
+  return {
+    status: "action_required",
+    step: "allow_ip",
+    provider, name, id: row.id,
+    ...(row.cloud ? { cloud: row.cloud, location: row.location ?? undefined } : {}),
+    ip, cidr, host, port,
+    ...(row.reserved_until ? { reserved_until: row.reserved_until } : {}),
+    ...(row.last_error ? { last_error: row.last_error } : {}),
+    ...(row.precheck_error ? { precheck_error: row.precheck_error } : {}),
+    egress_ip: ip,
+    next: stopped
+      ? `Stopped. ${ip} stays reserved until ${heldUntil(row.reserved_until)}. ${allow}, then: ${continueCommand(opts, url)}`
+      : `${allow}, then ${opts.agent ? continueCommand(opts, url) : `re-run with --yes --ip-allowed: ${continueCommand(opts, url)}`}`,
+  };
+}
+
+/**
+ * platform-all#987: show the reserved IP. A person at a terminal continues (once the database
+ * allows it) or stops; anyone else gets the allow_ip result. "continue" means: create the box.
+ */
+async function allowIpStep(row: Database, c: { provider: Provider; name: string; url: string; opts: ConnectOptions; deps: ConnectDeps; progress: Progress }): Promise<ConnectResult | "continue"> {
+  if (row.status === "ip_reserving") row = (await waitForIp(row.id, c.deps)) ?? row;
+  if (!reservedStatus(row.status) || !row.egress_ip) {
+    return { status: "action_required", provider: c.provider, name: c.name, id: row.id,
+      next: row.status === "ip_reserving" ? `The IP is still being reserved: re-run in a minute, or see pgai mon instances list` : `See pgai mon instances list (${row.status ?? "unknown"})` };
+  }
+  const r = allowIpResult(row, c.provider, c.name, c.opts, c.url);
+  c.progress("allow_ip", `Reserved IP for the monitoring box: ${r.ip}`, { ip: r.ip, cidr: r.cidr, host: r.host, port: r.port, reserved_until: r.reserved_until, id: row.id });
+  if (!c.deps.allowIp) return r;
+  const why = row.last_error
+    ? `The box could not connect from ${r.ip}: ${row.last_error}`
+    : c.opts.ipFirst ? "You asked for the IP first (--ip-first)."
+    // No pre-check error: PostgresAI reached the database; the IP was asked for first.
+    : !row.precheck_error ? "The IP was reserved first, as asked."
+    : `PostgresAI could not connect to ${r.host}:${r.port} (${row.precheck_error}). The database likely allows only listed IPs.`;
+  const answer = await c.deps.allowIp([
+    `Monitoring box IP: ${r.ip}${row.cloud ? ` (${cloudWord(row.cloud)}, ${row.location})` : ""}`,
+    why,
+    `Allow inbound TCP ${r.port} from ${r.cidr} on ${r.host}, then continue. The IP is held until ${heldUntil(row.reserved_until)} and stays this box's IP.`,
+  ]);
+  return answer === "continue" ? "continue" : allowIpResult(row, c.provider, c.name, c.opts, c.url, true);
 }
 
 /**
@@ -1452,6 +1691,8 @@ interface Followed {
   note: string;
   /** Where the box runs (placeBox), for the result. */
   place?: Place;
+  /** The database URL as given, for the next command shown (its password is never printed). */
+  url?: string;
 }
 
 /** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
@@ -1507,6 +1748,7 @@ async function lookForBox(findMade: (list: Database[]) => Database | undefined, 
 /** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
 async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
   const { provider, name, fresh, billingUrl, undoRole, note } = f;
+  const url = (_: Database) => f.url ?? name;
   // The result carries where a new box runs, next to its billing.
   const billing = { ...f.billing, ...f.place };
   // The box's state, each time it changes while deploy waits for it (not on a re-run of a connected database).
@@ -1517,9 +1759,21 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
       return { status: "action_required", provider, name, id: row.id, ...billing,
         next: chargeFailed(row.billing_error, "re-run", billingUrl, opts.agent ? "coupon" : "--coupon") };
     }
+    // platform-all#987: the database refused the box until the wait ended (or refused it for another
+    // reason): the box is gone, its IP kept; allowing it and running again creates a new box with it.
+    if (row.status === "ip_reserved") {
+      // The box is gone: a role this run made with a generated password is dropped (the re-run makes it again).
+      if (undoRole) await undoRole();
+      return { ...allowIpResult(row, provider, name, opts, url(row)), ...billing };
+    }
     const result = connectStatus(row, provider, fresh);
     const state = boxState(row);
-    if (state !== shown && (shown !== undefined || result.status === "in_progress")) progress("box", `Monitoring box: ${boxWords(state)}`, { state, id: row.id });
+    if (state !== shown && (shown !== undefined || result.status === "in_progress")) {
+      progress("box", state === "waiting_for_access" && row.egress_ip
+        ? `Monitoring box: waiting for database access from ${row.egress_ip}${row.last_error ? ` (${row.last_error})` : ""}`
+        : `Monitoring box: ${boxWords(state)}`,
+        { state, id: row.id, ...(state === "waiting_for_access" && row.egress_ip ? { ip: row.egress_ip, ...(row.last_error ? { error: row.last_error } : {}) } : {}) });
+    }
     shown = state;
     if (result.status !== "in_progress" || deps.now() >= deadline) {
       const final = deps.links ? connectStatus(await deps.links(row), provider, fresh) : result;
@@ -1900,7 +2154,28 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     verifyTls: verifyCollectorTls,
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     links: withLinks,
-    create: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body, p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS),
+    create: async (body: Record<string, string | boolean | number>) => {
+      // platform-all#987: a platform before the allow_ip step can't take its arguments. Without
+      // --ip-first / --ip-allowed the deploy goes on as there (an unreachable database is refused);
+      // with them it stops, since what was asked can't be done.
+      const { allow_ip_fallback: _fallback, ip_first, ip_allowed, ...older } = body;
+      const asked = !!(ip_first || ip_allowed);
+      const connectMs = p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS;
+      const connectTimeout = { timeoutMs: connectMs, timeoutCeilingMs: connectMs };
+      try {
+        return await callRpc<{ id: string; name: string; status: string; error?: string }>({
+          apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn: "cloud_monitoring_connect", body,
+          operation: "cloud monitoring connect", debug: p.debug, orgScope: p.orgScope,
+          ...connectTimeout,
+          ...(asked ? {} : { fallbackBody: older }),
+        });
+      } catch (err) {
+        if (asked && err instanceof HttpStatusError && err.status === 404 && /cloud_monitoring_connect/.test(err.message)) {
+          throw new Error("This PostgresAI platform does not support --ip-first or --ip-allowed yet: deploy without them");
+        }
+        throw err;
+      }
+    },
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
     setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),

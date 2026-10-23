@@ -34,6 +34,11 @@ describe("pgai mon deploy", () => {
     expect(help).toContain("The last event of a run is {\"event\":\"done\",\"status\":...,\"next\":...}; not after Ctrl-C (exit 130) or an error in the options or --org before the run starts (an error event, exit 1).");
   });
 
+  test("--ip-first says how long the IP is kept and that the deploy continues afterwards (platform-all#987)", async () => {
+    const help = (await run(["mon", "deploy", "--help"])).stdout.replace(/\s+/g, " ");
+    expect(help).toContain("--ip-first reserve the monitoring box's IP and stop before the box: the IP is kept for a week, so you can allow it on the database and continue the deploy afterwards with --ip-allowed (PostgresAI Cloud only)");
+  });
+
   test("--monitoring-user reaches mon deploy (a blank one is refused)", async () => {
     const help = (await run(["mon", "deploy", "--help"])).stdout;
     expect(help).toContain("--monitoring-user <name>");

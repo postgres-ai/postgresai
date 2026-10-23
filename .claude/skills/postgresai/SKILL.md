@@ -267,7 +267,9 @@ For another file or variable, use it in place of `./.env` and `DATABASE_URL`.
 An admin URL (a superuser, or the provider's admin user) is best: the deploy
 uses it once to create its own role.
 
-PostgresAI Cloud connects to the database over the internet. If the host is
+PostgresAI Cloud connects to the database over the internet, from the
+monitoring box's own static IP (see `allow_ip` below for a database that only
+accepts listed IPs). If the host is
 `localhost`, `127.*`, `::1`, `host.docker.internal`, a `*.internal` or
 docker-compose service name, or a private address (`10.*`, `172.16-31.*`,
 `192.168.*`), tell the user PostgresAI Cloud cannot reach it, and offer
@@ -343,6 +345,22 @@ silent about a failure:
   URL): stop, say what went wrong in plain words (`next`), and go back to
   step 1.
 - `action_required`: read `next`.
+  - It has `"step": "allow_ip"`: the monitoring box's IP was reserved before
+    the box (`ip`, `cidr`, `host`, `port`, held until `reserved_until`), either
+    because the database didn't let PostgresAI in the way an IP allowlist
+    refuses (`precheck_error` says how) or because the IP was asked for first
+    (`--ip-first`, or the Console's "only accepts listed IP addresses"; no
+    `precheck_error`). Tell the user to allow inbound TCP `port` from `cidr`
+    on the database (its firewall, security group or provider allowlist), and
+    why. Re-run with `--yes --ip-allowed` only when they say it is allowed.
+    With `last_error`, the box tried and the database still refused it: say
+    so, with the error. If the error says the password was refused, the IP got
+    through: ask for the right password (in `.env`) instead of the allowlist.
+    Otherwise ask them to check the allowlist before re-running. Re-running
+    without `--ip-allowed` shows the same IP again; it never reserves a second
+    one. `pgai mon instances watch` and `list` show the same step for it (exit
+    3): don't poll a reservation, it waits for the user.
+    `--ip-first` gets the IP before anything else, when the user asks for it.
   - It says "Finish in the console" (Amazon RDS): give the user that link.
     Watch for it as in "When the user leaves the terminal", with the check:
     `pgai mon instances list --org <alias> --json` shows this database. Then

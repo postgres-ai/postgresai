@@ -276,6 +276,40 @@ describe("init module", () => {
     expect(r.password).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
+  test("applyInitPlan runs a step again when another session's grant hit the same catalog row", async () => {
+    // Two deploys of one database at once (platform-all#987 C15): concurrent GRANTs fail with
+    // "tuple concurrently updated" (XX000). Each step is its own transaction and can run again.
+    const plan = { monitoringUser: DEFAULT_MONITORING_USER, database: "mydb", steps: [{ name: "03.permissions", sql: "grant x" }] };
+    const run = async (failures: number) => {
+      let left = failures;
+      const calls: string[] = [];
+      const client = {
+        query: async (sql: string) => {
+          calls.push(sql);
+          if (sql === "grant x" && left-- > 0) throw Object.assign(new Error("tuple concurrently updated"), { code: "XX000" });
+          return { rowCount: 1 };
+        },
+      };
+      const r = await init.applyInitPlan({ client: client as any, plan: plan as any }).catch((e: Error) => e);
+      return { r, grants: calls.filter((c) => c === "grant x").length };
+    };
+    const once = await run(1);
+    expect(once.r).toEqual({ applied: ["03.permissions"], skippedOptional: [] });
+    expect(once.grants).toBe(2);
+    const always = await run(99);
+    expect(always.r).toBeInstanceOf(Error);
+    expect((always.r as Error).message).toBe('Failed at step "03.permissions": tuple concurrently updated');
+    expect(always.grants).toBe(3);
+  });
+
+  test("the role step takes a role another session created at the same instant (unique_violation)", async () => {
+    // Two deploys of one database at once (platform-all#987 C15): both CREATE USER after the exists
+    // check; the second gets unique_violation on pg_authid, not duplicate_object.
+    const plan = await init.buildInitPlan({ database: "mydb", monitoringUser: DEFAULT_MONITORING_USER, monitoringPassword: "pw", includeOptionalPermissions: false, keepExistingPassword: true });
+    const role = plan.steps.find((s) => s.name === "01.role")!.sql;
+    expect(role).toMatch(/exception when duplicate_object or unique_violation then/);
+  });
+
   test("applyInitPlan preserves Postgres error fields on step failures", async () => {
     const plan = {
       monitoringUser: DEFAULT_MONITORING_USER,
