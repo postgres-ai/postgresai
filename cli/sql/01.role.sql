@@ -6,12 +6,10 @@
 --     if not exists (select 1 from pg_catalog.pg_roles where rolname = '...') then
 --       begin
 --         create user "..." with password '...';
---       exception when duplicate_object then
+--       exception when duplicate_object or unique_violation then
 --         null;
 --       end;
 --     end if;
 --     alter user "..." with password '...';
 --   end $$;
 {{ROLE_STMT}}
-
-

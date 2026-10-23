@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
+import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4327,7 +4327,7 @@ function signedIn(opts: { yes?: boolean; json?: boolean }): boolean {
 type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
   monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; cloud?: string; location?: string; vcpus?: string;
-  supabaseProject?: string;
+  supabaseProject?: string; ipFirst?: boolean; ipAllowed?: boolean;
 };
 
 /** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
@@ -4469,6 +4469,26 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         },
+        // platform-all#987: the box's IP is reserved; a person at a terminal continues once the
+        // database allows it, or stops (it stays reserved). Elsewhere the result carries step allow_ip.
+        ...(interactive(opts.json) ? { allowIp: async (lines: string[]) => {
+          steps.view()?.stop();
+          console.error("");
+          for (const line of lines) console.error(terminalText(line));
+          process.exitCode = 130;
+          try {
+            for (let tries = 0; tries < 3; tries++) {
+              const answer = (await question("[Enter] continue / [s]top: ")).trim().toLowerCase();
+              if (answer === "" || answer === "c" || answer === "continue") return "continue" as const;
+              if (answer === "s" || answer === "stop") return "stop" as const;
+            }
+            return "stop" as const;
+          } finally {
+            process.exitCode = undefined;
+            closeReadline();
+            steps.reset();
+          }
+        } } : {}),
         // --provider supabase without --supabase-project: a person at a terminal picks the project
         // (elsewhere the result carries the list).
         ...(interactive(opts.json) ? { chooseSupabaseProject: async (projects: SupabaseProject[], org: string) => {
@@ -4538,8 +4558,9 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
       else if (result.next === STOPPED_LOOKING) view.setNote("stopped watching");
       // A box found by the look and already active or failed sends no new box state.
       else if (looking) view.setNote("");
-      if (result.status === "ready") view.complete();
-      else if (result.status !== "in_progress" && !result.next.startsWith(STILL_IN_PROGRESS)) view.fail();
+      const end = stepViewEnd(result);
+      if (end === "complete") view.complete();
+      else if (end === "fail") view.fail();
       view.stop();
     }
     emitConnect(result, opts.json, true);
@@ -4568,6 +4589,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
   .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
   .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal; Supabase: from the project's compute size)")
   .option("--supabase-project <name|project-id>", "the Supabase project to monitor (its exact name, or its project ID), instead of a URL; implies --provider supabase")
+  .option("--ip-first", "reserve the monitoring box's IP and stop before the box: the IP is kept for a week, so you can allow it on the database and continue the deploy afterwards with --ip-allowed (PostgresAI Cloud only)")
+  .option("--ip-allowed", "the database now allows the reserved IP: create the box with it")
   .addHelpText("after", [
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
@@ -4587,10 +4610,14 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "place, the price and the choices (\"choices\" in the JSON result): re-run with --yes, and with",
     "--cloud/--location to pick another place.",
     "",
-    "Network: the database must be reachable from this machine and from PostgresAI. Before provisioning,",
-    "PostgresAI tests the connection from an unpublished address, so the port must accept connections",
-    "from the internet; after it, the monitoring box connects from the IP shown on its Console page.",
-    "Behind an IP allowlist, use AWS PrivateLink (RDS) or --self-hosted.",
+    "Network: the database must be reachable from this machine. The monitoring box connects from its",
+    "own static IP, shown before the box is created when PostgresAI can't reach the database the way",
+    "an IP allowlist refuses (timeout, refused, no pg_hba.conf entry), or with --ip-first: deploy then",
+    "stops at the IP (\"step\":\"allow_ip\" with ip, cidr, host, port, reserved_until; exit 3 when not",
+    "at a terminal). Allow it on the database, then re-run with --ip-allowed (at a terminal: Enter).",
+    "The IP is held 7 days and stays the box's for its life. If the box still can't connect, it waits",
+    "up to 90 minutes, then is removed and the IP kept: allow it and re-run with --ip-allowed.",
+    "RDS can also use AWS PrivateLink (no public IP), or monitor with --self-hosted.",
     "",
     "Billing is per Postgres cluster observed: another database in a cluster the organization already",
     "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",
@@ -4695,7 +4722,7 @@ withOrgOptions(monInstances.command("list"))
   .option("--debug", "print HTTP requests (secrets masked)")
   .action(async (opts: { json?: boolean; debug?: boolean }) => {
     try {
-      printResult((await linkedDatabases(opts)).map((d) => ({ ...d, status: stateOf(d.status) })), opts.json);
+      printResult((await linkedDatabases(opts)).map(listedDatabase), opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }

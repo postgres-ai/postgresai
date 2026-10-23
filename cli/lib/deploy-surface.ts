@@ -22,6 +22,8 @@ export function monitoringStatus(raw: string | null): DeployStatus {
   if (/delet/.test(raw ?? "") && !/fail/.test(raw ?? "")) return "deleting";
   if (raw === "deactivated") return "inactive";
   if (/fail|error/.test(raw ?? "")) return "failed";
+  // platform-all#987: the box's IP is reserved and waits for the database to allow it: the user's to act on.
+  if (raw === "ip_reserved") return "action_required";
   return "in_progress";
 }
 

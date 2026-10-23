@@ -216,12 +216,17 @@ and the result's `provider` remains `self-managed` for compatibility. It works w
 PostgreSQL endpoint where the supplied user can create the monitoring role and grant privileges.
 Use a direct endpoint, not a pooler.
 
-The endpoint must be reachable from this machine, which prepares the database, and from
-PostgresAI. Before provisioning, PostgresAI tests the connection from its platform, whose
-address is not published, so the port must accept connections from the internet at that point.
-After provisioning, the monitoring server connects from its own IP address, shown on its page in
-the Console (Monitoring, then the instance). A database that must stay behind an IP allowlist
-needs AWS PrivateLink (RDS) or self-hosted monitoring (`--self-hosted`).
+The endpoint must be reachable from this machine, which prepares the database. The monitoring
+box connects from its own static IP. When PostgresAI can't reach the database the way an IP
+allowlist refuses (a timeout, a refused connection, no `pg_hba.conf` entry), deploy reserves the
+box's IP before the box exists and stops at it: at a terminal it shows the IP and waits (Enter
+continues, `s` stops); elsewhere it exits 3 with `"step":"allow_ip"` and `ip`, `cidr`, `host`,
+`port`, `reserved_until`. Allow the IP on the database, then run `pgai mon deploy <url> --yes
+--ip-allowed` to create the box with it. `--ip-first` asks for the IP first even when PostgresAI
+can reach the database. A re-run never reserves a second IP; the IP is held 7 days and stays the
+box's for its life. If the box still can't connect, it waits for up to 90 minutes, then is removed
+and its IP kept: allow it, and run with `--ip-allowed` again. RDS can also use AWS PrivateLink,
+and any database self-hosted monitoring (`--self-hosted`).
 
 Without `--provider`, RDS hostnames still go to their console integration, and Supabase hostnames to the Supabase consent flow (`pgai mon deploy` for Supabase).
 

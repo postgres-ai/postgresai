@@ -690,13 +690,14 @@ export async function buildInitPlan(params: {
     // Role creation/update is done in one template file.
     // Always use a single DO block to avoid race conditions between "role exists?" checks and CREATE USER.
     // We:
-    // - create role if missing (and handle duplicate_object in case another session created it concurrently),
+    // - create role if missing (another session may create it concurrently: duplicate_object, or
+    //   unique_violation when its CREATE raced this one past the exists check),
     // - then ALTER ROLE to ensure the password is set to the desired value.
     const roleStmt = `do ${doQuote} begin
   if not exists (select 1 from pg_catalog.pg_roles where rolname = ${qRoleNameLit}) then
     begin
       create user ${qRole} with password ${qPwVerifier};
-    exception when duplicate_object then
+    exception when duplicate_object or unique_violation then
       null;
     end;
   end if;${params.keepExistingPassword ? "" : `
@@ -780,10 +781,24 @@ export async function applyInitPlan(params: {
     }
   };
 
+  // Another session granting on the same catalog row at once (two deploys of one
+  // database): the step is its own transaction and re-runnable, so it runs again.
+  const concurrent = (e: unknown) => /tuple concurrently (updated|deleted)/.test(e instanceof Error ? e.message : String(e));
+  const executeRetried = async (step: InitStep): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await executeStep(step);
+      } catch (e) {
+        if (attempt >= 3 || !concurrent(e)) throw e;
+        await new Promise((r) => setTimeout(r, 200 * attempt));
+      }
+    }
+  };
+
   // Apply non-optional steps, each in its own transaction
   for (const step of params.plan.steps.filter((s) => !s.optional)) {
     try {
-      await executeStep(step);
+      await executeRetried(step);
       applied.push(step.name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

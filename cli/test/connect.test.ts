@@ -205,7 +205,7 @@ describe("mon deploy", () => {
       `clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa`,
       "check clickhouse",
       "prepare clickhouse",
-      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`,
+      `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, provider: "clickhouse", clickhouse_org_id: ORG, clickhouse_key_id: "AbCdEf0123456789XyZa", clickhouse_key_secret: "Sec4b1dTestSecret0123456789" })}`, // gitleaks:allow (fake fixture key)
       // No checkup of its own: the box runs the first one (first_checkup_eta).
       "sleep", "list", "sleep", "list",
     ]);
@@ -626,7 +626,7 @@ describe("mon deploy", () => {
     const box = "postgresql://postgres_ai_mon:genpw@db.example.com:5432/app?sslmode=verify-full";
     const { deps, calls } = fake({ prepare: async () => ({ monitoringUrl: box }) });
     await connect(tls, { waitMs: 0 }, deps);
-    expect(calls.filter((c) => c.startsWith("create"))).toEqual([`create ${JSON.stringify({ db_url: box })}`]);
+    expect(calls.filter((c) => c.startsWith("create"))).toEqual([`create ${JSON.stringify({ db_url: box, allow_ip_fallback: true })}`]);
   });
 
   test("ClickHouse without a key: connected, and told how to get host metrics", async () => {
@@ -667,7 +667,7 @@ describe("mon deploy", () => {
     try {
       const { deps, calls } = fake();
       expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("in_progress");
-      expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON })}`]);
+      expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true })}`]);
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
         .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
       await connect(CH, { waitMs: 0 }, deps);
@@ -730,7 +730,7 @@ describe("mon deploy", () => {
     process.env.CLICKHOUSE_KEY_SECRET = "Sec4b1d";
     try {
       expect((await connect(CH, { waitMs: 0, agent: true }, deps)).host_metrics).toBe(false);
-      expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`]);
+      expect(calls).toEqual(["list", "check clickhouse", "prepare clickhouse", `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, provider: "clickhouse" })}`]);
       // The key the agent passes is used.
       await connect(CH, { clickhouseKey: KEY, waitMs: 0, agent: true }, deps);
       expect(calls).toContain("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud AbCdEf0123456789XyZa");
@@ -809,7 +809,7 @@ describe("mon deploy", () => {
     expect(seen).toEqual([{ resetPassword: true, monitoringUser: "my_mon", check: true, warn }, { resetPassword: true, monitoringUser: "my_mon", warn }]);
     expect(calls).toEqual([
       "list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "prepare clickhouse",
-      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
+      `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, provider: "clickhouse" })}`, "resetUnlock l-1",
     ]);
   });
 
@@ -966,7 +966,7 @@ describe("mon deploy", () => {
     expect(calls).toEqual([
       "list", "check clickhouse", "list", "check clickhouse",
       "resetLock abc123.us-east-1.aws.pg.clickhouse.cloud:5432", "list", "prepare clickhouse",
-      `create ${JSON.stringify({ db_url: MON, provider: "clickhouse" })}`, "resetUnlock l-1",
+      `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, provider: "clickhouse" })}`, "resetUnlock l-1",
     ]);
   });
 
@@ -1521,7 +1521,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     expect(asked).toEqual([`Provision ${SH_NAME}? (y/N): `]);
     expect(calls.slice(0, 4)).toEqual(["list", "check self-managed", "quote", "prepare self-managed"]);
     // The price was accepted: the platform creates a billed box only with accept_price.
-    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, accept_price: true })}`);
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, accept_price: true })}`);
     expect(result).toMatchObject({ status: "ready", price: "$512.00/month per database cluster (scale plan)", requires_payment_method: false });
   });
 
@@ -1563,7 +1563,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const { deps, calls } = make({ promo, amount_after_promo: 0 });
     const result = await connect(SH, { waitMs: 60_000, yes: true, coupon: "LAUNCH100" }, deps);
     expect(calls[2]).toBe("quote LAUNCH100");
-    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, promo_code: "LAUNCH100", accept_price: true })}`);
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true, promo_code: "LAUNCH100", accept_price: true })}`);
     expect(result).toMatchObject({
       status: "ready",
       price: "$0.00 the first month with LAUNCH100 (100% off (first billing period)), then $512.00/month per database cluster (scale plan)",
@@ -1604,7 +1604,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
       price: "free (1 of 1 free slots)", requires_payment_method: false,
       next: "The price changed since it was shown: re-run pgai mon deploy to see it",
     });
-    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON })}`);
+    expect(calls[4]).toBe(`create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true })}`);
   });
 
   test("--coupon '' (an empty variable): refused, not dropped; nothing prepared", async () => {
@@ -1657,7 +1657,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const r = await connect("postgresql://postgres:adminpw@DB.Example.com/app", { waitMs: 0 }, deps);
     expect(seen).toEqual(["db.example.com:5432"]);
     expect(r.price).toBe("included: same database cluster as db.example.com/other, no extra charge");
-    expect(calls).toContain(`create ${JSON.stringify({ db_url: MON })}`);
+    expect(calls).toContain(`create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true })}`);
   });
 
   test("the price is per database cluster, and names the cluster's place on the subscription", () => {
@@ -1753,7 +1753,7 @@ describe("mon deploy on the paid path: the price before the box", () => {
     const result = await connect(SH, { waitMs: 60_000, yes: true }, deps);
     expect(result.status).toBe("ready");
     expect(seen).toEqual([true, true]);
-    expect(calls).toContain(`create ${JSON.stringify({ db_url: NO_PW, accept_price: true })}`);
+    expect(calls).toContain(`create ${JSON.stringify({ db_url: NO_PW, allow_ip_fallback: true, accept_price: true })}`);
   });
 
   test.each([
