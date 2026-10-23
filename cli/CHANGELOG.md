@@ -245,6 +245,10 @@
 
 ### Fixed
 
+- `pgai mon instances delete` says "Delete the ClickHouse Cloud API key you gave us" only for a ClickHouse box. The
+  platform now reports `host_metrics` for Supabase and RDS boxes too, with `host_metrics_source`
+  (`clickhouse` | `supabase` | `rds`) right after it in `pgai mon instances list`
+  (https://gitlab.com/postgres-ai/platform-all/-/issues/992).
 - `pgai mon deploy` / `mon instances watch` / `list`: when a box is removed because Stripe refused the promo code at
   the first charge (for example, a code made for another organization), `next` now says to re-run without `--coupon`
   or with a code this organization can use, instead of "Update the payment method"

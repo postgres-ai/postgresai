@@ -124,6 +124,8 @@ export interface Database {
   health_url?: string;
   dashboard_url: string | null;
   host_metrics: boolean;
+  /** Who feeds the box's host metrics (null: nobody). Absent from platforms before #992, where host_metrics meant a ClickHouse key. */
+  host_metrics_source?: "clickhouse" | "supabase" | "rds" | null;
   /** When the box registered with the platform (it then sets up the monitoring). */
   registered_at?: string | null;
   /** The platform keeps postgres_ai_mon's password for this database's server (another database there connects without it). */
@@ -136,6 +138,10 @@ export interface Database {
   cloud?: string | null;
   location?: string | null;
 }
+
+/** We hold a ClickHouse Cloud key for the box. A platform before #992 sends no host_metrics_source and sets host_metrics only for a key; null means nobody feeds host metrics. */
+export const clickhouseKeyHeld = (d: Pick<Database, "host_metrics" | "host_metrics_source">): boolean =>
+  d.host_metrics && (d.host_metrics_source === undefined || d.host_metrics_source === "clickhouse");
 
 /**
  * The monitoring URL (with a note for the user, if any), or what to do first.
@@ -1886,8 +1892,9 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
       return undefined;
     });
     // Ordered for a person reading it: the Health Matrix, then Grafana.
-    const { dashboard_url, host_metrics, ...rest } = row;
-    return { ...rest, ...(health_url ? { health_url } : {}), dashboard_url: grafanaOAuthUrl(dashboard_url), host_metrics } as Database;
+    const { dashboard_url, host_metrics, host_metrics_source, ...rest } = row;
+    return { ...rest, ...(health_url ? { health_url } : {}), dashboard_url: grafanaOAuthUrl(dashboard_url), host_metrics,
+      ...(host_metrics_source !== undefined ? { host_metrics_source } : {}) } as Database;
   };
   return {
     verifyTls: verifyCollectorTls,

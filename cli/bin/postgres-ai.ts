@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
+import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4743,7 +4743,7 @@ withOrgOptions(monInstances.command("delete <id-or-name>"))
       }
       const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
       emitConnect({ status: "deleting", provider: row.provider as Provider, name: row.name, id: row.id, ...(billing ? { billing } : {}),
-        next: row.host_metrics ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
+        next: clickhouseKeyHeld(row) ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }
