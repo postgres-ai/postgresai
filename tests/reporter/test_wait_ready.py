@@ -163,3 +163,30 @@ def test_main_passes_url_timeout_and_poll(entry, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "waiting for data: c1/n1; next check in 5s" in out
     assert "no data after 60s for: c1/n1; running anyway" in out
+
+
+LONG = "denis-clickhouse-test-1-4224e50c-pg9qxanm35t63qsngnpdvpynnd-c0-eu-central-1-aws-pg-clickhouse-cloud-postgres"
+
+
+@pytest.mark.unit
+def test_read_targets_reads_folded_block_scalars(tmp_path):
+    """js-yaml writes a long name as a folded block scalar (`name: >-` with the
+    value on the next, deeper line). Reading `>-` as the name made the first
+    run wait the whole readiness timeout for a target that never matches."""
+    path = tmp_path / "sources.yml"
+    path.write_text(
+        "# PGWatch Sources Configuration - prometheus Instance\n"
+        "- name: >-\n"
+        f"    {LONG}\n"
+        "  conn_str: >-\n"
+        "    postgresql://u:p@host:5432/postgres?sslmode=require\n"
+        "  is_enabled: true\n"
+        "  custom_tags:\n"
+        "    cluster: default\n"
+        "    node_name: >-\n"
+        f"      {LONG}\n"
+        "- name: >-\n"
+        f"    {LONG}-2\n"
+        "  is_enabled: true\n"
+    )
+    assert read_targets(str(path)) == [("default", LONG), ("default", LONG + "-2")]

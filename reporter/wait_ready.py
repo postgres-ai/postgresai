@@ -43,17 +43,31 @@ def read_targets(path: str) -> List[Target]:
             lines = f.read().splitlines()
     except OSError:
         return []
+    def value(i: int, raw: str) -> str:
+        # A block scalar (js-yaml writes long names as `>-`): the value is the
+        # following lines indented deeper than this key (a `- name:` key sits
+        # after the dash).
+        if not re.match(r"^[>|][+-]?$", raw.strip()):
+            return _scalar(raw)
+        indent = len(lines[i]) - len(lines[i].lstrip(" -"))
+        parts = []
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            parts.append(nxt.strip())
+        return (" " if raw.strip()[0] == ">" else "\n").join(p for p in parts if p)
+
     items = []
-    for line in lines:
+    for i, line in enumerate(lines):
         m = re.match(r"^-\s+name:\s*(.*)$", line)
         if m:
-            items.append({"name": _scalar(m.group(1)), "is_enabled": "true"})
+            items.append({"name": value(i, m.group(1)), "is_enabled": "true"})
             continue
         if not items:
             continue
         m = re.match(r"^\s+(is_enabled|cluster|node_name):\s*(.*)$", line)
         if m:
-            items[-1][m.group(1)] = _scalar(m.group(2))
+            items[-1][m.group(1)] = value(i, m.group(2))
     targets = []
     for item in items:
         if item["is_enabled"].lower() != "true":
