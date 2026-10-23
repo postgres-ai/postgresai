@@ -2,6 +2,31 @@
 
 This document outlines the naming principles used in PostgresAI Grafana dashboards.
 
+## Consistency first
+
+Before inventing anything in a dashboard, look for the same problem already
+solved in `config/grafana/dashboards/*.json`. If an equivalent exists — a
+template variable shape, an "All vs one" selector, a reference line, a legend
+calc set, a unit, a stat reducer, an empty-state message, a row layout, a
+description voice — **reuse it verbatim** and say in the MR description which
+dashboard and panel you copied. Fifteen dashboards that make one choice
+consistently are worth more to an operator than any single dashboard that makes
+a better choice alone: the operator learns the convention once and then reads
+every dashboard fluently, and a reviewer can check a diff against a known
+pattern instead of re-litigating it.
+
+When the existing approach is genuinely not good enough, **do not fix it in one
+dashboard**. Keep this dashboard on the existing pattern and open a separate MR
+that changes the convention everywhere, updating this README and the lints in
+`tests/grafana_dashboards/` in the same change. A local one-off is the expensive
+outcome: it silently becomes a second convention, and the next contributor
+cannot tell which of the two to copy.
+
+Two things are not covered by this rule, and both should be called out
+explicitly in the MR description: a genuine bug in an existing pattern (fix it,
+and say so), and a problem the repo has never had to solve (choose carefully,
+and propose it as the convention).
+
 ## Tag vocabulary
 
 Every shipped dashboard JSON MUST include a top-level `"tags"` array whose

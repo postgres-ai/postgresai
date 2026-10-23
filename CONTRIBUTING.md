@@ -234,6 +234,8 @@ docker compose restart grafana
 `config/grafana/dashboards/README.md` is the source of truth for tags, panel
 titles, terminology, units, and **legend sorting** (rate panels sort by `Mean`,
 per-call/latency by `Max`, levels by `Last`/`Last *` — always descending).
+Consistency with the existing dashboards comes first: see README.md §
+"Consistency first".
 
 `tests/grafana_dashboards/` enforces the mechanical parts on every MR via the
 `quality:grafana-dashboards-lint` job. Run it locally before pushing:
