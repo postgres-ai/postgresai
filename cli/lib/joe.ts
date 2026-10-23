@@ -14,6 +14,7 @@ import {
   positiveSeconds,
   asyncPollDelayMs,
   asyncRetryDelayMs,
+  sqlstateOf,
 } from "./util";
 import { buildAuthHeaders, type OrgScope } from "./org-scope";
 
@@ -132,6 +133,8 @@ interface RpcCallParams {
   operation: string;
   debug?: boolean;
   timeoutMs?: number;
+  /** Lets `timeoutMs` exceed the 25 s default bound (requestTimeoutSignal). */
+  timeoutCeilingMs?: number;
   orgScope?: OrgScope;
   /**
    * Re-sent ONCE, verbatim, when PostgREST could not RESOLVE `fn` with the keys
@@ -173,7 +176,7 @@ async function callRpcRaw<T>(params: RpcCallParams): Promise<{ data: T; status: 
     }
 
     let response: Response;
-    const requestTimeout = requestTimeoutSignal(params.timeoutMs);
+    const requestTimeout = requestTimeoutSignal(params.timeoutMs, params.timeoutCeilingMs);
     try {
       response = await fetch(url.toString(), {
         method: "POST",
@@ -215,7 +218,8 @@ async function callRpcRaw<T>(params: RpcCallParams): Promise<{ data: T; status: 
     // The status rides on the Error so the poll loop can classify retryability.
     throw new HttpStatusError(
       formatHttpError(operation, response.status, text, response.statusText),
-      response.status
+      response.status,
+      sqlstateOf(text)
     );
   }
 

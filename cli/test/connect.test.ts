@@ -4,10 +4,10 @@ import { Client, type ClientConfig } from "pg";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { handleToolCall } from "../lib/mcp-server";
-import { HttpStatusError } from "../lib/util";
+import { HttpRequestTimeoutError, HttpStatusError } from "../lib/util";
 import { StepView, monitoringSteps } from "../lib/deploy";
 import { resolveAdminConnection } from "../lib/init";
-import { CancelledError, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, pickPlace, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent, type SupabaseProject, type SupabaseProjects, supabaseProjectRows } from "../lib/connect";
+import { CancelledError, CONNECT_TIMEOUT_MS, STILL_CREATING, mayHaveRun, platformDeps, NO_VCPUS_NOTE, httpStatus, disconnectBilling, errorText, resultLines, stepProgress, priceText, checkUrlParams, ClickhouseKeyError, FIRST_CHECKUP_DELAY_MS, clickhouseOrgFor, clusterOf, connect, connectStatus, pickPlace, stateOf, databaseName, detectCloudProvider, parseClickhouseKey, prepareDatabase, unprepareDatabase, progressText, type ConnectDeps, type Database, type PrepareOptions, type ProgressEvent, type SupabaseProject, type SupabaseProjects, supabaseProjectRows } from "../lib/connect";
 import { notAdminNext as notAdminNextText } from "../lib/deploy-surface";
 
 // `pgai mon deploy` (postgres-ai/internal#354): the step machine, with every
@@ -55,6 +55,15 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
   };
   return { deps, calls };
 }
+
+/** A clock that moves only when deploy sleeps, so a 5-minute wait takes no time. */
+function clock() {
+  let t = 0;
+  let naps = 0;
+  return { now: () => t, sleep: async (ms: number) => { t += ms; naps++; }, naps: () => naps };
+}
+
+const NOT_CONFIRMED = "PostgresAI did not confirm the monitoring box within 5 minutes. Run pgai mon instances list: if this database is there, follow it with pgai mon instances watch <id>; if not, run pgai mon deploy again";
 
 const row = (status: string | null, extra: Partial<Database> = {}): Database => ({
   id: "i-1", name: CH_NAME, provider: "clickhouse", status,
@@ -540,12 +549,16 @@ describe("mon deploy", () => {
       expect((await connect(CH, { waitMs: 0 }, deps)).next).toBe(`${REFUSED.error} Re-run pgai mon deploy later.`);
     });
 
-    test("a 5xx or no answer: a box may be starting with this URL, so the role stays", async () => {
-      for (const err of [new HttpStatusError("HTTP 502", 502), new Error("timed out")]) {
-        const { deps, calls } = fake({ ...generated, create: async () => { throw err; } });
-        await expect(connect(CH, { waitMs: 0 }, deps)).rejects.toThrow(err.message);
-        expect(calls).toEqual(["list"]);
-      }
+    test("no answer (a proxy's 502): a box may be starting with this URL, so the role stays", async () => {
+      // A 502: deploy looks for the box (postgresai#443); none appears, so it does not confirm one.
+      const unanswered = fake({ ...generated, ...clock(), create: async () => { throw new HttpStatusError("HTTP 502", 502); } });
+      expect((await connect(CH, { waitMs: 0 }, unanswered.deps)).next).toBe(NOT_CONFIRMED);
+      expect(unanswered.calls).not.toContain("unprepare");
+      // An error that is neither an answer nor "no answer" still ends the run.
+      const err = new Error("timed out");
+      const { deps, calls } = fake({ ...generated, create: async () => { throw err; } });
+      await expect(connect(CH, { waitMs: 0 }, deps)).rejects.toThrow(err.message);
+      expect(calls).toEqual(["list"]);
     });
 
     test("a launch that starts: the role stays", async () => {
@@ -1164,9 +1177,10 @@ describe("mon deploy", () => {
   // a run that took the lock now would not see it, and would reset its password.
   for (const err of [new HttpStatusError("Failed to cloud monitoring connect (HTTP 502)", 502), new Error("timed out")]) {
     test(`--reset-password keeps the lock when the box request fails with ${err.message}: the lease frees the server`, async () => {
-      const { deps, calls } = fake({ create: async () => { calls.push("create"); throw err; } });
-      await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow(err.message);
-      expect(calls.slice(-2)).toEqual(["prepare clickhouse", "create"]);
+      const { deps, calls } = fake({ ...clock(), create: async () => { calls.push("create"); throw err; } });
+      if (err instanceof HttpStatusError) expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(NOT_CONFIRMED);
+      else await expect(connect(CH, { resetPassword: true, waitMs: 0 }, deps)).rejects.toThrow(err.message);
+      expect(calls).not.toContain("resetUnlock l-1");
     });
   }
 
@@ -3494,5 +3508,173 @@ describe("pickPlace: the terminal's question (A17)", () => {
     expect((await run(["c", "9", "1", "1"])).r).toEqual({ cloud: "aws", location: "us-east-1" });
     expect((await run(["c", ""])).r).toBe(false);
     expect((await run(["x", "x", "x"])).r).toBe(false);
+  });
+});
+
+// The box request got no answer (a timeout, a 5xx): the platform may still be
+// creating the box, so deploy looks for it before it says anything (postgresai#443).
+describe("a box request without an answer", () => {
+  const TIMEOUT = new HttpRequestTimeoutError("cloud monitoring connect", CONNECT_TIMEOUT_MS);
+  const made = (status: string, extra: Partial<Database> = {}) =>
+    row(status, { id: "i-7", cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "postgres", ...extra });
+
+  test("the box appears: the step goes on, and deploy follows it", async () => {
+    const messages: string[] = [];
+    const f = fake({ ...clock(), rows: [undefined, undefined, made("launch_requested")],
+      create: async () => { throw TIMEOUT; }, progress: (e) => { messages.push(e.message); } });
+    const result = await connect(CH, { waitMs: 0 }, f.deps);
+    expect(result).toMatchObject({ status: "in_progress", id: "i-7" });
+    expect(messages).toContain(STILL_CREATING);
+    // The first look misses, then one poll later the row is there.
+    expect(f.calls.filter((c) => c === "list").length).toBeGreaterThanOrEqual(3);
+    expect(f.calls).not.toContain("unprepare");
+  });
+
+  test("a proxy's 504 is no answer too", async () => {
+    const f = fake({ ...clock(), rows: [undefined, made("launch_requested")],
+      create: async () => { throw new HttpStatusError("Failed to cloud monitoring connect (HTTP 504)", 504); } });
+    expect((await connect(CH, { waitMs: 0 }, f.deps)).id).toBe("i-7");
+  });
+
+  test("no box after 5 minutes: not confirmed (exit 3), the role and the server lease stay", async () => {
+    const c = clock();
+    const f = fake({ now: c.now, sleep: c.sleep, prepare: async () => ({ monitoringUrl: MON, generated: true }), create: async () => { throw TIMEOUT; } });
+    expect(await connect(CH, { waitMs: 0, resetPassword: true }, f.deps)).toMatchObject({ status: "action_required", provider: "clickhouse", name: CH_NAME, next: NOT_CONFIRMED });
+    // One look at once, then every 15 s for 5 minutes.
+    expect(c.naps()).toBe(20);
+    expect(f.calls).not.toContain("unprepare");
+    expect(f.calls).not.toContain("resetUnlock l-1");
+  });
+
+  test("an agent's run, steps before the request included, ends its look 50 s in (a tool call must answer within 60 s)", async () => {
+    // Slow steps before the request (prepare took 10 s): the look gets what is left, and the
+    // last check lands at 50 s into the run, not up to a poll (15 s) later.
+    const slow = clock();
+    const late = fake({ now: slow.now, sleep: slow.sleep, create: async () => { throw TIMEOUT; },
+      prepare: async (_u, _p, o) => { if (!o?.check) await slow.sleep(10_000); return o?.check ? { checked: true } : { monitoringUrl: MON }; } });
+    await connect(CH, { waitMs: 0, agent: true }, late.deps);
+    expect(slow.now()).toBe(50_000);
+    const c = clock();
+    const f = fake({ now: c.now, sleep: c.sleep, create: async () => { throw TIMEOUT; } });
+    expect((await connect(CH, { waitMs: 0, agent: true }, f.deps)).next).toBe("PostgresAI did not confirm the monitoring box yet. Call deploy_monitoring again in a minute: it continues with the box if PostgresAI created it. If pgai mon instances list still has no box for this database, ask the user to run pgai mon deploy with --reset-password in a terminal");
+    expect(c.naps()).toBe(4);
+  });
+
+  test("found, but the platform refused and undid the launch: failed, and the generated role is dropped", async () => {
+    const f = fake({ ...clock(), rows: [undefined, made("deleting")], prepare: async () => ({ monitoringUrl: MON, generated: true }),
+      create: async () => { throw TIMEOUT; } });
+    expect(await connect(CH, { waitMs: 0 }, f.deps)).toEqual({ status: "failed", provider: "clickhouse", name: CH_NAME, id: "i-7",
+      next: "PostgresAI could not launch the monitoring box. Re-run pgai mon deploy later." });
+    expect(f.calls).toContain("unprepare");
+  });
+
+  test("--reset-password: the lock is released once the box is found, or found refused; kept while unconfirmed", async () => {
+    const live = fake({ ...clock(), rows: [undefined, undefined, undefined, made("launch_requested")], create: async () => { throw TIMEOUT; } });
+    expect((await connect(CH, { waitMs: 0, resetPassword: true }, live.deps)).id).toBe("i-7");
+    expect(live.calls).toContain("resetUnlock l-1");
+    const refused = fake({ ...clock(), rows: [undefined, undefined, made("deleting")], prepare: async () => ({ monitoringUrl: MON, generated: true }),
+      create: async () => { throw TIMEOUT; } });
+    expect((await connect(CH, { waitMs: 0, resetPassword: true }, refused.deps)).status).toBe("failed");
+    expect(refused.calls).toEqual(expect.arrayContaining(["unprepare", "resetUnlock l-1"]));
+  });
+
+  test("a refused box whose destroy failed too (deleting_failed_to_launch) is failed, not followed", async () => {
+    const f = fake({ ...clock(), rows: [undefined, made("deleting_failed_to_launch")], prepare: async () => ({ monitoringUrl: MON, generated: true }),
+      create: async () => { throw TIMEOUT; } });
+    expect(await connect(CH, { waitMs: 0 }, f.deps)).toMatchObject({ status: "failed",
+      next: "PostgresAI could not launch the monitoring box. Run pgai mon instances delete i-7 --yes, then pgai mon deploy again." });
+    expect(f.calls).toContain("unprepare");
+  });
+
+  test("a box of this database from before is not taken for the new one", async () => {
+    const old = made("deleting", { id: "i-old" });
+    const f = fake({ ...clock(), rows: [old], create: async () => { throw TIMEOUT; } });
+    expect((await connect(CH, { waitMs: 0 }, f.deps)).next).toBe(NOT_CONFIRMED);
+  });
+
+  test("Ctrl-C while looking: stops at once; still in progress, not a failure", async () => {
+    const c = clock();
+    let looking = false;
+    const f = fake({ now: c.now, sleep: c.sleep, create: async () => { looking = true; throw TIMEOUT; }, aborted: () => looking });
+    expect((await connect(CH, { waitMs: 0 }, f.deps)).next).toBe("Still in progress: deploy stopped watching before PostgresAI confirmed the monitoring box; it may still appear. Run pgai mon instances list before running deploy again");
+    expect(c.naps()).toBe(0);
+  });
+
+  test("a failing list is a miss, not the end", async () => {
+    let n = 0;
+    const f = fake({ ...clock(), create: async () => { throw TIMEOUT; } });
+    f.deps.list = async () => { n++; if (n === 2) throw new Error("cloud monitoring list: HTTP 502"); return n >= 3 ? [made("launch_requested")] : []; };
+    expect((await connect(CH, { waitMs: 0 }, f.deps)).id).toBe("i-7");
+  });
+
+  test("a 5xx the platform raised (PT503) is its answer: its reason at once, no waiting", async () => {
+    const c = clock();
+    const refusal = new HttpStatusError("cloud monitoring connect: Deploys to PostgresAI cloud are unavailable right now. Try again later.", 503, "PT503");
+    const f = fake({ now: c.now, sleep: c.sleep, prepare: async () => ({ monitoringUrl: MON, generated: true }), create: async () => { throw refusal; } });
+    await expect(connect(CH, { waitMs: 0, resetPassword: true }, f.deps)).rejects.toThrow("Deploys to PostgresAI cloud are unavailable right now");
+    expect(c.naps()).toBe(0);
+    // Nothing was created: the generated role goes and the server lock is released.
+    expect(f.calls).toEqual(expect.arrayContaining(["unprepare", "resetUnlock l-1"]));
+  });
+
+  test("callRpc keeps the SQLSTATE of a PostgREST error, none for a proxy's page", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [
+      new Response(JSON.stringify({ code: "PT503", message: "Service Unavailable", details: "Deploys to PostgresAI cloud are unavailable right now." }), { status: 503 }),
+      new Response("<html>504 Gateway Time-out</html>", { status: 504 }),
+    ];
+    globalThis.fetch = (async () => bodies.shift()!) as unknown as typeof fetch;
+    const deps = platformDeps({ apiKey: "k", apiBaseUrl: "https://example.test/api/general", uiBaseUrl: "https://example.test" });
+    try {
+      const answered = await deps.create({ db_url: "postgresql://x" }).catch((e) => e);
+      const proxied = await deps.create({ db_url: "postgresql://x" }).catch((e) => e);
+      expect([answered.status, answered.sqlstate, mayHaveRun(answered)]).toEqual([503, "PT503", false]);
+      expect([proxied.status, proxied.sqlstate, mayHaveRun(proxied)]).toEqual([504, undefined, true]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("what may have run", () => {
+    expect(mayHaveRun(TIMEOUT)).toBe(true);
+    expect(mayHaveRun(new HttpStatusError("x", 502))).toBe(true);
+    expect(mayHaveRun(new HttpStatusError("x", 524))).toBe(true);
+    expect(mayHaveRun(new HttpStatusError("x", 503, "PT503"))).toBe(false);
+    expect(mayHaveRun(new HttpStatusError("x", 409))).toBe(false);
+    expect(mayHaveRun(new Error("cloud monitoring connect: could not reach https://postgres.ai/api/general (ECONNRESET)"))).toBe(true);
+    expect(mayHaveRun(new Error("cloud monitoring connect: could not reach https://postgres.ai/api/general (ECONNREFUSED)"))).toBe(false);
+    expect(mayHaveRun(new Error("cloud monitoring connect: could not reach https://postgres.ai/api/general (ENOTFOUND)"))).toBe(false);
+    expect(mayHaveRun(new Error("timed out"))).toBe(false);
+    for (const code of ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN"]) {
+      expect(mayHaveRun(new Error(`cloud monitoring connect: could not reach https://postgres.ai/api/general (${code})`))).toBe(false);
+    }
+  });
+
+  test("only the box request waits 55 s; the other calls keep 25 s", async () => {
+    const seen: Record<string, number> = {};
+    const realFetch = globalThis.fetch;
+    const realTimeout = AbortSignal.timeout;
+    let last = 0;
+    AbortSignal.timeout = (ms: number) => { last = ms; return realTimeout.call(AbortSignal, ms); };
+    globalThis.fetch = (async (url: string) => { seen[String(url).split("/").pop()!] = last; return Response.json({ id: "i-1", name: "x", status: "launch_requested" }); }) as typeof fetch;
+    try {
+      const deps = platformDeps({ apiKey: "k", apiBaseUrl: "https://example.test/api/general", uiBaseUrl: "https://example.test" });
+      await deps.create({ db_url: "postgresql://x" });
+      await deps.list();
+    } finally {
+      globalThis.fetch = realFetch;
+      AbortSignal.timeout = realTimeout;
+    }
+    expect(seen).toEqual({ cloud_monitoring_connect: 55_000, cloud_monitoring_list: 25_000 });
+    // The MCP tool (agent) keeps 25 s for the request, so the whole call fits in 60 s.
+    AbortSignal.timeout = (ms: number) => { last = ms; return realTimeout.call(AbortSignal, ms); };
+    globalThis.fetch = (async (url: string) => { seen[String(url).split("/").pop()!] = last; return Response.json({ id: "i-1", name: "x", status: "launch_requested" }); }) as typeof fetch;
+    try {
+      await platformDeps({ apiKey: "k", apiBaseUrl: "https://example.test/api/general", uiBaseUrl: "https://example.test", agent: true }).create({ db_url: "postgresql://x" });
+    } finally {
+      globalThis.fetch = realFetch;
+      AbortSignal.timeout = realTimeout;
+    }
+    expect(seen.cloud_monitoring_connect).toBe(25_000);
   });
 });

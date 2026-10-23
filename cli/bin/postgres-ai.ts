@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, STILL_IN_PROGRESS, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
+import { boxWords, CancelledError, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -4401,6 +4401,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     };
     // The box request is sent once the "provisioning" step starts.
     let requested = false;
+    // It got no answer, and deploy is looking for the box (postgresai#443).
+    let looking = false;
     const onSigint = (): void => {
       if (createdId) return resume();
       if (stopping) {
@@ -4409,7 +4411,9 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
         process.exit(130);
       }
       stopping = true;
-      const reply = requested
+      const reply = looking
+        ? "Stopping: PostgresAI may still create the monitoring box; deploy stops at its next check (Ctrl-C again to quit now)."
+        : requested
         ? "Stopping: the monitoring box is already requested; deploy stops watching when the request ends (Ctrl-C again to quit now)."
         : "Cancelling: nothing has been created yet (Ctrl-C again to quit now).";
       // Through the step view, if shown: else it draws over the reply.
@@ -4503,6 +4507,9 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
         ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
         progress: (e) => {
           if (e.event === "provisioning") requested = true;
+          if (e.message === STILL_CREATING) looking = true;
+          // The look found the box: its states replace the "still creating" note.
+          if (e.event === "box") looking = false;
           // Supabase without a URL: the project picked names the step view.
           if (e.project) shownName = terminalText(e.project);
           steps.progress(e);
@@ -4526,6 +4533,11 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     if (stopping && createdId) return resume();
     const view = steps.view();
     if (view) {
+      // The "still creating" note must not outlive the look for the box.
+      if (result.next === NOT_CONFIRMED) view.setNote(`not confirmed after ${LOOKUP_MS / 60_000} min`);
+      else if (result.next === STOPPED_LOOKING) view.setNote("stopped watching");
+      // A box found by the look and already active or failed sends no new box state.
+      else if (looking) view.setNote("");
       if (result.status === "ready") view.complete();
       else if (result.status !== "in_progress" && !result.next.startsWith(STILL_IN_PROGRESS)) view.fail();
       view.stop();
