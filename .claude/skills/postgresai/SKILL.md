@@ -176,7 +176,11 @@ read-only check that tells you they are done.
    again if they are.
 
 A check only reads: it never changes anything, and never prints a secret
-(load `.env` in it as in Rules, when it needs it).
+(load `.env` in it as in Rules, when it needs it). Run the watcher as the
+plain shell loop above, never as a script (Python or other): an agent's
+approval review cannot see what a script does, and refuses it. When your agent
+asks for approval, say what the check does: for a deploy without `--yes`, "it
+creates nothing; it only reads the price and whether a card is on file".
 
 ## 0. Sign in and pick the organization
 
@@ -299,10 +303,21 @@ Act on the result:
     new `price` and the coupon's `description`. Then, as a separate question,
     ask whether they accept the price. Re-run with `--yes` (and the same
     `--coupon`) only if they agree.
-  - It needs a payment method: first quote `price` and get the user's YES (or
-    a coupon) as above. Only then give the console link from `next`, and
-    watch for it as in "When the user leaves the terminal", with the check:
-    the same deploy without `--yes` no longer says a payment method is needed.
+  - It needs a payment method (`"requires_payment_method": true`): if the
+    user has not yet said YES to the price or given a coupon, ask that first,
+    as above. Then send the `price` and the console link from `next` in one
+    message, and say that adding the card is their YES to that price. Watch
+    for the card as in "When the user leaves the terminal", with this check:
+    the same deploy you just ran, still without `--yes`:
+
+    ```bash
+    ! pgai mon deploy "$DATABASE_URL" --org <alias> --provider <provider> \
+      --coupon <code> --json --no-wait 2>/dev/null |
+      grep -Eq '"requires_payment_method": *true'
+    ```
+
+    (For Supabase: `--supabase-project <ref>` in place of the URL.) When it
+    ends with 0, deploy with `--yes` (step 4–5) and do not ask again.
   - It says the promo code cannot be used by this organization: tell the user,
     and ask for another code or whether to go on without one. Re-run with the
     new `--coupon`, or without it (no `--yes`), and quote the new `price` first.
