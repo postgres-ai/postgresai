@@ -276,6 +276,15 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
     }, () => [{ ...ROW, status: listed++ ? "deleting_launched" : "registered", billing_error: refused }]);
   }, 20_000);
 
+  // #992: who feeds the host metrics sits right after host_metrics, not 11 lines above it.
+  test("mon instances list keeps host_metrics_source next to host_metrics", async () => {
+    await withApi(async (env) => {
+      const [row] = (await run(["mon", "instances", "list"], env)).json();
+      const keys = Object.keys(row);
+      expect(keys.indexOf("host_metrics_source")).toBe(keys.indexOf("host_metrics") + 1);
+    }, [{ ...ROW, provider: "self-managed", host_metrics_source: "supabase" }]);
+  });
+
   test("mon instances list and status", async () => {
     await withApi(async (env) => {
       // The same words as mon instances status and mon deploy: the platform's "active" is "ready".
@@ -390,6 +399,23 @@ describe("pgai mon deploy / mon instances list / status / delete", () => {
       expect(calls.at(-1)).toBe('/rpc/cloud_monitoring_disconnect test-key {"instance_id":"i-1"}');
     });
   });
+
+  // #992: host_metrics is also true for Supabase and RDS boxes; only a ClickHouse one has a key of ours.
+  for (const [source, provider, next] of [
+    ["supabase", "self-managed", "none"],
+    ["rds", "rds", "none"],
+    ["clickhouse", "clickhouse", "Delete the ClickHouse Cloud API key you gave us"],
+    // An explicit null says nobody feeds host metrics: no key of ours.
+    [null, "self-managed", "none"],
+  ] as const) {
+    test(`mon instances delete of a box with ${source} host metrics: next is "${next}"`, async () => {
+      await withApi(async (env) => {
+        const done = await run(["mon", "instances", "delete", NAME, "--yes", "--json"], env);
+        expect(done.status).toBe(0);
+        expect(done.json()).toEqual({ status: "deleting", provider, name: NAME, id: "i-1", next });
+      }, [{ ...ROW, provider, host_metrics: true, host_metrics_source: source }]);
+    });
+  }
 
   test("mon instances delete --json with TTY stdin does not prompt and prints valid JSON", async () => {
     await withApi(async (env, calls) => {
