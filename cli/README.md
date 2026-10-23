@@ -353,6 +353,11 @@ do `pgai dblab deploy` and `pgai dblab instances`:
 | `action_required` | do what `next` says, then re-run; also when the `--wait` of `pgai mon deploy` ran out with the box still starting (`next`: "Still in progress ... resume with pgai mon instances watch <id>") | 3 |
 | `failed` | `next` has the reason | 1 |
 
+When PostgresAI is slow to answer the box request for a database URL, `pgai mon deploy` says it is still
+creating the monitoring box and looks for the box for up to 5 minutes (30 seconds from the MCP tool)
+before `--wait` starts, also with `--no-wait`; then it follows the box as usual. If no box appears, it
+stops with `action_required` and says to check `pgai mon instances list` before running deploy again.
+
 `pgai init` exits with 130 when cancelled at a prompt (Ctrl-C, Ctrl-D).
 
 `--self-hosted` starts `mon local-install` with the monitoring URL, the API key and the ClickHouse

@@ -323,6 +323,10 @@ server's vCPU count (its instance class or server spec); never guess it, and
 do not ask. Note the time printed first, on stderr: it is when the deploy
 started. For Supabase, there is no URL: see "Supabase" below.
 
+Run it with a timeout of at least 7 minutes: when PostgresAI is slow to answer
+the box request, deploy looks for the box for up to 5 minutes, also with
+`--no-wait`. A shorter timeout kills it before it can say what happened.
+
 `--yes` accepts the price without showing it again, so run it only right
 after the user's YES in step 2, with the same database and `--coupon`. If
 either changed, go back to "2–3" for the new price first.
@@ -352,6 +356,11 @@ silent about a failure:
     "When the user leaves the terminal", with the check
     `grep -q '^PGAI_MON_PASSWORD=' .env`, then re-run the deploy.
   - A payment method or a coupon: back to "2–3".
+  - It says "did not confirm the monitoring box" (the platform was slow to
+    answer, and no box appeared while deploy looked for it): run
+    `pgai mon instances list --org <alias> --json`. If it shows this database,
+    `watch` it; otherwise wait a minute and re-run the same deploy once (it
+    finds a box that appeared meanwhile).
   - Otherwise, do what `next` says, within the Rules above.
 - `failed` with no `id` (a timeout): run
   `pgai mon instances list --org <alias> --json`. If it shows this database,

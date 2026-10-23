@@ -170,10 +170,23 @@ export function describeFetchError(operation: string, url: string, err: unknown)
  */
 export class HttpStatusError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** The SQLSTATE of a function that raised (PostgREST's JSON `code`, e.g. PT503): the platform answered. */
+  readonly sqlstate?: string;
+  constructor(message: string, status: number, sqlstate?: string) {
     super(message);
     this.name = "HttpStatusError";
     this.status = status;
+    this.sqlstate = sqlstate;
+  }
+}
+
+/** The SQLSTATE in a PostgREST error body, if any: absent for a proxy's page or a lost connection. */
+export function sqlstateOf(body: string): string | undefined {
+  try {
+    const code = (JSON.parse(body) as { code?: unknown })?.code;
+    return typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -260,13 +273,17 @@ export class HttpRequestTimeoutError extends Error {
   }
 }
 
-/** Return a finite AbortSignal timeout acceptable to both Node and Bun fetch. */
-export function requestTimeoutSignal(timeoutMs?: number): { signal: AbortSignal; timeoutMs: number } {
+/**
+ * Return a finite AbortSignal timeout acceptable to both Node and Bun fetch.
+ * `ceilingMs` lets one call wait longer than the default bound (only
+ * cloud_monitoring_connect does, postgresai#443); every other call stays at 25 s.
+ */
+export function requestTimeoutSignal(timeoutMs?: number, ceilingMs = DEFAULT_HTTP_REQUEST_TIMEOUT_MS): { signal: AbortSignal; timeoutMs: number } {
   const requested =
     typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
       ? timeoutMs
       : DEFAULT_HTTP_REQUEST_TIMEOUT_MS;
-  const bounded = Math.max(1, Math.min(DEFAULT_HTTP_REQUEST_TIMEOUT_MS, Math.floor(requested)));
+  const bounded = Math.max(1, Math.min(ceilingMs, Math.floor(requested)));
   return { signal: AbortSignal.timeout(bounded), timeoutMs: bounded };
 }
 

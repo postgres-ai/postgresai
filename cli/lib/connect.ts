@@ -10,7 +10,7 @@ import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./
 import { callRpc, type ProjectListItem } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
 import { SUPABASE_API_BASE, extractProjectRefFromUrl } from "./supabase";
-import { HttpStatusError, requestTimeoutSignal, stripControlsToSpace } from "./util";
+import { HttpRequestTimeoutError, HttpStatusError, requestTimeoutSignal, stripControlsToSpace } from "./util";
 
 // `pgai mon deploy <database-url>`: put a database under PostgresAI's care
 // (postgres-ai/internal#354). Each step is skipped when already done, so a
@@ -558,6 +558,7 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
     view.advance(e.event);
     if (/^(Note|Warning):/.test(e.message)) view.log(e.message);
     if (e.event === "box" && e.state) view.setNote(`box: ${boxWords(e.state)}`);
+    if (e.message === STILL_CREATING) view.setNote(`still creating: PostgresAI is slow to answer (checking for up to ${LOOKUP_MS / 60_000} min)`);
   };
   return { progress, view: () => view };
 }
@@ -730,12 +731,19 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     return { status: "action_required", provider, name, next: "A monitoring stack already runs on this machine: add the database with PGAI_DB_URL='<postgres_ai_mon URL>' pgai mon targets add" };
   }
 
+  const byCluster = (d: Database) => !!d.cluster && serverOf(d.cluster) === cluster && d.database != null && decodeURIComponent(d.database) === name.split("/").slice(1).join("/");
+  const byName = (d: Database) => (d.cluster == null || d.database == null) && d.name === name;
   const findDatabase = (list: Database[]) => {
     const live = list.filter((d) => !disconnecting(d.status));
-    return live.find((d) => d.cluster && serverOf(d.cluster) === cluster && d.database != null && decodeURIComponent(d.database) === name.split("/").slice(1).join("/"))
-      ?? live.find((d) => (d.cluster == null || d.database == null) && d.name === name);
+    return live.find(byCluster) ?? live.find(byName);
   };
   const rows = opts.selfHosted ? [] : await deps.list();
+  // The box a request without an answer made: a row of this database that was not there before, live or not.
+  const known = new Set(rows.map((d) => d.id));
+  const findMade = (list: Database[]) => {
+    const fresh = list.filter((d) => !known.has(d.id));
+    return fresh.find(byCluster) ?? fresh.find(byName);
+  };
   let row = findDatabase(rows);
   const fresh = !row;
   let note = "";
@@ -900,7 +908,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       lockId = lock.lock_id;
     }
     let prepared: Prepared;
-    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "payment" | "declined" | "price" | "stored";
+    let created: Awaited<ReturnType<ConnectDeps["create"]>> | "payment" | "declined" | "price" | "stored" | "unanswered";
     // No answer to the box request: it may still be created with this URL.
     let unanswered = false;
     try {
@@ -946,8 +954,9 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         // The database server's vCPUs: without them AAS is never collected.
         ...(vcpus ? { vcpus } : {}),
       }).catch(async (err) => {
-        // A 4xx is a refusal; after anything else (5xx, no answer) a box may be starting with this URL.
-        if (err instanceof HttpStatusError && err.status >= 400 && err.status < 500) await undo(prepared);
+        // A 4xx, or a 5xx the function raised (its SQLSTATE: the transaction rolled back), is a
+        // refusal; after anything else (no answer) a box may be starting with this URL.
+        if (err instanceof HttpStatusError && (err.status < 500 || err.sqlstate)) await undo(prepared);
         else unanswered = true;
         // 402: the payment method went away since the quote; nothing was created.
         if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
@@ -956,8 +965,30 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         // 409 "none is stored" for a URL without a password: the platform no longer keeps the server's
         // (its last box went meanwhile). Its other 409s (a name taken, say) say what they are.
         if (err instanceof HttpStatusError && err.status === 409 && "storedPassword" in prepared && prepared.storedPassword && /none is stored/.test(err.message)) return "stored" as const;
+        // No answer, but the platform may have made the box (postgresai#443): look for it below.
+        if (mayHaveRun(err)) return "unanswered" as const;
         throw err;
       });
+      if (created === "unanswered") {
+        progress("provisioning", STILL_CREATING);
+        const made = await lookForBox(findMade, opts, deps, started);
+        // Ctrl-C: the person stopped watching, the box may still come (the step view is not failed then).
+        if (!made && deps.aborted?.()) return { status: "action_required", provider, name, ...billing, next: STOPPED_LOOKING };
+        if (!made) return { status: "action_required", provider, name, ...billing, next: opts.agent ? NOT_CONFIRMED_AGENT : NOT_CONFIRMED };
+        // Refused and undone by the platform: as a "failed" reply.
+        if (stateOf(made.status) === "failed" || disconnecting(made.status)) {
+          await undo(prepared);
+          // Nothing starts with this URL: the server lock can go (finally).
+          unanswered = false;
+          return { status: "failed", provider, name, id: made.id, next: disconnecting(made.status)
+            ? "PostgresAI could not launch the monitoring box. Re-run pgai mon deploy later."
+            // A failed row stays in the list: the next deploy would follow it.
+            : `PostgresAI could not launch the monitoring box. Run pgai mon instances delete ${made.id} --yes, then pgai mon deploy again.` };
+        }
+        // The box has its URL: the server lock can go (finally).
+        unanswered = false;
+        created = { id: made.id, name: made.name ?? name, status: made.status ?? "launch_requested" };
+      }
       if (created === "payment") return { status: "action_required", provider, name, ...billingPage! };
       // A card on file that Stripe declined is not a missing one.
       if (created === "declined") {
@@ -1420,6 +1451,53 @@ interface Followed {
 /** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
 export const STILL_IN_PROGRESS = "Still in progress";
 
+/**
+ * How long the box request (cloud_monitoring_connect) may take: just under the 60 s the
+ * platform's nginx gives an API call, so a slow answer times out here, not as a 504. On
+ * 2026-10-22 it took 31 s, waiting on a lock (platform-all#988).
+ */
+export const CONNECT_TIMEOUT_MS = 55_000;
+/** An MCP tool call must answer within the 60 s many clients allow: the request keeps 25 s, and the look ends 50 s into the run. */
+const AGENT_CONNECT_TIMEOUT_MS = 25_000;
+/** Shown while deploy looks for the box of a request that got no answer (postgresai#443). */
+export const STILL_CREATING = "Still creating the monitoring box";
+export const NOT_CONFIRMED = "PostgresAI did not confirm the monitoring box within 5 minutes. Run pgai mon instances list: if this database is there, follow it with pgai mon instances watch <id>; if not, run pgai mon deploy again";
+export const STOPPED_LOOKING = `${STILL_IN_PROGRESS}: deploy stopped watching before PostgresAI confirmed the monitoring box; it may still appear. Run pgai mon instances list before running deploy again`;
+/** The MCP tool's: a second call finds the box (it is safe to call again). */
+const NOT_CONFIRMED_AGENT = "PostgresAI did not confirm the monitoring box yet. Call deploy_monitoring again in a minute: it continues with the box if PostgresAI created it. If pgai mon instances list still has no box for this database, ask the user to run pgai mon deploy with --reset-password in a terminal";
+/** How long deploy looks for that box: it appears once the platform's request commits. An agent's tool call waits less. */
+export const LOOKUP_MS = 5 * 60_000;
+const AGENT_RUN_MS = 50_000;
+
+/**
+ * No answer to a request the platform may still have run: a timeout, a 5xx without the
+ * function's SQLSTATE (a proxy's 502/504/524, a lost database connection), or a connection
+ * lost after it was sent. A 5xx with one (PT503 "deploys are unavailable") is the platform's
+ * answer: its transaction rolled back. A refused connection or a name that does not
+ * resolve: nothing reached the platform.
+ */
+export function mayHaveRun(err: unknown): boolean {
+  if (err instanceof HttpRequestTimeoutError) return true;
+  if (err instanceof HttpStatusError) return err.status >= 500 && !err.sqlstate;
+  const message = err instanceof Error ? err.message : "";
+  return / could not reach /.test(message)
+    && !/\((ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|CERT_\w+|ERR_TLS_\w+|UNABLE_TO_\w+|DEPTH_ZERO_\w+|SELF_SIGNED_\w+)\)/.test(message);
+}
+
+/** The box of a request without an answer, polled until the lookup window ends or Ctrl-C. */
+async function lookForBox(findMade: (list: Database[]) => Database | undefined, opts: ConnectOptions, deps: ConnectDeps, started: number): Promise<Database | undefined> {
+  // An agent's whole run, steps before the request included, ends by AGENT_RUN_MS; it looks at least once.
+  for (const deadline = opts.agent ? started + AGENT_RUN_MS : deps.now() + LOOKUP_MS; ;) {
+    // A failed list is a miss: the next poll may answer.
+    const made = findMade(await deps.list().catch(() => []));
+    if (made) return made;
+    const now = deps.now();
+    if (deps.aborted?.() || now >= deadline) return undefined;
+    // The last check lands at the deadline, not up to a poll past it.
+    await deps.sleep(Math.min(POLL_MS, deadline - now));
+  }
+}
+
 /** Waits for the box until it is no longer starting, or opts.waitMs passed: its state as the result. */
 async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
   const { provider, name, fresh, billingUrl, undoRole, note } = f;
@@ -1786,8 +1864,9 @@ export function grafanaOAuthUrl(dashboardUrl: string | null): string | null {
 
 /** The platform side of mon deploy, for the CLI and the MCP server alike. */
 export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean; agent?: boolean }) {
-  const rpc = <T>(fn: string, body: Record<string, unknown> = {}) =>
-    callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope });
+  const rpc = <T>(fn: string, body: Record<string, unknown> = {}, timeoutMs?: number) =>
+    callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope,
+      ...(timeoutMs ? { timeoutMs, timeoutCeilingMs: timeoutMs } : {}) });
   // The console links of a row: the org alias once, the projects again only while one is not found.
   let orgAlias: Promise<string | undefined> | undefined;
   let projects: Promise<ProjectListItem[]> | undefined;
@@ -1814,7 +1893,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     verifyTls: verifyCollectorTls,
     list: () => rpc<Database[]>("cloud_monitoring_list"),
     links: withLinks,
-    create: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body),
+    create: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_connect", body, p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS),
     disconnect: (id: string) => rpc("cloud_monitoring_disconnect", { instance_id: id }),
     setVcpus: (id: string, vcpus: number) => rpc<{ vcpus: number; previous_vcpus: number | null; changed: boolean; aas_status: string }>("cloud_monitoring_set_vcpus", { instance_id: id, vcpus }),
     resetLock: (server: string) => rpc<{ lock_id: string }>("cloud_monitoring_reset_lock", { server }),

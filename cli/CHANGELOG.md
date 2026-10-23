@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- `pgai mon deploy` no longer reports "✗ Create the monitoring box … request timed out after 25000ms" when the box
+  request is slow but the platform creates the box (https://gitlab.com/postgres-ai/postgresai/-/work_items/443). The
+  box request may take 55 s; with no answer (a timeout, a proxy's 502/504/524) deploy says it is still creating the box
+  and looks for it for up to 5 minutes (30 s from the MCP tool), whatever `--wait` is, then follows it as usual. A box
+  that does not appear ends with `action_required` (exit 3) and the next step, instead of `failed`. A 5xx the platform
+  raised (with its SQLSTATE, such as PT503) is still reported at once, as before.
+
 ### Added
 
 - `pgai mon deploy --cloud aws|hetzner` (https://gitlab.com/postgres-ai/platform-all/-/issues/972): the platform decides
