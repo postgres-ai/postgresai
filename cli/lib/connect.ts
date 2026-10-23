@@ -786,7 +786,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
     }
   }
   if (row && opts.resetPassword) {
-    return { status: "action_required", provider, name, id: row.id, next: `${name} is already monitored, and its monitoring uses the current password: ${disconnectEach([deleteRef(row, rows)])} first` };
+    return { status: "action_required", provider, name, id: row.id, next: `${row.name} is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: ${disconnectEach([deleteRef(row, rows)])}` };
   }
   if (row && key) {
     const found = await findOrg();
@@ -916,7 +916,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
       if (lockId) {
         const now = await deps.list();
         const same = findDatabase(now);
-        if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${name} is already monitored, and its monitoring uses the current password: ${disconnectEach([deleteRef(same, now)])} first` };
+        if (same) return { status: "action_required", provider, name, id: same.id, ...billing, next: `${same.name} is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: ${disconnectEach([deleteRef(same, now)])}` };
         const others = othersOnServer(now);
         if (others.length) return { ...cutOff(others, now), ...billing };
       }

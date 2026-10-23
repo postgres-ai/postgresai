@@ -928,11 +928,13 @@ describe("mon deploy", () => {
     expect(calls).toEqual([]);
   });
 
+  // The platform names the instance itself (platform-all#993: "abc123 (ClickHouse)"):
+  // the hint names it that way, and ends with the command so the line can be copied.
   test("--reset-password for a database already monitored: nothing reset, delete first", async () => {
-    const { deps, calls } = fake({ rows: [row("active")] });
+    const { deps, calls } = fake({ rows: [row("active", { name: "abc123 (ClickHouse)", cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "postgres" })] });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1",
-      next: `${CH_NAME} is already monitored, and its monitoring uses the current password: pgai mon instances delete ${CH_NAME} --yes first`,
+      next: "abc123 (ClickHouse) is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: pgai mon instances delete 'abc123 (ClickHouse)' --yes",
     });
     expect(calls).toEqual(["list"]);
   });
@@ -1108,7 +1110,15 @@ describe("mon deploy", () => {
     const { deps } = fake();
     deps.list = async () => [row("active", { cluster: `${SERVER}:5432`, database: "postgres" }), row("active", { id: "i-2" })];
     expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
-      `${CH_NAME} is already monitored, and its monitoring uses the current password: pgai mon instances delete i-1 --yes first`);
+      `${CH_NAME} is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: pgai mon instances delete i-1 --yes`);
+  });
+
+  test("--reset-password: a box connected under the lock whose name another box has is deleted by id", async () => {
+    const { deps } = fake();
+    let listed = 0;
+    deps.list = async () => (listed++ === 0 ? [] : [row("launch_requested", { cluster: `${SERVER}:5432`, database: "postgres" }), row("active", { id: "i-2" })]);
+    expect((await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).next).toBe(
+      `${CH_NAME} is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: pgai mon instances delete i-1 --yes`);
   });
 
   test("--reset-password against a platform without the lock: nothing reset, PGAI_MON_PASSWORD instead", async () => {
@@ -1137,10 +1147,10 @@ describe("mon deploy", () => {
   });
 
   test("--reset-password: the same database connected by the run that held the lock is seen under it", async () => {
-    const { deps, calls } = fake({ rows: [undefined, row("launch_requested")] });
+    const { deps, calls } = fake({ rows: [undefined, row("launch_requested", { name: "abc123 (ClickHouse)", cluster: "abc123.us-east-1.aws.pg.clickhouse.cloud:5432", database: "postgres" })] });
     expect(await connect(CH, { resetPassword: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "clickhouse", name: CH_NAME, id: "i-1", ...FREE,
-      next: `${CH_NAME} is already monitored, and its monitoring uses the current password: pgai mon instances delete ${CH_NAME} --yes first`,
+      next: "abc123 (ClickHouse) is already monitored, and its monitoring uses the current password. Delete it, then run this deploy again with --reset-password: pgai mon instances delete 'abc123 (ClickHouse)' --yes",
     });
     expect(calls).toEqual(["list", "check clickhouse", `resetLock ${SERVER}:5432`, "list", "resetUnlock l-1"]);
   });
