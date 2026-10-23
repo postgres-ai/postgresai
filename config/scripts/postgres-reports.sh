@@ -24,9 +24,6 @@ use_current_time="${USE_CURRENT_TIME:-false}"
 
 pgwatch_config_path="${REPORTER_PGWATCH_CONFIG_PATH:-/app/.pgwatch-config}"
 api_url="${REPORTER_API_URL:-}"
-# Project name: env var takes priority, then config file. No default — uploads
-# require a project name (the hardcoded "postgres-ai-monitoring" default was removed).
-project_name="${REPORTER_PROJECT_NAME:-}"
 
 sleep_seconds() {
   local s
@@ -103,14 +100,6 @@ fi
 
 export REPORTER_API_URL="${api_url}"
 
-# Resolve project name: env var > config file. No default — uploads require a
-# project name (the hardcoded "postgres-ai-monitoring" default was removed).
-if [[ -z "${project_name}" ]]; then
-  if config_project_name="$(read_project_name)"; then
-    project_name="${config_project_name}"
-  fi
-fi
-
 echo "postgres-reports: initial_delay_seconds=${initial_delay_seconds}, interval_seconds=${interval_seconds}, readiness_timeout_seconds=${readiness_timeout_seconds}"
 sleep_seconds "$initial_delay_seconds"
 
@@ -125,6 +114,14 @@ while true; do
   reporter_args=(--prometheus-url "${prometheus_url}" --output "${output_path}")
   if [[ "${use_current_time}" == "true" ]]; then
     reporter_args+=(--use-current-time)
+  fi
+
+  # Project name: env var > config file, read each cycle: a platform-provisioned
+  # box learns its project only when the platform adopts the instance, after
+  # this container has started. No default: uploads require a project name.
+  project_name="${REPORTER_PROJECT_NAME:-}"
+  if [[ -z "${project_name}" ]] && config_project_name="$(read_project_name)"; then
+    project_name="${config_project_name}"
   fi
 
   if api_key="$(read_api_key)"; then

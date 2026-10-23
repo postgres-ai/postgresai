@@ -411,3 +411,59 @@ def test_failed_run_is_retried_after_a_back_off(tmp_path):
     assert sleeps == ["180", "1800", "1800"]
     assert [c.split()[1] for c in calls] == ["reporter.wait_ready"] + ["reporter.postgres_reports"] * 2
     assert "run failed; retrying in 1800s" in proc.stderr
+
+
+@pytest.mark.unit
+def test_project_name_written_after_start_is_used(tmp_path):
+    """A platform-provisioned box learns its project only when the platform
+    adopts the instance, after `compose up` has started this container. The
+    name must be read each cycle, not once at start, or every cycle skips the
+    upload (platform-all#980: a pre-baked box has no later Docker restart that
+    used to hide this)."""
+    config = tmp_path / ".pgwatch-config"
+    config.write_text("api_key=secret-token-123\n")
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    sleeps = tmp_path / "sleeps.txt"
+    (stub_dir / "python").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$STUB_CALLS"\n'
+        "exit 0\n"
+    )
+    # The initial delay is when adoption writes the project name; the next
+    # sleep (after the first cycle) ends the script.
+    (stub_dir / "sleep").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$1" >> "$STUB_SLEEPS"\n'
+        f'[ "$(wc -l < "$STUB_SLEEPS")" -ge 2 ] && exit {STUB_EXIT_CODE}\n'
+        'printf \'project_name=2492\\n\' >> "$REPORTER_PGWATCH_CONFIG_PATH"\n'
+        "exit 0\n"
+    )
+    for name in ("python", "sleep"):
+        (stub_dir / name).chmod(0o755)
+    env = os.environ.copy()
+    for key in ("REPORTER_PROJECT_NAME", "REPORTER_INITIAL_DELAY_SECONDS", "REPORTER_INTERVAL_SECONDS",
+                "REPORTER_RETRY_SECONDS", "USE_CURRENT_TIME"):
+        env.pop(key, None)
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "STUB_CALLS": str(calls),
+            "STUB_SLEEPS": str(sleeps),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(config),
+            "REPORTER_READINESS_TIMEOUT_SECONDS": "0",
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "r.json"),
+        }
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=TIMEOUT_SECONDS,
+    )
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    reports = [c for c in calls.read_text().splitlines() if "reporter.postgres_reports" in c]
+    assert len(reports) == 1, calls.read_text()
+    assert "--project-name 2492" in reports[0]
+    assert "--no-upload" not in reports[0]
+    assert "project name is required" not in proc.stderr
