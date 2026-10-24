@@ -113,6 +113,8 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
   let text = ''
   const errors: Error[] = []
   const labels = `{cluster="${escapeLabel(target.cluster)}",node_name="${escapeLabel(target.nodeName)}"}`
+  const providerLabels = `{cluster="${escapeLabel(target.cluster)}",node_name="${escapeLabel(target.nodeName)}",provider="Amazon RDS"}`
+  const providerMetric = 'host_provider_info'
   for (const [key, time] of state) if (time < start.getTime() - 15 * 60_000) state.delete(key)
   // Only finite numbers reach the import body: a value from a log event is
   // untrusted text, and a string with a newline would add lines of its own.
@@ -123,6 +125,13 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
       text += `${name}${labels} ${value} ${time}\n`
       state.set(key, time)
     }
+  }
+  // A fixed, non-sensitive identity series lets the dashboard name the
+  // provider without displaying account, region, instance or host IDs.
+  const providerKey = `${providerMetric}${providerLabels} ${end.getTime()}`
+  if (!state.has(providerKey)) {
+    text += `${providerMetric}${providerLabels} 1 ${end.getTime()}\n`
+    state.set(providerKey, end.getTime())
   }
   const result: GetMetricDataCommandOutput = await clients.cloudwatch.send(new GetMetricDataCommand({ StartTime: start, EndTime: end, MetricDataQueries }))
   for (const [name, , scale = 1] of metrics) {

@@ -1,6 +1,6 @@
 # Host metrics vocabulary
 
-Every managed-Postgres provider we collect host metrics from lands in VictoriaMetrics under the same `host_*` names, in the same units, with exactly two labels: `cluster` and `node_name`, equal to the pgwatch tags of the target in `instances.yml`. Dashboards, alerts and sizing rules read `host_*` only. They never read a provider's raw series.
+Every managed-Postgres provider we collect host metrics from lands in VictoriaMetrics under the same `host_*` names, in the same units, with `cluster` and `node_name` equal to the pgwatch tags of the target in `instances.yml`. `host_provider_info` also carries a fixed `provider` label (`Amazon RDS`, `Supabase`, or `ClickHouse`) for safe dashboard branding; it never contains an account, organization, service, instance, host, or credential identifier. Dashboards, alerts and sizing rules read `host_*` only. They never read a provider's raw series.
 
 | Provider | Raw source | How it becomes `host_*` | Labels from |
 | --- | --- | --- | --- |
@@ -18,6 +18,7 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 
 | Name | Unit | RDS / Aurora | Supabase | ClickHouse |
 | --- | --- | --- | --- | --- |
+| `host_provider_info` | identity | constant 1, provider `Amazon RDS` | constant 1, provider `Supabase` | constant 1, provider `ClickHouse` |
 | `host_cpu_utilization_percent` | percent | CPUUtilization | 100 × (1 − idle share of `cpu_seconds_total`) | 100 × (1 − idle share of `CPUSeconds_Total`) |
 | `host_os_cpu_percent` | percent | EM cpuUtilization.total | – | – |
 | `host_os_cpu_iowait_percent` | percent | EM cpuUtilization.wait | iowait share of `cpu_seconds_total` | iowait share of `CPUSeconds_Total` |
@@ -43,7 +44,7 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 
 ## Dashboard
 
-Dashboard 1 has one collapsed **Host** row, second to last on the page. It has five panels: CPU utilization, Memory, Storage, Disk IOPS /s and Network /s. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none of them is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. `rds-host-stats` requests no CloudWatch metric that no panel reads: GetMetricData bills per metric.
+Dashboard 1 has one collapsed **Host** row, second to last on the page. It starts with a provider identity panel, then CPU utilization, Memory and Storage. Disk read IOPS, disk write IOPS, network receive and network transmit each have their own full-width chart so series with different operational limits are never overlaid. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. `rds-host-stats` requests no CloudWatch metric that no panel reads: GetMetricData bills per metric.
 
 DB load (`host_db_load`, RDS and Aurora with Performance Insights on) has no Supabase or ClickHouse equivalent, so it is not in the Host row. It has its own collapsed row after Host, **RDS DB load (Performance Insights)**. Grafana 12.3 cannot hide a row that has no data (a row repeated over an empty variable is still rendered once), so on Supabase, ClickHouse, self-managed nodes and RDS without Performance Insights this row stays closed and empty.
 

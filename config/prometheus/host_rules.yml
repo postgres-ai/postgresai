@@ -22,6 +22,10 @@ groups:
   - name: host-supabase
     interval: 60s
     rules:
+      - record: host_provider_info
+        labels:
+          provider: Supabase
+        expr: max by (cluster, node_name) (labels_equal(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}, "supabase_identifier", "supabase_project_ref")) * 0 + 1
       - record: host_cpu_utilization_percent
         expr: 100 * (1 - sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="idle"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")))
       - record: host_os_cpu_iowait_percent
@@ -54,6 +58,10 @@ groups:
   - name: host-clickhouse
     interval: 60s
     rules:
+      - record: host_provider_info
+        labels:
+          provider: ClickHouse
+        expr: max by (cluster, node_name) (PostgresServer_MemoryLimitBytes{job=~"clickhouse-.+", cluster!="", node_name!=""}) * 0 + 1
       - record: host_cpu_utilization_percent
         expr: 100 * (1 - sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!="", mode="idle"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
       - record: host_os_cpu_iowait_percent

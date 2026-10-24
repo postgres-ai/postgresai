@@ -3625,6 +3625,70 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
+          "description": "Database hosting provider. This fixed label identifies Amazon RDS, Supabase, or ClickHouse without exposing account, organization, service, instance, host, or credential identifiers.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 24,
+            "x": 0,
+            "y": 143
+          },
+          "id": 63,
+          "options": {
+            "colorMode": "none",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "name",
+            "wideLayout": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_provider_info{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "instant": true,
+              "legendFormat": "{{provider}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Provider",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
           "description": "Share of CPU time busy and waiting on I/O. RDS: CloudWatch CPUUtilization, and the OS view from Enhanced Monitoring when enabled. Supabase and ClickHouse: derived from per-mode CPU seconds.",
           "fieldConfig": {
             "defaults": {
@@ -3651,7 +3715,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 143
+            "y": 147
           },
           "id": 54,
           "options": {
@@ -3740,7 +3804,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 143
+            "y": 147
           },
           "id": 55,
           "options": {
@@ -3860,9 +3924,9 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 12,
+            "w": 24,
             "x": 0,
-            "y": 158
+            "y": 162
           },
           "id": 56,
           "options": {
@@ -3925,7 +3989,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Read and write operations per second, summed over the host's disks. Aurora cluster volume IOPS are 5-minute counts divided by 300 seconds. Completed 5-minute buckets appear at least 10 minutes behind the current time; use a time range of at least 30 minutes.",
+          "description": "Read operations per second. Aurora cluster-volume values are 5-minute counts divided by 300 seconds and appear at least 10 minutes behind current time.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3949,11 +4013,11 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 158
+            "w": 24,
+            "x": 0,
+            "y": 170
           },
-          "id": 57,
+          "id": 64,
           "options": {
             "legend": {
               "calcs": [
@@ -3989,21 +4053,77 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_disk_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "write",
+              "expr": "host_volume_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "volume read (Aurora)",
               "range": true,
               "refId": "B"
+            }
+          ],
+          "title": "Disk read IOPS /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Write operations per second. Aurora cluster-volume values are 5-minute counts divided by 300 seconds and appear at least 10 minutes behind current time.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "iops"
             },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 178
+          },
+          "id": 65,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
             {
               "datasource": {
                 "type": "prometheus",
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_volume_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "volume read (Aurora)",
+              "expr": "host_disk_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "write",
               "range": true,
-              "refId": "C"
+              "refId": "A"
             },
             {
               "datasource": {
@@ -4014,10 +4134,10 @@
               "expr": "host_volume_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "volume write (Aurora)",
               "range": true,
-              "refId": "D"
+              "refId": "B"
             }
           ],
-          "title": "Disk IOPS /s",
+          "title": "Disk write IOPS /s",
           "type": "timeseries"
         },
         {
@@ -4025,7 +4145,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Network receive and transmit throughput. RDS and Supabase exclude loopback; ClickHouse counters include it.",
+          "description": "Network receive throughput. Amazon RDS and Supabase exclude loopback; ClickHouse includes it.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4049,11 +4169,11 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 12,
+            "w": 24,
             "x": 0,
-            "y": 166
+            "y": 186
           },
-          "id": 60,
+          "id": 66,
           "options": {
             "legend": {
               "calcs": [
@@ -4082,7 +4202,63 @@
               "legendFormat": "receive",
               "range": true,
               "refId": "A"
+            }
+          ],
+          "title": "Network receive /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "Network transmit throughput. Amazon RDS and Supabase exclude loopback; ClickHouse includes it.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "binBps"
             },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 194
+          },
+          "id": 67,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
             {
               "datasource": {
                 "type": "prometheus",
@@ -4092,10 +4268,10 @@
               "expr": "host_network_transmit_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "transmit",
               "range": true,
-              "refId": "B"
+              "refId": "A"
             }
           ],
-          "title": "Network /s",
+          "title": "Network transmit /s",
           "type": "timeseries"
         }
       ],
