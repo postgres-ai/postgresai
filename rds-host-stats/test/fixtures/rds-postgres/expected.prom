@@ -1,3 +1,4 @@
+host_provider_info{cluster="ci",node_name="node-01",provider="Amazon RDS"} 1 1790892960000
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 48.074999999999996 1790892300000
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 27.76620389660172 1790892360000
 host_cpu_utilization_percent{cluster="ci",node_name="node-01"} 17.125285421423694 1790892420000

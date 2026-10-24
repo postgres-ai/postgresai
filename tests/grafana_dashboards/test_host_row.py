@@ -30,6 +30,7 @@ DASHBOARDS = [
 
 # title -> the host_* families charted on that panel, in order.
 PANEL_FAMILIES = {
+    "Provider": ["host_provider_info"],
     "CPU utilization": [
         "host_cpu_utilization_percent",
         "host_os_cpu_percent",
@@ -48,16 +49,16 @@ PANEL_FAMILIES = {
         "host_local_storage_free_bytes",
         "host_volume_used_bytes",
     ],
-    "Disk IOPS /s": [
+    "Disk read IOPS /s": [
         "host_disk_read_iops",
-        "host_disk_write_iops",
         "host_volume_read_iops",
+    ],
+    "Disk write IOPS /s": [
+        "host_disk_write_iops",
         "host_volume_write_iops",
     ],
-    "Network /s": [
-        "host_network_receive_bytes_per_second",
-        "host_network_transmit_bytes_per_second",
-    ],
+    "Network receive /s": ["host_network_receive_bytes_per_second"],
+    "Network transmit /s": ["host_network_transmit_bytes_per_second"],
 }
 
 # title -> (unit, legend sortBy), per the dashboards README: rates sort by
@@ -66,8 +67,10 @@ PANELS = {
     "CPU utilization": ("percent", "Max"),
     "Memory": ("bytes", "Last *"),
     "Storage": ("bytes", "Last *"),
-    "Disk IOPS /s": ("iops", "Mean"),
-    "Network /s": ("binBps", "Mean"),
+    "Disk read IOPS /s": ("iops", "Mean"),
+    "Disk write IOPS /s": ("iops", "Mean"),
+    "Network receive /s": ("binBps", "Mean"),
+    "Network transmit /s": ("binBps", "Mean"),
 }
 
 
@@ -145,6 +148,27 @@ def test_host_row_charts_each_family_on_its_panel(path):
             assert expr == f'{_family(expr)}{{cluster="$cluster_name", node_name="$node_name"}}', expr
 
 
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
+def test_provider_identity_is_safe_and_visible(path):
+    panel = _host_panels(path)["Provider"]
+    assert panel["type"] == "stat"
+    assert panel["targets"][0]["legendFormat"] == "{{provider}}"
+    assert panel["options"]["textMode"] == "name"
+    description = panel["description"].lower()
+    for sensitive in ("account", "organization", "service", "instance", "host", "credential"):
+        assert sensitive in description
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
+def test_directional_io_panels_are_separate_and_stacked(path):
+    host = _host_panels(path)
+    titles = ["Disk read IOPS /s", "Disk write IOPS /s", "Network receive /s", "Network transmit /s"]
+    panels = [host[title] for title in titles]
+    assert all(panel["gridPos"]["x"] == 0 and panel["gridPos"]["w"] == 24 for panel in panels)
+    assert [panel["gridPos"]["y"] for panel in panels] == sorted(panel["gridPos"]["y"] for panel in panels)
+    assert len({panel["gridPos"]["y"] for panel in panels}) == len(panels)
+
+
 def test_every_host_panel_has_data_from_every_provider():
     providers = _providers()
     for title, families in PANEL_FAMILIES.items():
@@ -164,6 +188,8 @@ def test_vocabulary_doc_lists_exactly_what_providers_write():
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
 def test_host_panels_do_not_bridge_collector_outages(path):
     for title, panel in _host_panels(path).items():
+        if panel["type"] != "timeseries":
+            continue
         span = panel["fieldConfig"]["defaults"]["custom"]["spanNulls"]
         assert isinstance(span, int) and span <= 180000, title
 
@@ -174,6 +200,8 @@ def test_host_table_legends_fit_their_rows(path):
     # to four rows, a 15-unit one six. Memory has six series, so it and its
     # neighbour on the row need the taller panel.
     for title, panel in _host_panels(path).items():
+        if panel["type"] != "timeseries":
+            continue
         needed = 15 if len(panel["targets"]) >= 5 else 8
         assert panel["gridPos"]["h"] >= needed, title
 
@@ -192,7 +220,7 @@ def test_host_percent_panels_use_soft_axis_limits(path):
     # provider reports out of range.
     for title, panel in _host_panels(path).items():
         defaults = panel["fieldConfig"]["defaults"]
-        if defaults["unit"] != "percent":
+        if defaults.get("unit") != "percent":
             continue
         assert "min" not in defaults and "max" not in defaults, title
         assert defaults["custom"]["axisSoftMin"] == 0, title

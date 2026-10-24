@@ -167,6 +167,8 @@ async function runTicks(env: Record<string, string | undefined>, ticks: number) 
   return { stdout, stderr: await new Response(run.stderr).text(), alive }
 }
 
+const providerLine = /^host_provider_info\{cluster="c",node_name="n",provider="Amazon RDS"\} 1 \d+\n$/
+
 // State is committed only after the write succeeds, so the samples of a tick
 // whose import failed are sent again on the next one.
 test('re-sends the samples of a failed VictoriaMetrics write on the next tick', async () => {
@@ -175,8 +177,14 @@ test('re-sends the samples of a failed VictoriaMetrics write on the next tick', 
     const { stdout, stderr, alive } = await runTicks(stack.env, 2)
     expect(alive).toBe(true)
     expect(stderr).toContain('Prometheus import failed: HTTP 500')
-    expect(stdout).toBe('samples written: 0\nsamples written: 1\n')
-    expect(stack.imports).toEqual([stack.sample, stack.sample])
+    // Each tick also writes the provider identity series, stamped at its
+    // minute boundary, which can move between the two ticks.
+    expect(stdout).toBe('samples written: 0\nsamples written: 2\n')
+    expect(stack.imports).toHaveLength(2)
+    for (const body of stack.imports) {
+      expect(body.slice(0, -stack.sample.length)).toMatch(providerLine)
+      expect(body.slice(-stack.sample.length)).toBe(stack.sample)
+    }
   } finally {
     void stack.server.stop(true)
   }
