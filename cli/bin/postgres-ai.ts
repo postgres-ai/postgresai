@@ -63,6 +63,7 @@ import * as authServer from "../lib/auth-server";
 import { ORG_ENV, ORG_ID_ENV, OrgScopeError, configOrgIdForBody, getActiveOrgScope, listOrgs, createOrg, orgScopeHeaders, requireOrgScope, resolveOrgIdForBody, resolveOrgScope, setActiveOrgScope, type OrgOptions, type OrgScope } from "../lib/org-scope";
 import { maskSecret } from "../lib/util";
 import { raiseConnectAttemptTimeout } from "../lib/connect-timeout";
+import { prepareDbPrivilegeAdvice, terminalDiagnosticLine } from "../lib/prepare-error";
 import { FEEDBACK_SUPPRESS_ENV, FEEDBACK_URL, feedbackJson, feedbackMessage, maybeEmitFeedbackTip } from "../lib/feedback";
 import { createInterface } from "readline";
 import { Writable } from "stream";
@@ -2022,10 +2023,10 @@ program
               console.error(`  Code: ${errAny.code}`);
             }
             if (typeof errAny.detail === "string" && errAny.detail) {
-              console.error(`  Detail: ${errAny.detail}`);
+              console.error(`  Detail: ${terminalDiagnosticLine(errAny.detail)}`);
             }
             if (typeof errAny.hint === "string" && errAny.hint) {
-              console.error(`  Hint: ${errAny.hint}`);
+              console.error(`  Hint: ${terminalDiagnosticLine(errAny.hint)}`);
             }
             if (typeof errAny.httpStatus === "number") {
               console.error(`  HTTP Status: ${errAny.httpStatus}`);
@@ -2034,14 +2035,8 @@ program
 
           // Provide context hints for common errors
           if (errAny && typeof errAny === "object" && typeof errAny.code === "string") {
-            if (errAny.code === "42501") {
-              if (failedStep === "01.role") {
-                console.error("  Context: role creation/update requires CREATEROLE or superuser");
-              } else if (failedStep === "03.permissions") {
-                console.error("  Context: grants/view/search_path require sufficient GRANT/DDL privileges");
-              }
-              console.error("  Fix: ensure your Supabase access token has sufficient permissions");
-              console.error("  Tip: run with --print-sql to review the exact SQL plan");
+            for (const line of prepareDbPrivilegeAdvice(errAny.code, failedStep, message, true)) {
+              console.error(`  ${line}`);
             }
             // Schema already exists (42P06) or other duplicate object errors
             if (errAny.code === "42P06" || (message.includes("already exists") && failedStep === "03.permissions")) {
@@ -2348,23 +2343,16 @@ program
             console.error(`  Code: ${errAny.code}`);
           }
           if (typeof errAny.detail === "string" && errAny.detail) {
-            console.error(`  Detail: ${errAny.detail}`);
+            console.error(`  Detail: ${terminalDiagnosticLine(errAny.detail)}`);
           }
           if (typeof errAny.hint === "string" && errAny.hint) {
-            console.error(`  Hint: ${errAny.hint}`);
+            console.error(`  Hint: ${terminalDiagnosticLine(errAny.hint)}`);
           }
         }
         for (const w of legacyWarnings) console.error(`⚠ ${w}`);
         if (errAny && typeof errAny === "object" && typeof errAny.code === "string") {
-          if (errAny.code === "42501") {
-            if (failedStep === "01.role") {
-              console.error("  Context: role creation/update requires CREATEROLE or superuser");
-            } else if (failedStep === "03.permissions") {
-              console.error("  Context: grants/view/search_path require sufficient GRANT/DDL privileges");
-            }
-            console.error("  Fix: connect as a superuser (or a role with CREATEROLE and sufficient GRANT privileges)");
-            console.error("  Fix: on managed Postgres, use the provider's admin/master user");
-            console.error("  Tip: run with --print-sql to review the exact SQL plan");
+          for (const line of prepareDbPrivilegeAdvice(errAny.code, failedStep, message, false)) {
+            console.error(`  ${line}`);
           }
           // Schema already exists (42P06) or other duplicate object errors
           if (errAny.code === "42P06" || (message.includes("already exists") && failedStep === "03.permissions")) {

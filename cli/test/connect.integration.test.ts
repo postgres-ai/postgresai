@@ -330,12 +330,25 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       }
     });
 
-    test("passes the check but a later step fails (postgres_ai belongs to someone else): the error, and no role left behind", async () => {
+    test("refuses a postgres_ai schema owned by another role and leaves no monitor role", async () => {
       const s = await creator([...ROLE_GRANTS, CREATE, "create schema postgres_ai"]);
       try {
-        await expect(prepareDatabase(s.url, "self-managed")).rejects.toThrow('Failed at step "03.permissions": permission denied for schema postgres_ai');
+        await expect(prepareDatabase(s.url, "self-managed")).rejects.toThrow('Failed at step "03.permissions": postgres_ai schema must be owned by the prepare-db administrator');
+        const proc = Bun.spawn([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"),
+          "prepare-db", s.url, "--provider", "generic", "--skip-optional-permissions",
+          "--monitoring-user", "pgai_cli_refusal_test"], {
+          stdout: "pipe", stderr: "pipe",
+          env: { ...process.env, PGAI_MON_PASSWORD: "temporary-test-only" },
+        });
+        const stderr = await new Response(proc.stderr).text();
+        expect(await proc.exited).not.toBe(0);
+        expect(stderr).toContain("Fix: ask a DBA to inspect the named schema ownership");
+        expect(stderr).not.toContain("Fix: connect as a superuser");
+        const membership = await s.c.query("select pg_has_role('pgai_cli_refusal_test', 'pg_monitor', 'member') as granted");
+        expect(membership.rows[0].granted).toBe(false);
         expect(await s.roles()).toBe(0);
       } finally {
+        await s.c.query("drop role if exists pgai_cli_refusal_test");
         await s.c.end();
       }
     });
