@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security
+
+- `prepare-db` refuses a preexisting `postgres_ai` schema unless the connecting administrator owns it, no other role
+  (including PUBLIC) has CREATE there, and every object in it belongs to that administrator. This includes operators,
+  types, and other object kinds beyond tables and functions, including objects owned by predefined roles that have no
+  ownership dependency row. Extensions installed inside `postgres_ai` are also refused. Existing installations using a `pg_database_owner`-owned
+  schema may need a DBA to inspect the schema and transfer ownership before running `prepare-db`; the CLI prints the
+  specific owner, grantee, object or extension and a recovery hint. Do not transfer ownership before inspecting existing objects
+  and grants.
+
 ### Fixed
 
 - `pgai mon deploy` no longer reports "✗ Create the monitoring box … request timed out after 25000ms" when the box

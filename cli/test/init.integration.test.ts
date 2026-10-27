@@ -361,6 +361,81 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
+  test("prepare-db refuses a precreated monitoring schema and foreign-owned helper", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query("create role pgai_schema_squatter");
+      await admin.query("grant create on database testdb to pgai_schema_squatter");
+      await admin.query("set role pgai_schema_squatter");
+      await admin.query("create schema postgres_ai");
+      await admin.query("create function postgres_ai.table_describe(text) returns text language sql as 'select current_user::text'");
+      await admin.query("reset role");
+
+      const { buildInitPlan, applyInitPlan } = await import("../lib/init");
+      const plan = await buildInitPlan({
+        database: "testdb", monitoringPassword: "temporary-test-only", includeOptionalPermissions: false,
+      });
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/schema must be owned by/);
+      const noMonitorGrant = await admin.query("select not pg_has_role('postgres_ai_mon', 'pg_monitor', 'member') as safe");
+      expect(noMonitorGrant.rows[0].safe).toBe(true);
+
+      await admin.query("alter schema postgres_ai owner to postgres");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/objects owned by another role/);
+      await admin.query("alter function postgres_ai.table_describe(text) owner to postgres");
+
+      await admin.query("grant create on schema postgres_ai to pgai_schema_squatter");
+      await admin.query("set role pgai_schema_squatter");
+      await admin.query("create view postgres_ai.foreign_view as select 1 as n");
+      await admin.query("reset role");
+      await admin.query("revoke create on schema postgres_ai from pgai_schema_squatter");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/objects owned by another role/);
+      await admin.query("drop view postgres_ai.foreign_view");
+
+      await admin.query("grant create on schema postgres_ai to pgai_schema_squatter");
+      await admin.query("set role pgai_schema_squatter");
+      await admin.query("create operator postgres_ai.## (leftarg = integer, rightarg = integer, procedure = pg_catalog.int4pl)");
+      await admin.query("reset role");
+      await admin.query("revoke create on schema postgres_ai from pgai_schema_squatter");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/objects owned by another role/);
+      await admin.query("drop operator postgres_ai.## (integer, integer)");
+
+      // Predefined role owners do not get pg_shdepend ownership rows. A
+      // preexisting function owned by pg_database_owner must still be refused.
+      await admin.query("create function postgres_ai.pinned_owner_probe() returns integer language sql as 'select 1'");
+      await admin.query("alter function postgres_ai.pinned_owner_probe() owner to pg_database_owner");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/objects owned by another role/);
+      const noPinnedGrant = await admin.query("select not pg_has_role('postgres_ai_mon', 'pg_monitor', 'member') as safe");
+      expect(noPinnedGrant.rows[0].safe).toBe(true);
+      await admin.query("drop function postgres_ai.pinned_owner_probe()");
+
+      // Extension members may be owned by bootstrap superuser oid 10 and
+      // therefore have no pg_shdepend owner row. The schema itself must still
+      // reject an extension in the monitoring role's search path.
+      await admin.query("create extension pg_trgm with schema postgres_ai");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/schema contains an extension/);
+      await admin.query("drop extension pg_trgm");
+
+      await admin.query("grant create on schema postgres_ai to pgai_schema_squatter");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/grants CREATE to another role/);
+      await admin.query("revoke create on schema postgres_ai from pgai_schema_squatter");
+      await admin.query("grant create on schema postgres_ai to public");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/grants CREATE to another role/);
+      await admin.query("revoke create on schema postgres_ai from public");
+      await applyInitPlan({ client: admin, plan });
+      const owner = await admin.query("select pg_get_userbyid(proowner) as owner from pg_proc where oid = 'postgres_ai.table_describe(text)'::regprocedure");
+      expect(owner.rows[0].owner).toBe("postgres");
+
+      await admin.query("drop schema postgres_ai cascade");
+      await admin.query("create schema postgres_ai authorization pg_database_owner");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/schema must be owned by/);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   test("role SQL authenticates with SCRAM even when password_encryption is md5", async () => {
     pg = await createTempPostgres();
     const admin = new Client({ connectionString: pg.adminUri });
@@ -796,7 +871,7 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
-  test("prepare-db reports legacy explain_generic when another role owns it", async () => {
+  test("prepare-db refuses a foreign schema while verify reports legacy helpers", async () => {
     pg = await createTempPostgres();
     const c = new Client({ connectionString: pg.adminUri });
 
@@ -821,22 +896,21 @@ $$`);
       `);
       const adminUri = pg.adminUri.replace("postgres:postgrespw@", "second_admin:adminpw@");
 
-      // Every release that installed explain_generic also installed table_describe with
-      // the same owner, so step 06.helpers fails. The error must name the legacy helper.
+      // The schema guard rejects the foreign owner before granting the monitoring
+      // role access. Verify still reports the installed legacy helpers separately.
       const stillInstalled = /explain_generic\(text, text, text\) is still installed/;
       const describeInstalled = /table_describe\(text\) is still installed/;
       const warning = (f: string) =>
         `legacy SECURITY DEFINER helper ${f} is still installed; its owner or a superuser must drop it, then re-run prepare-db`;
       const failed = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
       expect(failed.status).toBe(1);
-      expect(failed.stderr).toMatch(/Failed at step "06\.helpers"/);
-      expect(failed.stderr).toMatch(stillInstalled);
-      expect(failed.stderr).toMatch(describeInstalled);
+      expect(failed.stderr).toMatch(/Failed at step "03\.permissions"/);
+      expect(failed.stderr).toMatch(/schema must be owned by the prepare-db administrator/);
 
       const failedJson = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions", "--json"]);
       expect(failedJson.status).toBe(1);
       const failure = JSON.parse(failedJson.stdout);
-      expect(failure.error.step).toBe("06.helpers");
+      expect(failure.error.step).toBe("03.permissions");
       expect(failure.warnings).toEqual([
         warning("postgres_ai.explain_generic(text, text, text)"),
         warning("postgres_ai.table_describe(text)"),
@@ -853,7 +927,7 @@ $$`);
       expect(describeLeft.status).toBe(1);
       expect(describeLeft.stderr).toMatch(describeInstalled);
 
-      // With only explain_generic left to another owner, prepare-db warns and continues.
+      // With only explain_generic left to another owner, prepare-db refuses.
       await c.query(`
         drop function postgres_ai.table_describe(text);
         create function postgres_ai.explain_generic(text, text, text)
@@ -868,13 +942,9 @@ $$`);
         warning("postgres_ai.explain_generic(text, text, text)"),
       ]));
       expect(describeGone.stdout + describeGone.stderr).not.toMatch(describeInstalled);
-      const r = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
-      expect(r.status).toBe(0);
-      expect(r.stderr).toMatch(stillInstalled);
-
-      const json = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions", "--json"]);
-      expect(json.status).toBe(0);
-      expect(JSON.parse(json.stdout).warnings.some((w: string) => stillInstalled.test(w))).toBe(true);
+      const stillBlocked = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(stillBlocked.status).toBe(1);
+      expect(stillBlocked.stderr).toMatch(/schema must be owned by the prepare-db administrator/);
 
       const verified = runCliInit([adminUri, "--verify", "--skip-optional-permissions"]);
       expect(verified.status).toBe(1);
@@ -890,7 +960,16 @@ $$`);
         "select to_regprocedure('postgres_ai.explain_generic(text,text,text)') as legacy, to_regprocedure('postgres_ai.table_describe(text)') as describe"
       );
       expect(helpers.rows[0].legacy).not.toBeNull();
-      expect(helpers.rows[0].describe).not.toBeNull();
+      expect(helpers.rows[0].describe).toBeNull();
+
+      // A privileged DBA inspects and removes the legacy helper, transfers the
+      // dedicated schema to the actual prepare-db administrator, then retries.
+      await c.query("drop function postgres_ai.explain_generic(text, text, text)");
+      await c.query("alter schema postgres_ai owner to second_admin");
+      const recovered = runCliInit([adminUri, "--password", "monpw", "--skip-optional-permissions"]);
+      expect(recovered.status).toBe(0);
+      const recoveredVerify = runCliInit([adminUri, "--verify", "--skip-optional-permissions"]);
+      expect(recoveredVerify.status).toBe(0);
     } finally {
       await c.end();
       await pg.cleanup();
