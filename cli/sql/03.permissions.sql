@@ -45,13 +45,13 @@ declare
   ext_schema text;
 begin
   select n.nspname into ext_schema
-  from pg_extension e
-  join pg_namespace n on e.extnamespace = n.oid
+  from pg_catalog.pg_extension e
+  join pg_catalog.pg_namespace n on e.extnamespace = n.oid
   where e.extname = 'pg_stat_statements';
 
   -- Only grant if extension exists and is in a non-standard schema
   if ext_schema is not null and ext_schema not in ('pg_catalog', 'public') then
-    execute format('grant usage on schema %I to %I', ext_schema, {{ROLE_LITERAL}});
+    execute pg_catalog.format('grant usage on schema %I to %I', ext_schema, {{ROLE_LITERAL}});
   end if;
 end {{DO_QUOTE}};
 
@@ -72,12 +72,12 @@ begin
   set local search_path = pg_catalog, pg_temp;
   -- Detect pg_stat_statements extension schema
   select n.nspname into ext_schema
-  from pg_extension e
-  join pg_namespace n on e.extnamespace = n.oid
+  from pg_catalog.pg_extension e
+  join pg_catalog.pg_namespace n on e.extnamespace = n.oid
   where e.extname = 'pg_stat_statements';
 
   if ext_schema is not null and ext_schema not in ('pg_catalog', 'public') then
-    db_path := 'pg_catalog, postgres_ai, ' || quote_ident(ext_schema) || ', public, pg_temp';
+    db_path := 'pg_catalog, postgres_ai, ' || pg_catalog.quote_ident(ext_schema) || ', public, pg_temp';
   end if;
 
   -- Role-wide value: for databases that prepare-db did not run in. All databases share
@@ -88,9 +88,9 @@ begin
       and setdatabase = 0
       and ('search_path=' || role_path) = any (setconfig)
   ) then
-    execute format('alter user %I set search_path = %s', {{ROLE_LITERAL}}, role_path);
+    execute pg_catalog.format('alter user %I set search_path = %s', {{ROLE_LITERAL}}, role_path);
   end if;
   -- This database's value: other databases keep their own pg_stat_statements schema.
-  execute format('alter user %I in database %I set search_path = %s', {{ROLE_LITERAL}}, pg_catalog.current_database(), db_path);
+  execute pg_catalog.format('alter user %I in database %I set search_path = %s', {{ROLE_LITERAL}}, pg_catalog.current_database(), db_path);
 end {{DO_QUOTE}};
 -- [SEARCH_PATH_BLOCK_END]

@@ -398,6 +398,72 @@ $$`);
     }
   }, { timeout: 60000 });
 
+  test("prepare and unprepare accept dollar quotes and apostrophes in role and database names", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    const monitoringUser = `mon\\$$'"$pgai_do$`;
+    const database = "db\\$$name";
+    try {
+      await admin.connect();
+      await admin.query('set standard_conforming_strings = off');
+      await admin.query('set search_path = public, pg_catalog');
+      for (const signature of ['format(text, text)', 'format(text, text, text)', 'quote_ident(text)']) {
+        await admin.query(`create function public.${signature} returns text language plpgsql as $trap$
+          begin raise exception 'untrusted function called'; end
+        $trap$`);
+      }
+      await admin.query('create database "db\\$$name"');
+      await admin.query("create schema extensions");
+      await admin.query("create extension pg_stat_statements with schema extensions");
+      // Stub of the RDS extension function that 04.optional_rds grants.
+      await admin.query("create schema rds_tools");
+      await admin.query("create function rds_tools.pg_ls_multixactdir() returns setof text language sql as 'select null::text where false'");
+      await admin.query("revoke execute on function rds_tools.pg_ls_multixactdir() from public");
+      const { buildInitPlan, applyInitPlan, buildUninitPlan, applyUninitPlan } = await import("../lib/init");
+      const prepare = await buildInitPlan({
+        database,
+        monitoringUser,
+        monitoringPassword: "test-only-password",
+        includeOptionalPermissions: true,
+      });
+      await applyInitPlan({ client: admin, plan: prepare });
+      await admin.query(`grant execute on function rds_tools.pg_ls_multixactdir() to "${monitoringUser.replace(/"/g, '""')}"`);
+      const role = await admin.query("select rolname from pg_roles where rolname = $1", [monitoringUser]);
+      expect(role.rows).toEqual([{ rolname: monitoringUser }]);
+      const schemaGrant = await admin.query("select has_schema_privilege($1, 'extensions', 'USAGE') as ok", [monitoringUser]);
+      expect(schemaGrant.rows[0].ok).toBe(true);
+      const filePrivileges = async () => admin.query(`
+        select pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE') as can_execute
+        from pg_catalog.pg_proc p
+        where p.oid in (
+          'pg_catalog.pg_stat_file(text)'::regprocedure,
+          'pg_catalog.pg_stat_file(text, boolean)'::regprocedure,
+          'pg_catalog.pg_ls_dir(text)'::regprocedure,
+          'pg_catalog.pg_ls_dir(text, boolean, boolean)'::regprocedure,
+          'rds_tools.pg_ls_multixactdir()'::regprocedure
+        )
+      `, [monitoringUser]);
+      expect((await filePrivileges()).rows.map((row) => row.can_execute)).toEqual([true, true, true, true, true]);
+
+      const retained = await buildUninitPlan({ database, monitoringUser, dropRole: false });
+      const retainedResult = await applyUninitPlan({ client: admin, plan: retained });
+      expect(retainedResult.errors).toEqual([]);
+      const roles = await admin.query("select pg_has_role($1, 'pg_monitor', 'MEMBER') as monitor, pg_has_role($1, 'pg_read_all_stats', 'MEMBER') as stats", [monitoringUser]);
+      expect(roles.rows[0]).toEqual({ monitor: false, stats: false });
+      expect((await filePrivileges()).rows.map((row) => row.can_execute)).toEqual([false, false, false, false, false]);
+      expect((await admin.query("select has_schema_privilege($1, 'extensions', 'USAGE') as ok", [monitoringUser])).rows[0].ok).toBe(false);
+
+      const unprepare = await buildUninitPlan({ database, monitoringUser });
+      const result = await applyUninitPlan({ client: admin, plan: unprepare });
+      expect(result.errors).toEqual([]);
+      const removed = await admin.query("select 1 from pg_roles where rolname = $1", [monitoringUser]);
+      expect(removed.rows).toEqual([]);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
   test("creation and reset honor the server SCRAM iteration count", async () => {
     // scram_iterations exists since PostgreSQL 16. CI sets PGAI_TEST_REQUIRE_PG16=1 so
     // this test fails instead of passing vacuously when only older binaries exist.

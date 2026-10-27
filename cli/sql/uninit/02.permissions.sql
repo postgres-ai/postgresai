@@ -57,6 +57,17 @@ begin
           select from pg_catalog.aclexplode(n.nspacl) a
           where a.grantee = role_oid and a.privilege_type = 'USAGE')
       union
+      -- prepare-db grants USAGE when pg_stat_statements lives in a custom
+      -- extension schema. Retaining the login role must remove that grant too.
+      select pg_catalog.format('revoke usage on schema %I from %I', n.nspname, {{ROLE_LITERAL}})
+      from pg_catalog.pg_extension e
+      join pg_catalog.pg_namespace n on n.oid = e.extnamespace
+      where e.extname = 'pg_stat_statements'
+        and n.nspname not in ('pg_catalog', 'public')
+        and exists (
+          select from pg_catalog.aclexplode(n.nspacl) a
+          where a.grantee = role_oid and a.privilege_type = 'USAGE')
+      union
       select pg_catalog.format('revoke execute on function %s from %I', p.oid::regprocedure, {{ROLE_LITERAL}})
       from pg_catalog.pg_proc p
       where p.oid in (

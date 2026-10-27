@@ -669,10 +669,10 @@ describe("init module", () => {
     // Role-wide: the base path. This database: the base path, or with its pg_stat_statements schema.
     expect(permStep!.sql).toContain("role_path constant text := 'pg_catalog, postgres_ai, public, pg_temp';");
     expect(permStep!.sql).toContain("db_path text := role_path;");
-    expect(permStep!.sql).toContain("db_path := 'pg_catalog, postgres_ai, ' || quote_ident(ext_schema) || ', public, pg_temp';");
-    expect(permStep!.sql).toContain(`execute format('alter user %I set search_path = %s', '${DEFAULT_MONITORING_USER}', role_path);`);
+    expect(permStep!.sql).toContain("db_path := 'pg_catalog, postgres_ai, ' || pg_catalog.quote_ident(ext_schema) || ', public, pg_temp';");
+    expect(permStep!.sql).toContain(`execute pg_catalog.format('alter user %I set search_path = %s', '${DEFAULT_MONITORING_USER}', role_path);`);
     expect(permStep!.sql).toContain(
-      `execute format('alter user %I in database %I set search_path = %s', '${DEFAULT_MONITORING_USER}', pg_catalog.current_database(), db_path);`
+      `execute pg_catalog.format('alter user %I in database %I set search_path = %s', '${DEFAULT_MONITORING_USER}', pg_catalog.current_database(), db_path);`
     );
     expect(permStep!.sql).not.toContain('"$user"');
   });
@@ -944,6 +944,21 @@ describe("init module", () => {
       "01.drop_helpers",
       "02.revoke_permissions",
     ]);
+    // The retained role must lose every grant that prepare-db makes.
+    for (const revoke of [
+      "m.roleid in ('pg_monitor'::regrole, 'pg_read_all_stats'::regrole)",
+      "'revoke select on pg_catalog.pg_index from %I'",
+      "'revoke connect on database %I from %I'",
+      "'revoke usage on schema postgres_ai from %I'",
+      "'revoke usage on schema %I from %I', n.nspname",
+      "pg_catalog.to_regprocedure('rds_tools.pg_ls_multixactdir()')",
+      "pg_catalog.to_regprocedure('pg_catalog.pg_stat_file(text)')",
+      "pg_catalog.to_regprocedure('pg_catalog.pg_stat_file(text, boolean)')",
+      "pg_catalog.to_regprocedure('pg_catalog.pg_ls_dir(text)')",
+      "pg_catalog.to_regprocedure('pg_catalog.pg_ls_dir(text, boolean, boolean)')",
+    ]) {
+      expect(plan.steps[1].sql).toContain(revoke);
+    }
   });
 
   test("buildUninitPlan skips role drop for supabase provider", async () => {
@@ -980,6 +995,16 @@ describe("init module", () => {
     expect(dropRoleStep).toBeTruthy();
     // Uses ROLE_LITERAL (single-quoted) for format('%I', ...) in dynamic SQL
     expect(dropRoleStep!.sql).toContain("'user \"with\" quotes'");
+  });
+
+  test("prepare and unprepare SQL double backslashes in role name literals", async () => {
+    const monitoringUser = String.raw`a\b`;
+    const prepare = await init.buildInitPlan({ database: "mydb", monitoringUser, monitoringPassword: "pw", includeOptionalPermissions: false });
+    const unprepare = await init.buildUninitPlan({ database: "mydb", monitoringUser });
+    const steps = [...prepare.steps, ...unprepare.steps];
+    for (const name of ["01.role", "03.permissions", "02.revoke_permissions", "03.drop_role"]) {
+      expect(steps.find((s) => s.name === name)!.sql).toContain(String.raw`E'a\\b'`);
+    }
   });
 
   test("buildUninitPlan rejects identifiers with null bytes", async () => {
