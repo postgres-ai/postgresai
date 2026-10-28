@@ -1023,7 +1023,10 @@ export async function applyUninitPlan(params: {
       applied.push(step.name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`${step.name}: ${msg}`);
+      const detail = e && typeof e === "object" && "detail" in e && typeof e.detail === "string"
+        ? e.detail.replace(/[\r\n]+/g, "; ")
+        : "";
+      errors.push(`${step.name}: ${msg}${detail ? ` (DETAIL: ${detail})` : ""}`);
       break;
     }
   }

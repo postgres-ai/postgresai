@@ -175,6 +175,10 @@
 
 ### Changed
 
+- `unprepare-db` no longer transfers or deletes objects owned by the monitoring role before
+  dropping it (postgresai#432). If that role owns an unrelated object or has another dependency,
+  the command keeps the role, exits 1, and reports the dependency for an administrator to resolve.
+  A normal role drop still removes the known `public` and `pg_stat_statements` schema grants.
 - `prepare-db`, `unprepare-db`, `checkup` and `pgai mon deploy` warn on stderr before an admin
   connection that is plaintext, or TLS without a verified server certificate (no sslmode, `prefer`,
   `allow`, `require`), and say when the session fell back to plaintext (postgresai#428). The warning
