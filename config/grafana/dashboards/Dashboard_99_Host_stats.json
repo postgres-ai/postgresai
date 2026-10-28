@@ -1,0 +1,1474 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Stacked CPU time by mode; the stack adds up to 100 %. user, system, iowait and steal are measured; other = busy \u2212 (user + system + iowait + steal), i.e. nice, irq and softirq; idle = 100 \u2212 busy. RDS with Enhanced Monitoring: all modes (busy = EM cpuUtilization.total). RDS without Enhanced Monitoring: CloudWatch CPUUtilization only, shown as \"busy (no mode split)\" + idle. Supabase and ClickHouse: per-mode CPU seconds. Self-managed: no host_* series, empty.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "axisSoftMax": 100
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "idle"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "rgba(128, 128, 128, 0.25)",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 15
+      },
+      "id": 101,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "user",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "system",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "iowait",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "steal",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})) - host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}, 0)",
+          "legendFormat": "other (nice, irq, softirq)",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "busy (no mode split)",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})), 0)",
+          "legendFormat": "idle",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "CPU utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Stacked memory; the stack adds up to total RAM (dashed line). With free, cached and buffers (RDS with Enhanced Monitoring, Supabase): used = total \u2212 free \u2212 cached \u2212 buffers, then buffers, cached, free. ClickHouse (no free or buffers): used = total \u2212 available, then available. RDS without Enhanced Monitoring: only CloudWatch FreeableMemory (\"available\"); total RAM is unknown, so the stack has no reference line. Swap is not part of RAM and is a separate line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total RAM"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "swap used"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 15
+      },
+      "id": 102,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "(host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "used",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "buffers",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "cached",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "free",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+          "legendFormat": "available",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "total RAM",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_swap_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "swap used",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Stacked used + free; the stack adds up to the volume size (dashed line, the limit). RDS: size = AllocatedStorage, free = FreeStorageSpace. Supabase: /data filesystem size and available bytes. ClickHouse: StorageLimitBytes. Aurora: storage grows on demand (limit unknown); local free storage and cluster volume used are lines. Without a size series only free is shown (limit unknown).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: size"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "local free (Aurora)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume used (Aurora)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 15
+      },
+      "id": 103,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "used",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "free",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "limit: size",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_local_storage_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "local free (Aurora)",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_volume_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "volume used (Aurora)",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Storage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Bytes per second received and transmitted. RDS: CloudWatch NetworkReceiveThroughput / NetworkTransmitThroughput. Supabase: node_exporter without lo. ClickHouse: includes loopback. No limit series is available from any source (limit unknown).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "binBps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 15
+      },
+      "id": 104,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_network_receive_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "receive",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_network_transmit_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "transmit",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Network /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Read operations per second. RDS: CloudWatch ReadIOPS (Aurora: plus cluster volume read IOPS). Supabase: all block devices. ClickHouse: DiskReads_Total rate. RDS: provisioned IOPS from DescribeDBInstances (gp3, io1, io2). The limit applies to reads + writes together. gp2, magnetic, Aurora, Supabase and ClickHouse: limit unknown, no line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "iops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: provisioned IOPS (read + write)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "id": 105,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "read",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_volume_read_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "volume read (Aurora)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_provisioned_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "limit: provisioned IOPS (read + write)",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Disk read IOPS /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Read bytes per second. RDS: CloudWatch ReadThroughput. Supabase: node_exporter read bytes, all block devices. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "binBps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: provisioned throughput (read + write)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 12,
+        "h": 8
+      },
+      "id": 106,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_read_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "read",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_provisioned_throughput_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "limit: provisioned throughput (read + write)",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Disk read throughput /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Average time per read operation. RDS: CloudWatch ReadLatency. Supabase: read time / completed reads. ClickHouse: not exposed. No source exposes a latency limit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "id": 107,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_read_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "read latency",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Disk read latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Write operations per second. RDS: CloudWatch WriteIOPS (Aurora: plus cluster volume write IOPS). Supabase: all block devices. ClickHouse: DiskWrites_Total rate. RDS: provisioned IOPS from DescribeDBInstances (gp3, io1, io2). The limit applies to reads + writes together. gp2, magnetic, Aurora, Supabase and ClickHouse: limit unknown, no line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "iops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: provisioned IOPS (read + write)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "id": 108,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "write",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_volume_write_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "volume write (Aurora)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_provisioned_iops{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "limit: provisioned IOPS (read + write)",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Disk write IOPS /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Write bytes per second. RDS: CloudWatch WriteThroughput. Supabase: node_exporter written bytes, all block devices. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "binBps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: provisioned throughput (read + write)"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 38,
+        "w": 12,
+        "h": 8
+      },
+      "id": 109,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_write_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "write",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_provisioned_throughput_bytes_per_second{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "limit: provisioned throughput (read + write)",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Disk write throughput /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P7A0D6631BB10B34F"
+      },
+      "description": "Average time per write operation. RDS: CloudWatch WriteLatency. Supabase: write time / completed writes. ClickHouse: not exposed. No source exposes a latency limit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisSoftMin": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": 180000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "id": 110,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_disk_write_latency_seconds{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "write latency",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Disk write latency",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 1
+      },
+      "id": 61,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "description": "RDS and Aurora with Performance Insights on (db.load.avg): the average number of sessions active per minute, on CPU or waiting. Empty for other providers.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisSoftMin": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": 180000,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 55,
+            "w": 24,
+            "h": 8
+          },
+          "id": 62,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_db_load{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "DB load",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "DB load (average active sessions)",
+          "type": "timeseries"
+        }
+      ],
+      "title": "RDS DB load (Performance Insights)",
+      "type": "row"
+    }
+  ],
+  "preload": false,
+  "schemaVersion": 41,
+  "tags": [
+    "postgres-ai",
+    "node"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "definition": "label_values({__name__=~\"host_.+\"},cluster)",
+        "label": "Cluster name",
+        "name": "cluster_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values({__name__=~\"host_.+\"},cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {},
+        "definition": "label_values({__name__=~\"host_.+\",cluster=\"$cluster_name\"},node_name)",
+        "label": "Node name",
+        "name": "node_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values({__name__=~\"host_.+\",cluster=\"$cluster_name\"},node_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "99. Host stats",
+  "uid": "host-stats",
+  "version": 1,
+  "description": "Host metrics for RDS, Aurora, Supabase and ClickHouse Managed Postgres. CPU, memory and storage are stacked and add up to 100 %, total RAM and volume size. Disk read and write are separate panels (IOPS, throughput, latency). Dashed red lines are limits where the source exposes them (RDS allocated storage, provisioned IOPS and throughput); no line means the limit is unknown. Series depend on provider and enabled monitoring, see docs/host-metrics.md. Performance Insights is in its own collapsed row. Empty on self-managed nodes and on the Helm chart."
+}

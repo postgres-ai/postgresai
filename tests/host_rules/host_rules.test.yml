@@ -225,6 +225,77 @@ tests:
       - {expr: 'round(host_network_receive_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_receive_bytes_per_second{cluster="default",node_name="ch1"}', value: 1000}]}
       - {expr: 'round(host_network_transmit_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_network_transmit_bytes_per_second{cluster="default",node_name="ch1"}', value: 2000}]}
 
+  # Series the Dashboard 99 panels stack or split by direction: CPU modes,
+  # buffers, data-disk size, read/write bytes and latency. The recorded
+  # Supabase fixture was trimmed before these families mattered; the names are
+  # node_exporter's standard ones.
+  - name: supabase CPU modes, buffers, disk size, read/write bytes and latency
+    interval: 1m
+    input_series:
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1790731200+60x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
+        values: '1000+48x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="user"}'
+        values: '100+6x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="system"}'
+        values: '100+3x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="steal"}'
+        values: '10+0.6x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="iowait"}'
+        values: '10+2.4x10'
+      - series: 'node_memory_Buffers_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '12345678x10'
+      - series: 'node_filesystem_size_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme1n1",fstype="ext4",mountpoint="/data"}'
+        values: '8589934592x10'
+      - series: 'node_filesystem_size_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"}'
+        values: '4294967296x10'
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+120x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+60x10'
+      - series: 'node_disk_read_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+491520x10'
+      - series: 'node_disk_written_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+245760x10'
+      - series: 'node_disk_read_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+0.24x10'
+      - series: 'node_disk_write_time_seconds_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+0.18x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_os_cpu_user_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_user_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_system_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_system_percent{cluster="prod",node_name="main-db"}', value: 5}]}
+      - {expr: 'round(host_os_cpu_steal_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_steal_percent{cluster="prod",node_name="main-db"}', value: 1}]}
+      - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="prod",node_name="main-db"}', value: 4}]}
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 20}]}
+      - {expr: host_os_memory_buffers_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_buffers_bytes{cluster="prod",node_name="main-db"}', value: 12345678}]}
+      - {expr: host_disk_size_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_size_bytes{cluster="prod",node_name="main-db"}', value: 8589934592}]}
+      - {expr: 'round(host_disk_read_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_bytes_per_second{cluster="prod",node_name="main-db"}', value: 8192}]}
+      - {expr: 'round(host_disk_write_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_bytes_per_second{cluster="prod",node_name="main-db"}', value: 4096}]}
+      - {expr: 'round(host_disk_read_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_latency_seconds{cluster="prod",node_name="main-db"}', value: 0.002}]}
+      - {expr: 'round(host_disk_write_latency_seconds, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_latency_seconds{cluster="prod",node_name="main-db"}', value: 0.003}]}
+
+  - name: clickhouse CPU modes and storage limit
+    interval: 1m
+    input_series:
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s",cpu="0",mode="idle"}'
+        values: '1000+48x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s",cpu="0",mode="user"}'
+        values: '100+6x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s",cpu="0",mode="system"}'
+        values: '100+3x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s",cpu="0",mode="steal"}'
+        values: '10+0.6x10'
+      - series: 'PostgresServer_CPUSeconds_Total{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s",cpu="0",mode="iowait"}'
+        values: '10+2.4x10'
+      - series: 'PostgresServer_StorageLimitBytes{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s"}'
+        values: '107374182400x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_os_cpu_user_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_user_percent{cluster="default",node_name="ch1"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_system_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_system_percent{cluster="default",node_name="ch1"}', value: 5}]}
+      - {expr: 'round(host_os_cpu_steal_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_steal_percent{cluster="default",node_name="ch1"}', value: 1}]}
+      - {expr: host_disk_size_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_size_bytes{cluster="default",node_name="ch1"}', value: 107374182400}]}
+
   - name: provider series without cluster/node_name produce no host_*
     interval: 1m
     input_series:

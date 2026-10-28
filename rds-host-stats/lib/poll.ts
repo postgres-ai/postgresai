@@ -29,6 +29,10 @@ const common: Metric[] = [
   ['host_disk_write_iops', 'WriteIOPS'],
   ['host_network_receive_bytes_per_second', 'NetworkReceiveThroughput'],
   ['host_network_transmit_bytes_per_second', 'NetworkTransmitThroughput'],
+  ['host_disk_read_bytes_per_second', 'ReadThroughput'],
+  ['host_disk_write_bytes_per_second', 'WriteThroughput'],
+  ['host_disk_read_latency_seconds', 'ReadLatency'],
+  ['host_disk_write_latency_seconds', 'WriteLatency'],
 ]
 const rdsMetrics: Metric[] = [
   ['host_disk_free_bytes', 'FreeStorageSpace'],
@@ -43,19 +47,23 @@ const volumeMetrics: Metric[] = [
 ]
 type OSMetric = {
   timestamp: string
-  cpuUtilization: { total: number; wait: number }
+  cpuUtilization: { total: number; wait: number; user: number; system: number; steal: number }
   loadAverageMinute: { one: number }
-  memory: { total: number; free: number; cached: number }
+  memory: { total: number; free: number; cached: number; buffers: number }
   swap: { total: number; free: number }
   processList?: { id: number; rss: number }[]
 }
 const osMetrics: [string, (m: OSMetric) => number][] = [
   ['host_os_cpu_percent', m => m.cpuUtilization.total],
   ['host_os_cpu_iowait_percent', m => m.cpuUtilization.wait],
+  ['host_os_cpu_user_percent', m => m.cpuUtilization.user],
+  ['host_os_cpu_system_percent', m => m.cpuUtilization.system],
+  ['host_os_cpu_steal_percent', m => m.cpuUtilization.steal],
   ['host_os_load1', m => m.loadAverageMinute.one],
   ['host_os_memory_total_bytes', m => m.memory.total * 1024],
   ['host_os_memory_free_bytes', m => m.memory.free * 1024],
   ['host_os_memory_cached_bytes', m => m.memory.cached * 1024],
+  ['host_os_memory_buffers_bytes', m => m.memory.buffers * 1024],
   ['host_os_swap_used_bytes', m => (m.swap.total - m.swap.free) * 1024],
 ]
 const escapeLabel = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
@@ -141,6 +149,16 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
     for (const point of points.sort((a, b) => a.time - b.time)) {
       if (typeof point.value === 'number' && closed(point.time, period)) emit(name, point.value * scale, point.time)
     }
+  }
+  // Storage limits from the instance description, stamped at `end` on every
+  // poll. Only RDS (not Aurora) reports them: Aurora storage grows on demand
+  // and has no provisioned IOPS or throughput. gp2 and magnetic storage report
+  // no Iops or StorageThroughput, so their limit series stay empty.
+  if (!aurora) {
+    const GiB = 1024 ** 3
+    if ((db.AllocatedStorage ?? 0) > 0) emit('host_disk_size_bytes', db.AllocatedStorage! * GiB, end.getTime())
+    if ((db.Iops ?? 0) > 0) emit('host_disk_provisioned_iops', db.Iops, end.getTime())
+    if ((db.StorageThroughput ?? 0) > 0) emit('host_disk_provisioned_throughput_bytes_per_second', db.StorageThroughput! * 1024 ** 2, end.getTime())
   }
   if (db.PerformanceInsightsEnabled) {
     try {

@@ -44,6 +44,8 @@ quality:host-rules:
     GIT_STRATEGY: fetch
   script:
     - cd tests/host_rules && /vmalert-tool-prod unittest --files=host_rules.test.yml
+    - /vmalert-tool-prod unittest --files=dashboard_memory.test.json
+    - /vmalert-tool-prod unittest --files=dashboard_cpu.test.json
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'

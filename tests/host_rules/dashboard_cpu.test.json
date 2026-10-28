@@ -1,0 +1,296 @@
+{
+  "rule_files": [
+    "../../config/prometheus/host_rules.yml"
+  ],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "name": "full modes",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_cpu_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_cpu_utilization_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "40x10"
+        },
+        {
+          "series": "host_os_cpu_user_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "20x10"
+        },
+        {
+          "series": "host_os_cpu_system_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "7x10"
+        },
+        {
+          "series": "host_os_cpu_iowait_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "2x10"
+        },
+        {
+          "series": "host_os_cpu_steal_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "1x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "(host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 20
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "expr": "(clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) - host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"}, 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "expr": "(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})), 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 70
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy wait only",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_cpu_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_cpu_utilization_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "40x10"
+        },
+        {
+          "series": "host_os_cpu_iowait_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "2x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "(host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) - host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"}, 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "expr": "(clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})), 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 70
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "RDS no EM",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_cpu_utilization_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "40x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "(host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) - host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"}, 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 40
+            }
+          ]
+        },
+        {
+          "expr": "(clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})), 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 60
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "partial missing system",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_cpu_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_os_cpu_user_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "20x10"
+        },
+        {
+          "series": "host_os_cpu_iowait_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "2x10"
+        },
+        {
+          "series": "host_os_cpu_steal_percent{cluster=\"test\",node_name=\"node\"}",
+          "values": "1x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "(host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) - host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} - host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"}, 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "expr": "(clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"test\", node_name=\"node\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"test\", node_name=\"node\"})), 0)) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 70
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -266,6 +266,74 @@
           }
         },
         {
+          "Id": "host_disk_read_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_bytes_per_second",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteThroughput",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_read_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "ReadLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_disk_write_latency_seconds",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "WriteLatency",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 60,
+            "Stat": "Average"
+          }
+        },
+        {
           "Id": "host_disk_free_bytes",
           "MetricStat": {
             "Metric": {
