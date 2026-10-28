@@ -1875,8 +1875,8 @@ async function readAws(ep: RdsEndpoint, opts: ConnectOptions, deps: ConnectDeps,
 /** The box's verification over PrivateLink in words (the console's), when it failed. */
 const VERIFY_FAILED: Record<string, string> = {
   unreachable: "The monitoring box could not reach the database over PrivateLink: check that the stack finished, its load balancer's target is healthy, and the RDS is not publicly accessible.",
-  auth_failed: `The monitoring box reached the database, but ${DEFAULT_MONITORING_USER} could not log in: its password changed after this deploy set it (another setup ran its SQL).`,
-  nonce_mismatch: "A newer PostgresAI setup SQL ran in this database after this deploy's (another deploy, or the Console), so monitoring does not start.",
+  auth_failed: `The monitoring box reached the database, but ${DEFAULT_MONITORING_USER} could not log in with the password this deploy's SQL set: the SQL did not run there, or another setup ran its SQL after it.`,
+  nonce_mismatch: "The database's newest PostgresAI setup is not this deploy's: its SQL did not run in this database, or a newer one ran after it (another deploy, or the Console), so monitoring does not start.",
 };
 
 /** A box's PrivateLink route (postgresai#454), for list, watch and delete; undefined for any other box. */
@@ -2295,6 +2295,9 @@ async function privateLinkRole(url: string, db: string, opts: ConnectOptions, de
   const resumeWith = (n: string) => opts.agent
     ? `call deploy_monitoring again with monitoring_password and nonce from this result`
     : `re-run with PGAI_MON_NONCE=${n} and PGAI_MON_PASSWORD set to the v_password value near the top of the SQL`;
+  // This machine can't reach the database (common for a private RDS): the SQL runs elsewhere, and the box
+  // checks it over PrivateLink (as for a box made in the console).
+  let away = false;
   if (password === undefined || nonce === undefined) {
     let p: RdsPrepareSql;
     try {
@@ -2313,11 +2316,14 @@ async function privateLinkRole(url: string, db: string, opts: ConnectOptions, de
       // Not logged in (node's errors carry no severity; the server's FATAL ones refuse the login: a password,
       // pg_hba, a database that is not there): no SQL to print. A refusal of the SQL itself prints it.
       const e = failed as { severity?: unknown; code?: unknown };
-      const refusedLogin = typeof e !== "object" || !e || !("severity" in e) || e.severity === "FATAL" || /^(28|3D|08)/.test(String(e.code ?? ""));
-      if (refusedLogin) return stop(`Could not log in to ${maskConnectionString(inDatabase(url, db))}: ${errorText(failed)}. Check the URL's user and password, and run pgai mon deploy where the database is reachable (in its VPC)`);
-      const why = `The user in this URL (${decodeURIComponent(new URL(url).username)}) can't create ${DEFAULT_MONITORING_USER} (${errorText(failed)})`;
+      away = unreachable(failed);
+      const refusedLogin = !away && (typeof e !== "object" || !e || !("severity" in e) || e.severity === "FATAL" || /^(28|3D|08)/.test(String(e.code ?? "")));
+      if (refusedLogin) return stop(`Could not log in to ${maskConnectionString(inDatabase(url, db))}: ${errorText(failed)}. Check the URL's user and password`);
+      const why = away
+        ? `This machine can't reach the database (${errorText(failed)}), so the SQL does not run from here`
+        : `The user in this URL (${decodeURIComponent(new URL(url).username)}) can't create ${DEFAULT_MONITORING_USER} (${errorText(failed)})`;
       const printed = { step: "prepare_db" as const, sql: p.prepare_db_sql, nonce, monitoring_password: password };
-      const run = `Run the SQL as the master user, connected to database ${db}`;
+      const run = `Run the SQL as the master user, connected to database ${db}${away ? ", from a machine that reaches it (in its VPC)" : ""}`;
       // The platform makes the box with the newest SQL issued for this database (platform-all#1058).
       const only = `A deploy of this database without ${opts.agent ? "them" : "PGAI_MON_PASSWORD and PGAI_MON_NONCE"} issues a new SQL and replaces this one`;
       if (!ask) return stop(`${why}. ${run}, then ${resumeWith(nonce)}. ${only}.`, printed);
@@ -2325,12 +2331,19 @@ async function privateLinkRole(url: string, db: string, opts: ConnectOptions, de
       if (a === "s" || a === "stop") return stop(`Stopped. ${run}, then ${resumeWith(nonce)}.`, { ...printed, sql: undefined });
     }
   }
-  // The box logs in as the role and checks this nonce: both checked here, before it exists.
+  // The box logs in as the role and checks this nonce: both checked here, before it exists, where this
+  // machine reaches the database; otherwise only by the box.
+  const boxChecks = (why: string) => {
+    progress("preparing", `Not checked from here (${why}): the monitoring box checks that ${DEFAULT_MONITORING_USER} logs in to ${db} and that this SQL ran, and deploy says if it fails`);
+    return { password: password!, nonce: nonce! };
+  };
+  if (away) return boxChecks("this machine can't reach the database");
   progress("preparing", `Checking that ${DEFAULT_MONITORING_USER} can log in to ${db} with the password the SQL set`);
   let found: string | undefined;
   try {
     found = await deps.readNonce!(roleUrl(url, db, password), warn);
   } catch (err) {
+    if (unreachable(err)) return boxChecks(`this machine can't reach the database: ${errorText(err)}`);
     const fresh = opts.agent ? "call again without monitoring_password and nonce for a new SQL" : "re-run without PGAI_MON_PASSWORD and PGAI_MON_NONCE for a new SQL";
     return stop(opts.monitoringPassword === undefined
       ? `${DEFAULT_MONITORING_USER} could not log in to ${db} with the password the SQL set (${errorText(err)}): run the SQL again, connected to database ${db}`
@@ -2388,6 +2401,14 @@ const NOT_CONFIRMED_AGENT = "PostgresAI did not confirm the monitoring box yet. 
 /** How long deploy looks for that box: it appears once the platform's request commits. An agent's tool call waits less. */
 export const LOOKUP_MS = 5 * 60_000;
 const AGENT_RUN_MS = 50_000;
+
+/** A connection that never reached the server (a network error or timeout, not a refusal by the server). */
+export function unreachable(err: unknown): boolean {
+  if (typeof err !== "object" || !err || "severity" in err) return false;
+  const codes = [(err as { code?: unknown }).code, ...((err as { errors?: { code?: unknown }[] }).errors ?? []).map((e) => e?.code)];
+  return codes.some((c) => ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ECONNRESET"].includes(String(c)))
+    || /connection timeout|timeout expired/i.test(err instanceof Error ? err.message : "");
+}
 
 /**
  * No answer to a request the platform may still have run: a timeout, a 5xx without the
