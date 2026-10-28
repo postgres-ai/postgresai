@@ -17,8 +17,8 @@ case "$*" in
   "info"|"compose version") exit 0 ;;
   "ps --filter name=grafana-with-datasources --filter name=pgwatch --format {{.Names}}")
     [ -n "$RUNNING" ] && printf '%s\\n' $RUNNING; exit 0 ;;
-  "ps -aq --filter name=^target-db\\$ "*) case " $DEMO_CONTAINERS " in *" target-db "*) echo id-db ;; esac; exit 0 ;;
-  "ps -aq --filter name=^target-standby\\$ "*) case " $DEMO_CONTAINERS " in *" target-standby "*) echo id-sb ;; esac; exit 0 ;;
+  compose*" ps -a --format {{.Service}}") [ -n "$DEMO_CONTAINERS" ] && printf '%s\\n' $DEMO_CONTAINERS; exit 0 ;;
+  compose*" ps --status running --services") [ -n "$READERS_RUNNING" ] && printf '%s\\n' $READERS_RUNNING; exit 0 ;;
   compose*" ps -q "*) svc="\${*##* }"; case " $READERS_RUNNING " in *" $svc "*) echo "id-$svc" ;; esac; exit 0 ;;
   inspect*) exit 1 ;;
   *) exit 0 ;;
@@ -113,21 +113,48 @@ describe("mon local-install --prestart", () => {
     expect(env()).toMatch(/^GRAFANA_BIND_HOST=127\.0\.0\.1:$/m);
   });
 
-  test("refuses on a stack that is already running, and changes nothing there", () => {
-    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources" });
+  test("refuses on a configured running stack, and changes nothing there", () => {
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
+    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources pgwatch-postgres" });
     expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain("already running");
+    expect(r.stderr).toContain("a configured monitoring stack is running");
+    expect(r.stderr).toContain("nothing was changed");
     expect(composeCalls("up")).toEqual([]);
+    expect(env()).toBe("PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
   });
 
-  test("refuses to take a target or a key", () => {
-    for (const extra of [["--db-url", DB_URL], ["--api-key", "k"], ["--demo"], ["--continue-prestarted"]]) {
-      const r = run(["mon", "local-install", "--prestart", ...extra]);
+  test("refuses on a stack that was prestarted already", () => {
+    for (const marker of [".prestarted", ".prestarted.done"]) {
+      writeFileSync(`${projectDir}/${marker}`, "x\n");
+      const r = run(["mon", "local-install", "--prestart"]);
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("--prestart starts the stack without a target");
+      expect(r.stderr).toContain(`prestarted already (${marker})`);
+      rmSync(`${projectDir}/${marker}`);
     }
     expect(composeCalls("up")).toEqual([]);
+  });
+
+  test("a partly started prestart (Grafana up, no pgwatch, no marker) can be retried", () => {
+    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources" });
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(`${projectDir}/.prestarted`)).toBe(true);
+  });
+
+  test("refuses to take a target, a key or an identity, before writing anything", () => {
+    const before = "PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n";
+    writeFileSync(`${projectDir}/.env`, before);
+    for (const [extra, envs] of [
+      [["--db-url", DB_URL], {}], [["--api-key", "k"], {}], [["--demo"], {}], [["--continue-prestarted"], {}],
+      [["--project", "p"], {}], [["--instance-jobs"], {}], [[], { PGAI_INSTANCE_ID: "abc" }], [[], { PGAI_INSTANCE_JOBS: "true" }],
+    ] as [string[], Record<string, string>][]) {
+      const r = run(["mon", "local-install", "--prestart", ...extra], envs);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--prestart starts the stack without a target or an identity");
+      expect([extra, envs, env()]).toEqual([extra, envs, before]);
+    }
+    expect(composeCalls("up")).toEqual([]);
+    expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
   });
 
   test("a failed start leaves no marker", () => {
@@ -152,6 +179,14 @@ describe("mon local-install --continue-prestarted", () => {
     expect(ups.some((c) => c.endsWith(" up -d"))).toBe(true);
     expect(ups.some((c) => c.includes("--force-recreate"))).toBe(false);
     expect(composeCalls("run").some((c) => c.includes("sources-generator"))).toBe(true);
+    // Configured: the marker is retired, so a later run refuses as on any running stack.
+    expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
+    expect(existsSync(`${projectDir}/.prestarted.done`)).toBe(true);
+    writeFileSync(log, "");
+    const again = run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"],
+      { RUNNING: "grafana-with-datasources pgwatch-postgres" });
+    expect(again.stderr).toContain("already running");
+    expect(composeCalls("up").filter((c) => !c.includes("instance-jobs"))).toEqual([]);
   });
 
   test("recreates the target readers that already run (a re-run)", () => {
@@ -161,9 +196,12 @@ describe("mon local-install --continue-prestarted", () => {
       RUNNING: "grafana-with-datasources pgwatch-postgres",
       READERS_RUNNING: "pgwatch-postgres postgres-reports",
     });
-    const recreate = composeCalls("up").filter((c) => c.includes("--force-recreate"));
+    const ups = composeCalls("up");
+    const recreate = ups.filter((c) => c.includes("--force-recreate"));
     expect(recreate.length).toBe(1);
     expect(recreate[0]).toMatch(/up -d --force-recreate --no-deps pgwatch-postgres postgres-reports$/);
+    // Recreated first, so the plain `up -d` after finds them current (no double recreate).
+    expect(ups.indexOf(recreate[0])).toBeLessThan(ups.findIndex((c) => c.endsWith(" up -d")));
   });
 
   test("reloads host metrics when the target brought scrape files", () => {
@@ -215,6 +253,12 @@ describe("the demo profile", () => {
     expect(instancesUseDemoTarget(f)).toBe(true);
     writeFileSync(f, "- name: x\n  conn_str: postgresql://u:p@db.example.com:5432/target-db\n");
     expect(instancesUseDemoTarget(f)).toBe(false);
+    // A commented-out demo line next to a real target is not "monitors the demo".
+    writeFileSync(f, "# - conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database\n- name: x\n  conn_str: postgresql://u:p@db.example.com:5432/app\n");
+    expect(instancesUseDemoTarget(f)).toBe(false);
+    // A demo target without credentials in the URL is.
+    writeFileSync(f, "- name: d\n  conn_str: postgresql://target-db:5432/target_database\n");
+    expect(instancesUseDemoTarget(f)).toBe(true);
     expect(instancesUseDemoTarget(`${dir}/missing.yml`)).toBe(false);
   });
 
@@ -228,15 +272,16 @@ describe("the demo profile", () => {
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\n");
     run(["mon", "start"]);
     expect(env()).toMatch(/^COMPOSE_PROFILES=demo$/m);
-    expect(calls()).not.toContain("rm -f target-db");
+    expect(calls().some((c) => c.includes(" rm -f -s "))).toBe(false);
   });
 
   test("mon update on a non-demo stack removes the old demo containers", () => {
     writeFileSync(`${projectDir}/instances.yml`, "- name: x\n  conn_str: postgresql://u:p@db.example.com:5432/app\n");
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\n");
     run(["mon", "update"], { DEMO_CONTAINERS: "target-db target-standby" });
-    expect(calls()).toContain("rm -f target-db");
-    expect(calls()).toContain("rm -f target-standby");
+    // Through compose (this project only), never a bare `docker rm` by the global name.
+    expect(calls().some((c) => /^compose .* rm -f -s target-db target-standby$/.test(c))).toBe(true);
+    expect(calls().some((c) => c.startsWith("rm "))).toBe(false);
     expect(env()).not.toMatch(/COMPOSE_PROFILES=.*demo/);
   });
 
@@ -244,6 +289,19 @@ describe("the demo profile", () => {
     writeFileSync(`${projectDir}/instances.yml`, "- name: x\n  conn_str: postgresql://u:p@db.example.com:5432/app\n");
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nCOMPOSE_PROFILES=demo\n");
     run(["mon", "start"], { DEMO_CONTAINERS: "target-db" });
-    expect(calls()).not.toContain("rm -f target-db");
+    expect(calls().some((c) => c.includes(" rm -f -s "))).toBe(false);
+  });
+
+  test("a non-demo install refused on a running stack keeps the demo profile", () => {
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nCOMPOSE_PROFILES=demo\n");
+    const r = run(["mon", "local-install", "--db-url", DB_URL, "-y"], { RUNNING: "grafana-with-datasources pgwatch-postgres" });
+    expect(r.stderr).toContain("already running");
+    expect(env()).toMatch(/^COMPOSE_PROFILES=demo$/m);
+  });
+
+  test("a non-demo install drops the demo profile when it does install", () => {
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nCOMPOSE_PROFILES=instance-jobs,demo\n");
+    run(["mon", "local-install", "--db-url", DB_URL, "-y"]);
+    expect(env()).toMatch(/^COMPOSE_PROFILES=instance-jobs$/m);
   });
 });

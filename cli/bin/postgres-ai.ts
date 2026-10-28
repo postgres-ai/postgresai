@@ -350,6 +350,8 @@ const DEMO_PROFILE = "demo";
  * this file is there, so a plain re-run over a configured box still refuses.
  */
 const PRESTARTED_MARKER = ".prestarted";
+/** What the marker becomes once --continue-prestarted has configured the stack. */
+const PRESTARTED_DONE_MARKER = ".prestarted.done";
 
 /**
  * What `--prestart` starts: storage, Grafana and self-monitoring. Not the
@@ -399,12 +401,17 @@ export function composeProfilesValue(
   return profiles.length > 0 ? profiles.join(",") : null;
 }
 
-/** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
-export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
+/** Is `profile` on, given a COMPOSE_PROFILES value? */
+export function profileEnabled(composeProfiles: string | null | undefined, profile: string): boolean {
   return (composeProfiles ?? "")
     .split(",")
     .map((p) => p.trim())
     .includes(profile);
+}
+
+/** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
+export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
+  return profileEnabled(composeProfiles, profile);
 }
 
 /**
@@ -4164,52 +4171,17 @@ async function composeServiceRunning(
   }
 }
 
-/**
- * Make the running stack match what `.env` now says about the instance-jobs
- * profile.
- *
- * `undefined` = this run expressed no opinion, so nothing happens.
- *
- * Enabling is a SCOPED `up -d --no-deps instance-jobs`, never a full `up -d`:
- * a whole-stack up recreates grafana (its admin password is re-randomised on
- * every install, so the container env differs and datasource ids renumber) and
- * strips the RDS CA-bundle override mount from running pgwatch. `--no-deps`
- * stops compose bringing this service's dependencies up alongside it, which at
- * postgresai@main is `sink-prometheus` -- recreating the metric store on every
- * run is the same hazard one service along.
- *
- * It is guarded on the stack ACTUALLY RUNNING. A scoped `up` against a stopped
- * project does not fail: compose creates the network and the volumes and
- * starts this container on its own, so `mon stop && mon update` would leave a
- * box the operator believes is stopped with one container polling -- exactly
- * the state this whole mechanism exists to make visible. "Could not tell" is
- * treated as "do not start": an unstarted container is a visible fault in
- * `mon health`, a wrongly-started one is invisible.
- *
- * Disabling removes the container, because nothing in the normal flow does it
- * once the profile is gone. Measured on compose v5.1.3 / engine 29.4.3:
- * `up -d --force-recreate` with the profile off leaves the container running.
- * Naming the service explicitly is what reliably reaches it, and
- * COMPOSE_PROFILES goes in the child environment so that call does not depend
- * on what `.env` says by then -- this command has just taken the profile out
- * of it.
- *
- * DO NOT rely on `down` / `down --remove-orphans` to reach a profile-gated
- * container. Two reviewers observed it BOTH reaching and not reaching one, on
- * the same engine and compose versions, with the profile absent from `.env`
- * and from the environment alike; across a dozen-plus runs each the variable
- * was never isolated. The force-remove does not depend on which way it goes,
- * which is the point of doing it explicitly.
- *
- * Going through compose rather than `docker rm -f <name>` keeps the removal
- * scoped to THIS project: `container_name: instance-jobs` is global, so a bare
- * `docker rm` could take out another project's container on the same host.
- */
-/** Does instances.yml monitor the bundled demo database (target-db)? */
+/** Does instances.yml monitor the bundled demo database (a target on host target-db)? */
 export function instancesUseDemoTarget(instancesPath: string): boolean {
   try {
     if (!fs.statSync(instancesPath).isFile()) return false;
-    return /@target-db[:/]/.test(fs.readFileSync(instancesPath, "utf8"));
+    return loadInstances(instancesPath).some((instance) => {
+      try {
+        return new URL(String(instance.conn_str ?? "")).hostname === "target-db";
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
   }
@@ -4219,20 +4191,22 @@ export function instancesUseDemoTarget(instancesPath: string): boolean {
  * Remove the demo database containers an older version started on every
  * install. They have no profile there, so a stack that now runs without the
  * demo profile would keep them forever (`restart: unless-stopped`), and `down`
- * does not reliably remove containers of an inactive profile. Only containers
- * compose created for these services; their volumes are kept.
+ * does not reliably remove containers of an inactive profile. Through compose,
+ * so only THIS project's containers go (the container names are global);
+ * their volumes are kept.
  */
-function removeDemoContainers(): void {
-  for (const service of ["target-standby", "target-db"]) {
-    const ps = spawnSync(
-      "docker",
-      ["ps", "-aq", "--filter", `name=^${service}$`, "--filter", `label=com.docker.compose.service=${service}`],
-      { stdio: "pipe", encoding: "utf8", timeout: 10000 } as Parameters<typeof spawnSync>[2],
-    );
-    if (ps.status !== 0 || !String(ps.stdout).trim()) continue;
-    console.log(`Removing the ${service} container: the demo database is not part of this install (its volume is kept)`);
-    spawnSync("docker", ["rm", "-f", service], { stdio: "ignore", timeout: 30000 } as Parameters<typeof spawnSync>[2]);
-  }
+async function removeDemoContainers(projectDir: string): Promise<void> {
+  const cmd = getComposeCmd();
+  if (!cmd) return;
+  const ps = spawnSync(
+    cmd[0],
+    [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "-a", "--format", "{{.Service}}"],
+    { cwd: projectDir, env: { ...process.env, COMPOSE_PROFILES: DEMO_PROFILE }, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+  );
+  const present = String(ps.stdout ?? "").split(/\s+/).filter((s) => s === "target-db" || s === "target-standby");
+  if (ps.status !== 0 || present.length === 0) return;
+  console.log(`Removing ${present.join(" and ")}: the demo database is not part of this install (volumes are kept)`);
+  await runCompose(["rm", "-f", "-s", ...present], undefined, { COMPOSE_PROFILES: DEMO_PROFILE });
 }
 
 /**
@@ -4241,15 +4215,15 @@ function removeDemoContainers(): void {
  * gets the profile, one that does not loses the old demo containers. An
  * explicit demo profile in .env is left alone.
  */
-function syncDemoProfile(projectDir: string, instancesPath: string): void {
+async function syncDemoProfile(projectDir: string, instancesPath: string): Promise<void> {
   const current = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? null;
-  if (instanceJobsProfileEnabled(current, DEMO_PROFILE)) return;
+  if (profileEnabled(current, DEMO_PROFILE)) return;
   if (instancesUseDemoTarget(instancesPath)) {
     setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, true, DEMO_PROFILE) });
     console.log(`Enabled the '${DEMO_PROFILE}' compose profile: instances.yml monitors the demo database`);
     return;
   }
-  removeDemoContainers();
+  await removeDemoContainers(projectDir);
 }
 
 /**
@@ -4308,6 +4282,34 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
 }
 
 /**
+ * Why `--prestart` must not run here, or null. A configured stack runs pgwatch
+ * (--prestart never starts it), and a marker means a prestart already
+ * finished. A partly started prestart (Grafana up, no marker) may be retried:
+ * its `up -d` is idempotent.
+ */
+function prestartRefusal(projectDir: string): string | null {
+  for (const marker of [PRESTARTED_MARKER, PRESTARTED_DONE_MARKER]) {
+    if (fs.existsSync(path.join(projectDir, marker))) return `this stack was prestarted already (${marker})`;
+  }
+  const { containers } = checkRunningContainers();
+  const pgwatch = containers.filter((c) => c.startsWith("pgwatch"));
+  if (pgwatch.length > 0) return `a configured monitoring stack is running (${pgwatch.join(", ")})`;
+  return null;
+}
+
+/** The services of this project that are running, from one `compose ps`. */
+function runningComposeServices(projectDir: string): string[] {
+  const cmd = getComposeCmd();
+  if (!cmd) return [];
+  const ps = spawnSync(
+    cmd[0],
+    [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "--status", "running", "--services"],
+    { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+  );
+  return ps.status === 0 ? String(ps.stdout ?? "").split(/\s+/).filter(Boolean) : [];
+}
+
+/**
  * `mon local-install --prestart`: the boot-time half of an install on a
  * pre-baked image. Starts storage, Grafana and self-monitoring with this box's
  * own secrets, binds every published port to 127.0.0.1 until the deploy says
@@ -4316,13 +4318,6 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
  */
 async function runPrestart(projectDir: string, instancesPath: string, imageTag: string): Promise<void> {
   console.log("Prestart: starting the monitoring infrastructure without a target\n");
-  const { running, containers } = checkRunningContainers();
-  if (running) {
-    console.error(`✗ Monitoring services are already running: ${containers.join(", ")}`);
-    console.error("  --prestart is for a stack that has never started; nothing was changed");
-    process.exitCode = 1;
-    return;
-  }
 
   // The bake leaves only docker-compose.yml. Create the bind-mount sources as
   // files now, or compose creates them as root-owned directories.
@@ -4382,6 +4377,47 @@ async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
   }
 }
 
+/**
+ * Make the running stack match what `.env` now says about the instance-jobs
+ * profile.
+ *
+ * `undefined` = this run expressed no opinion, so nothing happens.
+ *
+ * Enabling is a SCOPED `up -d --no-deps instance-jobs`, never a full `up -d`:
+ * a whole-stack up recreates grafana (its admin password is re-randomised on
+ * every install, so the container env differs and datasource ids renumber) and
+ * strips the RDS CA-bundle override mount from running pgwatch. `--no-deps`
+ * stops compose bringing this service's dependencies up alongside it, which at
+ * postgresai@main is `sink-prometheus` -- recreating the metric store on every
+ * run is the same hazard one service along.
+ *
+ * It is guarded on the stack ACTUALLY RUNNING. A scoped `up` against a stopped
+ * project does not fail: compose creates the network and the volumes and
+ * starts this container on its own, so `mon stop && mon update` would leave a
+ * box the operator believes is stopped with one container polling -- exactly
+ * the state this whole mechanism exists to make visible. "Could not tell" is
+ * treated as "do not start": an unstarted container is a visible fault in
+ * `mon health`, a wrongly-started one is invisible.
+ *
+ * Disabling removes the container, because nothing in the normal flow does it
+ * once the profile is gone. Measured on compose v5.1.3 / engine 29.4.3:
+ * `up -d --force-recreate` with the profile off leaves the container running.
+ * Naming the service explicitly is what reliably reaches it, and
+ * COMPOSE_PROFILES goes in the child environment so that call does not depend
+ * on what `.env` says by then -- this command has just taken the profile out
+ * of it.
+ *
+ * DO NOT rely on `down` / `down --remove-orphans` to reach a profile-gated
+ * container. Two reviewers observed it BOTH reaching and not reaching one, on
+ * the same engine and compose versions, with the profile absent from `.env`
+ * and from the environment alike; across a dozen-plus runs each the variable
+ * was never isolated. The force-remove does not depend on which way it goes,
+ * which is the point of doing it explicitly.
+ *
+ * Going through compose rather than `docker rm -f <name>` keeps the removal
+ * scoped to THIS project: `container_name: instance-jobs` is global, so a bare
+ * `docker rm` could take out another project's container on the same host.
+ */
 async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): Promise<boolean> {
   if (enabled === undefined) return true;
 
@@ -5111,6 +5147,23 @@ mon
     const { projectDir, instancesFile: instancesPath } = await resolveOrInitPaths();
     console.log(`Project directory: ${projectDir}\n`);
 
+    // --prestart is checked before anything is written: a refused run changes nothing.
+    if (opts.prestart) {
+      const identity = opts.instanceId || process.env.PGAI_INSTANCE_ID || opts.instanceJobs !== undefined
+        || (process.env.PGAI_INSTANCE_JOBS ?? "").trim() !== "" || opts.project;
+      if (opts.demo || opts.dbUrl || apiKey || opts.continuePrestarted || identity) {
+        console.error("✗ --prestart starts the stack without a target or an identity: it cannot be combined with --demo, --db-url, --api-key, --instance-id, --project, --instance-jobs or --continue-prestarted (or PGAI_INSTANCE_ID / PGAI_INSTANCE_JOBS)");
+        process.exitCode = 1;
+        return;
+      }
+      const refusal = prestartRefusal(projectDir);
+      if (refusal) {
+        console.error(`✗ ${refusal}; nothing was changed`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
     // Save project name to .pgwatch-config if provided (used by reporter container)
     if (opts.project && !applyProjectName(projectDir, opts.project)) {
       process.exitCode = 1;
@@ -5148,19 +5201,13 @@ mon
     }
     const instanceJobs = instanceJobsRequest.enabled;
 
-    if (opts.prestart && (opts.demo || opts.dbUrl || apiKey || opts.continuePrestarted || opts.instanceId)) {
-      console.error("✗ --prestart starts the stack without a target: it cannot be combined with --demo, --db-url, --api-key, --instance-id or --continue-prestarted");
-      process.exitCode = 1;
-      return;
-    }
-
     const { content: envContent, preservedKeys } = buildLocalInstallEnv(
       existingEnv,
       imageTag,
       opts.instanceId || process.env.PGAI_INSTANCE_ID || null,
       path.resolve(projectDir, ".pgwatch-config"),
       instanceJobs,
-      opts.demo,
+      opts.demo ? true : undefined,
     );
     writeEnvFile(envFile, envContent);
     if (preservedKeys.length > 0) {
@@ -5465,7 +5512,14 @@ mon
     // Remove stopped containers left by "run --rm" dependencies (e.g. config-init)
     // to avoid docker-compose v1 'ContainerConfig' error on recreation.
     // Best-effort: ignore exit code — container may not exist, failure here is non-fatal.
-    if (!opts.demo) removeDemoContainers();
+    if (!opts.demo) {
+      // A non-demo install: the demo database is not part of it.
+      const profiles = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? null;
+      if (profileEnabled(profiles, DEMO_PROFILE)) {
+        setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(profiles, false, DEMO_PROFILE) });
+      }
+      await removeDemoContainers(projectDir);
+    }
     await runCompose(["rm", "-f", "-s", "config-init"]);
     let code2: number;
     if (onPrestarted) {
@@ -5474,15 +5528,18 @@ mon
       // --prestart left out. The target readers load their sources at start,
       // so any of them already running (a re-run) is recreated explicitly.
       console.log("Step 5: Applying the configuration to the prestarted stack...");
-      const readersRunning: string[] = [];
-      for (const service of TARGET_READER_SERVICES) {
-        if (await composeServiceRunning(projectDir, service)) readersRunning.push(service);
-      }
-      code2 = await runCompose(["up", "-d"], grafanaPassword);
-      if (code2 === 0 && readersRunning.length > 0) {
-        code2 = await runCompose(["up", "-d", "--force-recreate", "--no-deps", ...readersRunning], grafanaPassword);
-      }
+      // Readers already running (a re-run) are recreated first, so the plain
+      // `up -d` after it finds them current instead of recreating them twice.
+      const readersRunning = runningComposeServices(projectDir).filter((s) => TARGET_READER_SERVICES.includes(s));
+      code2 = readersRunning.length > 0
+        ? await runCompose(["up", "-d", "--force-recreate", "--no-deps", ...readersRunning], grafanaPassword)
+        : 0;
+      if (code2 === 0) code2 = await runCompose(["up", "-d"], grafanaPassword);
       if (code2 === 0) await reloadHostMetricsFiles(projectDir);
+      // Configured now: a later run over this stack refuses again, as on any running stack.
+      if (code2 === 0) {
+        fs.renameSync(path.join(projectDir, PRESTARTED_MARKER), path.join(projectDir, PRESTARTED_DONE_MARKER));
+      }
     } else {
       console.log("Step 5: Starting monitoring services...");
       code2 = await runCompose(["up", "-d", "--force-recreate"], grafanaPassword);
@@ -5683,7 +5740,7 @@ mon
     }
 
     const { projectDir, instancesFile } = await resolveOrInitPaths();
-    syncDemoProfile(projectDir, instancesFile);
+    await syncDemoProfile(projectDir, instancesFile);
     const code = await runCompose(["up", "-d"]);
     if (code !== 0) process.exitCode = code;
   });
@@ -5883,7 +5940,7 @@ mon
     const profiles = readComposeProfiles();
     const services = monitoringHealthServices(
       instanceJobsProfileEnabled(profiles),
-      instanceJobsProfileEnabled(profiles, DEMO_PROFILE),
+      profileEnabled(profiles, DEMO_PROFILE),
     );
 
     const waitTime = opts.wait || 0;
@@ -6015,7 +6072,7 @@ mon
 
       // The demo database moved behind a compose profile: keep it on a stack
       // that monitors it, and remove the old containers from one that does not.
-      syncDemoProfile(projectDir, instancesFile);
+      await syncDemoProfile(projectDir, instancesFile);
 
       // Step 1: migrate .env so newer stack versions that require additional
       // env vars (e.g. VM_AUTH_USERNAME / VM_AUTH_PASSWORD introduced in 0.15)
