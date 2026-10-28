@@ -5122,16 +5122,19 @@ mon
     "enable the instance-jobs compose profile (outbound collection channel; PGAI_INSTANCE_JOBS env also works). Writes COMPOSE_PROFILES into the stack .env, so every later mon command covers the container"
   )
   .option("--no-instance-jobs", "disable the instance-jobs compose profile and remove its container")
-  // For PostgresAI-managed images only: the image's first-boot unit and the
-  // deploy run them (postgres_ai-ansible#43), so they stay out of --help.
-  .addOption(new Option(
+  // Run by the image's first-boot unit and the deploy (postgres_ai-ansible#43).
+  // Visible on purpose: the image bake reads this help to learn that the CLI
+  // can prestart (images/bake.yml), so hiding them turns the feature off.
+  .option(
     "--prestart",
-    "managed images, at first boot: start storage, Grafana and self-monitoring with fresh secrets, ports on 127.0.0.1, no target, no API calls",
-  ).default(false).hideHelp())
-  .addOption(new Option(
+    "for PostgresAI-managed images only: at first boot, start storage, Grafana and self-monitoring with fresh secrets, ports on 127.0.0.1, no target, no API calls",
+    false,
+  )
+  .option(
     "--continue-prestarted",
-    "managed images: finish an install on a stack started by --prestart, recreating only what changed",
-  ).default(false).hideHelp())
+    "for PostgresAI-managed images only: finish an install on a stack started by --prestart, recreating only what changed",
+    false,
+  )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
   .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; prestart: boolean; continuePrestarted: boolean; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)

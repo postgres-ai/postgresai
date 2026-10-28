@@ -141,10 +141,13 @@ describe("mon local-install --prestart", () => {
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(true);
   });
 
-  test("the managed-image options stay out of --help but still parse", () => {
+  // Contract with postgres_ai-ansible images/bake.yml: the bake reads this help
+  // to record the boot-stack capability. Hidden options turn the feature off.
+  test("--help names --prestart and --continue-prestarted (the image bake reads it)", () => {
     const help = run(["mon", "local-install", "--help"]);
-    expect(help.stdout).not.toContain("--prestart");
-    expect(help.stdout).not.toContain("--continue-prestarted");
+    expect(help.stdout).toContain("--prestart");
+    expect(help.stdout).toContain("--continue-prestarted");
+    expect(help.stdout).toContain("for PostgresAI-managed images only");
   });
 
   test("refuses to take a target, a key or an identity, before writing anything", () => {
