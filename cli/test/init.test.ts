@@ -242,6 +242,31 @@ describe("init module", () => {
     expect(plan.steps.some((s) => s.name === "01.role")).toBe(true);
   });
 
+  // Printed SQL and Supabase API requests run each step on a fresh session with no
+  // enclosing transaction, so every step must pin search_path at session level first.
+  test("buildInitPlan starts every step with a session-level search_path pin", async () => {
+    const expected: Record<string, string[]> = {
+      "self-managed": ["01.role", "02.extensions", "03.permissions", "06.helpers", "04.optional_rds", "05.optional_self_managed"],
+      rds: ["01.role", "02.extensions", "03.permissions", "06.helpers", "04.optional_rds", "05.optional_self_managed"],
+      supabase: ["02.extensions", "03.permissions", "06.helpers", "04.optional_rds", "05.optional_self_managed"],
+    };
+    for (const [provider, names] of Object.entries(expected)) {
+      const plan = await init.buildInitPlan({
+        database: "mydb",
+        monitoringPassword: "pw",
+        includeOptionalPermissions: true,
+        provider,
+      });
+      expect(plan.steps.map((s) => s.name)).toEqual(names);
+      for (const step of plan.steps) {
+        const firstStatement = step.sql.split("\n").find((l) => l.trim() !== "" && !l.trim().startsWith("--"));
+        expect(`${provider} ${step.name}: ${firstStatement}`).toBe(
+          `${provider} ${step.name}: set search_path = pg_catalog, pg_temp;`
+        );
+      }
+    }
+  });
+
   test("resolveAdminConnection accepts positional URI", () => {
     const r = init.resolveAdminConnection({ conn: "postgresql://u:p@h:5432/d" });
     expect(r.clientConfig.connectionString).toBeTruthy();
@@ -1153,6 +1178,10 @@ describe("CLI commands", () => {
     expect(r.stdout).toMatch(new RegExp(`grant connect on database "mydb" to "${DEFAULT_MONITORING_USER}"`, "i"));
     expect((r.stdout + r.stderr).includes("monpw")).toBe(false);
     expect((r.stdout + r.stderr).includes("SCRAM-SHA-256$")).toBe(false);
+    expect(r.stdout).toMatch(/Run the complete plan in one session[^\n]*\nbegin;\n/);
+    expect(r.stdout).toMatch(/\ncommit;\n\n--- end SQL plan ---/);
+    expect(r.stdout).toContain("do $pgai_optional_outer_0$");
+    expect(r.stdout).toContain("optional SQL step 04.optional_rds skipped");
   });
 
   test("cli: prepare-db --print-sql with --provider supabase skips role step", () => {
@@ -1381,6 +1410,13 @@ describe("CLI commands", () => {
     expect(r.stdout).toMatch(/revoke usage on schema postgres_ai from/i);
     expect(r.stdout).toMatch(/'pg_read_all_stats'::regrole/);
     expect(r.stdout).toMatch(/to_regprocedure\('pg_catalog\.pg_ls_dir\(text\)'\)/);
+    // A single printed step may be pasted into psql with autocommit enabled.
+    // SET LOCAL is ignored there, exposing catalog lookups to a hostile schema.
+    expect((r.stdout.match(/set search_path = pg_catalog, pg_temp;/g) || []).length).toBe(3);
+    expect(r.stdout).not.toMatch(/set local search_path/i);
+    expect(r.stdout).toMatch(/set client_min_messages = warning;/);
+    expect(r.stdout).toMatch(/Run the complete plan in one session[^\n]*\nbegin;\n/);
+    expect(r.stdout).toMatch(/\ncommit;\n\n--- end SQL plan ---/);
   });
 
   test("cli: unprepare-db --print-sql with --keep-role skips role drop", () => {

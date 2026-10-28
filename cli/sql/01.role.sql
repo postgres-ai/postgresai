@@ -1,4 +1,6 @@
 -- Role creation / password update (template-filled by cli/lib/init.ts)
+-- Pin name resolution before the privileged DO block, including for printed SQL.
+set search_path = pg_catalog, pg_temp;
 --
 -- A race-safe pattern: create if missing, then alter to set the password.
 -- `pgai mon deploy` omits the alter, so an existing role keeps its password:

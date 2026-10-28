@@ -1,4 +1,5 @@
 -- Optional permissions for RDS Postgres / Aurora (best effort)
+set search_path = pg_catalog, pg_temp;
 
 create schema if not exists rds_tools;
 create extension if not exists rds_tools with schema rds_tools;

@@ -1,4 +1,5 @@
 -- Helper functions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
+set search_path = pg_catalog, pg_temp;
 
 -- Remove the retired helper from databases prepared by older CLI versions.
 -- Only its owner or a superuser can drop it: anyone else gets a warning here. Releases
