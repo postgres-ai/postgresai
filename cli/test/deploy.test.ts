@@ -101,7 +101,7 @@ describe("StepView", () => {
     v.stop();
     const frame = v.render().join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     expect(frame).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
-    expect(frame).toContain("… Prepare the database and install monitoring (about 5 min) 0s");
+    expect(frame).toContain("… Prepare the database and install monitoring (1-5 min) 0s");
     expect(out.at(-2)).toContain("… Prepare the database");
   });
 

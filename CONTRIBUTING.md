@@ -152,6 +152,8 @@ Edit `instances.yml` and set:
 
 The demo DB is initialized by `config/target-db/init.sql` and creates the `monitor` user/password used above.
 
+The demo DB containers (`target-db`, `target-standby`) belong to the `demo` compose profile, so turn it on before starting the stack: add `COMPOSE_PROFILES=demo` to `.env`, or pass `--profile demo` to `docker compose`.
+
 ##### Option B: monitor your own Postgres instance
 
 - Ensure your DB is reachable **from Docker containers** (network + `pg_hba.conf`).
