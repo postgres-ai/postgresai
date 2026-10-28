@@ -92,9 +92,22 @@ describe("mon health: which services are reported on", () => {
       "sink-postgres",
     ]);
     // Neither flag, so they keep the status-only check they have always had.
+    // target-db is the exception: it is gated by the demo profile (below).
     for (const s of longStanding) {
-      expect(s.optional).toBeUndefined();
+      if (s.container !== "target-db") expect(s.optional).toBeUndefined();
       expect(s.readHealth).toBeUndefined();
     }
+  });
+
+  test("target-db is required only with the demo profile", () => {
+    const entry = (demo?: boolean) =>
+      monitoringHealthServices(false, demo).find(s => s.container === "target-db")!;
+    expect(entry().optional).toBe(true);
+    expect(entry(false).optional).toBe(true);
+    expect(entry(true).optional).toBeUndefined();
+    // Without the profile an absent demo database is not a fault...
+    expect(judgeServiceHealth(entry(), false, "", "").ok).toBe(true);
+    // ...with it, it is.
+    expect(judgeServiceHealth(entry(true), false, "", "").ok).toBe(false);
   });
 });

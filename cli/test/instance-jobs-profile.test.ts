@@ -207,7 +207,8 @@ describe("mon health follows the profile", () => {
         "sink-postgres",
       ]);
       for (const s of others) {
-        expect(s.optional).toBeUndefined();
+        // target-db is gated by the demo profile, not by this one.
+        if (s.container !== "target-db") expect(s.optional).toBeUndefined();
         expect(s.absentLabel).toBeUndefined();
       }
     }

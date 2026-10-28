@@ -29,10 +29,12 @@ services:
     command:
       ["bash", "/postgres_ai_configs/scripts/generate-pgwatch-sources.sh"]
 
-  # Target Database - The PostgreSQL database being monitored (demo only)
+  # Target Database - The PostgreSQL database being monitored (demo only).
+  # Behind the demo profile: `mon local-install --demo` turns it on.
   target-db:
     image: postgres:17
     container_name: target-db
+    profiles: ["demo"]
     cpus: ${TARGET_DB_CPUS:-0.2}
     mem_limit: ${TARGET_DB_MEM:-805306368}
     environment:
@@ -72,6 +74,7 @@ services:
   target-standby:
     image: postgres:17
     container_name: target-standby
+    profiles: ["demo"]
     cpus: ${TARGET_STANDBY_CPUS:-0.2}
     mem_limit: ${TARGET_STANDBY_MEM:-805306368}
     environment:
