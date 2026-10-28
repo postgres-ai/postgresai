@@ -1920,7 +1920,7 @@ describe("mon deploy for Supabase: connect the org through the browser (platform
       "Connect Supabase: done (0s)",
       "Create the monitoring box: started",
       "Create the monitoring box: done (0s)",
-      "Prepare the database and install monitoring (about 5 min): started",
+      "Prepare the database and install monitoring (1-5 min): started",
       "",
     ].join("\n"));
   });

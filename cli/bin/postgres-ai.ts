@@ -4205,7 +4205,7 @@ async function removeDemoContainers(projectDir: string): Promise<void> {
   );
   const present = String(ps.stdout ?? "").split(/\s+/).filter((s) => s === "target-db" || s === "target-standby");
   if (ps.status !== 0 || present.length === 0) return;
-  console.log(`Removing ${present.join(" and ")}: the demo database is not part of this install (volumes are kept)`);
+  console.log(`Removing the demo database (containers ${present.join(", ")}): this install monitors your own database. Its data volumes are kept.`);
   await runCompose(["rm", "-f", "-s", ...present], undefined, { COMPOSE_PROFILES: DEMO_PROFILE });
 }
 
@@ -4220,7 +4220,7 @@ async function syncDemoProfile(projectDir: string, instancesPath: string): Promi
   if (profileEnabled(current, DEMO_PROFILE)) return;
   if (instancesUseDemoTarget(instancesPath)) {
     setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, true, DEMO_PROFILE) });
-    console.log(`Enabled the '${DEMO_PROFILE}' compose profile: instances.yml monitors the demo database`);
+    console.log(`Kept the demo database running: instances.yml monitors it (added '${DEMO_PROFILE}' to COMPOSE_PROFILES in .env)`);
     return;
   }
   await removeDemoContainers(projectDir);
@@ -4289,11 +4289,15 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
  */
 function prestartRefusal(projectDir: string): string | null {
   for (const marker of [PRESTARTED_MARKER, PRESTARTED_DONE_MARKER]) {
-    if (fs.existsSync(path.join(projectDir, marker))) return `this stack was prestarted already (${marker})`;
+    if (fs.existsSync(path.join(projectDir, marker))) {
+      return "This stack was already started with --prestart";
+    }
   }
   const { containers } = checkRunningContainers();
   const pgwatch = containers.filter((c) => c.startsWith("pgwatch"));
-  if (pgwatch.length > 0) return `a configured monitoring stack is running (${pgwatch.join(", ")})`;
+  if (pgwatch.length > 0) {
+    return `A configured monitoring stack is already running (${pgwatch.join(", ")}); --prestart is only for a fresh box`;
+  }
   return null;
 }
 
@@ -4356,7 +4360,7 @@ async function runPrestart(projectDir: string, instancesPath: string, imageTag: 
     encoding: "utf8",
     mode: 0o600,
   });
-  console.log("✓ Monitoring infrastructure started; finish with: postgresai mon local-install --continue-prestarted --db-url <url> --api-key <key>\n");
+  console.log("✓ Monitoring infrastructure started; finish with 'postgresai mon local-install --continue-prestarted --db-url <url> --api-key <key>'\n");
 }
 
 /**
@@ -4373,7 +4377,7 @@ async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
   }
   if (files.length === 0) return;
   if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
-    console.error("⚠ Could not reload sink-prometheus; host metrics start with its next restart ('postgresai mon restart')");
+    console.error("⚠ Could not reload the metrics store; host metrics start after 'postgresai mon restart'");
   }
 }
 
@@ -5118,16 +5122,16 @@ mon
     "enable the instance-jobs compose profile (outbound collection channel; PGAI_INSTANCE_JOBS env also works). Writes COMPOSE_PROFILES into the stack .env, so every later mon command covers the container"
   )
   .option("--no-instance-jobs", "disable the instance-jobs compose profile and remove its container")
-  .option(
+  // For PostgresAI-managed images only: the image's first-boot unit and the
+  // deploy run them (postgres_ai-ansible#43), so they stay out of --help.
+  .addOption(new Option(
     "--prestart",
-    "pre-baked images, at first boot: start storage, Grafana and self-monitoring with fresh secrets, ports on 127.0.0.1, no target, no API calls",
-    false,
-  )
-  .option(
+    "managed images, at first boot: start storage, Grafana and self-monitoring with fresh secrets, ports on 127.0.0.1, no target, no API calls",
+  ).default(false).hideHelp())
+  .addOption(new Option(
     "--continue-prestarted",
-    "finish an install on a stack started by --prestart: add the target, key and registration, and recreate only what changed",
-    false,
-  )
+    "managed images: finish an install on a stack started by --prestart, recreating only what changed",
+  ).default(false).hideHelp())
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
   .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; prestart: boolean; continuePrestarted: boolean; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)
@@ -5158,7 +5162,7 @@ mon
       }
       const refusal = prestartRefusal(projectDir);
       if (refusal) {
-        console.error(`✗ ${refusal}; nothing was changed`);
+        console.error(`✗ ${refusal}. Nothing was changed.`);
         process.exitCode = 1;
         return;
       }
@@ -5251,7 +5255,7 @@ mon
     // stack still refuses, so a plain re-run never reconfigures a live box.
     const onPrestarted = opts.continuePrestarted && fs.existsSync(path.join(projectDir, PRESTARTED_MARKER));
     if (opts.continuePrestarted && !onPrestarted) {
-      console.log(`(no ${PRESTARTED_MARKER} marker in ${projectDir}: installing as usual)\n`);
+      console.log("(this stack was not started with --prestart: installing as usual)\n");
     }
 
     // Check if containers are already running
@@ -5917,7 +5921,7 @@ export function monitoringHealthServices(instanceJobsEnabled = false, demoEnable
     { name: "PGWatch (Prometheus)", container: "pgwatch-prometheus" },
     // The demo database runs only with the demo profile; without it, an
     // absent target-db is "not enabled", not a fault.
-    { name: "Target DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
+    { name: "Demo DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
     { name: "Sink Postgres", container: "sink-postgres" },
     // Profile-gated and self-reporting; see judgeServiceHealth. The six above
     // stay on the status-only check - reading their health status is a

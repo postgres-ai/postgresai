@@ -373,7 +373,7 @@ export interface StepDef {
 export const MONITORING_STEPS: StepDef[] = [
   { key: "preparing", label: "Prepare the database" },
   { key: "provisioning", label: "Create the monitoring box" },
-  { key: "box", label: "Install monitoring (about 5 min)" },
+  { key: "box", label: "Install monitoring (1-5 min)" },
   { key: "ready", label: "Ready" },
 ];
 
@@ -381,7 +381,7 @@ export const MONITORING_STEPS: StepDef[] = [
 export const SUPABASE_STEPS: StepDef[] = [
   { key: "preparing", label: "Connect Supabase" },
   { key: "provisioning", label: "Create the monitoring box" },
-  { key: "box", label: "Prepare the database and install monitoring (about 5 min)" },
+  { key: "box", label: "Prepare the database and install monitoring (1-5 min)" },
   { key: "ready", label: "Ready" },
 ];
 

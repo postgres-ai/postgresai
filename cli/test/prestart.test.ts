@@ -117,8 +117,8 @@ describe("mon local-install --prestart", () => {
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
     const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources pgwatch-postgres" });
     expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain("a configured monitoring stack is running");
-    expect(r.stderr).toContain("nothing was changed");
+    expect(r.stderr).toContain("A configured monitoring stack is already running");
+    expect(r.stderr).toContain("Nothing was changed.");
     expect(composeCalls("up")).toEqual([]);
     expect(env()).toBe("PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
@@ -129,7 +129,7 @@ describe("mon local-install --prestart", () => {
       writeFileSync(`${projectDir}/${marker}`, "x\n");
       const r = run(["mon", "local-install", "--prestart"]);
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain(`prestarted already (${marker})`);
+      expect(r.stderr).toContain("This stack was already started with --prestart");
       rmSync(`${projectDir}/${marker}`);
     }
     expect(composeCalls("up")).toEqual([]);
@@ -139,6 +139,12 @@ describe("mon local-install --prestart", () => {
     const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources" });
     expect(r.exitCode).toBe(0);
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(true);
+  });
+
+  test("the managed-image options stay out of --help but still parse", () => {
+    const help = run(["mon", "local-install", "--help"]);
+    expect(help.stdout).not.toContain("--prestart");
+    expect(help.stdout).not.toContain("--continue-prestarted");
   });
 
   test("refuses to take a target, a key or an identity, before writing anything", () => {
@@ -216,7 +222,7 @@ describe("mon local-install --continue-prestarted", () => {
   test("without the marker it is today's install, and a running stack still refuses", () => {
     const r = run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"],
       { RUNNING: "grafana-with-datasources" });
-    expect(r.stdout).toContain("no .prestarted marker");
+    expect(r.stdout).toContain("this stack was not started with --prestart: installing as usual");
     expect(r.stderr).toContain("already running");
     expect(composeCalls("up").filter((c) => !c.includes("instance-jobs"))).toEqual([]);
   });
