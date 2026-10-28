@@ -1,9 +1,10 @@
 -- Revoke permissions and drop objects created by prepare-db (template-filled by cli/lib/init.ts)
 
 -- Objects in other schemas (for example, a planted public.=) must not run as the admin.
-set local search_path = pg_catalog, pg_temp;
+-- Printed plans may run in psql autocommit, where SET LOCAL is ignored.
+set search_path = pg_catalog, pg_temp;
 -- The CLI reads the "unprepare-db:" WARNINGs. A higher setting would hide them.
-set local client_min_messages = warning;
+set client_min_messages = warning;
 
 -- Drop the postgres_ai.pg_statistic view
 drop view if exists postgres_ai.pg_statistic;

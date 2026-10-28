@@ -56,7 +56,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, redactPasswordsInSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1728,7 +1728,6 @@ program
     }
 
     const shouldPrintSql = !!opts.printSql;
-    const redactPasswords = (sql: string): string => redactPasswordsInSql(sql);
 
     const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
     const note = opts.json ? console.error : console.log;
@@ -1746,6 +1745,7 @@ program
     const announceScope = (plan: InitPlan) => {
       if (provider === "clickhouse" && !opts.verify && !opts.resetPassword) note(describeInitScope(plan));
     };
+
 
     // Offline mode: allow printing SQL without providing/using an admin connection.
     // Useful for audits/reviews; caller can provide -d/PGDATABASE.
@@ -1773,10 +1773,7 @@ program
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
         console.log(`-- provider: ${provider}`);
         console.log(`-- optional permissions: ${includeOptionalPermissions ? "enabled" : "skipped"}`);
-        for (const step of plan.steps) {
-          console.log(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
-          console.log(redactPasswords(step.sql));
-        }
+        console.log(renderInitPlanSql(plan));
         console.log("\n--- end SQL plan ---\n");
         console.log("Note: passwords are redacted in the printed SQL output.");
         return;
@@ -1955,10 +1952,7 @@ program
 
         if (shouldPrintSql) {
           console.log("\n--- SQL plan ---");
-          for (const step of effectivePlan.steps) {
-            console.log(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
-            console.log(redactPasswords(step.sql));
-          }
+          console.log(renderInitPlanSql(effectivePlan));
           console.log("\n--- end SQL plan ---\n");
           console.log("Note: passwords are redacted in the printed SQL output.");
           return;
@@ -2278,10 +2272,7 @@ program
 
       if (shouldPrintSql) {
         console.log("\n--- SQL plan ---");
-        for (const step of effectivePlan.steps) {
-          console.log(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
-          console.log(redactPasswords(step.sql));
-        }
+        console.log(renderInitPlanSql(effectivePlan));
         console.log("\n--- end SQL plan ---\n");
               console.log("Note: passwords are redacted in the printed SQL output.");
         return;
@@ -2530,10 +2521,13 @@ program
         console.log(`-- monitoring user: ${opts.monitoringUser}`);
         console.log(`-- provider: ${provider}`);
         console.log(`-- drop role: ${dropRole}`);
+        console.log("-- Run the complete plan in one session. For psql, use -v ON_ERROR_STOP=1.");
+        console.log("begin;");
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}`);
           console.log(step.sql);
         }
+        console.log("commit;");
         console.log("\n--- end SQL plan ---\n");
         return;
       }
@@ -2607,10 +2601,13 @@ program
 
       if (shouldPrintSql) {
         console.log("\n--- SQL plan ---");
+        console.log("-- Run the complete plan in one session. For psql, use -v ON_ERROR_STOP=1.");
+        console.log("begin;");
         for (const step of plan.steps) {
           console.log(`\n-- ${step.name}`);
           console.log(step.sql);
         }
+        console.log("commit;");
         console.log("\n--- end SQL plan ---\n");
         return;
       }

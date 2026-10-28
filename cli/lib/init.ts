@@ -354,6 +354,43 @@ export function redactPasswordsInSql(sql: string): string {
   return sql.replace(/password\s+'(?:''|[^'])*'/gi, "password '<redacted>'");
 }
 
+/** SQL for manual execution, including the mon deploy handoff. Required steps
+ * must be atomic; optional failures roll back only their own subtransaction. */
+export function renderInitPlanSql(plan: InitPlan): string {
+  const lines = [
+    "-- Run the complete plan in one session. For psql, use -v ON_ERROR_STOP=1.",
+    "begin;",
+  ];
+  for (const step of plan.steps) {
+    const sql = redactPasswordsInSql(step.sql);
+    lines.push(`\n-- ${step.name}${step.optional ? " (optional)" : ""}`);
+    if (!step.optional) {
+      lines.push(sql);
+      continue;
+    }
+    // Dollar tags must not occur in customer-supplied role/database names.
+    const delimiter = (base: string): string => {
+      let i = 0;
+      while (sql.includes(`$${base}_${i}$`)) i++;
+      return `$${base}_${i}$`;
+    };
+    const outer = delimiter("pgai_optional_outer");
+    const inner = delimiter("pgai_optional_sql");
+    lines.push(`do ${outer}
+begin
+  begin
+    execute ${inner}
+${sql}
+${inner};
+  exception when others then
+    raise warning 'optional SQL step ${step.name} skipped: %', sqlerrm;
+  end;
+end ${outer};`);
+  }
+  lines.push("commit;");
+  return lines.join("\n");
+}
+
 export function maskConnectionString(dbUrl: string): string {
   // Hide the password of postgresql://user:pass@host/db, then password-like
   // query parameters (password, sslpassword, pwd). An unencoded "/", "?",

@@ -1,4 +1,6 @@
 -- Required permissions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
+-- The first DO block also runs as the admin; pin before any name resolution.
+set search_path = pg_catalog, pg_temp;
 
 -- Allow connect
 grant connect on database {{DB_IDENT}} to {{ROLE_IDENT}};

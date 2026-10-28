@@ -3012,6 +3012,9 @@ describe("prepareDatabase (a fake pg client)", () => {
     const result = await s.prepare();
     expect((result as { next: string }).next).toBe("Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai mon deploy again with the postgres_ai_mon URL");
     expect((result as { sql: string }).sql).toContain("-- 01.role");
+    expect((result as { sql: string }).sql).toContain("begin;\n");
+    expect((result as { sql: string }).sql).toContain("do $pgai_optional_outer_0$");
+    expect((result as { sql: string }).sql).toMatch(/\ncommit;$/);
     expect(s.ran).toEqual([]);
   });
 });
