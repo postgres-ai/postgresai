@@ -36,7 +36,6 @@ function fake(over: Partial<ConnectDeps> & { lists?: Database[][]; creates?: { i
     localStackRunning: () => false,
     clickhouseOrg: async () => ({ orgId: "x", state: "running" }),
     selfHosted: async () => {},
-    handoffUrl: async () => "",
     supabaseStart: async () => { throw new Error("no"); },
     supabaseStatus: async () => { throw new Error("no"); },
     supabaseConnect: async () => { throw new Error("no"); },

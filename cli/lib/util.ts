@@ -311,7 +311,8 @@ function isSensitiveLogKey(key: string): boolean {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[-\s]+/g, "_")
     .toLowerCase();
-  return /^(?:password|passwd|db_(?:pass|password|url)|conn_?str|secret|(?:[a-z]+_)?key_secret|token|api_key|private_key|access_key|access_token|refresh_token|auth|auth_key|auth_token|authorization|credentials?|dsn)$/.test(normalized);
+  // prepare_db_sql: the RDS prepare SQL sets the monitoring role's password in its text.
+  return /^(?:password|passwd|db_(?:pass|password|url)|prepare_db_sql|conn_?str|secret|(?:[a-z]+_)?key_secret|token|api_key|private_key|access_key|access_token|refresh_token|auth|auth_key|auth_token|authorization|credentials?|dsn)$/.test(normalized);
 }
 
 /**
@@ -743,4 +744,10 @@ export function resolveBaseUrls(
     uiBaseUrl: normalizeBaseUrl(uiCandidate),
     storageBaseUrl: normalizeBaseUrl(storageCandidate),
   };
+}
+
+/** Whether a browser can open here: a desktop session, not an SSH login to a server (postgresai#454). */
+export function canOpenBrowser(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === "darwin" || platform === "win32") return !env.SSH_CONNECTION && !env.SSH_TTY;
+  return !!(env.DISPLAY || env.WAYLAND_DISPLAY);
 }

@@ -14,7 +14,7 @@ import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
-import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText } from "../lib/connect";
+import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -40,9 +40,9 @@ import {
   createSnapshot,
   destroySnapshot,
 } from "../lib/dblab";
-import { resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
+import { canOpenBrowser, resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
-import { monitoringSteps, StepView } from "../lib/deploy";
+import { monitoringSteps, PRIVATELINK_STEPS, StepView } from "../lib/deploy";
 import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, monitoringStatus, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
   enqueueQuery,
@@ -4313,6 +4313,7 @@ type ConnectOpts = {
   provider?: string; clickhouseKey?: string; selfHosted?: boolean; resetPassword?: boolean; wait?: string | boolean; coupon?: string;
   monitoringUser?: string; yes?: boolean; json?: boolean; debug?: boolean; dbUrl?: string; name?: string; cloud?: string; location?: string; vcpus?: string;
   supabaseProject?: string; ipFirst?: boolean; ipAllowed?: boolean;
+  privatelink?: boolean; vpceService?: string; hostStats?: boolean; hostStatsRole?: string; awsProfile?: string; aws?: boolean; terraform?: boolean;
 };
 
 /** Ctrl-C while deploy waits for the box: stop watching, the deploy goes on (exit 130). */
@@ -4372,8 +4373,11 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     const tty = !json && !!process.stderr.isTTY && !process.env.CI && process.env.TERM !== "dumb";
     let createdId: string | undefined;
     let stopping = false;
+    // An RDS over PrivateLink (postgresai#454), said before the price: its steps start with the customer's stack.
+    let privateLink = false;
     const steps = stepProgress({
-      json, tty, makeView: () => new StepView(`Deploying monitoring for ${shownName || "the Supabase project"}`, monitoringSteps(provider), true),
+      json, tty, makeView: () => new StepView(`Deploying monitoring for ${shownName || "the Supabase project"}`,
+        privateLink ? PRIVATELINK_STEPS : monitoringSteps(provider), true),
       writeLine: (line) => console.error(line), writeEvent, onId: (id) => { createdId = id; },
     });
     shownView = () => steps.view() as StepView | undefined;
@@ -4409,7 +4413,10 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
     process.on("SIGINT", onSigint);
     let result: ConnectResult;
     try {
-      result = await connect(url, { ...opts, vcpus, waitMs: minutes * 60_000 }, {
+      // RDS over PrivateLink (postgresai#454): the printed SQL ran, with this password and nonce.
+      // Only for an RDS: a value left in the shell from one resume never stops another database's deploy.
+      const resumed = provider === "rds" && process.env.PGAI_MON_NONCE ? { nonce: process.env.PGAI_MON_NONCE, monitoringPassword: process.env.PGAI_MON_PASSWORD } : {};
+      result = await connect(url, { ...opts, ...resumed, vcpus, waitMs: minutes * 60_000 }, {
         ...api,
         selfHosted: async (monitoringUrl, env) => {
           // A child `mon local-install`: the URL, API key and ClickHouse key ride in its
@@ -4454,6 +4461,20 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             closeReadline();
           }
         },
+        // A line from a person at a terminal (RDS over PrivateLink: a profile, the stack's output, Enter
+        // once the SQL ran), with the lines it is about shown first, over a stopped step view.
+        ...(interactive(opts.json) ? { ask: async (q: string, lines: string[] = []) => {
+          steps.view()?.stop();
+          for (const line of lines) console.error(terminalText(line));
+          process.exitCode = 130;
+          try {
+            return await question(q);
+          } finally {
+            process.exitCode = undefined;
+            closeReadline();
+            steps.reset();
+          }
+        } } : {}),
         // platform-all#987: the box's IP is reserved; a person at a terminal continues once the
         // database allows it, or stops (it stays reserved). Elsewhere the result carries step allow_ip.
         ...(interactive(opts.json) ? { allowIp: async (lines: string[]) => {
@@ -4509,7 +4530,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
           }
         } } : {}),
         // Supabase's consent page, for a person at a terminal (the link is printed too).
-        ...(interactive(opts.json) ? { openUrl: openInBrowser } : {}),
+        // Only where a browser can open (not an SSH session to a server, say).
+        ...(interactive(opts.json) && canOpenBrowser() ? { openUrl: openInBrowser } : {}),
         progress: (e) => {
           if (e.event === "provisioning") requested = true;
           if (e.message === STILL_CREATING) looking = true;
@@ -4517,6 +4539,7 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
           if (e.event === "box") looking = false;
           // Supabase without a URL: the project picked names the step view.
           if (e.project) shownName = terminalText(e.project);
+          if (e.location_reason === "privatelink") privateLink = true;
           steps.progress(e);
         },
         aborted: () => stopping,
@@ -4570,12 +4593,20 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
   .option("--reset-password", "the monitoring role exists and its password is lost: set a new one (admin URL; refused while another database on the server is monitored)")
-  .option("--monitoring-user <name>", "monitoring role to create or use", DEFAULT_MONITORING_USER)
+  .option("--monitoring-user <name>", "monitoring role to create or use (not over AWS PrivateLink, which uses postgres_ai_mon)", DEFAULT_MONITORING_USER)
   .option("--coupon <code>", "promotion code for the organization's monitoring subscription (applies when it is first created)")
   .option("--vcpus <n>", "vCPUs of the database server; without it there is no AAS (database load) data (asked at a terminal; Supabase: from the project's compute size)")
   .option("--supabase-project <name|project-id>", "the Supabase project to monitor (its exact name, or its project ID), instead of a URL; implies --provider supabase")
   .option("--ip-first", "reserve the monitoring box's IP and stop before the box: the IP is kept for a week, so you can allow it on the database and continue the deploy afterwards with --ip-allowed (PostgresAI Cloud only)")
   .option("--ip-allowed", "the database now allows the reserved IP: create the box with it")
+  .option("--privatelink", "RDS: monitor over AWS PrivateLink (the instance is not publicly accessible; default: decided from AWS or public DNS)")
+  .option("--no-privatelink", "RDS: monitor directly (the instance is publicly accessible)")
+  .option("--vpce-service <name>", "RDS over PrivateLink: the stack's VpceServiceName output, when this machine can't read it from AWS")
+  .option("--host-stats", "RDS over PrivateLink: also host CPU, memory, disk and IOPS, through a read-only role the stack creates")
+  .option("--host-stats-role <arn>", "RDS over PrivateLink: the stack's HostStatsRoleArn output, when not read from AWS (implies --host-stats)")
+  .option("--aws-profile <name>", "RDS: the aws CLI profile that reads the instance and its stack, read-only (default: the aws CLI's own)")
+  .option("--no-aws", "RDS: do not use the aws CLI on this machine")
+  .option("--terraform", "RDS over PrivateLink: write the stack as a Terraform module (./postgresai-privatelink-<instance>/) instead of the CloudFormation link")
   .addHelpText("after", [
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
@@ -4602,7 +4633,21 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "at a terminal). Allow it on the database, then re-run with --ip-allowed (at a terminal: Enter).",
     "The IP is held 7 days and stays the box's for its life. If the box still can't connect, it waits",
     "up to 90 minutes, then is removed and the IP kept: allow it and re-run with --ip-allowed.",
-    "RDS can also use AWS PrivateLink (no public IP), or monitor with --self-hosted.",
+    "",
+    "Amazon RDS that is not publicly accessible: over AWS PrivateLink (nothing becomes public, no",
+    "port is opened). Run deploy where the database is reachable (in its VPC). It reads the instance",
+    "with the aws CLI when it can (read-only: the profile it uses is printed; --aws-profile picks one,",
+    "--no-aws skips it), else asks public DNS; --privatelink / --no-privatelink decide instead. Then:",
+    "the price, a CloudFormation link that creates the stack in your AWS account (filled in with what",
+    "AWS said; --terraform writes the same as Terraform), the monitoring role, and the box on AWS in the",
+    "RDS's region. At a terminal deploy waits up to 30 minutes for the stack (any name: it is found by",
+    "its RDS; with several, you pick one), or without AWS asks for its VpceServiceName;",
+    "elsewhere it stops (exit 3, \"step\":\"privatelink_stack\" with cfn_url): create the stack,",
+    "then re-run (with --vpce-service <VpceServiceName> when AWS is not read here). When the URL's",
+    "user can't create the role, the SQL is printed (\"step\":\"prepare_db\" with sql, nonce,",
+    "monitoring_password): run it as the master user in that database, then re-run with",
+    "PGAI_MON_PASSWORD and PGAI_MON_NONCE set to those two. Aurora and RDS Proxy: not over PrivateLink.",
+    "Any database can also be monitored from this machine with --self-hosted.",
     "",
     "Billing is per Postgres cluster observed: another database in a cluster the organization already",
     "monitors is included. Once the URL is checked, deploy shows the price (or \"free (N of M free slots)\"). A billed",
@@ -4635,7 +4680,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "for another database on a server PostgresAI already monitors for the org, with",
     "sslmode=require or verify-* in the URL: PostgresAI fills in the password it keeps, over TLS only),",
     "PGPASSWORD (the password for a URL without one),",
-    "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key).",
+    "CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET (instead of --clickhouse-key),",
+    "PGAI_MON_NONCE (RDS over PrivateLink: with PGAI_MON_PASSWORD, the printed SQL ran; see above).",
     "",
     "Examples:",
     "  pgai mon deploy 'postgresql://postgres:<password>@<host>.pg.clickhouse.cloud:5432/postgres?sslmode=require'",
@@ -4645,6 +4691,8 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "  pgai mon deploy 'postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres'",
     "  pgai mon deploy '<url>' --cloud hetzner --location nbg1",
     "  pgai mon deploy '<url>' --self-hosted",
+    "  pgai mon deploy 'postgresql://postgres:<password>@<instance>.<id>.<region>.rds.amazonaws.com:5432/app'",
+    "  pgai mon deploy '<rds-url>' --yes --json --vpce-service com.amazonaws.vpce.<region>.vpce-svc-<id>",
   ].join("\n"))
   .action((urlArg: string | undefined, opts: ConnectOpts, cmd: Command) => {
     // The URL is the argument or --db-url (not needed for a Supabase project, postgresai#438):
@@ -4687,10 +4735,13 @@ async function cloudInstance(opts: { debug?: boolean }, ref: string, live = fals
   return pickInstance(rows, ref, (d) => d.id, (d) => d.name, "pgai mon instances list");
 }
 
-/** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in). */
+/** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in), and a PrivateLink box's route. */
 async function linkedDatabases(opts: { debug?: boolean }): Promise<Database[]> {
   const api = cloudApi(opts.debug);
-  return Promise.all((await api.list()).map(api.links));
+  return Promise.all((await api.list()).map(async (d) => {
+    const [linked, pl] = await Promise.all([api.links(d), privateLinkOf(d, api.rdsStatus)]);
+    return pl ? { ...linked, privatelink: { region: pl.region, vpce_service_name: pl.vpce_service_name, verified: verifiedWords(pl.verified_status) } } : linked;
+  }));
 }
 
 // Tests shorten the poll; people never need to.
@@ -4736,7 +4787,10 @@ withOrgOptions(monInstances.command("watch <id-or-name>"))
       } finally {
         undetach();
       }
-      emitConnect(connectStatus(await cloudApi(opts.debug).links(row)), opts.json);
+      // A PrivateLink box (postgresai#454): no public IP, and one not ready says why before what to do.
+      const pl = await privateLinkOf(row, cloudApi(opts.debug).rdsStatus);
+      const status = connectStatus(await cloudApi(opts.debug).links(row));
+      emitConnect(pl ? overPrivateLink(status, privateLinkFailure(pl)) : status, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }
@@ -4753,9 +4807,11 @@ withOrgOptions(monInstances.command("delete <id-or-name>"))
       if (!opts.yes && !(interactive(opts.json) && /^y/i.test(await question(`Stop monitoring ${row.name} and delete its monitoring box? (y/N): `)))) {
         return emitConnect({ status: "action_required", provider: row.provider as Provider, name: row.name, id: row.id, next: `pgai mon instances delete ${row.id} --yes` }, opts.json);
       }
+      // Read before the delete: the route goes with the box (postgresai#454).
+      const pl = await privateLinkOf(row, cloudApi(opts.debug).rdsStatus);
       const billing = disconnectBilling(await cloudApi(opts.debug).disconnect(row.id));
       emitConnect({ status: "deleting", provider: row.provider as Provider, name: row.name, id: row.id, ...(billing ? { billing } : {}),
-        next: clickhouseKeyHeld(row) ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
+        next: pl ? stackTeardown(pl, row.id) : clickhouseKeyHeld(row) ? "Delete the ClickHouse Cloud API key you gave us" : "none" } as ConnectResult, opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }

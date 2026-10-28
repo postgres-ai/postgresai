@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Client } from "pg";
 import { parse as parseConnString, parseIntoClientConfig } from "pg-connection-string";
 import { findService } from "./clickhouse";
@@ -9,6 +12,11 @@ import { assertEncodedUserinfo, estimateLine, monitoringStatus, noCardNext, notA
 import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
 import { callRpc, type ProjectListItem } from "./joe";
 import { listOrgs, type OrgScope } from "./org-scope";
+import {
+  AwsError, PRINCIPAL_ARN, ROLE_ARN, TERRAFORM_URL, VPCE_SERVICE, awsRunner, callerIdentity, describeDbInstance, findStacks, isPrivateAddress, oneSubnetPerAz,
+  publicAddresses, quickCreateUrl, rdsEndpoint, stackFailure, stackNameFor, stackState, terraformFiles, vcpusOfClass,
+  type AwsRun, type DbInstance, type RdsEndpoint, type Stack, type StackInputs,
+} from "./privatelink";
 import { SUPABASE_API_BASE, extractProjectRefFromUrl } from "./supabase";
 import { HttpRequestTimeoutError, HttpStatusError, requestTimeoutSignal, stripControlsToSpace } from "./util";
 
@@ -22,7 +30,7 @@ export type Status = DeployStatus;
 
 /** A step of mon deploy, once each: a line for a person, a JSON event for an agent. */
 export interface ProgressEvent {
-  event: "billing" | "preparing" | "provisioning" | "box" | "allow_ip";
+  event: "billing" | "privatelink" | "preparing" | "provisioning" | "box" | "allow_ip";
   /** Where the box runs (the "Monitoring box: <cloud>, <location>" line, platform-all#972). */
   cloud?: string;
   location?: string;
@@ -46,6 +54,9 @@ export interface ProgressEvent {
   reserved_until?: string;
   /** event box, waiting_for_access: why the database refused the box's IP the last time. */
   error?: string;
+  /** event privatelink (postgresai#454): the CloudFormation link, and the stack it creates. */
+  cfn_url?: string;
+  stack_name?: string;
 }
 
 export interface ConnectResult {
@@ -81,7 +92,7 @@ export interface ConnectResult {
    * database to allow it: ip (cidr) on host:port, held until reserved_until; last_error is
    * why the database refused the box the last time, if it did.
    */
-  step?: "allow_ip";
+  step?: "allow_ip" | "privatelink_stack" | "prepare_db";
   ip?: string;
   cidr?: string;
   host?: string;
@@ -92,6 +103,22 @@ export interface ConnectResult {
   precheck_error?: string;
   /** The IP the box connects to the database from (ready results and reservations). */
   egress_ip?: string;
+  /**
+   * AWS PrivateLink (postgresai#454). step privatelink_stack: the CloudFormation link that publishes
+   * the RDS (cfn_url), the stack it creates, the RDS's region, the External ID it carries (host
+   * metrics), and where --terraform wrote the module. step prepare_db: the SQL to run as the master
+   * user (`sql`), and the nonce and password it sets, to resume with.
+   */
+  cfn_url?: string;
+  stack_name?: string;
+  region?: string;
+  external_id?: string;
+  terraform_dir?: string;
+  nonce?: string;
+  monitoring_password?: string;
+  /** step privatelink_stack: the link's fields to choose in the form (no AWS here); several stacks for the RDS, to pick one. */
+  choose_in_form?: string[];
+  stacks?: { name: string; status: string; created: string | null; vpce_service_name: string }[];
 }
 
 /** A project of the Supabase organization connected to the org (v1.cloud_monitoring_supabase_projects). */
@@ -198,7 +225,6 @@ export interface ConnectDeps {
   localStackRunning(): boolean;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
-  handoffUrl(provider: "rds"): Promise<string>;
   /**
    * Supabase (v1.cloud_monitoring_supabase_*): the org's connection, or the consent page that makes one;
    * whether that consent came back; the box for a project of the connected org.
@@ -247,6 +273,50 @@ export interface ConnectDeps {
    * database allows it, or stop (it stays reserved). Absent when nobody can be asked.
    */
   allowIp?(lines: string[]): Promise<"continue" | "stop">;
+  /**
+   * AWS PrivateLink (postgresai#454), v1.cloud_monitoring_rds_*: the org's External ID for the host
+   * metrics role, the prepare SQL (a new nonce and password each call), the box, its verification.
+   */
+  rdsExternalId?(): Promise<string>;
+  rdsPrepareSql?(dbName: string): Promise<RdsPrepareSql>;
+  rdsProvision?(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; provider?: string; status: string; region?: string; verified_status?: string; launch_status?: string }>;
+  rdsStatus?(id: string): Promise<RdsStatus>;
+  /** The aws CLI under a profile (the standard chain without one); absent: AWS is never read. */
+  aws?(profile?: string): AwsRun;
+  /** The profiles the aws CLI knows, to pick one at a terminal. */
+  awsProfiles?(): Promise<string[]>;
+  /** The host's addresses as the internet resolves them; undefined when nobody answered. */
+  publicAddresses?(host: string): Promise<string[] | undefined>;
+  /** Runs the prepare SQL over the URL (one session); refusals are pg's errors. */
+  runSql?(url: string, sql: string, warn?: Warn): Promise<void>;
+  /** The newest ownership nonce in the database, read as the monitoring role; undefined: no marker. */
+  readNonce?(url: string, warn?: Warn): Promise<string | undefined>;
+  /** The Terraform module (TERRAFORM_URL), and where its files go (a directory here): the path written. */
+  writeTerraform?(dirName: string, files: { mainTf: string; tfvars: string }): Promise<string>;
+  terraformModule?(): Promise<string>;
+  /** Asks a person at a terminal for a line (Enter: ""); absent when nobody can be asked. */
+  ask?(question: string, lines?: string[]): Promise<string>;
+}
+
+/** v1.cloud_monitoring_rds_prepare_sql. */
+export interface RdsPrepareSql {
+  nonce: string;
+  db_user: string;
+  db_name: string;
+  db_password: string;
+  prepare_db_sql: string;
+}
+
+/** v1.cloud_monitoring_rds_status: the PrivateLink route of a box. */
+export interface RdsStatus {
+  id: string;
+  /** pending until the collector's check passes: db_verified, or unreachable / auth_failed / nonce_mismatch. */
+  verified_status: string;
+  instance_status: string | null;
+  vpce_service_name: string;
+  rds_endpoint: string;
+  region: string;
+  dashboard_url?: string | null;
 }
 
 export interface ConnectOptions {
@@ -278,6 +348,22 @@ export interface ConnectOptions {
   ipFirst?: boolean;
   /** --ip-allowed: the reserved IP is allowed on the database; create the box with it. */
   ipAllowed?: boolean;
+  /** --privatelink / --no-privatelink: an RDS over AWS PrivateLink, or directly (default: private instances over PrivateLink). */
+  privatelink?: boolean;
+  /** --vpce-service: the stack's VpceServiceName, when it is not read from AWS here. */
+  vpceService?: string;
+  /** --host-stats: host CPU, memory, disk and IOPS through a read-only role in the customer's account. */
+  hostStats?: boolean;
+  /** --host-stats-role: that role's ARN (the stack's HostStatsRoleArn). */
+  hostStatsRole?: string;
+  /** --aws-profile: the aws CLI profile; false (--no-aws): AWS is not read. */
+  awsProfile?: string;
+  aws?: boolean;
+  /** --terraform: the Terraform module instead of the CloudFormation link. */
+  terraform?: boolean;
+  /** The printed prepare SQL ran: its password and nonce (PGAI_MON_PASSWORD, PGAI_MON_NONCE), to resume without a new SQL. */
+  monitoringPassword?: string;
+  nonce?: string;
 }
 
 /**
@@ -610,7 +696,10 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
       view.start();
     }
     view.advance(e.event);
-    if (/^(Note|Warning):/.test(e.message)) view.log(e.message);
+    // PrivateLink (postgresai#454): the link and the stack used stay on screen; the wait is a note under the step.
+    const kept = e.event === "privatelink" && (!!e.cfn_url || e.message.startsWith("Using stack "));
+    if (/^(Note|Warning):/.test(e.message) || kept) view.log(e.message);
+    if (e.event === "privatelink" && !kept && !/^(Note|Warning):/.test(e.message)) view.setNote(e.message);
     if (e.event === "box" && e.state) {
       view.setNote(e.state === "waiting_for_access" && e.ip ? `box: waiting for database access from ${e.ip}` : `box: ${boxWords(e.state)}`);
       if (e.state === "waiting_for_access" && e.ip && e.error && e.error !== refused) {
@@ -627,7 +716,7 @@ export function stepProgress(o: { json: boolean; tty: boolean; makeView: () => S
 /** How the step list ends: a run stopped at the reserved IP (platform-all#987) or still in progress is left waiting, not failed. */
 export function stepViewEnd(r: ConnectResult): "complete" | "fail" | "stop" {
   if (r.status === "ready") return "complete";
-  if (r.status === "in_progress" || r.step === "allow_ip" || r.next.startsWith(STILL_IN_PROGRESS)) return "stop";
+  if (r.status === "in_progress" || r.step || r.next.startsWith(STILL_IN_PROGRESS)) return "stop";
   return "fail";
 }
 
@@ -653,6 +742,7 @@ function personLines(r: ConnectResult): string[] {
         ...(r.price ? [`  Price:         ${r.price}`] : []),
         ...(r.cloud ? [`  Runs on:       ${cloudWord(r.cloud)}, ${r.location}`] : []),
         ...(r.egress_ip ? [`  Connects from: ${r.egress_ip}`] : []),
+        ...(r.provider === "rds" && r.host_metrics ? ["  Host metrics:  on (CPU, memory, disk, IOPS)"] : []),
         ...(!r.health_url && !r.dashboard_url && r.next && r.next !== "none" ? [`Next: ${r.next}`] : []),
         ...(extra && (r.health_url || r.dashboard_url) ? [`Note: ${extra}`] : []),
       ];
@@ -676,6 +766,8 @@ function personLines(r: ConnectResult): string[] {
       }
       // Supabase without a URL: the projects one per line under the reason (JSON has them in `projects`).
       if (r.projects?.length) return [r.next, ...supabaseProjectRows(r.projects)];
+      // PrivateLink (postgresai#454): the stack's link on its own line, whole.
+      if (r.step === "privatelink_stack" && r.cfn_url && !r.terraform_dir) return [r.next, `  ${r.cfn_url}`];
       // Not deployed for want of --yes: where else it can run, a line per cloud (JSON has them in `choices`).
       return r.choices ? [r.next, ...Object.entries(r.choices).map(([cloud, codes]) => `  --cloud ${cloud} --location ${codes.join("|")}`)] : [r.next];
   }
@@ -806,9 +898,15 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
   const key = parseClickhouseKey(opts.clickhouseKey, provider === "clickhouse" && !opts.agent ? process.env : {});
   if (key && provider !== "clickhouse") throw new Error("--clickhouse-key applies to ClickHouse Managed Postgres only");
 
+  // An RDS that is not publicly accessible: over AWS PrivateLink (postgresai#454); a public one goes on below.
+  const plFlag = privateLinkFlag(opts);
   if (!opts.selfHosted && provider === "rds") {
-    const ignored = monitoringUser ? ` (${opts.agent ? "monitoring_user" : "--monitoring-user"} is not used there)` : "";
-    return { status: "action_required", provider, name, next: `Finish in the console: ${await deps.handoffUrl(provider)}${ignored}` };
+    const route = await rdsRoute(url, opts, deps, progress);
+    if ("status" in route) return { ...route, provider, name };
+    if (route.private) return deployPrivateLink(url, route, { ...opts, monitoringUser }, deps, progress);
+    if (plFlag) return { status: "action_required", provider, name, next: `${plFlag} applies to AWS PrivateLink only, and ${name} is monitored directly${opts.privatelink === false ? ` (${opts.agent ? "privatelink: false" : "--no-privatelink"})` : " (it is publicly accessible)"}` };
+  } else if (plFlag) {
+    return { status: "action_required", provider, name, next: `${plFlag} applies to Amazon RDS monitored from PostgresAI Cloud only` };
   }
 
   if (opts.selfHosted && opts.resetPassword) {
@@ -1675,6 +1773,579 @@ async function supabaseBox(ref: string, name: string, opts: ConnectOptions, deps
   return follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "", place }, opts, deps, progress);
 }
 
+const PL = "AWS PrivateLink";
+/** How long a terminal deploy waits for the customer's stack, and how often it reads it. */
+export const STACK_WAIT_MS = 30 * 60_000;
+const STACK_POLL_MS = 15_000;
+
+/** The first option given that applies to AWS PrivateLink only, as given (an agent: its argument). */
+function privateLinkFlag(opts: ConnectOptions): string | undefined {
+  const named: [unknown, string, string][] = [
+    [opts.privatelink === true ? true : undefined, "--privatelink", "privatelink"],
+    [opts.vpceService, "--vpce-service", "vpce_service"],
+    [opts.hostStats ? true : undefined, "--host-stats", "host_stats"],
+    [opts.hostStatsRole, "--host-stats-role", "host_stats_role"],
+    [opts.terraform ? true : undefined, "--terraform", "terraform"],
+    // An agent's argument; the CLI's environment is read for an RDS only (a value left from another deploy).
+    [opts.agent ? opts.nonce : undefined, "PGAI_MON_NONCE", "nonce"],
+  ];
+  const hit = named.find(([v]) => v !== undefined);
+  return hit && (opts.agent ? hit[2] : hit[1]);
+}
+
+/** How mon deploy reaches an RDS: directly, or over PrivateLink with what AWS said of it here. */
+type RdsRoute = { private: false } | { private: true; ep: RdsEndpoint; aws?: AwsRun; inst?: DbInstance };
+
+/**
+ * Whether an RDS is monitored over PrivateLink (postgresai#454): --privatelink / --no-privatelink,
+ * else whether it is publicly accessible, from AWS when the aws CLI reads it here, else from
+ * public DNS (inside the VPC, AWS resolves even a public RDS to a private address).
+ */
+async function rdsRoute(url: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<RdsRoute | { status: "action_required"; next: string }> {
+  const host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  const ep = rdsEndpoint(host);
+  const flag = (cli: string, agent: string) => (opts.agent ? agent : cli);
+  const stop = (next: string) => ({ status: "action_required" as const, next });
+  if (opts.privatelink === false) return { private: false };
+  const asked = opts.privatelink === true;
+  let read: { aws?: AwsRun; inst?: DbInstance } = {};
+  if (ep?.kind === "instance" && ep.partition === "aws" && opts.aws !== false && deps.aws) read = await readAws(ep, opts, deps, progress);
+  let isPublic = read.inst?.publiclyAccessible;
+  if (isPublic === undefined && ep && deps.publicAddresses) {
+    progress("preparing", `Looking up ${host} in public DNS (cloudflare-dns.com, dns.google): is it publicly accessible?`);
+    const addresses = await deps.publicAddresses(host);
+    if (addresses?.length) {
+      isPublic = !addresses.every(isPrivateAddress);
+      progress("preparing", `${host} resolves to a ${isPublic ? "public address in public DNS, so it is monitored directly" : `private address in public DNS, so it is monitored over ${PL}`}`);
+    }
+  }
+  if (isPublic === true) {
+    if (asked) return stop(`${host} is publicly accessible, so it is monitored directly: deploy without ${flag("--privatelink", "privatelink")}`);
+    return { private: false };
+  }
+  if (isPublic === undefined && !asked) {
+    if (!deps.ask || opts.yes) return stop(`Could not tell whether ${host} is publicly accessible (AWS ${opts.aws === false ? "not read" : "not readable here"}, and public DNS did not answer): re-run with ${flag("--privatelink", "privatelink: true")} if it is not, or ${flag("--no-privatelink", "privatelink: false")} if it is`);
+    const a = (await deps.ask(`Is ${host} publicly accessible? [y]es, monitor it directly / [n]o, over ${PL} / Enter to stop: `)).trim().toLowerCase();
+    if (a === "y" || a === "yes") return { private: false };
+    if (a !== "n" && a !== "no") return stop("Stopped: nothing was created");
+  }
+  if (!ep) return stop(`${PL} needs the RDS instance endpoint (<instance>.<id>.<region>.rds.amazonaws.com) in the URL, not ${host}; or monitor from this network with --self-hosted`);
+  if (ep.partition !== "aws") return stop(`${ep.partition === "aws-cn" ? "AWS China" : "AWS GovCloud"} can't reach PostgresAI over ${PL} (it does not cross AWS partitions): monitor from this network with --self-hosted`);
+  if (ep.kind !== "instance" || read.inst?.engine?.startsWith("aurora")) return stop(`${ep.kind === "proxy" ? "An RDS Proxy endpoint" : "Aurora"} is not supported over ${PL} yet: monitor from this network with --self-hosted, or ask support@postgres.ai`);
+  return { private: true, ep, ...read };
+}
+
+/**
+ * The RDS as the aws CLI reads it here (the standard profile chain, or --aws-profile), said with
+ * the account it signs in as. When it can't (no aws CLI, an expired session, the RDS in another
+ * account), a person at a terminal may pick another profile; otherwise deploy goes on without AWS.
+ */
+async function readAws(ep: RdsEndpoint, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<{ aws?: AwsRun; inst?: DbInstance }> {
+  let profile = opts.awsProfile?.trim() || undefined;
+  for (let tries = 0; tries < 3; tries++) {
+    const run = deps.aws!(profile);
+    const of = profile ? ` (profile ${profile})` : "";
+    let why: string;
+    let missing = false;
+    try {
+      const me = await callerIdentity(run);
+      const inst = await describeDbInstance(run, ep.id, ep.region);
+      progress("preparing", `AWS account ${me.account} (${me.arn.split(":").pop()}), read-only: ${ep.id} is ${inst.publiclyAccessible ? "publicly accessible, so it is monitored directly" : `not publicly accessible, so it is monitored over ${PL}`}`);
+      return { aws: run, inst };
+    } catch (err) {
+      if (!(err instanceof AwsError)) throw err;
+      missing = err.kind === "missing";
+      why = missing ? "the aws CLI is not installed here"
+        : err.kind === "not_found" ? `${ep.id} is not in ${ep.region} of this AWS account${of}`
+        : err.kind === "credentials" ? `the AWS credentials${of} do not work: ${err.message}`
+        : `AWS refused${of}: ${err.message}`;
+    }
+    if (missing || !deps.ask || opts.yes) {
+      progress("preparing", `Note: ${why}; going on without AWS${missing ? "" : ` (${opts.agent ? "aws_profile" : "--aws-profile"} picks a profile)`}`);
+      return {};
+    }
+    const profiles = deps.awsProfiles ? await deps.awsProfiles().catch(() => [] as string[]) : [];
+    const a = (await deps.ask(`AWS profile to read ${ep.id} with${profiles.length ? ` (${profiles.join(", ")})` : ""}, or Enter to go on without AWS: `, [`${why}.`])).trim();
+    if (!a) return {};
+    profile = a;
+  }
+  return {};
+}
+
+/** The box's verification over PrivateLink in words (the console's), when it failed. */
+const VERIFY_FAILED: Record<string, string> = {
+  unreachable: "The monitoring box could not reach the database over PrivateLink: check that the stack finished, its load balancer's target is healthy, and the RDS is not publicly accessible.",
+  auth_failed: `The monitoring box reached the database, but ${DEFAULT_MONITORING_USER} could not log in: its password changed after this deploy set it (another setup ran its SQL).`,
+  nonce_mismatch: "A newer PostgresAI setup SQL ran in this database after this deploy's (another deploy, or the Console), so monitoring does not start.",
+};
+
+/** A box's PrivateLink route (postgresai#454), for list, watch and delete; undefined for any other box. */
+export async function privateLinkOf(d: Database, rdsStatus?: ConnectDeps["rdsStatus"]): Promise<RdsStatus | undefined> {
+  if (!rdsStatus || disconnecting(d.status)) return undefined;
+  // Made by deploy: provider rds or aurora; in the console: no server in the list.
+  if (d.cluster && d.provider !== "rds" && d.provider !== "aurora") return undefined;
+  return rdsStatus(d.id).catch(() => undefined);
+}
+
+/** The box's check of the database over PrivateLink, in words. */
+export function verifiedWords(verified: string): string {
+  return verified === "db_verified" ? "verified" : verified === "pending" ? "not verified yet" : VERIFY_FAILED[verified] ?? verified;
+}
+
+/** Why a PrivateLink box can't monitor its database (it failed the check); undefined otherwise. */
+export const privateLinkFailure = (s: RdsStatus | undefined): string | undefined => (s ? VERIFY_FAILED[s.verified_status] : undefined);
+
+/** After a PrivateLink box is deleted: the customer's stack, which only they can delete. */
+export function stackTeardown(s: RdsStatus, id: string): string {
+  const ep = rdsEndpoint(s.rds_endpoint);
+  const made = ep ? ` If deploy's link made it:\n  aws cloudformation delete-stack --stack-name ${stackNameFor(ep.id)} --region ${ep.region}` : "";
+  return `Once it is deleted (pgai mon instances watch ${id}), and if nothing else is to monitor this RDS (a new deploy for it reuses the stack), delete the PrivateLink stack in your AWS account whose VpceServiceName is ${s.vpce_service_name} (terraform destroy, if it was made with Terraform).${made}`;
+}
+
+/** A time as people read it in UTC ("2026-10-28 12:02:03 UTC"); AWS writes "2026-10-28T12:02:03.456000+00:00". */
+const utc = (iso: string): string => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${d.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+};
+
+/**
+ * The URL in database `db`: a URL without a path would connect pg to its user's default one. A path
+ * given is kept as written (pg decodes it with decodeURI, so re-encoding it could name another database).
+ */
+function inDatabase(url: string, db: string): string {
+  const u = new URL(url);
+  if (u.pathname.length <= 1) u.pathname = `/${encodeURIComponent(db)}`;
+  return u.toString();
+}
+
+/** The monitoring role's login from here, in database `db`: no user or password of the given URL's query string. */
+function roleUrl(url: string, db: string, password: string): string {
+  const u = new URL(loginUrlFor(url, DEFAULT_MONITORING_USER, db, password));
+  u.pathname = new URL(inDatabase(url, db)).pathname;
+  return u.toString();
+}
+
+/**
+ * A private RDS over AWS PrivateLink (postgresai#454), the console's wizard from here: the price,
+ * the customer's stack (the CloudFormation link, or Terraform), the monitoring role with the org's
+ * ownership nonce, then the box on PostgresAI's AWS in the RDS's region. The role is prepared
+ * last: every prepare SQL is a new nonce, and the box is made with the newest.
+ */
+async function deployPrivateLink(url: string, route: Extract<RdsRoute, { private: true }>, opts: ConnectOptions, deps: ConnectDeps, progress: Progress): Promise<ConnectResult> {
+  const provider: Provider = "rds";
+  const { ep, inst } = route;
+  const name = databaseName(url);
+  const db = name.split("/").slice(1).join("/") || "postgres";
+  const port = Number(new URL(url).port || inst?.port || 5432);
+  const cluster = `${ep.host}:${port}`;
+  const flag = (cli: string, agent: string) => (opts.agent ? agent : cli);
+  const stop = (next: string, more: Partial<ConnectResult> = {}): ConnectResult => ({ status: "action_required", provider, name, ...more, next });
+  const notHere = ([[opts.cloud, "--cloud", "cloud"], [opts.location, "--location", "location"], [opts.name, "--name", "name"],
+    [opts.ipFirst || undefined, "--ip-first", "ip_first"], [opts.ipAllowed || undefined, "--ip-allowed", "ip_allowed"],
+    [opts.resetPassword || undefined, "--reset-password", "reset_password"], [opts.monitoringUser, "--monitoring-user", "monitoring_user"]] as const)
+    .find(([v]) => v !== undefined && v !== "");
+  if (notHere) return stop(`${flag(notHere[1], notHere[2])} does not apply over ${PL}: the box runs on AWS in ${ep.region} (the RDS's region), as ${DEFAULT_MONITORING_USER}, in a project named ${ep.id}`);
+  if ((opts.monitoringPassword === undefined) !== (opts.nonce === undefined)) {
+    return stop(opts.agent ? "Pass monitoring_password and nonce together (both from the prepare_db result)" : "Set PGAI_MON_PASSWORD and PGAI_MON_NONCE together (both from the printed SQL's result), or neither");
+  }
+  // One box per RDS: the prepare SQL sets the cluster-wide role's password anew (the platform keeps
+  // none), so a box on this RDS (any database, made here or in the console) is found before anything is changed.
+  const rows = await deps.list();
+  const live = rows.filter((d) => !disconnecting(d.status));
+  const onServer = live.filter((d) => d.cluster && serverOf(d.cluster) === cluster);
+  const verify = async (row: Database) => VERIFY_FAILED[(await deps.rdsStatus?.(row.id).catch(() => undefined))?.verified_status ?? ""];
+  const own = onServer.find((d) => (d.provider === "rds" || d.provider === "aurora") && d.database != null && decodeURIComponent(d.database) === db);
+  if (own) {
+    const note = opts.vpceService || opts.hostStatsRole ? "; the flags for a new box were not used: it exists" : "";
+    return overPrivateLink(await follow(own, { provider, name, fresh: false, billing: {}, note, verify }, opts, deps, progress));
+  }
+  const already = (d: Database, how: string) => {
+    const instead = d.database != null && decodeURIComponent(d.database) !== db ? `To monitor ${db} instead` : "To set it up from here instead";
+    return stop(`${ep.id} is already monitored ${how} (instance ${d.name}). Setting up another instance would change ${DEFAULT_MONITORING_USER}'s password, which that instance logs in with. ${instead}, delete that instance first (pgai mon instances delete ${deleteRef(d, rows)})`);
+  };
+  if (onServer.length) return already(onServer[0], onServer[0].provider === "rds" ? `over ${PL}, database ${decodeURIComponent(onServer[0].database ?? "?")}` : "directly");
+  // A console-made PrivateLink box names no server in the list: its route does.
+  const candidates = live.filter((r) => !r.cluster || r.provider === "rds" || r.provider === "aurora");
+  // 404: not a PrivateLink box. Any other failure stops here: the SQL below would change the role's password.
+  let routes: (RdsStatus | undefined)[];
+  try {
+    routes = await Promise.all(candidates.map((d) => deps.rdsStatus?.(d.id).catch((err) => {
+      if (httpStatus(err) === 404) return undefined;
+      throw err;
+    })));
+  } catch (err) {
+    return stop(`Could not check what already monitors ${ep.id} (${errorText(err)}): re-run pgai mon deploy. Nothing was changed`);
+  }
+  const viaConsole = candidates.find((_, i) => routes[i]?.rds_endpoint.toLowerCase().replace(/\.$/, "") === ep.host);
+  if (viaConsole) return already(viaConsole, `over ${PL}, set up in the console`);
+  const hostStats = !!opts.hostStats || !!opts.hostStatsRole?.trim();
+  const place: Place = { cloud: "aws", location: ep.region, location_reason: "privatelink", location_reason_text: `same region as your database, over ${PL}` };
+  progress("preparing", `Monitoring box: AWS, ${ep.region} (${place.location_reason_text})`, { cloud: "aws", location: ep.region, location_reason: "privatelink" });
+  let quote: Quote;
+  try {
+    // The org's price: the PrivateLink box is billed as one more cluster.
+    quote = await deps.quote(opts.coupon);
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+    throw err;
+  }
+  // From AWS, said with the price.
+  let vcpus = opts.vcpus;
+  if (vcpus === undefined && route.aws && inst?.instanceClass) {
+    vcpus = await vcpusOfClass(route.aws, inst.instanceClass, ep.region);
+    if (vcpus) progress("billing", `vCPUs: ${vcpus} (${inst.instanceClass})`);
+  }
+  const where = `AWS, ${ep.region}`;
+  const b = await billingFor(quote, name, opts, deps, (price) => progress("billing", estimateLine(price)), async (price) => {
+    if (opts.yes) return { go: true };
+    if (deps.ask) {
+      return await deps.confirm(`Deploy ${terminalText(name)} over ${PL} (monitoring box on ${where})? [y/N] `)
+        ? { go: true } : { go: false, stop: { next: `Nothing was created: re-run with --yes to deploy over ${PL}` } };
+    }
+    return { go: false, stop: { next: opts.agent
+      ? `Show the user the price (${price}); the monitoring box runs on ${where}, reached over ${PL}. Then call deploy_monitoring again with yes: true. Nothing was created.`
+      : `The monitoring box would run on ${where} for ${price}, reached over ${PL}: re-run with --yes to deploy. Nothing was created.` } };
+  });
+  if (b.stop) return { ...stop(b.stop.next), ...place, ...b.stop };
+  if (deps.aborted?.()) throw new CancelledError();
+  const more = { ...place, ...b.billing };
+  // Asked after the price, before the steps (the first step is the customer's stack).
+  if (vcpus === undefined) {
+    vcpus = !opts.yes && !opts.agent && deps.askVcpus ? await deps.askVcpus(VCPUS_QUESTION) : undefined;
+    if (deps.aborted?.()) throw new CancelledError();
+    if (vcpus === undefined) progress("billing", NO_VCPUS_NOTE);
+  }
+  const stack = await privateLinkStack({ ep, aws: route.aws, inst, port, hostStats, opts, deps, progress, stop: (next, m = {}) => stop(next, { ...more, ...m }) });
+  if ("status" in stack) return stack;
+  if (deps.aborted?.()) throw new CancelledError();
+  const role = await privateLinkRole(url, db, opts, deps, progress, (next, m = {}) => stop(next, { ...more, ...m }));
+  if ("status" in role) return role;
+  if (deps.aborted?.()) throw new CancelledError();
+  progress("provisioning", `Provisioning monitoring for ${name} over ${PL}`);
+  const created = await deps.rdsProvision!({
+    vpce_service_name: stack.vpce,
+    rds_endpoint: ep.host,
+    db_password: role.password,
+    rds_port: port,
+    rds_database: db,
+    region: ep.region,
+    ...(b.accepted ? { accept_price: true } : {}),
+    ...(opts.coupon ? { promo_code: opts.coupon } : {}),
+    ...(stack.roleArn ? { host_stats_role_arn: stack.roleArn } : {}),
+    ...(vcpus ? { vcpus } : {}),
+  }).catch((err) => {
+    if (err instanceof HttpStatusError && err.status === 402) return /declined/i.test(err.message) ? "declined" as const : "payment" as const;
+    if (err instanceof HttpStatusError && err.status === 412) return "price" as const;
+    // Refused before anything was made: the platform's words (a region not offered, the RDS monitored, a partner's org).
+    if (err instanceof HttpStatusError && err.status < 500) return { refused: errorText(err) };
+    if (mayHaveRun(err)) return "unanswered" as const;
+    throw err;
+  });
+  if (typeof created === "object" && "refused" in created) return stop(`${created.refused.replace(/\.?$/, ".")} No monitoring box was created.`, more);
+  if (created === "payment") return { status: "action_required", provider, name, ...place, ...b.billingPage };
+  if (created === "declined") return { status: "action_required", provider, name, ...place, ...b.billingPage, next: b.billingPage.next.replace(/^Add a payment method at /, "The payment method on file was declined: update it at ") };
+  if (created === "price") return stop("The price changed since it was shown: re-run pgai mon deploy to see it", more);
+  let box: Database;
+  if (created === "unanswered") {
+    progress("provisioning", STILL_CREATING);
+    const known = new Set(rows.map((d) => d.id));
+    const made = await lookForBox((list) => list.find((d) => !known.has(d.id) && !!d.cluster && serverOf(d.cluster) === cluster), opts, deps, deps.now());
+    if (!made) return stop(deps.aborted?.() ? STOPPED_LOOKING : opts.agent ? NOT_CONFIRMED_AGENT : NOT_CONFIRMED, more);
+    box = made;
+  } else {
+    box = { id: created.id, name: created.name, provider, status: created.status, dashboard_url: null, host_metrics: !!stack.roleArn };
+  }
+  if (deps.aborted?.()) return { ...connectStatus(box, provider, true), ...more };
+  return overPrivateLink(await follow(box, { provider, name, fresh: true, billing: b.billing, billingUrl: b.billingUrl, note: "", place, verify }, opts, deps, progress));
+}
+
+/** Why a PrivateLink box fails to launch, nearly always: the customer's endpoint service, which PostgresAI connects to. */
+export const PRIVATELINK_LAUNCH_FAILED = `The monitoring box could not connect to the stack's endpoint service: check that the stack finished, and that the endpoint service (VPC console, Endpoint services, Allow principals) lists ${PRINCIPAL_ARN}.`;
+
+/**
+ * A PrivateLink box's result: it reaches the database over PrivateLink, so its public IP ("Connects from")
+ * says nothing. One that is not ready says why first: its failed check of the database (`why`, or already
+ * in the result), else for a failed launch, the endpoint service.
+ */
+export function overPrivateLink(r: ConnectResult, why?: string): ConnectResult {
+  const { egress_ip: _ip, ...rest } = r;
+  if (rest.status === "ready") return rest;
+  const said = Object.values(VERIFY_FAILED).some((t) => rest.next.includes(t));
+  const first = said ? undefined : why ?? (rest.status === "failed" ? PRIVATELINK_LAUNCH_FAILED : undefined);
+  return first ? { ...rest, next: `${first} ${rest.status === "failed" ? "Then: " : ""}${rest.next}` } : rest;
+}
+
+/**
+ * The customer's stack, which publishes the RDS to PostgresAI: its VpceServiceName (and the host
+ * metrics role). Given (--vpce-service), read from AWS here, or pasted at a terminal; else the
+ * link (or Terraform) to make it, and how to resume (step privatelink_stack). AWS is only read.
+ */
+async function privateLinkStack(c: {
+  ep: RdsEndpoint; aws?: AwsRun; inst?: DbInstance; port: number; hostStats: boolean; opts: ConnectOptions; deps: ConnectDeps; progress: Progress;
+  stop: (next: string, more?: Partial<ConnectResult>) => ConnectResult;
+}): Promise<ConnectResult | { vpce: string; roleArn?: string }> {
+  const { ep, opts, deps, progress } = c;
+  const flag = (cli: string, agent: string) => (opts.agent ? agent : cli);
+  // At a terminal deploy waits for the stack; with --yes it asks nothing (no [o], no paste).
+  const terminal = !!deps.ask;
+  const ask = opts.yes ? undefined : deps.ask;
+  // Terraform makes no CloudFormation stack to find: its output is pasted, or passed on the next run.
+  // AWS still filled in terraform.tfvars (c.inst).
+  let aws = opts.terraform ? undefined : c.aws;
+  let vpce = opts.vpceService?.trim() || undefined;
+  let roleArn = opts.hostStatsRole?.trim() || undefined;
+  const badVpce = (v: string): string | undefined => {
+    const m = VPCE_SERVICE.exec(v);
+    if (!m) return `${v} is not a VpceServiceName (com.amazonaws.vpce.<region>.vpce-svc-<id>, the stack's output)`;
+    if (m[1] !== ep.region) return `${v} is in ${m[1]}, and ${ep.id} in ${ep.region}: ${PL} connects within one region, so use the stack made in ${ep.region}`;
+    return undefined;
+  };
+  if (roleArn && !ROLE_ARN.test(roleArn)) return c.stop(`${roleArn} is not an IAM role ARN (arn:aws:iam::<account>:role/<name>, the stack's HostStatsRoleArn output)`);
+  if (vpce && badVpce(vpce)) return c.stop(badVpce(vpce)!);
+  let externalId: string | undefined;
+  const externalIdOf = async () => (externalId ??= await deps.rdsExternalId!());
+  // What deploy said of the stack to make: once.
+  let shown: Partial<ConnectResult> | undefined;
+  const show = async (): Promise<Partial<ConnectResult>> => {
+    const inputs: StackInputs = {
+      region: ep.region, rdsId: ep.id, port: c.port,
+      vpcId: c.inst?.vpcId, subnetIds: c.inst ? oneSubnetPerAz(c.inst.subnets) : undefined,
+      // Several security groups: the customer picks the one that admits the RDS's traffic.
+      securityGroupId: c.inst?.securityGroupIds.length === 1 ? c.inst.securityGroupIds[0] : undefined,
+      ...(c.hostStats ? { externalId: await externalIdOf() } : {}),
+    };
+    const cfn = quickCreateUrl(inputs);
+    // What the link leaves to choose in the form (no AWS here, or several security groups).
+    // Named as the form (CloudFormation) or terraform.tfvars (--terraform) names them.
+    const [vpcKey, subnetsKey, sgKey] = opts.terraform ? ["vpc_id", "subnet_ids", "rds_security_group_id"] : ["VpcId", "SubnetIds", "RdsSecurityGroupId"];
+    const w = sgKey.length + 2;
+    const blanks = [
+      !inputs.vpcId && `  ${vpcKey.padEnd(w)}the RDS's VPC`,
+      !inputs.subnetIds?.length && `  ${subnetsKey.padEnd(w)}one subnet per availability zone of the RDS's subnet group`,
+      !inputs.securityGroupId && `  ${sgKey.padEnd(w)}the RDS's security group`,
+    ].filter((l): l is string => !!l);
+    const choose = blanks.length
+      ? `\n${opts.terraform ? "In terraform.tfvars, fill in" : "In the form, choose (empty in the link)"}:\n${blanks.join("\n")}\n(the RDS console lists them: ${ep.id}, Connectivity & security)` : "";
+    let dir: string | undefined;
+    if (opts.terraform) dir = await deps.writeTerraform!(stackNameFor(ep.id), terraformFiles(await deps.terraformModule!(), inputs));
+    // Where no browser opens here (SSH to a server, say), the person opens the link elsewhere.
+    const where = deps.openUrl ? "" : "\nOpen it in a browser signed in to that AWS account.";
+    const tf = opts.agent ? "" : `\nPrefer Terraform? ${deps.ask ? "Stop (Ctrl-C) and re-run" : "Re-run"} with --terraform: it writes the same stack as a module.`;
+    progress("privatelink", dir
+      ? `Terraform for the PrivateLink stack written to ${dir}: terraform init && terraform apply there${choose}`
+      : `Create the PrivateLink stack in your AWS account from this link; nothing becomes public:${choose}\n${cfn}${where}${tf}`, { cfn_url: cfn, stack_name: stackNameFor(ep.id) });
+    return { step: "privatelink_stack", cfn_url: cfn, stack_name: stackNameFor(ep.id), region: ep.region,
+      ...(inputs.externalId ? { external_id: inputs.externalId } : {}), ...(dir ? { terraform_dir: dir } : {}),
+      ...(blanks.length ? { choose_in_form: blanks.map((l) => l.trim().split(/\s+/)[0]) } : {}) };
+  };
+  const resume = () => {
+    const output = opts.terraform ? "vpce_service_name output" : "VpceServiceName output";
+    const role = c.hostStats && !roleArn ? ` and ${flag("--host-stats-role", "host_stats_role")} <its ${opts.terraform ? "host_stats_role_arn" : "HostStatsRoleArn"} output>` : "";
+    return aws ? (opts.agent ? "call deploy_monitoring again" : "re-run pgai mon deploy") : `${opts.agent ? "call deploy_monitoring again with" : "re-run with"} ${flag("--vpce-service", "vpce_service")} <its ${output}>${role}`;
+  };
+  const deadline = deps.now() + STACK_WAIT_MS;
+  // Why the last paste was refused (or that Enter does not stop): shown with the question again.
+  let refusedPaste: string | undefined;
+  let saidMisnamed = false;
+  // The vpce came from a stack read here (not pasted or passed): its outputs were seen.
+  let readStack = false;
+  // Stacks for the RDS this run saw being made, or created since it started (a failure of theirs is
+  // said), and older failed ones (said once while deploy waits for a new one).
+  const seenMaking = new Set<string>();
+  const saidFailed = new Set<string>();
+  const startedAt = Date.now() - 60_000;
+  const thisRuns = (s: Stack) => s.name === stackNameFor(ep.id) || seenMaking.has(s.name) || (!!s.created && Date.parse(s.created) >= startedAt);
+  for (let pastes = 0, empties = 0; !vpce;) {
+    let found: Stack[] = [];
+    if (aws) {
+      try {
+        const r = await findStacks(aws, ep.id, ep.region);
+        found = r.stacks;
+        // A stack with deploy's name for another RDS is never used.
+        if (r.misnamed && !saidMisnamed) {
+          saidMisnamed = true;
+          progress("privatelink", `Note: stack ${r.misnamed.name} is for RDS ${r.misnamed.rdsId ?? "(none)"}, not ${ep.id}: not used. Give the new stack another name in the form`);
+        }
+      } catch (err) {
+        if (!(err instanceof AwsError)) throw err;
+        progress("privatelink", `Note: could not read CloudFormation (${err.message}); going on without AWS`);
+        aws = undefined;
+      }
+    }
+    const ready = found.filter((s) => stackState(s.status) === "ready" && s.outputs.VpceServiceName);
+    let stack: Stack | undefined;
+    if (ready.length === 1) stack = ready[0];
+    else if (ready.length > 1) {
+      // Several stacks publish this RDS: the person picks one; elsewhere the result lists them.
+      const rows = ready.map((s, i) => `  ${i + 1}. ${s.name}  ${s.status}${s.created ? `  created ${utc(s.created)}` : ""}  ${s.outputs.VpceServiceName}`);
+      const listed = { step: "privatelink_stack" as const, region: ep.region,
+        stacks: ready.map((s) => ({ name: s.name, status: s.status, created: s.created ?? null, vpce_service_name: s.outputs.VpceServiceName })) };
+      if (!ask) {
+        return c.stop(`Several stacks publish ${ep.id}: ${opts.agent ? "ask the user which one, then call deploy_monitoring again with vpce_service" : "re-run with --vpce-service"} <the VpceServiceName of the one to use>. Nothing was created on PostgresAI yet.\n${rows.join("\n")}`, listed);
+      }
+      for (let tries = 0; !stack && tries < 3; tries++) {
+        const a = (await ask(`The stack to use (1-${ready.length}, Enter to stop): `, tries ? [`Type a number from 1 to ${ready.length}.`] : [`Several stacks publish ${ep.id}:`, ...rows])).trim();
+        if (!a) return c.stop(`Stopped: re-run with --vpce-service <the VpceServiceName of the stack to use>. Nothing was created on PostgresAI yet.`, listed);
+        const i = Number(a);
+        if (Number.isInteger(i) && i >= 1 && i <= ready.length) stack = ready[i - 1];
+      }
+      if (!stack) return c.stop(`No stack picked: re-run with --vpce-service <the VpceServiceName of the stack to use>. Nothing was created on PostgresAI yet.`, listed);
+    }
+    if (stack) {
+      vpce = stack.outputs.VpceServiceName;
+      roleArn ??= stack.outputs.HostStatsRoleArn;
+      readStack = true;
+      progress("privatelink", `Using stack ${stack.name}${stack.created ? ` (created ${utc(stack.created)})` : ""}: ${vpce}`, { stack_name: stack.name });
+      break;
+    }
+    // A failed stack, with nothing ready or being made: why, and how to make it again. Deploy's own, or one
+    // made since this run started (any name); a run that does not wait (a script, an agent) reports the
+    // newest failed one, as the next run would not know it as its own. Waiting at a terminal, an older
+    // failed one is said once and deploy waits for a new stack.
+    for (const s of found) if (stackState(s.status) === "in_progress") seenMaking.add(s.name);
+    // A done stack without the template's output (made from another template).
+    const foreign = found.find((s) => s.name === stackNameFor(ep.id) && stackState(s.status) === "ready" && !s.outputs.VpceServiceName);
+    if (foreign && !found.some((s) => stackState(s.status) === "in_progress")) {
+      return c.stop(`Stack ${foreign.name} has no VpceServiceName output: it was not made from the PostgresAI template. Delete it, create the stack from the link deploy prints, then ${resume()}`, { step: "privatelink_stack", stack_name: foreign.name, region: ep.region });
+    }
+    const failedNow = found.filter((s) => stackState(s.status) === "failed")
+      .sort((a, b) => Date.parse(b.created ?? "") - Date.parse(a.created ?? "") || 0);
+    const waits = terminal && !!aws;
+    const failed = failedNow.find(thisRuns) ?? (waits ? undefined : failedNow[0]);
+    for (const s of failedNow) {
+      if (s === failed || saidFailed.has(s.name)) continue;
+      saidFailed.add(s.name);
+      progress("privatelink", `Note: stack ${s.name} for ${ep.id} failed earlier (${s.status}): not used`);
+    }
+    if (failed && !found.some((s) => stackState(s.status) === "in_progress")) {
+      const why = ((aws && await stackFailure(aws, failed.name, ep.region)) || failed.reason || failed.status).replace(/\s*\(RequestId: [^)]*\)/g, "");
+      // A stack that never got made is deleted and made again; one whose update failed is repaired where it is.
+      const fix = /^(CREATE_FAILED|ROLLBACK_|DELETE_FAILED)/.test(failed.status)
+        ? `delete the stack, then re-run pgai mon deploy:\n  aws cloudformation delete-stack --stack-name ${failed.name} --region ${ep.region}`
+        : "repair the stack in the CloudFormation console (Stack actions, Continue update rollback), then re-run pgai mon deploy";
+      return c.stop(`Stack ${failed.name} failed (${failed.status}): ${why}\nFix that, ${fix}`, { step: "privatelink_stack", stack_name: failed.name, region: ep.region });
+    }
+    const being = found.find((s) => stackState(s.status) === "in_progress");
+    const first = !shown;
+    shown ??= await show();
+    const making = being ? `Stack ${being.name} is ${/ROLLBACK/.test(being.status) ? "rolling back" : "being created"} (${being.status})` : undefined;
+    if (!terminal || (!aws && !ask)) {
+      const make = shown.terraform_dir ? `Run terraform init && terraform apply in ${shown.terraform_dir}`
+        : opts.agent ? `Give the user cfn_url to open in the AWS account of ${ep.id}, to create the stack there${shown.choose_in_form ? ` (choosing ${shown.choose_in_form.join(", ")} in the form)` : ""}, or call again with terraform: true for the same as Terraform`
+        : `Open the link below in the AWS account of ${ep.id} and create the stack there${shown.choose_in_form ? ` (choose ${shown.choose_in_form.join(", ")} in the form)` : ""}, or re-run with --terraform for the same as Terraform`;
+      return c.stop(`${making ? `${making}: once it is CREATE_COMPLETE` : `${make}; once it is done`}, ${resume()}. Nothing was created on PostgresAI yet.`, shown);
+    }
+    // The link in the browser, when the person asks for it ([o]) and a browser can open here.
+    const openIt = !shown.terraform_dir && deps.openUrl ? ", [o] to open the link in your browser" : "";
+    if (aws) {
+      if (first && openIt && ask) {
+        const a = (await ask(`[o] opens the link in your browser; Enter waits for the stack: `)).trim().toLowerCase();
+        if (a === "o") deps.openUrl!(shown.cfn_url!);
+      }
+      if (deps.aborted?.()) throw new CancelledError();
+      if (deps.now() >= deadline) return c.stop(`No stack for ${ep.id} was ready within ${STACK_WAIT_MS / 60_000} minutes: re-run pgai mon deploy once it is. Nothing was created on PostgresAI yet.`, shown);
+      progress("privatelink", making ?? `Waiting for you to create the stack from the link above (any name; deploy finds it by its RDS; up to ${STACK_WAIT_MS / 60_000} min)`, { stack_name: being?.name ?? stackNameFor(ep.id) });
+      await deps.sleep(STACK_POLL_MS);
+      continue;
+    }
+    const output = opts.terraform ? "vpce_service_name output" : "VpceServiceName (CloudFormation, the stack, Outputs)";
+    const a = (await ask!(`Paste the stack's ${output}${openIt}, or [s] to stop: `, refusedPaste ? [refusedPaste] : [])).trim();
+    if (a.toLowerCase() === "s") return c.stop(`Stopped: once the stack is done, ${resume()}. Nothing was created on PostgresAI yet.`, shown);
+    if (!a) {
+      // Enter does not stop (it waits elsewhere); several in a row do (Ctrl-D ends the run, exit 130).
+      if (++empties >= 3) return c.stop(`Stopped: once the stack is done, ${resume()}. Nothing was created on PostgresAI yet.`, shown);
+      refusedPaste = `Paste the stack's ${opts.terraform ? "vpce_service_name output" : "VpceServiceName"} once it is created, or s to stop.`;
+      continue;
+    }
+    empties = 0;
+    if (openIt && a.toLowerCase() === "o") {
+      deps.openUrl!(shown.cfn_url!);
+      refusedPaste = undefined;
+      continue;
+    }
+    refusedPaste = badVpce(a);
+    if (!refusedPaste) vpce = a;
+    else if (++pastes >= 3) return c.stop(refusedPaste, shown);
+  }
+  if (c.hostStats && !roleArn && !readStack) {
+    // Pasted or passed: the stack or module made the role if it got the External ID; its output is not read here.
+    const out = opts.terraform ? "host_stats_role_arn" : "HostStatsRoleArn";
+    return c.stop(`Host metrics need the metrics role too: ${opts.agent ? "call deploy_monitoring again with" : "re-run with"} ${flag("--vpce-service", "vpce_service")} ${vpce} and ${flag("--host-stats-role", "host_stats_role")} <its ${out} output>. If it has none, it was made without this PostgresAiExternalId: ${opts.terraform ? "set postgres_ai_external_id in terraform.tfvars and apply again" : "update the stack with it"}; or deploy without ${flag("--host-stats", "host_stats")}.\n  PostgresAiExternalId = ${await externalIdOf()}`, { external_id: externalId });
+  }
+  if (c.hostStats && !roleArn) {
+    return c.stop(`Host metrics need the stack's metrics role (its HostStatsRoleArn output), and it has none: update the stack with this PostgresAiExternalId (it then creates a read-only role), then ${resume()}; or deploy without ${flag("--host-stats", "host_stats")}.\n  PostgresAiExternalId = ${await externalIdOf()}`, { external_id: externalId });
+  }
+  return { vpce, ...(roleArn ? { roleArn } : {}) };
+}
+
+/**
+ * postgres_ai_mon with the org's ownership nonce (v1.cloud_monitoring_rds_prepare_sql): run here
+ * with the URL's user, or printed for the master user. Resumed with the password and nonce of SQL
+ * that already ran. Either way the database's newest marker must be this nonce before the box is made.
+ */
+async function privateLinkRole(url: string, db: string, opts: ConnectOptions, deps: ConnectDeps, progress: Progress,
+  stop: (next: string, more?: Partial<ConnectResult>) => ConnectResult): Promise<ConnectResult | { password: string; nonce: string }> {
+  let password = opts.monitoringPassword;
+  let nonce = opts.nonce;
+  // --yes: nobody is asked (the step result says what to do).
+  const ask = opts.yes ? undefined : deps.ask;
+  // A session's TLS warning, once, through the step view (a raw line breaks it).
+  const warned = new Set<string>();
+  const warn = (m: string) => { if (!warned.has(m)) { warned.add(m); progress("preparing", m); } };
+  const resumeWith = (n: string) => opts.agent
+    ? `call deploy_monitoring again with monitoring_password and nonce from this result`
+    : `re-run with PGAI_MON_NONCE=${n} and PGAI_MON_PASSWORD set to the v_password value near the top of the SQL`;
+  if (password === undefined || nonce === undefined) {
+    let p: RdsPrepareSql;
+    try {
+      p = await deps.rdsPrepareSql!(db);
+    } catch (err) {
+      if (err instanceof HttpStatusError && err.status === 403) return stop(notAdminNext);
+      if (err instanceof HttpStatusError && err.status < 500) return stop(errorText(err));
+      throw err;
+    }
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(p.nonce)) throw new Error("cloud_monitoring_rds_prepare_sql returned a malformed nonce: nothing was changed");
+    password = p.db_password;
+    nonce = p.nonce;
+    progress("preparing", `Preparing ${maskConnectionString(url)}`);
+    const failed = await deps.runSql!(inDatabase(url, db), p.prepare_db_sql, warn).then(() => undefined, (err: unknown) => err);
+    if (failed) {
+      // Not logged in (node's errors carry no severity; the server's FATAL ones refuse the login: a password,
+      // pg_hba, a database that is not there): no SQL to print. A refusal of the SQL itself prints it.
+      const e = failed as { severity?: unknown; code?: unknown };
+      const refusedLogin = typeof e !== "object" || !e || !("severity" in e) || e.severity === "FATAL" || /^(28|3D|08)/.test(String(e.code ?? ""));
+      if (refusedLogin) return stop(`Could not log in to ${maskConnectionString(inDatabase(url, db))}: ${errorText(failed)}. Check the URL's user and password, and run pgai mon deploy where the database is reachable (in its VPC)`);
+      const why = `The user in this URL (${decodeURIComponent(new URL(url).username)}) can't create ${DEFAULT_MONITORING_USER} (${errorText(failed)})`;
+      const printed = { step: "prepare_db" as const, sql: p.prepare_db_sql, nonce, monitoring_password: password };
+      const run = `Run the SQL as the master user, connected to database ${db}`;
+      // The platform makes the box with the newest SQL issued for this database (platform-all#1058).
+      const only = `A deploy of this database without ${opts.agent ? "them" : "PGAI_MON_PASSWORD and PGAI_MON_NONCE"} issues a new SQL and replaces this one`;
+      if (!ask) return stop(`${why}. ${run}, then ${resumeWith(nonce)}. ${only}.`, printed);
+      const a = (await ask(`${run}, then press Enter ([s] to stop): `, [`${why}. The SQL:`, "", p.prepare_db_sql, ""])).trim().toLowerCase();
+      if (a === "s" || a === "stop") return stop(`Stopped. ${run}, then ${resumeWith(nonce)}.`, { ...printed, sql: undefined });
+    }
+  }
+  // The box logs in as the role and checks this nonce: both checked here, before it exists.
+  progress("preparing", `Checking that ${DEFAULT_MONITORING_USER} can log in to ${db} with the password the SQL set`);
+  let found: string | undefined;
+  try {
+    found = await deps.readNonce!(roleUrl(url, db, password), warn);
+  } catch (err) {
+    const fresh = opts.agent ? "call again without monitoring_password and nonce for a new SQL" : "re-run without PGAI_MON_PASSWORD and PGAI_MON_NONCE for a new SQL";
+    return stop(opts.monitoringPassword === undefined
+      ? `${DEFAULT_MONITORING_USER} could not log in to ${db} with the password the SQL set (${errorText(err)}): run the SQL again, connected to database ${db}`
+      : opts.agent
+        ? `${DEFAULT_MONITORING_USER} could not log in to ${db} with monitoring_password (${errorText(err)}): pass the monitoring_password of the prepare_db result whose SQL ran, or ${fresh}`
+        : `${DEFAULT_MONITORING_USER} could not log in to ${db} with PGAI_MON_PASSWORD (${errorText(err)}): set it to the v_password value near the top of the SQL you ran, or ${fresh}`);
+  }
+  const again = opts.monitoringPassword !== undefined
+    ? `${opts.agent ? "call again without monitoring_password and nonce" : "re-run without PGAI_MON_PASSWORD and PGAI_MON_NONCE"} for a new SQL, and run only that one`
+    : "re-run pgai mon deploy";
+  if (found === undefined) return stop(`The SQL has not run in database ${db} (perhaps in another database): run it connected to database ${db}, then ${resumeWith(nonce)}`);
+  if (found !== nonce) return stop(`A newer PostgresAI setup SQL ran in database ${db} after this one (another deploy, or the Console): ${again}`);
+  return { password, nonce };
+}
+
 type Progress = (event: ProgressEvent["event"], message: string, more?: Partial<ProgressEvent>) => void;
 
 /** What deploy knows of a box when it starts following it. */
@@ -1693,6 +2364,8 @@ interface Followed {
   place?: Place;
   /** The database URL as given, for the next command shown (its password is never printed). */
   url?: string;
+  /** Why the box can't verify the database yet (PrivateLink, postgresai#454): said once, and with a result that is not ready. */
+  verify?: (row: Database) => Promise<string | undefined>;
 }
 
 /** How the next action starts when deploy's wait ended before the box was ready (the step view is not failed then). */
@@ -1753,7 +2426,13 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
   const billing = { ...f.billing, ...f.place };
   // The box's state, each time it changes while deploy waits for it (not on a re-run of a connected database).
   let shown: string | undefined;
+  let unverified: string | undefined;
   for (const deadline = deps.now() + opts.waitMs; ;) {
+    if (f.verify) {
+      const why = await f.verify(row);
+      if (why && why !== unverified) progress("box", `Note: ${why}`, { id: row.id });
+      unverified = why;
+    }
     if (row.billing_error && disconnecting(row.status)) {
       if (undoRole) await undoRole();
       return { status: "action_required", provider, name, id: row.id, ...billing,
@@ -1781,12 +2460,13 @@ async function follow(row: Database, f: Followed, opts: ConnectOptions, deps: Co
         final.next += "; for CPU, memory and disk, delete the instance (pgai mon instances delete) and deploy again with --clickhouse-key <key-id>:<key-secret>";
       }
       const { next, ...rest } = final;
+      const why = unverified && final.status !== "ready" ? `${unverified} ` : "";
       // The wait ran out with the box still starting: not done (exit 3); it goes on on the platform.
       if (final.status === "in_progress" && opts.waitMs > 0) {
         return { ...rest, status: "action_required", ...billing,
-          next: `${STILL_IN_PROGRESS} (box: ${boxWords(boxState(row))}) when the wait ended: resume with ${next}${note}` };
+          next: `${STILL_IN_PROGRESS} (box: ${boxWords(boxState(row))}) when the wait ended: ${why}${why ? "Resume" : "resume"} with ${next}${note}` };
       }
-      return { ...rest, ...billing, next: next + note };
+      return { ...rest, ...billing, next: why + next + note };
     }
     await deps.sleep(POLL_MS);
     // The box is already requested: a failed poll keeps the last known state.
@@ -1892,7 +2572,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
   try {
     // Admin: a superuser, or CREATEROLE that can run the rest of the plan too: grant pg_monitor and
     // pg_read_all_stats (PG 16+ needs ADMIN OPTION for that), create the postgres_ai schema, and
-    // find pg_stat_statements installed (creating it takes a superuser).
+    // find pg_stat_statements installed (creating it takes a superuser; on RDS, rds_superuser creates it).
     const me = (await client.query(
       `select session_user as name, current_database() as db,
          rolsuper or (rolcreaterole
@@ -1900,7 +2580,8 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
              or (pg_has_role(current_user, 'pg_monitor', 'USAGE WITH ADMIN OPTION')
                and pg_has_role(current_user, 'pg_read_all_stats', 'USAGE WITH ADMIN OPTION')))
            and has_database_privilege(current_user, current_database(), 'CREATE')
-           and exists (select 1 from pg_extension where extname = 'pg_stat_statements')) as admin,
+           and (exists (select 1 from pg_extension where extname = 'pg_stat_statements')
+             or exists (select 1 from pg_roles where rolname = 'rds_superuser' and pg_has_role(current_user, oid, 'MEMBER')))) as admin,
          exists (select 1 from pg_roles where rolname = ${quoteLiteral(role)}) as mon_exists,
          exists (select 1 from pg_roles where rolname = ${quoteLiteral(role)} and (rolsuper or rolcreatedb or rolcreaterole or rolreplication or rolbypassrls)) as mon_privileged,
          (select string_agg(g.rolname::text, ', ' order by g.rolname::text collate "C") from pg_roles m join pg_roles g
@@ -2190,10 +2871,50 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     supabaseConnect: (body: Record<string, string | boolean | number>) => rpc<{ id: string; name: string; status: string; error?: string }>("cloud_monitoring_supabase_connect", body),
     supabaseProjects: () => rpc<SupabaseProjects>("cloud_monitoring_supabase_projects", {}),
     deployOptions: (args: Parameters<NonNullable<ConnectDeps["deployOptions"]>>[0]) => rpc<DeployOptions>("monitoring_deploy_options", args),
-    handoffUrl: async (provider: "rds") => {
-      const orgs = await listOrgs({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl });
-      const org = orgs.length === 1 ? orgs[0] : orgs.find((o) => o.alias === p.orgScope?.alias || o.org_id === p.orgScope?.id);
-      return `${p.uiBaseUrl}/${org?.alias ?? "<org>"}/monitoring/scale/create/${provider}`;
+    rdsExternalId: async () => (await rpc<{ external_id: string }>("cloud_monitoring_rds_external_id")).external_id,
+    rdsPrepareSql: (dbName: string) => rpc<RdsPrepareSql>("cloud_monitoring_rds_prepare_sql", { db_name: dbName }),
+    rdsProvision: (body: Record<string, string | boolean | number>) =>
+      rpc<{ id: string; name: string; provider?: string; status: string; region?: string; verified_status?: string; launch_status?: string }>("cloud_monitoring_rds_provision", body, p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS),
+    rdsStatus: (id: string) => rpc<RdsStatus>("cloud_monitoring_rds_status", { instance_id: id }),
+    aws: awsRunner,
+    awsProfiles: () => new Promise<string[]>((resolve) => execFile("aws", ["configure", "list-profiles"], { timeout: 10_000 },
+      (err, stdout) => resolve(err ? [] : stdout.split("\n").map((l) => l.trim()).filter(Boolean)))),
+    publicAddresses: (host: string) => publicAddresses(host),
+    runSql: async (url: string, sql: string, warn?: Warn) => {
+      const { client } = await openConnection(url, { agent: p.agent, warn });
+      try {
+        await client.query(sql);
+      } finally {
+        await client.end().catch(() => {});
+      }
+    },
+    readNonce: async (url: string, warn?: Warn) => {
+      const { client } = await openConnection(url, { agent: p.agent, warn });
+      try {
+        const r = await client.query("select nonce from postgres_ai.monitoring_ownership order by issued_at desc limit 1");
+        return r.rows[0]?.nonce as string | undefined;
+      } catch (err) {
+        // No schema or table yet: the SQL did not run in this database.
+        if (["3F000", "42P01"].includes((err as { code?: string }).code ?? "")) return undefined;
+        throw err;
+      } finally {
+        await client.end().catch(() => {});
+      }
+    },
+    terraformModule: async () => {
+      const r = await fetch(TERRAFORM_URL, { signal: AbortSignal.timeout(30_000) });
+      if (!r.ok) throw new Error(`Could not download the Terraform module (${TERRAFORM_URL}: HTTP ${r.status})`);
+      return r.text();
+    },
+    writeTerraform: async (dirName: string, files: { mainTf: string; tfvars: string }) => {
+      const dir = path.resolve(dirName);
+      await fs.promises.mkdir(dir, { recursive: true });
+      // A terraform.tfvars the customer filled in already is kept.
+      await fs.promises.writeFile(path.join(dir, "main.tf"), files.mainTf);
+      await fs.promises.writeFile(path.join(dir, "terraform.tfvars"), files.tfvars, { flag: "wx" }).catch((err) => {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      });
+      return dir;
     },
     sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
     now: () => Date.now(),

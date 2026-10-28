@@ -225,17 +225,40 @@ continues, `s` stops); elsewhere it exits 3 with `"step":"allow_ip"` and `ip`, `
 --ip-allowed` to create the box with it. `--ip-first` asks for the IP first even when PostgresAI
 can reach the database. A re-run never reserves a second IP; the IP is held 7 days and stays the
 box's for its life. If the box still can't connect, it waits for up to 90 minutes, then is removed
-and its IP kept: allow it, and run with `--ip-allowed` again. RDS can also use AWS PrivateLink,
-and any database self-hosted monitoring (`--self-hosted`).
+and its IP kept: allow it, and run with `--ip-allowed` again. Any database can also use self-hosted
+monitoring (`--self-hosted`).
 
-Without `--provider`, RDS hostnames still go to their console integration, and Supabase hostnames to the Supabase consent flow (`pgai mon deploy` for Supabase).
+An Amazon RDS that is not publicly accessible is monitored over AWS PrivateLink: nothing becomes public and no port is
+opened. Run the deploy where the database is reachable (in its VPC):
+
+```bash
+pgai mon deploy 'postgresql://postgres:<password>@<instance>.<id>.<region>.rds.amazonaws.com:5432/app'
+```
+
+It reads the instance with the aws CLI when it can (read-only: `sts get-caller-identity`, `rds describe-db-instances`,
+`cloudformation describe-stacks`, `ec2 describe-instance-types`; the profile it uses is printed, `--aws-profile`
+picks one, `--no-aws` skips AWS), else asks public DNS whether the RDS is public (inside the VPC, AWS resolves even a
+public RDS to a private address). Then: the price; a CloudFormation link that creates the stack in your AWS account,
+filled in with what AWS said (`--terraform` writes the same as a Terraform module); the `postgres_ai_mon` role; the box
+on AWS in the RDS's region; and its check of the database over PrivateLink. At a terminal it waits up to 30 minutes for
+the stack, under any name: it is found by its `RdsInstanceIdentifier` (with several for the RDS, you pick one; scripts get
+them listed in `stacks`). `[o]` opens the link where a browser can open. Without AWS, the link leaves the VPC, subnets and
+security group to choose in the form (listed above it), and deploy asks for the stack's `VpceServiceName`. Scripts and agents get
+exit 3 with `"step":"privatelink_stack"` and `cfn_url`: create the stack, then re-run (with `--vpce-service <name>`
+when AWS is not read here). When the URL's user can't create the role, the SQL comes back (`"step":"prepare_db"` with
+`sql`, `nonce`, `monitoring_password`): run it as the master user in that database, then re-run with
+`PGAI_MON_PASSWORD` and `PGAI_MON_NONCE` set to those. `--host-stats` adds host CPU, memory, disk and IOPS through a
+read-only role the stack creates. `--privatelink` / `--no-privatelink` decide public or private instead. Aurora and RDS
+Proxy endpoints are not supported over PrivateLink. A publicly accessible RDS is monitored directly.
+
+Supabase hostnames go to the Supabase consent flow (`pgai mon deploy` for Supabase).
 
 A Supabase project needs no URL at all: `pgai mon deploy --provider supabase` connects the Supabase organization
 if needed and lists its projects. At a terminal you pick one; agents and scripts pass
 `--supabase-project <name or project ID>`. Without either, with `--yes`, or not at a terminal, it stops (exit 3) with the list
 in the JSON result (`projects`, each with `selectable` and `reason`). The vCPUs come from the project's compute size.
 
-`generic` does not configure AWS PrivateLink, open a firewall, or remove TLS, permission, or
+`generic` does not configure AWS PrivateLink (`rds` does, for a private RDS), open a firewall, or remove TLS, permission, or
 payment checks. A private endpoint needs a network path, or monitoring hosted in that network
 (`--self-hosted`).
 
@@ -264,9 +287,14 @@ terminal, or with `--json`, it only points to `pgai mon deploy`.
 | `--clickhouse-key <key-id>:<key-secret>` | ClickHouse Cloud API key, for CPU, memory and disk |
 | `--self-hosted` | run the stack on this machine (`mon local-install`) instead of PostgresAI Cloud |
 | `--reset-password` | the monitoring role exists and its password is lost: set a new one (see below) |
-| `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Ignored for a host handed to the Console (RDS); refused for Supabase, where PostgresAI creates `postgres_ai_mon` through the Supabase Management API |
+| `--monitoring-user <name>` | the monitoring role to create or use (default `postgres_ai_mon`; at most 63 bytes; MCP: `monitoring_user`). A custom role always carries its own password: PostgresAI keeps only `postgres_ai_mon`'s, so creating or resetting a custom role needs `PGAI_MON_PASSWORD` (an agent passes the role's URL). A name with `'`, `$`, `%`, backslash or a control character is refused, and so is a role that is a superuser or has `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`, is a member of a role other than `pg_monitor`, `pg_read_all_stats`, `pg_read_all_settings` and `pg_stat_scan_tables` (directly or through other roles, also through `pg_monitor` itself), owns objects, has grants in another database of the server, or has grants in the database beyond `CONNECT`, `USAGE` on schemas other than `pg_toast`, `SELECT` outside `pg_catalog` and `pg_toast`, and the grants pgai makes, or holds any grant `WITH GRANT OPTION` or a membership `WITH ADMIN OPTION`. So a custom role used for databases on one server is refused for the second one. `SELECT` on application tables and views is allowed, including a view over `pg_authid`: what a role may read through views is the owner's choice. Refused for a private RDS over AWS PrivateLink (the box uses `postgres_ai_mon`) and for Supabase, where PostgresAI creates `postgres_ai_mon` through the Supabase Management API |
 | `--db-url <url>` | the database URL, instead of the argument |
 | `--name <name>` | the instance's name (default: `host[:port]/database`); ignored, with a note, for a database already monitored |
+| `--privatelink` / `--no-privatelink` | RDS: over AWS PrivateLink (not publicly accessible) or directly; default: decided from AWS, else public DNS (see the PrivateLink paragraph above) |
+| `--vpce-service <name>` | RDS over PrivateLink: the stack's `VpceServiceName` output, when AWS is not read here |
+| `--host-stats` / `--host-stats-role <arn>` | RDS over PrivateLink: host CPU, memory, disk and IOPS through the stack's read-only role (its `HostStatsRoleArn` output, when not read from AWS) |
+| `--aws-profile <name>` / `--no-aws` | RDS: the aws CLI profile that reads the instance and its stack (read-only); `--no-aws` skips AWS |
+| `--terraform` | RDS over PrivateLink: write the stack as a Terraform module (`./postgresai-privatelink-<instance>/`) instead of the CloudFormation link |
 | `--cloud <cloud>` | `mon deploy`: `aws` or `hetzner`; default: the database's cloud (its RDS, Aurora, EC2 or Supabase region), else AWS. `dblab deploy`: `hetzner`, `aws` or `gcp` (default `hetzner`) |
 | `--location <location>` | a location of that cloud: an AWS region, or a Hetzner location (`fsn1`, `nbg1`, `hel1`, `ash`, `hil`). `mon deploy` default: the database's region, else us-east-1 on AWS; a location of another cloud is refused before anything is created |
 | `--vcpus <n>` | `mon deploy` only: the database server's vCPUs. Without it there is no AAS (database load) data; at a terminal you are asked. On a database already monitored, it sets missing vCPUs (a set value is changed with `mon instances set`) |
@@ -282,6 +310,7 @@ and asks you to re-run with `--yes` to accept it.
 | Environment | |
 |---|---|
 | `PGAI_API_KEY` | the API key, instead of signing in (agents, CI) |
+| `PGAI_MON_NONCE` | RDS over PrivateLink: with `PGAI_MON_PASSWORD`, the printed SQL (`"step":"prepare_db"`) ran: deploy goes on with its password and nonce, without a new SQL |
 | `PGAI_MON_PASSWORD` | the password of `postgres_ai_mon`. For a new role it is set; for an existing role it is checked by logging in, and never changed. Without it a new role gets a generated password. Not needed for another database on a server PostgresAI already monitors for the organization, with `sslmode=require` or `verify-*` in the URL (see below) |
 | `PGPASSWORD` | the password for a URL without one. With a `postgres_ai_mon` URL it is the password the monitoring box gets, once the server has checked it |
 | `PGSSLMODE` | the `sslmode` for a URL without one (`sslmode` in the URL wins, as in libpq) |
