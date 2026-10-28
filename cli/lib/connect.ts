@@ -3,7 +3,7 @@ import { parse as parseConnString, parseIntoClientConfig } from "pg-connection-s
 import { findService } from "./clickhouse";
 import {
   applyInitPlan, buildInitPlan, connectWithSslFallback, DEFAULT_MONITORING_USER,
-  maskConnectionString, quoteIdent, quoteLiteral, redactPasswordsInSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
+  maskConnectionString, quoteIdent, quoteLiteral, renderInitPlanSql, resolveAdminConnection, resolveMonitoringPassword, verifyInitSetup,
 } from "./init";
 import { assertEncodedUserinfo, estimateLine, monitoringStatus, noCardNext, notAdminNext, type DeployStatus } from "./deploy-surface";
 import { collectorConnection, splitChannelBinding, verifyCollectorTls } from "./instances";
@@ -2053,7 +2053,7 @@ export async function prepareDatabase(url: string, provider: Provider, opts: Pre
     }
     const plan = await buildInitPlan({ database: me.db, monitoringUser: role, monitoringPassword: "<password>", includeOptionalPermissions: true, provider: pgProvider, keepExistingPassword: true });
     return {
-      sql: plan.steps.map((s) => `-- ${s.name}${s.optional ? " (optional: an error in this part can be ignored)" : ""}\n${redactPasswordsInSql(s.sql)}`).join("\n\n"),
+      sql: renderInitPlanSql(plan),
       next: `Run the SQL as an admin, with a password of your choice in place of <redacted> (or re-run with an admin URL), then pgai mon deploy again with the ${role} URL`,
     };
   } finally {

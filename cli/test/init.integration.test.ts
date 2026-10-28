@@ -10,7 +10,7 @@ import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
 import { prepareDatabase } from "../lib/connect";
-import { buildInitPlan } from "../lib/init";
+import { buildInitPlan, buildUninitPlan } from "../lib/init";
 import { applyInitPlanViaSupabase, type SupabaseClient } from "../lib/supabase";
 
 const TEST_TIMEOUT = 30000; // 30 seconds
@@ -217,6 +217,36 @@ if (process.env.PGAI_TEST_REQUIRE_PG16 === "1" && (skipTests || !findPgBinDirAtL
 
 describe.skipIf(skipTests)("integration: prepare-db", () => {
   let pg: TempPostgres;
+
+  // Printed and Supabase steps each run on a fresh session, and the admin's
+  // search_path can list public before pg_catalog. Plant an exact match for the
+  // operator in the 01.role DO block and for a type that the first
+  // 03.permissions DO block declares before its own set local.
+  test("printed prepare steps never run objects planted in public under an unsafe admin path", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    try {
+      await c.query(`create function public.pgai_planted(name, name) returns boolean
+          language plpgsql as $f$ begin raise exception 'planted code ran as %', current_user; end $f$;
+        create operator public.= (leftarg = name, rightarg = name, function = public.pgai_planted);
+        create function public.pgai_planted(pg_catalog.text) returns boolean
+          language plpgsql as $f$ begin raise exception 'planted code ran as %', current_user; end $f$;
+        create domain public.text as pg_catalog.text check (public.pgai_planted(value));`);
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: "monpw", includeOptionalPermissions: false });
+      for (const name of ["01.role", "03.permissions"]) {
+        const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", pg.adminUri], {
+          env: { ...process.env, PGOPTIONS: "-c search_path=public,pg_catalog" },
+          stdin: new TextEncoder().encode(plan.steps.find((step) => step.name === name)!.sql),
+        });
+        expect(`${name}: ${new TextDecoder().decode(psql.stderr)}`).not.toContain("planted code ran");
+        expect(psql.exitCode).toBe(0);
+      }
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
 
   // Use a shared postgres instance for all tests in this describe block
   // Each test will reset state as needed
@@ -1153,6 +1183,128 @@ $$`);
       });
       expect(psql.exitCode).toBe(0);
       expect((await c.query("select what from public.hijack")).rows).toEqual([]);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  // A copied --print-sql unprepare plan runs in psql autocommit. SET LOCAL
+  // would be ignored there, allowing an attacker-owned operator in public to
+  // execute during the administrator's catalog lookups.
+  test("printed unprepare SQL pins search_path in psql autocommit", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    try {
+      await c.query(`create function public.hijack_name_eq(name, name) returns boolean
+        language plpgsql as $f$ begin raise exception 'public name equality ran as %', current_user; end $f$;
+        create operator public.= (leftarg = name, rightarg = name, function = public.hijack_name_eq);`);
+      await c.query("create role postgres_ai_mon login");
+      const plan = await buildUninitPlan({ database: "testdb", dropRole: false });
+      const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", pg.adminUri], {
+        env: { ...process.env, PGOPTIONS: "-c search_path=public,pg_catalog" },
+        stdin: new TextEncoder().encode(plan.steps.map((step) => step.sql).join("\n")),
+      });
+      expect(new TextDecoder().decode(psql.stderr)).not.toContain("public name equality ran");
+      expect(psql.exitCode).toBe(0);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  // psql continues after SQL errors by default. A rejected customer schema
+  // must not leave the role and its preceding grants committed.
+  test("printed prepare SQL rolls back a rejected schema in default psql", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    try {
+      await c.query(`create role schema_writer nologin;
+        create schema postgres_ai;
+        grant create on schema postgres_ai to schema_writer;`);
+      const printed = runCliInit(["--print-sql", "-d", "testdb", "--password", "monpw", "--skip-optional-permissions"],
+        { PGAI_DB_URL: "", PGHOST: "" });
+      expect(printed.status).toBe(0);
+      const sql = printed.stdout.match(/--- SQL plan \(offline; not connected\) ---\n([\s\S]*?)\n--- end SQL plan ---/)?.[1];
+      expect(sql).toBeTruthy();
+      const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-d", pg.adminUri], {
+        stdin: new TextEncoder().encode(sql!),
+      });
+      expect(new TextDecoder().decode(psql.stderr)).toContain("postgres_ai schema grants CREATE to another role");
+      expect((await c.query("select exists (select from pg_catalog.pg_roles where rolname = 'postgres_ai_mon') as created")).rows[0].created).toBe(false);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  test("mon deploy admin handoff SQL rolls back a rejected schema in default psql", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    try {
+      await c.query(`create role plan_requester login password 'requesterpw';
+        create role schema_writer nologin;
+        create schema postgres_ai;
+        grant create on schema postgres_ai to schema_writer;`);
+      const requesterUri = `${pg.adminUri.replace("postgres:postgrespw@", "plan_requester:requesterpw@")}?sslmode=disable`;
+      const handoff = await prepareDatabase(requesterUri, "self-managed", { agent: true });
+      expect("sql" in handoff).toBe(true);
+      const sql = (handoff as { sql: string }).sql;
+      expect(sql).toMatch(/^-- Run the complete plan in one session/);
+      const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-d", pg.adminUri], {
+        stdin: new TextEncoder().encode(sql),
+      });
+      expect(new TextDecoder().decode(psql.stderr)).toContain("postgres_ai schema grants CREATE to another role");
+      expect((await c.query("select exists (select from pg_catalog.pg_roles where rolname = 'postgres_ai_mon') as created")).rows[0].created).toBe(false);
+    } finally {
+      await c.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
+  // Optional RDS setup creates a schema before trying the extension. On a
+  // non-RDS server, its caught error must roll back that schema, then let the
+  // self-managed grants and all required setup commit. The role name also
+  // collides with both initial dollar tags used by the optional renderer.
+  test("printed prepare SQL commits required setup around failed optional RDS step", async () => {
+    pg = await createTempPostgres();
+    const c = new Client({ connectionString: pg.adminUri });
+    await c.connect();
+    const role = "mon$pgai_optional_outer_0$$pgai_optional_sql_0$";
+    try {
+      const printed = runCliInit(["--print-sql", "-d", "testdb", "--password", "monpw", "--monitoring-user", role],
+        { PGAI_DB_URL: "", PGHOST: "" });
+      expect(printed.status).toBe(0);
+      const sql = printed.stdout.match(/--- SQL plan \(offline; not connected\) ---\n([\s\S]*?)\n--- end SQL plan ---/)?.[1];
+      expect(sql).toBeTruthy();
+      expect(sql).toContain("do $pgai_optional_outer_1$");
+      expect(sql).toContain("execute $pgai_optional_sql_1$");
+      const psql = Bun.spawnSync([findPgBin("psql")!, "-X", "-d", pg.adminUri], {
+        stdin: new TextEncoder().encode(sql!),
+      });
+      expect(psql.exitCode).toBe(0);
+      expect(new TextDecoder().decode(psql.stderr)).toContain("optional SQL step 04.optional_rds skipped");
+      expect(new TextDecoder().decode(psql.stdout)).toContain("COMMIT");
+      const state = await c.query(`select
+        exists (select from pg_catalog.pg_roles where rolname = $1) as role_exists,
+        pg_catalog.to_regprocedure('postgres_ai.table_describe(text)') is not null as helper_exists,
+        pg_catalog.to_regnamespace('rds_tools') is null as rds_schema_absent,
+        exists (select from pg_catalog.pg_auth_members m join pg_catalog.pg_roles r on r.oid = m.member
+          where r.rolname = $1 and m.roleid = 'pg_monitor'::pg_catalog.regrole) as monitor_granted,
+        exists (select from pg_catalog.pg_proc p,
+          lateral pg_catalog.aclexplode(p.proacl) a
+          where p.oid = 'pg_catalog.pg_ls_dir(text)'::pg_catalog.regprocedure
+            and a.grantee = (select oid from pg_catalog.pg_roles where rolname = $1)) as ls_dir_granted`, [role]);
+      expect(state.rows[0]).toEqual({
+        role_exists: true,
+        helper_exists: true,
+        rds_schema_absent: true,
+        monitor_granted: true,
+        ls_dir_granted: true,
+      });
     } finally {
       await c.end();
       await pg.cleanup();

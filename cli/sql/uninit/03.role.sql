@@ -2,7 +2,8 @@
 -- This must run after revoking all permissions from the role.
 
 -- Objects in other schemas (for example, a planted public.format) must not run as the admin.
-set local search_path = pg_catalog, pg_temp;
+-- Printed plans may run in psql autocommit, where SET LOCAL is ignored.
+set search_path = pg_catalog, pg_temp;
 
 -- Use a DO block to handle the case where the role doesn't exist
 do {{DO_QUOTE}} begin

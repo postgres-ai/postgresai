@@ -1,4 +1,5 @@
 -- Extensions required for postgres_ai monitoring
+set search_path = pg_catalog, pg_temp;
 
 -- Enable pg_stat_statements for query performance monitoring
 -- Note: Uses IF NOT EXISTS because extension may already be installed.
