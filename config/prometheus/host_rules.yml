@@ -48,6 +48,24 @@ groups:
         expr: sum by (cluster, node_name) (labels_equal(rate(node_network_receive_bytes_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", device!="lo"}[3m]), "supabase_identifier", "supabase_project_ref")) / (max by (cluster, node_name) (labels_equal(rate(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
       - record: host_network_transmit_bytes_per_second
         expr: sum by (cluster, node_name) (labels_equal(rate(node_network_transmit_bytes_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", device!="lo"}[3m]), "supabase_identifier", "supabase_project_ref")) / (max by (cluster, node_name) (labels_equal(rate(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
+      - record: host_os_cpu_user_percent
+        expr: 100 * sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="user"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_cpu_system_percent
+        expr: 100 * sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="system"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_cpu_steal_percent
+        expr: 100 * sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mode="steal"}[3m]), "supabase_identifier", "supabase_project_ref")) / sum by (cluster, node_name) (labels_equal(rate(node_cpu_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref"))
+      - record: host_os_memory_buffers_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_memory_Buffers_bytes{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_disk_size_bytes
+        expr: max by (cluster, node_name) (labels_equal(node_filesystem_size_bytes{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db", mountpoint="/data"}, "supabase_identifier", "supabase_project_ref"))
+      - record: host_disk_read_bytes_per_second
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_read_bytes_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / (max by (cluster, node_name) (labels_equal(rate(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
+      - record: host_disk_write_bytes_per_second
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_written_bytes_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / (max by (cluster, node_name) (labels_equal(rate(node_time_seconds{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
+      - record: host_disk_read_latency_seconds
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_read_time_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / (sum by (cluster, node_name) (labels_equal(rate(node_disk_reads_completed_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
+      - record: host_disk_write_latency_seconds
+        expr: sum by (cluster, node_name) (labels_equal(rate(node_disk_write_time_seconds_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) / (sum by (cluster, node_name) (labels_equal(rate(node_disk_writes_completed_total{job="supabase-host-metrics", cluster!="", node_name!="", service_type="db"}[3m]), "supabase_identifier", "supabase_project_ref")) > 0)
 
   # ClickHouse Managed Postgres: each target scrapes its service, labelled
   # with cluster/node_name. Deduplicate service rates across target jobs.
@@ -74,3 +92,11 @@ groups:
         expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_NetworkReceiveBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
       - record: host_network_transmit_bytes_per_second
         expr: sum by (cluster, node_name) (max by (cluster, node_name, clickhouse_org, postgres_service) (rate(PostgresServer_NetworkTransmitBytes_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m])))
+      - record: host_os_cpu_user_percent
+        expr: 100 * sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!="", mode="user"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+      - record: host_os_cpu_system_percent
+        expr: 100 * sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!="", mode="system"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+      - record: host_os_cpu_steal_percent
+        expr: 100 * sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!="", mode="steal"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
+      - record: host_disk_size_bytes
+        expr: max by (cluster, node_name) (PostgresServer_StorageLimitBytes{job=~"clickhouse-.+", cluster!="", node_name!=""})

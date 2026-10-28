@@ -218,3 +218,31 @@ test('aurora-postgresql: Aurora-only series are scaled to per-second rates', asy
   expect(text).toContain(`host_local_storage_free_bytes${labels} 1 ${recent.getTime()}\n`)
   expect(text).not.toContain(`host_volume_used_bytes${labels} 1 ${recent.getTime()}\n`)
 })
+
+// Recorded instances had no throughput/latency samples. Exercise actual values
+// and DescribeDBInstances units without relying on a live AWS account.
+test('rds-postgres: disk rates, latency and provisioned limits retain their units', async () => {
+  const dir = `${root}/rds-postgres`
+  const recorded: Recorded[] = await Bun.file(`${dir}/recorded.json`).json()
+  const { now, instanceId } = await Bun.file(`${dir}/case.json`).json()
+  const db = (recorded.find(r => r.command === 'DescribeDBInstancesCommand')!.output as { DBInstances: Record<string, unknown>[] }).DBInstances[0]
+  Object.assign(db, { AllocatedStorage: 100, Iops: 3000, StorageThroughput: 125 })
+  const results = (recorded.find(r => r.command === 'GetMetricDataCommand')!.output as { MetricDataResults: { Id: string; Timestamps: string[]; Values: number[] }[] }).MetricDataResults
+  const time = Date.parse(now) - 3 * 60_000
+  const raw = { host_disk_read_bytes_per_second: 1048576, host_disk_write_bytes_per_second: 2097152, host_disk_read_latency_seconds: 0.002, host_disk_write_latency_seconds: 0.004 }
+  for (const [id, value] of Object.entries(raw)) {
+    results.push({ Id: id, Timestamps: [new Date(time).toISOString()], Values: [value] })
+  }
+  const target = { instanceId, cluster: 'ci', nodeName: 'node-01' }
+  const { text, errors } = await pollOnce(replay(recorded).clients, target, new Date(now), new Map())
+  expect(errors).toEqual([])
+  for (const [id, value] of Object.entries(raw)) expect(text).toContain(`${id}{cluster="ci",node_name="node-01"} ${value} ${time}\n`)
+  expect(text).toContain(`host_disk_size_bytes{cluster="ci",node_name="node-01"} ${100 * 1024 ** 3} ${Date.parse(now)}\n`)
+  expect(text).toContain(`host_disk_provisioned_iops{cluster="ci",node_name="node-01"} 3000 ${Date.parse(now)}\n`)
+  expect(text).toContain(`host_disk_provisioned_throughput_bytes_per_second{cluster="ci",node_name="node-01"} ${125 * 1024 ** 2} ${Date.parse(now)}\n`)
+  delete db.Iops
+  delete db.StorageThroughput
+  const unknown = await pollOnce(replay(recorded).clients, target, new Date(now), new Map())
+  expect(unknown.text).not.toContain('host_disk_provisioned_')
+  expect(unknown.text).toContain('host_disk_size_bytes')
+})
