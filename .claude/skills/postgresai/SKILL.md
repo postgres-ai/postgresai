@@ -55,7 +55,7 @@ Start: user pastes prompt (console → Create organization → "Set up with your
         │   (all paths converge here)
 5. (auto) Deploy monitoring   ← FIRST action that creates anything
         (region = DB's cloud region, fallback default — no question)
-        ├── FAIL → stop, show error clearly (never silent)
+        ├── FAIL → stop, show error clearly (never silent); still stuck → support@postgres.ai
         └── OK
         │
 6. (auto) After deploy OK → clear success message, e.g.
@@ -122,6 +122,9 @@ would show, and stop.
   commands, and only within these rules.
 - **Bug reports.** When something goes wrong with PostgresAI or this skill,
   offer to report it to PostgresAI (see "Report a problem" at the end).
+- **Stuck.** When monitoring cannot be set up or does not start working, and
+  nothing here moves it forward, tell the user to email PostgresAI support at
+  support@postgres.ai (see "When you are stuck" near the end).
 - **Secrets.** Never print a password or an API key, and never `cat` or read a
   `.env` file into the conversation. Shell state does not carry over between
   your commands, so load `.env` in the same command as each `pgai` call and
@@ -355,7 +358,8 @@ silent about a failure:
 - `in_progress`: poll with
   `pgai mon instances watch <id> --org <alias> --json --no-wait` every few
   minutes, and start step 6 meanwhile. The box usually becomes `ready` within
-  about 10 minutes.
+  about 10 minutes. Still not `ready` 30 minutes after it first showed
+  `in_progress`: see "When you are stuck".
 - `failed` before anything was created (cannot connect, wrong password, a bad
   URL): stop, say what went wrong in plain words (`next`), and go back to
   step 1.
@@ -398,9 +402,15 @@ silent about a failure:
 - `failed` with no `id` (a timeout): run
   `pgai mon instances list --org <alias> --json`. If it shows this database,
   `watch` it; otherwise re-run the same deploy once. If that fails too, tell
-  the user what `next` says.
+  the user what `next` says, and point them to support (see "When you are
+  stuck").
 - `failed`, `inactive`, `deleting` or `deleted`: tell the user the status, and
-  `next` unless it is `none`.
+  `next` unless it is `none`. For `failed`, do what `next` says once (a
+  delete only with their OK, see Rules). After a delete, re-deploy without
+  `--yes` first: if `price` is not the one they accepted, go back to "2–3".
+  If it is `failed` again, point them to support (see "When you are
+  stuck"). For `inactive`, `deleting` or `deleted` the user did not ask for,
+  point them to support.
 
 ## Supabase
 
@@ -501,7 +511,8 @@ the entry in `pgai projects --org <alias> --json` whose
 `monitoring_instance_ids` contains the deploy's `id` (until the box is ready,
 the entry whose `name` is the deploy's `name`, if exactly one has it). If you
 can keep working, check every 2 minutes until about 15 minutes after `ready`;
-otherwise offer to look again later.
+otherwise offer to look again later. Still none an hour after `ready`: see
+"When you are stuck".
 
 **Before the signal**, do not interpret or explain any data, even if some
 arrived early: no early check results, no issues, no dashboard readings. Say
@@ -526,9 +537,10 @@ deploy, and then one a day.
 ### Report
 
 If the box's first report has not arrived, say so: report what was set up,
-the links, and when the first findings are expected, and end with one
-question: whether to look again then. Once findings are in, tell the user, in
-plain words, worst first:
+the links, when the first findings are expected, and that if it has still
+not arrived an hour after `ready` (give that time), they can email
+support@postgres.ai. End with one question: whether to look again then.
+Once findings are in, tell the user, in plain words, worst first:
 
 1. **What is wrong.** Name the table, index or setting.
 2. **Why it matters for their application.** For example: slow queries, bloat,
@@ -549,6 +561,33 @@ hours after the deploy), what they add, and that you can go through them
 together then. End with one question, on its own after the report: whether to
 apply the first fix (name it). Apply fixes one at a time, and none until the
 user agrees.
+
+## When you are stuck: PostgresAI support
+
+When monitoring cannot be set up or does not start working, and the steps
+here give you no way forward, tell the user to email PostgresAI support at
+support@postgres.ai. For example:
+
+- the deploy still fails after the re-run this skill allows; the box is
+  `failed` again after you did what `next` said once; or it is `inactive`,
+  `deleting` or `deleted` without the user asking;
+- the box is still not `ready` 30 minutes after it first showed
+  `in_progress`, or the initial checkup has not arrived an hour after
+  `ready`;
+- sign-in, the card, the Supabase approval or the console step (Amazon RDS)
+  still does not go through after the user tried again;
+- `next` asks for something you cannot do within the Rules.
+
+Problems in the user's database are findings, not a reason to contact
+support: report them as in step 6.
+
+Give the user the address and a short summary to paste into the email: what
+they were setting up (the provider), the step of this skill and the exact
+`pgai` command with the connection URL replaced by `<url>`, the `status` and
+`next` as printed, the organization alias, the monitoring box `id` if there is
+one, and when the deploy started. Never put a password, an API key or a
+connection URL in it. Do not send the email yourself. If the problem looks
+like a bug in `pgai` or this skill, also offer the bug report below.
 
 ## Report a problem to PostgresAI
 
