@@ -229,7 +229,9 @@ and its IP kept: allow it, and run with `--ip-allowed` again. Any database can a
 monitoring (`--self-hosted`).
 
 An Amazon RDS that is not publicly accessible is monitored over AWS PrivateLink: nothing becomes public and no port is
-opened. Run the deploy where the database is reachable (in its VPC):
+opened. Run the deploy anywhere: where the database is reachable (in its VPC) it runs the setup SQL itself and checks it
+before the box exists; where it is not, it prints the SQL to run as the master user on a machine that reaches the
+database, and the box checks it over PrivateLink:
 
 ```bash
 pgai mon deploy 'postgresql://postgres:<password>@<instance>.<id>.<region>.rds.amazonaws.com:5432/app'

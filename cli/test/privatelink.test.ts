@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { connect, stepProgress, type StepViewLike, overPrivateLink, privateLinkFailure, privateLinkOf, stackTeardown, verifiedWords, type ConnectDeps, type Database, type ProgressEvent, type RdsPrepareSql } from "../lib/connect";
+import { connect, unreachable, stepProgress, type StepViewLike, overPrivateLink, privateLinkFailure, privateLinkOf, stackTeardown, verifiedWords, type ConnectDeps, type Database, type ProgressEvent, type RdsPrepareSql } from "../lib/connect";
 import { canOpenBrowser, HttpStatusError, redactSecretsForLog } from "../lib/util";
 import { PRIVATELINK_STEPS } from "../lib/deploy";
 import {
@@ -290,11 +290,52 @@ describe("P: a private RDS over PrivateLink", () => {
     expect(provisioned(f.calls)[0].db_password).toBe("Secr3t");
   });
 
-  test("a database this machine can't reach: says so, and prints no SQL (node's errors have a code, not a severity)", async () => {
-    const f = fake({ runSql: async () => { throw Object.assign(new Error("connect ECONNREFUSED 172.31.1.2:5432"), { code: "ECONNREFUSED" }); } });
+  test("#459 a database this machine can't reach, a script: the SQL to run where it is reachable (step prepare_db); no box", async () => {
+    const f = fake({ runSql: async () => { throw Object.assign(new Error("connect ETIMEDOUT 172.31.1.2:5432"), { code: "ETIMEDOUT" }); } });
     const r = await connect(URL_, { waitMs: 0, yes: true }, f.deps);
-    expect(r).toMatchObject({ status: "action_required", next: `Could not log in to postgresql://pgai_admin:*****@${HOST}:5432/app: connect ECONNREFUSED 172.31.1.2:5432. Check the URL's user and password, and run pgai mon deploy where the database is reachable (in its VPC)` });
+    expect(r).toMatchObject({ status: "action_required", step: "prepare_db", sql: PREP.prepare_db_sql, nonce: "n1", monitoring_password: "Secr3t",
+      next: "This machine can't reach the database (connect ETIMEDOUT 172.31.1.2:5432), so the SQL does not run from here. Run the SQL as the master user, connected to database app, from a machine that reaches it (in its VPC), then re-run with PGAI_MON_NONCE=n1 and PGAI_MON_PASSWORD set to the v_password value near the top of the SQL. A deploy of this database without PGAI_MON_PASSWORD and PGAI_MON_NONCE issues a new SQL and replaces this one." });
+    expect(provisioned(f.calls)).toEqual([]);
+  });
+
+  test("#459 resumed with the SQL's password and nonce from a machine that can't reach it: the box checks it, and is made", async () => {
+    const f = fake({ readNonce: async () => { throw Object.assign(new Error("Connection terminated due to connection timeout"), {}); }, rows: [[], [], [box("launch_requested")]] });
+    const r = await connect(URL_, { waitMs: 0, yes: true, monitoringPassword: "Secr3t", nonce: "n1" }, f.deps);
+    expect(r.status).toBe("in_progress");
+    expect(f.calls.filter((c) => /prepareSql|runSql/.test(c))).toEqual([]);
+    expect(provisioned(f.calls)[0]).toMatchObject({ db_password: "Secr3t", vpce_service_name: VPCE });
+    expect(f.events.map((e) => e.message)).toContain("Not checked from here (this machine can't reach the database: Connection terminated due to connection timeout): the monitoring box checks that postgres_ai_mon logs in to app and that this SQL ran, and deploy says if it fails");
+  });
+
+  test("#459 at a terminal, unreachable: the SQL shown, Enter once it ran elsewhere; no check from here, the box is made", async () => {
+    const lines: string[] = [];
+    const f = terminal(fake({ answers: ["y", ""], runSql: async () => { throw Object.assign(new AggregateError([Object.assign(new Error("x"), { code: "EHOSTUNREACH" })], "connect"), {}); }, rows: [[], [box("active")]] }), lines);
+    expect((await connect(URL_, { waitMs: 60_000 }, f.deps)).status).toBe("ready");
+    expect(lines).toContain(PREP.prepare_db_sql);
+    expect(f.asked.at(-1)).toBe("Run the SQL as the master user, connected to database app, from a machine that reaches it (in its VPC), then press Enter ([s] to stop): ");
+    expect(f.calls.filter((c) => c.startsWith("readNonce"))).toEqual([]);
+    expect(provisioned(f.calls)).toHaveLength(1);
+  });
+
+  test("#459 a login the server refuses is not 'unreachable': no SQL, check the URL", async () => {
+    const f = fake({ runSql: async () => { throw Object.assign(new Error('password authentication failed for user "pgai_admin"'), { code: "28P01", severity: "FATAL" }); } });
+    const r = await connect(URL_, { waitMs: 0, yes: true }, f.deps);
+    expect(r).toMatchObject({ status: "action_required", next: `Could not log in to postgresql://pgai_admin:*****@${HOST}:5432/app: password authentication failed for user "pgai_admin". Check the URL's user and password` });
     expect(r.sql).toBeUndefined();
+    const g = fake({ readNonce: async () => { throw Object.assign(new Error('password authentication failed for user "postgres_ai_mon"'), { code: "28P01", severity: "FATAL" }); } });
+    const r2 = await connect(URL_, { waitMs: 0, yes: true, monitoringPassword: "Secr3t", nonce: "n1" }, g.deps);
+    expect(r2.next).toStartWith("postgres_ai_mon could not log in to app with PGAI_MON_PASSWORD");
+    expect(provisioned(g.calls)).toEqual([]);
+  });
+
+  test("#459 unreachable(): network errors and timeouts, not the server's refusals", () => {
+    for (const code of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ECONNRESET"]) expect(unreachable(Object.assign(new Error(code), { code }))).toBe(true);
+    expect(unreachable(new AggregateError([Object.assign(new Error("a"), { code: "ECONNREFUSED" })], ""))).toBe(true);
+    expect(unreachable(new Error("Connection terminated due to connection timeout"))).toBe(true);
+    expect(unreachable(Object.assign(new Error("timeout"), { code: "ETIMEDOUT", severity: "FATAL" }))).toBe(false);
+    expect(unreachable(Object.assign(new Error("permission denied"), { code: "42501", severity: "ERROR" }))).toBe(false);
+    expect(unreachable(new Error("self-signed certificate"))).toBe(false);
+    expect(unreachable("ETIMEDOUT")).toBe(false);
   });
 
   test("P8 at a terminal: the SQL shown, Enter once it ran, then the marker is checked", async () => {
@@ -459,8 +500,8 @@ describe("P10 P11: list, watch and delete of a PrivateLink box", () => {
 
   test("its check in words; a failed one says why", () => {
     expect(["db_verified", "pending", "auth_failed"].map(verifiedWords)).toEqual(["verified", "not verified yet",
-      "The monitoring box reached the database, but postgres_ai_mon could not log in: its password changed after this deploy set it (another setup ran its SQL)."]);
-    expect(privateLinkFailure({ ...route, verified_status: "nonce_mismatch" })).toStartWith("A newer PostgresAI setup SQL ran in this database after this deploy's");
+      "The monitoring box reached the database, but postgres_ai_mon could not log in with the password this deploy's SQL set: the SQL did not run there, or another setup ran its SQL after it."]);
+    expect(privateLinkFailure({ ...route, verified_status: "nonce_mismatch" })).toBe("The database's newest PostgresAI setup is not this deploy's: its SQL did not run in this database, or a newer one ran after it (another deploy, or the Console), so monitoring does not start.");
     expect(privateLinkFailure(route)).toBeUndefined();
   });
 

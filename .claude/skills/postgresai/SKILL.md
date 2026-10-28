@@ -235,9 +235,10 @@ user and ask which is right.
 - **Supabase**: connect through Supabase's sign-in, and pick the project: see
   "Supabase" below. No URL or password.
 - **RDS or Aurora**, **another Postgres**: find the database as below. Add
-  `--provider rds` or `--provider generic` to the deploy. A private RDS is
-  deployed from a machine that reaches it (in its VPC), and needs one step in
-  the user's AWS account: see "Private RDS" under step 4–5. For a private
+  `--provider rds` or `--provider generic` to the deploy. A private RDS needs
+  one step in the user's AWS account, and, when this machine can't reach the
+  database, the user runs the setup SQL where it can: see "Private RDS" under
+  step 4–5. For a private
   RDS, host CPU, memory, disk and IOPS charts need `--host-stats` (a
   read-only role the same stack creates): offer it as optional before the
   stack is created, since the stack's link depends on it.
@@ -399,7 +400,8 @@ silent about a failure:
     stack's `VpceServiceName` output and re-run with
     `--vpce-service <it>`. Never create, change or delete their AWS
     resources yourself. `"step":"prepare_db"` (the URL's user can't create
-    the role): give them `sql` to run as the master user in that database,
+    the role, or this machine can't reach the database): give them `sql` to
+    run as the master user in that database, from wherever they can reach it,
     then re-run with `PGAI_MON_PASSWORD` and `PGAI_MON_NONCE` set to the
     result's `monitoring_password` and `nonce` (in `.env`, never in the
     command). Re-running without them issues a new SQL that replaces the
