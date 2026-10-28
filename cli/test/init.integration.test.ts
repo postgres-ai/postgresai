@@ -816,6 +816,72 @@ $$`);
     }
   }, { timeout: 60000 });
 
+  test("unprepare-db refuses to transfer objects owned by a reused monitoring role", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query('create schema "My Ext"');
+      await admin.query('create extension pg_stat_statements with schema "My Ext"');
+      await admin.query("create role postgres_ai_mon login password 'monpw'");
+      const prepared = runCliInit([pg.adminUri, "--password", "monpw"]);
+      expect(`${prepared.status}: ${prepared.stdout} ${prepared.stderr}`).toStartWith("0:");
+      await admin.query("create table public.customer_asset (id integer primary key)");
+      await admin.query("insert into public.customer_asset values (99)");
+      await admin.query("alter table public.customer_asset owner to postgres_ai_mon");
+
+      const directSchemaUsage = `select exists (
+        select from pg_catalog.pg_namespace n,
+          pg_catalog.aclexplode(n.nspacl) a
+        where n.nspname = $1
+          and a.grantee = 'postgres_ai_mon'::regrole
+          and a.privilege_type = 'USAGE') as granted`;
+      for (const schema of ["public", "My Ext"]) {
+        expect((await admin.query(directSchemaUsage, [schema])).rows[0].granted).toBe(true);
+      }
+
+      const cleaned = runCliUnprepare([pg.adminUri]);
+      expect(cleaned.status).toBe(1);
+      expect(cleaned.output).toMatch(/03\.drop_role:.*depend/i);
+      expect(cleaned.output).toContain("owner of table public.customer_asset");
+      expect((await admin.query("select 1 from pg_catalog.pg_roles where rolname = 'postgres_ai_mon'")).rowCount).toBe(1);
+      expect((await admin.query("select id from public.customer_asset")).rows).toEqual([{ id: 99 }]);
+      expect((await admin.query("select pg_get_userbyid(relowner) as owner from pg_catalog.pg_class where oid = 'public.customer_asset'::regclass")).rows[0].owner).toBe("postgres_ai_mon");
+      // The failed DROP ROLE rolls back the public revoke in step 03. Step 02
+      // commits on its own and has already revoked the extension-schema grant.
+      expect((await admin.query(directSchemaUsage, ["public"])).rows[0].granted).toBe(true);
+      expect((await admin.query(directSchemaUsage, ["My Ext"])).rows[0].granted).toBe(false);
+
+      await admin.query("drop table public.customer_asset");
+      const retried = runCliUnprepare([pg.adminUri]);
+      expect(retried.status).toBe(0);
+      expect((await admin.query("select 1 from pg_catalog.pg_roles where rolname = 'postgres_ai_mon'")).rowCount).toBe(0);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("unprepare-db revokes stale extension-schema grants after extension and public removal", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query('create schema "My Ext"');
+      await admin.query('create extension pg_stat_statements with schema "My Ext"');
+      expect(runCliInit([pg.adminUri, "--password", "monpw"]).status).toBe(0);
+      await admin.query("drop extension pg_stat_statements");
+      await admin.query("drop schema public cascade");
+
+      const cleaned = runCliUnprepare([pg.adminUri]);
+      expect(cleaned.status).toBe(0);
+      expect((await admin.query("select 1 from pg_catalog.pg_roles where rolname = 'postgres_ai_mon'")).rowCount).toBe(0);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
   test("unprepare-db runs as a non-superuser admin with ADMIN OPTION on pg_monitor only", async () => {
     // PG 16+ needs ADMIN OPTION to revoke a role and grant option to revoke EXECUTE.
     const binDir = findPgBinDirAtLeast(16);

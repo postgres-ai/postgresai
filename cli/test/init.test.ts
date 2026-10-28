@@ -1018,8 +1018,8 @@ describe("init module", () => {
 
     const dropRoleStep = plan.steps.find((s) => s.name === "03.drop_role");
     expect(dropRoleStep).toBeTruthy();
-    // Uses ROLE_LITERAL (single-quoted) for format('%I', ...) in dynamic SQL
-    expect(dropRoleStep!.sql).toContain("'user \"with\" quotes'");
+    expect(dropRoleStep!.sql).toContain('drop role if exists "user ""with"" quotes";');
+    expect(dropRoleStep!.sql).not.toMatch(/reassign owned|drop owned/i);
   });
 
   test("prepare and unprepare SQL double backslashes in role name literals", async () => {

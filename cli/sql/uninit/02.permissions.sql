@@ -94,5 +94,5 @@ begin
   end loop;
 end {{DO_QUOTE}};
 
--- Note: USAGE on public is typically granted by default; we don't revoke it
--- to avoid breaking other applications that may rely on it.
+-- Step 02 keeps a direct USAGE grant on public for --keep-role. Step 03
+-- revokes every direct schema USAGE grant only inside the DROP ROLE transaction.
