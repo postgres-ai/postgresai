@@ -315,6 +315,23 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
       }
     });
 
+    test("RDS: a member of rds_superuser (which can create pg_stat_statements there) counts as admin without it installed", async () => {
+      const s = await creator([...ROLE_GRANTS, CREATE]);
+      try {
+        await s.c.query("drop extension pg_stat_statements");
+        await s.c.query("do $$ begin if not exists (select 1 from pg_roles where rolname = 'rds_superuser') then create role rds_superuser; end if; end $$");
+        await s.c.query("grant rds_superuser to pgai_connect_creator");
+        expect(await prepareDatabase(s.url, "rds", { check: true })).toEqual({ checked: true });
+        // The role there, but not its member: not an admin without the extension.
+        await s.c.query("revoke rds_superuser from pgai_connect_creator");
+        expect(await prepareDatabase(s.url, "rds", { check: true })).toHaveProperty("sql");
+      } finally {
+        await s.c.query("drop role if exists rds_superuser").catch(() => {});
+        await s.c.query("create extension if not exists pg_stat_statements");
+        await s.c.end();
+      }
+    });
+
     test("with all of it: the role is created and its URL logs in", async () => {
       const s = await creator([...ROLE_GRANTS, CREATE]);
       try {

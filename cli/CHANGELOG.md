@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- `pgai mon deploy` monitors an Amazon RDS that is not publicly accessible over AWS PrivateLink
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/454), as the console's wizard does: the price, a CloudFormation
+  link that creates the stack in your AWS account (`--terraform` writes the same as Terraform), the `postgres_ai_mon`
+  role with the organization's ownership marker, and the box on AWS in the RDS's region. Run it where the database is
+  reachable. With the aws CLI it reads the instance and the stack (read-only; `--aws-profile`, `--no-aws`), fills the
+  link in, and waits for the stack at a terminal; otherwise it asks public DNS whether the RDS is public, and for the
+  stack's `VpceServiceName` (`--vpce-service`). Scripts and agents get exit 3 with `"step":"privatelink_stack"`
+  (`cfn_url`) or `"step":"prepare_db"` (`sql`, `nonce`, `monitoring_password`; resume with `PGAI_MON_PASSWORD` and
+  `PGAI_MON_NONCE`). `--host-stats` adds host CPU, memory, disk and IOPS through a read-only role the stack creates.
+  `--privatelink` / `--no-privatelink` decide instead. The MCP `deploy_monitoring` tool takes the same arguments.
+  `pgai mon instances list` shows a PrivateLink box's `privatelink` (region, service, verification), `watch` says why
+  a box failed its check of the database, and `delete` names the stack to delete afterwards.
+  Deploy finds the stack under any name by its RDS; with several for the RDS, a person picks one and a script gets them
+  listed (`stacks`). A stack with deploy's name for another RDS is never used.
+
+### Changed
+
+- A publicly accessible RDS is monitored directly (as `--provider generic`), not handed off to the console. There the
+  RDS master user (a member of `rds_superuser`) counts as an admin before `pg_stat_statements` is installed, as it can
+  create it.
+- `--monitoring-user` with a private RDS is refused (over PrivateLink the box uses `postgres_ai_mon`); it used to be
+  ignored with a note.
+
 ### Security
 
 - `prepare-db` refuses a preexisting `postgres_ai` schema unless the connecting administrator owns it, no other role

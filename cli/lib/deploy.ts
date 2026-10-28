@@ -385,6 +385,15 @@ export const SUPABASE_STEPS: StepDef[] = [
   { key: "ready", label: "Ready" },
 ];
 
+/** pgai mon deploy's steps for an RDS over AWS PrivateLink (postgresai#454): the customer's stack comes first. */
+export const PRIVATELINK_STEPS: StepDef[] = [
+  { key: "privatelink", label: "Wait for you to create the PrivateLink stack in AWS" },
+  { key: "preparing", label: "Prepare the database" },
+  { key: "provisioning", label: "Create the monitoring box" },
+  { key: "box", label: "Connect over PrivateLink and install monitoring (about 5 min)" },
+  { key: "ready", label: "Ready" },
+];
+
 /** The step list of pgai mon deploy for a provider. */
 export const monitoringSteps = (provider: string): StepDef[] => provider === "supabase" ? SUPABASE_STEPS : MONITORING_STEPS;
 

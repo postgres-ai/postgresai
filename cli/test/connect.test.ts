@@ -38,7 +38,6 @@ function fake(over: Partial<ConnectDeps> & { rows?: (Database | undefined)[] } =
     localStackRunning: () => false,
     clickhouseOrg: async (host, keyId) => { calls.push(`clickhouseOrg ${host} ${keyId}`); return { orgId: ORG, state: "running" }; },
     selfHosted: async (url, env) => { calls.push(`selfHosted ${url} ${JSON.stringify(env)}`); },
-    handoffUrl: async (provider) => `https://console.postgres.ai/acme/monitoring/scale/create/${provider}`,
     supabaseStart: async () => { throw new Error("not a Supabase test"); },
     supabaseStatus: async () => { throw new Error("not a Supabase test"); },
     supabaseConnect: async () => { throw new Error("not a Supabase test"); },
@@ -409,11 +408,11 @@ describe("mon deploy", () => {
     });
   });
 
-  test("RDS hands off to the console flow, touching nothing", async () => {
+  test("RDS that can't be told public or private, not at a terminal: asks for --privatelink or --no-privatelink, touching nothing", async () => {
     const { deps, calls } = fake();
     expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "rds", name: "db.abc.us-east-1.rds.amazonaws.com/app",
-      next: "Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds",
+      next: "Could not tell whether db.abc.us-east-1.rds.amazonaws.com is publicly accessible (AWS not readable here, and public DNS did not answer): re-run with --privatelink if it is not, or --no-privatelink if it is",
     });
     expect(calls).toEqual([]);
   });
@@ -669,7 +668,7 @@ describe("mon deploy", () => {
       expect((await connect("postgresql://u:p@10.0.0.5:5432/app", { waitMs: 0 }, deps)).status).toBe("in_progress");
       expect(calls).toEqual(["list", "check self-managed", "prepare self-managed", `create ${JSON.stringify({ db_url: MON, allow_ip_fallback: true })}`]);
       expect((await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { waitMs: 0 }, deps)).next)
-        .toBe("Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds");
+        .toBe("Could not tell whether db.abc.us-east-1.rds.amazonaws.com is publicly accessible (AWS not readable here, and public DNS did not answer): re-run with --privatelink if it is not, or --no-privatelink if it is");
       await connect(CH, { waitMs: 0 }, deps);
       expect(calls.at(-4)).toBe("clickhouseOrg abc123.us-east-1.aws.pg.clickhouse.cloud kid");
     } finally {
@@ -861,11 +860,11 @@ describe("mon deploy", () => {
     }
   });
 
-  test("--monitoring-user with a host handed to the console: says the console does not use it", async () => {
+  test("--monitoring-user over AWS PrivateLink: refused before anything (the platform's SQL makes postgres_ai_mon)", async () => {
     const { deps, calls } = fake();
-    expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { monitoringUser: "my_mon", waitMs: 0 }, deps)).toEqual({
+    expect(await connect("postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", { monitoringUser: "my_mon", privatelink: true, waitMs: 0 }, deps)).toEqual({
       status: "action_required", provider: "rds", name: "db.abc.us-east-1.rds.amazonaws.com/app",
-      next: "Finish in the console: https://console.postgres.ai/acme/monitoring/scale/create/rds (--monitoring-user is not used there)",
+      next: "--monitoring-user does not apply over AWS PrivateLink: the box runs on AWS in us-east-1 (the RDS's region), as postgres_ai_mon, in a project named db",
     });
     expect(calls).toEqual([]);
   });
@@ -3109,8 +3108,9 @@ describe("MCP deploy_monitoring", () => {
         dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F", host_metrics: true,
         next: "Open https://console.example/acme/projects/abc-db/health",
       });
-      expect((await call({ database_url: "postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app" })).next)
-        .toBe("Finish in the console: https://console.example/acme/monitoring/scale/create/rds");
+      // The PrivateLink arguments reach deploy: one for PrivateLink only is refused on the direct path.
+      expect((await call({ database_url: "postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", privatelink: false, host_stats: true })).next)
+        .toBe("host_stats applies to AWS PrivateLink only, and db.abc.us-east-1.rds.amazonaws.com/app is monitored directly (privatelink: false)");
     } finally {
       server.stop(true);
     }
