@@ -338,6 +338,40 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
 const INSTANCE_JOBS_PROFILE = "instance-jobs";
 
 /**
+ * The compose profile that gates the demo database (target-db) and its hot
+ * standby. Without it a managed or self-hosted box would run a second Postgres
+ * with the well-known demo password next to the real target.
+ */
+const DEMO_PROFILE = "demo";
+
+/**
+ * Written by `mon local-install --prestart` once the stack's infrastructure is
+ * up with no target. `--continue-prestarted` takes a running stack only when
+ * this file is there, so a plain re-run over a configured box still refuses.
+ */
+const PRESTARTED_MARKER = ".prestarted";
+/** What the marker becomes once --continue-prestarted has configured the stack. */
+const PRESTARTED_DONE_MARKER = ".prestarted.done";
+
+/**
+ * What `--prestart` starts: storage, Grafana and self-monitoring. Not the
+ * services that read the target (pgwatch, the reporter): they must start with
+ * the deploy's sources, or they keep the empty boot-time list.
+ */
+const PRESTART_SERVICES = [
+  "sink-postgres",
+  "sink-prometheus",
+  "grafana",
+  "monitoring_flask_backend",
+  "self-cadvisor",
+  "self-node-exporter",
+  "self-postgres-exporter",
+];
+
+/** Containers that read the target list at start, recreated when they already run. */
+const TARGET_READER_SERVICES = ["pgwatch-postgres", "pgwatch-prometheus", "postgres-reports"];
+
+/**
  * The COMPOSE_PROFILES value to write, given what `.env` already has and what
  * this run asks for.
  *
@@ -367,12 +401,17 @@ export function composeProfilesValue(
   return profiles.length > 0 ? profiles.join(",") : null;
 }
 
-/** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
-export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
+/** Is `profile` on, given a COMPOSE_PROFILES value? */
+export function profileEnabled(composeProfiles: string | null | undefined, profile: string): boolean {
   return (composeProfiles ?? "")
     .split(",")
     .map((p) => p.trim())
     .includes(profile);
+}
+
+/** Is the instance-jobs profile on, given a COMPOSE_PROFILES value? */
+export function instanceJobsProfileEnabled(composeProfiles: string | null | undefined, profile = INSTANCE_JOBS_PROFILE): boolean {
+  return profileEnabled(composeProfiles, profile);
 }
 
 /**
@@ -456,6 +495,7 @@ function buildLocalInstallEnv(
   instanceId?: string | null,
   credentialFile?: string | null,
   instanceJobs?: boolean,
+  demo?: boolean,
 ): { content: string; preservedKeys: string[] } {
   const readRaw = (key: string): string | null => {
     // Read the way compose does: tolerate `export `/indentation and take the
@@ -522,8 +562,12 @@ function buildLocalInstallEnv(
   // there. postgresai#381.
   const existingProfiles = readRaw("COMPOSE_PROFILES");
   const composeProfiles = composeProfilesValue(
-    existingProfiles === null ? null : stripMatchingQuotes(existingProfiles),
-    instanceJobs,
+    composeProfilesValue(
+      existingProfiles === null ? null : stripMatchingQuotes(existingProfiles),
+      instanceJobs,
+    ),
+    demo,
+    DEMO_PROFILE,
   );
   if (composeProfiles) envLines.push(`COMPOSE_PROFILES=${composeProfiles}`);
 
@@ -4127,6 +4171,216 @@ async function composeServiceRunning(
   }
 }
 
+/** Does instances.yml monitor the bundled demo database (a target on host target-db)? */
+export function instancesUseDemoTarget(instancesPath: string): boolean {
+  try {
+    if (!fs.statSync(instancesPath).isFile()) return false;
+    return loadInstances(instancesPath).some((instance) => {
+      try {
+        return new URL(String(instance.conn_str ?? "")).hostname === "target-db";
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the demo database containers an older version started on every
+ * install. They have no profile there, so a stack that now runs without the
+ * demo profile would keep them forever (`restart: unless-stopped`), and `down`
+ * does not reliably remove containers of an inactive profile. Through compose,
+ * so only THIS project's containers go (the container names are global);
+ * their volumes are kept.
+ */
+async function removeDemoContainers(projectDir: string): Promise<void> {
+  const cmd = getComposeCmd();
+  if (!cmd) return;
+  const ps = spawnSync(
+    cmd[0],
+    [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "-a", "--format", "{{.Service}}"],
+    { cwd: projectDir, env: { ...process.env, COMPOSE_PROFILES: DEMO_PROFILE }, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+  );
+  const present = String(ps.stdout ?? "").split(/\s+/).filter((s) => s === "target-db" || s === "target-standby");
+  if (ps.status !== 0 || present.length === 0) return;
+  console.log(`Removing the demo database (containers ${present.join(", ")}): this install monitors your own database. Its data volumes are kept.`);
+  await runCompose(["rm", "-f", "-s", ...present], undefined, { COMPOSE_PROFILES: DEMO_PROFILE });
+}
+
+/**
+ * Keep the demo profile in step with what the stack monitors, for stacks
+ * installed before the profile existed: one that monitors the demo database
+ * gets the profile, one that does not loses the old demo containers. An
+ * explicit demo profile in .env is left alone.
+ */
+async function syncDemoProfile(projectDir: string, instancesPath: string): Promise<void> {
+  const current = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? null;
+  if (profileEnabled(current, DEMO_PROFILE)) return;
+  if (instancesUseDemoTarget(instancesPath)) {
+    setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, true, DEMO_PROFILE) });
+    console.log(`Kept the demo database running: instances.yml monitors it (added '${DEMO_PROFILE}' to COMPOSE_PROFILES in .env)`);
+    return;
+  }
+  await removeDemoContainers(projectDir);
+}
+
+/**
+ * The Grafana admin password from .pgwatch-config, generated and saved there
+ * (0600) when absent. Every `mon` command reads it from that file.
+ */
+async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
+  let grafanaPassword = "";
+  try {
+    if (fs.existsSync(cfgPath)) {
+      const stats = fs.statSync(cfgPath);
+      if (!stats.isDirectory()) {
+        const content = fs.readFileSync(cfgPath, "utf8");
+        const match = content.match(/^grafana_password=([^\r\n]+)/m);
+        if (match) {
+          grafanaPassword = match[1].trim();
+        }
+      }
+    }
+
+    if (!grafanaPassword) {
+      console.log("Generating secure Grafana password...");
+      const { stdout: password } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
+      grafanaPassword = password.trim().replace(/\n/g, "");
+
+      let configContent = "";
+      if (fs.existsSync(cfgPath)) {
+        const stats = fs.statSync(cfgPath);
+        if (!stats.isDirectory()) {
+          configContent = fs.readFileSync(cfgPath, "utf8");
+        }
+      }
+
+      const lines = configContent.split(/\r?\n/).filter((l) => !/^grafana_password=/.test(l));
+      lines.push(`grafana_password=${grafanaPassword}`);
+      // Same file as the api_key writer: once `mon local-install` has run
+      // it carries the credential, so it must not be left at umask default.
+      fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      try {
+        fs.chmodSync(cfgPath, 0o600);
+      } catch {
+        /* best-effort hardening; the file is already written */
+      }
+    }
+
+    console.log("✓ Grafana password configured\n");
+  } catch (error) {
+    console.error("⚠ Could not generate Grafana password automatically");
+    console.log("Using default password: demo\n");
+    grafanaPassword = "demo";
+  }
+  return grafanaPassword;
+}
+
+/**
+ * Why `--prestart` must not run here, or null. A configured stack runs pgwatch
+ * (--prestart never starts it), and a marker means a prestart already
+ * finished. A partly started prestart (Grafana up, no marker) may be retried:
+ * its `up -d` is idempotent.
+ */
+function prestartRefusal(projectDir: string): string | null {
+  for (const marker of [PRESTARTED_MARKER, PRESTARTED_DONE_MARKER]) {
+    if (fs.existsSync(path.join(projectDir, marker))) {
+      return "This stack was already started with --prestart";
+    }
+  }
+  const { containers } = checkRunningContainers();
+  const pgwatch = containers.filter((c) => c.startsWith("pgwatch"));
+  if (pgwatch.length > 0) {
+    return `A configured monitoring stack is already running (${pgwatch.join(", ")}); --prestart is only for a fresh box`;
+  }
+  return null;
+}
+
+/** The services of this project that are running, from one `compose ps`. */
+function runningComposeServices(projectDir: string): string[] {
+  const cmd = getComposeCmd();
+  if (!cmd) return [];
+  const ps = spawnSync(
+    cmd[0],
+    [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "--status", "running", "--services"],
+    { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+  );
+  return ps.status === 0 ? String(ps.stdout ?? "").split(/\s+/).filter(Boolean) : [];
+}
+
+/**
+ * `mon local-install --prestart`: the boot-time half of an install on a
+ * pre-baked image. Starts storage, Grafana and self-monitoring with this box's
+ * own secrets, binds every published port to 127.0.0.1 until the deploy says
+ * otherwise, and adds no target and calls no API. `--continue-prestarted` does
+ * the rest when the deploy arrives.
+ */
+async function runPrestart(projectDir: string, instancesPath: string, imageTag: string): Promise<void> {
+  console.log("Prestart: starting the monitoring infrastructure without a target\n");
+
+  // The bake leaves only docker-compose.yml. Create the bind-mount sources as
+  // files now, or compose creates them as root-owned directories.
+  if (!fs.existsSync(instancesPath)) {
+    fs.writeFileSync(instancesPath, "# PostgreSQL instances to monitor\n# Add your instances using: postgres-ai mon targets add\n\n", "utf8");
+  }
+  const cfgPath = path.resolve(projectDir, ".pgwatch-config");
+  if (!fs.existsSync(cfgPath)) {
+    fs.writeFileSync(cfgPath, "", { encoding: "utf8", mode: 0o600 });
+  }
+  for (const file of [instancesPath, cfgPath]) {
+    if (!fs.statSync(file).isFile()) {
+      console.error(`✗ ${file} is not a regular file; remove it and re-run`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const binds: Record<string, string> = {};
+  for (const key of ["BIND_HOST", "GRAFANA_BIND_HOST"]) {
+    if (readEnvValue(projectDir, key) === undefined) binds[key] = "127.0.0.1:";
+  }
+  if (Object.keys(binds).length > 0) setEnvValues(projectDir, binds);
+
+  const grafanaPassword = await ensureGrafanaPassword(cfgPath);
+
+  await runCompose(["rm", "-f", "-s", "config-init"]);
+  const code = await runCompose(["up", "-d", ...PRESTART_SERVICES], grafanaPassword);
+  if (code !== 0) {
+    console.error("✗ The monitoring infrastructure did not start");
+    process.exitCode = code;
+    return;
+  }
+
+  fs.writeFileSync(path.join(projectDir, PRESTARTED_MARKER), `${imageTag} ${new Date().toISOString()}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  console.log("✓ Monitoring infrastructure started; finish with 'postgresai mon local-install --continue-prestarted --db-url <url> --api-key <key>'\n");
+}
+
+/**
+ * SIGHUP sink-prometheus when host-metrics scrape files exist: on a prestarted
+ * stack it was already running when the target wrote them, and it reads them
+ * only at start or on reload. Best effort: the files stay for the next start.
+ */
+async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(path.join(projectDir, "host-metrics")).filter((f) => f.endsWith(".yml"));
+  } catch {
+    return;
+  }
+  if (files.length === 0) return;
+  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+    console.error("⚠ Could not reload the metrics store; host metrics start after 'postgresai mon restart'");
+  }
+}
+
 /**
  * Make the running stack match what `.env` now says about the instance-jobs
  * profile.
@@ -4925,8 +5179,21 @@ mon
     "enable the instance-jobs compose profile (outbound collection channel; PGAI_INSTANCE_JOBS env also works). Writes COMPOSE_PROFILES into the stack .env, so every later mon command covers the container"
   )
   .option("--no-instance-jobs", "disable the instance-jobs compose profile and remove its container")
+  // Run by the image's first-boot unit and the deploy (postgres_ai-ansible#43).
+  // Visible on purpose: the image bake reads this help to learn that the CLI
+  // can prestart (images/bake.yml), so hiding them turns the feature off.
+  .option(
+    "--prestart",
+    "for PostgresAI-managed images only: at first boot, start storage, Grafana and self-monitoring with fresh secrets, ports on 127.0.0.1, no target, no API calls",
+    false,
+  )
+  .option(
+    "--continue-prestarted",
+    "for PostgresAI-managed images only: finish an install on a stack started by --prestart, recreating only what changed",
+    false,
+  )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; yes: boolean; org?: string; orgId?: string }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; prestart: boolean; continuePrestarted: boolean; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -4943,6 +5210,23 @@ mon
     // Ensure we have a project directory with docker-compose.yml even if running from elsewhere
     const { projectDir, instancesFile: instancesPath } = await resolveOrInitPaths();
     console.log(`Project directory: ${projectDir}\n`);
+
+    // --prestart is checked before anything is written: a refused run changes nothing.
+    if (opts.prestart) {
+      const identity = opts.instanceId || process.env.PGAI_INSTANCE_ID || opts.instanceJobs !== undefined
+        || (process.env.PGAI_INSTANCE_JOBS ?? "").trim() !== "" || opts.project;
+      if (opts.demo || opts.dbUrl || apiKey || opts.continuePrestarted || identity) {
+        console.error("✗ --prestart starts the stack without a target or an identity: it cannot be combined with --demo, --db-url, --api-key, --instance-id, --project, --instance-jobs or --continue-prestarted (or PGAI_INSTANCE_ID / PGAI_INSTANCE_JOBS)");
+        process.exitCode = 1;
+        return;
+      }
+      const refusal = prestartRefusal(projectDir);
+      if (refusal) {
+        console.error(`✗ ${refusal}. Nothing was changed.`);
+        process.exitCode = 1;
+        return;
+      }
+    }
 
     // Save project name to .pgwatch-config if provided (used by reporter container)
     if (opts.project && !applyProjectName(projectDir, opts.project)) {
@@ -4987,6 +5271,7 @@ mon
       opts.instanceId || process.env.PGAI_INSTANCE_ID || null,
       path.resolve(projectDir, ".pgwatch-config"),
       instanceJobs,
+      opts.demo ? true : undefined,
     );
     writeEnvFile(envFile, envContent);
     if (preservedKeys.length > 0) {
@@ -5021,9 +5306,21 @@ mon
       return;
     }
 
+    if (opts.prestart) {
+      await runPrestart(projectDir, instancesPath, imageTag);
+      return;
+    }
+
+    // A stack started by --prestart is taken as it is; any other running
+    // stack still refuses, so a plain re-run never reconfigures a live box.
+    const onPrestarted = opts.continuePrestarted && fs.existsSync(path.join(projectDir, PRESTARTED_MARKER));
+    if (opts.continuePrestarted && !onPrestarted) {
+      console.log("(this stack was not started with --prestart: installing as usual)\n");
+    }
+
     // Check if containers are already running
     const { running, containers } = checkRunningContainers();
-    if (running) {
+    if (running && !onPrestarted) {
       console.error(`⚠ Monitoring services are already running: ${containers.join(", ")}`);
       console.log("Use 'postgres-ai mon restart' to restart them\n");
       // This path returns without any `up`, so a profile change written to
@@ -5229,56 +5526,9 @@ mon
     // Step 4: Ensure Grafana password is configured
     console.log(opts.demo ? "Step 4: Configuring Grafana security..." : "Step 4: Configuring Grafana security...");
     const cfgPath = path.resolve(projectDir, ".pgwatch-config");
-    let grafanaPassword = "";
+    const grafanaPassword = await ensureGrafanaPassword(cfgPath);
     let vmAuthUsername = "";
     let vmAuthPassword = "";
-
-    try {
-      if (fs.existsSync(cfgPath)) {
-        const stats = fs.statSync(cfgPath);
-        if (!stats.isDirectory()) {
-          const content = fs.readFileSync(cfgPath, "utf8");
-          const match = content.match(/^grafana_password=([^\r\n]+)/m);
-          if (match) {
-            grafanaPassword = match[1].trim();
-          }
-        }
-      }
-
-      if (!grafanaPassword) {
-        console.log("Generating secure Grafana password...");
-        const { stdout: password } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
-        grafanaPassword = password.trim().replace(/\n/g, "");
-
-        let configContent = "";
-        if (fs.existsSync(cfgPath)) {
-          const stats = fs.statSync(cfgPath);
-          if (!stats.isDirectory()) {
-            configContent = fs.readFileSync(cfgPath, "utf8");
-          }
-        }
-
-        const lines = configContent.split(/\r?\n/).filter((l) => !/^grafana_password=/.test(l));
-        lines.push(`grafana_password=${grafanaPassword}`);
-        // Same file as the api_key writer above: once `mon local-install` has run
-        // it carries the credential, so it must not be left at umask default.
-        fs.writeFileSync(cfgPath, lines.filter(Boolean).join("\n") + "\n", {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        try {
-          fs.chmodSync(cfgPath, 0o600);
-        } catch {
-          /* best-effort hardening; the file is already written */
-        }
-      }
-
-      console.log("✓ Grafana password configured\n");
-    } catch (error) {
-      console.error("⚠ Could not generate Grafana password automatically");
-      console.log("Using default password: demo\n");
-      grafanaPassword = "demo";
-    }
 
     // Generate VictoriaMetrics auth credentials
     try {
@@ -5326,9 +5576,38 @@ mon
     // Remove stopped containers left by "run --rm" dependencies (e.g. config-init)
     // to avoid docker-compose v1 'ContainerConfig' error on recreation.
     // Best-effort: ignore exit code — container may not exist, failure here is non-fatal.
+    if (!opts.demo) {
+      // A non-demo install: the demo database is not part of it.
+      const profiles = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? null;
+      if (profileEnabled(profiles, DEMO_PROFILE)) {
+        setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(profiles, false, DEMO_PROFILE) });
+      }
+      await removeDemoContainers(projectDir);
+    }
     await runCompose(["rm", "-f", "-s", "config-init"]);
-    console.log("Step 5: Starting monitoring services...");
-    const code2 = await runCompose(["up", "-d", "--force-recreate"], grafanaPassword);
+    let code2: number;
+    if (onPrestarted) {
+      // Plain `up -d` recreates only the services whose config changed (Grafana
+      // for OAuth, VictoriaMetrics for retention or binds) and creates the ones
+      // --prestart left out. The target readers load their sources at start,
+      // so any of them already running (a re-run) is recreated explicitly.
+      console.log("Step 5: Applying the configuration to the prestarted stack...");
+      // Readers already running (a re-run) are recreated first, so the plain
+      // `up -d` after it finds them current instead of recreating them twice.
+      const readersRunning = runningComposeServices(projectDir).filter((s) => TARGET_READER_SERVICES.includes(s));
+      code2 = readersRunning.length > 0
+        ? await runCompose(["up", "-d", "--force-recreate", "--no-deps", ...readersRunning], grafanaPassword)
+        : 0;
+      if (code2 === 0) code2 = await runCompose(["up", "-d"], grafanaPassword);
+      if (code2 === 0) await reloadHostMetricsFiles(projectDir);
+      // Configured now: a later run over this stack refuses again, as on any running stack.
+      if (code2 === 0) {
+        fs.renameSync(path.join(projectDir, PRESTARTED_MARKER), path.join(projectDir, PRESTARTED_DONE_MARKER));
+      }
+    } else {
+      console.log("Step 5: Starting monitoring services...");
+      code2 = await runCompose(["up", "-d", "--force-recreate"], grafanaPassword);
+    }
     if (code2 !== 0) {
       process.exitCode = code2;
       return;
@@ -5524,6 +5803,8 @@ mon
       return;
     }
 
+    const { projectDir, instancesFile } = await resolveOrInitPaths();
+    await syncDemoProfile(projectDir, instancesFile);
     const code = await runCompose(["up", "-d"]);
     if (code !== 0) process.exitCode = code;
   });
@@ -5537,6 +5818,7 @@ const MONITORING_CONTAINERS = [
   "sink-postgres",
   "sink-prometheus",
   "target-db",
+  "target-standby",
   "pgwatch-postgres",
   "pgwatch-prometheus",
   "self-postgres-exporter",
@@ -5691,13 +5973,15 @@ export function judgeServiceHealth(
  * which is the most likely way the channel stops, and a health line that calls
  * it "not enabled" is blind to exactly that. postgresai#381.
  */
-export function monitoringHealthServices(instanceJobsEnabled = false): MonitoringService[] {
+export function monitoringHealthServices(instanceJobsEnabled = false, demoEnabled = false): MonitoringService[] {
   return [
     { name: "Grafana", container: "grafana-with-datasources" },
     { name: "Prometheus", container: "sink-prometheus" },
     { name: "PGWatch (Postgres)", container: "pgwatch-postgres" },
     { name: "PGWatch (Prometheus)", container: "pgwatch-prometheus" },
-    { name: "Target DB", container: "target-db" },
+    // The demo database runs only with the demo profile; without it, an
+    // absent target-db is "not enabled", not a fault.
+    { name: "Demo DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
     { name: "Sink Postgres", container: "sink-postgres" },
     // Profile-gated and self-reporting; see judgeServiceHealth. The six above
     // stay on the status-only check - reading their health status is a
@@ -5717,7 +6001,11 @@ mon
   .description("health check for monitoring services")
   .option("--wait <seconds>", "wait time in seconds for services to become healthy", parseInt, 0)
   .action(async (opts: { wait: number }) => {
-    const services = monitoringHealthServices(instanceJobsProfileEnabled(readComposeProfiles()));
+    const profiles = readComposeProfiles();
+    const services = monitoringHealthServices(
+      instanceJobsProfileEnabled(profiles),
+      profileEnabled(profiles, DEMO_PROFILE),
+    );
 
     const waitTime = opts.wait || 0;
     const maxAttempts = waitTime > 0 ? Math.ceil(waitTime / 5) : 1;
@@ -5836,14 +6124,19 @@ mon
 
     try {
       let projectDir: string;
+      let instancesFile: string;
       try {
-        ({ projectDir } = await resolveOrInitPaths());
+        ({ projectDir, instancesFile } = await resolveOrInitPaths());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(message);
         process.exitCode = 1;
         return;
       }
+
+      // The demo database moved behind a compose profile: keep it on a stack
+      // that monitors it, and remove the old containers from one that does not.
+      await syncDemoProfile(projectDir, instancesFile);
 
       // Step 1: migrate .env so newer stack versions that require additional
       // env vars (e.g. VM_AUTH_USERNAME / VM_AUTH_PASSWORD introduced in 0.15)

@@ -91,11 +91,13 @@ grafana_password=${grafana_password}
 %{ if enable_demo_db }demo_mode=true%{ else }demo_mode=false%{ endif }
 EOF
 
-# Create .env file for docker-compose
+# Create .env file for docker-compose (the demo DB containers start only with
+# the "demo" compose profile)
 cat > .env <<ENV_EOF
 GF_SECURITY_ADMIN_PASSWORD=${grafana_password}
 BIND_HOST=${bind_host}
 GRAFANA_BIND_HOST=${grafana_bind_host}
+%{ if enable_demo_db }COMPOSE_PROFILES=demo%{ endif }
 ENV_EOF
 
 %{ if vm_auth_password != "" ~}

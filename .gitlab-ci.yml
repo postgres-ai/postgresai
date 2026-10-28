@@ -300,6 +300,7 @@ terraform:aws:tests:
     - terraform init -backend=false
     - terraform validate
     - terraform test -filter=tests/kms_encryption.tftest.hcl
+    - terraform test -filter=tests/demo_profile.tftest.hcl
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
