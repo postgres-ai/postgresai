@@ -42,6 +42,7 @@ import {
 } from "../lib/dblab";
 import { canOpenBrowser, resolveBaseUrls, requestTimeoutSignal } from "../lib/util";
 import { registerDblabDeployCommands, type DeployCliDeps } from "../lib/deploy-commands";
+import { registerBillingCommands } from "../lib/billing";
 import { monitoringSteps, PRIVATELINK_STEPS, StepView } from "../lib/deploy";
 import { DEPLOY_EXIT, databaseUrlArg, jsonOutput as deployJsonOutput, monitoringStatus, pickInstance, sharedDeployOptions, vcpusArg, waitMinutes } from "../lib/deploy-surface";
 import {
@@ -8939,6 +8940,8 @@ const deployDeps: DeployCliDeps = {
   uiBaseUrl: () => resolveBaseUrls(program.opts<CliOptions>(), config.readConfig()).uiBaseUrl,
 };
 registerDblabDeployCommands(dblab, deployDeps);
+// The card a deploy needs, readable without deploying (postgresai#462).
+registerBillingCommands(program, deployDeps);
 
 // ---- clone ----------------------------------------------------------------
 

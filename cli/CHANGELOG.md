@@ -4,6 +4,11 @@
 
 ### Added
 
+- `pgai billing status` says whether the organization has a payment method on file
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/462): `--json` gives `org`, `has_payment_method` and
+  `billing_url`; exit 0 yes, 3 no, 1 error or unknown. It is read-only and checks no promo code. The `postgresai` agent
+  skill uses it to wait for the card the user is adding. Before, the skill re-ran the deploy with `--coupon`, which
+  used up the platform's coupon checks within minutes and then read the refusal as "card added".
 - `pgai mon deploy` monitors an Amazon RDS that is not publicly accessible over AWS PrivateLink
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/454), as the console's wizard does: the price, a CloudFormation
   link that creates the stack in your AWS account (`--terraform` writes the same as Terraform), the `postgres_ai_mon`

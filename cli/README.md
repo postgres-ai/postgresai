@@ -787,6 +787,17 @@ pgai orgs create --name "My team" --alias my-team --json
 - You become the owner and an Admin member. No organization selection is sent, and your saved configuration does not change. Use the returned alias with `--org` afterwards.
 - Requires the Platform change https://gitlab.com/postgres-ai/platform-all/-/merge_requests/1157 to be deployed.
 
+### Check for a payment method on file
+
+```bash
+pgai billing status --org my-team          # Payment method on file for my-team.
+pgai billing status --org my-team --json   # {"org", "has_payment_method", "billing_url"}
+```
+
+- Exit 0: a payment method is on file. Exit 3: none; add one at `billing_url`. Exit 1: an error, or it could not be checked just now.
+- It is the check `pgai mon deploy` and `pgai dblab deploy` make before they create anything. Any member of the organization can run it.
+- Read-only and safe to repeat, so a script or an agent can wait for the card while you add it. It checks no promo code: a coupon is checked only by the deploy.
+
 ## Configuration
 
 The CLI stores configuration in `~/.config/postgresai/config.json` including:
