@@ -404,6 +404,8 @@ describe("CLI reports command group", () => {
       );
       expect(req).toBeTruthy();
       expect(req!.searchParams.checkup_report_id).toBe("eq.1");
+      // Checkup reports are JSON: no --type means JSON.
+      expect(req!.searchParams.type).toBe("eq.json");
     } finally {
       api.stop();
     }
@@ -431,7 +433,7 @@ describe("CLI reports command group", () => {
     }
   });
 
-  test("reports data outputs raw markdown by default", async () => {
+  test("reports data prints file data as stored when piped", async () => {
     const api = await startFakeApi();
     try {
       const r = await runCliAsync(
@@ -673,7 +675,7 @@ describe("CLI reports command group", () => {
     expect(`${r.stdout}\n${r.stderr}`).toContain("--all and --before cannot be used together");
   });
 
-  test("reports data without --type defaults to md for terminal output", async () => {
+  test("reports data without --type fetches JSON for terminal output", async () => {
     const api = await startFakeApi();
     try {
       await runCliAsync(
@@ -688,13 +690,13 @@ describe("CLI reports command group", () => {
         x.pathname.endsWith("/checkup_report_file_data")
       );
       expect(req).toBeTruthy();
-      expect(req!.searchParams.type).toBe("eq.md");
+      expect(req!.searchParams.type).toBe("eq.json");
     } finally {
       api.stop();
     }
   });
 
-  test("reports data --json without --type fetches all types", async () => {
+  test("reports data --json without --type fetches JSON", async () => {
     const api = await startFakeApi();
     try {
       await runCliAsync(
@@ -709,9 +711,36 @@ describe("CLI reports command group", () => {
         x.pathname.endsWith("/checkup_report_file_data")
       );
       expect(req).toBeTruthy();
-      expect(req!.searchParams.type).toBeUndefined();
+      expect(req!.searchParams.type).toBe("eq.json");
     } finally {
       api.stop();
+    }
+  });
+
+  test("reports files rejects an unknown --type", async () => {
+    const r = await runCliAsync(
+      ["reports", "files", "1", "--type", "pdf"],
+      isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: "http://127.0.0.1:1" })
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/Allowed choices are json, md/);
+  });
+
+  test("reports data --type md with no markdown says why", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json([]),
+    });
+    try {
+      const r = await runCliAsync(
+        ["reports", "data", "1", "--type", "md"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: server.url.origin })
+      );
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain("No markdown files: checkup reports are JSON.");
+    } finally {
+      server.stop(true);
     }
   });
 

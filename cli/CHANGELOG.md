@@ -28,6 +28,15 @@
 - `--monitoring-user` with a private RDS is refused (over PrivateLink the box uses `postgres_ai_mon`); it used to be
   ignored with a note.
 
+### Removed
+
+- Checkup reports are JSON only (https://gitlab.com/postgres-ai/postgresai/-/work_items/458): `pgai checkup
+  --markdown` is gone and now fails at once with a message pointing to `--json` and `--output`. `pgai reports files`
+  and `pgai reports data` return JSON files by default in every mode (the terminal default was markdown; `--json` and
+  `--output` used to return every type); `--type md` still returns markdown that the legacy postgres-checkup tool
+  uploaded. The MCP report tools default to JSON and point to the issues tools for recommendations. Uploads no longer
+  send `generate_issue`.
+
 ### Security
 
 - `prepare-db` refuses a preexisting `postgres_ai` schema unless the connecting administrator owns it, no other role

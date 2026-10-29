@@ -2919,33 +2919,29 @@ describe("CLI tests", () => {
     expect(r.stderr).not.toMatch(/API key is required/i);
   });
 
-  test("checkup --help shows --markdown option", () => {
+  test("checkup --help no longer lists --markdown", () => {
     const r = runCli(["checkup", "--help"]);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/--markdown/);
-    expect(r.stdout).toMatch(/PostgresAI API/i);
-    expect(r.stdout).toMatch(/transmits the full\s+report JSON/i);
+    expect(r.stdout).not.toMatch(/--markdown/);
   });
 
-  test("checkup --markdown is recognized as valid option", () => {
-    // Should not produce "unknown option" error for --markdown
-    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown"]);
-    // Connection will fail, but option parsing should succeed
-    expect(r.stderr).not.toMatch(/unknown option/i);
-    expect(r.stderr).not.toMatch(/did you mean/i);
-  });
-
-  test("checkup --markdown works without API key", () => {
-    // Use empty config dir to ensure no API key is configured
+  test("checkup --markdown without a connection explains instead of showing help", () => {
     const env = { XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config" };
-    // --markdown should work even without API key
+    const r = runCli(["checkup", "--markdown"], env);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/--markdown is no longer available/);
+    expect(r.stderr).toMatch(/Uploaded reports appear in the PostgresAI Console/);
+  });
+
+  test("checkup --markdown fails with a clear message before any work", () => {
+    const env = { XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config" };
     const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--markdown"], env);
-    // Connection will fail, but --markdown flag should be recognized
-    expect(r.status).not.toBe(0);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/--markdown is no longer available: checkup reports are JSON/);
+    expect(r.stderr).toMatch(/--json/);
     expect(r.stderr).not.toMatch(/unknown option/i);
-    expect(r.stderr).not.toMatch(/API key is required/i);
-    expect(r.stderr).toMatch(/full report JSON will still be sent/i);
-    expect(r.stderr).toMatch(/markdown conversion/i);
+    // Rejected before connecting: no connection error, no API key notice.
+    expect(r.stderr).not.toMatch(/ECONNREFUSED|connect|API key/i);
   });
 
   test("checkup with --no-upload and no output flags shows summary", () => {
@@ -2960,15 +2956,6 @@ describe("CLI tests", () => {
     // but we verify the option parsing is correct (tested above in other tests).
     // The actual summary output is tested in integration tests.
     expect(r.status).not.toBe(0); // Will fail due to connection
-  });
-
-  test("checkup rejects --json and --markdown together", () => {
-    const env = { XDG_CONFIG_HOME: "/tmp/postgresai-test-empty-config" };
-    const r = runCli(["checkup", "postgresql://test:test@localhost:5432/test", "--json", "--markdown", "--no-upload"], env);
-
-    // Should fail with mutual exclusivity error
-    expect(r.status).not.toBe(0);
-    expect(r.stderr).toMatch(/mutually exclusive/i);
   });
 
   // Argument parsing tests for check ID / connection string recognition
@@ -3050,7 +3037,7 @@ describe("checkup auth pre-flight (CLI)", () => {
   // failure mentions this address.
   const DEAD_DB = "postgresql://test:test@127.0.0.1:2/test";
 
-  test("--no-upload rejects --markdown before database or API work", () => {
+  test("--markdown is rejected before database or API work", () => {
     const env = {
       XDG_CONFIG_HOME: `/tmp/postgresai-test-no-upload-markdown-${process.pid}`,
       PGAI_API_KEY: "configured-token",
@@ -3058,11 +3045,10 @@ describe("checkup auth pre-flight (CLI)", () => {
     };
     const r = runCli(["checkup", DEAD_DB, "--no-upload", "--markdown"], env);
 
-    expect(r.status).not.toBe(0);
-    expect(r.stderr).toMatch(/--no-upload and --markdown are mutually exclusive/i);
-    expect(r.stderr).toMatch(/markdown conversion is performed by the PostgresAI API/i);
-    expect(r.stderr).toMatch(/use --json or --output/i);
-    expect(r.stderr).not.toMatch(/127\.0\.0\.1:2|ECONNREFUSED/);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/--markdown is no longer available: checkup reports are JSON/);
+    expect(r.stderr).toMatch(/use --json to print them, or --output <dir> to save them/i);
+    expect(r.stderr).not.toMatch(/127\.0\.0\.1:(1|2)|ECONNREFUSED/);
   });
 
   test("no API key: prominent notice, run continues locally", () => {

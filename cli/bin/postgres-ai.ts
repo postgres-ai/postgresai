@@ -70,7 +70,7 @@ import { Writable } from "stream";
 import * as childProcess from "child_process";
 import { REPORT_GENERATORS, CHECK_INFO, generateAllReports, withCheckSummary } from "../lib/checkup";
 import { getCheckupEntry } from "../lib/checkup-dictionary";
-import { createCheckupReport, uploadCheckupReportJson, convertCheckupReportJsonToMarkdown, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
+import { createCheckupReport, uploadCheckupReportJson, RpcError, formatRpcErrorForDisplay, withRetry, verifyApiKey } from "../lib/checkup-api";
 import { generateCheckSummary } from "../lib/checkup-summary";
 import { jsonConsole, runChild, writeEvent } from "../lib/json-stderr";
 import {
@@ -812,18 +812,12 @@ function prepareUploadConfig(
       console.error("Tip: run 'postgresai auth' or pass --api-key / set PGAI_API_KEY");
       return null; // Signal to exit
     }
-    if (opts.markdown) {
-      console.error("Notice: no API key configured — regular report upload is disabled.");
-      console.error("        The full report JSON will still be sent to the PostgresAI API for markdown conversion.");
-      console.error("        To avoid sending report data, replace --markdown with --no-upload and --json or --output.");
-    } else {
-      // No credentials and upload not explicitly requested: fall back to
-      // local-only mode, but say so prominently — skipping the upload silently
-      // hides the fact that results never reach the Console.
-      console.error("Notice: no API key configured — results will NOT be uploaded to PostgresAI.");
-      console.error("        To upload: run 'postgresai auth login' or pass --api-key / set PGAI_API_KEY.");
-      console.error("        To run locally without this notice, pass --no-upload.");
-    }
+    // No credentials and upload not explicitly requested: fall back to
+    // local-only mode, but say so prominently — skipping the upload silently
+    // hides the fact that results never reach the Console.
+    console.error("Notice: no API key configured — results will NOT be uploaded to PostgresAI.");
+    console.error("        To upload: run 'postgresai auth login' or pass --api-key / set PGAI_API_KEY.");
+    console.error("        To run locally without this notice, pass --no-upload.");
     return undefined; // Skip upload, run checks locally
   }
 
@@ -2743,7 +2737,9 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     "project name or ID for remote upload (used with --upload; defaults to config defaultProject; auto-generated on first run)"
   )
   .option("--json", "output JSON to stdout")
-  .option("--markdown", "output markdown via PostgresAI API (transmits the full report JSON)")
+  // Removed: checkup reports are JSON only. Kept hidden so an old script gets
+  // a clear error instead of "unknown option".
+  .addOption(new Option("--markdown").hideHelp())
   .addHelpText(
     "after",
     [
@@ -2757,7 +2753,6 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
       "  postgresai checkup postgresql://user:pass@host:5432/db --check-id H002",
       "  postgresai checkup postgresql://user:pass@host:5432/db --output ./reports",
       "  postgresai checkup postgresql://user:pass@host:5432/db --no-upload --json",
-      "  postgresai checkup postgresql://user:pass@host:5432/db --markdown",
     ].join("\n")
   )
   .action(async (checkIdOrConn: string | undefined, connArg: string | undefined, opts: CheckupOptions, cmd: Command) => {
@@ -2765,6 +2760,14 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     //   pgai checkup postgresql://...              -> run ALL checks
     //   pgai checkup H002 postgresql://...         -> run specific check (positional)
     //   pgai checkup --check-id H002 postgresql:// -> run specific check (option)
+    if (opts.markdown) {
+      console.error("Error: --markdown is no longer available: checkup reports are JSON.");
+      console.error("Use --json to print them, or --output <dir> to save them.");
+      console.error("Uploaded reports appear in the PostgresAI Console.");
+      process.exitCode = 1;
+      return;
+    }
+
     const checkIdPattern = /^[A-Z]\d{3}$/i;
     let conn: string | undefined;
     let checkId: string;
@@ -2798,23 +2801,8 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     }
 
     const shouldPrintJson = !!opts.json;
-    const shouldConvertMarkdown = !!opts.markdown;
     const uploadExplicitlyRequested = opts.upload === true;
-
-    // Validate mutually exclusive flags
-    if (shouldPrintJson && shouldConvertMarkdown) {
-      console.error("Error: --json and --markdown are mutually exclusive");
-      process.exitCode = 1;
-      return;
-    }
     const uploadExplicitlyDisabled = opts.upload === false;
-    if (uploadExplicitlyDisabled && shouldConvertMarkdown) {
-      console.error("Error: --no-upload and --markdown are mutually exclusive");
-      console.error("Markdown conversion is performed by the PostgresAI API and transmits the full report JSON.");
-      console.error("Drop --no-upload to allow transmission, or use --json or --output for local-only output.");
-      process.exitCode = 1;
-      return;
-    }
     let shouldUpload = !uploadExplicitlyDisabled;
 
     // Preflight: validate/create output directory BEFORE connecting / running checks.
@@ -2968,87 +2956,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
 
       // Print upload summary
       if (uploadSummary) {
-        printUploadSummary(uploadSummary, projectWasGenerated, shouldPrintJson || shouldConvertMarkdown, reports);
-      }
-
-      // Convert to markdown if requested
-      if (shouldConvertMarkdown) {
-        let apiKey: string;
-        let apiBaseUrl: string;
-
-        try {
-          const configResult = getConfig(rootOpts);
-          apiKey = configResult.apiKey;
-          const cfg = config.readConfig();
-          apiBaseUrl = resolveBaseUrls(rootOpts, cfg).apiBaseUrl;
-        } catch (error) {
-          spinner.stop();
-          console.error("Error: Failed to read configuration for markdown conversion");
-          console.error(error instanceof Error ? error.message : String(error));
-          process.exitCode = 1;
-          return;
-        }
-
-        // NOTE: apiKey can be empty - this is intentional. The API will return:
-        // - Without API key: Partial markdown with observations only (limited functionality)
-        // - With API key: Full markdown reports with all details
-        // This allows users to get basic insights without requiring authentication.
-
-        const markdownResults: Array<{ checkId: string; markdown?: string; error?: Error }> = [];
-
-        for (const [checkId, report] of Object.entries(reports)) {
-          try {
-            spinner.update(`Converting ${checkId} to markdown`);
-
-            // For reports that share JSON files (e.g., A002/A013 share a002.json,
-            // A003/D001/G003/F001 share a003.json), pass checkId as report_type
-            // so the API can generate the correct markdown variant
-            const markdownResult = await convertCheckupReportJsonToMarkdown({
-              apiKey,
-              apiBaseUrl,
-              checkId,
-              jsonPayload: report,
-              reportType: checkId,
-            });
-
-            // Extract markdown from response structure
-            // API returns: { reports: [{ markdown: "...", ... }], ... }
-            const markdown = markdownResult?.reports?.[0]?.markdown || markdownResult?.markdown;
-
-            markdownResults.push({
-              checkId,
-              markdown,
-            });
-          } catch (error) {
-            markdownResults.push({
-              checkId,
-              error: error instanceof Error ? error : new Error(String(error)),
-            });
-          }
-        }
-
-        spinner.stop();
-
-        // Output all markdown results
-        for (const result of markdownResults) {
-          if (result.error) {
-            if (result.error instanceof RpcError) {
-              console.error(`Error converting ${result.checkId} to markdown:`);
-              for (const line of formatRpcErrorForDisplay(result.error)) {
-                console.error(line);
-              }
-            } else {
-              console.error(`Error converting ${result.checkId} to markdown: ${result.error.message}`);
-            }
-          } else if (result.markdown) {
-            console.log(result.markdown);
-            if (!result.markdown.endsWith('\n')) {
-              console.log();
-            }
-          } else {
-            console.error(`Warning: No markdown content returned for ${result.checkId}`);
-          }
-        }
+        printUploadSummary(uploadSummary, projectWasGenerated, shouldPrintJson, reports);
       }
 
       // Output JSON to stdout (unless --output is specified, in which case files are written instead)
@@ -3064,7 +2972,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
       }
 
       // If no output was produced, show summary
-      const hadOutput = shouldPrintJson || shouldConvertMarkdown || outputPath || uploadSummary;
+      const hadOutput = shouldPrintJson || outputPath || uploadSummary;
       if (!hadOutput) {
         const checkCount = Object.keys(reports).length;
         console.log(`Checkup completed: ${checkCount} check${checkCount > 1 ? 's' : ''}\n`);
@@ -3099,9 +3007,6 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
 
         console.log('\nFor details:');
         console.log('  --json          Output JSON');
-        if (!uploadExplicitlyDisabled) {
-          console.log('  --markdown      Output markdown via PostgresAI API');
-        }
         console.log('  --output <dir>  Save to directory');
       }
 
@@ -8517,9 +8422,17 @@ withOrgOptions(reports.command("list"))
     }
   });
 
+// Markdown exists only where the legacy postgres-checkup tool uploaded it; say
+// so instead of printing nothing when --type md finds none.
+function warnNoMarkdown(type: string | undefined, count: number): void {
+  if (type === "md" && count === 0) {
+    console.error("No markdown files: checkup reports are JSON. Markdown exists only for reports uploaded by the legacy postgres-checkup tool.");
+  }
+}
+
 withOrgOptions(reports.command("files [reportId]"))
   .description("list files of a checkup report (metadata only, no content)")
-  .option("--type <type>", "filter by file type: json, md")
+  .addOption(new Option("--type <type>", "file type: json (default), md (uploaded by the legacy postgres-checkup tool)").choices(["json", "md"]))
   .option("--check-id <id>", "filter by check ID (e.g., H002)")
   .addOption(new Option("--debug", "enable debug output").hideHelp())
   .option("--json", "output raw JSON")
@@ -8557,11 +8470,12 @@ withOrgOptions(reports.command("files [reportId]"))
         apiKey,
         apiBaseUrl,
         reportId: numericId,
-        type: opts.type,
+        type: opts.type ?? "json",
         checkId: opts.checkId,
         debug: !!opts.debug,
       });
       spinner.stop();
+      warnNoMarkdown(opts.type, result.length);
       printResult(result, opts.json);
     } catch (err) {
       spinner.stop();
@@ -8573,12 +8487,12 @@ withOrgOptions(reports.command("files [reportId]"))
 
 withOrgOptions(reports.command("data [reportId]"))
   .description("get checkup report file data (includes content)")
-  .option("--type <type>", "filter by file type: json, md")
+  .addOption(new Option("--type <type>", "file type: json (default), md (uploaded by the legacy postgres-checkup tool)").choices(["json", "md"]))
   .option("--check-id <id>", "filter by check ID (e.g., H002)")
-  .option("--formatted", "render markdown with ANSI styling (experimental)")
+  .option("--formatted", "render md files with ANSI styling in a terminal (experimental); JSON is indented in a terminal anyway")
   .option("-o, --output <dir>", "save files to directory (uses original filenames)")
   .addOption(new Option("--debug", "enable debug output").hideHelp())
-  .option("--json", "output raw JSON")
+  .option("--json", "print files and metadata as one JSON array (for scripts / jq)")
   .action(async (reportId: string | undefined, opts: { type?: "json" | "md"; checkId?: string; formatted?: boolean; output?: string; debug?: boolean; json?: boolean }) => {
     const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Fetching report data...");
     try {
@@ -8609,17 +8523,18 @@ withOrgOptions(reports.command("data [reportId]"))
       }
       const { apiBaseUrl } = resolveBaseUrls(rootOpts, cfg);
 
-      // Default to "md" for terminal output (human-readable); --json and --output get all types
-      const effectiveType = opts.type ?? (!opts.json && !opts.output ? "md" as const : undefined);
+      // Checkup reports are JSON; markdown exists only where the legacy
+      // postgres-checkup tool uploaded it (--type md).
       const result = await fetchReportFileData({
         apiKey,
         apiBaseUrl,
         reportId: numericId,
-        type: effectiveType,
+        type: opts.type ?? "json",
         checkId: opts.checkId,
         debug: !!opts.debug,
       });
       spinner.stop();
+      warnNoMarkdown(opts.type, result.length);
 
       if (opts.output) {
         const dir = path.resolve(opts.output);
@@ -8654,11 +8569,14 @@ withOrgOptions(reports.command("data [reportId]"))
           }
         }
       } else {
+        // In a terminal JSON is indented to be read; piped it stays as stored.
+        const pretty = process.stdout.isTTY ?? false;
         for (const f of result) {
           if (result.length > 1) {
             console.log(`--- ${f.filename} (${f.check_id}, ${f.type}) ---`);
           }
-          console.log(f.data);
+          const parsed = pretty && f.type === "json" ? tryParseJson(f.data) : f.data;
+          console.log(typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2));
         }
       }
     } catch (err) {

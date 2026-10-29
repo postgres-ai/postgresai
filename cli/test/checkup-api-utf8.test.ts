@@ -9,15 +9,14 @@
  * (mojibake). This affects any RPC response containing non-ASCII text:
  * query texts, object names, org names with accents/CJK/emoji, etc.
  *
- * The test drives convertCheckupReportJsonToMarkdown (the thinnest exported
- * wrapper over postRpc) against a local http.Server that deliberately splits
+ * The test drives postRpc against a local http.Server that deliberately splits
  * the JSON body inside a multibyte sequence, flushing each half in a
  * separate socket write so the client receives it as two chunks.
  */
 import { describe, test, expect, afterAll } from "bun:test";
 import * as http from "http";
 import type { AddressInfo } from "net";
-import { convertCheckupReportJsonToMarkdown } from "../lib/checkup-api";
+import { postRpc } from "../lib/checkup-api";
 
 // Non-ASCII payload: accented Latin (2-byte), CJK (3-byte), emoji (4-byte).
 const ORIGINAL = "Résumé — 日本語テスト 🐘 café";
@@ -69,11 +68,11 @@ function offsetInsideFirstMultibyte(body: Buffer): number {
 describe("postRpc UTF-8 decoding across chunk boundaries", () => {
   test("multibyte character split across two response chunks is not corrupted", async () => {
     const port = await startSplittingServer(offsetInsideFirstMultibyte);
-    const resp = await convertCheckupReportJsonToMarkdown({
+    const resp = await postRpc<string>({
       apiKey: "test-key",
       apiBaseUrl: `http://127.0.0.1:${port}`,
-      checkId: "H002",
-      jsonPayload: { dummy: true },
+      rpcName: "checkup_report_file_post",
+      bodyObj: { dummy: true },
     });
     expect(resp).toBe(ORIGINAL);
   });
@@ -84,11 +83,11 @@ describe("postRpc UTF-8 decoding across chunk boundaries", () => {
       if (idx < 0) throw new Error("emoji not found in body");
       return idx + 2; // middle of the 4-byte sequence
     });
-    const resp = await convertCheckupReportJsonToMarkdown({
+    const resp = await postRpc<string>({
       apiKey: "test-key",
       apiBaseUrl: `http://127.0.0.1:${port}`,
-      checkId: "H002",
-      jsonPayload: { dummy: true },
+      rpcName: "checkup_report_file_post",
+      bodyObj: { dummy: true },
     });
     expect(resp).toBe(ORIGINAL);
   });
