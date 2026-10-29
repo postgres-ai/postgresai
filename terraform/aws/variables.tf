@@ -80,7 +80,7 @@ variable "enable_demo_db" {
 }
 
 variable "postgres_ai_version" {
-  description = "postgres_ai version (git tag or branch)"
+  description = "postgres_ai release tag (also the container image tag, PGAI_TAG)"
   type        = string
   default     = "0.10"
 }
@@ -115,9 +115,8 @@ variable "vm_auth_username" {
 }
 
 variable "vm_auth_password" {
-  description = "VictoriaMetrics HTTP Basic Auth password. Leave empty to disable VM auth."
+  description = "VictoriaMetrics HTTP Basic Auth password. Leave empty to generate one on the instance."
   type        = string
   default     = ""
   sensitive   = true
 }
-

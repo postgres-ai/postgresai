@@ -67,7 +67,7 @@ bind_host             = "127.0.0.1:"      # Internal services on localhost (defa
 grafana_bind_host     = "127.0.0.1:"      # Grafana on localhost only (default, use SSH tunnel)
 # grafana_bind_host   = ""                # OR: Grafana accessible from outside
 vm_auth_username      = "vmauth"                     # VictoriaMetrics Basic Auth username (default: "vmauth")
-vm_auth_password      = "CHANGE_ME_vm_auth_password"  # VictoriaMetrics Basic Auth password (empty = auth disabled)
+vm_auth_password      = "CHANGE_ME_vm_auth_password"  # VictoriaMetrics Basic Auth password (empty = generated on the instance)
 
 monitoring_instances = [
   {
@@ -212,14 +212,14 @@ sudo docker-compose up -d
 
 ### VictoriaMetrics authentication
 
-VictoriaMetrics (metrics storage) can be protected with HTTP Basic Auth. Set `vm_auth_password` in `terraform.tfvars` to enable:
+VictoriaMetrics (metrics storage) is protected with HTTP Basic Auth (Grafana's datasource needs it). Set `vm_auth_password` in `terraform.tfvars` to choose the password; left empty, the instance generates one into `.env`:
 
 ```hcl
 vm_auth_username = "vmauth"           # Default
-vm_auth_password = "CHANGE_ME"        # Set to enable auth, leave empty to disable
+vm_auth_password = "CHANGE_ME"        # Leave empty to generate one on the instance
 ```
 
-When enabled, all VictoriaMetrics API endpoints require authentication. The health endpoint (`/health`) remains accessible without auth for container health checks.
+All VictoriaMetrics API endpoints require authentication. The health endpoint (`/health`) remains accessible without auth for container health checks.
 
 ### VictoriaMetrics admin endpoints
 

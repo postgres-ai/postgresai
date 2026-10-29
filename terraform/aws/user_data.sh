@@ -100,12 +100,27 @@ GRAFANA_BIND_HOST=${grafana_bind_host}
 %{ if enable_demo_db }COMPOSE_PROFILES=demo%{ endif }
 ENV_EOF
 
+# docker-compose.yml requires PGAI_TAG (the image tag: the release tag cloned
+# above) and VM auth (Grafana's datasource provisioning); the demo DB's
+# replication needs REPLICATOR_PASSWORD. Passwords not given are generated here.
+cat >> .env <<ENV_EOF
+PGAI_TAG=${postgres_ai_version}
+VM_AUTH_USERNAME=${vm_auth_username}
+ENV_EOF
 %{ if vm_auth_password != "" ~}
 cat >> .env <<ENV_EOF
-VM_AUTH_USERNAME=${vm_auth_username}
 VM_AUTH_PASSWORD=${vm_auth_password}
 ENV_EOF
 %{ endif ~}
+for secret_name in %{ if vm_auth_password == "" }VM_AUTH_PASSWORD %{ endif }REPLICATOR_PASSWORD; do
+  secret_value=$(openssl rand -hex 32 || true)
+  if [ -z "$secret_value" ]; then
+    echo "FATAL: cannot generate $secret_name" >&2
+    exit 1
+  fi
+  echo "$secret_name=$secret_value" >> .env
+done
+unset secret_name secret_value
 
 # VictoriaMetrics admin-endpoint keys (#359). sink-prometheus mints a throwaway
 # key when these are absent, which shuts the endpoints but leaves the operator
