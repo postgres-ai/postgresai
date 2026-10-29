@@ -32,11 +32,11 @@ def _success_metric(value: str) -> dict[str, Any]:
 
 def _query_stub_factory(prom_result, mapping: dict[str, Any]) -> Callable[[str], dict[str, Any]]:
     """Return a query_instant stub that matches substrings defined in mapping keys.
-    
+
     Args:
         prom_result: Fallback callable that returns a default Prometheus response
         mapping: Dict mapping query substrings to responses (either dict or callable)
-        
+
     Returns:
         A callable that takes a query string and returns a Prometheus-like response
     """
@@ -1452,6 +1452,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
         "generate_a003_settings_report",
         "generate_a004_cluster_report",
         "generate_a007_altered_settings_report",
+        "generate_a014_resource_sizing_report",
         "generate_f002_wraparound_report",
         "generate_f004_heap_bloat_report",
         "generate_f005_btree_bloat_report",
@@ -1490,7 +1491,7 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
 
     # All report types should be generated
     expected_report_codes = {
-        'A002', 'A003', 'A004', 'A007',
+        'A002', 'A003', 'A004', 'A007', 'A014',
         'D004', 'F001', 'F002', 'F004', 'F005', 'G001',
         'H001', 'H002', 'H004',
         'I001',
@@ -1550,7 +1551,7 @@ def test_upload_report_file_sends_contents(tmp_path, monkeypatch: pytest.MonkeyP
 @pytest.mark.unit
 def test_upload_report_file_handles_404_gracefully(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     generator = PostgresReportGenerator()
-    
+
     def fake_make_request(api_url, endpoint, request_data):
         import requests
         response = requests.Response()
@@ -1564,7 +1565,7 @@ def test_upload_report_file_handles_404_gracefully(tmp_path, monkeypatch: pytest
 
     # Should not raise exception
     generator.upload_report_file("https://api", "tok", 100, str(report_file))
-    
+
     captured = capsys.readouterr()
     assert "Upload endpoint not available (404)" in captured.out
     assert "--no-upload" in captured.out
@@ -1573,7 +1574,7 @@ def test_upload_report_file_handles_404_gracefully(tmp_path, monkeypatch: pytest
 @pytest.mark.unit
 def test_create_report_handles_404_gracefully(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     generator = PostgresReportGenerator()
-    
+
     def fake_make_request(api_url, endpoint, request_data):
         import requests
         response = requests.Response()
@@ -1584,7 +1585,7 @@ def test_create_report_handles_404_gracefully(monkeypatch: pytest.MonkeyPatch, c
 
     # Should not raise exception, should return None
     report_id = generator.create_report("https://api", "tok", "proj", "123")
-    
+
     assert report_id is None
     captured = capsys.readouterr()
     assert "API endpoint not available (404)" in captured.out
@@ -1627,13 +1628,13 @@ def test_main_runs_specific_check_without_upload(monkeypatch: pytest.MonkeyPatch
     lines = captured.splitlines()
     start_idx = 0
     end_idx = len(lines)
-    
+
     # Find start of JSON
     for i, line in enumerate(lines):
         if line.strip().startswith("{"):
             start_idx = i
             break
-    
+
     # Find end of JSON (stop at first non-JSON line after JSON starts)
     brace_count = 0
     for i in range(start_idx, len(lines)):
@@ -1642,7 +1643,7 @@ def test_main_runs_specific_check_without_upload(monkeypatch: pytest.MonkeyPatch
         if brace_count == 0 and line.endswith("}"):
             end_idx = i + 1
             break
-    
+
     json_str = "\n".join(lines[start_idx:end_idx])
 
     output = json.loads(json_str)

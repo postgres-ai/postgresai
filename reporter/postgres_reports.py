@@ -722,6 +722,140 @@ class PostgresReportGenerator:
     #
     # ==================================================================================
 
+    def generate_a014_resource_sizing_report(self, cluster: str = "local", node_name: str = "node-01",
+                                             window_hours: int = 168) -> Dict[str, Any]:
+        """
+        Generate A014 Resource sizing report: how much CPU, memory, disk I/O and
+        connections the database server used over the last week (or since data
+        began). Measurements only: the platform holds the compute tier and makes
+        the sizing verdict (platform-all#1051). CPU, memory and disk need host_*
+        series (host stats); without them those fields are null.
+
+        Args:
+            cluster: Cluster name
+            node_name: Node name
+            window_hours: How far back to look (at most what the box keeps)
+
+        Returns:
+            Dictionary with the A014 measurements and a 5-minute series
+        """
+        logger.info("Generating A014 Resource sizing report...")
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        step = 300
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=window_hours)
+        grid_start = int(start.timestamp()) // step * step + step
+        grid = list(range(grid_start, int(end.timestamp()) + 1, step))
+
+        series_queries = {
+            'cpu_pct': f'max_over_time(host_cpu_utilization_percent{{{sel}}}[5m])',
+            'mem_available_pct': (f'100 * min_over_time(host_memory_available_bytes{{{sel}}}[5m])'
+                                  f' / max_over_time(host_os_memory_total_bytes{{{sel}}}[5m])'),
+            # The 5-minute average: the platform reads a point at the limit as
+            # five minutes sustained there, so it must not be the busiest minute.
+            'disk_mbps': (f'avg_over_time((host_disk_read_bytes_per_second{{{sel}}}'
+                          f' + host_disk_write_bytes_per_second{{{sel}}})[5m:1m]) / 1000000'),
+            'disk_iops': (f'max_over_time((host_disk_read_iops{{{sel}}}'
+                          f' + host_disk_write_iops{{{sel}}})[5m:1m])'),
+            'backends': f'max_over_time(sum(pgwatch_pg_stat_activity_count{{{sel}}})[5m:1m])',
+        }
+        series: Dict[str, List[Optional[float]]] = {}
+        first_ts: Optional[int] = None
+        for name, query in series_queries.items():
+            points: Dict[int, float] = {}
+            for item in self.query_range(query, start, end, step=f"{step}s"):
+                for ts, value in item.get('values', []):
+                    try:
+                        v = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if v != v or v in (float('inf'), float('-inf')):
+                        continue
+                    t = int(float(ts)) // step * step
+                    points[t] = max(points.get(t, v), v) if name != 'mem_available_pct' else min(points.get(t, v), v)
+            if points:
+                first = min(points)
+                first_ts = first if first_ts is None else min(first_ts, first)
+            series[name] = [round(points[t], 3) if t in points else None for t in grid]
+
+        def _values(name: str) -> List[float]:
+            return [v for v in series.get(name, []) if v is not None]
+
+        def _pct(values: List[float], q: float) -> Optional[float]:
+            if not values:
+                return None
+            ordered = sorted(values)
+            pos = (len(ordered) - 1) * q
+            lo = int(pos)
+            hi = min(lo + 1, len(ordered) - 1)
+            return round(ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo), 3)
+
+        def _instant(query: str) -> Optional[float]:
+            result = self.query_instant(query)
+            if result.get('status') == 'success' and result.get('data', {}).get('result'):
+                try:
+                    return float(result['data']['result'][0]['value'][1])
+                except (KeyError, IndexError, TypeError, ValueError):
+                    return None
+            return None
+
+        max_connections = None
+        settings = self.query_instant(
+            f'last_over_time(pgwatch_settings_configured{{{sel}, setting_name="max_connections"}}[3h])')
+        if settings.get('status') == 'success' and settings.get('data', {}).get('result'):
+            try:
+                max_connections = int(settings['data']['result'][0]['metric'].get('setting_value'))
+            except (TypeError, ValueError):
+                max_connections = None
+
+        cpu, mem, mbps, iops, backends = (_values(n) for n in
+                                          ('cpu_pct', 'mem_available_pct', 'disk_mbps', 'disk_iops', 'backends'))
+        total_bytes = _instant(f'last_over_time(host_os_memory_total_bytes{{{sel}}}[3h])')
+        free_bytes = _instant(f'last_over_time(host_disk_free_bytes{{{sel}}}[3h])')
+        db_size = _instant(f'sum(last_over_time(pgwatch_db_size_size_b{{{sel}}}[3h]))')
+        # The hours with host data (CPU or memory), not the earliest point of any
+        # series: pgwatch may run long before host metrics are allowed. Without
+        # host metrics, the span of what there is.
+        host_points = sum(1 for c, m in zip(series['cpu_pct'], series['mem_available_pct'])
+                          if c is not None or m is not None)
+        if host_points:
+            hours = round(host_points * step / 3600, 2)
+        else:
+            hours = round((int(end.timestamp()) - first_ts) / 3600, 2) if first_ts is not None else 0
+
+        data = {
+            "window_hours": min(hours, float(window_hours)),
+            "host_metrics": bool(cpu),
+            "cpu": {"cores": None, "p95_pct": _pct(cpu, 0.95), "max_pct": max(cpu) if cpu else None},
+            "memory": {
+                "total_bytes": int(total_bytes) if total_bytes is not None else None,
+                "available_min_pct": min(mem) if mem else None,
+                "available_p5_pct": _pct(mem, 0.05),
+            },
+            "disk": {
+                "mbps_p95": _pct(mbps, 0.95), "mbps_max": max(mbps) if mbps else None,
+                "iops_p95": _pct(iops, 0.95), "iops_max": max(iops) if iops else None,
+                "free_bytes": int(free_bytes) if free_bytes is not None else None,
+            },
+            "connections": {
+                "backends_p95": _pct(backends, 0.95),
+                "backends_max": max(backends) if backends else None,
+                "max_connections": max_connections,
+            },
+            "db_size_bytes": int(db_size) if db_size is not None else None,
+            "series": {
+                "step_seconds": step,
+                "start_epoch": grid[0] if grid else None,
+                "cpu_pct": series.get('cpu_pct', []),
+                "mem_available_pct": series.get('mem_available_pct', []),
+                "disk_mbps": series.get('disk_mbps', []),
+                "disk_iops": series.get('disk_iops', []),
+            },
+        }
+        return self.format_report_data("A014", data, node_name,
+                                       postgres_version=self._get_postgres_version_info(cluster, node_name))
+
     def generate_h001_invalid_indexes_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
         """
@@ -4268,6 +4402,7 @@ class PostgresReportGenerator:
             "A011": "Connection pooling. pgbouncer",
             "A012": "Anti-crash checks",
             "A013": "Postgres minor version",
+            "A014": "Resource sizing",
             "B001": "SLO/SLA, RPO, RTO",
             "B002": "File system, mount flags",
             "B003": "Full backups / incremental",
@@ -4534,6 +4669,7 @@ class PostgresReportGenerator:
             ('A003', self.generate_a003_settings_report),
             ('A004', self.generate_a004_cluster_report),
             ('A007', self.generate_a007_altered_settings_report),
+            ('A014', self.generate_a014_resource_sizing_report),
             ('F002', self.generate_f002_wraparound_report),
             ('F004', self.generate_f004_heap_bloat_report),
             ('F005', self.generate_f005_btree_bloat_report),

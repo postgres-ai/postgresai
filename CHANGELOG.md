@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- New reporter check A014 "Resource sizing": each daily report now carries how much CPU, memory, disk throughput and IOPS the database server used over the last 7 days (or since data began), plus backends against `max_connections`, database size and a 5-minute series. It is measurements only: the platform compares them with the project's Supabase compute size and shows whether it is undersized, right-sized or oversized in the health matrix (postgres-ai/platform-all#1051). CPU, memory and disk need host metrics; without them those fields are null. Two new host rules, `host_disk_read_bytes_per_second` and `host_disk_write_bytes_per_second`, record the throughput of the Supabase `/data` volume only.
 - `prepare-db` refuses extensions and predefined-role-owned objects inside the `postgres_ai` schema, including objects with no ownership dependency row. Schema refusal errors now give DBA remediation in the CLI and render database-provided Detail and Hint on one terminal line.
 
 - Dashboard "06. Replication and HA" replaces the placeholder with primary-side streaming replication panels read from `pg_stat_replication`.

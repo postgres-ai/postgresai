@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A014 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checkId",
+    "checkTitle",
+    "timestamptz",
+    "nodes",
+    "results"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "message"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "warning",
+            "info"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "build_ts": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkId": {
+      "const": "A014"
+    },
+    "checkTitle": {
+      "const": "Resource sizing"
+    },
+    "timestamptz": {
+      "type": "string"
+    },
+    "nodes": {
+      "$ref": "#/$defs/nodes"
+    },
+    "results": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/nodeResult"
+      }
+    }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary",
+        "standbys"
+      ],
+      "properties": {
+        "primary": {
+          "type": "string"
+        },
+        "standbys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "postgresVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "server_version_num",
+        "server_major_ver",
+        "server_minor_ver"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "server_version_num": {
+          "type": "string"
+        },
+        "server_major_ver": {
+          "type": "string"
+        },
+        "server_minor_ver": {
+          "type": "string"
+        }
+      }
+    },
+    "clusterMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "unit",
+        "description"
+      ],
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_hours",
+        "host_metrics",
+        "cpu",
+        "memory",
+        "disk",
+        "connections",
+        "db_size_bytes",
+        "series"
+      ],
+      "properties": {
+        "window_hours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "host_metrics": {
+          "type": "boolean"
+        },
+        "cpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cores",
+            "p95_pct",
+            "max_pct"
+          ],
+          "properties": {
+            "cores": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "p95_pct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_pct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        },
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total_bytes",
+            "available_min_pct",
+            "available_p5_pct"
+          ],
+          "properties": {
+            "total_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "available_min_pct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "available_p5_pct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        },
+        "disk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mbps_p95",
+            "mbps_max",
+            "iops_p95",
+            "iops_max",
+            "free_bytes"
+          ],
+          "properties": {
+            "mbps_p95": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mbps_max": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "iops_p95": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "iops_max": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "free_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "connections": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backends_p95",
+            "backends_max",
+            "max_connections"
+          ],
+          "properties": {
+            "backends_p95": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "backends_max": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_connections": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "db_size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "series": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "step_seconds",
+            "start_epoch",
+            "cpu_pct",
+            "mem_available_pct",
+            "disk_mbps",
+            "disk_iops"
+          ],
+          "properties": {
+            "step_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "start_epoch": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cpu_pct": {
+              "type": "array",
+              "maxItems": 2100,
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "mem_available_pct": {
+              "type": "array",
+              "maxItems": 2100,
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "disk_mbps": {
+              "type": "array",
+              "maxItems": 2100,
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "disk_iops": {
+              "type": "array",
+              "maxItems": 2100,
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "nodeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data"
+      ],
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/data"
+        },
+        "postgres_version": {
+          "$ref": "#/$defs/postgresVersion"
+        }
+      }
+    }
+  }
+}
