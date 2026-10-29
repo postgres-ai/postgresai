@@ -156,10 +156,11 @@ tests:
     metricsql_expr_test:
       - {expr: '{__name__=~"host_disk_(read|write)_iops|host_network_(receive|transmit)_bytes_per_second"}', eval_time: 10m, exp_samples: []}
 
-  # Resource sizing (platform-all#1051): throughput of the /data volume only.
-  # Recorded exposition, 2026-10-27: /data is /dev/nvme1n1 and node_disk names
-  # it nvme1n1; the root disk nvme0n1 must not count.
-  - name: supabase disk throughput counts only the /data volume
+  # Resource sizing (platform-all#1051, #1086): the compute size's IOPS and
+  # MB/s limits are the instance's EBS limits, which cap all attached volumes
+  # together, so the root disk counts. Recorded exposition, 2026-10-27: /data
+  # is /dev/nvme1n1 (node_disk nvme1n1), the root disk is nvme0n1.
+  - name: supabase disk throughput and IOPS sum every block device, root disk included
     interval: 1m
     input_series:
       - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
@@ -177,9 +178,20 @@ tests:
         values: '1000000+420000000x10'
       - series: 'node_disk_written_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
         values: '1000000+420000000x10'
+      # Per second: /data 3 reads and 4 writes; the root disk 90 reads and 20 writes.
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+180x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '0+240x10'
+      - series: 'node_disk_reads_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '0+5400x10'
+      - series: 'node_disk_writes_completed_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '0+1200x10'
     metricsql_expr_test:
-      - {expr: 'round(host_disk_read_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_bytes_per_second{cluster="prod",node_name="main-db"}', value: 1000000}]}
-      - {expr: 'round(host_disk_write_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_bytes_per_second{cluster="prod",node_name="main-db"}', value: 2000000}]}
+      - {expr: 'round(host_disk_read_bytes_per_second)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_bytes_per_second{cluster="prod",node_name="main-db"}', value: 8000000}]}
+      - {expr: 'round(host_disk_write_bytes_per_second)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_bytes_per_second{cluster="prod",node_name="main-db"}', value: 9000000}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_iops{cluster="prod",node_name="main-db"}', value: 93}]}
+      - {expr: 'round(host_disk_write_iops, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_iops{cluster="prod",node_name="main-db"}', value: 24}]}
 
   - name: two targets on one clickhouse service map to one host rate
     interval: 1m

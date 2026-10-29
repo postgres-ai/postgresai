@@ -117,3 +117,45 @@ def test_a014_disk_series_is_sustained_throughput(monkeypatch: pytest.MonkeyPatc
     gen.generate_a014_resource_sizing_report("local", "node-1")
     disk = [q for q in queries if "host_disk_read_bytes_per_second" in q]
     assert len(disk) == 1 and disk[0].startswith("avg_over_time(") and "max_over_time" not in disk[0]
+
+
+@pytest.mark.unit
+def test_a014_disk_iops_series_is_the_5_minute_average(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The platform judges IOPS against the sustained limit the same way as
+    # throughput: a point is "5 minutes at this rate", so it must be the
+    # 5-minute average, and the report says so (series.disk_iops_kind), since
+    # older boxes sent the busiest minute (platform-all#1086).
+    queries: list[str] = []
+    gen = _gen(monkeypatch, {
+        "host_cpu_utilization_percent": [4.0] * 12,
+        "host_disk_read_iops": [100.0] * 11 + [300.0],
+    }, {})
+    real_range = gen.query_range
+
+    def spy(query: str, *a: Any, **k: Any) -> list[dict[str, Any]]:
+        queries.append(query)
+        return real_range(query, *a, **k)
+
+    monkeypatch.setattr(gen, "query_range", spy)
+    report = gen.generate_a014_resource_sizing_report("local", "node-1")
+    validate_report(report)
+    iops = [q for q in queries if "host_disk_read_iops" in q]
+    assert len(iops) == 1 and iops[0].startswith("avg_over_time(") and "max_over_time" not in iops[0]
+    data = report["results"]["node-1"]["data"]
+    assert data["series"]["disk_iops_kind"] == "avg_5m"
+    assert data["disk"]["iops_max"] == 300 and data["disk"]["iops_p95"] == pytest.approx(190)
+    assert data["series"]["disk_iops"][-1] == 300
+
+
+@pytest.mark.unit
+def test_a014_schema_iops_kind_is_optional_and_only_avg_5m(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jsonschema import ValidationError
+
+    gen = _gen(monkeypatch, {"host_cpu_utilization_percent": [4.0] * 12}, {})
+    report = gen.generate_a014_resource_sizing_report("local", "node-1")
+    series = report["results"]["node-1"]["data"]["series"]
+    series.pop("disk_iops_kind", None)
+    validate_report(report)  # reports from released reporters stay valid (optional field)
+    series["disk_iops_kind"] = "max_1m"
+    with pytest.raises(ValidationError):
+        validate_report(report)

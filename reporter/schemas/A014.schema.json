@@ -245,13 +245,15 @@
               "type": [
                 "number",
                 "null"
-              ]
+              ],
+              "description": "95th percentile of the 5-minute averages of read + write IOPS (Supabase: all block devices, root disk included)."
             },
             "iops_max": {
               "type": [
                 "number",
                 "null"
-              ]
+              ],
+              "description": "The highest 5-minute average of read + write IOPS, not the busiest minute."
             },
             "free_bytes": {
               "type": [
@@ -356,7 +358,15 @@
                   "number",
                   "null"
                 ]
-              }
+              },
+              "description": "Read + write IOPS, each point the average over its 5 minutes."
+            },
+            "disk_iops_kind": {
+              "type": "string",
+              "enum": [
+                "avg_5m"
+              ],
+              "description": "What a disk_iops point is: avg_5m = the 5-minute average. Reports from older reporters omit it (their points were the busiest minute), and the platform does not judge their IOPS."
             }
           }
         }
