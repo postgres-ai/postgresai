@@ -4897,11 +4897,13 @@ async function cloudInstance(opts: { debug?: boolean }, ref: string, live = fals
 }
 
 /** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in), and a PrivateLink box's route. */
-async function linkedDatabases(opts: { debug?: boolean }): Promise<Database[]> {
+async function linkedDatabases(opts: { debug?: boolean }) {
   const api = cloudApi(opts.debug);
   return Promise.all((await api.list()).map(async (d) => {
     const [linked, pl] = await Promise.all([api.links(d), privateLinkOf(d, api.rdsStatus)]);
-    return pl ? { ...linked, privatelink: { region: pl.region, vpce_service_name: pl.vpce_service_name, verified: verifiedWords(pl.verified_status) } } : linked;
+    // The platform's privatelink (platform-all#1058) is said in words, and only for a PrivateLink box.
+    const { privatelink: _route, ...row } = listedDatabase(linked);
+    return pl ? { ...row, privatelink: { region: pl.region, vpce_service_name: pl.vpce_service_name, verified: verifiedWords(pl.verified_status) } } : row;
   }));
 }
 
@@ -4919,7 +4921,7 @@ withOrgOptions(monInstances.command("list"))
   .option("--debug", "print HTTP requests (secrets masked)")
   .action(async (opts: { json?: boolean; debug?: boolean }) => {
     try {
-      printResult((await linkedDatabases(opts)).map(listedDatabase), opts.json);
+      printResult(await linkedDatabases(opts), opts.json);
     } catch (err) {
       failCloud(err, opts.json);
     }
