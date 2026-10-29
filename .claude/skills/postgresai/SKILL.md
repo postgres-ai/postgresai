@@ -187,8 +187,8 @@ A check only reads: it never changes anything, and never prints a secret
 (load `.env` in it as in Rules, when it needs it). Run the watcher as the
 plain shell loop above, never as a script (Python or other): an agent's
 approval review cannot see what a script does, and refuses it. When your agent
-asks for approval, say what the check does: for a deploy without `--yes`, "it
-creates nothing; it only reads the price and whether a card is on file".
+asks for approval, say what the check does: for `pgai billing status`, "it
+creates nothing; it only reads whether a card is on file".
 
 ## 0. Sign in and pick the organization
 
@@ -307,7 +307,9 @@ If the user gave a coupon (see `action_required` below), add `--coupon
 <code>`. It applies when the organization's monitoring subscription is first
 created. An invalid code stops the deploy with `action_required` and changes
 nothing: tell the user what `next` says, and re-run with a corrected code or,
-if they agree, without it.
+if they agree, without it. Each run with `--coupon` uses one of the 10
+coupon checks PostgresAI allows per user every 15 minutes: run it for the
+price and for the deploy only, never in a loop.
 
 Act on the result:
 
@@ -322,16 +324,21 @@ Act on the result:
     as above. Then send the `price` and the console link from `next` in one
     message, and say that adding the card is their YES to that price. Watch
     for the card as in "When the user leaves the terminal", with this check:
-    the same deploy you just ran, still without `--yes`:
 
     ```bash
-    ! pgai mon deploy "$DATABASE_URL" --org <alias> --provider <provider> \
-      --coupon <code> --json --no-wait 2>/dev/null |
-      grep -Eq '"requires_payment_method": *true'
+    pgai billing status --org <alias> --json 2>/dev/null |
+      grep -Eq '"has_payment_method": *true'
     ```
 
-    (For Supabase: `--supabase-project <ref>` in place of the URL.) When it
-    ends with 0, deploy with `--yes` (step 4–5) and do not ask again.
+    Before you start the watcher, run `pgai billing status --org <alias>
+    --json` once: it should exit 3 (no payment method yet). If it exits 1,
+    tell the user what it printed and do not start the watcher: the check
+    would only wait until it times out. The check ends with 0 only when the
+    card is on file: an error keeps the watcher waiting. When it ends with 0,
+    deploy with `--yes` (step 4–5, with the same `--coupon`) and do not ask
+    again. If the watcher ends with 1 and the user says the card is added,
+    re-run the deploy without `--yes` once: its `requires_payment_method`
+    says whether PostgresAI sees the card.
   - It says the promo code cannot be used by this organization: tell the user,
     and ask for another code or whether to go on without one. Re-run with the
     new `--coupon`, or without it (no `--yes`), and quote the new `price` first.
