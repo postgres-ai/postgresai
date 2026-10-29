@@ -752,11 +752,11 @@ class PostgresReportGenerator:
             'cpu_pct': f'max_over_time(host_cpu_utilization_percent{{{sel}}}[5m])',
             'mem_available_pct': (f'100 * min_over_time(host_memory_available_bytes{{{sel}}}[5m])'
                                   f' / max_over_time(host_os_memory_total_bytes{{{sel}}}[5m])'),
-            # The 5-minute average: the platform reads a point at the limit as
+            # The 5-minute averages: the platform reads a point at the limit as
             # five minutes sustained there, so it must not be the busiest minute.
             'disk_mbps': (f'avg_over_time((host_disk_read_bytes_per_second{{{sel}}}'
                           f' + host_disk_write_bytes_per_second{{{sel}}})[5m:1m]) / 1000000'),
-            'disk_iops': (f'max_over_time((host_disk_read_iops{{{sel}}}'
+            'disk_iops': (f'avg_over_time((host_disk_read_iops{{{sel}}}'
                           f' + host_disk_write_iops{{{sel}}})[5m:1m])'),
             'backends': f'max_over_time(sum(pgwatch_pg_stat_activity_count{{{sel}}})[5m:1m])',
         }
@@ -851,6 +851,9 @@ class PostgresReportGenerator:
                 "mem_available_pct": series.get('mem_available_pct', []),
                 "disk_mbps": series.get('disk_mbps', []),
                 "disk_iops": series.get('disk_iops', []),
+                # Older reporters sent the busiest minute per point; the
+                # platform judges IOPS only when it sees this (platform-all#1086).
+                "disk_iops_kind": "avg_5m",
             },
         }
         return self.format_report_data("A014", data, node_name,

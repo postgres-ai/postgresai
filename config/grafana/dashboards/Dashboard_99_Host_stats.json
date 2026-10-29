@@ -1088,7 +1088,7 @@
         "type": "prometheus",
         "uid": "P7A0D6631BB10B34F"
       },
-      "description": "Read bytes per second. RDS: CloudWatch ReadThroughput. Supabase: node_exporter read bytes of the /data volume only. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
+      "description": "Read bytes per second. RDS: CloudWatch ReadThroughput. Supabase: node_exporter read bytes, all block devices. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1404,7 +1404,7 @@
         "type": "prometheus",
         "uid": "P7A0D6631BB10B34F"
       },
-      "description": "Write bytes per second. RDS: CloudWatch WriteThroughput. Supabase: node_exporter written bytes of the /data volume only. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
+      "description": "Write bytes per second. RDS: CloudWatch WriteThroughput. Supabase: node_exporter written bytes, all block devices. ClickHouse: not exposed. RDS: provisioned throughput from DescribeDBInstances (gp3). The limit applies to reads + writes together. Other storage types and sources: limit unknown, no line.",
       "fieldConfig": {
         "defaults": {
           "color": {
