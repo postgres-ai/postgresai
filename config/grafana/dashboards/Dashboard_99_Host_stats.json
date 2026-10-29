@@ -65,6 +65,96 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "user"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "system"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "semi-dark-yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "iowait"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "steal"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "other (nice, irq, softirq)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "busy (no mode split)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "idle"
             },
             "properties": [
@@ -83,7 +173,7 @@
         "x": 0,
         "y": 0,
         "w": 12,
-        "h": 15
+        "h": 16
       },
       "id": 101,
       "options": {
@@ -190,7 +280,7 @@
         "type": "prometheus",
         "uid": "P7A0D6631BB10B34F"
       },
-      "description": "Stacked memory; the stack adds up to total RAM (dashed line). With free, cached and buffers (RDS with Enhanced Monitoring, Supabase): used = total \u2212 free \u2212 cached \u2212 buffers, then buffers, cached, free. ClickHouse (no free or buffers): used = total \u2212 available, then available. RDS without Enhanced Monitoring: only CloudWatch FreeableMemory (\"available\"); total RAM is unknown, so the stack has no reference line. Swap is not part of RAM and is a separate line.",
+      "description": "Stacked memory; the stack adds up to total RAM (dashed line). With free, cached and buffers (RDS with Enhanced Monitoring, Supabase): used = total \u2212 free \u2212 cached \u2212 buffers, then buffers, cached, free. ClickHouse (no free or buffers): used = total \u2212 available, then available. RDS without Enhanced Monitoring: only CloudWatch FreeableMemory (\"available\"); total RAM is unknown, so the stack has no reference line. Swap is not part of RAM and is a separate line. The largest process RSS (RDS with Enhanced Monitoring only) is a dashed line, not part of the stack.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -211,6 +301,81 @@
           "unit": "bytes"
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "used"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "buffers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "semi-dark-yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cached"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "free"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "available"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "semi-dark-yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -286,6 +451,46 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "largest process RSS"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#6ED0E0",
+                  "mode": "fixed"
+                }
+              }
+            ]
           }
         ]
       },
@@ -293,7 +498,7 @@
         "x": 12,
         "y": 0,
         "w": 12,
-        "h": 15
+        "h": 16
       },
       "id": 102,
       "options": {
@@ -391,6 +596,17 @@
           "legendFormat": "swap used",
           "range": true,
           "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P7A0D6631BB10B34F"
+          },
+          "editorMode": "code",
+          "expr": "host_os_process_max_rss_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+          "legendFormat": "largest process RSS",
+          "range": true,
+          "refId": "H"
         }
       ],
       "title": "Memory",
@@ -401,7 +617,7 @@
         "type": "prometheus",
         "uid": "P7A0D6631BB10B34F"
       },
-      "description": "Stacked used + free; the stack adds up to the volume size (dashed line, the limit). RDS: size = AllocatedStorage, free = FreeStorageSpace. Supabase: /data filesystem size and available bytes. ClickHouse: StorageLimitBytes. Aurora: storage grows on demand (limit unknown); local free storage and cluster volume used are lines. Without a size series only free is shown (limit unknown).",
+      "description": "Stacked used + free; the stack adds up to the volume size (dashed line, the limit). RDS: size = AllocatedStorage, free = FreeStorageSpace. Supabase: /data filesystem size and available bytes. ClickHouse: StorageLimitBytes. Aurora: storage grows on demand (limit unknown); local free storage and cluster volume used are lines. Without a size series only free is shown (limit unknown). Aurora cluster volume samples use completed 5-minute buckets and appear at least 10 minutes behind the current time; use a time range of at least 30 minutes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -422,6 +638,36 @@
           "unit": "bytes"
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "used"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "free"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "semi-dark-yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -546,7 +792,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 16,
         "w": 12,
         "h": 15
       },
@@ -658,7 +904,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 15,
+        "y": 16,
         "w": 12,
         "h": 15
       },
@@ -777,7 +1023,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 31,
         "w": 12,
         "h": 8
       },
@@ -907,7 +1153,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 39,
         "w": 12,
         "h": 8
       },
@@ -985,7 +1231,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 47,
         "w": 12,
         "h": 8
       },
@@ -1093,7 +1339,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 30,
+        "y": 31,
         "w": 12,
         "h": 8
       },
@@ -1223,7 +1469,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 38,
+        "y": 39,
         "w": 12,
         "h": 8
       },
@@ -1301,7 +1547,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 46,
+        "y": 47,
         "w": 12,
         "h": 8
       },
@@ -1343,7 +1589,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 55,
         "w": 24,
         "h": 1
       },
@@ -1378,7 +1624,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 55,
+            "y": 56,
             "w": 24,
             "h": 8
           },

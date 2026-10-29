@@ -70,14 +70,14 @@ What each panel shows per source (EM = Enhanced Monitoring):
 | Panel | RDS | Aurora | Supabase | ClickHouse |
 | --- | --- | --- | --- | --- |
 | CPU utilization (stacked to 100 %) | with EM: user, system, iowait, steal, other, idle; without EM: busy (no mode split), idle | same as RDS | user, system, iowait, steal, other, idle | user, system, iowait, steal, other, idle |
-| Memory (stacked to total RAM) | with EM: used, buffers, cached, free, total RAM, swap used; without EM: available only, total unknown | same as RDS | used, buffers, cached, free, total RAM, swap used | used, available, total RAM |
+| Memory (stacked to total RAM) | with EM: used, buffers, cached, free, total RAM, swap used, largest process RSS; without EM: available only, total unknown | same as RDS | used, buffers, cached, free, total RAM, swap used | used, available, total RAM |
 | Storage (stacked to size) | used, free, limit: size (AllocatedStorage) | local free, volume used; size limit unknown | used, free, limit: size (`/data`) | used, free, limit: size (StorageLimitBytes) |
 | Network /s | receive, transmit | receive, transmit | receive, transmit | receive, transmit (includes loopback) |
 | Disk read / write IOPS /s | read / write; limit: provisioned IOPS for gp3, io1, io2 (unknown for gp2 and magnetic) | read / write, volume read / write; limit unknown | read / write; limit unknown | read / write; limit unknown |
 | Disk read / write throughput /s | read / write; limit: provisioned throughput for gp3 (unknown otherwise) | read / write; limit unknown | read / write; limit unknown | not exposed |
 | Disk read / write latency | read / write | read / write | read / write | not exposed |
 
-Dashboard 1 keeps its five-panel Host row unchanged.
+Dashboard 1's Host row shows the same CPU utilization, Memory and Storage panels; only their position and size differ. Its other host panels are unchanged. Every series on these three panels has a fixed colour, the same on both dashboards, so a series keeps its colour whichever other series a provider reports.
 
 ## Limits
 

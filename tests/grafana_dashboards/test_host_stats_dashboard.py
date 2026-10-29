@@ -65,7 +65,14 @@ TITLES = [
 ]
 STACKED = {"CPU utilization", "Memory", "Storage"}
 # Series drawn as reference lines on a stacked panel: never part of the stack.
-REFERENCE = {"total RAM", "swap used", "limit: size", "local free (Aurora)", "volume used (Aurora)"}
+REFERENCE = {
+    "total RAM",
+    "swap used",
+    "largest process RSS",
+    "limit: size",
+    "local free (Aurora)",
+    "volume used (Aurora)",
+}
 LIMITS = {
     "Storage": "host_disk_size_bytes",
     "Disk read IOPS /s": "host_disk_provisioned_iops",
@@ -97,6 +104,40 @@ def test_panel_titles_and_order():
 def test_db_load_row_equals_dashboard_1():
     d1_row = _d1_rows()[DB_LOAD_ROW]
     assert _without_grid_pos(_load(D99)["panels"][-1]) == _without_grid_pos(d1_row)
+
+
+def test_stacked_panels_equal_dashboard_1():
+    # Dashboard 1's Host row shows the same three panels, so a host reads the
+    # same on both pages: queries, legends, stacking, colours, units and
+    # descriptions. Only the panel id and the position differ.
+    d1 = {p["title"]: p for p in _d1_rows()["Host"]["panels"]}
+
+    def comparable(panel: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in panel.items() if k not in ("gridPos", "id")}
+
+    for title in sorted(STACKED):
+        assert comparable(d1[title]) == comparable(_host_panels()[title]), title
+
+
+def test_every_series_on_a_stacked_panel_has_a_pinned_colour():
+    # Palette colours follow series order, and which series a provider returns
+    # differs, so an unpinned series changes colour from box to box.
+    for title in sorted(STACKED):
+        panel = _host_panels()[title]
+        overrides = _overrides(panel)
+        for target in panel["targets"]:
+            colour = overrides[target["legendFormat"]]["color"]
+            assert colour["mode"] == "fixed" and colour["fixedColor"], (title, target["legendFormat"])
+
+
+def test_largest_process_rss_is_a_dashed_line_over_the_memory_stack():
+    panel = _host_panels()["Memory"]
+    [rss] = [t for t in panel["targets"] if t["legendFormat"] == "largest process RSS"]
+    assert rss["expr"] == 'host_os_process_max_rss_bytes{cluster="$cluster_name", node_name="$node_name"}'
+    props = _overrides(panel)["largest process RSS"]
+    assert props["custom.stacking"]["mode"] == "none"
+    assert props["custom.lineStyle"]["fill"] == "dash"
+    assert props["custom.fillOpacity"] == 0
 
 
 def test_read_and_write_are_never_on_one_panel():
@@ -214,12 +255,12 @@ def test_db_load_row_is_collapsed_last_and_below_the_host_panels():
 
 def test_host_panels_fit_their_legends_and_do_not_overlap():
     # Same rule as the Dashboard 1 Host row: a table legend under an 8-unit
-    # panel shows up to four rows, a 15-unit one six.
+    # panel shows up to four rows, a 15-unit one six, a 16-unit one seven.
     panels = _load(D99)["panels"][:-1]
     cells: set[tuple[int, int]] = set()
     for panel in panels:
         pos = panel["gridPos"]
-        needed = 15 if len(panel["targets"]) >= 5 else 8
+        needed = 16 if len(panel["targets"]) >= 7 else 15 if len(panel["targets"]) >= 5 else 8
         assert pos["h"] >= needed, panel["title"]
         assert pos["x"] + pos["w"] <= 24, panel["title"]
         mine = {(x, y) for x in range(pos["x"], pos["x"] + pos["w"]) for y in range(pos["y"], pos["y"] + pos["h"])}
