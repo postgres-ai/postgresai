@@ -24,8 +24,15 @@ test("the CLI sends the report wire bodies with its org scope", async () => {
     const { reportId } = await createCheckupReport({ ...auth, project: "db/app" });
     expect(await uploadCheckupReportJson({ ...auth, reportId, filename: "H001.json", checkId: "H001", jsonText: JSON.stringify(reports.H001, null, 2) })).toEqual({ reportChunkId: 4 });
     expect(calls[0].body).toEqual({ access_token: token, project: "db/app" });
-    expect(calls[1].body).toEqual({ access_token: token, checkup_report_id: 9, filename: "H001.json", check_id: "H001", data: JSON.stringify(reports.H001, null, 2), type: "json", generate_issue: true });
+    expect(calls[1].body).toEqual({ access_token: token, checkup_report_id: 9, filename: "H001.json", check_id: "H001", data: JSON.stringify(reports.H001, null, 2), type: "json" });
     expect(calls.map(c => c.headers.get(ORG_ID_HEADER))).toEqual(["5225", "5225"]);
+  });
+});
+
+test("an empty API key is refused before any request", async () => {
+  await withBackend(async (apiBaseUrl, calls) => {
+    await expect(createCheckupReport({ apiKey: "", apiBaseUrl, project: "p" })).rejects.toThrow("API key is required");
+    expect(calls).toHaveLength(0);
   });
 });
 

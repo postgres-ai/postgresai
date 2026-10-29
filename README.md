@@ -85,9 +85,8 @@ npx postgresai checkup --check-id H002 postgresql://...
 npx postgresai checkup --no-upload --check-id H002 postgresql://...
 ```
 
-Markdown conversion is performed by the PostgresAI API and transmits the full
-report JSON. Therefore, `--markdown` cannot be combined with `--no-upload`. For
-local-only output, use `--json` or `--output` instead.
+Checkup reports are JSON. Use `--json` to print them or `--output <dir>` to save
+them; uploaded reports show up in the Console.
 
 > **Tips:** `npx pgai checkup` also works. `bunx postgresai` if you prefer Bun.
 

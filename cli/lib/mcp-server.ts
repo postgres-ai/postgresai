@@ -474,7 +474,7 @@ export async function handleToolCall(
       if (reportId !== undefined && isNaN(reportId)) {
         return { content: [{ type: "text", text: "report_id must be a number" }], isError: true };
       }
-      const type = args.type ? String(args.type) as "json" | "md" : undefined;
+      const type = args.type ? String(args.type) as "json" | "md" : "json";
       const checkId = args.check_id ? String(args.check_id) : undefined;
       if (reportId === undefined && !checkId) {
         return { content: [{ type: "text", text: "Either report_id or check_id is required" }], isError: true };
@@ -490,7 +490,7 @@ export async function handleToolCall(
       if (reportId !== undefined && isNaN(reportId)) {
         return { content: [{ type: "text", text: "report_id must be a number" }], isError: true };
       }
-      const type = args.type ? String(args.type) as "json" | "md" : undefined;
+      const type = args.type ? String(args.type) as "json" | "md" : "json";
       const checkId = args.check_id ? String(args.check_id) : undefined;
       if (reportId === undefined && !checkId) {
         return { content: [{ type: "text", text: "Either report_id or check_id is required" }], isError: true };
@@ -806,13 +806,13 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "list_report_files",
-          description: "List files in a checkup report (metadata only, no content). Each report contains json (raw data) and md (markdown analysis) files per check. Either report_id or check_id must be provided.",
+          description: "List files in a checkup report (metadata only, no content). Checkup reports are JSON, one file per check. Either report_id or check_id must be provided. For findings and recommendations, use the issues tools (list_issues, view_issue).",
           inputSchema: {
             type: "object",
             properties: {
               ...ORG_ID_TOOL_PROPERTY,
               report_id: { type: "number", description: "Checkup report ID (optional if check_id is provided)" },
-              type: { type: "string", description: "Filter by file type: 'json' or 'md'" },
+              type: { type: "string", enum: ["json", "md"], description: "File type: 'json' (default), or 'md' for markdown that the legacy postgres-checkup tool uploaded" },
               check_id: { type: "string", description: "Filter by check ID (e.g., 'H002', 'F004')" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
@@ -821,13 +821,13 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "get_report_data",
-          description: "Get checkup report file content. Returns files with a 'data' field containing the actual content: markdown analysis or JSON raw data. Use type='md' for human-readable analysis with recommendations, type='json' for raw check data. Either report_id or check_id must be provided.",
+          description: "Get checkup report file content: the JSON data of each check, in a 'data' field. Either report_id or check_id must be provided. For findings and recommendations, use the issues tools (list_issues, view_issue).",
           inputSchema: {
             type: "object",
             properties: {
               ...ORG_ID_TOOL_PROPERTY,
               report_id: { type: "number", description: "Checkup report ID (optional if check_id is provided)" },
-              type: { type: "string", description: "Filter by file type: 'json' for raw data, 'md' for markdown analysis" },
+              type: { type: "string", enum: ["json", "md"], description: "File type: 'json' (default), or 'md' for markdown that the legacy postgres-checkup tool uploaded" },
               check_id: { type: "string", description: "Filter by check ID (e.g., 'H002', 'F004')" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },

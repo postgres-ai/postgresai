@@ -953,16 +953,16 @@ provider-specific behavior.
 | Schema-valid JSON reports | Local (CLI) | Yes |
 | Severity summaries (`summary`: `status` + `message`) | Local (CLI) | Yes |
 | Local conclusions/recommendations for the checks that implement them (e.g. F003, H001) | Local (CLI) | Yes |
-| Rich markdown analysis and prose recommendations | **Server-side** (PostgresAI API, via `--markdown`) | No — requires a network call and, for full detail, an API key |
+| Issues with findings and recommendations | **Server-side** (PostgresAI) | No — requires an API key |
 
 In short: the local embed gives you structured JSON, per-check severity, and
-the conclusions each check implements today. The full narrative analysis is an
-API-side capability. Embedders that only need structured findings and severity
+the conclusions each check implements today. Issues with findings are a
+PostgresAI capability on the server side. Embedders that only need structured findings and severity
 never have to call the API.
 
 For every new or updated check, local JSON must include `conclusions` and
-`recommendations`. Server-side markdown analysis can enrich those verdicts, but
-must never be their only source. The coverage checklist in
+`recommendations`. Server-side issues can enrich those verdicts, but must never
+be their only source. The coverage checklist in
 [work item #285](https://gitlab.com/postgres-ai/postgresai/-/work_items/285)
 tracks which existing checks have completed this migration.
 

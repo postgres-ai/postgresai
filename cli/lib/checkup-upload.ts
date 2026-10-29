@@ -28,7 +28,7 @@ export async function uploadCheckupReportJson(rpc: Rpc, params: {
   const response = await rpc(fn, {
     access_token: params.apiKey, checkup_report_id: params.reportId,
     filename: params.filename, check_id: params.checkId, data: params.jsonText,
-    type: "json", generate_issue: true,
+    type: "json",
   });
   // The platform's original spelling has a typo; both remain supported.
   return { reportChunkId: responseId(fn, response, "report_chunck_id", "report_chunk_id") };

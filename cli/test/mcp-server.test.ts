@@ -2010,6 +2010,8 @@ describe("MCP Server", () => {
       expect(parsed[0].filename).toBe("H002.md");
       expect(capturedUrl).toContain("check_id=eq.H002");
       expect(capturedUrl).not.toContain("checkup_report_id");
+      // Checkup reports are JSON: no type means JSON.
+      expect(capturedUrl).toContain("type=eq.json");
 
       readConfigSpy.mockRestore();
     });
@@ -2116,6 +2118,8 @@ describe("MCP Server", () => {
       expect(parsed[0].data).toContain("# H002");
       expect(capturedUrl).toContain("check_id=eq.H002");
       expect(capturedUrl).not.toContain("checkup_report_id");
+      // Checkup reports are JSON: no type means JSON.
+      expect(capturedUrl).toContain("type=eq.json");
 
       readConfigSpy.mockRestore();
     });
@@ -2193,6 +2197,34 @@ describe("MCP Server", () => {
       expect(capturedUrl).toContain("checkup_report_id=eq.42");
       expect(capturedUrl).toContain("type=eq.json");
       expect(capturedUrl).toContain("check_id=eq.F004");
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("fetches JSON when no type is given", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: null,
+        defaultProject: null,
+        projectName: null,
+      });
+
+      let capturedUrl: string | undefined;
+      globalThis.fetch = mock((url: string) => {
+        capturedUrl = url;
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      await handleToolCall(createRequest("get_report_data", { report_id: 42 }));
+
+      expect(capturedUrl).toContain("type=eq.json");
 
       readConfigSpy.mockRestore();
     });
