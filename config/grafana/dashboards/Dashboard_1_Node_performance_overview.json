@@ -3689,7 +3689,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Share of CPU time busy and waiting on I/O. RDS: CloudWatch CPUUtilization, and the OS view from Enhanced Monitoring when enabled. Supabase and ClickHouse: derived from per-mode CPU seconds.",
+          "description": "Stacked CPU time by mode; the stack adds up to 100 %. user, system, iowait and steal are measured; other = busy − (user + system + iowait + steal), i.e. nice, irq and softirq; idle = 100 − busy. RDS with Enhanced Monitoring: all modes (busy = EM cpuUtilization.total). RDS without Enhanced Monitoring: CloudWatch CPUUtilization only, shown as \"busy (no mode split)\" + idle. Supabase and ClickHouse: per-mode CPU seconds. Self-managed: no host_* series, empty.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3698,21 +3698,128 @@
               "custom": {
                 "axisSoftMin": 0,
                 "drawStyle": "line",
-                "fillOpacity": 10,
+                "fillOpacity": 70,
                 "lineWidth": 1,
                 "showPoints": "never",
                 "spanNulls": 180000,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
-                }
+                  "mode": "normal"
+                },
+                "axisSoftMax": 100
               },
               "unit": "percent"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "user"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "system"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "semi-dark-yellow",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "iowait"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "blue",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "steal"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "orange",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "other (nice, irq, softirq)"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "busy (no mode split)"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "idle"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "rgba(128, 128, 128, 0.25)",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "gridPos": {
-            "h": 15,
+            "h": 16,
             "w": 12,
             "x": 0,
             "y": 147
@@ -3732,7 +3839,7 @@
             },
             "tooltip": {
               "mode": "multi",
-              "sort": "desc"
+              "sort": "none"
             }
           },
           "targets": [
@@ -3742,8 +3849,8 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "CPU busy",
+              "expr": "host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "user",
               "range": true,
               "refId": "A"
             },
@@ -3753,8 +3860,8 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "CPU busy (RDS Enhanced Monitoring)",
+              "expr": "host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "system",
               "range": true,
               "refId": "B"
             },
@@ -3764,10 +3871,54 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "I/O wait",
+              "expr": "host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "iowait",
               "range": true,
               "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "steal",
+              "range": true,
+              "refId": "D"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "clamp_min(max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})) - host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"}, 0)",
+              "legendFormat": "other (nice, irq, softirq)",
+              "range": true,
+              "refId": "E"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})) unless on(cluster, node_name) (host_os_cpu_user_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_system_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_iowait_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_cpu_steal_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "busy (no mode split)",
+              "range": true,
+              "refId": "F"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "clamp_min(100 - max by (cluster, node_name) (host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} or on(cluster, node_name) (host_cpu_utilization_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) host_os_cpu_percent{cluster=\"$cluster_name\", node_name=\"$node_name\"})), 0)",
+              "legendFormat": "idle",
+              "range": true,
+              "refId": "G"
             }
           ],
           "title": "CPU utilization",
@@ -3778,7 +3929,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Available memory (RDS FreeableMemory, Linux MemAvailable, or the ClickHouse limit minus used), with total, free, cached and swap used where the provider reports them. The largest process RSS comes from RDS Enhanced Monitoring.",
+          "description": "Stacked memory; the stack adds up to total RAM (dashed line). With free, cached and buffers (RDS with Enhanced Monitoring, Supabase): used = total − free − cached − buffers, then buffers, cached, free. ClickHouse (no free or buffers): used = total − available, then available. RDS without Enhanced Monitoring: only CloudWatch FreeableMemory (\"available\"); total RAM is unknown, so the stack has no reference line. Swap is not part of RAM and is a separate line. The largest process RSS (RDS with Enhanced Monitoring only) is a dashed line, not part of the stack.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3787,21 +3938,213 @@
               "custom": {
                 "axisSoftMin": 0,
                 "drawStyle": "line",
-                "fillOpacity": 10,
+                "fillOpacity": 70,
                 "lineWidth": 1,
                 "showPoints": "never",
                 "spanNulls": 180000,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 }
               },
               "unit": "bytes"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "used"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "buffers"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "semi-dark-yellow",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "cached"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "blue",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "free"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "orange",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "available"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "semi-dark-yellow",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "total RAM"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "swap used"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "solid"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "purple",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "largest process RSS"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "#6ED0E0",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "gridPos": {
-            "h": 15,
+            "h": 16,
             "w": 12,
             "x": 12,
             "y": 147
@@ -3811,6 +4154,7 @@
             "legend": {
               "calcs": [
                 "lastNotNull",
+                "min",
                 "max"
               ],
               "displayMode": "table",
@@ -3821,7 +4165,7 @@
             },
             "tooltip": {
               "mode": "multi",
-              "sort": "desc"
+              "sort": "none"
             }
           },
           "targets": [
@@ -3831,8 +4175,8 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "available",
+              "expr": "(host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "used",
               "range": true,
               "refId": "A"
             },
@@ -3842,8 +4186,8 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "total",
+              "expr": "host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "buffers",
               "range": true,
               "refId": "B"
             },
@@ -3853,8 +4197,8 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "free",
+              "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "cached",
               "range": true,
               "refId": "C"
             },
@@ -3864,10 +4208,32 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
-              "expr": "host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
-              "legendFormat": "cached",
+              "expr": "host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "free",
               "range": true,
               "refId": "D"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_memory_available_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"})",
+              "legendFormat": "available",
+              "range": true,
+              "refId": "E"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_os_memory_total_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "total RAM",
+              "range": true,
+              "refId": "F"
             },
             {
               "datasource": {
@@ -3878,7 +4244,7 @@
               "expr": "host_os_swap_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "swap used",
               "range": true,
-              "refId": "E"
+              "refId": "G"
             },
             {
               "datasource": {
@@ -3889,7 +4255,7 @@
               "expr": "host_os_process_max_rss_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "largest process RSS",
               "range": true,
-              "refId": "F"
+              "refId": "H"
             }
           ],
           "title": "Memory",
@@ -3900,7 +4266,7 @@
             "type": "prometheus",
             "uid": "P7A0D6631BB10B34F"
           },
-          "description": "Free space on the database volume (RDS free storage, Supabase /data, ClickHouse storage limit minus used). Aurora shows cluster volume bytes used, not volume free space. Local free storage is separate and is not available for Aurora Serverless. Aurora cluster volume samples use completed 5-minute buckets and appear at least 10 minutes behind the current time; use a time range of at least 30 minutes.",
+          "description": "Stacked used + free; the stack adds up to the volume size (dashed line, the limit). RDS: size = AllocatedStorage, free = FreeStorageSpace. Supabase: /data filesystem size and available bytes. ClickHouse: StorageLimitBytes. Aurora: storage grows on demand (limit unknown); local free storage and cluster volume used are lines. Without a size series only free is shown (limit unknown). Aurora cluster volume samples use completed 5-minute buckets and appear at least 10 minutes behind the current time; use a time range of at least 30 minutes.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3909,31 +4275,183 @@
               "custom": {
                 "axisSoftMin": 0,
                 "drawStyle": "line",
-                "fillOpacity": 10,
+                "fillOpacity": 70,
                 "lineWidth": 1,
                 "showPoints": "never",
                 "spanNulls": 180000,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 }
               },
               "unit": "bytes"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "used"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "free"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "semi-dark-yellow",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "limit: size"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "local free (Aurora)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "blue",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "volume used (Aurora)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.stacking",
+                    "value": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "orange",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "gridPos": {
-            "h": 8,
+            "h": 15,
             "w": 24,
             "x": 0,
-            "y": 162
+            "y": 163
           },
           "id": 56,
           "options": {
             "legend": {
               "calcs": [
                 "lastNotNull",
-                "min"
+                "min",
+                "max"
               ],
               "displayMode": "table",
               "placement": "bottom",
@@ -3943,7 +4461,7 @@
             },
             "tooltip": {
               "mode": "multi",
-              "sort": "desc"
+              "sort": "none"
             }
           },
           "targets": [
@@ -3953,10 +4471,32 @@
                 "uid": "P7A0D6631BB10B34F"
               },
               "editorMode": "code",
+              "expr": "host_disk_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"} - host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "used",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
               "expr": "host_disk_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "free",
               "range": true,
-              "refId": "A"
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "P7A0D6631BB10B34F"
+              },
+              "editorMode": "code",
+              "expr": "host_disk_size_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
+              "legendFormat": "limit: size",
+              "range": true,
+              "refId": "C"
             },
             {
               "datasource": {
@@ -3967,7 +4507,7 @@
               "expr": "host_local_storage_free_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "local free (Aurora)",
               "range": true,
-              "refId": "B"
+              "refId": "D"
             },
             {
               "datasource": {
@@ -3978,7 +4518,7 @@
               "expr": "host_volume_used_bytes{cluster=\"$cluster_name\", node_name=\"$node_name\"}",
               "legendFormat": "volume used (Aurora)",
               "range": true,
-              "refId": "C"
+              "refId": "E"
             }
           ],
           "title": "Storage",
@@ -4015,7 +4555,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 170
+            "y": 178
           },
           "id": 64,
           "options": {
@@ -4093,7 +4633,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 178
+            "y": 186
           },
           "id": 65,
           "options": {
@@ -4171,7 +4711,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 186
+            "y": 194
           },
           "id": 66,
           "options": {
@@ -4238,7 +4778,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 194
+            "y": 202
           },
           "id": 67,
           "options": {

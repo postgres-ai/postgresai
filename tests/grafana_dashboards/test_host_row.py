@@ -28,23 +28,31 @@ DASHBOARDS = [
     REPO_ROOT / "postgres_ai_helm/config/grafana/dashboards/Dashboard_1_Node_performance_overview.json",
 ]
 
-# title -> the host_* families charted on that panel, in order.
+# title -> the host_* families charted on that panel, in order of first use.
+# CPU utilization, Memory and Storage are the Dashboard 99 panels
+# (test_host_stats_dashboard.py), so their queries combine several families.
+STACKED = {"CPU utilization", "Memory", "Storage"}
 PANEL_FAMILIES = {
     "Provider": ["host_provider_info"],
     "CPU utilization": [
-        "host_cpu_utilization_percent",
-        "host_os_cpu_percent",
+        "host_os_cpu_user_percent",
+        "host_os_cpu_system_percent",
         "host_os_cpu_iowait_percent",
+        "host_os_cpu_steal_percent",
+        "host_os_cpu_percent",
+        "host_cpu_utilization_percent",
     ],
     "Memory": [
-        "host_memory_available_bytes",
         "host_os_memory_total_bytes",
         "host_os_memory_free_bytes",
         "host_os_memory_cached_bytes",
+        "host_os_memory_buffers_bytes",
+        "host_memory_available_bytes",
         "host_os_swap_used_bytes",
         "host_os_process_max_rss_bytes",
     ],
     "Storage": [
+        "host_disk_size_bytes",
         "host_disk_free_bytes",
         "host_local_storage_free_bytes",
         "host_volume_used_bytes",
@@ -117,6 +125,11 @@ def _family(expr: str) -> str:
     return expr.split("{", 1)[0]
 
 
+def _families_in_order(exprs: list[str]) -> list[str]:
+    found = [f for e in exprs for f in re.findall(r"\b(host_[a-z0-9_]+)\{", e)]
+    return list(dict.fromkeys(found))
+
+
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
 def test_host_row_is_collapsed_last_and_reads_only_host_series(path):
     # Collapsed: a self-managed box writes no host_* and sees one closed row.
@@ -143,6 +156,12 @@ def test_host_row_charts_each_family_on_its_panel(path):
     assert list(host) == list(PANEL_FAMILIES)
     for title, families in PANEL_FAMILIES.items():
         exprs = [t["expr"] for t in host[title]["targets"]]
+        if title in STACKED:
+            assert _families_in_order(exprs) == families, title
+            for expr in exprs:
+                for selector in re.findall(r"host_[a-z0-9_]+(\{[^}]*\})", expr):
+                    assert selector == SELECTOR, expr
+            continue
         assert [_family(e) for e in exprs] == families, title
         for expr in exprs:
             assert expr == f'{_family(expr)}{{cluster="$cluster_name", node_name="$node_name"}}', expr
@@ -197,12 +216,13 @@ def test_host_panels_do_not_bridge_collector_outages(path):
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.parts[-4])
 def test_host_table_legends_fit_their_rows(path):
     # Rendered in Grafana 12.3: a table legend under an 8-unit panel shows up
-    # to four rows, a 15-unit one six. Memory has six series, so it and its
-    # neighbour on the row need the taller panel.
+    # to four rows, a 15-unit one six, a 16-unit one seven. Memory shows up to
+    # seven series (RDS with Enhanced Monitoring), so it and its neighbour on
+    # the row need the 16-unit panel.
     for title, panel in _host_panels(path).items():
         if panel["type"] != "timeseries":
             continue
-        needed = 15 if len(panel["targets"]) >= 5 else 8
+        needed = 16 if len(panel["targets"]) >= 7 else 15 if len(panel["targets"]) >= 5 else 8
         assert panel["gridPos"]["h"] >= needed, title
 
 
