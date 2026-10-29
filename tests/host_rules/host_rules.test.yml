@@ -156,6 +156,31 @@ tests:
     metricsql_expr_test:
       - {expr: '{__name__=~"host_disk_(read|write)_iops|host_network_(receive|transmit)_bytes_per_second"}', eval_time: 10m, exp_samples: []}
 
+  # Resource sizing (platform-all#1051): throughput of the /data volume only.
+  # Recorded exposition, 2026-10-27: /data is /dev/nvme1n1 and node_disk names
+  # it nvme1n1; the root disk nvme0n1 must not count.
+  - name: supabase disk throughput counts only the /data volume
+    interval: 1m
+    input_series:
+      - series: 'node_time_seconds{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db"}'
+        values: '1790731200+60x10'
+      - series: 'node_filesystem_size_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme1n1",device_error="",fstype="ext4",mountpoint="/data"}'
+        values: '1808470016x10'
+      - series: 'node_filesystem_size_bytes{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="/dev/nvme0n1p2",device_error="",fstype="ext4",mountpoint="/"}'
+        values: '5000000000x10'
+      # Per second: /data reads 1 MB and writes 2 MB; the root disk 7 MB each.
+      - series: 'node_disk_read_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1000000+60000000x10'
+      - series: 'node_disk_written_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme1n1"}'
+        values: '1000000+120000000x10'
+      - series: 'node_disk_read_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '1000000+420000000x10'
+      - series: 'node_disk_written_bytes_total{job="supabase-host-metrics",instance="instance-jobs:9188",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",device="nvme0n1"}'
+        values: '1000000+420000000x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_disk_read_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_read_bytes_per_second{cluster="prod",node_name="main-db"}', value: 1000000}]}
+      - {expr: 'round(host_disk_write_bytes_per_second, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_disk_write_bytes_per_second{cluster="prod",node_name="main-db"}', value: 2000000}]}
+
   - name: two targets on one clickhouse service map to one host rate
     interval: 1m
     input_series:

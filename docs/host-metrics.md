@@ -40,8 +40,8 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_disk_read_iops` | operations/s | ReadIOPS | rate of `disk_reads_completed_total`, all disks, per second of `time_seconds` | rate of `DiskReads_Total` |
 | `host_disk_write_iops` | operations/s | WriteIOPS | rate of `disk_writes_completed_total`, all disks, per second of `time_seconds` | rate of `DiskWrites_Total` |
 | `host_disk_provisioned_iops` | operations/s | DescribeDBInstances Iops (RDS gp3, io1, io2) | – | – |
-| `host_disk_read_bytes_per_second` | bytes/s | ReadThroughput | rate of `disk_read_bytes_total`, all disks, per second of `time_seconds` | – |
-| `host_disk_write_bytes_per_second` | bytes/s | WriteThroughput | rate of `disk_written_bytes_total`, all disks, per second of `time_seconds` | – |
+| `host_disk_read_bytes_per_second` | bytes/s | ReadThroughput | rate of `disk_read_bytes_total` on the `/data` volume only, per second of `time_seconds` | – |
+| `host_disk_write_bytes_per_second` | bytes/s | WriteThroughput | rate of `disk_written_bytes_total` on the `/data` volume only, per second of `time_seconds` | – |
 | `host_disk_provisioned_throughput_bytes_per_second` | bytes/s | DescribeDBInstances StorageThroughput × 2^20 (RDS gp3) | – | – |
 | `host_disk_read_latency_seconds` | seconds | ReadLatency | rate of `disk_read_time_seconds_total` / rate of `disk_reads_completed_total`, all disks | – |
 | `host_disk_write_latency_seconds` | seconds | WriteLatency | rate of `disk_write_time_seconds_total` / rate of `disk_writes_completed_total`, all disks | – |
@@ -82,7 +82,7 @@ Dashboard 1 keeps its five-panel Host row unchanged.
 ## Limits
 
 - Supabase: only the primary (`supabase_identifier` = `supabase_project_ref`) is mapped. Read replicas are relayed but get no `host_*`. The relay serves one project, so a box has one Supabase scrape job: the last Supabase target added owns it, and it keeps only that project's series.
-- Supabase disk IOPS, throughput and latency are summed (latency: weighted) over all block devices, including the root disk. The recorded Supabase fixture holds no `disk_read_bytes_total`, `disk_written_bytes_total`, `disk_read_time_seconds_total`, `disk_write_time_seconds_total` or `memory_Buffers_bytes`; the rules use node_exporter's standard names and are not yet checked against a live project.
+- Supabase disk IOPS and latency are summed (latency: weighted) over all block devices, including the root disk; throughput counts the `/data` volume only. The recorded Supabase fixture holds no `disk_read_bytes_total`, `disk_written_bytes_total`, `disk_read_time_seconds_total`, `disk_write_time_seconds_total` or `memory_Buffers_bytes`; the rules use node_exporter's standard names and are not yet checked against a live project.
 - Supabase serves an exposition sampled up to a minute before the scrape, and with one 60 s scraper it refreshes only every other scrape. So the CPU shares are ratios of the CPU counters, and the per-second rates are divided by the rate of the host's own `node_time_seconds`. A plain `rate()` swings between 2/3 and 4/3 of the true value, and `1 − idle rate` went negative on a live project.
 - ClickHouse: the raw names and units match a response recorded from a live service (`cli/test/fixtures/clickhouse-prometheus.txt`). Its HELP text says `DiskReads_Total` and `DiskWrites_Total` count operations. The endpoint refreshes once a minute. A new service serves no counters (CPU, disk, network) for its first few minutes, so those panels start a little later than memory and storage.
 - ClickHouse network bytes include loopback. On a live r6gd.medium with light pgbench load they were about 2.5 times the NIC traffic in `/proc/net/dev`, and loopback made up the difference. Memory is relative to `MemoryLimitBytes` (8 GiB on r6gd.medium), not the guest's `MemTotal` (7.6 GiB), so available memory reads about 5 % higher than `MemAvailable`.
