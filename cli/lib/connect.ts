@@ -196,6 +196,8 @@ export interface Database {
   last_error?: string | null;
   /** Why PostgresAI could not reach the database before the IP was reserved. */
   precheck_error?: string | null;
+  /** A box over AWS PrivateLink (null: another box). Absent from platforms before platform-all#1058, where it is read per box. */
+  privatelink?: Pick<RdsStatus, "rds_endpoint" | "region" | "vpce_service_name" | "verified_status"> | null;
 }
 
 /** We hold a ClickHouse Cloud key for the box. A platform before #992 sends no host_metrics_source and sets host_metrics only for a key; null means nobody feeds host metrics. */
@@ -1881,7 +1883,10 @@ const VERIFY_FAILED: Record<string, string> = {
 
 /** A box's PrivateLink route (postgresai#454), for list, watch and delete; undefined for any other box. */
 export async function privateLinkOf(d: Database, rdsStatus?: ConnectDeps["rdsStatus"]): Promise<RdsStatus | undefined> {
-  if (!rdsStatus || disconnecting(d.status)) return undefined;
+  if (disconnecting(d.status)) return undefined;
+  // The list says (platform-all#1058); before it, the route is read per box.
+  if (d.privatelink !== undefined) return d.privatelink ? { id: d.id, instance_status: d.status, dashboard_url: d.dashboard_url, ...d.privatelink } : undefined;
+  if (!rdsStatus) return undefined;
   // Made by deploy: provider rds or aurora; in the console: no server in the list.
   if (d.cluster && d.provider !== "rds" && d.provider !== "aurora") return undefined;
   return rdsStatus(d.id).catch(() => undefined);
@@ -1952,8 +1957,10 @@ async function deployPrivateLink(url: string, route: Extract<RdsRoute, { private
   // none), so a box on this RDS (any database, made here or in the console) is found before anything is changed.
   const rows = await deps.list();
   const live = rows.filter((d) => !disconnecting(d.status));
-  const onServer = live.filter((d) => d.cluster && serverOf(d.cluster) === cluster);
-  const verify = async (row: Database) => VERIFY_FAILED[(await deps.rdsStatus?.(row.id).catch(() => undefined))?.verified_status ?? ""];
+  // The role covers the whole server: a PrivateLink box by its route's host, whatever port it was given.
+  const onServer = live.filter((d) => (d.cluster && serverOf(d.cluster) === cluster)
+    || d.privatelink?.rds_endpoint.toLowerCase().replace(/\.$/, "") === ep.host);
+  const verify = async (row: Database) => VERIFY_FAILED[(await privateLinkOf(row, deps.rdsStatus))?.verified_status ?? ""];
   const own = onServer.find((d) => (d.provider === "rds" || d.provider === "aurora") && d.database != null && decodeURIComponent(d.database) === db);
   if (own) {
     const note = opts.vpceService || opts.hostStatsRole ? "; the flags for a new box were not used: it exists" : "";
@@ -1963,9 +1970,9 @@ async function deployPrivateLink(url: string, route: Extract<RdsRoute, { private
     const instead = d.database != null && decodeURIComponent(d.database) !== db ? `To monitor ${db} instead` : "To set it up from here instead";
     return stop(`${ep.id} is already monitored ${how} (instance ${d.name}). Setting up another instance would change ${DEFAULT_MONITORING_USER}'s password, which that instance logs in with. ${instead}, delete that instance first (pgai mon instances delete ${deleteRef(d, rows)})`);
   };
-  if (onServer.length) return already(onServer[0], onServer[0].provider === "rds" ? `over ${PL}, database ${decodeURIComponent(onServer[0].database ?? "?")}` : "directly");
-  // A console-made PrivateLink box names no server in the list: its route does.
-  const candidates = live.filter((r) => !r.cluster || r.provider === "rds" || r.provider === "aurora");
+  if (onServer.length) return already(onServer[0], onServer[0].privatelink || onServer[0].provider === "rds" ? `over ${PL}, database ${decodeURIComponent(onServer[0].database ?? "?")}` : "directly");
+  // A console-made PrivateLink box names no server in a list before platform-all#1058: its route does.
+  const candidates = live.filter((r) => r.privatelink === undefined && (!r.cluster || r.provider === "rds" || r.provider === "aurora"));
   // 404: not a PrivateLink box. Any other failure stops here: the SQL below would change the role's password.
   let routes: (RdsStatus | undefined)[];
   try {
@@ -2029,6 +2036,8 @@ async function deployPrivateLink(url: string, route: Extract<RdsRoute, { private
     rds_port: port,
     rds_database: db,
     region: ep.region,
+    // The SQL that ran: a newer one issued since (another run, the console) does not take the box (platform-all#1058).
+    nonce: role.nonce,
     ...(b.accepted ? { accept_price: true } : {}),
     ...(opts.coupon ? { promo_code: opts.coupon } : {}),
     ...(stack.roleArn ? { host_stats_role_arn: stack.roleArn } : {}),
@@ -2826,9 +2835,9 @@ export function grafanaOAuthUrl(dashboardUrl: string | null): string | null {
 
 /** The platform side of mon deploy, for the CLI and the MCP server alike. */
 export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl: string; orgScope?: OrgScope; debug?: boolean; agent?: boolean }) {
-  const rpc = <T>(fn: string, body: Record<string, unknown> = {}, timeoutMs?: number) =>
+  const rpc = <T>(fn: string, body: Record<string, unknown> = {}, timeoutMs?: number, fallbackBody?: Record<string, unknown>) =>
     callRpc<T>({ apiKey: p.apiKey, apiBaseUrl: p.apiBaseUrl, fn, body, operation: fn.replace(/_/g, " "), debug: p.debug, orgScope: p.orgScope,
-      ...(timeoutMs ? { timeoutMs, timeoutCeilingMs: timeoutMs } : {}) });
+      ...(timeoutMs ? { timeoutMs, timeoutCeilingMs: timeoutMs } : {}), ...(fallbackBody ? { fallbackBody } : {}) });
   // The console links of a row: the org alias once, the projects again only while one is not found.
   let orgAlias: Promise<string | undefined> | undefined;
   let projects: Promise<ProjectListItem[]> | undefined;
@@ -2894,8 +2903,11 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     deployOptions: (args: Parameters<NonNullable<ConnectDeps["deployOptions"]>>[0]) => rpc<DeployOptions>("monitoring_deploy_options", args),
     rdsExternalId: async () => (await rpc<{ external_id: string }>("cloud_monitoring_rds_external_id")).external_id,
     rdsPrepareSql: (dbName: string) => rpc<RdsPrepareSql>("cloud_monitoring_rds_prepare_sql", { db_name: dbName }),
-    rdsProvision: (body: Record<string, string | boolean | number>) =>
-      rpc<{ id: string; name: string; provider?: string; status: string; region?: string; verified_status?: string; launch_status?: string }>("cloud_monitoring_rds_provision", body, p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS),
+    rdsProvision: (body: Record<string, string | boolean | number>) => {
+      // A platform before platform-all#1058 has no nonce argument: without it, the newest pending one, as before.
+      const { nonce: _nonce, ...older } = body;
+      return rpc<{ id: string; name: string; provider?: string; status: string; region?: string; verified_status?: string; launch_status?: string }>("cloud_monitoring_rds_provision", body, p.agent ? AGENT_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS, older);
+    },
     rdsStatus: (id: string) => rpc<RdsStatus>("cloud_monitoring_rds_status", { instance_id: id }),
     aws: awsRunner,
     awsProfiles: () => new Promise<string[]>((resolve) => execFile("aws", ["configure", "list-profiles"], { timeout: 10_000 },

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { connect, unreachable, stepProgress, type StepViewLike, overPrivateLink, privateLinkFailure, privateLinkOf, stackTeardown, verifiedWords, type ConnectDeps, type Database, type ProgressEvent, type RdsPrepareSql } from "../lib/connect";
+import { connect, platformDeps, unreachable, stepProgress, type StepViewLike, overPrivateLink, privateLinkFailure, privateLinkOf, stackTeardown, verifiedWords, type ConnectDeps, type Database, type ProgressEvent, type RdsPrepareSql } from "../lib/connect";
 import { canOpenBrowser, HttpStatusError, redactSecretsForLog } from "../lib/util";
 import { PRIVATELINK_STEPS } from "../lib/deploy";
 import {
@@ -190,7 +190,7 @@ describe("P: a private RDS over PrivateLink", () => {
     expect(f.events.map((e) => e.message)).toContain("Waiting for you to create the stack from the link above (any name; deploy finds it by its RDS; up to 30 min)");
     expect(f.calls.filter((c) => !c.startsWith("aws") && c !== "list")).toEqual([
       "quote -", "prepareSql app", "runSql pgai_admin", "readNonce postgres_ai_mon:Secr3t",
-      `provision ${JSON.stringify({ vpce_service_name: VPCE, rds_endpoint: HOST, db_password: "Secr3t", rds_port: 5432, rds_database: "app", region: "us-east-2", vcpus: 2 })}`,
+      `provision ${JSON.stringify({ vpce_service_name: VPCE, rds_endpoint: HOST, db_password: "Secr3t", rds_port: 5432, rds_database: "app", region: "us-east-2", nonce: "n1", vcpus: 2 })}`,
       "status b-1", "status b-1", "status b-1",
     ]);
     expect(f.events.some((e) => e.message === "AWS account 123456789012 (user/me), read-only: denis-cpl-rds is not publicly accessible, so it is monitored over AWS PrivateLink")).toBe(true);
@@ -425,6 +425,58 @@ describe("F: refusals and failures", () => {
     for (const x of [other, direct, fromConsole]) expect(x.calls.filter((c) => /quote|prepareSql|provision/.test(c))).toEqual([]);
   });
 
+  test("#1058 a list that says privatelink: a console-made box is followed (same database) or refused (another), no per-box route read", async () => {
+    const pl = { rds_endpoint: HOST, region: "us-east-2", vpce_service_name: VPCE, verified_status: "db_verified" };
+    const read: string[] = [];
+    const rdsStatus = async (id: string) => { read.push(id); throw new Error("not read when the list says"); };
+    const same = fake({ rows: [[box("active", { id: "c-1", privatelink: pl })]], rdsStatus });
+    expect(await connect(URL_, { waitMs: 0, yes: true }, same.deps)).toMatchObject({ status: "ready", id: "c-1" });
+    const other = fake({ rows: [[box("active", { id: "c-2", database: "shop", name: "denis-cpl-rds/shop", privatelink: pl })]], rdsStatus });
+    expect((await connect(URL_, { waitMs: 0, yes: true }, other.deps)).next)
+      .toStartWith("denis-cpl-rds is already monitored over AWS PrivateLink, database shop (instance denis-cpl-rds/shop).");
+    // An aurora box over PrivateLink is not "directly".
+    const aurora = fake({ rows: [[box("active", { id: "c-3", provider: "aurora", database: "shop", name: "x/shop", privatelink: pl })]], rdsStatus });
+    expect((await connect(URL_, { waitMs: 0, yes: true }, aurora.deps)).next).toContain("already monitored over AWS PrivateLink, database shop");
+    // Another box (privatelink null) is not a candidate for the route read either.
+    const direct = fake({ rows: [[box("active", { id: "d-1", provider: "self-managed", cluster: null, privatelink: null })]], rdsStatus, rdsProvision: async () => ({ id: "b-9", name: "n", status: "launch_requested" }) });
+    await connect(URL_, { waitMs: 0, yes: true }, direct.deps);
+    expect(read).not.toContain("d-1");
+    expect(read.filter((id) => id.startsWith("c-"))).toEqual([]);
+    for (const x of [same, other, aurora]) expect(x.calls.filter((c) => /quote|prepareSql|provision/.test(c))).toEqual([]);
+  });
+
+  test("#1058 a console box on this RDS under another port is still this RDS (the role covers the server)", async () => {
+    const pl = { rds_endpoint: `${HOST.toUpperCase()}.`, region: "us-east-2", vpce_service_name: VPCE, verified_status: "db_verified" };
+    const f = fake({ rows: [[box("active", { id: "c-5", cluster: `${HOST}:5433`, database: "shop", name: "denis-cpl-rds/shop", privatelink: pl })]] });
+    expect((await connect(URL_, { waitMs: 0, yes: true }, f.deps)).next).toStartWith("denis-cpl-rds is already monitored over AWS PrivateLink, database shop");
+    expect(f.calls.filter((c) => /quote|prepareSql|runSql|provision/.test(c))).toEqual([]);
+  });
+
+  test("#1058 a platform without the nonce argument: provision is sent again without it", async () => {
+    const realFetch = globalThis.fetch;
+    const sent: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      sent.push(body);
+      return "nonce" in body
+        ? Response.json({ code: "PGRST202", message: "Could not find the v1.cloud_monitoring_rds_provision(db_password, nonce, rds_endpoint, vpce_service_name) function in the schema cache" }, { status: 404 })
+        : Response.json({ id: "b-1", name: "x", status: "launch_requested" });
+    }) as typeof fetch;
+    try {
+      const deps = platformDeps({ apiKey: "k", apiBaseUrl: "https://example.test/api/general", uiBaseUrl: "https://example.test" });
+      expect(await deps.rdsProvision!({ vpce_service_name: VPCE, rds_endpoint: HOST, db_password: "p", nonce: "n1" })).toMatchObject({ id: "b-1" });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(sent).toEqual([{ vpce_service_name: VPCE, rds_endpoint: HOST, db_password: "p", nonce: "n1" }, { vpce_service_name: VPCE, rds_endpoint: HOST, db_password: "p" }]);
+  });
+
+  test("#1058 provision sends the nonce of the SQL that ran (resumed too)", async () => {
+    const f = fake({ nonce: "n7", rows: [[], [], [box("launch_requested")]] });
+    await connect(URL_, { waitMs: 0, yes: true, monitoringPassword: "Secr3t", nonce: "n7" }, f.deps);
+    expect(provisioned(f.calls)[0]).toMatchObject({ nonce: "n7", db_password: "Secr3t" });
+  });
+
   test("F9 the platform refuses the box (PT409/PT400): its words, nothing created", async () => {
     const f = fake({ rdsProvision: async () => { throw new HttpStatusError("cloud monitoring rds provision: HTTP 400 - Bad Request\nRegion us-east-2 is not in the allowed RDS monitoring regions", 400, "PT400"); } });
     expect(await connect(URL_, { waitMs: 0, yes: true }, f.deps)).toMatchObject({ status: "action_required",
@@ -496,6 +548,18 @@ describe("P10 P11: list, watch and delete of a PrivateLink box", () => {
     expect(await privateLinkOf(box("deleting_launched", { id: "e-1" }), status)).toBeUndefined();
     expect(await privateLinkOf(box("active", { id: "f-1" }), async () => { throw new Error("404"); })).toBeUndefined();
     expect(asked).toEqual(["b-1", "c-1"]);
+  });
+
+  test("#1058 privateLinkOf: from the list when it says (no read), per box before it", async () => {
+    const read: string[] = [];
+    const rdsStatus = async (id: string) => { read.push(id); return { ...route, id }; };
+    const pl = { rds_endpoint: HOST, region: "us-east-2", vpce_service_name: VPCE, verified_status: "auth_failed" };
+    expect(await privateLinkOf(box("active", { id: "a-1", privatelink: pl }), rdsStatus)).toEqual({ id: "a-1", instance_status: "active", dashboard_url: "https://x.pgai.watch", ...pl });
+    expect(await privateLinkOf(box("active", { id: "a-2", privatelink: null }), rdsStatus)).toBeUndefined();
+    expect(await privateLinkOf(box("active", { id: "a-3", privatelink: pl }))).toMatchObject({ verified_status: "auth_failed" });
+    expect(read).toEqual([]);
+    expect(await privateLinkOf(box("active", { id: "a-4" }), rdsStatus)).toMatchObject({ id: "a-4" });
+    expect(read).toEqual(["a-4"]);
   });
 
   test("its check in words; a failed one says why", () => {
