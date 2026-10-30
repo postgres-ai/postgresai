@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
+import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
 import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
@@ -7657,9 +7657,16 @@ withOrgOptions(issues.command("view <issueId>"))
       }
 
       spinner.update("Fetching comments...");
-      const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
+      // "Seen by" (platform-all #1085): opening the issue here records the
+      // token owner, via CLI, or via AI agent when an agent runs the CLI
+      // (cliViewVia); seen_by is omitted when the platform has no such rpc
+      // yet. recordIssueView never rejects, so it runs alongside.
+      const [comments, seenBy] = await Promise.all([
+        fetchIssueComments({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug }),
+        recordIssueView({ apiKey, apiBaseUrl, issueId, via: cliViewVia(), debug: !!opts.debug }),
+      ]);
       spinner.stop();
-      const combined = { issue: presentIssue(issue), comments };
+      const combined = { issue: { ...presentIssue(issue), ...(seenBy ? { seen_by: seenBy } : {}) }, comments };
       printResult(combined, opts.json);
     } catch (err) {
       spinner.stop();

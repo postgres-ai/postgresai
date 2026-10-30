@@ -4,6 +4,14 @@
 
 ### Added
 
+- "Seen by" on issues (https://gitlab.com/postgres-ai/platform-all/-/work_items/1085): `pgai issues view` records that
+  the token owner opened the issue, via CLI, or via AI agent when an AI coding agent runs pgai (`AI_AGENT`,
+  `CLAUDECODE`, `CURSOR_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX` or `CODEX_THREAD_ID` set; `PGAI_VIA=cli|agent` decides
+  when set). It prints `issue.seen_by` (`user_id`, `name`, `via` = console, cli or agent, `first_seen_at`; first view
+  per person, oldest first; newer platforms add `last_seen_at` and `last_via`, the latest open). The MCP `view_issue`
+  tool does the same as an AI agent.
+  Shared (non-personal) org tokens are not recorded. On a platform without this feature `seen_by` is omitted and the
+  issue prints as before.
 - `pgai billing status` says whether the organization has a payment method on file
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/462): `--json` gives `org`, `has_payment_method` and
   `billing_url`; exit 0 yes, 3 no, 1 error or unknown. It is read-only and checks no promo code. The `postgresai` agent

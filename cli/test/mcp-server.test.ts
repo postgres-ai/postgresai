@@ -354,6 +354,59 @@ describe("MCP Server", () => {
     });
   });
 
+  describe("view_issue seen by (platform-all #1085)", () => {
+    const cfgReturn = {
+      apiKey: "test-key",
+      baseUrl: null,
+      storageBaseUrl: null,
+      orgId: null,
+      defaultProject: null,
+      projectName: null,
+    };
+    const issue = { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", title: "Seen", status: 0, created_at: "2026-10-29" };
+    const seen = [{ user_id: 7, name: "Ann Lee", via: "agent", first_seen_at: "2026-10-29T10:00:00Z" }];
+
+    const route = (rpcStatus: number, bodies: string[]) =>
+      mock((url: string, init?: RequestInit) => {
+        if (url.includes("/rpc/issue_view_record")) {
+          bodies.push(String(init?.body));
+          return Promise.resolve(new Response(rpcStatus === 200 ? JSON.stringify(seen) : "{}", { status: rpcStatus }));
+        }
+        const payload = url.includes("issue_comments") ? [] : [issue];
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } })
+        );
+      }) as unknown as typeof fetch;
+
+    test("records the view as an AI agent and returns seen_by", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      const bodies: string[] = [];
+      globalThis.fetch = route(200, bodies);
+
+      const response = await handleToolCall(createRequest("view_issue", { issue_id: issue.id }));
+
+      expect(response.isError).toBeUndefined();
+      expect(bodies).toHaveLength(1);
+      expect(JSON.parse(bodies[0])).toEqual({ issue_id: issue.id, via: "agent" });
+      const parsed = JSON.parse(getResponseText(response));
+      expect(parsed.issue.seen_by).toEqual(seen);
+      readConfigSpy.mockRestore();
+    });
+
+    test("an older platform without the rpc still returns the issue, without seen_by", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfgReturn);
+      globalThis.fetch = route(404, []);
+
+      const response = await handleToolCall(createRequest("view_issue", { issue_id: issue.id }));
+
+      expect(response.isError).toBeUndefined();
+      const parsed = JSON.parse(getResponseText(response));
+      expect(parsed.issue.title).toBe("Seen");
+      expect(parsed.issue.seen_by).toBeUndefined();
+      readConfigSpy.mockRestore();
+    });
+  });
+
   describe("hidden-issue flag (MCP path)", () => {
     // The CLI half of MR !394 filters is_hidden out of `issues list` / `issues
     // view` output; these guard the MCP half, which reuses the same fetchers.

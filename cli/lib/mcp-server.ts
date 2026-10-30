@@ -6,6 +6,7 @@ import {
   fetchIssueComments,
   createIssueComment,
   fetchIssue,
+  recordIssueView,
   createIssue,
   updateIssue,
   updateIssueComment,
@@ -193,10 +194,15 @@ export async function handleToolCall(
       if (!issue) {
         return { content: [{ type: "text", text: "Issue not found" }], isError: true };
       }
-      const comments = await fetchIssueComments({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, debug });
+      // "Seen by" (platform-all #1085): an agent reading the issue records the
+      // token owner "via AI agent"; omitted on a platform without the rpc.
+      const [comments, seenBy] = await Promise.all([
+        fetchIssueComments({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, debug }),
+        recordIssueView({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, via: "agent", debug }),
+      ]);
       // Mirror `issues view`: normalize the flag so is_hidden=false/undefined is
       // dropped and only a genuine true survives into the MCP response.
-      const combined = { issue: presentIssue(issue), comments };
+      const combined = { issue: { ...presentIssue(issue), ...(seenBy ? { seen_by: seenBy } : {}) }, comments };
       return { content: [{ type: "text", text: JSON.stringify(combined, null, 2) }] };
     }
 
@@ -539,7 +545,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
         },
         {
           name: "view_issue",
-          description: "View a specific issue with its comments",
+          description: "View a specific issue with its comments and who has seen it (seen_by). Viewing records the token owner in the issue's seen-by list as an AI agent.",
           inputSchema: {
             type: "object",
             properties: {

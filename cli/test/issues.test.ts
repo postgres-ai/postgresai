@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel } from "../lib/issues";
+import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, recordIssueView, cliViewVia, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel, type SeenByEntry } from "../lib/issues";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -744,5 +744,68 @@ describe("status label (postgresai #367)", () => {
     const closed = presentIssue({ id: "b", title: "t", status: 1, is_hidden: true });
     expect(closed.status).toBe("closed");
     expect(closed.is_hidden).toBe(true);
+  });
+});
+
+describe("recordIssueView (platform-all #1085)", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("posts the issue and via to the rpc and returns the seen-by list", async () => {
+    const seen: SeenByEntry[] = [{ user_id: 1, name: "Ann Lee", via: "cli", first_seen_at: "2026-10-29T10:00:00Z" }];
+    let calledUrl = "";
+    let calledInit: RequestInit | undefined;
+    globalThis.fetch = mock((url: string, init?: RequestInit) => {
+      calledUrl = url;
+      calledInit = init;
+      return Promise.resolve(new Response(JSON.stringify(seen), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const result = await recordIssueView({ apiKey: "k", apiBaseUrl: "https://api.example.com", issueId: "i-1", via: "cli" });
+
+    expect(calledUrl).toBe("https://api.example.com/rpc/issue_view_record");
+    expect(calledInit?.method).toBe("POST");
+    expect(JSON.parse(String(calledInit?.body))).toEqual({ issue_id: "i-1", via: "cli" });
+    expect((calledInit?.headers as Record<string, string>)["access-token"]).toBe("k");
+    expect(result).toEqual(seen);
+  });
+
+  test("returns null instead of failing on an older platform (404) or a network error", async () => {
+    globalThis.fetch = mock(() => Promise.resolve(new Response("{}", { status: 404 }))) as unknown as typeof fetch;
+    expect(await recordIssueView({ apiKey: "k", apiBaseUrl: "https://api.example.com", issueId: "i-1", via: "cli" })).toBeNull();
+
+    globalThis.fetch = mock(() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
+    expect(await recordIssueView({ apiKey: "k", apiBaseUrl: "https://api.example.com", issueId: "i-1", via: "agent" })).toBeNull();
+  });
+
+  test("gives up with null when the rpc hangs past the timeout", async () => {
+    globalThis.fetch = mock((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })
+    ) as unknown as typeof fetch;
+    expect(await recordIssueView({ apiKey: "k", apiBaseUrl: "https://api.example.com", issueId: "i-1", via: "cli", timeoutMs: 20 })).toBeNull();
+  });
+});
+
+describe("cliViewVia (platform-all #1085)", () => {
+  test("a person's shell is cli", () => {
+    expect(cliViewVia({})).toBe("cli");
+    expect(cliViewVia({ CLAUDECODE: "" })).toBe("cli");
+  });
+
+  test("an agent's shell is agent", () => {
+    expect(cliViewVia({ CLAUDECODE: "1" })).toBe("agent");
+    expect(cliViewVia({ CURSOR_AGENT: "1" })).toBe("agent");
+    expect(cliViewVia({ CODEX_SANDBOX: "seatbelt" })).toBe("agent");
+    expect(cliViewVia({ AI_AGENT: "anything" })).toBe("agent");
+  });
+
+  test("PGAI_VIA decides when set", () => {
+    expect(cliViewVia({ PGAI_VIA: "agent" })).toBe("agent");
+    expect(cliViewVia({ PGAI_VIA: " Agent " })).toBe("agent");
+    expect(cliViewVia({ PGAI_VIA: "cli", CLAUDECODE: "1" })).toBe("cli");
+    expect(cliViewVia({ PGAI_VIA: "bogus", GEMINI_CLI: "1" })).toBe("agent");
   });
 });
