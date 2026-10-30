@@ -316,6 +316,92 @@ export async function fetchIssueComments(params: FetchIssueCommentsParams): Prom
   }
 }
 
+/** How an issue was first opened ("seen by", platform-all #1085). */
+export type SeenVia = "console" | "cli" | "agent";
+
+/**
+ * Environment variables AI coding agents set in the shells they run
+ * commands in (presence is enough). Community-documented, not vendor
+ * contracts: an agent not listed here reads as "cli".
+ */
+export const AGENT_ENV_MARKERS = [
+  "AI_AGENT", // proposed cross-tool standard
+  "CLAUDECODE", // Claude Code
+  "CURSOR_AGENT", // Cursor CLI agent
+  "GEMINI_CLI", // Gemini CLI
+  "CODEX_SANDBOX", // OpenAI Codex
+  "CODEX_THREAD_ID", // OpenAI Codex
+] as const;
+
+/**
+ * How `issues view` was run: PGAI_VIA=agent|cli decides when set; else an
+ * agent's environment marker means "agent"; else "cli".
+ */
+export function cliViewVia(env: Record<string, string | undefined> = process.env): "cli" | "agent" {
+  const explicit = env.PGAI_VIA?.trim().toLowerCase();
+  if (explicit === "agent" || explicit === "cli") return explicit;
+  return AGENT_ENV_MARKERS.some((name) => (env[name] ?? "") !== "") ? "agent" : "cli";
+}
+
+export interface SeenByEntry {
+  user_id: number;
+  /** null when the user has no first or last name */
+  name: string | null;
+  via: SeenVia;
+  first_seen_at: string;
+  /** The latest open and how (platforms with comment "seen by"). */
+  last_seen_at?: string;
+  last_via?: SeenVia;
+}
+
+export interface RecordIssueViewParams {
+  apiKey: string;
+  orgScope?: OrgScope;
+  apiBaseUrl: string;
+  issueId: string;
+  via: "cli" | "agent";
+  debug?: boolean;
+  /** Give up after this long; the issue is printed either way. */
+  timeoutMs?: number;
+}
+
+/**
+ * Tell the platform the token owner opened this issue and get back who has
+ * seen it, oldest first. Only the first view per person is kept, and shared
+ * (non-personal) org tokens are not recorded.
+ *
+ * Display-only, so it never fails `issues view`: an older platform without
+ * the rpc (404), a timeout or any other error returns null and the caller
+ * simply prints no seen_by.
+ */
+export async function recordIssueView(params: RecordIssueViewParams): Promise<SeenByEntry[] | null> {
+  const { apiKey, apiBaseUrl, orgScope, issueId, via, debug, timeoutMs = 3000 } = params;
+  const url = `${normalizeBaseUrl(apiBaseUrl)}/rpc/issue_view_record`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { ...issueRequestHeaders(apiKey, orgScope), "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: issueId, via }),
+      signal: controller.signal,
+    });
+    if (debug) {
+      console.error(`Debug: POST ${url} -> ${response.status}`);
+    }
+    if (!response.ok) return null;
+    const data = await response.json();
+    return Array.isArray(data) ? (data as SeenByEntry[]) : null;
+  } catch (err) {
+    if (debug) {
+      console.error(`Debug: recording the issue view failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface FetchIssueParams {
   apiKey: string;
   /** Selected organization, required under a global token (postgresai #327). */

@@ -47,7 +47,7 @@ function isolatedEnv(extra: Record<string, string> = {}) {
 const ORDINARY_ISSUE_ID = "11111111-1111-1111-1111-111111111111";
 const HIDDEN_ISSUE_ID = "22222222-2222-2222-2222-222222222222";
 
-async function startFakeApi(opts: { rejectHiddenWrites?: boolean } = {}) {
+async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boolean } = {}) {
   const requests: Array<{
     method: string;
     pathname: string;
@@ -132,6 +132,17 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean } = {}) {
       });
 
       // Minimal fake PostgREST RPC endpoints used by our CLI.
+      // "Seen by" (platform-all #1085); without opts.seenBy it falls through to
+      // the 404 an older platform gives.
+      if (opts.seenBy && req.method === "POST" && url.pathname.endsWith("/rpc/issue_view_record")) {
+        return new Response(
+          JSON.stringify([
+            { user_id: 1, name: "Ann Lee", via: "console", first_seen_at: "2026-10-29T10:12:03Z" },
+            { user_id: 2, name: "Bob", via: bodyJson?.via ?? "cli", first_seen_at: "2026-10-29T11:40:51Z" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       if (req.method === "POST" && url.pathname.endsWith("/rpc/issue_create")) {
         if (opts.rejectHiddenWrites && bodyJson?.is_hidden === true) {
           // Shape of the platform's user_is_staff() refusal (platform-all #562).
@@ -1198,6 +1209,61 @@ describe("CLI issues --attach flag", () => {
       const req = api.requests.find((x) => x.pathname.endsWith("/rpc/issue_comment_create"));
       expect(req).toBeTruthy();
       expect(req!.bodyJson.content).toBe("plain comment");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+describe("issues view records the view and prints seen_by (platform-all #1085)", () => {
+  test("an agent running the CLI posts via=agent", async () => {
+    const api = await startFakeApi({ seenBy: true });
+    try {
+      const r = await runCliAsync(
+        ["issues", "view", ORDINARY_ISSUE_ID],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_VIA: "", CLAUDECODE: "1" })
+      );
+      expect(r.status).toBe(0);
+      const rpc = api.requests.filter((q) => q.pathname.endsWith("/rpc/issue_view_record"));
+      expect(rpc.map((q) => q.bodyJson.via)).toEqual(["agent"]);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("posts via=cli and prints who has seen the issue", async () => {
+    const api = await startFakeApi({ seenBy: true });
+    try {
+      const r = await runCliAsync(
+        ["issues", "view", ORDINARY_ISSUE_ID],
+        // PGAI_VIA=cli: the suite may itself run inside an agent's shell.
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_VIA: "cli" })
+      );
+      expect(r.status).toBe(0);
+      const rpc = api.requests.filter((q) => q.pathname.endsWith("/rpc/issue_view_record"));
+      expect(rpc).toHaveLength(1);
+      expect(rpc[0].bodyJson).toEqual({ issue_id: ORDINARY_ISSUE_ID, via: "cli" });
+      const out = JSON.parse(r.stdout.trim());
+      expect(out.issue.seen_by.map((e: { name: string; via: string }) => [e.name, e.via])).toEqual([
+        ["Ann Lee", "console"],
+        ["Bob", "cli"],
+      ]);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("an older platform without the rpc still prints the issue, without seen_by", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["issues", "view", ORDINARY_ISSUE_ID],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout.trim());
+      expect(out.issue.id).toBe(ORDINARY_ISSUE_ID);
+      expect("seen_by" in out.issue).toBe(false);
     } finally {
       api.stop();
     }
