@@ -2080,6 +2080,284 @@ export async function generateA004(client: Client, nodeName: string = "node-01")
   return report;
 }
 
+// ============================================================================
+// A005 - Extensions (catalog facts for the A013 CVE prerequisites)
+// ============================================================================
+
+/**
+ * A005 reads every database of the server that accepts connections, not only
+ * the one the checkup connects to: a CVE prerequisite (an extension, an index
+ * type) is ruled out only when it holds in all of them (platform-all#1108).
+ * Other databases are read over new connections with the same credentials,
+ * at most A005_MAX_DATABASES of them and within A005_TIME_BUDGET_MS; a
+ * database that is not read is listed with the reason. Counts, not names,
+ * wherever a count is enough.
+ */
+export const A005_MAX_DATABASES = 100;
+export const A005_TIME_BUDGET_MS = 60_000;
+const A005_ERROR_CHARS = 200;
+
+/** Per database: extensions, index access methods with the extension of their operator classes, and two counts. */
+export const A005_DATABASE_SQL = `
+select
+  coalesce((select json_object_agg(e.extname, e.extversion order by e.extname)
+            from pg_extension as e), '{}'::json) as extensions,
+  coalesce((select json_agg(json_build_object('am', t.am, 'extension', t.extension, 'indexes', t.indexes)
+                            order by t.am, t.extension nulls first)
+            from (
+              select am.amname as am, x.extname as extension, count(*)::int as indexes
+              from pg_index as i
+              join pg_class as c on c.oid = i.indexrelid
+              join pg_namespace as n on n.oid = c.relnamespace
+              join pg_am as am on am.oid = c.relam
+              left join lateral (
+                select distinct e.extname
+                from unnest(i.indclass::oid[]) as opc(oid)
+                join pg_depend as d on d.classid = 'pg_opclass'::regclass and d.objid = opc.oid
+                  and d.refclassid = 'pg_extension'::regclass and d.deptype = 'e'
+                join pg_extension as e on e.oid = d.refobjid
+              ) as x on true
+              where n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+                and n.nspname !~ '^pg_(toast_)?temp_'
+              group by am.amname, x.extname
+            ) as t), '[]'::json) as index_access_methods,
+  (select count(*) from pg_policy)::int as row_security_policies,
+  (select count(*) from pg_statistic_ext)::int as extended_statistics
+`;
+
+/** The databases that accept connections, and the non-superuser roles with CREATE on each (pg_database is shared). */
+const A005_DATABASES_SQL = `
+select d.datname, d.datname = current_database() as is_current,
+  has_database_privilege(d.oid, 'CONNECT') as can_connect,
+  (select count(*) from pg_roles as r
+   where not r.rolsuper and has_database_privilege(r.oid, d.oid, 'CREATE'))::int as roles_with_create
+from pg_database as d
+where d.datallowconn
+order by d.datname
+`;
+
+const A005_SLOTS_SQL = `
+select database, plugin, count(*)::int as slots, (count(*) filter (where active))::int as active
+from pg_replication_slots
+where slot_type = 'logical'
+group by database, plugin
+order by database, plugin
+`;
+
+/** Non-superuser roles that can use replication: the attribute, or membership in a platform role that grants it. */
+const A005_REPLICATION_ROLES_SQL = `
+select count(*)::int as replication
+from pg_roles as r
+where not r.rolsuper
+  and (r.rolreplication or exists (
+    select 1 from pg_roles as p
+    where p.rolname = 'rds_replication' and p.oid <> r.oid and pg_has_role(r.oid, p.oid, 'member')))
+`;
+
+/** Superuser only (pg_authid): an error on managed platforms, recorded as unknown. */
+const A005_PASSWORD_HASHES_SQL = `
+select (count(*) filter (where rolpassword like 'md5%'))::int as md5_passwords,
+  (count(*) filter (where rolpassword like 'SCRAM-SHA-256$%'
+                      and split_part(split_part(rolpassword, '$', 2), ':', 1) <> '4096'))::int
+    as nondefault_scram_iterations
+from pg_authid
+`;
+
+const A005_HBA_SQL = `
+select (count(*) filter (where auth_method = 'cert'))::int as cert,
+  (count(*) filter (where auth_method = 'trust'))::int as trust,
+  (count(*) filter (where type = 'hostgssenc'))::int as hostgssenc,
+  (count(*) filter (where error is not null))::int as errors
+from pg_hba_file_rules
+`;
+
+export interface A005Database {
+  /** True when the database was read; false with `error` when it was not. */
+  read: boolean;
+  error?: string;
+  /** Non-superuser roles with CREATE on the database (they can install a trusted extension). */
+  roles_with_create: number;
+  /** Installed extensions: name → version. */
+  extensions?: Record<string, string>;
+  /** Index counts per access method and the extension owning an operator class (null: built-in). */
+  index_access_methods?: Array<{ am: string; extension: string | null; indexes: number }>;
+  row_security_policies?: number;
+  extended_statistics?: number;
+}
+
+function a005Error(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.replace(/\s+/g, " ").trim().slice(0, A005_ERROR_CHARS) || "unknown error";
+}
+
+/**
+ * A new connection to another database of the server with the connected
+ * client's own parameters (host, port, user, password, TLS). Replaceable for
+ * tests; a client without connection parameters (a mock) cannot reconnect.
+ */
+export let a005OpenDatabase = async (client: Client, database: string): Promise<Client> => {
+  const params = (client as any).connectionParameters;
+  if (!params || typeof (client as any).constructor !== "function") {
+    throw new Error("cannot open another connection from this client");
+  }
+  const Ctor = (client as any).constructor as typeof Client;
+  const other = new Ctor({
+    host: params.host,
+    port: params.port,
+    user: params.user,
+    password: (client as any).password ?? params.password,
+    database,
+    ssl: (client as any).ssl,
+    options: params.options,
+    application_name: params.application_name,
+    enableChannelBinding: (client as any).enableChannelBinding,
+    connectionTimeoutMillis: 10_000,
+  } as any);
+  try {
+    await other.connect();
+    await other.query("set search_path = pg_catalog, pg_temp");
+    await other.query("set statement_timeout = '30s'");
+  } catch (err) {
+    await other.end().catch(() => {});
+    throw err;
+  }
+  return other;
+};
+
+/** For tests: replace how A005 opens another database; returns the previous opener. */
+export function setA005OpenDatabase(open: typeof a005OpenDatabase): typeof a005OpenDatabase {
+  const previous = a005OpenDatabase;
+  a005OpenDatabase = open;
+  return previous;
+}
+
+async function a005ReadDatabase(client: Client): Promise<Omit<A005Database, "read" | "roles_with_create">> {
+  const row = (await client.query(A005_DATABASE_SQL)).rows[0] || {};
+  return {
+    extensions: row.extensions || {},
+    index_access_methods: row.index_access_methods || [],
+    row_security_policies: Number(row.row_security_policies ?? 0),
+    extended_statistics: Number(row.extended_statistics ?? 0),
+  };
+}
+
+function a005Conclusions(data: Record<string, any>): { conclusions: string[]; recommendations: string[] } {
+  const conclusions: string[] = [];
+  const recommendations: string[] = [];
+  const dbs = Object.entries(data.databases as Record<string, A005Database>);
+  const unread = dbs.filter(([, db]) => !db.read);
+  const installed = new Set<string>();
+  for (const [, db] of dbs) for (const name of Object.keys(db.extensions || {})) installed.add(name);
+  const n = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+  conclusions.push(
+    `${dbs.length - unread.length} of ${n(dbs.length, "database")} read; ${n(installed.size, "distinct extension")} installed.`
+  );
+  if (unread.length) {
+    conclusions.push(
+      `Not read: ${unread.map(([name]) => name).join(", ")}. A fact about extensions or indexes is not known for the server.`
+    );
+    recommendations.push(
+      "Let the checkup role connect to every database (CONNECT privilege) so that A005 covers the whole server."
+    );
+  }
+  const withCreate = dbs.filter(([, db]) => db.roles_with_create > 0).length;
+  if (withCreate) {
+    conclusions.push(
+      `${withCreate} of ${n(dbs.length, "database")} ${withCreate === 1 ? "has" : "have"} a non-superuser role with CREATE: it can install trusted extensions itself.`
+    );
+  }
+  const roles = data.roles || {};
+  if (roles.md5_passwords === null) {
+    conclusions.push(`Stored password hashes are not known: ${roles.password_hashes_error || "pg_authid is not readable"}.`);
+  } else if (roles.md5_passwords > 0) {
+    conclusions.push(`${n(roles.md5_passwords, "role")} with an MD5 password hash.`);
+    recommendations.push(
+      "Set password_encryption = 'scram-sha-256' and reset the passwords of the roles with MD5 hashes."
+    );
+  }
+  const slots = (data.logical_slots as Array<{ slots: number }>).reduce((sum, s) => sum + s.slots, 0);
+  if (slots) {
+    conclusions.push(`${n(slots, "logical replication slot")}.`);
+  }
+  return { conclusions, recommendations };
+}
+
+/** Generate A005 report - Extensions: catalog facts of every database of the server. */
+export async function generateA005(client: Client, nodeName: string = "node-01"): Promise<Report> {
+  const report = createBaseReport("A005", "Extensions", nodeName);
+  const postgresVersion = await getPostgresVersion(client);
+  const started = Date.now();
+
+  // No prototype: a database may be named "__proto__", which would set the prototype of a plain object.
+  const databases: Record<string, A005Database> = Object.create(null);
+  const listed = (await client.query(A005_DATABASES_SQL)).rows;
+  let opened = 0;
+  for (const row of listed) {
+    const entry: A005Database = { read: false, roles_with_create: Number(row.roles_with_create ?? 0) };
+    databases[row.datname] = entry;
+    try {
+      if (row.is_current) {
+        Object.assign(entry, await a005ReadDatabase(client), { read: true });
+        continue;
+      }
+      if (!toBool(row.can_connect)) throw new Error("the checkup role has no CONNECT privilege on this database");
+      if (opened >= A005_MAX_DATABASES) throw new Error(`not read: more than ${A005_MAX_DATABASES} databases`);
+      if (Date.now() - started > A005_TIME_BUDGET_MS) throw new Error("not read: the time budget ran out");
+      opened += 1;
+      const other = await a005OpenDatabase(client, row.datname);
+      try {
+        Object.assign(entry, await a005ReadDatabase(other), { read: true });
+      } finally {
+        await other.end().catch(() => {});
+      }
+    } catch (err) {
+      entry.error = a005Error(err);
+    }
+  }
+
+  const optional = async <T>(fn: () => Promise<T>): Promise<{ value: T | null; error: string | null }> => {
+    try {
+      return { value: await fn(), error: null };
+    } catch (err) {
+      return { value: null, error: a005Error(err) };
+    }
+  };
+  const slots = await optional(async () => (await client.query(A005_SLOTS_SQL)).rows.map((r) => ({
+    database: r.database, plugin: r.plugin, slots: Number(r.slots), active: Number(r.active),
+  })));
+  const replication = await optional(async () => Number((await client.query(A005_REPLICATION_ROLES_SQL)).rows[0].replication));
+  const hashes = await optional(async () => (await client.query(A005_PASSWORD_HASHES_SQL)).rows[0]);
+  const scram = await optional(async () =>
+    (await client.query("select current_setting('scram_iterations', true) as v")).rows[0]?.v ?? null);
+  const subscriptions = await optional(async () =>
+    Number((await client.query("select count(*)::int as n from pg_subscription")).rows[0].n));
+  const hba = await optional(async () => {
+    const r = (await client.query(A005_HBA_SQL)).rows[0];
+    return { cert: Number(r.cert), trust: Number(r.trust), hostgssenc: Number(r.hostgssenc), errors: Number(r.errors) };
+  });
+
+  const data: Record<string, any> = {
+    databases,
+    logical_slots: slots.value ?? [],
+    logical_slots_error: slots.error,
+    roles: {
+      replication: replication.value,
+      replication_error: replication.error,
+      md5_passwords: hashes.value ? Number(hashes.value.md5_passwords) : null,
+      nondefault_scram_iterations: hashes.value ? Number(hashes.value.nondefault_scram_iterations) : null,
+      password_hashes_error: hashes.error,
+      scram_iterations: scram.value,
+    },
+    subscriptions: subscriptions.value,
+    subscriptions_error: subscriptions.error,
+    hba_rules: hba.value,
+    hba_rules_error: hba.error,
+  };
+  Object.assign(data, a005Conclusions(data));
+  report.results[nodeName] = { data, postgres_version: postgresVersion };
+  return report;
+}
+
 /** Generate A007 report - Altered settings */
 export const generateA007 = (client: Client, nodeName = "node-01") =>
   generateSettingsReport(client, nodeName, "A007", "Altered settings", getAlteredSettings);
@@ -4154,6 +4432,7 @@ export const REPORT_GENERATORS: Record<string, (client: Client, nodeName: string
   A002: generateA002,
   A003: generateA003,
   A004: generateA004,
+  A005: generateA005,
   A007: generateA007,
   A013: generateA013,
   D001: generateD001,

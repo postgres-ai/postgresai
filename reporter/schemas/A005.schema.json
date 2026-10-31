@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A005 report schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checkId",
+    "checkTitle",
+    "timestamptz",
+    "nodes",
+    "results"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "message"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "warning",
+            "info"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "build_ts": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkId": {
+      "const": "A005"
+    },
+    "checkTitle": {
+      "const": "Extensions"
+    },
+    "timestamptz": {
+      "type": "string"
+    },
+    "nodes": {
+      "$ref": "#/$defs/nodes"
+    },
+    "results": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/nodeResult"
+      }
+    }
+  },
+  "$defs": {
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary",
+        "standbys"
+      ],
+      "properties": {
+        "primary": {
+          "type": "string"
+        },
+        "standbys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "postgresVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "server_version_num",
+        "server_major_ver",
+        "server_minor_ver"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "server_version_num": {
+          "type": "string"
+        },
+        "server_major_ver": {
+          "type": "string"
+        },
+        "server_minor_ver": {
+          "type": "string"
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read",
+        "roles_with_create"
+      ],
+      "properties": {
+        "read": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "roles_with_create": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "index_access_methods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "am",
+              "extension",
+              "indexes"
+            ],
+            "properties": {
+              "am": {
+                "type": "string"
+              },
+              "extension": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "indexes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "row_security_policies": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extended_statistics": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "if": {
+        "properties": {
+          "read": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "extensions",
+          "index_access_methods",
+          "row_security_policies",
+          "extended_statistics"
+        ]
+      },
+      "else": {
+        "required": [
+          "error"
+        ]
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databases",
+        "logical_slots",
+        "logical_slots_error",
+        "roles",
+        "subscriptions",
+        "subscriptions_error",
+        "hba_rules",
+        "hba_rules_error",
+        "conclusions",
+        "recommendations"
+      ],
+      "properties": {
+        "databases": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/database"
+          }
+        },
+        "logical_slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "database",
+              "plugin",
+              "slots",
+              "active"
+            ],
+            "properties": {
+              "database": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plugin": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "slots": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "active": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "logical_slots_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "replication",
+            "replication_error",
+            "md5_passwords",
+            "nondefault_scram_iterations",
+            "password_hashes_error",
+            "scram_iterations"
+          ],
+          "properties": {
+            "replication": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "replication_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "md5_passwords": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "nondefault_scram_iterations": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "password_hashes_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scram_iterations": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "subscriptions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "subscriptions_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hba_rules": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "cert",
+            "trust",
+            "hostgssenc",
+            "errors"
+          ],
+          "properties": {
+            "cert": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "trust": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hostgssenc": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "errors": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "hba_rules_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nodeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data"
+      ],
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/data"
+        },
+        "postgres_version": {
+          "$ref": "#/$defs/postgresVersion"
+        }
+      }
+    }
+  }
+}

@@ -1223,4 +1223,74 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     expect(code).not.toBe(0);
     expect(stdout.trim()).toBe("");
   });
+
+  // platform-all#1108: A005 reads every database that accepts connections over
+  // its own connection with the checkup's credentials; a database the role
+  // cannot connect to is listed with the reason, and pg_authid is unknown for
+  // a role that is not a superuser.
+  test("checkup A005: every database, an unreadable one listed, a non-superuser sees hashes as unknown", async () => {
+    ensurePrepared();
+    const admin = await pg.connect();
+    try {
+      for (const name of ["a005_app", "a005_locked", "a005_owned"]) {
+        await admin.query(`drop database if exists ${name}`);
+        await admin.query(`create database ${name}`);
+      }
+      await admin.query("revoke connect on database a005_locked from public");
+      await admin.query("drop role if exists a005_owner");
+      await admin.query("create role a005_owner nologin");
+      await admin.query("alter database a005_owned owner to a005_owner");
+    } finally {
+      await admin.end();
+    }
+    const app = await pg.connect("a005_app");
+    try {
+      await app.query("create extension btree_gist");
+      await app.query("create table pts (p point, n int)");
+      await app.query("create index pts_gist on pts using gist (p)");
+      // An operator class of btree_gist: the index is attributed to the extension.
+      await app.query("create index pts_n_gist on pts using gist (n)");
+      await app.query("create index pts_n on pts (n)");
+      await app.query("alter table pts enable row level security");
+      await app.query("create policy pts_all on pts using (true)");
+    } finally {
+      await app.end();
+    }
+
+    const { code, stdout, stderr } = runCli(
+      ["checkup", monConn(), "--check-id", "A005", "--no-upload", "--json"],
+      { PGPASSWORD: MON_PASSWORD }
+    );
+    if (code !== 0) throw new Error(`CLI exited ${code}: ${stderr}`);
+    const report = JSON.parse(stdout).A005;
+    validateAgainstSchema(report, "A005");
+    const data = report.results["node-01"].data;
+
+    expect(data.databases.a005_app.read).toBe(true);
+    expect(data.databases.a005_app.extensions).toEqual({ btree_gist: expect.any(String), plpgsql: expect.any(String) });
+    expect(data.databases.a005_app.index_access_methods).toEqual([
+      { am: "btree", extension: null, indexes: 1 },
+      { am: "gist", extension: null, indexes: 1 },
+      { am: "gist", extension: "btree_gist", indexes: 1 },
+    ]);
+    expect(data.databases.a005_app.row_security_policies).toBe(1);
+    expect(data.databases.a005_locked.read).toBe(false);
+    expect(data.databases.a005_locked.error).toContain("no CONNECT privilege");
+    expect(data.databases.a005_owned.roles_with_create).toBeGreaterThanOrEqual(1);
+    expect(data.databases.postgres.read).toBe(true);
+    expect(data.databases.template1.read).toBe(true);
+    expect(data.databases.template0).toBeUndefined();
+    expect(data.roles.md5_passwords).toBeNull();
+    expect(data.roles.password_hashes_error).toContain("pg_authid");
+    expect(data.hba_rules).toBeNull();
+    expect(report.summary.status).toBe("warning");
+
+    // A superuser reads pg_authid and pg_hba_file_rules: counts, and every database.
+    const asAdmin = runCli(["checkup", adminConn(), "--check-id", "A005", "--no-upload", "--json"]);
+    if (asAdmin.code !== 0) throw new Error(`CLI exited ${asAdmin.code}: ${asAdmin.stderr}`);
+    const adminData = JSON.parse(asAdmin.stdout).A005.results["node-01"].data;
+    expect(adminData.databases.a005_locked.read).toBe(true);
+    expect(adminData.roles.md5_passwords).toBe(0);
+    expect(adminData.hba_rules.trust).toBeGreaterThan(0);
+  }, { timeout: 60000 });
 });

@@ -39,6 +39,15 @@ export interface MockClientOptions {
   pgStatKcacheSampleRows?: any[];
   sensitiveColumnsRows?: any[];
   xminHorizonRows?: any[];
+  /** A005: the databases that accept connections (datname, is_current, can_connect, roles_with_create). */
+  a005DatabasesRows?: any[];
+  /** A005: the one row of a database's facts (extensions, index_access_methods, counts). */
+  a005DatabaseRow?: any;
+  a005SlotsRows?: any[];
+  /** A005: pg_authid counts, or an Error to throw (not superuser). */
+  a005PasswordHashes?: any;
+  /** A005: pg_hba_file_rules counts, or an Error to throw. */
+  a005HbaRules?: any;
 }
 
 const DEFAULT_VERSION_ROWS = [
@@ -119,10 +128,33 @@ export function createMockClient(options: MockClientOptions = {}) {
     pgStatKcacheSampleRows = [],
     sensitiveColumnsRows = [],
     xminHorizonRows = defaultXminHorizonRows,
+    a005DatabasesRows = [{ datname: databaseName, is_current: true, can_connect: true, roles_with_create: 1 }],
+    a005DatabaseRow = {
+      extensions: { plpgsql: "1.0" },
+      index_access_methods: [{ am: "btree", extension: null, indexes: 3 }],
+      row_security_policies: 0,
+      extended_statistics: 0,
+    },
+    a005SlotsRows = [],
+    a005PasswordHashes = new Error("permission denied for table pg_authid"),
+    a005HbaRules = new Error("permission denied for view pg_hba_file_rules"),
   } = options;
+  const rowsOrThrow = (value: any) => {
+    if (value instanceof Error) throw value;
+    return { rows: [value] };
+  };
 
   return {
     query: async (sql: string) => {
+      // A005: catalog facts (one route per query, before the generic routes below).
+      if (sql.includes("where d.datallowconn")) return { rows: a005DatabasesRows };
+      if (sql.includes("indclass::oid[]")) return { rows: [a005DatabaseRow] };
+      if (sql.includes("slot_type = 'logical'")) return { rows: a005SlotsRows };
+      if (sql.includes("rds_replication")) return { rows: [{ replication: 0 }] };
+      if (sql.includes("from pg_authid")) return rowsOrThrow(a005PasswordHashes);
+      if (sql.includes("current_setting('scram_iterations', true)")) return { rows: [{ v: "4096" }] };
+      if (sql.includes("from pg_subscription")) return { rows: [{ n: 0 }] };
+      if (sql.includes("from pg_hba_file_rules")) return rowsOrThrow(a005HbaRules);
       // Version query (simple inline - used by getPostgresVersion)
       if (sql.includes("server_version") && sql.includes("server_version_num") && sql.includes("pg_settings") && !sql.includes("tag_setting_name")) {
         return { rows: versionRows };

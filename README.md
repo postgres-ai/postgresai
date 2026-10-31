@@ -435,6 +435,16 @@ postgres_ai monitoring generates automated health check reports based on [postgr
 | A007 | Altered settings |
 | A008 | Disk usage and file system type |
 
+A005 reads every database that accepts connections, each over its own connection with
+the checkup's credentials (at most 100 databases, within 60 seconds): installed
+extensions with versions, index counts per access method and the extension of their
+operator classes, row security policies and extended statistics. From the connected
+database it adds the logical slots with their plugin, the non-superuser roles with
+CREATE on each database, and the roles that can use replication. MD5 password hashes
+(pg_authid) and pg_hba.conf rules need a superuser: for any other role they are
+recorded as unknown, with the reason, never as none. A database that is not read is
+listed with the reason.
+
 ### D. Monitoring / Troubleshooting
 | Check ID | Title |
 |----------|-------|
