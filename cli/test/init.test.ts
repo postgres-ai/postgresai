@@ -1134,7 +1134,7 @@ describe("init module", () => {
     expect(extIndex).toBeLessThan(permIndex);
   });
 
-  test("buildInitPlan uses IF NOT EXISTS for postgres_ai schema (idempotent)", async () => {
+  test("buildInitPlan creates postgres_ai schema only when missing (idempotent)", async () => {
     const plan = await init.buildInitPlan({
       database: "mydb",
       monitoringUser: DEFAULT_MONITORING_USER,
@@ -1144,8 +1144,9 @@ describe("init module", () => {
 
     const permStep = plan.steps.find((s) => s.name === "03.permissions");
     expect(permStep).toBeTruthy();
-    // Should use IF NOT EXISTS for idempotent behavior
-    expect(permStep!.sql).toMatch(/create schema if not exists postgres_ai/i);
+    // An existing or concurrently created schema is kept, not an error
+    expect(permStep!.sql).toMatch(/create schema postgres_ai;/i);
+    expect(permStep!.sql).toMatch(/exception when duplicate_schema or unique_violation then/i);
   });
 
   test("buildUninitPlan does NOT drop pg_stat_statements extension", async () => {

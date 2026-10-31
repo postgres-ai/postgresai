@@ -466,6 +466,72 @@ $$`);
     }
   }, { timeout: TEST_TIMEOUT });
 
+  // ClickHouse Cloud's default privileges grant CREATE on every new schema
+  // to chpg_console_admin (#469).
+  test("prepare-db revokes CREATE that default privileges grant on a schema it creates", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      await admin.query("create role pgai_console_admin nologin");
+      await admin.query("alter default privileges for role postgres grant usage, create on schemas to pgai_console_admin with grant option");
+      await admin.query("alter default privileges for role postgres grant create on schemas to public");
+
+      const { buildInitPlan, applyInitPlan } = await import("../lib/init");
+      const plan = await buildInitPlan({
+        database: "testdb", monitoringPassword: "temporary-test-only", includeOptionalPermissions: false,
+      });
+      const schemaAcl = async () => (await admin.query(`
+        select coalesce(array_agg(g order by g), '{}') as acl from (
+          select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end
+                 || ':' || a.privilege_type as g
+          from pg_namespace n, aclexplode(n.nspacl) a
+          where n.nspname = 'postgres_ai' and a.grantee <> n.nspowner) s`)).rows[0].acl;
+
+      await applyInitPlan({ client: admin, plan });
+      expect(await schemaAcl()).toEqual(["pgai_console_admin:USAGE", "postgres_ai_mon:USAGE"]);
+      await applyInitPlan({ client: admin, plan });
+      expect(await schemaAcl()).toEqual(["pgai_console_admin:USAGE", "postgres_ai_mon:USAGE"]);
+
+      // An existing schema keeps the refusal: prepare-db did not create it.
+      await admin.query("drop schema postgres_ai cascade");
+      await admin.query("create schema postgres_ai");
+      await expect(applyInitPlan({ client: admin, plan })).rejects.toThrow(/grants CREATE to another role/);
+
+      // A schema created by another session while prepare-db waits on its
+      // CREATE fails with unique_violation; it is checked like an existing one.
+      const raceOtherSession = async (otherSql: string) => {
+        await admin.query("drop schema if exists postgres_ai cascade");
+        const other = new Client({ connectionString: pg.adminUri });
+        await other.connect();
+        try {
+          await other.query("begin");
+          await other.query(otherSql);
+          const applying = applyInitPlan({ client: admin, plan });
+          applying.catch(() => {});
+          await waitFor(async () => {
+            const r = await other.query(`select exists (select from pg_locks l join pg_locks h using (transactionid)
+              where not l.granted and h.granted and h.pid = pg_backend_pid()) as waiting`);
+            if (!r.rows[0].waiting) throw new Error("prepare-db is not waiting on the schema yet");
+          });
+          await other.query("commit");
+          return await applying;
+        } finally {
+          await other.end();
+        }
+      };
+      await raceOtherSession("create schema postgres_ai; revoke create on schema postgres_ai from pgai_console_admin, public");
+      expect(await schemaAcl()).toEqual(["pgai_console_admin:USAGE", "postgres_ai_mon:USAGE"]);
+      await expect(raceOtherSession("create schema postgres_ai")).rejects.toThrow(/grants CREATE to another role/);
+      // Under repeatable read the committed schema is invisible to the checks.
+      await admin.query("set default_transaction_isolation = 'repeatable read'");
+      await expect(raceOtherSession("create schema postgres_ai")).rejects.toThrow(/created by another session/);
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: TEST_TIMEOUT });
+
   test("role SQL authenticates with SCRAM even when password_encryption is md5", async () => {
     pg = await createTempPostgres();
     const admin = new Client({ connectionString: pg.adminUri });

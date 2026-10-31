@@ -1,5 +1,5 @@
 -- Required permissions for postgres_ai monitoring user (template-filled by cli/lib/init.ts)
--- The first DO block also runs as the admin; pin before any name resolution.
+-- The first DO blocks also run as the admin; pin before any name resolution.
 set search_path = pg_catalog, pg_temp;
 
 -- Allow connect
@@ -14,9 +14,34 @@ grant select on pg_catalog.pg_index to {{ROLE_IDENT}};
 -- is not granted directly: on PostgreSQL 16+ that needs ADMIN OPTION on pg_read_all_stats,
 -- which Supabase's `postgres` role does not have (it has ADMIN OPTION on pg_monitor only).
 
--- Create postgres_ai schema for our objects
--- Using IF NOT EXISTS for idempotency - prepare-db can be run multiple times
-create schema if not exists postgres_ai;
+-- Create postgres_ai schema for our objects; an existing one is kept (prepare-db
+-- can be run multiple times). Default privileges can grant CREATE on every new
+-- schema to another role (ClickHouse Cloud grants it to chpg_console_admin).
+-- A schema created here is still empty, so revoke those grants.
+do {{DO_QUOTE}}
+declare
+  create_grantee text;
+begin
+  set local search_path = pg_catalog, pg_temp;
+  if exists (select from pg_catalog.pg_namespace where nspname = 'postgres_ai') then
+    return;
+  end if;
+  begin
+    create schema postgres_ai;
+  exception when duplicate_schema or unique_violation then
+    -- Created concurrently (unique_violation when its CREATE raced this one
+    -- past the exists check): checked below like any existing schema.
+    return;
+  end;
+  for create_grantee in
+    select distinct case when a.grantee = 0 then 'public'
+                         else pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) end
+    from pg_catalog.pg_namespace n, pg_catalog.aclexplode(n.nspacl) a
+    where n.nspname = 'postgres_ai' and a.privilege_type = 'CREATE' and a.grantee <> n.nspowner
+  loop
+    execute pg_catalog.format('revoke create on schema postgres_ai from %s', create_grantee);
+  end loop;
+end {{DO_QUOTE}};
 -- An existing schema keeps its owner, and CREATE OR REPLACE keeps the owner of
 -- existing functions/views. Refuse a schema that another role can still write:
 -- the monitoring role searches postgres_ai and calls our helper from it.
@@ -32,6 +57,13 @@ begin
   set local search_path = pg_catalog, pg_temp;
   select oid into admin_oid from pg_catalog.pg_roles where rolname = current_user;
   select oid into schema_oid from pg_catalog.pg_namespace where nspname = 'postgres_ai';
+  -- Under repeatable read, a schema another session committed after this
+  -- snapshot is invisible here; it cannot be checked, so refuse.
+  if schema_oid is null then
+    raise exception 'postgres_ai schema was created by another session during prepare-db'
+      using errcode = '40001',
+        hint = 'Run prepare-db again.';
+  end if;
 
   select pg_catalog.pg_get_userbyid(n.nspowner) into schema_owner
   from pg_catalog.pg_namespace n where n.oid = schema_oid;
