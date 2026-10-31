@@ -36,6 +36,7 @@ export function generateCheckSummary(checkId: string, report: any): CheckSummary
     // Settings checks
     case 'A003': return summarizeA003(nodeData);
     case 'A004': return summarizeA004(nodeData);
+    case 'A005': return summarizeA005(nodeData);
     case 'A007': return summarizeA007(nodeData);
     case 'D001': return summarizeD001(nodeData);
     case 'D004': return summarizeD004(nodeData);
@@ -64,6 +65,22 @@ function summarizeA003(nodeData: any): CheckSummary {
     status: 'info',
     message: `${settingsCount} setting${settingsCount > 1 ? 's' : ''} collected`
   };
+}
+
+function summarizeA005(nodeData: any): CheckSummary {
+  const databases = Object.values(nodeData?.data?.databases || {}) as any[];
+  if (databases.length === 0) {
+    return { status: 'info', message: 'No databases listed' };
+  }
+  const extensions = new Set<string>();
+  for (const db of databases) for (const name of Object.keys(db.extensions || {})) extensions.add(name);
+  const unread = databases.filter((db) => !db.read).length;
+  const message = `${extensions.size} extension${extensions.size === 1 ? '' : 's'} in ` +
+    `${databases.length - unread} of ${databases.length} database${databases.length === 1 ? '' : 's'}`;
+  if (unread > 0) {
+    return { status: 'warning', message: `${message}; ${unread} not read` };
+  }
+  return { status: 'info', message };
 }
 
 function summarizeA004(nodeData: any): CheckSummary {

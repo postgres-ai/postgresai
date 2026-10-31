@@ -957,6 +957,10 @@ membership, `SELECT` on the relevant catalogs/views, and the appropriate
 [prepare-db](#prepare-db-create-monitoring-user-in-postgres) for details and
 provider-specific behavior.
 
+A005 (Extensions) also opens one connection to each other database of the server
+with the same credentials, so the role needs CONNECT there (the default for
+PUBLIC); a database it cannot read is listed in the report with the reason.
+
 ### What runs locally vs. server-side
 
 | Output | Where it is produced | Available offline (`--no-upload`) |
