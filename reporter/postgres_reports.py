@@ -41,6 +41,7 @@ CONTRACT_VERSION = "1.0.0"
 
 import requests
 import json
+import math
 import time
 import re
 import gc
@@ -150,6 +151,14 @@ class PostgresReportGenerator:
         'autovacuum_vacuum_scale_factor',
         'autovacuum_vacuum_threshold',
         'autovacuum_work_mem',
+        # Source and newer settings the F001 settings table resolves (protocols
+        # F001-S2): what -1 inherits, the insert trigger, PG18's cap and slots,
+        # and the autovacuum log setting.
+        'autovacuum_vacuum_insert_threshold',
+        'autovacuum_vacuum_max_threshold',
+        'autovacuum_worker_slots',
+        'maintenance_work_mem',
+        'log_autovacuum_min_duration',
         'vacuum_cost_delay',
         'vacuum_cost_limit',
         'vacuum_cost_page_dirty',
@@ -1464,6 +1473,11 @@ class PostgresReportGenerator:
             'autovacuum_vacuum_scale_factor',
             'autovacuum_vacuum_threshold',
             'autovacuum_work_mem',
+            'autovacuum_vacuum_insert_threshold',
+            'autovacuum_vacuum_max_threshold',
+            'autovacuum_worker_slots',
+            'maintenance_work_mem',
+            'log_autovacuum_min_duration',
             'vacuum_cost_delay',
             'vacuum_cost_limit',
             'vacuum_cost_page_dirty',
@@ -1501,7 +1515,195 @@ class PostgresReportGenerator:
                         "pretty_value": self.format_setting_value(setting_name, setting_value, unit)
                     }
 
-        return self.format_report_data("F001", autovacuum_data, node_name, postgres_version=self._get_postgres_version_info(cluster, node_name))
+        report = self.format_report_data("F001", autovacuum_data, node_name, postgres_version=self._get_postgres_version_info(cluster, node_name))
+        return self._f001_add_dynamics(report, cluster, node_name)
+
+    def _f001_add_dynamics(self, report: Dict[str, Any], cluster: str, node_name: str) -> Dict[str, Any]:
+        """Both F001 generators (from A003, the normal path, and the fallback)
+        add the workers, tables and window facts to the node's result."""
+        node = report["results"].get(node_name)
+        if node is not None:
+            workers, tables, scope = self._f001_autovacuum_dynamics(cluster, node_name)
+            if workers:
+                node["autovacuum_workers"] = workers
+            if tables is not None:
+                node["autovacuum_tables"] = tables
+                node["autovacuum_scope"] = scope
+            node.update(self._f001_window_facts(cluster, node_name))
+            if "autovacuum_tables" in node or "autovacuum_runs_top" in node:
+                node["autovacuum_runs_window_seconds"] = self.F001_WINDOW_SECONDS
+        return report
+
+    #: F001 window for worker history, runs and settings stability (protocols F001-O1, O3).
+    F001_WINDOW = "7d"
+    F001_WINDOW_SECONDS = 7 * 86400
+    #: Per-table rows kept: tables of 1 GiB or more (F001 assessed scope) and
+    #: tables with dead tuples, the most overdue first. autovacuum_scope has the
+    #: full counts.
+    F001_TABLES_MAX = 15
+    F001_SCOPE_BYTES = 1024 ** 3
+    #: System catalogs are F006's; "$other$" is pgwatch table_stats' sum of the
+    #: tables after its top 100 per database, not a table.
+    _F001_SKIP_SCHEMAS = ("pg_catalog", "pg_toast", "information_schema", "$other$")
+
+    @staticmethod
+    def _f001_unquote(name: str) -> str:
+        """pgwatch table_stats labels are quote_ident()ed, the queue labels are raw."""
+        if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+            return name[1:-1].replace('""', '"')
+        return name
+
+    @staticmethod
+    def _f001_number(row: Dict[str, Any]) -> Optional[float]:
+        """A finite sample value, else None (NaN and +Inf parse as floats)."""
+        try:
+            value = float((row.get('value') or [None, None])[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def _f001_autovacuum_dynamics(self, cluster: str, node_name: str):
+        """Workers over the window and per-table autovacuum facts for F001.
+
+        Returns (workers, tables, scope). ``workers``: mean and peak active
+        workers, the sample count and the limit over F001_WINDOW, or {} without
+        data. ``tables``: application tables of 1 GiB or more and tables with
+        dead tuples, the most overdue first (F001_TABLES_MAX), each with its
+        size, live and dead tuples (now and 24 h ago), its own vacuum threshold,
+        completed autovacuum runs in the window, seconds since its last vacuum
+        (manual or auto; ``vacuum_recorded`` false: none since the statistics
+        began, null: not read) and whether autovacuum is off on it. ``scope``:
+        the full counts behind the capped list. tables and scope are None when
+        the queue metrics cannot be read or give nothing (unknown, never "no
+        tables"; the queue metric leaves pg_* schemas out).
+        """
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        win = self.F001_WINDOW
+
+        def scalar(query: str):
+            result = self.query_instant(query)
+            rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
+            return self._f001_number(rows[0]) if rows else None
+
+        active = f'pgwatch_pg_autovacuum_workers_active_workers{{{sel}}}'
+        workers = {
+            "window_seconds": self.F001_WINDOW_SECONDS,
+            "mean_active": scalar(f'avg_over_time({active}[{win}])'),
+            "peak_active": scalar(f'max_over_time({active}[{win}])'),
+            "samples": scalar(f'count_over_time({active}[{win}])'),
+            "max_workers": scalar(f'max_over_time(pgwatch_pg_autovacuum_workers_max_workers{{{sel}}}[{win}])'),
+        }
+        if workers["samples"] is None:
+            workers = {}
+        else:
+            workers["samples"] = int(workers["samples"])
+
+        def per_table(query: str, schema_label: str, table_label: str, quoted: bool = False):
+            result = self.query_instant(query)
+            if result.get('status') != 'success':
+                return None
+            out = {}
+            for row in (result.get('data') or {}).get('result') or []:
+                metric = row.get('metric') or {}
+                schema, table = metric.get(schema_label, ''), metric.get(table_label, '')
+                if quoted:
+                    schema, table = self._f001_unquote(schema), self._f001_unquote(table)
+                datname = metric.get('datname', '')
+                if schema in self._F001_SKIP_SCHEMAS or datname in self.excluded_databases:
+                    continue
+                value = self._f001_number(row)
+                if value is not None:
+                    out[(datname, schema, table)] = value
+            return out
+
+        queue = ('schemaname', 'relname')
+        stats = ('schema', 'table_name', True)
+        dead = per_table(f'last_over_time(pgwatch_pg_autovacuum_queue_n_dead_tup{{{sel}}}[1h])', *queue)
+        threshold = per_table(f'last_over_time(pgwatch_pg_autovacuum_queue_autovacuum_threshold{{{sel}}}[1h])', *queue)
+        # No series at all is a missing metric: unknown, never "no tables".
+        if not dead or not threshold:
+            return workers, None, None
+        live = per_table(f'last_over_time(pgwatch_pg_autovacuum_queue_n_live_tup{{{sel}}}[1h])', *queue) or {}
+        day_ago = per_table(f'last_over_time(pgwatch_pg_autovacuum_queue_n_dead_tup{{{sel}}}[1h] offset 1d)', *queue) or {}
+        size = per_table(f'last_over_time(pgwatch_table_stats_total_relation_size_b{{{sel}}}[3h])', *stats) or {}
+        runs = per_table(f'increase(pgwatch_table_stats_autovacuum_count{{{sel}}}[{win}])', *stats) or {}
+        since = per_table(f'last_over_time(pgwatch_table_stats_seconds_since_last_vacuum{{{sel}}}[1h])', *stats)
+        off = per_table(f'last_over_time(pgwatch_table_stats_no_autovacuum{{{sel}}}[1h])', *stats) or {}
+
+        rows = []
+        for key in set(dead) | {k for k, v in size.items() if v >= self.F001_SCOPE_BYTES}:
+            datname, schema, table = key
+            n_dead, trigger = dead.get(key), threshold.get(key)
+            in_scope = size.get(key, 0) >= self.F001_SCOPE_BYTES
+            if not in_scope and not n_dead:
+                continue
+            rows.append({
+                "database": datname,
+                "schema_name": schema,
+                "table_name": table,
+                "total_relation_size_bytes": int(size[key]) if key in size else None,
+                "in_scope_by_size": in_scope,
+                "n_live_tup": int(live[key]) if key in live else None,
+                "n_dead_tup": int(n_dead) if n_dead is not None else None,
+                "n_dead_tup_24h_ago": int(day_ago[key]) if key in day_ago else None,
+                "vacuum_threshold": int(trigger) if trigger is not None else None,
+                "autovacuum_runs_in_window": int(round(runs[key])) if key in runs else None,
+                "seconds_since_last_vacuum": int(since[key]) if since and key in since else None,
+                # table_stats has no series for a table never vacuumed (NULL greatest()). It also
+                # covers only its top 100 tables per database and partition roots, so "never"
+                # only where it covers the table (a size row); else unknown.
+                "vacuum_recorded": (key in since) if since is not None and key in size else None,
+                "autovacuum_disabled": bool(off.get(key)) if key in off else None,
+            })
+        rows.sort(key=lambda r: (-(r["n_dead_tup"] or 0) / max(r["vacuum_threshold"] or 1, 1),
+                                 -(r["total_relation_size_bytes"] or 0)))
+        scope = {
+            "scope_bytes": self.F001_SCOPE_BYTES,
+            "tables_in_scope_by_size": sum(1 for r in rows if r["in_scope_by_size"]),
+            "smaller_tables_with_dead_tuples": sum(1 for r in rows if not r["in_scope_by_size"]),
+            "smaller_tables_past_threshold": sum(
+                1 for r in rows if not r["in_scope_by_size"] and (r["n_dead_tup"] or 0) > (r["vacuum_threshold"] or 0) > 0),
+            "rows_shown": min(len(rows), self.F001_TABLES_MAX),
+        }
+        return workers, rows[:self.F001_TABLES_MAX], scope
+
+    def _f001_window_facts(self, cluster: str, node_name: str) -> Dict[str, Any]:
+        """F001-O1 and F001-O3 over F001_WINDOW: the autovacuum settings that had
+        more than one value, and the application tables with the most completed
+        autovacuum runs. A key is left out when unreadable."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        win = self.F001_WINDOW
+        out: Dict[str, Any] = {}
+        names = "autovacuum.*|vacuum_.*|maintenance_work_mem|log_autovacuum_min_duration"
+        # Distinct values per setting: other labels that vary must not count.
+        values = self.query_instant(
+            f'count by (setting_name) (count by (setting_name, setting_value) '
+            f'(max_over_time(pgwatch_settings_configured{{{sel}, setting_name=~"{names}"}}[{win}])))')
+        if values.get('status') == 'success' and (values.get('data') or {}).get('result'):
+            out["settings_window_seconds"] = self.F001_WINDOW_SECONDS
+            out["settings_changed_in_window"] = sorted(
+                (r.get('metric') or {}).get('setting_name', '') for r in values['data']['result']
+                if (self._f001_number(r) or 0) > 1)
+        excluded = "|".join(sorted(d for d in self.excluded_databases if re.fullmatch(r"[A-Za-z0-9_]+", d)))
+        runs = self.query_instant(
+            f'topk(10, increase(pgwatch_table_stats_autovacuum_count{{{sel}, '
+            f'schema!~"pg_catalog|pg_toast|information_schema|[$]other[$]"'
+            + (f', datname!~"{excluded}"' if excluded else '') + f'}}[{win}]) > 0)')
+        if runs.get('status') == 'success':
+            top = []
+            for r in (runs.get('data') or {}).get('result') or []:
+                metric = r.get('metric') or {}
+                count = self._f001_number(r)
+                if count is None or metric.get('datname', '') in self.excluded_databases:
+                    continue
+                top.append({"database": metric.get('datname', ''),
+                            "schema_name": self._f001_unquote(metric.get('schema', '')),
+                            "table_name": self._f001_unquote(metric.get('table_name', '')),
+                            "autovacuum_runs": int(round(count))})
+            out["autovacuum_runs_top"] = sorted(top, key=lambda t: (-t["autovacuum_runs"], t["table_name"]))
+        return out
 
     @staticmethod
     def _wraparound_risk(age: float, emergency_age: float, failsafe_age: Optional[float]) -> Dict[str, Any]:
@@ -4327,7 +4529,8 @@ class PostgresReportGenerator:
             postgres_version=postgres_version,
         )
 
-    def generate_f001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01") -> Dict[str, Any]:
+    def generate_f001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01",
+                                cluster: str = "local") -> Dict[str, Any]:
         """
         Generate F001 report by filtering A003 data for autovacuum settings.
 
@@ -4346,7 +4549,8 @@ class PostgresReportGenerator:
         # Extract postgres version from A003
         postgres_version = self.extract_postgres_version_from_a003(a003_report, node_name)
 
-        return self.format_report_data("F001", autovacuum_data, node_name, postgres_version=postgres_version)
+        report = self.format_report_data("F001", autovacuum_data, node_name, postgres_version=postgres_version)
+        return self._f001_add_dynamics(report, cluster, node_name)
 
     def generate_g001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01") -> Dict[str, Any]:
         """
@@ -4740,7 +4944,7 @@ class PostgresReportGenerator:
             # Reports derived from A003
             a003_derived_reports = [
                 ('D004', lambda c, n: self.generate_d004_from_a003(a003_report, c, n)),
-                ('F001', lambda c, n: self.generate_f001_from_a003(a003_report, n)),
+                ('F001', lambda c, n: self.generate_f001_from_a003(a003_report, n, c)),
                 ('G001', lambda c, n: self.generate_g001_from_a003(a003_report, n)),
             ]
 
@@ -5756,7 +5960,7 @@ def main():
                         report = generator.generate_d004_pgstat_settings_report(cluster, args.node_name)
                 elif args.check_id == 'F001':
                     if a003_report:
-                        report = generator.generate_f001_from_a003(a003_report, args.node_name)
+                        report = generator.generate_f001_from_a003(a003_report, args.node_name, cluster)
                     else:
                         report = generator.generate_f001_autovacuum_settings_report(cluster, args.node_name)
                 elif args.check_id == 'F002':

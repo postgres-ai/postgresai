@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- F001 "Autovacuum: current settings": the report now also reads `maintenance_work_mem`, `log_autovacuum_min_duration`, `autovacuum_vacuum_insert_threshold`, and PG18's `autovacuum_vacuum_max_threshold` and `autovacuum_worker_slots`, and carries new optional fields for CheckupLoop's F001 report (postgres-ai/platform-all#1112, #471):
+  - `autovacuum_workers`: mean and peak active workers over 7 days, with the sample count and the limit.
+  - `autovacuum_tables`: application tables of 1 GiB or more, and tables with dead tuples, the most overdue first. Each row has its size, live and dead tuples (now and 24 h ago), its own vacuum threshold, autovacuum runs in the window, its last vacuum, and whether autovacuum is off.
+  - `autovacuum_scope`: the full counts behind that list.
+  - `settings_changed_in_window`: the autovacuum settings that had more than one value in the window.
+  - `autovacuum_runs_top`: the most vacuumed tables.
+  - `autovacuum_runs_window_seconds`: the window both run counts cover (7 days).
+
+  These come from both F001 paths, from A003 and the fallback. System catalogs, pgwatch's `$other$` row and excluded databases are left out, and a field is omitted when its metrics cannot be read.
 - A014 "Resource sizing": each `series.disk_iops` point is now the 5-minute average of read + write IOPS, as `disk_mbps` already was, not the busiest minute, so `disk.iops_p95` and `disk.iops_max` are the 95th percentile and the highest of those averages. The report says so in a new field, `series.disk_iops_kind: "avg_5m"`; the platform judges IOPS against the compute size's sustained limit only when it is present, since older reports carry busiest-minute points (postgres-ai/platform-all#1086). Supabase disk IOPS and throughput (`host_disk_read_iops`, `host_disk_write_iops`, `host_disk_read_bytes_per_second`, `host_disk_write_bytes_per_second`) sum every block device, root disk included: a compute size's IOPS and MB/s limits are the instance's EBS limits, which cap all attached volumes together.
 - New reporter check A014 "Resource sizing": each daily report now carries how much CPU, memory, disk throughput and IOPS the database server used over the last 7 days (or since data began), plus backends against `max_connections`, database size and a 5-minute series. It is measurements only: the platform compares them with the project's Supabase compute size and shows whether it is undersized, right-sized or oversized in the health matrix (postgres-ai/platform-all#1051). CPU, memory and disk need host metrics; without them those fields are null.
 - `prepare-db` refuses extensions and predefined-role-owned objects inside the `postgres_ai` schema, including objects with no ownership dependency row. Schema refusal errors now give DBA remediation in the CLI and render database-provided Detail and Hint on one terminal line.

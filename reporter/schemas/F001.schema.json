@@ -190,6 +190,42 @@
         "thresholds": { "type": "object" }
       }
     },
+    "autovacuumWorkers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["window_seconds", "mean_active", "peak_active", "samples", "max_workers"],
+      "properties": {
+        "window_seconds": { "type": "integer" },
+        "mean_active": { "type": ["number", "null"] },
+        "peak_active": { "type": ["number", "null"] },
+        "samples": { "type": ["integer", "null"] },
+        "max_workers": { "type": ["number", "null"] }
+      }
+    },
+    "autovacuumTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database", "schema_name", "table_name", "total_relation_size_bytes", "in_scope_by_size", "n_live_tup",
+        "n_dead_tup", "n_dead_tup_24h_ago", "vacuum_threshold", "autovacuum_runs_in_window", "seconds_since_last_vacuum",
+        "vacuum_recorded", "autovacuum_disabled"
+      ],
+      "properties": {
+        "database": { "type": "string" },
+        "schema_name": { "type": "string" },
+        "table_name": { "type": "string" },
+        "total_relation_size_bytes": { "type": ["integer", "null"] },
+        "in_scope_by_size": { "type": "boolean" },
+        "n_live_tup": { "type": ["integer", "null"] },
+        "n_dead_tup": { "type": ["integer", "null"] },
+        "n_dead_tup_24h_ago": { "type": ["integer", "null"] },
+        "vacuum_threshold": { "type": ["integer", "null"] },
+        "autovacuum_runs_in_window": { "type": ["integer", "null"] },
+        "seconds_since_last_vacuum": { "type": ["integer", "null"] },
+        "vacuum_recorded": { "type": ["boolean", "null"] },
+        "autovacuum_disabled": { "type": ["boolean", "null"] }
+      }
+    },
     "nodeResult": {
       "type": "object",
       "additionalProperties": false,
@@ -198,6 +234,38 @@
         "data": { "$ref": "#/$defs/data" },
         "postgres_version": { "$ref": "#/$defs/postgresVersion" },
         "effective_values": { "$ref": "#/$defs/effectiveValues" },
+        "autovacuum_workers": { "$ref": "#/$defs/autovacuumWorkers" },
+        "autovacuum_tables": { "type": "array", "items": { "$ref": "#/$defs/autovacuumTable" } },
+        "autovacuum_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope_bytes", "tables_in_scope_by_size", "smaller_tables_with_dead_tuples",
+                       "smaller_tables_past_threshold", "rows_shown"],
+          "properties": {
+            "scope_bytes": { "type": "integer" },
+            "tables_in_scope_by_size": { "type": "integer" },
+            "smaller_tables_with_dead_tuples": { "type": "integer" },
+            "smaller_tables_past_threshold": { "type": "integer" },
+            "rows_shown": { "type": "integer" }
+          }
+        },
+        "settings_window_seconds": { "type": "integer" },
+        "autovacuum_runs_window_seconds": { "type": "integer" },
+        "settings_changed_in_window": { "type": "array", "items": { "type": "string" } },
+        "autovacuum_runs_top": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["database", "schema_name", "table_name", "autovacuum_runs"],
+            "properties": {
+              "database": { "type": "string" },
+              "schema_name": { "type": "string" },
+              "table_name": { "type": "string" },
+              "autovacuum_runs": { "type": "integer" }
+            }
+          }
+        },
         "throughput_budget": { "$ref": "#/$defs/throughputBudget" },
         "conclusions": { "type": "array", "items": { "type": "string" } },
         "recommendations": { "type": "array", "items": { "type": "string" } },
