@@ -219,7 +219,9 @@ describe("mon local-install --continue-prestarted", () => {
     writeFileSync(`${projectDir}/host-metrics/clickhouse-x.yml`, "[]\n");
     writeFileSync(log, "");
     run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"], { RUNNING: "grafana-with-datasources" });
-    expect(calls().some((c) => c.startsWith("compose ") && c.endsWith("kill -s SIGHUP sink-prometheus"))).toBe(true);
+    expect(calls().some((c) => c.startsWith("compose ") && c.endsWith("exec -T sink-prometheus kill -HUP 1"))).toBe(true);
+    // Never through the daemon: `docker kill` turns off the restart policy (#473).
+    expect(calls().some((c) => / kill -s /.test(c))).toBe(false);
   });
 
   test("without the marker it is today's install, and a running stack still refuses", () => {

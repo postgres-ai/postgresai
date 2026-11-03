@@ -30,6 +30,7 @@ case "$*" in
   *" ps "*rds-host-stats) [ -n "$FAKE_RDS_PS_FAILS" ] && exit 1; [ -n "$FAKE_RDS_RUNNING" ] && echo 4567ef ;;
   "up -d --no-deps vmalert") [ "$FAKE_VMALERT_FAILS" = signal ] && kill -TERM $$; [ -n "$FAKE_VMALERT_FAILS" ] && exit 1 ;;
   *" up "*rds-host-stats) echo "$RDS_DB_INSTANCE_IDENTIFIER $AWS_REGION $PGAI_CLUSTER $PGAI_NODE_NAME" >> "$FAKE_DOCKER_LOG_DIR/rds-env.log" ;;
+  "exec -T sink-prometheus kill -HUP 1") [ -n "$FAKE_KILL_FAILS" ] && exit 1 ;;
   exec*) [ -n "$FAKE_EXEC_FAILS" ] && exit 1 ;;
   kill*) [ -n "$FAKE_KILL_FAILS" ] && exit 1 ;;
   ps*) echo 0123abcd ;;
@@ -47,7 +48,9 @@ function run(args: string[], extra: Record<string, string> = {}) {
 }
 const relayOff = "Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.";
 const scrapeFiles = () => existsSync(`${projectDir}/host-metrics`) ? readdirSync(`${projectDir}/host-metrics`).sort() : [];
-const reloads = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("kill "));
+// Any signal sent through the daemon (`kill ...`) counts too, so a regression to
+// `docker compose kill` shows up here (#473).
+const reloads = () => readFileSync(log, "utf8").split("\n").filter((line) => line.startsWith("kill ") || line.endsWith(" kill -HUP 1"));
 const profiles = () => envFile().match(/^COMPOSE_PROFILES=.*$/m)?.[0];
 const vmalertCalls = () => readFileSync(log, "utf8").split("\n").filter((line) => line.endsWith(" vmalert"));
 const envFile = () => existsSync(`${projectDir}/.env`) ? readFileSync(`${projectDir}/.env`, "utf8") : "";
@@ -57,7 +60,7 @@ test("Supabase: the relay scrape job carries the target's cluster and node_name"
   expect(added.exitCode, added.out).toBe(0);
   expect(readFileSync(`${projectDir}/host-metrics/supabase-sb.yml`, "utf8")).toBe(readFileSync(`${import.meta.dir}/fixtures/supabase-scrape.golden.yml`, "utf8"));
   expect(added.out).toContain("Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)");
-  expect(reloads()).toEqual(["kill -s SIGHUP sink-prometheus"]);
+  expect(reloads()).toEqual(["exec -T sink-prometheus kill -HUP 1"]);
   // vmalert maps the relayed series to host_*, so it runs from now on.
   expect(profiles()).toBe("COMPOSE_PROFILES=host-metrics");
   expect(vmalertCalls()).toEqual(["up -d --no-deps vmalert"]);
@@ -203,7 +206,7 @@ test.each([["false"], [""]])("Supabase: with the flag %p the job is removed and 
   const off = run(["add", supabase(), "sb"], { PGAI_SUPABASE_HOST_METRICS: flag });
   expect(off.exitCode, off.out).toBe(0);
   expect(scrapeFiles()).toEqual([]);
-  expect(reloads()).toEqual(["kill -s SIGHUP sink-prometheus"]);
+  expect(reloads()).toEqual(["exec -T sink-prometheus kill -HUP 1"]);
   expect(profiles()).toBeUndefined();
   expect(vmalertCalls()).toEqual(["rm -sf vmalert"]);
 });
