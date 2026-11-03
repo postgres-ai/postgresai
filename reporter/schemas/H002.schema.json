@@ -64,9 +64,11 @@
         "reason": { "type": "string" },
         "idx_scan": { "type": "number" },
         "index_size_bytes": { "type": "number" },
-        "idx_is_btree": { "type": "boolean" },
-        "supports_fk": { "type": "boolean" },
-        "index_size_pretty": { "type": "string" }
+        "idx_is_btree": { "type": ["boolean", "null"] },
+        "supports_fk": { "type": ["boolean", "null"] },
+        "index_size_pretty": { "type": "string" },
+        "zero_scans_since_epoch": { "type": "number" },
+        "zero_scans_since_time": { "type": "string" }
       }
     },
     "statsReset": {
@@ -107,7 +109,39 @@
         "total_size_pretty": { "type": "string" },
         "database_size_bytes": { "type": "number" },
         "database_size_pretty": { "type": "string" },
-        "stats_reset": { "$ref": "#/$defs/statsReset" }
+        "stats_reset": { "$ref": "#/$defs/statsReset" },
+        "scan_window": { "$ref": "#/$defs/scanWindow" },
+        "table_writes": { "type": "array", "items": { "$ref": "#/$defs/tableWrites" } }
+      }
+    },
+    "scanWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_epoch", "start_time", "end_epoch", "end_time", "days", "lookback", "reading_step", "restart_in_window", "reset_in_window"],
+      "properties": {
+        "start_epoch": { "type": "number" },
+        "start_time": { "type": "string" },
+        "end_epoch": { "type": "number" },
+        "end_time": { "type": "string" },
+        "days": { "type": "number" },
+        "lookback": { "type": "string" },
+        "reading_step": { "type": "string" },
+        "restart_in_window": { "type": ["boolean", "null"] },
+        "reset_in_window": { "type": ["boolean", "null"] }
+      }
+    },
+    "tableWrites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_name", "table_name", "n_tup_upd", "n_tup_hot_upd", "n_tup_ins", "hot_share_pct", "window"],
+      "properties": {
+        "schema_name": { "type": "string" },
+        "table_name": { "type": "string" },
+        "n_tup_upd": { "type": ["integer", "null"] },
+        "n_tup_hot_upd": { "type": ["integer", "null"] },
+        "n_tup_ins": { "type": ["integer", "null"] },
+        "hot_share_pct": { "type": ["number", "null"] },
+        "window": { "type": "string" }
       }
     },
     "data": {
@@ -125,5 +159,3 @@
     }
   }
 }
-
-

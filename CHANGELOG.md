@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- H002 "Unused indexes" (postgres-ai/postgresai#475):
+  - `supports_fk` and `idx_is_btree` now come from their pgwatch series. They were read as labels that do not exist, so every index was reported as backing no foreign key. An index the series does not cover gets `null` (unknown), never `false`.
+  - `index_definition` falls back to the metric's own definition when the sink database has none, so the undo statement is known.
+  - `stats_reset` is read by `database_name` as well as `datname` (pgwatch labels it `database_name`); it was always null.
+  - New `scan_window` per database: the first monitored reading of the unused-index list in the last 35 days to now, in days, and whether a restart or a statistics reset falls inside it. Each index gets `zero_scans_since`: the list holds only indexes with no scans, and the counter only grows, so an index in every reading had no scans in between.
+  - New `table_writes`: updates, HOT updates (they write no index entries) and inserts over that window, per table holding a candidate.
 - F001 "Autovacuum: current settings": the report now also reads `maintenance_work_mem`, `log_autovacuum_min_duration`, `autovacuum_vacuum_insert_threshold`, and PG18's `autovacuum_vacuum_max_threshold` and `autovacuum_worker_slots`, and carries new optional fields for CheckupLoop's F001 report (postgres-ai/platform-all#1112, #471):
   - `autovacuum_workers`: mean and peak active workers over 7 days, with the sample count and the limit.
   - `autovacuum_tables`: application tables of 1 GiB or more, and tables with dead tuples, the most overdue first. Each row has its size, live and dead tuples (now and 24 h ago), its own vacuum threshold, autovacuum runs in the window, its last vacuum, and whether autovacuum is off.
