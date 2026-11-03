@@ -995,6 +995,89 @@ class PostgresReportGenerator:
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
 
+    # H002 window: 0 scans in every monitored reading over the lookback (protocols
+    # checkup-acceptance-criteria/H002: H002-O2; checklist Q1, "a monitored delta over
+    # stated UTC bounds"). The unused_indexes metric lists only indexes with idx_scan = 0,
+    # and idx_scan only grows, so an index in every reading had no scans in between.
+    H002_LOOKBACK = "35d"
+    H002_STEP = "1h"
+
+    @staticmethod
+    def _h002_utc(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _h002_index_values(self, query: str) -> Dict[Tuple[str, str, str], float]:
+        """(schema_name, table_name, index_name) -> value of an unused_indexes series."""
+        out: Dict[Tuple[str, str, str], float] = {}
+        result = self.query_instant(query)
+        for row in (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []:
+            m = row.get('metric') or {}
+            try:
+                out[(m.get('schema_name', 'unknown'), m.get('table_name', 'unknown'),
+                     m.get('index_name', 'unknown'))] = float(row['value'][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        return out
+
+    def _h002_scan_window(self, first_zero: Dict[Tuple[str, str, str], float],
+                          stats_reset_epoch: Optional[float], postmaster_startup_epoch: Optional[float]
+                          ) -> Optional[Dict[str, Any]]:
+        """The window the zero scans cover: the first reading of the list in the lookback to now.
+        Hours without a reading are not counted: the counter only grows, so with no restart and no
+        reset inside the window the zero covers them."""
+        if not first_zero:
+            return None
+        start, end = min(first_zero.values()), time.time()
+        return {
+            "start_epoch": start,
+            "start_time": self._h002_utc(start),
+            "end_epoch": end,
+            "end_time": self._h002_utc(end),
+            "days": round((end - start) / 86400, 1),
+            "lookback": self.H002_LOOKBACK,
+            "reading_step": self.H002_STEP,
+            "restart_in_window": None if postmaster_startup_epoch is None else postmaster_startup_epoch > start,
+            "reset_in_window": None if stats_reset_epoch is None else stats_reset_epoch > start,
+        }
+
+    def _h002_table_writes(self, cluster: str, node_name: str, db_name: str,
+                           unused_indexes: List[Dict[str, Any]], window: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Updates, HOT updates and inserts over the window on each table holding a candidate (H002-O5)."""
+        _esc = self._escape_promql_label
+        span = f'{max(1, int((window["end_epoch"] - window["start_epoch"]) // 3600))}h'
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+
+        def per_table(column: str) -> Dict[Tuple[str, str], float]:
+            result = self.query_instant(f'increase(pgwatch_table_stats_{column}{{{sel}}}[{span}])')
+            out: Dict[Tuple[str, str], float] = {}
+            for row in (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []:
+                m = row.get('metric') or {}
+                try:
+                    # table_stats labels are quote_ident()ed; the unused_indexes ones are raw
+                    out[(self._f001_unquote(m.get('schema', '')),
+                         self._f001_unquote(m.get('table_name', '')))] = float(row['value'][1])
+                except (KeyError, IndexError, TypeError, ValueError):
+                    continue
+            return out
+
+        upd, hot, ins = per_table("n_tup_upd"), per_table("n_tup_hot_upd"), per_table("n_tup_ins")
+        tables = sorted({(i["schema_name"], i["table_name"]) for i in unused_indexes})
+        out = []
+        for key in tables:
+            if key not in upd and key not in ins:
+                continue
+            n_upd, n_hot = upd.get(key), hot.get(key)
+            out.append({
+                "schema_name": key[0],
+                "table_name": key[1],
+                "n_tup_upd": None if n_upd is None else int(round(n_upd)),
+                "n_tup_hot_upd": None if n_hot is None else int(round(n_hot)),
+                "n_tup_ins": None if key not in ins else int(round(ins[key])),
+                "hot_share_pct": round(100.0 * n_hot / n_upd, 1) if n_upd and n_hot is not None else None,
+                "window": span,
+            })
+        return out
+
     def generate_h002_unused_indexes_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
         """
         Generate H002 Unused Indexes report.
@@ -1032,7 +1115,8 @@ class PostgresReportGenerator:
         if postmaster_uptime_result.get('status') == 'success' and postmaster_uptime_result.get('data', {}).get('result'):
             uptime_seconds = float(postmaster_uptime_result['data']['result'][0]['value'][1]) if postmaster_uptime_result['data']['result'] else None
             if uptime_seconds:
-                postmaster_startup_epoch = datetime.now().timestamp() - uptime_seconds
+                # time.time(): the same clock as the H002 scan window's end
+                postmaster_startup_epoch = time.time() - uptime_seconds
                 postmaster_startup_time = datetime.fromtimestamp(postmaster_startup_epoch).isoformat()
 
         unused_indexes_by_db = {}
@@ -1040,8 +1124,13 @@ class PostgresReportGenerator:
             # Get index definitions from Postgres sink database for this specific database
             index_definitions = self.get_index_definitions_from_sink(db_name)
             # Query stats_reset timestamp for this database
-            stats_reset_query = f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
-            stats_reset_result = self.query_instant(stats_reset_query)
+            stats_reset_result = {}
+            # pgwatch labels this metric database_name; older sinks used datname.
+            for db_label in ("datname", "database_name"):
+                stats_reset_query = f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", {db_label}="{_esc(db_name)}"}}[3h])'
+                stats_reset_result = self.query_instant(stats_reset_query)
+                if stats_reset_result.get('status') == 'success' and stats_reset_result.get('data', {}).get('result'):
+                    break
 
             stats_reset_epoch = None
             days_since_reset = None
@@ -1056,6 +1145,12 @@ class PostgresReportGenerator:
             # Query unused indexes for each database using last_over_time to get most recent value
             unused_indexes_query = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}}[3h])'
             unused_result = self.query_instant(unused_indexes_query)
+            db_sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+            # supports_fk and idx_is_btree are value series of the metric, not labels.
+            supports_fk = self._h002_index_values(f'last_over_time(pgwatch_unused_indexes_supports_fk{{{db_sel}}}[3h])')
+            is_btree = self._h002_index_values(f'last_over_time(pgwatch_unused_indexes_idx_is_btree{{{db_sel}}}[3h])')
+            first_zero = self._h002_index_values(
+                f'min_over_time(timestamp(pgwatch_unused_indexes_idx_scan{{{db_sel}}})[{self.H002_LOOKBACK}:{self.H002_STEP}])')
 
             unused_indexes = []
             if unused_result.get('status') == 'success' and unused_result.get('data', {}).get('result'):
@@ -1077,8 +1172,11 @@ class PostgresReportGenerator:
                                                                                                               {}).get(
                         'result') else 0
 
-                    # Get index definition from collected metrics
-                    index_definition = index_definitions.get(index_name, "Definition not available")
+                    # Index definition: the sink, else the metric's own label
+                    index_definition = (index_definitions.get(index_name) or item['metric'].get('index_definition')
+                                        or "Definition not available")
+                    key = (schema_name, table_name, index_name)
+                    fk_value, btree_value = supports_fk.get(key), is_btree.get(key)
 
                     index_data = {
                         "schema_name": schema_name,
@@ -1088,9 +1186,13 @@ class PostgresReportGenerator:
                         "reason": reason,
                         "idx_scan": idx_scan,
                         "index_size_bytes": index_size_bytes,
-                        "idx_is_btree": item['metric'].get('idx_is_btree', 'false') == 'true',
-                        "supports_fk": bool(int(item['metric'].get('supports_fk', 0)))
+                        # None: the series did not cover the index (unknown, never "no foreign key")
+                        "idx_is_btree": None if btree_value is None else btree_value > 0,
+                        "supports_fk": None if fk_value is None else fk_value > 0,
                     }
+                    if key in first_zero:
+                        index_data["zero_scans_since_epoch"] = first_zero[key]
+                        index_data["zero_scans_since_time"] = self._h002_utc(first_zero[key])
 
                     index_data['index_size_pretty'] = self.format_bytes(index_data['index_size_bytes'])
 
@@ -1121,6 +1223,11 @@ class PostgresReportGenerator:
                     "postmaster_startup_time": postmaster_startup_time
                 }
             }
+            window = self._h002_scan_window(first_zero, stats_reset_epoch, postmaster_startup_epoch)
+            if window:
+                unused_indexes_by_db[db_name]["scan_window"] = window
+                unused_indexes_by_db[db_name]["table_writes"] = self._h002_table_writes(
+                    cluster, node_name, db_name, unused_indexes, window)
 
         return self.format_report_data(
             "H002",
