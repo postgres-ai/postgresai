@@ -11,7 +11,9 @@ const conn = `postgresql://monitor:password@${hostname}:5432/postgres`;
 const orgId = "ca04a310-730d-4ce0-93dd-39f2cd2d5e6f";
 const serviceId = "0c330583-6396-86d0-82cd-ed0f23b0d38c";
 const execLine = `exec -T sink-prometheus sh -c grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1" sh /etc/pgai/host-metrics/clickhouse-ch.yml`;
-const killLine = "kill -s SIGHUP sink-prometheus";
+// The reload signals VictoriaMetrics from inside the container: a `docker kill`
+// would turn off its restart policy (#473).
+const killLine = "exec -T sink-prometheus kill -HUP 1";
 const probeLine = "ps -a -q --status running --status paused sink-prometheus";
 const verifyRemoveLine = `exec -T sink-prometheus sh -c ${HOST_METRICS_VERIFY_SCRIPT} sh "scrapePool":"clickhouse-ch" absent`;
 const reloadError = "Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.";
@@ -34,7 +36,7 @@ printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
   ps) [ -n "$FAKE_PS_CODE" ] && exit "$FAKE_PS_CODE"; case " $* " in *" --status \${FAKE_PS_STATE:-running} "*) echo 0123abcd ;; esac; exit 0 ;;
   kill) exit \${FAKE_KILL_CODE:-0} ;;
-  exec) case "$*" in *api/v1/targets*) exit \${FAKE_VERIFY_CODE:-0} ;; esac; exit \${FAKE_EXEC_CODE:-0} ;;
+  exec) case "$*" in *api/v1/targets*) exit \${FAKE_VERIFY_CODE:-0} ;; *" kill -HUP 1") exit \${FAKE_KILL_CODE:-0} ;; esac; exit \${FAKE_EXEC_CODE:-0} ;;
   *) exit 0 ;;
 esac
 `);

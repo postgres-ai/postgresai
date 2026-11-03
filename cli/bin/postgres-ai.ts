@@ -4270,6 +4270,18 @@ async function runPrestart(projectDir: string, instancesPath: string, imageTag: 
 }
 
 /**
+ * Reload sink-prometheus (SIGHUP to VictoriaMetrics, PID 1 in the container).
+ *
+ * The signal is sent from INSIDE the container, never with `docker kill` /
+ * `docker compose kill`: dockerd marks a container it signals as stopped by
+ * hand, whatever the signal (moby daemon/kill.go: HasBeenManuallyStopped, and
+ * ExitOnNext when no StopSignal is set). A HUP through the daemon therefore
+ * turns off `restart: unless-stopped` for that container: it was not started
+ * again after the next reboot and the box stopped storing metrics (#473).
+ */
+const SINK_PROMETHEUS_RELOAD = ["exec", "-T", "sink-prometheus", "kill", "-HUP", "1"];
+
+/**
  * SIGHUP sink-prometheus when host-metrics scrape files exist: on a prestarted
  * stack it was already running when the target wrote them, and it reads them
  * only at start or on reload. Best effort: the files stay for the next start.
@@ -4282,7 +4294,7 @@ async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
     return;
   }
   if (files.length === 0) return;
-  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+  if (await runCompose(SINK_PROMETHEUS_RELOAD) !== 0) {
     console.error("⚠ Could not reload the metrics store; host metrics start after 'postgresai mon restart'");
   }
 }
@@ -6309,7 +6321,7 @@ async function reloadHostMetrics(projectDir: string, job: string, file?: string)
       return true;
     }
   }
-  if (await runCompose(["kill", "-s", "SIGHUP", "sink-prometheus"]) !== 0) {
+  if (await runCompose(SINK_PROMETHEUS_RELOAD) !== 0) {
     console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
     return false;
   }
