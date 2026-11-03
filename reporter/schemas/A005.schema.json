@@ -177,6 +177,11 @@
         "extended_statistics": {
           "type": "integer",
           "minimum": 0
+        },
+        "deferrable_uniques": {
+          "description": "Deferrable unique and primary-key constraints (pg_constraint.condeferrable); absent in files written before it existed.",
+          "type": "integer",
+          "minimum": 0
         }
       },
       "if": {

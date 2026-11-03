@@ -134,6 +134,7 @@ export function createMockClient(options: MockClientOptions = {}) {
       index_access_methods: [{ am: "btree", extension: null, indexes: 3 }],
       row_security_policies: 0,
       extended_statistics: 0,
+      deferrable_uniques: 2,
     },
     a005SlotsRows = [],
     a005PasswordHashes = new Error("permission denied for table pg_authid"),

@@ -45,6 +45,7 @@ describe("A005 Extensions", () => {
       index_access_methods: [{ am: "btree", extension: null, indexes: 3 }],
       row_security_policies: 0,
       extended_statistics: 0,
+      deferrable_uniques: 2,
     });
     expect(data.roles.md5_passwords).toBeNull();
     expect(data.roles.nondefault_scram_iterations).toBeNull();
@@ -181,5 +182,13 @@ describe("A005 Extensions", () => {
     const error = report.results["node-01"].data.databases.other.error;
     expect(error.length).toBe(200);
     expect(error).not.toContain("\n");
+  });
+
+  test("conclusions: the reporter's shared vectors give the same output (postgresai#474)", () => {
+    const vectors = JSON.parse(
+      require("fs").readFileSync(require("path").join(__dirname, "../../tests/compliance_vectors/a005_conclusions.json"), "utf8")
+    );
+    expect(vectors.valid_cases.length).toBeGreaterThan(2);
+    for (const c of vectors.valid_cases) expect(checkup.a005Conclusions(c.input)).toEqual(c.expected);
   });
 });

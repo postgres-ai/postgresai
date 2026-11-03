@@ -1,0 +1,185 @@
+{
+  "spec_version": "1.0",
+  "function": "a005_conclusions",
+  "description": "A005 conclusions: the same inputs give the same output in the CLI (a005Conclusions, cli/lib/checkup.ts) and the reporter (reporter/a005.py conclusions). postgresai#474.",
+  "python_verified": "reporter/a005.py conclusions",
+  "typescript_verified": "cli/lib/checkup.ts a005Conclusions",
+  "valid_cases": [
+    {
+      "id": "all_read_nothing_notable",
+      "input": {
+        "databases": {
+          "postgres": {
+            "read": true,
+            "roles_with_create": 0,
+            "extensions": {
+              "plpgsql": "1.0"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          },
+          "template1": {
+            "read": true,
+            "roles_with_create": 0,
+            "extensions": {
+              "plpgsql": "1.0"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          }
+        },
+        "logical_slots": [],
+        "roles": {
+          "md5_passwords": 0,
+          "password_hashes_error": null
+        }
+      },
+      "outcome": "success",
+      "expected": {
+        "conclusions": [
+          "2 of 2 databases read; 1 distinct extension installed."
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "one_not_read_CREATE_roles_hashes_unknown",
+      "input": {
+        "databases": {
+          "postgres": {
+            "read": true,
+            "roles_with_create": 1,
+            "extensions": {
+              "plpgsql": "1.0"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          },
+          "noconn": {
+            "read": false,
+            "roles_with_create": 0,
+            "error": "the checkup role has no CONNECT privilege on this database"
+          }
+        },
+        "logical_slots": [],
+        "roles": {
+          "md5_passwords": null,
+          "password_hashes_error": "permission denied for table pg_authid"
+        }
+      },
+      "outcome": "success",
+      "expected": {
+        "conclusions": [
+          "1 of 2 databases read; 1 distinct extension installed.",
+          "Not read: noconn. A fact about extensions or indexes is not known for the server.",
+          "1 of 2 databases has a non-superuser role with CREATE: it can install trusted extensions itself.",
+          "Stored password hashes are not known: permission denied for table pg_authid."
+        ],
+        "recommendations": [
+          "Let the checkup role connect to every database (CONNECT privilege) so that A005 covers the whole server."
+        ]
+      }
+    },
+    {
+      "id": "one_database_MD5_roles_and_two_slots",
+      "input": {
+        "databases": {
+          "postgres": {
+            "read": true,
+            "roles_with_create": 0,
+            "extensions": {
+              "plpgsql": "1.0",
+              "pgcrypto": "1.3"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          }
+        },
+        "logical_slots": [
+          {
+            "database": "a",
+            "plugin": "pgoutput",
+            "slots": 1,
+            "active": 0
+          },
+          {
+            "database": "a",
+            "plugin": "pgoutput",
+            "slots": 1,
+            "active": 0
+          }
+        ],
+        "roles": {
+          "md5_passwords": 2,
+          "password_hashes_error": null
+        }
+      },
+      "outcome": "success",
+      "expected": {
+        "conclusions": [
+          "1 of 1 database read; 2 distinct extensions installed.",
+          "2 roles with an MD5 password hash.",
+          "2 logical replication slots."
+        ],
+        "recommendations": [
+          "Set password_encryption = 'scram-sha-256' and reset the passwords of the roles with MD5 hashes."
+        ]
+      }
+    },
+    {
+      "id": "one_role_with_MD5_one_slot_two_with_CREATE",
+      "input": {
+        "databases": {
+          "a": {
+            "read": true,
+            "roles_with_create": 1,
+            "extensions": {
+              "plpgsql": "1.0"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          },
+          "b": {
+            "read": true,
+            "roles_with_create": 3,
+            "extensions": {
+              "plpgsql": "1.0"
+            },
+            "index_access_methods": [],
+            "row_security_policies": 0,
+            "extended_statistics": 0
+          }
+        },
+        "logical_slots": [
+          {
+            "database": "a",
+            "plugin": "pgoutput",
+            "slots": 1,
+            "active": 0
+          }
+        ],
+        "roles": {
+          "md5_passwords": 1,
+          "password_hashes_error": null
+        }
+      },
+      "outcome": "success",
+      "expected": {
+        "conclusions": [
+          "2 of 2 databases read; 1 distinct extension installed.",
+          "2 of 2 databases have a non-superuser role with CREATE: it can install trusted extensions itself.",
+          "1 role with an MD5 password hash.",
+          "1 logical replication slot."
+        ],
+        "recommendations": [
+          "Set password_encryption = 'scram-sha-256' and reset the passwords of the roles with MD5 hashes."
+        ]
+      }
+    }
+  ]
+}

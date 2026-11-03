@@ -3,9 +3,10 @@
 PostgreSQL Reports Generator using PromQL
 
 This script generates JSON reports containing Observations for specific PostgreSQL
-check types (A002, A003, A004, A007, D004, F001, F004, F005, H001, H002, H004,
+check types (A002, A003, A004, A005, A007, D004, F001, F004, F005, H001, H002, H004,
 I001, K001, K003, K004, K005, K006, K007, K008, M001, M002, M003, N001) by querying
-Prometheus metrics using PromQL.
+Prometheus metrics using PromQL. A005 is the exception: it reads each monitored node
+itself, with the node's pgwatch connection (reporter/a005.py).
 
 IMPORTANT: Scope of this module
 -------------------------------
@@ -60,8 +61,10 @@ except ImportError:  # pragma: no cover
 import boto3
 from requests_aws4auth import AWS4Auth
 
+from reporter import a005 as a005_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
+from reporter.wait_ready import read_sources
 try:
     from monitoring_flask_backend.promql_utils import escape_promql_label as _promql_escape_label
 except ImportError:  # pragma: no cover
@@ -199,7 +202,8 @@ class PostgresReportGenerator:
     def __init__(self, prometheus_url: str = "http://sink-prometheus:9090",
                  postgres_sink_url: str = "postgresql://pgwatch@sink-postgres:5432/measurements",
                  excluded_databases: Optional[List[str]] = None,
-                 use_current_time: bool = False):
+                 use_current_time: bool = False,
+                 sources_path: Optional[str] = None):
         """
         Initialize the PostgreSQL report generator.
 
@@ -216,6 +220,9 @@ class PostgresReportGenerator:
         self.postgres_sink_url = postgres_sink_url
         self.pg_conn = None
         self.use_current_time = use_current_time
+        # The pgwatch sources file: A005 connects to each node with its conn_str.
+        self.sources_path = sources_path or os.environ.get(
+            'REPORTER_SOURCES_PATH', '/postgres_ai_configs/pgwatch-prometheus/sources.yml')
         # Files that failed to upload, per report id; finish_report reads it.
         self.failed_uploads: Dict[int, List[str]] = {}
         self._build_metadata = self._load_build_metadata()
@@ -668,6 +675,29 @@ class PostgresReportGenerator:
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+
+    def generate_a005_extensions_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
+        """
+        Generate A005 Extensions report: catalog facts of every database of the node.
+
+        Unlike the other reports it reads the node itself, not Prometheus: once
+        per run, with the connection pgwatch uses (the node's conn_str in the
+        sources file), every database that accepts connections. A node that
+        cannot be read is listed with the reason and no database
+        (postgresai#474). See reporter/a005.py.
+        """
+        logger.info(f"Generating A005 Extensions report for cluster='{cluster}', node_name='{node_name}'...")
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        if conn_str is None:
+            result = a005_facts.unreachable_node(RuntimeError("no connection for this node in the sources file"))
+        else:
+            try:
+                result = a005_facts.node_facts(conn_str)
+            except Exception as err:  # the node: recorded in the file, the run goes on
+                result = a005_facts.unreachable_node(err, conn_str)
+                logger.warning(f"A005: node {node_name} not read: {result['data']['logical_slots_error']}")
+        return self.format_report_data("A005", {node_name: result}, node_name)
 
     def generate_a007_altered_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
@@ -4938,6 +4968,18 @@ class PostgresReportGenerator:
             if len(reports) % 5 == 0:
                 gc.collect()
 
+        # A005 reads the nodes themselves (not Prometheus); its failure never
+        # costs the other reports or the upload (postgresai#474).
+        try:
+            a005_results = {}
+            for node in nodes_to_process:
+                node_report = self.generate_a005_extensions_report(cluster, node)
+                a005_results[node] = node_report['results'][node]
+            reports['A005'] = self.format_report_data(
+                'A005', a005_results, all_nodes["primary"] if all_nodes["primary"] else nodes_to_process[0], all_nodes)
+        except Exception as err:
+            logger.warning(f"A005 not generated: {a005_facts.error_text(err)}")
+
         # Generate D004, F001, G001 from A003 data (if A003 was generated successfully)
         a003_report = reports.get('A003')
         if a003_report:
@@ -5806,9 +5848,12 @@ def main():
     parser.add_argument('--no-combine-nodes', action='store_true', default=False,
                         help='Disable combining primary and replica reports into single report')
     parser.add_argument('--check-id',
-                        choices=['A002', 'A003', 'A004', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'H001', 'H002',
+                        choices=['A002', 'A003', 'A004', 'A005', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'H001', 'H002',
                                  'H004', 'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008', 'M001', 'M002', 'M003', 'N001', 'ALL'],
                         help='Specific check ID to generate (default: ALL)')
+    parser.add_argument('--sources-path', default=None,
+                        help='pgwatch sources file with each node\'s connection (A005); default: '
+                             '$REPORTER_SOURCES_PATH or /postgres_ai_configs/pgwatch-prometheus/sources.yml')
     parser.add_argument('--output', default='-',
                         help='Output file (default: stdout)')
     parser.add_argument('--api-url', default='https://postgres.ai/api/general')
@@ -5834,7 +5879,7 @@ def main():
 
     generator = PostgresReportGenerator(
         args.prometheus_url, args.postgres_sink_url, excluded_databases,
-        use_current_time=args.use_current_time
+        use_current_time=args.use_current_time, sources_path=args.sources_path
     )
 
     # Test connection
@@ -5947,6 +5992,8 @@ def main():
 
                 if args.check_id == 'A002':
                     report = generator.generate_a002_version_report(cluster, args.node_name)
+                elif args.check_id == 'A005':
+                    report = generator.generate_a005_extensions_report(cluster, args.node_name)
                 elif args.check_id == 'A003':
                     report = generator.generate_a003_settings_report(cluster, args.node_name)
                 elif args.check_id == 'A004':

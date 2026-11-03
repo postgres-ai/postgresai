@@ -20,14 +20,29 @@ READY_SERIES = ("pgwatch_settings_configured", "pgwatch_db_stats_in_recovery_int
 Target = Tuple[str, str]
 
 
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "f": "\f", "e": "\x1b", "a": "\a"}
+
+
+def _unescape(m: "re.Match[str]") -> str:
+    """A YAML double-quoted escape (js-yaml writes \\xXX / \\uXXXX for non-printable characters)."""
+    e = m.group(1)
+    if e[0] in "xuU" and len(e) > 1:
+        return chr(int(e[1:], 16))
+    return _ESCAPES.get(e, e)
+
+
 def _scalar(raw: str) -> str:
     value = raw.strip()
     # A quoted scalar may hold " #" (js-yaml quotes such a name): unquote first,
     # strip a trailing comment only from a plain scalar.
-    if value[:1] in ("'", '"'):
-        end = value.find(value[0], 1)
-        if end > 0:
-            return value[1:end]
+    if value[:1] == "'":  # '' is an escaped quote
+        m = re.match(r"'((?:[^']|'')*)'", value)
+        if m:
+            return m.group(1).replace("''", "'")
+    if value[:1] == '"':
+        m = re.match(r'"((?:[^"\\]|\\.)*)"', value)
+        if m:
+            return re.sub(r'\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)', _unescape, m.group(1))
     return value.split(" #", 1)[0].strip()
 
 
@@ -38,6 +53,18 @@ def read_targets(path: str) -> List[Target]:
     `cluster` and `node_name` under `custom_tags`). Defaults follow the CLI:
     cluster "default", node_name = the target name.
     """
+    targets = []
+    for item in read_sources(path):
+        target = (item["cluster"], item["node_name"])
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
+def read_sources(path: str) -> List[dict]:
+    """Each enabled target of a sources file: name, cluster, node_name and
+    conn_str (None when absent). The connection string carries the password:
+    never log it."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -58,24 +85,34 @@ def read_targets(path: str) -> List[Target]:
         return (" " if raw.strip()[0] == ">" else "\n").join(p for p in parts if p)
 
     items = []
+    own = 2
     for i, line in enumerate(lines):
-        m = re.match(r"^-\s+name:\s*(.*)$", line)
+        # Any key may open an item (`- conn_str: …` then `  name: …`). The item's
+        # own keys sit at the column after the dash; cluster and node_name only
+        # under custom_tags (deeper), so a nested `name:` never renames it.
+        m = re.match(r"^(-\s+)(\w+):\s*(.*)$", line)
         if m:
-            items.append({"name": value(i, m.group(1)), "is_enabled": "true"})
+            items.append({"is_enabled": "true"})
+            own = len(m.group(1))
+            key, raw, depth = m.group(2), m.group(3), own
+        elif items:
+            m = re.match(r"^(\s+)(\w+):\s*(.*)$", line)
+            if not m:
+                continue
+            depth, key, raw = len(m.group(1)), m.group(2), m.group(3)
+        else:
             continue
-        if not items:
-            continue
-        m = re.match(r"^\s+(is_enabled|cluster|node_name):\s*(.*)$", line)
-        if m:
-            items[-1][m.group(1)] = value(i, m.group(2))
-    targets = []
+        if (key in ("name", "is_enabled", "conn_str") and depth == own) or \
+                (key in ("cluster", "node_name") and depth > own):
+            items[-1][key] = value(i, raw)
+    items = [item for item in items if item.get("name")]
+    sources = []
     for item in items:
         if item["is_enabled"].lower() != "true":
             continue
-        target = (item.get("cluster") or "default", item.get("node_name") or item["name"])
-        if target not in targets:
-            targets.append(target)
-    return targets
+        sources.append({"name": item["name"], "cluster": item.get("cluster") or "default",
+                        "node_name": item.get("node_name") or item["name"], "conn_str": item.get("conn_str") or None})
+    return sources
 
 
 def targets_with_data(query: Callable[[str], dict]) -> Set[Target]:

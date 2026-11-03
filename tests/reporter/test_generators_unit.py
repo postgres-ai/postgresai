@@ -1491,7 +1491,9 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
 
     # All report types should be generated
     expected_report_codes = {
-        'A002', 'A003', 'A004', 'A007', 'A014',
+        # A005 reads the nodes (not Prometheus): here, with no sources file, a
+        # node that is not read, listed with the reason (postgresai#474).
+        'A002', 'A003', 'A004', 'A005', 'A007', 'A014',
         'D004', 'F001', 'F002', 'F004', 'F005', 'G001',
         'H001', 'H002', 'H004',
         'I001',
