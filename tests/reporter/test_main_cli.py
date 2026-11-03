@@ -350,6 +350,7 @@ def test_main_uses_explicit_project_name() -> None:
     ("A002", "generate_a002_version_report"),
     ("A003", "generate_a003_settings_report"),
     ("A004", "generate_a004_cluster_report"),
+    ("A005", "generate_a005_extensions_report"),
     ("A007", "generate_a007_altered_settings_report"),
     ("H001", "generate_h001_invalid_indexes_report"),
     ("H002", "generate_h002_unused_indexes_report"),

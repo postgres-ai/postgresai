@@ -2097,7 +2097,7 @@ export const A005_MAX_DATABASES = 100;
 export const A005_TIME_BUDGET_MS = 60_000;
 const A005_ERROR_CHARS = 200;
 
-/** Per database: extensions, index access methods with the extension of their operator classes, and two counts. */
+/** Per database: extensions, index access methods with the extension of their operator classes, and three counts. */
 export const A005_DATABASE_SQL = `
 select
   coalesce((select json_object_agg(e.extname, e.extversion order by e.extname)
@@ -2122,7 +2122,9 @@ select
               group by am.amname, x.extname
             ) as t), '[]'::json) as index_access_methods,
   (select count(*) from pg_policy)::int as row_security_policies,
-  (select count(*) from pg_statistic_ext)::int as extended_statistics
+  (select count(*) from pg_statistic_ext)::int as extended_statistics,
+  (select count(*) from pg_constraint
+   where contype in ('u', 'p') and condeferrable)::int as deferrable_uniques
 `;
 
 /** The databases that accept connections, and the non-superuser roles with CREATE on each (pg_database is shared). */
@@ -2183,6 +2185,8 @@ export interface A005Database {
   index_access_methods?: Array<{ am: string; extension: string | null; indexes: number }>;
   row_security_policies?: number;
   extended_statistics?: number;
+  /** Deferrable unique and primary-key constraints (the 17.11 REINDEX CONCURRENTLY fix). */
+  deferrable_uniques?: number;
 }
 
 function a005Error(err: unknown): string {
@@ -2238,10 +2242,11 @@ async function a005ReadDatabase(client: Client): Promise<Omit<A005Database, "rea
     index_access_methods: row.index_access_methods || [],
     row_security_policies: Number(row.row_security_policies ?? 0),
     extended_statistics: Number(row.extended_statistics ?? 0),
+    deferrable_uniques: Number(row.deferrable_uniques ?? 0),
   };
 }
 
-function a005Conclusions(data: Record<string, any>): { conclusions: string[]; recommendations: string[] } {
+export function a005Conclusions(data: Record<string, any>): { conclusions: string[]; recommendations: string[] } {
   const conclusions: string[] = [];
   const recommendations: string[] = [];
   const dbs = Object.entries(data.databases as Record<string, A005Database>);
