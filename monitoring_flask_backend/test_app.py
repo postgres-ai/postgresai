@@ -2802,3 +2802,45 @@ class TestQueryTextsRouteFilterShape:
         assert "data->>'real_dbname'" not in sql, sql
         assert re.search(r"(?<!\w)dbname\s*=\s*%s", sql) is None, sql
         assert 'make_interval' in sql, sql
+
+class TestScopedQueryInfoMetrics:
+    def row(self, **overrides):
+        return {'cluster': 'default', 'node_name': 'node-a', 'datname': 'db-a', 'queryid': '9223372036854775807', 'query': 'SELECT  $1 FROM "items"', 'observed_at': 2000000000, **overrides}
+
+    def test_same_queryid_remains_separate_across_sources_and_escapes_text(self):
+        rows = [self.row(query='SELECT $1 FROM "a\\b"'), self.row(node_name='node-b', datname='db-b')]
+        result = '\n'.join(app_module._scoped_query_info_lines(rows, 0))
+        assert 'node_name="node-a"' in result and 'node_name="node-b"' in result
+        assert 'datname="db-a"' in result and 'datname="db-b"' in result
+        assert 'queryid="9223372036854775807"' in result
+        assert r'\"a\\b\"' in result
+        assert '2000000000' in result
+
+    def test_absent_scope_and_conflicting_latest_text_are_omitted(self):
+        rows = [self.row(cluster=''), self.row(), self.row(query='SELECT other')]
+        result = '\n'.join(app_module._scoped_query_info_lines(rows, 0))
+        assert 'pgwatch_query_info_scoped{' not in result
+        assert 'state="incomplete"' in result
+
+    def test_budget_never_pushes_legacy_scrape_over_5000_and_marks_truncation(self):
+        rows = [self.row(queryid=str(i)) for i in range(10)]
+        result = app_module._scoped_query_info_lines(rows, 4998)
+        samples = [line for line in result if not line.startswith('#')]
+        assert len(samples) == 2
+        assert 'state="truncated"' in samples[-1]
+        assert app_module._scoped_query_info_lines(rows, 5000) == []
+
+    def test_capped_query_text_is_explicit_and_invalid_timestamp_is_omitted(self):
+        result = '\n'.join(app_module._scoped_query_info_lines([self.row(query='x' * 700), self.row(queryid='bad', observed_at=float('nan'))], 0))
+        assert 'query_truncated="true"' in result
+        assert 'x' * 501 not in result
+        assert 'queryid="bad"' not in result
+
+    def test_lookup_uses_all_source_keys_and_latest_timestamp(self):
+        sql = app_module._scoped_query_info_sql()
+        for key in ["tag_data->>'cluster'", "tag_data->>'node_name'", "data->>'real_dbname'", "data->>'queryid'"]:
+            assert key in sql
+        assert 'dense_rank() over' in sql
+        assert 'order by time desc' in sql
+        assert 'limit %s' in sql
+        assert sql.index('having count(distinct query) = 1') < sql.index('limit %s')

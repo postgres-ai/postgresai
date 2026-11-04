@@ -75,8 +75,9 @@ type tempfileNodeEntry struct {
 // TempfilePayload is stored as TEMPFILE.json; the platform derives the paired
 // TEMPFILEp health-matrix row from the same object.
 type TempfilePayload struct {
-	CheckID string                       `json:"checkId"`
-	Results map[string]tempfileNodeEntry `json:"results"`
+	Observation *Observation                 `json:"observation,omitempty"`
+	CheckID     string                       `json:"checkId"`
+	Results     map[string]tempfileNodeEntry `json:"results"`
 }
 
 // BuildTempfilePayload wraps a TempfileResult into the TEMPFILE payload.

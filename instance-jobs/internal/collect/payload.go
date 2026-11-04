@@ -43,8 +43,9 @@ type nodeEntry struct {
 // Payload is the STEP-5 checkup report object stored verbatim into
 // checkup_report_jsons.data.
 type Payload struct {
-	CheckID string               `json:"checkId"`
-	Results map[string]nodeEntry `json:"results"`
+	Observation *Observation         `json:"observation,omitempty"`
+	CheckID     string               `json:"checkId"`
+	Results     map[string]nodeEntry `json:"results"`
 }
 
 // toTopEvents converts the key->list map into the typed struct, defaulting a

@@ -257,6 +257,23 @@ someone debugging "the command went nowhere" needs. It **displaces nothing**: a
 `resolve_channel` job that does get a reply stores that reply, and every other
 action is relayed verbatim or stores `NULL` as before.
 
+## The query_text job
+
+A `query_text` job asks for the full collected SQL text of one query. Its args
+are identifiers only: `cluster`, `node_name`, `datname`, `queryid` (a decimal
+pg_stat_statements id) and a `start`/`end` window of at most 93 days. Unknown
+fields, SQL or a URL are refused before anything is called. The worker POSTs
+the args to one fixed endpoint, `http://monitoring_flask_backend:8000/query_text`
+on the Compose network, without following redirects and without forwarding any
+Platform or Access credential, and returns the backend's answer only if it is
+for the same `queryid`, at most 64 KiB of text, and observed inside the window.
+
+By default the text is the latest one collected in `(start, end]`. A job can
+instead set `lookup_mode: "latest_collected"`: the text is then the latest
+retained collection after `start`, bounded to 93 days and the database lookup
+statement's current time. Its `observed_at` may postdate `end`; `text_scope`
+and `retrieved_at` tell that text apart from historical chart evidence.
+
 ## Configuration
 
 Everything comes from `.pgwatch-config`, the file the reporter container already

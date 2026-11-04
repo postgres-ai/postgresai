@@ -303,6 +303,13 @@
           }
         ]
       }
+    },
+    "max(timestamp(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
     }
   },
   "expected": {

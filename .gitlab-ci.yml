@@ -208,7 +208,7 @@ flask-backend:tests:
     - pip install --upgrade pip
     - pip install -r monitoring_flask_backend/requirements.txt
   script:
-    - PYTHONPATH=monitoring_flask_backend:. python -m pytest monitoring_flask_backend/test_app.py
+    - PYTHONPATH=monitoring_flask_backend:. python -m pytest monitoring_flask_backend/test_app.py monitoring_flask_backend/test_query_text_native.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
