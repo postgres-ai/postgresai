@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- H004 "Redundant indexes":
+  - Each candidate's `index_definition`, and the definition and size of each index in `redundant_to`, now come from the metric's own labels (`index_definition`, `redundant_to_json`) when the sink database has none. Before, every definition read "Definition not available" and every covering index had size 0, so no pair could be checked.
+  - `database_size_bytes` is matched by the database's own name (`real_dbname`): the redundant-index series carry pgwatch's source name, so the size was 0 on managed platforms. The entry is now keyed by the database's name, as H002's is.
+  - New per candidate: `index_usage_first` with `index_usage_first_time` (its scan counter at its first monitored reading in the last 35 days) and `index_usage_last_time` (the reading `index_usage` comes from), so a report can say how many counters rose between two dated readings. New per database: `usage_readings`, the span of those readings and whether a restart or a statistics reset falls inside it.
+  - New `also_unused` on each candidate and each covering index: whether it is also on the unused-index list (H002). Omitted when that list cannot be read.
 - H002 "Unused indexes" (postgres-ai/postgresai#475):
   - `supports_fk` and `idx_is_btree` now come from their pgwatch series. They were read as labels that do not exist, so every index was reported as backing no foreign key. An index the series does not cover gets `null` (unknown), never `false`.
   - `index_definition` falls back to the metric's own definition when the sink database has none, so the undo statement is known.
