@@ -1266,6 +1266,80 @@ class PostgresReportGenerator:
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
 
+    # H004 readings: the scan counter of each candidate at its first monitored reading in the
+    # lookback and at the latest one (protocols checkup-acceptance-criteria/H004: H004-O2,
+    # "scan counters at two dated readings and how many rose"), the same lookback as H002.
+    H004_LOOKBACK = "35d"
+    H004_STEP = "1h"
+
+    @staticmethod
+    def _h004_qualified(name: str, schema: str) -> str:
+        """The schema-qualified index name, with pgwatch's quote_ident() removed: the redundant_indexes labels are
+        formatted (no schema for public, quoted when needed), the unused_indexes ones are raw."""
+        unquote = PostgresReportGenerator._f001_unquote
+        parts = [unquote(p) for p in re.findall(r'"(?:[^"]|"")*"|[^.]+', name or "")]
+        if len(parts) >= 2:
+            return f"{parts[-2]}.{parts[-1]}"
+        return f"{schema}.{parts[0]}" if parts else ""
+
+    def _h004_redundant_to(self, labels: Dict[str, str], schema_name: str, reason: str,
+                           index_definitions: Dict[str, str]) -> List[Dict[str, Any]]:
+        """The indexes that cover a candidate, with definition and size: from the metric's
+        redundant_to_json label (pg_get_indexdef and pg_relation_size of each), else the names
+        in its reason label."""
+        out: List[Dict[str, Any]] = []
+        try:
+            parsed = json.loads(labels.get("redundant_to_json") or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+        for entry in parsed if isinstance(parsed, list) else []:
+            if not isinstance(entry, dict) or not entry.get("index_name"):
+                continue
+            name = str(entry["index_name"])
+            size = entry.get("index_size_bytes")
+            size = float(size) if isinstance(size, (int, float)) else 0
+            out.append({
+                "index_name": name,
+                "index_definition": (index_definitions.get(name) or entry.get("index_definition")
+                                     or "Definition not available"),
+                "index_size_bytes": size,
+                "index_size_pretty": self.format_bytes(size) if size else "N/A",
+            })
+        if out:
+            return sorted(out, key=lambda e: e["index_name"])
+        return [{"index_name": n, "index_definition": index_definitions.get(n, "Definition not available"),
+                 "index_size_bytes": 0, "index_size_pretty": "N/A"}
+                for n in [r.strip() for r in reason.split(',') if r.strip()]]
+
+    def _h004_counter_resets(self, cluster: str, node_name: str, db_name: str
+                             ) -> Tuple[Optional[float], Optional[float]]:
+        """(server start, last statistics reset) as epochs, or None: a restart or a reset between the
+        two readings restarts the scan counters, so "rose" would compare two counters."""
+        _esc = self._escape_promql_label
+        start = None
+        uptime = self.query_instant(
+            f'last_over_time(pgwatch_db_stats_postmaster_uptime_s{{cluster="{_esc(cluster)}", '
+            f'node_name="{_esc(node_name)}"}}[3h])')
+        rows = (uptime.get('data') or {}).get('result') or [] if uptime.get('status') == 'success' else []
+        if rows:
+            try:
+                start = time.time() - float(rows[0]['value'][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                start = None
+        reset = None
+        for db_label in ("datname", "database_name"):  # pgwatch labels it database_name
+            result = self.query_instant(
+                f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{cluster="{_esc(cluster)}", '
+                f'node_name="{_esc(node_name)}", {db_label}="{_esc(db_name)}"}}[3h])')
+            rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
+            if rows:
+                try:
+                    reset = float(rows[0]['value'][1]) or None
+                except (KeyError, IndexError, TypeError, ValueError):
+                    reset = None
+                break
+        return start, reset
+
     def generate_h004_redundant_indexes_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
         """
@@ -1284,16 +1358,20 @@ class PostgresReportGenerator:
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
-        # Get database sizes
+        # Database sizes by datname, and by pgwatch's source name (dbname): the redundant_indexes
+        # series carry the source name, which is not the database's name on managed platforms.
         db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
+        source_sizes = {}
 
         if db_sizes_result.get('status') == 'success' and db_sizes_result.get('data', {}).get('result'):
             for result in db_sizes_result['data']['result']:
                 db_name = result['metric'].get('datname', 'unknown')
                 size_bytes = float(result['value'][1])
                 database_sizes[db_name] = size_bytes
+                if result['metric'].get('dbname'):
+                    source_sizes[result['metric']['dbname']] = size_bytes
 
         redundant_indexes_by_db = {}
         for db_name in databases:
@@ -1302,9 +1380,21 @@ class PostgresReportGenerator:
             # Query redundant indexes for each database using last_over_time to get most recent value
             redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"}}[3h])'
             result = self.query_instant(redundant_indexes_query)
+            sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"'
+            # H004-O2: each candidate's first reading in the lookback (time, counter) and its latest.
+            # One value per candidate across its series: redundant_to_json is a label holding the
+            # covering index's size, so a candidate gets a new series each time that index grows.
+            by_index = "by (schema_name, table_name, index_name)"
+            first_time = self._h002_index_values(
+                f'min {by_index} (min_over_time(timestamp(pgwatch_redundant_indexes_index_usage{{{sel}}})[{self.H004_LOOKBACK}:{self.H004_STEP}]))')
+            first_usage = self._h002_index_values(
+                f'min {by_index} (min_over_time(pgwatch_redundant_indexes_index_usage{{{sel}}}[{self.H004_LOOKBACK}]))')
+            last_time = self._h002_index_values(
+                f'max {by_index} (max_over_time(timestamp(pgwatch_redundant_indexes_index_usage{{{sel}}})[6h:{self.H004_STEP}]))')
 
             redundant_indexes = []
             total_size = 0
+            real_db = db_name
 
             if result.get('status') == 'success' and result.get('data', {}).get('result'):
                 for item in result['data']['result']:
@@ -1314,6 +1404,8 @@ class PostgresReportGenerator:
                     relation_name = item['metric'].get('relation_name', f"{schema_name}.{table_name}")
                     access_method = item['metric'].get('access_method', 'unknown')
                     reason = item['metric'].get('reason', 'Unknown')
+                    # The database's own name (pgwatch's real_dbname); dbname is the source's name.
+                    real_db = item['metric'].get('real_dbname') or real_db
                     if is_system_schema(schema_name):
                         continue  # #345: never recommend dropping system-catalog indexes
 
@@ -1340,19 +1432,8 @@ class PostgresReportGenerator:
                                                                                                             {}).get(
                         'result') else False
 
-                    # Build redundant_to array from the reason field
-                    # The reason field contains comma-separated index names
-                    # (the indexes that make this index redundant)
-                    # Note: In full mode, index sizes for redundant_to are not available
-                    # (would require additional Prometheus queries). Use express mode for sizes.
-                    redundant_to = []
-                    for idx_name in [r.strip() for r in reason.split(',') if r.strip()]:
-                        redundant_to.append({
-                            "index_name": idx_name,
-                            "index_definition": index_definitions.get(idx_name, "Definition not available"),
-                            "index_size_bytes": 0,
-                            "index_size_pretty": "N/A"
-                        })
+                    # The covering indexes, with definitions and sizes, from the metric's own labels.
+                    redundant_to = self._h004_redundant_to(item['metric'], schema_name, reason, index_definitions)
 
                     redundant_index = {
                         "schema_name": schema_name,
@@ -1365,11 +1446,22 @@ class PostgresReportGenerator:
                         "table_size_bytes": table_size_bytes,
                         "index_usage": index_usage,
                         "supports_fk": supports_fk,
-                        "index_definition": index_definitions.get(index_name, "Definition not available"),
+                        # Index definition: the sink, else the metric's own label
+                        "index_definition": (index_definitions.get(index_name)
+                                             or item['metric'].get('index_definition')
+                                             or "Definition not available"),
                         "index_size_pretty": self.format_bytes(index_size_bytes),
                         "table_size_pretty": self.format_bytes(table_size_bytes),
                         "redundant_to": redundant_to
                     }
+                    key = (schema_name, table_name, index_name)
+                    if key in first_time and key in first_usage:
+                        redundant_index["index_usage_first"] = first_usage[key]
+                        redundant_index["index_usage_first_epoch"] = first_time[key]
+                        redundant_index["index_usage_first_time"] = self._h002_utc(first_time[key])
+                    if key in last_time:
+                        redundant_index["index_usage_last_epoch"] = last_time[key]
+                        redundant_index["index_usage_last_time"] = self._h002_utc(last_time[key])
 
                     redundant_indexes.append(redundant_index)
                     total_size += index_size_bytes
@@ -1381,8 +1473,22 @@ class PostgresReportGenerator:
             if not redundant_indexes:
                 continue
 
-            db_size_bytes = database_sizes.get(db_name, 0)
-            redundant_indexes_by_db[db_name] = {
+            # H004-O3 / C4: candidates and covering indexes also on the unused-index list (H002).
+            unused_result = self.query_instant(
+                f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{_esc(cluster)}", '
+                f'node_name="{_esc(node_name)}", datname="{_esc(real_db)}"}}[3h])')
+            unused = None
+            if unused_result.get('status') == 'success':
+                unused = {self._h004_qualified(r['metric'].get('index_name', ''), r['metric'].get('schema_name', ''))
+                          for r in (unused_result.get('data') or {}).get('result') or []}
+            if unused is not None:
+                for idx in redundant_indexes:
+                    idx["also_unused"] = self._h004_qualified(idx["index_name"], idx["schema_name"]) in unused
+                    for cover in idx["redundant_to"]:
+                        cover["also_unused"] = self._h004_qualified(cover["index_name"], idx["schema_name"]) in unused
+
+            db_size_bytes = database_sizes.get(real_db) or source_sizes.get(db_name, 0)
+            entry = {
                 "redundant_indexes": redundant_indexes,
                 "total_count": len(redundant_indexes),
                 "total_size_bytes": total_size,
@@ -1390,6 +1496,20 @@ class PostgresReportGenerator:
                 "database_size_bytes": db_size_bytes,
                 "database_size_pretty": self.format_bytes(db_size_bytes)
             }
+            firsts = [i["index_usage_first_epoch"] for i in redundant_indexes if "index_usage_first_epoch" in i]
+            lasts = [i["index_usage_last_epoch"] for i in redundant_indexes if "index_usage_last_epoch" in i]
+            if firsts and lasts:
+                start, end = min(firsts), max(lasts)
+                server_start, reset = self._h004_counter_resets(cluster, node_name, real_db)
+                entry["usage_readings"] = {
+                    "start_epoch": start, "start_time": self._h002_utc(start),
+                    "end_epoch": end, "end_time": self._h002_utc(end),
+                    "lookback": self.H004_LOOKBACK, "reading_step": self.H004_STEP,
+                    "restart_in_window": None if server_start is None else start < server_start < end,
+                    "reset_in_window": None if reset is None else start < reset < end,
+                }
+            # Keyed by the database's own name, as H002 (one source per database).
+            redundant_indexes_by_db[real_db] = entry
 
         return self.format_report_data(
             "H004",
