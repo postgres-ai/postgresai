@@ -1273,6 +1273,34 @@ class PostgresReportGenerator:
     H004_STEP = "1h"
 
     @staticmethod
+    def _h004_series_labels(metric: Dict[str, str]) -> Tuple[Tuple[str, str], ...]:
+        """A series' labels without the metric name: the same row's other columns carry the same."""
+        return tuple(sorted((k, v) for k, v in metric.items() if k != '__name__'))
+
+    def _h004_latest_series(self, result: Dict[str, Any], stamps_query: str) -> List[Dict[str, Any]]:
+        """One series per (schema, table, index): the one with the latest sample (#483).
+
+        redundant_to_json holds the covering index's size, so a candidate gets a new series
+        each time that index grows, and the lookback can hold two. stamps_query gives each
+        series' latest sample time; without it, the first series of each index is kept."""
+        rows = ((result.get('data') or {}).get('result') or []) if result.get('status') == 'success' else []
+        stamped = self.query_instant(stamps_query)
+        stamps: Dict[Tuple[Tuple[str, str], ...], float] = {}
+        for row in ((stamped.get('data') or {}).get('result') or []) if stamped.get('status') == 'success' else []:
+            try:
+                stamps[self._h004_series_labels(row.get('metric') or {})] = float(row['value'][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        chosen: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Any]]] = {}
+        for row in rows:
+            m = row.get('metric') or {}
+            key = (m.get('schema_name', 'unknown'), m.get('table_name', 'unknown'), m.get('index_name', 'unknown'))
+            stamp = stamps.get(self._h004_series_labels(m), float('-inf'))
+            if key not in chosen or stamp > chosen[key][0]:
+                chosen[key] = (stamp, row)
+        return [row for _, row in chosen.values()]
+
+    @staticmethod
     def _h004_qualified(name: str, schema: str) -> str:
         """The schema-qualified index name, with pgwatch's quote_ident() removed: the redundant_indexes labels are
         formatted (no schema for public, quoted when needed), the unused_indexes ones are raw."""
@@ -1379,8 +1407,10 @@ class PostgresReportGenerator:
             index_definitions = self.get_index_definitions_from_sink(db_name)
             # Query redundant indexes for each database using last_over_time to get most recent value
             redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"}}[3h])'
-            result = self.query_instant(redundant_indexes_query)
             sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"'
+            candidates = self._h004_latest_series(
+                self.query_instant(redundant_indexes_query),
+                f'tlast_over_time(pgwatch_redundant_indexes_index_size_bytes{{{sel}}}[3h])')
             # H004-O2: each candidate's first reading in the lookback (time, counter) and its latest.
             # One value per candidate across its series: redundant_to_json is a label holding the
             # covering index's size, so a candidate gets a new series each time that index grows.
@@ -1396,8 +1426,8 @@ class PostgresReportGenerator:
             total_size = 0
             real_db = db_name
 
-            if result.get('status') == 'success' and result.get('data', {}).get('result'):
-                for item in result['data']['result']:
+            if candidates:
+                for item in candidates:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
                     index_name = item['metric'].get('index_name', 'unknown')
@@ -1412,25 +1442,23 @@ class PostgresReportGenerator:
                     # Get the index size from the metric value
                     index_size_bytes = float(item['value'][1]) if item.get('value') else 0
 
-                    # Query other related metrics for this index
+                    # The same row's other columns: the candidate's series by all its labels (#483),
+                    # else by the index alone (a store that labels the columns differently).
                     _idx_filter = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}", schema_name="{_esc(schema_name)}", table_name="{_esc(table_name)}", index_name="{_esc(index_name)}"'
-                    table_size_query = f'last_over_time(pgwatch_redundant_indexes_table_size_bytes{{{_idx_filter}}}[3h])'
-                    table_size_result = self.query_instant(table_size_query)
-                    table_size_bytes = float(
-                        table_size_result['data']['result'][0]['value'][1]) if table_size_result.get('data', {}).get(
-                        'result') else 0
+                    _series_filter = ", ".join(f'{k}="{_esc(v)}"' for k, v in self._h004_series_labels(
+                        dict({"cluster": cluster, "node_name": node_name, "dbname": db_name}, **item['metric'])))
 
-                    index_usage_query = f'last_over_time(pgwatch_redundant_indexes_index_usage{{{_idx_filter}}}[3h])'
-                    index_usage_result = self.query_instant(index_usage_query)
-                    index_usage = float(index_usage_result['data']['result'][0]['value'][1]) if index_usage_result.get(
-                        'data', {}).get('result') else 0
+                    def _column(name: str) -> Optional[float]:
+                        for flt in (_series_filter, _idx_filter):
+                            res = self.query_instant(f'last_over_time(pgwatch_redundant_indexes_{name}{{{flt}}}[3h])')
+                            rows = (res.get('data') or {}).get('result') or []
+                            if rows:
+                                return float(rows[0]['value'][1])
+                        return None
 
-                    supports_fk_query = f'last_over_time(pgwatch_redundant_indexes_supports_fk{{{_idx_filter}}}[3h])'
-                    supports_fk_result = self.query_instant(supports_fk_query)
-                    supports_fk = bool(
-                        int(supports_fk_result['data']['result'][0]['value'][1])) if supports_fk_result.get('data',
-                                                                                                            {}).get(
-                        'result') else False
+                    table_size_bytes = _column('table_size_bytes') or 0
+                    index_usage = _column('index_usage') or 0
+                    supports_fk = bool(int(_column('supports_fk') or 0))
 
                     # The covering indexes, with definitions and sizes, from the metric's own labels.
                     redundant_to = self._h004_redundant_to(item['metric'], schema_name, reason, index_definitions)
