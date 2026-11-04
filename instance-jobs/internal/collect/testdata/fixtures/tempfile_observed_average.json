@@ -42,6 +42,13 @@
           }
         ]
       }
+    },
+    "max(timestamp(pgwatch_db_stats_temp_bytes{cluster=\"c1\", node_name=\"n1\"}))": {
+      "status": "success",
+      "data": {
+        "resultType": "matrix",
+        "result": []
+      }
     }
   },
   "expected": {

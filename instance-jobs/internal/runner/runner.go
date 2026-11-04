@@ -983,6 +983,8 @@ func (r *Runner) execute(ctx context.Context, cfg config.Config, job platform.Jo
 	// target is a service on this box rather than the metric store, and its result
 	// is relayed verbatim instead of applied to anything.
 	switch job.Kind {
+	case collect.KindQueryText:
+		return collect.QueryText(jobCtx, job.Args, r.now())
 	case dblab.KindCall:
 		return r.executeDBLab(jobCtx, cfg, job)
 	case joe.KindCall:

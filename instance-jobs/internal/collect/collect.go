@@ -328,10 +328,9 @@ func runAAS(ctx context.Context, c *Client, req Request, filter SeriesFilter, w 
 		}
 	}
 
-	return Outcome{
-		Status:  OutcomeOK,
-		Payload: BuildPayload(req.NodeName, req.ClusterName, req.vcpus(), result),
-	}, nil
+	payload := BuildPayload(req.NodeName, req.ClusterName, req.vcpus(), result)
+	payload.Observation = c.queryObservation(ctx, KindAAS, filter, w.start, w.end)
+	return Outcome{Status: OutcomeOK, Payload: payload}, nil
 }
 
 func runTempfile(ctx context.Context, c *Client, req Request, filter SeriesFilter, w window) (Outcome, error) {
@@ -344,8 +343,7 @@ func runTempfile(ctx context.Context, c *Client, req Request, filter SeriesFilte
 	if len(samples) == 0 {
 		return Outcome{Status: OutcomeSkipped, SkipReason: SkipNoData}, nil
 	}
-	return Outcome{
-		Status:  OutcomeOK,
-		Payload: BuildTempfilePayload(req.NodeName, req.ClusterName, AggregateTempfile(samples)),
-	}, nil
+	payload := BuildTempfilePayload(req.NodeName, req.ClusterName, AggregateTempfile(samples))
+	payload.Observation = c.queryObservation(ctx, KindTempfile, filter, w.start, w.end)
+	return Outcome{Status: OutcomeOK, Payload: payload}, nil
 }

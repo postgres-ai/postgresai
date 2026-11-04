@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import os
 import hmac
+import math
 import re
 import threading
 import time
@@ -1604,6 +1605,72 @@ def prometheus_table_to_dict(prom_data, timestamp):
     return metrics_dict
 
 
+# Internal native-job transport: identifiers only, never caller-supplied SQL.
+@app.route('/query_text', methods=['POST'])
+def get_scoped_query_text():
+    body = request.get_json(silent=True)
+    keys = {'cluster', 'node_name', 'datname', 'queryid', 'start', 'end'}
+    if (not isinstance(body, dict) or set(body) not in (keys, keys | {'lookup_mode'}) or
+            ('lookup_mode' in body and body['lookup_mode'] != 'latest_collected')):
+        return jsonify({'error': 'Invalid query text scope'}), 400
+    if (not all(isinstance(body[k], str) and 0 < len(body[k]) <= 512 for k in ('cluster', 'node_name', 'datname')) or
+            not isinstance(body['queryid'], str) or not re.fullmatch(r'-?[0-9]{1,20}', body['queryid']) or
+            not all(type(body[k]) in (int, float) and math.isfinite(body[k]) for k in ('start', 'end')) or
+            not 0 <= body['start'] < body['end'] <= time.time() + 5 or
+            body['end'] - body['start'] > 93 * 86400):
+        return jsonify({'error': 'Invalid query text scope'}), 400
+    latest_collected = body.get('lookup_mode') == 'latest_collected'
+    conn = None
+    try:
+        conn = psycopg2.connect(POSTGRES_SINK_URL, connect_timeout=10)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            cursor.execute("set local statement_timeout = '5000ms'")
+            if latest_collected:
+                cursor.execute("""
+                    with bounds as (select statement_timestamp() as retrieved_at), latest as (
+                        select data->>'query' as query, time, bounds.retrieved_at,
+                            dense_rank() over(order by time desc) as newest
+                        from public.pgss_queryid_queries cross join bounds
+                        where tag_data->>'cluster' = %s and tag_data->>'node_name' = %s
+                          and data->>'real_dbname' = %s and data->>'queryid' = %s
+                          and time > greatest(to_timestamp(%s), bounds.retrieved_at - interval '93 days')
+                          and time <= bounds.retrieved_at
+                          and nullif(data->>'query', '') is not null
+                    )
+                    select min(query) as query, extract(epoch from max(time))::double precision as observed_at,
+                        extract(epoch from max(retrieved_at))::double precision as retrieved_at
+                    from latest where newest = 1 having count(distinct query) = 1
+                """, tuple(body[k] for k in ('cluster', 'node_name', 'datname', 'queryid', 'start')))
+            else:
+                cursor.execute("""
+                    with latest as (
+                        select data->>'query' as query, time,
+                            dense_rank() over(order by time desc) as newest
+                        from public.pgss_queryid_queries
+                        where tag_data->>'cluster' = %s and tag_data->>'node_name' = %s
+                          and data->>'real_dbname' = %s and data->>'queryid' = %s
+                          and time > to_timestamp(%s) and time <= to_timestamp(%s)
+                          and nullif(data->>'query', '') is not null
+                    )
+                    select min(query) as query, extract(epoch from max(time))::double precision as observed_at
+                    from latest where newest = 1 having count(distinct query) = 1
+                """, tuple(body[k] for k in ('cluster', 'node_name', 'datname', 'queryid', 'start', 'end')))
+            row = cursor.fetchone()
+        metadata = {'text_scope': 'latest_collected', 'retrieved_at': row['retrieved_at'] if row else None} if latest_collected else {}
+        if not row:
+            return jsonify(queryid=body['queryid'], query=None, truncated=False, observed_at=None, available=False, **metadata)
+        raw = row['query'].encode('utf-8')
+        text = raw[:65536].decode('utf-8', errors='ignore')
+        return jsonify(queryid=body['queryid'], query=text, truncated=len(raw) > 65536,
+                       observed_at=row['observed_at'], available=True, **metadata)
+    except Exception:
+        # Driver errors may contain SQL/query text; keep both logs and response generic.
+        return jsonify({'error': 'Query text lookup failed'}), 503
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route('/query_texts', methods=['GET'])
 def get_query_texts():
     """
@@ -1712,6 +1779,92 @@ def _escape_prometheus_label(value):
             .replace('\t', ' '))
 
 
+# Keep additions within the existing query-info scrape sample_limit (5000).
+_SCOPED_QUERY_INFO_MAX_SERIES = 1000
+_QUERY_INFO_SAMPLE_LIMIT = 5000
+
+
+def _normalize_query_display(query):
+    # Same display normalization already used by the legacy exporter.
+    return ' '.join((query or '').split())
+
+
+def _scoped_query_info_sql(with_db_filter=False):
+    database_filter = "and data->>'real_dbname' = %s" if with_db_filter else ""
+    return f"""
+        with latest as (
+            select tag_data->>'cluster' as cluster,
+                tag_data->>'node_name' as node_name,
+                data->>'real_dbname' as datname,
+                data->>'queryid' as queryid, data->>'query' as query,
+                extract(epoch from time)::double precision as observed_at,
+                dense_rank() over (
+                    partition by tag_data->>'cluster', tag_data->>'node_name',
+                        data->>'real_dbname', data->>'queryid'
+                    order by time desc
+                ) as newest
+            from public.pgss_queryid_queries
+            where time > now() - make_interval(mins => %s) and time <= now()
+                and nullif(tag_data->>'cluster', '') is not null
+                and nullif(tag_data->>'node_name', '') is not null
+                and nullif(data->>'real_dbname', '') is not null
+                and nullif(data->>'queryid', '') is not null
+                and nullif(data->>'query', '') is not null
+                {database_filter}
+        ), unambiguous as (
+            select cluster, node_name, datname, queryid,
+                max(query) as query, max(observed_at) as observed_at
+            from latest where newest = 1
+            group by cluster, node_name, datname, queryid
+            having count(distinct query) = 1
+        )
+        select cluster, node_name, datname, queryid, query, observed_at
+        from unambiguous
+        order by observed_at desc, cluster, node_name, datname, queryid
+        limit %s
+    """
+
+
+def _scoped_query_info_lines(rows, legacy_count):
+    capacity = max(0, _QUERY_INFO_SAMPLE_LIMIT - legacy_count)
+    if not capacity:
+        return []
+    limit = min(_SCOPED_QUERY_INFO_MAX_SERIES, capacity - 1)
+    groups = {}
+    incomplete = False
+    for row in rows or []:
+        key = tuple(row.get(label) for label in ('cluster', 'node_name', 'datname', 'queryid'))
+        timestamp = row.get('observed_at')
+        text = row.get('query')
+        if (not all(isinstance(value, str) and value for value in key) or
+                not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or
+                timestamp <= 0 or not isinstance(text, str) or not text):
+            incomplete = True
+            continue
+        groups.setdefault(key, []).append((timestamp, _normalize_query_display(text)))
+    selected = []
+    for key, candidates in groups.items():
+        timestamp = max(item[0] for item in candidates)
+        texts = {text for observed, text in candidates if observed == timestamp}
+        if len(texts) != 1:
+            incomplete = True
+            continue
+        selected.append((timestamp, key, texts.pop()))
+    selected.sort(key=lambda item: (-item[0], item[1]))
+    truncated = len(selected) > limit or len(rows or []) > _SCOPED_QUERY_INFO_MAX_SERIES
+    lines = ['# HELP pgwatch_query_info_scoped Source-scoped SQL display text; value is source observation epoch seconds',
+             '# TYPE pgwatch_query_info_scoped gauge']
+    for timestamp, key, text in selected[:limit]:
+        labels = dict(zip(('cluster', 'node_name', 'datname', 'queryid'), key))
+        labels.update(query=text[:500], query_truncated='true' if len(text) > 500 else 'false')
+        encoded = ','.join(f'{name}="{_escape_prometheus_label(value)}"' for name, value in labels.items())
+        lines.append(f'pgwatch_query_info_scoped{{{encoded}}} {timestamp:.6f}')
+    state = ('unavailable' if rows is None else 'truncated' if truncated else
+             'incomplete' if incomplete else 'complete' if selected else 'empty')
+    lines.append(f'pgwatch_query_info_scoped_coverage{{state="{state}"}} 1')
+    return lines
+
+
 @app.route('/query_info_metrics', methods=['GET'])
 def get_query_info_metrics():
     """
@@ -1738,6 +1891,7 @@ def get_query_info_metrics():
         TRUNCATE_LONG = 100
 
         query_data = {}
+        scoped_rows = None
 
         conn = None
         try:
@@ -1750,6 +1904,23 @@ def get_query_info_metrics():
                 logger.warning("Failed to start retention cleanup thread: %s", e)
 
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Optional enrichment has its own savepoint so failure cannot abort
+                # the unchanged legacy lookup that follows.
+                cursor.execute("savepoint scoped_query_info")
+                try:
+                    scoped_filter = _should_apply_db_filter(db_name)
+                    params = [QUERYID_ACTIVE_MINUTES]
+                    if scoped_filter:
+                        params.append(db_name)
+                    params.append(_SCOPED_QUERY_INFO_MAX_SERIES + 1)
+                    cursor.execute(_scoped_query_info_sql(scoped_filter), tuple(params))
+                    scoped_rows = [dict(row) for row in cursor]
+                except Exception:
+                    cursor.execute("rollback to savepoint scoped_query_info")
+                    logger.warning("Source-scoped query metadata unavailable")
+                finally:
+                    cursor.execute("release savepoint scoped_query_info")
+
                 # Only export queryids recently seen in pg_stat_statements.
                 # The dedup trigger refreshes the timestamp on each collection,
                 # so active queryids have time within the last few minutes.
@@ -1773,7 +1944,7 @@ def get_query_info_metrics():
                             cross_source_dupes.append((queryid, list(sources)))
                     if queryid:
                         # Normalize whitespace for raw truncation
-                        normalized_text = ' '.join(query_text.split()) if query_text else ''
+                        normalized_text = _normalize_query_display(query_text)
 
                         # Smart truncation (extracts table names, CTEs, etc.)
                         short_text = smart_truncate_query(query_text, TRUNCATE_SHORT)
@@ -1838,6 +2009,8 @@ def get_query_info_metrics():
                 f'displayname_full="{names["full"]}",'
                 f'displayname_queryid="{names["queryid_only"]}"}} 1'
             )
+
+        lines.extend(_scoped_query_info_lines(scoped_rows, len(query_data)))
 
         response = make_response('\n'.join(lines) + '\n')
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'
