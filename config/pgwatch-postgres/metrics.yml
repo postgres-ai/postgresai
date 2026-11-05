@@ -135,8 +135,10 @@ metrics:
             not i2.indisprimary
             and not i2.indisunique
             and am1.amname = am2.amname
-            and i1.columns like (i2.columns || '%')
-            and i1.opclasses like (i2.opclasses || '%')
+            -- i2's columns and opclasses are a leading prefix of i1's; the
+            -- trailing separator keeps column 1 from matching column 12 (#482)
+            and (i1.columns || ' ') like (i2.columns || ' %')
+            and (i1.opclasses || ', ') like (i2.opclasses || ', %')
             and pg_get_expr(i1.indexprs, i1.indrelid) is not distinct from pg_get_expr(i2.indexprs, i2.indrelid)
             and pg_get_expr(i1.indpred, i1.indrelid) is not distinct from pg_get_expr(i2.indpred, i2.indrelid)
             -- #345: never recommend dropping system-catalog indexes

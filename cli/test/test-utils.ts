@@ -219,7 +219,7 @@ export function createMockClient(options: MockClientOptions = {}) {
         return { rows: unusedIndexesRows };
       }
       // Redundant indexes (H004) - from metrics.yml
-      if (sql.includes("redundant_indexes_grouped") && sql.includes("columns like")) {
+      if (sql.includes("redundant_indexes_grouped") && sql.includes("redundant_to_json")) {
         return { rows: redundantIndexesRows };
       }
       // F003: dead tuples metric from metrics.yml.
