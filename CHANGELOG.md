@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- H001 "Invalid indexes":
+  - `index_definition` comes from the metric's own label when the sink database has none (it read "Definition not available").
+  - The invalid-index metric gains `is_ready` (`pg_index.indisready`: false means writes do not maintain the index) and `build_in_progress` (a `CREATE INDEX` for it is running, `pg_stat_progress_create_index`). Both are in the report only when the box collects them, never defaulted.
+  - New per index: `first_seen_time` / `last_seen_time` (its first and last monitored reading in the last 35 days) and `listed_hours` against `reading_hours` (hourly steps that listed it, against steps with any reading of the database), so a report can tell a leftover from a build that is still running. New per database: `monitoring_start_time`.
+  - New metric `pg_not_valid_constraints` (constraints added `NOT VALID` and never validated, system schemas excluded, with each one's type, definition and whether it is a partition's copy of a parent's constraint) and the H001 field `not_valid_constraints`. A `$total$` row keeps "not collected" apart from "none". A database with such a constraint and no invalid index is now reported too.
 - G003 "Timeouts, locks, deadlocks" (postgres-ai/postgresai#485):
   - Monitoring boxes now upload a G003 file. It reads as the CLI's, with the settings from A003.
   - New in the box's file and the CLI's: `roles` (the timeouts stored per role and per database, whether it logs in, its calls and longest completed call), `database_settings`, `server_settings` (the value a session starts with, and its source), `routines` (procedures, and functions that set a timeout: whether they commit or catch a cancel). No other setting is copied.

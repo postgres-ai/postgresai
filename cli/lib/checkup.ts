@@ -175,6 +175,10 @@ export interface InvalidIndex {
   valid_duplicate_name: string | null;
   /** Full CREATE INDEX statement of the valid duplicate index */
   valid_duplicate_definition: string | null;
+  /** pg_index.indisready: false = writes do not maintain the index */
+  is_ready?: boolean;
+  /** A CREATE INDEX for it is running (pg_stat_progress_create_index) */
+  build_in_progress?: boolean;
 }
 
 /** Recommendation for handling an invalid index */
@@ -1057,6 +1061,9 @@ export async function getInvalidIndexes(client: Client, pgMajorVersion: number =
       has_valid_duplicate: toBool(transformed.has_valid_duplicate),
       valid_duplicate_name: transformed.valid_index_name ? String(transformed.valid_index_name) : null,
       valid_duplicate_definition: transformed.valid_index_definition ? String(transformed.valid_index_definition) : null,
+      // only when the metric SQL returns them (older embedded SQL does not)
+      ...(transformed.is_ready !== undefined ? { is_ready: toBool(transformed.is_ready) } : {}),
+      ...(transformed.build_in_progress !== undefined ? { build_in_progress: toBool(transformed.build_in_progress) } : {}),
     };
   // #345: the metric SQL is the primary filter; this second pass keeps
   // catalog rows out of the report JSON if a future SQL edit re-admits them.

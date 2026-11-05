@@ -1009,6 +1009,104 @@ class PostgresReportGenerator:
         return self.format_report_data("A014", data, node_name,
                                        postgres_version=self._get_postgres_version_info(cluster, node_name))
 
+    # H001-O2 persistence: an invalid index listed in readings over days is a leftover; one reading is not.
+    H001_LOOKBACK = "35d"
+    H001_STEP = "1h"
+    H001_COUNTED = 20  # indexes (largest first) whose readings are counted
+
+    def _h001_persistence(self, invalid_indexes: List[Dict[str, Any]], base_filter: str) -> None:
+        """Per index: the first and the last monitored reading that listed it in the lookback, and how many
+        hourly steps from the first listed it (``listed_hours``) against how many had a database-size reading
+        (``reading_hours``, monitoring up): equal means it was in every reading."""
+        series = f'pgwatch_pg_invalid_indexes_index_size_bytes{{{base_filter}}}'
+        by = "by (schema_name, table_name, index_name)"
+        lb, step = self.H001_LOOKBACK, self.H001_STEP
+        invalid_indexes.sort(key=lambda i: -float(i.get("index_size_bytes") or 0))
+        first = self._h002_index_values(f'min {by} (min_over_time(timestamp({series})[{lb}:{step}]))')
+        last = self._h002_index_values(f'max {by} (max_over_time(timestamp({series})[{lb}:{step}]))')
+        listed_by_window: Dict[int, Dict[Tuple[str, str, str], float]] = {}
+        for n, idx in enumerate(invalid_indexes):
+            key = (idx["schema_name"], idx["table_name"], idx["index_name"])
+            if key in first and key in last:
+                idx["first_seen_epoch"] = first[key]
+                idx["first_seen_time"] = self._h002_utc(first[key])
+                idx["last_seen_epoch"] = last[key]
+                idx["last_seen_time"] = self._h002_utc(last[key])
+                if n >= self.H001_COUNTED:  # the counts cost two queries per window; the largest are enough
+                    continue
+                hours = max(1, int((time.time() - first[key]) // 3600))
+                readings = self._h001_steps_since(base_filter, hours)
+                # the same window for both counts; the metric runs every 2 h, so a 3 h window at each
+                # hourly step sees the reading before it
+                if hours not in listed_by_window:
+                    listed_by_window[hours] = self._h002_index_values(
+                        f'count_over_time((max {by} (max_over_time({series}[3h])))[{hours}h:{step}])')
+                listed = listed_by_window[hours]
+                if key in listed and readings is not None:
+                    idx["listed_hours"] = int(listed[key])
+                    idx["reading_hours"] = readings
+
+    def _h001_steps_since(self, base_filter: str, hours: int) -> Optional[int]:
+        """Hourly steps in the last ``hours`` with a database-size reading of the database."""
+        result = self.query_instant(
+            f'count_over_time((max(max_over_time(pgwatch_db_size_size_b{{{base_filter}}}[3h])))'
+            f'[{hours}h:{self.H001_STEP}])')
+        rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
+        try:
+            return int(float(rows[0]['value'][1])) if rows else None
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
+    def _h001_monitoring_start(self, cluster: str, node_name: str, db_name: str) -> Optional[float]:
+        """The first database-size reading in the lookback: an index listed from then on predates monitoring."""
+        _esc = self._escape_promql_label
+        result = self.query_instant(
+            f'min(min_over_time(timestamp(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", '
+            f'node_name="{_esc(node_name)}", datname="{_esc(db_name)}"}})[{self.H001_LOOKBACK}:{self.H001_STEP}]))')
+        rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
+        try:
+            return float(rows[0]['value'][1]) if rows else None
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
+    def _h001_constraint_values(self, query: str) -> Dict[Tuple[str, str, str], Tuple[Dict[str, str], float]]:
+        """(schema_name, table_name, constraint_name) -> (labels, value) of a pg_not_valid_constraints series."""
+        out: Dict[Tuple[str, str, str], Tuple[Dict[str, str], float]] = {}
+        result = self.query_instant(query)
+        for row in (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []:
+            m = row.get('metric') or {}
+            try:
+                out[(m.get('schema_name', ''), m.get('table_name', ''), m.get('constraint_name', ''))] = (
+                    m, float(row['value'][1]))
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        return out
+
+    def _h001_not_valid_constraints(self, base_filter: str) -> Optional[Dict[str, Any]]:
+        """H001-O4: the database's NOT VALID constraints (system schemas excluded), or None when the box does
+        not collect them (no `$total$` series: never read as "none")."""
+        rows = self._h001_constraint_values(
+            f'last_over_time(pgwatch_pg_not_valid_constraints_not_valid{{{base_filter}}}[3h])')
+        total = rows.pop(("$total$", "$total$", "$total$"), None)
+        if total is None:
+            return None
+        copies = self._h001_constraint_values(
+            f'last_over_time(pgwatch_pg_not_valid_constraints_is_partition_copy{{{base_filter}}}[3h])')
+        constraints = []
+        for key, (m, _) in sorted(rows.items()):
+            if is_system_schema(key[0]):
+                continue
+            constraints.append({
+                "schema_name": key[0],
+                "table_name": key[1],
+                "constraint_name": key[2],
+                "constraint_type": m.get('constraint_type', ''),
+                "constraint_definition": m.get('constraint_definition', ''),
+                # a partition's copy of a parent's constraint can read not valid under a validated parent
+                "is_partition_copy": key in copies and copies[key][1] == 1,
+            })
+        return {"total_count": int(total[1]), "constraints": constraints}
+
     def generate_h001_invalid_indexes_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
         """
@@ -1070,7 +1168,10 @@ class PostgresReportGenerator:
                         "index_name": index_name,
                         "relation_name": item['metric'].get('relation_name', f"{schema_name}.{table_name}"),
                         "index_size_bytes": float(item['value'][1]) if item.get('value') else 0,
-                        "index_definition": index_definitions.get(index_name, "Definition not available"),
+                        # The sink, else the metric's own label (pg_get_indexdef on the database)
+                        "index_definition": (index_definitions.get(index_name)
+                                             or item['metric'].get('index_definition')
+                                             or "Definition not available"),
                         "valid_duplicate_name": item['metric'].get('valid_index_name') or None,
                         "valid_duplicate_definition": item['metric'].get('valid_index_definition') or None,
                         "constraint_name": item['metric'].get('constraint_name') or None,
@@ -1089,6 +1190,9 @@ class PostgresReportGenerator:
                 ('pgwatch_pg_invalid_indexes_is_unique', 'is_unique', lambda v: int(float(v)) == 1),
                 ('pgwatch_pg_invalid_indexes_has_valid_duplicate', 'has_valid_duplicate', lambda v: int(float(v)) == 1),
                 ('pgwatch_pg_invalid_indexes_table_row_estimate', 'table_row_estimate', lambda v: int(float(v))),
+                # H001-O1 / O2: set only when the box collects them (an older box has no such series)
+                ('pgwatch_pg_invalid_indexes_is_ready', 'is_ready', lambda v: int(float(v)) == 1),
+                ('pgwatch_pg_invalid_indexes_build_in_progress', 'build_in_progress', lambda v: int(float(v)) == 1),
             ]
 
             for metric_name, field_name, converter in additional_metrics:
@@ -1115,12 +1219,18 @@ class PostgresReportGenerator:
                 invalid_indexes.append(data)
                 total_size += data["index_size_bytes"]
 
-            # Skip databases with no invalid indexes
-            if not invalid_indexes:
+            # H001-O2: when monitoring first and last listed each index in the lookback
+            if invalid_indexes:
+                self._h001_persistence(invalid_indexes, base_filter)
+            # H001-O4: constraints added NOT VALID and never validated (None: not collected)
+            not_valid = self._h001_not_valid_constraints(base_filter)
+
+            # Skip databases with no invalid indexes and no unvalidated constraint
+            if not invalid_indexes and not (not_valid or {}).get("constraints"):
                 continue
 
             db_size_bytes = database_sizes.get(db_name, 0)
-            invalid_indexes_by_db[db_name] = {
+            entry = {
                 "invalid_indexes": invalid_indexes,
                 "total_count": len(invalid_indexes),
                 "total_size_bytes": total_size,
@@ -1128,6 +1238,13 @@ class PostgresReportGenerator:
                 "database_size_bytes": db_size_bytes,
                 "database_size_pretty": self.format_bytes(db_size_bytes)
             }
+            if not_valid is not None:
+                entry["not_valid_constraints"] = not_valid
+            start = self._h001_monitoring_start(cluster, node_name, db_name)
+            if start is not None:
+                entry["monitoring_start_epoch"] = start
+                entry["monitoring_start_time"] = self._h002_utc(start)
+            invalid_indexes_by_db[db_name] = entry
 
         return self.format_report_data(
             "H001",

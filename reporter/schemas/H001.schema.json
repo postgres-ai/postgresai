@@ -101,7 +101,21 @@
         "valid_duplicate_definition": {
           "type": ["string", "null"],
           "description": "Full CREATE INDEX statement of the valid duplicate index from pg_get_indexdef()"
-        }
+        },
+        "is_ready": {
+          "type": "boolean",
+          "description": "pg_index.indisready: false = writes do not maintain the index; absent when the box does not collect it"
+        },
+        "build_in_progress": {
+          "type": "boolean",
+          "description": "A CREATE INDEX for it is running (pg_stat_progress_create_index): not a leftover yet"
+        },
+        "first_seen_epoch": { "type": "number", "description": "First monitored reading in the lookback that listed it" },
+        "first_seen_time": { "type": "string" },
+        "last_seen_epoch": { "type": "number" },
+        "last_seen_time": { "type": "string" },
+        "listed_hours": { "type": "integer", "description": "Hourly steps from first_seen that listed it" },
+        "reading_hours": { "type": "integer", "description": "Hourly steps from first_seen with a database-size reading" }
       }
     },
     "dbEntry": {
@@ -121,7 +135,32 @@
         "total_size_bytes": { "type": "number" },
         "total_size_pretty": { "type": "string" },
         "database_size_bytes": { "type": "number" },
-        "database_size_pretty": { "type": "string" }
+        "database_size_pretty": { "type": "string" },
+        "not_valid_constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total_count", "constraints"],
+          "description": "Constraints added NOT VALID and never validated; absent when the box does not collect them",
+          "properties": {
+            "total_count": { "type": "integer" },
+            "constraints": { "type": "array", "items": { "$ref": "#/$defs/notValidConstraint" } }
+          }
+        },
+        "monitoring_start_epoch": { "type": "number", "description": "First database-size reading in the lookback" },
+        "monitoring_start_time": { "type": "string" }
+      }
+    },
+    "notValidConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_name", "table_name", "constraint_name", "constraint_type", "constraint_definition", "is_partition_copy"],
+      "properties": {
+        "schema_name": { "type": "string" },
+        "table_name": { "type": "string" },
+        "constraint_name": { "type": "string" },
+        "constraint_type": { "type": "string", "description": "c = CHECK, f = FOREIGN KEY" },
+        "constraint_definition": { "type": "string" },
+        "is_partition_copy": { "type": "boolean", "description": "A partition's copy of a parent's constraint" }
       }
     },
     "data": {
