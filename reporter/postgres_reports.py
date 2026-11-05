@@ -196,8 +196,22 @@ class PostgresReportGenerator:
         'dynamic_shared_memory_type',
         'huge_pages',
         'max_files_per_process',
-        'max_stack_depth'
+        'max_stack_depth',
+        # The memory model's other inputs (protocols G001-O1): shared memory in
+        # all, and the processes that each take their own work memory.
+        'shared_memory_size',
+        'autovacuum_max_workers',
+        'max_worker_processes',
+        'max_parallel_workers',
+        'max_parallel_workers_per_gather',
+        'max_parallel_maintenance_workers',
     ]
+
+    #: G001 window for connection peaks, server starts and host memory.
+    G001_WINDOW = "7d"
+    G001_WINDOW_SECONDS = 7 * 86400
+    #: Applications listed by their own peak connection count.
+    G001_APPLICATIONS_MAX = 5
 
     def __init__(self, prometheus_url: str = "http://sink-prometheus:9090",
                  postgres_sink_url: str = "postgresql://pgwatch@sink-postgres:5432/measurements",
@@ -2257,32 +2271,7 @@ class PostgresReportGenerator:
         _esc = self._escape_promql_label
         logger.info("Generating G001 Memory-related Settings report...")
 
-        # Define memory-related settings
-        memory_settings = [
-            'shared_buffers',
-            'work_mem',
-            'maintenance_work_mem',
-            'effective_cache_size',
-            'autovacuum_work_mem',
-            'max_wal_size',
-            'min_wal_size',
-            'wal_buffers',
-            'checkpoint_completion_target',
-            'max_connections',
-            'max_prepared_transactions',
-            'max_locks_per_transaction',
-            'max_pred_locks_per_transaction',
-            'max_pred_locks_per_relation',
-            'max_pred_locks_per_page',
-            'logical_decoding_work_mem',
-            'hash_mem_multiplier',
-            'temp_buffers',
-            'shared_preload_libraries',
-            'dynamic_shared_memory_type',
-            'huge_pages',
-            'max_files_per_process',
-            'max_stack_depth'
-        ]
+        memory_settings = self.G001_SETTINGS
 
         # Query all PostgreSQL settings for memory-related settings using last_over_time
         settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
@@ -2318,13 +2307,14 @@ class PostgresReportGenerator:
 
         # Calculate some memory usage estimates and recommendations
         memory_analysis = self._analyze_memory_settings(memory_data)
+        data = {"settings": memory_data, "analysis": memory_analysis}
+        activity = self._g001_activity(cluster, node_name)
+        if activity:
+            data["activity"] = activity
 
         return self.format_report_data(
             "G001",
-            {
-                "settings": memory_data,
-                "analysis": memory_analysis,
-            },
+            data,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
@@ -2344,15 +2334,15 @@ class PostgresReportGenerator:
         }
 
         try:
-            # Extract key memory values for analysis
-            shared_buffers = self._parse_memory_value(memory_data.get('shared_buffers', {}).get('setting', '128MB'))
-            work_mem = self._parse_memory_value(memory_data.get('work_mem', {}).get('setting', '4MB'))
-            maintenance_work_mem = self._parse_memory_value(
-                memory_data.get('maintenance_work_mem', {}).get('setting', '64MB'))
-            effective_cache_size = self._parse_memory_value(
-                memory_data.get('effective_cache_size', {}).get('setting', '4GB'))
+            # Extract key memory values for analysis. pg_settings gives a bare
+            # number in the setting's unit (shared_buffers: 8kB pages), so the
+            # unit is applied here; a missing setting takes the default.
+            shared_buffers = self._setting_bytes(memory_data, 'shared_buffers', '128MB')
+            work_mem = self._setting_bytes(memory_data, 'work_mem', '4MB')
+            maintenance_work_mem = self._setting_bytes(memory_data, 'maintenance_work_mem', '64MB')
+            effective_cache_size = self._setting_bytes(memory_data, 'effective_cache_size', '4GB')
             max_connections = int(memory_data.get('max_connections', {}).get('setting', '100'))
-            wal_buffers = self._parse_memory_value(memory_data.get('wal_buffers', {}).get('setting', '16MB'))
+            wal_buffers = self._setting_bytes(memory_data, 'wal_buffers', '16MB')
 
             # Calculate estimated memory usage
             shared_memory = shared_buffers + wal_buffers
@@ -2381,6 +2371,24 @@ class PostgresReportGenerator:
             analysis["estimated_total_memory_usage"] = {}
 
         return analysis
+
+    #: pg_settings units of the memory settings, in bytes.
+    _SETTING_UNIT_BYTES = {"B": 1, "kB": 1024, "8kB": 8192, "16kB": 16384, "32kB": 32768,
+                           "64kB": 65536, "MB": 1024 ** 2, "16MB": 16 * 1024 ** 2, "GB": 1024 ** 3,
+                           "TB": 1024 ** 4}
+
+    def _setting_bytes(self, memory_data: Dict[str, Any], name: str, default: str) -> int:
+        """A memory setting in bytes: its bare number times its pg_settings unit
+        (shared_buffers 28672 in 8kB pages is 224 MiB, not 28 MiB). A setting
+        with no known unit, or none at all, is parsed as a value with a suffix."""
+        entry = memory_data.get(name) or {}
+        value, unit = entry.get('setting'), entry.get('unit') or ''
+        if value is None:
+            return self._parse_memory_value(default)
+        if unit in self._SETTING_UNIT_BYTES:
+            number = int(float(value))
+            return 0 if number < 0 else number * self._SETTING_UNIT_BYTES[unit]
+        return self._parse_memory_value(value)
 
     def _parse_memory_value(self, value: str) -> int:
         """
@@ -2417,6 +2425,121 @@ class PostgresReportGenerator:
                 return numeric_value * 1024  # Assume KB if no unit specified
             except ValueError:
                 return 0
+
+    def _g001_activity(self, cluster: str, node_name: str) -> Dict[str, Any]:
+        """What G001 sets the memory settings against, over G001_WINDOW (or since
+        the data began): the monitored databases, connections and active statements (peak, when it was
+        last reached, mean, samples), the applications with the most connections
+        at their own peak, server starts, statistics resets and fatal session ends, and the host's memory
+        when host metrics are collected (protocols G001-O2, O4). A key whose
+        series is empty is left out; {} when nothing could be read.
+
+        Connections are pg_stat_activity rows, every state, all databases. A
+        crash restart (a backend killed, e.g. by the out-of-memory killer)
+        keeps the postmaster, so its start time does not move; it resets the
+        cumulative statistics, so ``stats_resets`` counts the resets of the
+        sessions counter (also a manual pg_stat_reset)."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        win = self.G001_WINDOW
+        now = int(time.time())
+
+        def first(query: str) -> Optional[float]:
+            result = self.query_instant(query)
+            rows = ((result.get('data') or {}).get('result') or []) if result.get('status') == 'success' else []
+            return self._f001_number(rows[0]) if rows else None
+
+        def utc(epoch: Optional[float]) -> Optional[str]:
+            if epoch is None:
+                return None
+            return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        def peak(expr: str) -> Dict[str, Any]:
+            top = first(f'max_over_time(({expr})[{win}:1m])')
+            if top is None:
+                return {}
+            out: Dict[str, Any] = {"peak": int(round(top))}
+            # The last time the peak was reached (a subquery: one value per minute).
+            # The exact float: a rounded threshold can miss the extreme or match another sample.
+            at = first(f'max_over_time(timestamp(({expr}) >= {top!r})[{win}:1m])')
+            if at is not None:
+                out["peak_at"] = utc(at)
+            mean = first(f'avg_over_time(({expr})[{win}:1m])')
+            if mean is not None:
+                out["mean"] = round(mean, 2)
+            return out
+
+        out: Dict[str, Any] = {}
+        # One series per database: the earliest of them all.
+        start = first(f'min(min_over_time(timestamp(pgwatch_db_stats_numbackends{{{sel}}})[{win}:1h]))')
+        samples = first(f'max(count_over_time(pgwatch_db_stats_numbackends{{{sel}}}[{win}]))')
+        if start is not None:
+            span = max(0, now - int(start))
+            out["window"] = {"start": utc(max(start, now - self.G001_WINDOW_SECONDS)), "end": utc(now),
+                             "seconds": min(span, self.G001_WINDOW_SECONDS)}
+            if samples:
+                out["window"]["samples"] = int(samples)
+                out["window"]["sample_seconds"] = int(round(out["window"]["seconds"] / samples)) if samples > 1 else None
+
+        names = self.query_instant(f'count by (datname) (last_over_time(pgwatch_db_stats_numbackends{{{sel}}}[3h]))')
+        if names.get('status') == 'success':
+            found = sorted({(r.get('metric') or {}).get('datname') or '' for r in (names.get('data') or {}).get('result') or []}
+                           - {''} - set(self.excluded_databases))
+            if found:
+                out["databases"] = found
+
+        activity = f'pgwatch_pg_stat_activity_count{{{sel}}}'
+        connections = peak(f'sum({activity})')
+        if connections:
+            out["connections"] = connections
+        active = peak(f'sum({activity[:-1]}, state="active"}})')
+        if active:
+            out["active_statements"] = active
+        apps = self.query_instant(
+            f'topk({self.G001_APPLICATIONS_MAX}, max_over_time((sum by (application_name) ({activity}))[{win}:1m]))')
+        if apps.get('status') == 'success':
+            rows = []
+            for r in (apps.get('data') or {}).get('result') or []:
+                value = self._f001_number(r)
+                if value is None or value <= 0:
+                    continue
+                rows.append({"application": (r.get('metric') or {}).get('application_name') or "",
+                             "peak": int(round(value))})
+            if rows:
+                out["applications"] = sorted(rows, key=lambda a: (-a["peak"], a["application"]))
+
+        server: Dict[str, Any] = {}
+        uptime = first(f'max(last_over_time(pgwatch_db_stats_postmaster_uptime_s{{{sel}}}[3h]))')
+        if uptime is not None:
+            server["last_start"] = utc(now - uptime)
+        starts = first(f'max(resets(pgwatch_db_stats_postmaster_uptime_s{{{sel}}}[{win}]))')
+        if starts is not None:
+            server["starts_in_window"] = int(starts)
+        resets = first(f'max(resets(pgwatch_db_stats_sessions{{{sel}}}[{win}]))')
+        if resets is not None:
+            server["stats_resets"] = int(resets)
+        # Fatal session ends only: sessions an operator ended or a client dropped are no
+        # memory signal, and a report read "killed" as out-of-memory kills.
+        for key in ("sessions_fatal",):
+            value = first(f'sum(increase(pgwatch_db_stats_{key}{{{sel}}}[{win}]))')
+            if value is not None:
+                server[key] = int(round(value))
+        if server:
+            out["server"] = server
+
+        total = first(f'max(last_over_time(host_os_memory_total_bytes{{{sel}}}[3h]))')
+        available = f'100 * host_memory_available_bytes{{{sel}}} / host_os_memory_total_bytes{{{sel}}}'
+        low = first(f'min_over_time(({available})[{win}:1m])')
+        if total is not None and low is not None:
+            memory: Dict[str, Any] = {"total_bytes": int(total), "available_min_pct": round(low, 2)}
+            at = first(f'max_over_time(timestamp(({available}) <= {low!r})[{win}:1m])')
+            if at is not None:
+                memory["available_min_at"] = utc(at)
+            p5 = first(f'quantile_over_time(0.05, ({available})[{win}:1m])')
+            if p5 is not None:
+                memory["available_p5_pct"] = round(p5, 2)
+            out["host_memory"] = memory
+        return out
 
     def generate_f004_heap_bloat_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
         """
@@ -4689,7 +4812,8 @@ class PostgresReportGenerator:
         report = self.format_report_data("F001", autovacuum_data, node_name, postgres_version=postgres_version)
         return self._f001_add_dynamics(report, cluster, node_name)
 
-    def generate_g001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01") -> Dict[str, Any]:
+    def generate_g001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01",
+                                cluster: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate G001 report by filtering A003 data for memory settings.
 
@@ -4710,13 +4834,14 @@ class PostgresReportGenerator:
 
         # Extract postgres version from A003
         postgres_version = self.extract_postgres_version_from_a003(a003_report, node_name)
+        data = {"settings": memory_data, "analysis": memory_analysis}
+        activity = self._g001_activity(cluster, node_name) if cluster is not None else {}
+        if activity:
+            data["activity"] = activity
 
         return self.format_report_data(
             "G001",
-            {
-                "settings": memory_data,
-                "analysis": memory_analysis,
-            },
+            data,
             node_name,
             postgres_version=postgres_version,
         )
@@ -5094,7 +5219,7 @@ class PostgresReportGenerator:
             a003_derived_reports = [
                 ('D004', lambda c, n: self.generate_d004_from_a003(a003_report, c, n)),
                 ('F001', lambda c, n: self.generate_f001_from_a003(a003_report, n, c)),
-                ('G001', lambda c, n: self.generate_g001_from_a003(a003_report, n)),
+                ('G001', lambda c, n: self.generate_g001_from_a003(a003_report, n, c)),
             ]
 
             for check_id, report_func in a003_derived_reports:
@@ -6125,7 +6250,7 @@ def main():
                     report = generator.generate_f005_btree_bloat_report(cluster, args.node_name)
                 elif args.check_id == 'G001':
                     if a003_report:
-                        report = generator.generate_g001_from_a003(a003_report, args.node_name)
+                        report = generator.generate_g001_from_a003(a003_report, args.node_name, cluster)
                     else:
                         report = generator.generate_g001_memory_settings_report(cluster, args.node_name)
                 elif args.check_id == 'H001':

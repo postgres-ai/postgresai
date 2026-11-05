@@ -117,7 +117,71 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/setting" }
         },
-        "analysis": { "$ref": "#/$defs/analysis" }
+        "analysis": { "$ref": "#/$defs/analysis" },
+        "activity": { "$ref": "#/$defs/activity" }
+      }
+    },
+    "peak": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["peak"],
+      "properties": {
+        "peak": { "type": "integer" },
+        "peak_at": { "type": "string" },
+        "mean": { "type": "number" }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end", "seconds"],
+          "properties": {
+            "start": { "type": "string" },
+            "end": { "type": "string" },
+            "seconds": { "type": "integer" },
+            "samples": { "type": "integer" },
+            "sample_seconds": { "type": ["integer", "null"] }
+          }
+        },
+        "databases": { "type": "array", "items": { "type": "string" } },
+        "connections": { "$ref": "#/$defs/peak" },
+        "active_statements": { "$ref": "#/$defs/peak" },
+        "applications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["application", "peak"],
+            "properties": { "application": { "type": "string" }, "peak": { "type": "integer" } }
+          }
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "last_start": { "type": "string" },
+            "starts_in_window": { "type": "integer" },
+            "stats_resets": { "type": "integer" },
+            "sessions_fatal": { "type": "integer" },
+            "sessions_killed": { "type": "integer" },
+            "sessions_abandoned": { "type": "integer" }
+          }
+        },
+        "host_memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total_bytes", "available_min_pct"],
+          "properties": {
+            "total_bytes": { "type": "integer" },
+            "available_min_pct": { "type": "number" },
+            "available_min_at": { "type": "string" },
+            "available_p5_pct": { "type": "number" }
+          }
+        }
       }
     },
     "nodeResult": {
@@ -131,5 +195,3 @@
     }
   }
 }
-
-
