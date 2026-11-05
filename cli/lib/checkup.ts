@@ -4174,10 +4174,213 @@ async function generateG001(client: Client, nodeName: string): Promise<Report> {
   return report;
 }
 
+// G003: what a timeout decision needs, read from the catalog (the same queries and JSON as
+// reporter/g003.py on a monitoring box; deadlocks over a window and lock waits need monitoring).
+const G003_TIMEOUT_SETTINGS = [
+  "statement_timeout",
+  "transaction_timeout",
+  "lock_timeout",
+  "idle_in_transaction_session_timeout",
+  "idle_session_timeout",
+  "deadlock_timeout",
+  "log_lock_waits",
+];
+const G003_MAX_ROLES = 60;
+const G003_MAX_ROUTINES = 30;
+const G003_QUERY_CHARS = 120;
+
+const G003_ROLES_SQL = `
+select r.rolname as role, r.rolcanlogin as can_login, r.rolsuper as superuser, r.rolbypassrls as bypass_rls,
+  coalesce((select array_agg(g.rolname::text order by g.rolname)
+            from pg_auth_members as m join pg_roles as g on g.oid = m.roleid
+            where m.member = r.oid), '{}') as member_of,
+  (select s.setconfig from pg_db_role_setting as s
+   where s.setrole = r.oid and s.setdatabase = 0) as config
+from pg_roles as r
+where r.rolname !~ '^pg_'
+order by r.rolname
+`;
+
+const G003_ROLE_DATABASE_SQL = `
+select r.rolname as role, d.datname as database, s.setconfig as config
+from pg_db_role_setting as s
+join pg_roles as r on r.oid = s.setrole
+join pg_database as d on d.oid = s.setdatabase
+order by r.rolname, d.datname
+`;
+
+const G003_DATABASE_SQL = `
+select d.datname as database, s.setconfig as config
+from pg_db_role_setting as s
+join pg_database as d on d.oid = s.setdatabase
+where s.setrole = 0
+order by d.datname
+`;
+
+// reset_val: what a session starts with, so the checkup's own `set` never reads back as the value.
+const G003_SERVER_SQL = `
+select name, reset_val as setting, coalesce(unit, '') as unit, source
+from pg_settings
+where name = any($1)
+order by name
+`;
+
+const G003_PGSS_SCHEMA_SQL = `
+select n.nspname as schema
+from pg_extension as e join pg_namespace as n on n.oid = e.extnamespace
+where e.extname = 'pg_stat_statements'
+`;
+
+const g003CallsSql = (quotedSchema: string): string => `
+with s as (
+  select p.userid, p.queryid, p.calls, p.query,
+    coalesce((to_jsonb(p) ->> 'max_exec_time'), (to_jsonb(p) ->> 'max_time'))::float8 as max_ms,
+    coalesce(to_jsonb(p) ->> 'minmax_stats_since', to_jsonb(p) ->> 'stats_since') as since
+  from ${quotedSchema}.pg_stat_statements as p
+)
+select r.rolname as role, sum(s.calls)::bigint as calls,
+  (array_agg(s.max_ms order by s.max_ms desc nulls last))[1] as longest_ms,
+  (array_agg(s.queryid::text order by s.max_ms desc nulls last))[1] as longest_queryid,
+  -- Utility text stays verbatim in pg_stat_statements, passwords included: only plain queries.
+  (array_agg(case when s.query ~* '^\\s*(insert|update|delete|merge|values)\\M'
+                       or (s.query ~* '^\\s*(select|with)\\M' and s.query !~* '\\minto\\M')
+                  then left(s.query, ${G003_QUERY_CHARS}) end order by s.max_ms desc nulls last))[1] as longest_query,
+  (array_agg(s.since order by s.max_ms desc nulls last))[1] as longest_since,
+  min(s.since) as stats_since
+from s join pg_roles as r on r.oid = s.userid
+group by r.rolname
+order by 3 desc nulls last
+limit ${G003_MAX_ROLES}
+`;
+
+const G003_ROUTINES_SQL = `
+select n.nspname as schema, p.proname as name, p.prokind as kind, pg_get_userbyid(p.proowner) as owner,
+  b.src ~* '\\mcommit\\M' as commits,
+  b.src ~* '\\m(query_canceled|57014)\\M' as catches_cancel,
+  (select array_agg(c) from unnest(p.proconfig) as c
+   where split_part(c, '=', 1) = any($1)) as config
+from pg_proc as p
+join pg_namespace as n on n.oid = p.pronamespace
+-- The code without its comments and \`on commit drop\`, which are not a commit.
+cross join lateral (select regexp_replace(regexp_replace(regexp_replace(p.prosrc, '/\\*.*?\\*/', '', 'g'),
+                                                         '--[^\\n]*', '', 'g'),
+                                          'on\\s+commit\\s+\\w+(\\s+\\w+)?', '', 'gi') as src) as b
+where n.nspname not in ('pg_catalog', 'information_schema') and n.nspname !~ '^pg_(toast|temp)'
+  and (p.prokind = 'p' or exists (select 1 from unnest(p.proconfig) as c
+                                  where split_part(c, '=', 1) = any($1)))
+  and not exists (select 1 from pg_depend as d
+                  where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+order by n.nspname, p.proname
+limit ${G003_MAX_ROUTINES}
+`;
+
+function g003Settings(config: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of Array.isArray(config) ? config : []) {
+    const text = String(item);
+    const at = text.indexOf("=");
+    const name = at < 0 ? text : text.slice(0, at);
+    if (G003_TIMEOUT_SETTINGS.includes(name)) out[name] = at < 0 ? "" : text.slice(at + 1);
+  }
+  return out;
+}
+
+async function g003ReadRoles(client: Client): Promise<Record<string, any>[]> {
+  const perDatabase: Record<string, Record<string, Record<string, string>>> = Object.create(null);
+  for (const row of (await client.query(G003_ROLE_DATABASE_SQL)).rows) {
+    const values = g003Settings(row.config);
+    if (Object.keys(values).length) {
+      (perDatabase[row.role] ??= Object.create(null))[row.database] = values;
+    }
+  }
+  return (await client.query(G003_ROLES_SQL)).rows.map((row: any) => ({
+    role: row.role,
+    can_login: Boolean(row.can_login),
+    superuser: Boolean(row.superuser),
+    bypass_rls: Boolean(row.bypass_rls),
+    member_of: row.member_of || [],
+    settings: g003Settings(row.config),
+    database_settings: perDatabase[row.role] || {},
+  }));
+}
+
+async function g003ReadCalls(client: Client): Promise<Map<string, Record<string, any>>> {
+  const schema = (await client.query(G003_PGSS_SCHEMA_SQL)).rows[0]?.schema;
+  if (!schema) throw new Error("pg_stat_statements is not installed");
+  const quoted = `"${String(schema).replace(/"/g, '""')}"`;
+  const calls = new Map<string, Record<string, any>>();
+  for (const row of (await client.query(g003CallsSql(quoted))).rows) {
+    calls.set(row.role, {
+      calls: parseInt(row.calls, 10) || 0,
+      longest_call_ms: row.longest_ms === null ? null : Math.round(parseFloat(row.longest_ms) * 10) / 10,
+      longest_call_queryid: row.longest_queryid,
+      longest_call_query: row.longest_query,
+      longest_call_since: row.longest_since,
+      stats_since: row.stats_since,
+    });
+  }
+  return calls;
+}
+
+/** The catalog part of G003: a fact that cannot be read is left out with its reason, never written as none. */
+async function g003CatalogFacts(client: Client): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const fact = async <T>(key: string, read: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      const value = await read();
+      out[key] = value;
+      return value;
+    } catch (err) {
+      out[`${key}_error`] = a005Error(err);
+      return undefined;
+    }
+  };
+  await fact("read_as", async () => (await client.query("select current_user as role, current_database() as database")).rows[0]);
+  await fact("server_settings", async () => {
+    const server: Record<string, unknown> = {};
+    for (const row of (await client.query(G003_SERVER_SQL, [G003_TIMEOUT_SETTINGS])).rows) {
+      server[row.name] = { setting: row.setting, unit: row.unit, source: row.source };
+    }
+    return server;
+  });
+  await fact("database_settings", async () => {
+    const values: Record<string, unknown> = {};
+    for (const row of (await client.query(G003_DATABASE_SQL)).rows) {
+      const stored = g003Settings(row.config);
+      if (Object.keys(stored).length) values[row.database] = stored;
+    }
+    return values;
+  });
+  const roles = await fact("roles", () => g003ReadRoles(client));
+  const calls = await fact("calls", () => g003ReadCalls(client));
+  delete out.calls;
+  if (roles && calls) {
+    for (const role of roles) Object.assign(role, calls.get(role.role) || {});
+  }
+  if (roles && roles.length > G003_MAX_ROLES) {
+    const useful = (role: Record<string, any>) =>
+      Object.keys(role.settings).length || Object.keys(role.database_settings).length || role.calls;
+    out.roles_total = roles.length;
+    out.roles = [...roles.filter(useful), ...roles.filter((role) => !useful(role))].slice(0, G003_MAX_ROLES);
+  }
+  await fact("routines", async () =>
+    (await client.query(G003_ROUTINES_SQL, [G003_TIMEOUT_SETTINGS])).rows.map((row: any) => ({
+      schema: row.schema,
+      name: row.name,
+      kind: row.kind === "p" ? "procedure" : "function",
+      owner: row.owner,
+      commits: Boolean(row.commits),
+      catches_cancel: Boolean(row.catches_cancel),
+      settings: g003Settings(row.config),
+    })));
+  return out;
+}
+
 /**
  * Generate G003 report - Timeouts, locks, deadlocks
  *
- * Collects timeout and lock-related settings, plus deadlock statistics.
+ * Collects timeout and lock-related settings, deadlock statistics, and the
+ * values stored per role and database with each role's longest call.
  */
 async function generateG003(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("G003", "Timeouts, locks, deadlocks", nodeName);
@@ -4243,6 +4446,7 @@ async function generateG003(client: Client, nodeName: string): Promise<Report> {
       settings: lockSettings,
       deadlock_stats: deadlockStats,
       ...(deadlockError && { deadlock_stats_error: deadlockError }),
+      ...(await g003CatalogFacts(client)),
     },
     postgres_version: postgresVersion,
   };
