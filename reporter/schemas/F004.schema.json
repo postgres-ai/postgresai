@@ -72,7 +72,47 @@
         "last_vacuum_epoch": { "type": "number" },
         "real_size_pretty": { "type": "string" },
         "extra_size_pretty": { "type": "string" },
-        "bloat_size_pretty": { "type": "string" }
+        "bloat_size_pretty": { "type": "string" },
+        "n_live_tup": { "type": ["integer", "null"] },
+        "n_dead_tup": { "type": ["integer", "null"] },
+        "vacuum_threshold": { "type": ["integer", "null"] },
+        "autovacuum_runs_in_window": { "type": ["integer", "null"] },
+        "vacuum_runs_in_window": { "type": ["integer", "null"] },
+        "n_tup_ins_in_window": { "type": ["integer", "null"] },
+        "n_tup_upd_in_window": { "type": ["integer", "null"] },
+        "n_tup_del_in_window": { "type": ["integer", "null"] },
+        "n_tup_hot_upd_in_window": { "type": ["integer", "null"] },
+        "table_size_bytes": { "type": ["integer", "null"] },
+        "toast_size_bytes": { "type": ["integer", "null"] },
+        "table_size_min_in_window_bytes": { "type": ["integer", "null"] },
+        "table_size_max_in_window_bytes": { "type": ["integer", "null"] },
+        "bloat_size_min_in_window_bytes": { "type": ["integer", "null"] },
+        "bloat_size_max_in_window_bytes": { "type": ["integer", "null"] },
+        "seconds_since_last_vacuum": { "type": ["integer", "null"] },
+        "vacuum_recorded": { "type": ["boolean", "null"] },
+        "autovacuum_disabled": { "type": ["boolean", "null"] }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["daily", "first_reading_at"],
+      "properties": {
+        "daily": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["days_ago", "at", "total_bloat_size_bytes"],
+            "properties": {
+              "days_ago": { "type": "integer" },
+              "at": { "type": ["string", "null"] },
+              "total_bloat_size_bytes": { "type": "integer" }
+            }
+          }
+        },
+        "first_reading_at": { "type": ["string", "null"] },
+        "window_seconds": { "type": "integer" }
       }
     },
     "dbEntry": {
@@ -93,7 +133,17 @@
         "total_bloat_size_bytes": { "type": "number" },
         "total_bloat_size_pretty": { "type": "string" },
         "database_size_bytes": { "type": "number" },
-        "database_size_pretty": { "type": "string" }
+        "database_size_pretty": { "type": "string" },
+        "history": { "$ref": "#/$defs/history" },
+        "autovacuum_settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["autovacuum_vacuum_threshold", "autovacuum_vacuum_scale_factor"],
+          "properties": {
+            "autovacuum_vacuum_threshold": { "type": "number" },
+            "autovacuum_vacuum_scale_factor": { "type": "number" }
+          }
+        }
       }
     },
     "status": {

@@ -807,7 +807,8 @@ SOURCE_VIEW_SUM_SQL_267 = {
           coalesce(sum(case when c.reltoastrelid <> 0
                   then pg_total_relation_size(c.reltoastrelid)
                   else 0::int8 end), 0)::int8 as toast_size_b,
-          coalesce(sum(case when 'autovacuum_enabled=off' = ANY (c.reloptions)
+          coalesce(sum(case when exists (select 1 from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+                  where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$')
                   then 1 else 0 end), 0)::int8 as no_autovacuum,
           coalesce(sum(ut.seq_scan), 0)::int8 as seq_scan,
           coalesce(sum(ut.seq_tup_read), 0)::int8 as seq_tup_read,
