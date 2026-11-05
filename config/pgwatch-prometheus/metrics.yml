@@ -544,7 +544,10 @@ metrics:
                         case when reltoastrelid <> 0 then pg_total_relation_size(reltoastrelid) else 0::int8 end as toast_size_b,
                         (extract(epoch from now() - greatest(last_vacuum, last_autovacuum)))::int8               as seconds_since_last_vacuum,
                         (extract(epoch from now() - greatest(last_analyze, last_autoanalyze)))::int8             as seconds_since_last_analyze,
-                        case when 'autovacuum_enabled=off' = ANY (c.reloptions) then 1 else 0 end                as no_autovacuum,
+                        case when exists (select 1 from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+                                             -- every boolean spelling, stored as typed (as pg_dead_tuples)
+                                             where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$')
+                             then 1 else 0 end                                                           as no_autovacuum,
                         seq_scan,
                         seq_tup_read,
                         coalesce(idx_scan, 0) as idx_scan,
@@ -718,7 +721,10 @@ metrics:
                         case when c.reltoastrelid <> 0 then pg_total_relation_size(c.reltoastrelid) else 0::int8 end as toast_size_b,
                         (extract(epoch from now() - greatest(last_vacuum, last_autovacuum)))::int8               as seconds_since_last_vacuum,
                         (extract(epoch from now() - greatest(last_analyze, last_autoanalyze)))::int8             as seconds_since_last_analyze,
-                        case when 'autovacuum_enabled=off' = ANY (c.reloptions) then 1 else 0 end                as no_autovacuum,
+                        case when exists (select 1 from unnest(coalesce(c.reloptions, '{}'::text[])) as opt
+                                             -- every boolean spelling, stored as typed (as pg_dead_tuples)
+                                             where lower(opt) ~ '^autovacuum_enabled=(false|fals|fal|fa|f|no|n|off|of|0)$')
+                             then 1 else 0 end                                                           as no_autovacuum,
                         seq_scan,
                         seq_tup_read,
                         coalesce(idx_scan, 0) as idx_scan,

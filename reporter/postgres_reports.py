@@ -2598,6 +2598,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         bloated_tables_by_db = {}
+        av_settings = None  # server-wide: read once, copied into each database's entry
         for db_name in databases:
             # Fetch last vacuum timestamp per table (from pg_stat_all_tables).
             # Note: prefer `relname`, but be defensive since other parts of the codebase / configs
@@ -2701,6 +2702,7 @@ class PostgresReportGenerator:
 
             # Sort by bloat percentage descending
             bloated_tables_list.sort(key=lambda x: x['bloat_pct'], reverse=True)
+            self._f004_add_table_facts(bloated_tables_list, cluster, node_name, db_name)
 
             db_size_bytes = database_sizes.get(db_name, 0)
             bloated_tables_by_db[db_name] = {
@@ -2711,6 +2713,13 @@ class PostgresReportGenerator:
                 "database_size_bytes": db_size_bytes,
                 "database_size_pretty": self.format_bytes(db_size_bytes)
             }
+            history = self._f004_history(cluster, node_name, db_name)
+            if history:
+                bloated_tables_by_db[db_name]["history"] = history
+            if av_settings is None:
+                av_settings = self._f004_autovacuum_settings(cluster, node_name)
+            if av_settings:
+                bloated_tables_by_db[db_name]["autovacuum_settings"] = av_settings
 
         return self.format_report_data(
             "F004",
@@ -2718,6 +2727,161 @@ class PostgresReportGenerator:
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+
+    #: F004 window for the estimate's history and the tables' writes and runs (protocols F004-O1, O2).
+    F004_WINDOW = "7d"
+    F004_WINDOW_SECONDS = 7 * 86400
+    F004_HISTORY_DAYS = 7
+
+    def _f004_series(self, query: str, schema_label: str, table_label: str,
+                     quoted: bool = False) -> Optional[Dict[tuple, float]]:
+        """One finite value per (schema, table) of an instant query; None when the
+        query failed (unknown), {} when it gave no series."""
+        result = self.query_instant(query)
+        if result.get('status') != 'success':
+            return None
+        out: Dict[tuple, float] = {}
+        for row in (result.get('data') or {}).get('result') or []:
+            metric = row.get('metric') or {}
+            schema, table = metric.get(schema_label, ''), metric.get(table_label, '')
+            if quoted:
+                schema, table = self._f001_unquote(schema), self._f001_unquote(table)
+            value = self._f001_number(row)
+            if value is not None:
+                out[(schema, table)] = value
+        return out
+
+    def _f004_add_table_facts(self, tables: List[Dict[str, Any]], cluster: str, node_name: str,
+                              db_name: str) -> None:
+        """Per bloated table, what tells dead tuples from free space and why
+        autovacuum did not clean them (protocols F004-O2, C2): live and dead
+        tuples, the table's own autovacuum trigger, vacuum runs and writes over
+        F004_WINDOW, seconds since its last vacuum (manual or auto), whether
+        autovacuum is off on it, its heap and TOAST size, and the estimate's
+        lowest and highest value over the window. A key is null when its series
+        is missing (pgwatch table_stats covers the top 100 tables per database)."""
+        if not tables:
+            return
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        win = self.F004_WINDOW
+        stats = ('schema', 'table_name', True)
+        queue = ('schemaname', 'relname')
+        bloat = ('schemaname', 'tblname')
+
+        def get(query: str, labels: tuple) -> Dict[tuple, float]:
+            return self._f004_series(query, *labels) or {}
+
+        # table_stats carries table_size_cardinality_mb: a table that crosses a power of ten has
+        # two series in the window, so every query collapses to one value per table.
+        # One series per table at each step (merged), then: the last step for current values (not a
+        # stale pre-crossing series); for window counts the sum of its per-step rises, a drop counted
+        # as 0. That holds where increase() does not on VictoriaMetrics (a series starting inside the
+        # window is counted from 0: every new box, every crossing) and where max - min does not (a
+        # counter reset: pg_stat_reset, crash restart, failover).
+        by = "by (schema, table_name)"
+        merged = lambda name, agg="max": f'({agg} {by} (pgwatch_table_stats_{name}{{{sel}}}))'  # noqa: E731
+        last = lambda name, agg="max": f'last_over_time({merged(name, agg)}[1h:1m])'  # noqa: E731
+        # The previous value is the last raw sample before each step (any gap in the window
+        # bridged: a box or sink down for an hour keeps the rise across it), of the series present
+        # at the step only (a stale pre-crossing series would hold the counts at 0 after a reset).
+        prev = lambda name: (f'(max {by} (last_over_time(pgwatch_table_stats_{name}{{{sel}}}[{win}] offset 5m) '  # noqa: E731
+                             f'and pgwatch_table_stats_{name}{{{sel}}}))')
+        inc = lambda name: f'sum_over_time(clamp_min({merged(name)} - {prev(name)}, 0)[{win}:5m])'  # noqa: E731
+        facts = {
+            "n_live_tup": get(last("n_live_tup"), stats),
+            "n_dead_tup": get(last("n_dead_tup"), stats),
+            "vacuum_threshold": get(
+                f'last_over_time(pgwatch_pg_autovacuum_queue_autovacuum_threshold{{{sel}}}[1h])', queue),
+            "autovacuum_runs_in_window": get(inc("autovacuum_count"), stats),
+            "vacuum_runs_in_window": get(inc("vacuum_count"), stats),
+            "n_tup_ins_in_window": get(inc("n_tup_ins"), stats),
+            "n_tup_upd_in_window": get(inc("n_tup_upd"), stats),
+            "n_tup_del_in_window": get(inc("n_tup_del"), stats),
+            "n_tup_hot_upd_in_window": get(inc("n_tup_hot_upd"), stats),
+            "table_size_bytes": get(last("table_size_b"), stats),
+            "toast_size_bytes": get(last("toast_size_b"), stats),
+            "table_size_min_in_window_bytes": get(
+                f'min {by} (min_over_time(pgwatch_table_stats_table_size_b{{{sel}}}[{win}]))', stats),
+            "table_size_max_in_window_bytes": get(
+                f'max {by} (max_over_time(pgwatch_table_stats_table_size_b{{{sel}}}[{win}]))', stats),
+            "bloat_size_min_in_window_bytes": get(
+                f'min_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[{win}])', bloat),
+            "bloat_size_max_in_window_bytes": get(
+                f'max_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[{win}])', bloat),
+        }
+        since = self._f004_series(last("seconds_since_last_vacuum", "min"), *stats)  # the latest vacuum
+        off = get(last("no_autovacuum"), stats)
+        sizes = facts["table_size_bytes"]
+        for table in tables:
+            key = (table.get('schema_name', ''), table.get('table_name', ''))
+            # pgwatch's '$other$' row sums the tables after its top 100, and table_stats and the
+            # bloat metric rank different tops: their two '$other$' rows are not one table.
+            if "$other$" in key:
+                key = ("", "")
+            for name, values in facts.items():
+                value = values.get(key)
+                table[name] = int(round(value)) if value is not None else None  # counts and bytes
+            table["seconds_since_last_vacuum"] = int(since[key]) if since and key in since else None
+            # No run is in the window when the last vacuum is older than the window.
+            if (table["seconds_since_last_vacuum"] or 0) > self.F004_WINDOW_SECONDS:
+                for name in ("autovacuum_runs_in_window", "vacuum_runs_in_window"):
+                    if table[name] is not None:
+                        table[name] = 0
+            # table_stats has no series for a table never vacuumed (NULL greatest()); "never"
+            # only where table_stats covers the table (a size row), else unknown.
+            table["vacuum_recorded"] = (key in since) if since is not None and key in sizes else None
+            table["autovacuum_disabled"] = bool(off[key]) if key in off else None
+
+    def _f004_autovacuum_settings(self, cluster: str, node_name: str) -> Dict[str, float]:
+        """The server settings behind each table's autovacuum trigger (threshold + scale
+        factor x rows, before a table's own settings override them); {} without data."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        names = "autovacuum_vacuum_threshold|autovacuum_vacuum_scale_factor"
+        # Both label schemas (setting_name and the older tag_setting_name), as _get_postgres_version_info.
+        result = self.query_instant(
+            f'last_over_time(pgwatch_settings_configured{{{sel}, setting_name=~"{names}"}}[3h]) or '
+            f'last_over_time(pgwatch_settings_configured{{{sel}, tag_setting_name=~"{names}"}}[3h])')
+        out: Dict[str, float] = {}
+        if result.get('status') == 'success':
+            for row in (result.get('data') or {}).get('result') or []:
+                metric = row.get('metric') or {}
+                name = metric.get('setting_name') or metric.get('tag_setting_name')
+                try:
+                    value = float(metric.get('setting_value') or metric.get('tag_setting_value'))
+                except (TypeError, ValueError):
+                    continue
+                if name in ("autovacuum_vacuum_threshold", "autovacuum_vacuum_scale_factor") and math.isfinite(value):
+                    out[name] = value
+        return out if len(out) == 2 else {}
+
+    def _f004_history(self, cluster: str, node_name: str, db_name: str) -> Dict[str, Any]:
+        """The database's estimated heap bloat once a day over F004_HISTORY_DAYS
+        (protocols F004-O1: the previous value, the min-max across the window)
+        and the time of the first reading within 35 days; {} without data."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        now = time.time()  # instant queries evaluate at now
+        daily = []
+        for days in range(self.F004_HISTORY_DAYS + 1):
+            offset = f" offset {days}d" if days else ""
+            result = self.query_instant(
+                f'sum(last_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[3h]{offset}))')
+            rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
+            value = self._f001_number(rows[0]) if rows else None
+            if value is not None:
+                daily.append({"days_ago": days, "at": self.format_epoch_timestamp(now - days * 86400),
+                              "total_bloat_size_bytes": int(round(value))})
+        if not daily:
+            return {}
+        first = self.query_instant(
+            f'min(min_over_time(timestamp(pgwatch_pg_table_bloat_bloat_size{{{sel}}})[35d:10m]))')
+        rows = (first.get('data') or {}).get('result') or [] if first.get('status') == 'success' else []
+        first_at = self._f001_number(rows[0]) if rows else None
+        # The tables' *_in_window facts cover window_seconds, or less when the first reading is later.
+        return {"daily": daily, "first_reading_at": self.format_epoch_timestamp(first_at) if first_at else None,
+                "window_seconds": self.F004_WINDOW_SECONDS}
 
     def generate_k001_query_calls_report(self, cluster: str = "local", node_name: str = "node-01",
                                          time_range_minutes: int = 60, use_hourly: bool = True) -> Dict[str, Any]:
