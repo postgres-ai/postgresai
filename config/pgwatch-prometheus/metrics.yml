@@ -3363,23 +3363,12 @@ metrics:
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
-          select
-            schemaname as schema_name,
-            indexrelid,
-            (indexrelid::regclass)::text as index_name,
-            (relid::regclass)::text as table_name,
-            (confrelid::regclass)::text as fk_table_ref,
-            array_to_string(indclass, ', ') as opclasses
-          from pg_stat_all_indexes
-          join pg_index using (indexrelid)
-          left join pg_constraint
-            on array_to_string(indkey, ',') = array_to_string(conkey, ',')
-              and schemaname = (connamespace::regnamespace)::text
-              and conrelid = relid
-              and contype = 'f'
-          where idx_scan = 0
-            and indisunique is false
-            and conkey is not null
+          -- An index backs a foreign key when the key is on the index's own table
+          -- and the key's columns are the index's leading columns (#476).
+          select distinct i.indexrelid
+          from pg_index i
+          join pg_constraint c on c.conrelid = i.indrelid and c.contype = 'f'
+          where (string_to_array(i.indkey::text, ' ')::int2[])[1:cardinality(c.conkey)] @> c.conkey
         ),
         -- Find valid indexes that could be duplicates (same table, same columns)
         valid_duplicates as (
@@ -3414,12 +3403,7 @@ metrics:
             vd.valid_index_name,
             vd.valid_index_definition,
             -- FK support check
-            ((
-              select count(1)
-              from fk_indexes fi
-              where fi.fk_table_ref = pct.relname
-                and fi.opclasses like (array_to_string(pidx.indclass, ', ') || '%')
-            ) > 0)::int as supports_fk
+            (exists (select from fk_indexes fi where fi.indexrelid = pidx.indexrelid))::int as supports_fk
           from pg_index pidx
           join pg_class pci on pci.oid = pidx.indexrelid
           join pg_class pct on pct.oid = pidx.indrelid
@@ -3511,24 +3495,12 @@ metrics:
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
-          select
-            n.nspname as schema_name,
-            ci.relname as index_name,
-            cr.relname as table_name,
-            (confrelid::regclass)::text as fk_table_ref,
-            array_to_string(indclass, ', ') as opclasses
+          -- An index backs a foreign key when the key is on the index's own table
+          -- and the key's columns are the index's leading columns (#476).
+          select distinct i.indexrelid
           from pg_index i
-          join pg_class ci on ci.oid = i.indexrelid and ci.relkind = 'i'
-          join pg_class cr on cr.oid = i.indrelid and cr.relkind = 'r'
-          join pg_namespace n on n.oid = ci.relnamespace
-          join pg_constraint cn on cn.conrelid = cr.oid
-          left join pg_stat_all_indexes as si on si.indexrelid = i.indexrelid
-          where
-            contype = 'f'
-            and i.indisunique is false
-            and conkey is not null
-            and ci.relpages > 5
-            and si.idx_scan < 10
+          join pg_constraint c on c.conrelid = i.indrelid and c.contype = 'f'
+          where (string_to_array(i.indkey::text, ' ')::int2[])[1:cardinality(c.conkey)] @> c.conkey
         ),
         -- Redundant indexes
         index_data as (
@@ -3594,13 +3566,7 @@ metrics:
         ), redundant_indexes_fk as (
           select
             ri.*,
-            ((
-              select count(1)
-              from fk_indexes fi
-              where
-                fi.fk_table_ref = ri.table_name
-                and fi.opclasses like (ri.opclasses || '%')
-            ) > 0)::int as supports_fk
+            (exists (select from fk_indexes fi where fi.indexrelid = ri.index_id))::int as supports_fk
           from redundant_indexes ri
         ),
         -- Cut recursive links
@@ -3728,24 +3694,12 @@ metrics:
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
-          select
-            n.nspname as schema_name,
-            ci.relname as index_name,
-            cr.relname as table_name,
-            (confrelid::regclass)::text as fk_table_ref,
-            array_to_string(indclass, ', ') as opclasses
+          -- An index backs a foreign key when the key is on the index's own table
+          -- and the key's columns are the index's leading columns (#476).
+          select distinct i.indexrelid
           from pg_index i
-          join pg_class ci on ci.oid = i.indexrelid and ci.relkind = 'i'
-          join pg_class cr on cr.oid = i.indrelid and cr.relkind = 'r'
-          join pg_namespace n on n.oid = ci.relnamespace
-          join pg_constraint cn on cn.conrelid = cr.oid
-          left join pg_stat_all_indexes as si on si.indexrelid = i.indexrelid
-          where
-            contype = 'f'
-            and i.indisunique is false
-            and conkey is not null
-            and ci.relpages > 5
-            and si.idx_scan < 10
+          join pg_constraint c on c.conrelid = i.indrelid and c.contype = 'f'
+          where (string_to_array(i.indkey::text, ' ')::int2[])[1:cardinality(c.conkey)] @> c.conkey
         ), table_scans as (
           select relid,
               tables.idx_scan + tables.seq_scan as all_scans,
@@ -3797,13 +3751,7 @@ metrics:
             i.relpages,
             idx_is_btree,
             i.opclasses,
-            (
-              select count(1)
-              from fk_indexes fi
-              where fi.fk_table_ref = i.table_name
-                and fi.schema_name = i.schema_name
-                and fi.opclasses like (i.opclasses || '%')
-            ) > 0 as supports_fk
+            exists (select from fk_indexes fi where fi.indexrelid = i.indexrelid) as supports_fk
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
@@ -3890,24 +3838,12 @@ metrics:
     sqls:
       11: |
         with fk_indexes as materialized ( /* pgwatch_generated */
-          select
-            n.nspname as schema_name,
-            ci.relname as index_name,
-            cr.relname as table_name,
-            (confrelid::regclass)::text as fk_table_ref,
-            array_to_string(indclass, ', ') as opclasses
+          -- An index backs a foreign key when the key is on the index's own table
+          -- and the key's columns are the index's leading columns (#476).
+          select distinct i.indexrelid
           from pg_index i
-          join pg_class ci on ci.oid = i.indexrelid and ci.relkind = 'i'
-          join pg_class cr on cr.oid = i.indrelid and cr.relkind = 'r'
-          join pg_namespace n on n.oid = ci.relnamespace
-          join pg_constraint cn on cn.conrelid = cr.oid
-          left join pg_stat_all_indexes as si on si.indexrelid = i.indexrelid
-          where
-            contype = 'f'
-            and i.indisunique is false
-            and conkey is not null
-            and ci.relpages > 5
-            and si.idx_scan < 10
+          join pg_constraint c on c.conrelid = i.indrelid and c.contype = 'f'
+          where (string_to_array(i.indkey::text, ' ')::int2[])[1:cardinality(c.conkey)] @> c.conkey
         ), table_scans as (
           select relid,
               tables.idx_scan + tables.seq_scan as all_scans,
@@ -3962,13 +3898,7 @@ metrics:
             i.relpages,
             idx_is_btree,
             i.opclasses,
-            (
-              select count(1)
-              from fk_indexes fi
-              where fi.fk_table_ref = i.table_name
-                and fi.schema_name = i.schema_name
-                and fi.opclasses like (i.opclasses || '%')
-            ) > 0 as supports_fk
+            exists (select from fk_indexes fi where fi.indexrelid = i.indexrelid) as supports_fk
           from indexes i
           join table_scans ts on ts.relid = i.indrelid
         )
