@@ -25,28 +25,8 @@ metrics:
       dropped and must never be recommended for removal.
     sqls:
       11: |-
-        with fk_indexes as (
-          select
-            n.nspname as schema_name,
-            ci.relname as index_name,
-            cr.relname as table_name,
-            (confrelid::regclass)::text as fk_table_ref,
-            array_to_string(indclass, ', ') as opclasses
-          from pg_index i
-          join pg_class ci on ci.oid = i.indexrelid and ci.relkind = 'i'
-          join pg_class cr on cr.oid = i.indrelid and cr.relkind = 'r'
-          join pg_namespace n on n.oid = ci.relnamespace
-          join pg_constraint cn on cn.conrelid = cr.oid
-          left join pg_stat_all_indexes as si on si.indexrelid = i.indexrelid
-          where
-            contype = 'f'
-            and not i.indisunique
-            and conkey is not null
-            and ci.relpages > 5
-            and si.idx_scan < 10
-        ),
         -- Unused indexes
-        table_scans as (
+        with table_scans as (
           select relid,
               tables.idx_scan + tables.seq_scan as all_scans,
               (tables.n_tup_ins + tables.n_tup_upd + tables.n_tup_del) as writes,
