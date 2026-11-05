@@ -3395,6 +3395,13 @@ metrics:
             -- Constraint info
             pidx.indisprimary as is_pk,
             pidx.indisunique as is_unique,
+            -- H001-O1: false = writes do not maintain it (the build failed before its first scan ended)
+            pidx.indisready as is_ready,
+            -- H001-O2 / §9: an index whose concurrent build is still running reads invalid too
+            exists (
+              select from pg_stat_progress_create_index as p
+              where p.index_relid = pidx.indexrelid
+            ) as build_in_progress,
             con.conname as constraint_name,
             -- Table row estimate
             pct.reltuples::bigint as table_row_estimate,
@@ -3438,6 +3445,8 @@ metrics:
           index_size_bytes,
           is_pk,
           is_unique,
+          is_ready,
+          build_in_progress,
           constraint_name,
           table_row_estimate,
           has_valid_duplicate,
@@ -3459,6 +3468,8 @@ metrics:
           coalesce(sum(index_size_bytes), 0)::int8 as index_size_bytes,
           false as is_pk,
           false as is_unique,
+          bool_and(is_ready) as is_ready,
+          bool_or(build_in_progress) as build_in_progress,
           '$other$'::text as constraint_name,
           coalesce(sum(table_row_estimate), 0)::bigint as table_row_estimate,
           bool_or(has_valid_duplicate) as has_valid_duplicate,
@@ -3469,6 +3480,107 @@ metrics:
         where num > 100
         group by ()
         having count(*) > 0;
+    gauges:
+      - '*'
+    statement_timeout_seconds: 15
+  pg_not_valid_constraints:
+    description: >
+      Constraints added NOT VALID and never validated (checkup H001: a schema change
+      left half-done). One series per constraint (top 100 by schema, table and name),
+      with its type (c = CHECK, f = FOREIGN KEY), definition and whether it is a
+      partition's copy of a parent's constraint (is_partition_copy: the copy can
+      read not valid while the parent's row is validated). A `'$total$'` row is
+      always present, so "no series" means "not collected", never "none".
+      System schemas are excluded.
+    sqls:
+      11: |
+        with not_valid as ( /* pgwatch_generated */
+          select
+            n.nspname as schema_name,
+            c.relname as table_name,
+            con.conname as constraint_name,
+            con.contype::text as constraint_type,
+            pg_get_constraintdef(con.oid) as constraint_definition,
+            (con.conparentid <> 0)::int as is_partition_copy
+          from pg_constraint as con
+          join pg_class as c on c.oid = con.conrelid
+          join pg_namespace as n on n.oid = c.relnamespace
+          where not con.convalidated
+            and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and n.nspname !~ '^pg_(toast_)?temp_'
+        )
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          schema_name as tag_schema_name,
+          table_name as tag_table_name,
+          constraint_name as tag_constraint_name,
+          constraint_type as tag_constraint_type,
+          constraint_definition,
+          is_partition_copy,
+          1 as not_valid
+        from (
+          select * from not_valid
+          order by schema_name, table_name, constraint_name
+          limit 100
+        ) as top
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          '$total$' as tag_schema_name,
+          '$total$' as tag_table_name,
+          '$total$' as tag_constraint_name,
+          '$total$' as tag_constraint_type,
+          '$total$' as constraint_definition,
+          coalesce(sum(is_partition_copy), 0)::int as is_partition_copy,
+          count(*)::int as not_valid
+        from not_valid;
+      18: |
+        with not_valid as ( /* pgwatch_generated */
+          select
+            n.nspname as schema_name,
+            c.relname as table_name,
+            con.conname as constraint_name,
+            con.contype::text as constraint_type,
+            pg_get_constraintdef(con.oid) as constraint_definition,
+            (con.conparentid <> 0)::int as is_partition_copy
+          from pg_constraint as con
+          join pg_class as c on c.oid = con.conrelid
+          join pg_namespace as n on n.oid = c.relnamespace
+          where not con.convalidated
+            -- PG 18: a NOT ENFORCED constraint also reads convalidated = false; it is a design, not a half-done change
+            and con.conenforced
+            and n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+            and n.nspname !~ '^pg_(toast_)?temp_'
+        )
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          schema_name as tag_schema_name,
+          table_name as tag_table_name,
+          constraint_name as tag_constraint_name,
+          constraint_type as tag_constraint_type,
+          constraint_definition,
+          is_partition_copy,
+          1 as not_valid
+        from (
+          select * from not_valid
+          order by schema_name, table_name, constraint_name
+          limit 100
+        ) as top
+        union all
+        select
+          (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
+          current_database() as tag_datname,
+          '$total$' as tag_schema_name,
+          '$total$' as tag_table_name,
+          '$total$' as tag_constraint_name,
+          '$total$' as tag_constraint_type,
+          '$total$' as constraint_definition,
+          coalesce(sum(is_partition_copy), 0)::int as is_partition_copy,
+          count(*)::int as not_valid
+        from not_valid;
     gauges:
       - '*'
     statement_timeout_seconds: 15
@@ -4874,6 +4986,7 @@ presets:
       table_size_detailed: 30
       pg_btree_bloat: 7200
       pg_invalid_indexes: 7200
+      pg_not_valid_constraints: 7200
       redundant_indexes: 10800
       unused_indexes: 7200
       rarely_used_indexes: 10800
