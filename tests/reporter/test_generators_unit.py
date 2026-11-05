@@ -1495,6 +1495,8 @@ def test_generate_all_reports_invokes_every_builder(monkeypatch: pytest.MonkeyPa
         # node that is not read, listed with the reason (postgresai#474).
         'A002', 'A003', 'A004', 'A005', 'A007', 'A014',
         'D004', 'F001', 'F002', 'F004', 'F005', 'G001',
+        # G003 reads monitoring and the nodes: here, a file with every catalog fact left out.
+        'G003',
         'H001', 'H002', 'H004',
         'I001',
         'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008',

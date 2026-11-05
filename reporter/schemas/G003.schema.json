@@ -64,6 +64,104 @@
         "stats_reset": { "type": ["string", "null"] }
       }
     },
+    "timeoutValues": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "can_login", "superuser", "bypass_rls", "member_of", "settings", "database_settings"],
+      "properties": {
+        "role": { "type": "string" },
+        "can_login": { "type": "boolean" },
+        "superuser": { "type": "boolean" },
+        "bypass_rls": { "type": "boolean" },
+        "member_of": { "type": "array", "items": { "type": "string" } },
+        "settings": { "$ref": "#/$defs/timeoutValues" },
+        "database_settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/timeoutValues" } },
+        "calls": { "type": "integer" },
+        "longest_call_ms": { "type": ["number", "null"] },
+        "longest_call_queryid": { "type": ["string", "null"] },
+        "longest_call_query": { "type": ["string", "null"] },
+        "longest_call_since": { "type": ["string", "null"] },
+        "stats_since": { "type": ["string", "null"] }
+      }
+    },
+    "routine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "name", "kind", "owner", "commits", "catches_cancel", "settings"],
+      "properties": {
+        "schema": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "enum": ["procedure", "function"] },
+        "owner": { "type": "string" },
+        "commits": { "type": "boolean" },
+        "catches_cancel": { "type": "boolean" },
+        "settings": { "$ref": "#/$defs/timeoutValues" }
+      }
+    },
+    "deadlockWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "days", "step_seconds", "deadlocks", "days_with_deadlocks", "per_day", "by_database"],
+      "properties": {
+        "start": { "type": "string" },
+        "end": { "type": "string" },
+        "days": { "type": "number" },
+        "step_seconds": { "type": "integer" },
+        "deadlocks": { "type": "integer" },
+        "days_with_deadlocks": { "type": "integer" },
+        "per_day": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["date", "deadlocks"],
+            "properties": { "date": { "type": "string" }, "deadlocks": { "type": "integer" } }
+          }
+        },
+        "by_database": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "peak_hour_utc": { "type": "integer" },
+        "peak_hour_deadlocks": { "type": "integer" },
+        "worst_step_end": { "type": "string" },
+        "worst_step_deadlocks": { "type": "integer" }
+      }
+    },
+    "lockWaits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "days", "pairs_total", "session_pairs_total", "pairs"],
+      "properties": {
+        "start": { "type": ["string", "null"] },
+        "end": { "type": ["string", "null"] },
+        "days": { "type": ["number", "null"] },
+        "pairs_total": { "type": "integer" },
+        "session_pairs_total": { "type": "integer" },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["blocked_query_id", "blocked_user", "blocked_table", "blocker_query_id", "blocker_user", "blocker_table", "sessions", "longest_blocked_statement_age_ms", "longest_at"],
+            "properties": {
+              "blocked_query_id": { "type": "string" },
+              "blocked_user": { "type": "string" },
+              "blocked_table": { "type": "string" },
+              "blocker_query_id": { "type": "string" },
+              "blocker_user": { "type": "string" },
+              "blocker_table": { "type": "string" },
+              "sessions": { "type": "integer" },
+              "longest_blocked_statement_age_ms": { "type": "integer" },
+              "longest_at": { "type": ["string", "null"] },
+              "blocked_query": { "type": ["string", "null"] },
+              "blocker_query": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
     "data": {
       "type": "object",
       "additionalProperties": false,
@@ -74,7 +172,36 @@
           "additionalProperties": { "$ref": "#/$defs/setting" }
         },
         "deadlock_stats": { "$ref": "#/$defs/deadlockStats" },
-        "deadlock_stats_error": { "type": "string" }
+        "deadlock_stats_error": { "type": "string" },
+        "deadlock_window": { "$ref": "#/$defs/deadlockWindow" },
+        "deadlock_window_error": { "type": "string" },
+        "lock_waits": { "$ref": "#/$defs/lockWaits" },
+        "lock_waits_error": { "type": "string" },
+        "read_as": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "database"],
+          "properties": { "role": { "type": "string" }, "database": { "type": "string" } }
+        },
+        "read_as_error": { "type": "string" },
+        "server_settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["setting", "unit", "source"],
+            "properties": { "setting": { "type": "string" }, "unit": { "type": "string" }, "source": { "type": "string" } }
+          }
+        },
+        "server_settings_error": { "type": "string" },
+        "database_settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/timeoutValues" } },
+        "database_settings_error": { "type": "string" },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/role" } },
+        "roles_total": { "type": "integer" },
+        "roles_error": { "type": "string" },
+        "calls_error": { "type": "string" },
+        "routines": { "type": "array", "items": { "$ref": "#/$defs/routine" } },
+        "routines_error": { "type": "string" }
       }
     },
     "nodeResult": {

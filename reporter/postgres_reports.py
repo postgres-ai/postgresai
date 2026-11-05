@@ -62,6 +62,7 @@ import boto3
 from requests_aws4auth import AWS4Auth
 
 from reporter import a005 as a005_facts
+from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
 from reporter.wait_ready import read_sources
@@ -172,6 +173,23 @@ class PostgresReportGenerator:
         'vacuum_multixact_freeze_min_age',
         'vacuum_multixact_freeze_table_age'
     ]
+
+    # As the CLI's G003 (cli/lib/checkup.ts lockTimeoutSettingNames).
+    G003_SETTINGS = [
+        'lock_timeout',
+        'statement_timeout',
+        'idle_in_transaction_session_timeout',
+        'idle_session_timeout',
+        'deadlock_timeout',
+        'max_locks_per_transaction',
+        'max_pred_locks_per_transaction',
+        'max_pred_locks_per_relation',
+        'max_pred_locks_per_page',
+        'log_lock_waits',
+        'transaction_timeout',
+    ]
+    #: The window of G003's deadlocks and lock waits.
+    G003_WINDOW_DAYS = 7
 
     G001_SETTINGS = [
         'shared_buffers',
@@ -712,6 +730,85 @@ class PostgresReportGenerator:
                 result = a005_facts.unreachable_node(err, conn_str)
                 logger.warning(f"A005: node {node_name} not read: {result['data']['logical_slots_error']}")
         return self.format_report_data("A005", {node_name: result}, node_name)
+
+    def generate_g003_timeouts_report(self, a003_report: Dict[str, Any], cluster: str = "local",
+                                      node_name: str = "node-01") -> Dict[str, Any]:
+        """
+        Generate G003 Timeouts, locks, deadlocks: the same file as the CLI's, plus
+        what a timeout decision needs (reporter/g003.py): the values stored per role
+        and database and the longest call per role, read from the node as for A005,
+        and the deadlocks and lock waits of the last G003_WINDOW_DAYS from monitoring.
+        A fact that cannot be read is left out with its reason, never written as none.
+        """
+        logger.info(f"Generating G003 report for cluster='{cluster}', node_name='{node_name}'...")
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        node = (a003_report.get('results') or {}).get(node_name) or {}
+        settings = {name: info for name, info in (node.get('data') or {}).items() if name in self.G003_SETTINGS}
+        data: Dict[str, Any] = {"settings": settings}
+
+        def latest(query: str) -> Optional[List[Dict[str, Any]]]:
+            """The series, or None when the query failed: never read as no series."""
+            result = self.query_instant(query)
+            return result.get('data', {}).get('result', []) if result.get('status') == 'success' else None
+
+        def total(query: str) -> Optional[int]:
+            rows = latest(query)
+            return int(float(rows[0]['value'][1])) if rows else None
+
+        deadlocks = total(f'sum(last_over_time(pgwatch_db_stats_deadlocks{{{where}}}[3h]))')
+        conflicts = total(f'sum(last_over_time(pgwatch_db_stats_conflicts{{{where}}}[3h]))')
+        reset = total(f'min(last_over_time(pgwatch_stats_reset_stats_reset_epoch{{{where}}}[3h]))')
+        data["deadlock_stats"] = None if deadlocks is None or conflicts is None else {
+            "deadlocks": deadlocks,
+            "conflicts": conflicts,
+            "stats_reset": datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None,
+        }
+        if data["deadlock_stats"] is None:
+            data["deadlock_stats_error"] = "the monitoring counters could not be read"
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=self.G003_WINDOW_DAYS)
+        window = g003_facts.deadlock_window(
+            self.query_range(f'pgwatch_db_stats_deadlocks{{{where}}}', start, end, step="1h"), step_seconds=3600)
+        version = self.extract_postgres_version_from_a003(a003_report, node_name)
+        major = str(version.get('server_major_ver') or '')
+        if not window:
+            data["deadlock_window_error"] = "monitoring has fewer than two readings of the counter"
+        else:
+            data["deadlock_window"] = window
+            metric = f'pgwatch_lock_waits_blocked_ms{{{where}}}[{self.G003_WINDOW_DAYS}d]'
+            longest = None
+            if major.isdigit() and int(major) < 14:  # the metric has SQL from 14 (metrics.yml lock_waits)
+                data["lock_waits_error"] = f"the lock-wait metric needs PostgreSQL 14; this is {major}"
+            else:
+                longest = latest(f'max_over_time({metric})')
+                if longest is None:
+                    data["lock_waits_error"] = "the monitoring query failed"
+            if longest is not None:
+                texts: Dict[str, str] = {}
+                if longest:
+                    for queries in self.get_queryid_queries_from_sink().values():
+                        texts.update(queries)
+                data["lock_waits"] = g003_facts.lock_waits(
+                    longest, latest(f'tmax_over_time({metric})') or [], window=window, query_text=texts.get)
+
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        if conn_str is None:
+            data["roles_error"] = "no connection for this node in the sources file"
+        else:
+            try:
+                data.update(g003_facts.catalog_facts(conn_str))
+            except Exception as err:  # the node: recorded in the file, the run goes on
+                data["roles_error"] = a005_facts.error_text(err, a005_facts._secrets(conn_str))
+                logger.warning(f"G003: node {node_name} not read: {data['roles_error']}")
+        # Keyed by node, as A005: format_report_data takes any value holding a `data` key
+        # for a node, and a database named `data` can be in database_settings.
+        node_result: Dict[str, Any] = {"data": data}
+        if version:
+            node_result["postgres_version"] = version
+        return self.format_report_data("G003", {node_name: node_result}, node_name)
 
     def generate_a007_altered_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
@@ -5524,6 +5621,19 @@ class PostgresReportGenerator:
         except Exception as err:
             logger.warning(f"A005 not generated: {a005_facts.error_text(err)}")
 
+        # G003 reads the nodes and monitoring beside A003; its failure never costs
+        # the other reports or the upload.
+        if reports.get('A003'):
+            try:
+                g003_results = {}
+                for node in nodes_to_process:
+                    node_report = self.generate_g003_timeouts_report(reports['A003'], cluster, node)
+                    g003_results[node] = node_report['results'][node]
+                reports['G003'] = self.format_report_data(
+                    'G003', g003_results, all_nodes["primary"] if all_nodes["primary"] else nodes_to_process[0], all_nodes)
+            except Exception as err:
+                logger.warning(f"G003 not generated: {a005_facts.error_text(err)}")
+
         # Generate D004, F001, G001 from A003 data (if A003 was generated successfully)
         a003_report = reports.get('A003')
         if a003_report:
@@ -6392,7 +6502,7 @@ def main():
     parser.add_argument('--no-combine-nodes', action='store_true', default=False,
                         help='Disable combining primary and replica reports into single report')
     parser.add_argument('--check-id',
-                        choices=['A002', 'A003', 'A004', 'A005', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'H001', 'H002',
+                        choices=['A002', 'A003', 'A004', 'A005', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'G003', 'H001', 'H002',
                                  'H004', 'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008', 'M001', 'M002', 'M003', 'N001', 'ALL'],
                         help='Specific check ID to generate (default: ALL)')
     parser.add_argument('--sources-path', default=None,
@@ -6530,7 +6640,7 @@ def main():
 
                 # For D004, F001, G001 - generate A003 first and derive from it
                 a003_report = None
-                if args.check_id in ('D004', 'F001', 'G001'):
+                if args.check_id in ('D004', 'F001', 'G001', 'G003'):
                     print(f"Generating A003 first for {args.check_id}...")
                     a003_report = generator.generate_a003_settings_report(cluster, args.node_name)
 
@@ -6538,6 +6648,8 @@ def main():
                     report = generator.generate_a002_version_report(cluster, args.node_name)
                 elif args.check_id == 'A005':
                     report = generator.generate_a005_extensions_report(cluster, args.node_name)
+                elif args.check_id == 'G003':
+                    report = generator.generate_g003_timeouts_report(a003_report, cluster, args.node_name)
                 elif args.check_id == 'A003':
                     report = generator.generate_a003_settings_report(cluster, args.node_name)
                 elif args.check_id == 'A004':

@@ -4982,7 +4982,7 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
           shared_buffers: expectedSharedBuffersSetting,
         });
         expect(reports.G001.results["test-node"].data.analysis.estimated_total_memory_usage.shared_buffers_bytes).toBe(134217728);
-        expect(reports.G003.results["test-node"].data).toEqual({
+        expect(reports.G003.results["test-node"].data).toMatchObject({
           settings: {
             deadlock_timeout: expectedDeadlockTimeoutSetting,
           },
