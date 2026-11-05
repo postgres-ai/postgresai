@@ -46,7 +46,7 @@ Start: user pastes prompt (console → Create organization → "Set up with your
                                          (if the user replies "wait, wrong coupon" → agent handles it: back to the coupon question)
         │
 3. (auto) Payment method check (YES path)
-        ├── card already on file → use it, continue silently (no card re-confirmation — decided)
+        ├── card already on file → use it only after the user explicitly accepts the final subscription price and billing period in step 2; offer another card if requested
         └── no card → [?] link to add a card, wait
         │
 4. (auto) Check connection
