@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Query-text retention cleanup no longer deletes recent rows. It selected rows by `ctid`, which is unique only within one partition of `pgss_queryid_queries`, so each batch also removed rows at the same position in other partitions (postgres-ai/postgresai#495).
 - H001 "Invalid indexes":
   - `index_definition` comes from the metric's own label when the sink database has none (it read "Definition not available").
   - The invalid-index metric gains `is_ready` (`pg_index.indisready`: false means writes do not maintain the index) and `build_in_progress` (a `CREATE INDEX` for it is running, `pg_stat_progress_create_index`). Both are in the report only when the box collects them, never defaulted.
