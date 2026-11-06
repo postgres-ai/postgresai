@@ -1251,7 +1251,7 @@ class TestRetentionCleanup:
 
             delete_call = self._delete_calls(mock_cursor)[0]
             params = delete_call[0][1]
-            assert params == (48, app_module.QUERYID_RETENTION_BATCH_SIZE)
+            assert params == (48, 48, app_module.QUERYID_RETENTION_BATCH_SIZE)
         finally:
             app_module.QUERYID_RETENTION_HOURS = original_hours
 

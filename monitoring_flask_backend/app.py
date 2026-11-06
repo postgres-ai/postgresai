@@ -460,12 +460,13 @@ def _run_retention_cleanup() -> None:
                 for _ in range(QUERYID_RETENTION_MAX_ITERATIONS):
                     cursor.execute("""
                         delete from public.pgss_queryid_queries
-                        where ctid in (
-                            select ctid from public.pgss_queryid_queries
+                        where time < now() - make_interval(hours => %s)
+                          and (tableoid, ctid) in (
+                            select tableoid, ctid from public.pgss_queryid_queries
                             where time < now() - make_interval(hours => %s)
                             limit %s
                         )
-                    """, (QUERYID_RETENTION_HOURS, QUERYID_RETENTION_BATCH_SIZE))
+                    """, (QUERYID_RETENTION_HOURS, QUERYID_RETENTION_HOURS, QUERYID_RETENTION_BATCH_SIZE))
                     deleted = cursor.rowcount
                     total_deleted += deleted
                     if deleted < QUERYID_RETENTION_BATCH_SIZE:
@@ -521,7 +522,7 @@ METRIC_NAME_MAPPING = {
     'rows': 'rows',
     'shared_bytes_hit_total': 'shared_blks_hit',
     'shared_bytes_read_total': 'shared_blks_read',
-    'shared_bytes_dirtied_total': 'shared_blks_dirtied', 
+    'shared_bytes_dirtied_total': 'shared_blks_dirtied',
     'shared_bytes_written_total': 'shared_blks_written',
     'block_read_total': 'blk_read_time',
     'block_write_total': 'blk_write_time'
@@ -536,17 +537,17 @@ def get_prometheus_client():
         if os.environ.get('ENABLE_AMP', 'false').lower() == 'true':
             region = os.environ.get('AWS_REGION', 'us-east-1')
             service = 'aps'
-            
+
             session = boto3.Session()
             credentials = session.get_credentials()
-            
+
             if credentials:
                 auth = AWS4Auth(
                     region=region,
                     service=service,
                     refreshable_credentials=credentials,
                 )
-            
+
             # Enable SSL verification for AMP
             disable_ssl = False
 
@@ -941,11 +942,11 @@ def get_pgss_metrics_csv():
 
             # Combine all fields in desired order
             all_fields = base_fields + all_metric_fields
-            
+
             writer = csv.DictWriter(output, fieldnames=all_fields)
             writer.writeheader()
             writer.writerows(csv_data)
-        
+
         csv_content = output.getvalue()
         output.close()
 
@@ -1017,28 +1018,28 @@ def process_pgss_data(start_data, end_data, start_time, end_time, query_texts=No
 
         # Numeric columns to calculate differences for (using original metric names)
         numeric_cols = list(METRIC_NAME_MAPPING.keys())
-        
+
         # Calculate differences and rates
         for col in numeric_cols:
             start_val = start_metric.get(col, 0)
             end_val = end_metric.get(col, 0)
             diff = end_val - start_val
-            
+
             # Use simplified display name for CSV columns
             display_name = METRIC_NAME_MAPPING[col]
-            
+
             # Convert bytes to blocks for block-related metrics (PostgreSQL uses 8KB blocks)
             if 'blks' in display_name and 'bytes' in col:
                 diff = diff / 8192  # Convert bytes to 8KB blocks
-            
+
             row[display_name] = diff
-            
+
             # Calculate rates per second
             if row['duration_seconds'] > 0:
                 row[f'{display_name}_per_sec'] = diff / row['duration_seconds']
             else:
                 row[f'{display_name}_per_sec'] = 0
-                
+
             # Calculate per-call averages
             calls_diff = row.get('calls', 0)
             if calls_diff > 0:
@@ -1115,13 +1116,13 @@ def debug_metrics():
     """
     try:
         prom = get_prometheus_client()
-        
+
         # Get all available metrics
         all_metrics = prom.all_metrics()
-        
+
         # Filter for pg_btree_bloat metrics
         btree_metrics = [m for m in all_metrics if 'btree_bloat' in m]
-        
+
         # Get sample data for each btree metric
         sample_data = {}
         for metric in btree_metrics[:5]:  # Limit to first 5 to avoid overwhelming
@@ -1133,7 +1134,7 @@ def debug_metrics():
                 }
             except Exception as e:
                 sample_data[metric] = {'error': str(e)}
-        
+
         return jsonify({
             'all_metrics_count': len(all_metrics),
             'btree_metrics': btree_metrics,
@@ -1262,7 +1263,7 @@ def get_table_info_csv():
     """
     Get comprehensive table information including size metrics, tuple statistics, and I/O statistics as a CSV table.
     Supports both instant queries (without time parameters) and rate calculations over a time period.
-    
+
     Query parameters:
     - time_start: Start time (ISO format or Unix timestamp) - optional
     - time_end: End time (ISO format or Unix timestamp) - optional
@@ -1284,7 +1285,7 @@ def get_table_info_csv():
 
         # Determine if we should calculate rates
         calculate_rates = bool(time_start and time_end)
-        
+
         if calculate_rates:
             # Parse time parameters
             try:
@@ -1316,7 +1317,7 @@ def get_table_info_csv():
         filter_str = '{' + ','.join(filters) + '}' if filters else ''
 
         prom = get_prometheus_client()
-        
+
         # Define base metrics to query (without last_over_time wrapper for rate calculation)
         base_metrics = {
             # Size metrics
@@ -1338,12 +1339,12 @@ def get_table_info_csv():
             'idx_blks_read': f'pgwatch_pg_statio_all_tables_idx_blks_read{filter_str}',
             'idx_blks_hit': f'pgwatch_pg_statio_all_tables_idx_blks_hit{filter_str}',
         }
-        
+
         if calculate_rates:
             # Get metrics at start and end times
             start_data = {}
             end_data = {}
-            
+
             for metric_name, metric_query in base_metrics.items():
                 try:
                     # Get data at start time
@@ -1354,7 +1355,7 @@ def get_table_info_csv():
                     )
                     if start_result:
                         start_data[metric_name] = start_result
-                    
+
                     # Get data at end time
                     end_result = prom.get_metric_range_data(
                         metric_name=metric_query,
@@ -1366,7 +1367,7 @@ def get_table_info_csv():
                 except Exception as e:
                     logger.warning(f"Failed to query metric {metric_name}: {e}")
                     continue
-            
+
             # Process the data to calculate rates
             metric_results = process_table_stats_with_rates(start_data, end_data, start_dt, end_dt)
         else:
@@ -1377,24 +1378,24 @@ def get_table_info_csv():
                     result = prom.custom_query(query=f'last_over_time({metric_query}[1d])')
                     for entry in result:
                         metric_labels = entry.get('metric', {})
-                        
+
                         # Use different key depending on label names
                         schema_label = metric_labels.get('schemaname') or metric_labels.get('schema', '')
                         table_label = metric_labels.get('relname') or metric_labels.get('table_name') or metric_labels.get('tblname', '')
-                        
+
                         key = (
                             metric_labels.get('datname', ''),
                             schema_label,
                             table_label,
                         )
-                        
+
                         if key not in metric_results:
                             metric_results[key] = {
                                 'database': metric_labels.get('datname', ''),
                                 'schema': schema_label,
                                 'table_name': table_label,
                             }
-                        
+
                         value = float(entry['value'][1])
                         metric_results[key][metric_name] = value
                 except Exception as e:
@@ -1403,7 +1404,7 @@ def get_table_info_csv():
 
         # Prepare CSV output
         output = io.StringIO()
-        
+
         if calculate_rates:
             # Fields with rate calculations
             fieldnames = [
@@ -1435,20 +1436,20 @@ def get_table_info_csv():
                 'heap_blks_read', 'heap_blks_hit',
                 'idx_blks_read', 'idx_blks_hit'
             ]
-            
+
             # Remove 'database' field from rows if present (not in fieldnames)
             for row in metric_results.values():
                 row.pop('database', None)
-        
+
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
-        
+
         # Write rows (handle both dict and list)
         if isinstance(metric_results, dict):
             rows = metric_results.values()
         else:
             rows = metric_results
-        
+
         for row in rows:
             writer.writerow(row)
 
@@ -1458,12 +1459,12 @@ def get_table_info_csv():
         # Create response
         response = make_response(csv_content)
         response.headers['Content-Type'] = 'text/csv'
-        
+
         if calculate_rates:
             filename = f'table_stats_{start_dt.strftime("%Y%m%d_%H%M%S")}_{end_dt.strftime("%Y%m%d_%H%M%S")}.csv'
         else:
             filename = 'table_stats_latest.csv'
-        
+
         response.headers['Content-Disposition'] = f'attachment; filename={filename}'
         return response
 
@@ -1478,49 +1479,49 @@ def process_table_stats_with_rates(start_data, end_data, start_time, end_time):
     # Convert data to dictionaries
     start_metrics = prometheus_table_to_dict(start_data, start_time)
     end_metrics = prometheus_table_to_dict(end_data, end_time)
-    
+
     if not start_metrics and not end_metrics:
         return []
-    
+
     # Get all unique table identifiers
     all_keys = set()
     all_keys.update(start_metrics.keys())
     all_keys.update(end_metrics.keys())
-    
+
     result_rows = []
-    
+
     for key in all_keys:
         start_metric = start_metrics.get(key, {})
         end_metric = end_metrics.get(key, {})
-        
+
         # Extract identifier components from key
         db_name, schema_name, table_name = key
-        
+
         # Calculate actual duration
         start_timestamp = start_metric.get('timestamp')
         end_timestamp = end_metric.get('timestamp')
-        
+
         if start_timestamp and end_timestamp:
             start_dt = datetime.fromisoformat(start_timestamp)
             end_dt = datetime.fromisoformat(end_timestamp)
             actual_duration = (end_dt - start_dt).total_seconds()
         else:
             actual_duration = (end_time - start_time).total_seconds()
-        
+
         # Create result row
         row = {
             'schema': schema_name,
             'table_name': table_name,
             'duration_seconds': actual_duration
         }
-        
+
         # Counter metrics to calculate differences and rates
         counter_metrics = [
-            'seq_scan', 'idx_scan', 'n_tup_ins', 'n_tup_upd', 
+            'seq_scan', 'idx_scan', 'n_tup_ins', 'n_tup_upd',
             'n_tup_del', 'n_tup_hot_upd', 'heap_blks_read', 'heap_blks_hit',
             'idx_blks_read', 'idx_blks_hit'
         ]
-        
+
         # Mapping for display names
         display_names = {
             'seq_scan': 'seq_scans',
@@ -1530,33 +1531,33 @@ def process_table_stats_with_rates(start_data, end_data, start_time, end_time):
             'n_tup_del': 'deletes',
             'n_tup_hot_upd': 'hot_updates',
         }
-        
+
         # Calculate differences and rates
         for metric in counter_metrics:
             start_val = start_metric.get(metric, 0)
             end_val = end_metric.get(metric, 0)
             diff = end_val - start_val
-            
+
             # Use display name if available
             display_name = display_names.get(metric, metric)
-            
+
             row[display_name] = diff
-            
+
             # Calculate rate per second
             if actual_duration > 0:
                 row[f'{display_name}_per_sec'] = diff / actual_duration
             else:
                 row[f'{display_name}_per_sec'] = 0
-        
+
         # Size metrics (just use end values, these don't need rates)
         for size_metric in ['total_size', 'table_size', 'index_size', 'toast_size']:
             row[size_metric] = end_metric.get(size_metric, 0)
-        
+
         result_rows.append(row)
-    
+
     # Sort by total size descending
     result_rows.sort(key=lambda x: x.get('total_size', 0), reverse=True)
-    
+
     return result_rows
 
 def prometheus_table_to_dict(prom_data, timestamp):
@@ -1565,43 +1566,43 @@ def prometheus_table_to_dict(prom_data, timestamp):
     """
     if not prom_data:
         return {}
-    
+
     metrics_dict = {}
-    
+
     for metric_name, metric_results in prom_data.items():
         for metric_data in metric_results:
             metric = metric_data.get('metric', {})
             values = metric_data.get('values', [])
-            
+
             if not values:
                 continue
-            
+
             # Get the closest value to our timestamp
             closest_value = min(values, key=lambda x: abs(float(x[0]) - timestamp.timestamp()))
-            
+
             # Handle different label names
             schema_label = metric.get('schemaname') or metric.get('schema', '')
             table_label = metric.get('relname') or metric.get('table_name') or metric.get('tblname', '')
-            
+
             # Create unique key for this table
             key = (
                 metric.get('datname', ''),
                 schema_label,
                 table_label,
             )
-            
+
             # Initialize metric dict if not exists
             if key not in metrics_dict:
                 metrics_dict[key] = {
                     'timestamp': datetime.fromtimestamp(float(closest_value[0]), tz=timezone.utc).isoformat(),
                 }
-            
+
             # Add metric value
             try:
                 metrics_dict[key][metric_name] = float(closest_value[1])
             except (ValueError, IndexError):
                 metrics_dict[key][metric_name] = 0
-    
+
     return metrics_dict
 
 

@@ -199,16 +199,22 @@ build:test:images:
 flask-backend:tests:
   stage: test
   image: python:3.11-bookworm
+  services:
+    - name: postgres:17
+      alias: sink-test-postgres
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     PIP_NO_CACHE_DIR: "1"
+    POSTGRES_HOST_AUTH_METHOD: trust
+    PGSS_SINK_TEST_URL: postgresql://postgres@sink-test-postgres:5432/postgres
   before_script:
     - python --version
     - pip install --upgrade pip
     - pip install -r monitoring_flask_backend/requirements.txt
+    - for i in $(seq 1 30); do python -c "import os, psycopg2; psycopg2.connect(os.environ['PGSS_SINK_TEST_URL']).close()" 2>/dev/null && break; sleep 2; done
   script:
-    - PYTHONPATH=monitoring_flask_backend:. python -m pytest monitoring_flask_backend/test_app.py monitoring_flask_backend/test_query_text_native.py
+    - PYTHONPATH=monitoring_flask_backend:. python -m pytest monitoring_flask_backend/test_app.py monitoring_flask_backend/test_query_text_native.py monitoring_flask_backend/test_retention_cleanup_pg.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
