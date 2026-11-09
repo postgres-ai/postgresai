@@ -1532,11 +1532,17 @@ class PostgresReportGenerator:
     def _h004_qualified(name: str, schema: str) -> str:
         """The schema-qualified index name, with pgwatch's quote_ident() removed: the redundant_indexes labels are
         formatted (no schema for public, quoted when needed), the unused_indexes ones are raw."""
+        parts = PostgresReportGenerator._h004_name_parts(name, schema)
+        return ".".join(parts) if parts else ""
+
+    @staticmethod
+    def _h004_name_parts(name: str, schema: str) -> Tuple[str, ...]:
+        """(schema, index) from a formatted redundant_indexes label; () when there is no name."""
         unquote = PostgresReportGenerator._f001_unquote
         parts = [unquote(p) for p in re.findall(r'"(?:[^"]|"")*"|[^.]+', name or "")]
         if len(parts) >= 2:
-            return f"{parts[-2]}.{parts[-1]}"
-        return f"{schema}.{parts[0]}" if parts else ""
+            return (parts[-2], parts[-1])
+        return (schema, parts[0]) if parts else ()
 
     def _h004_redundant_to(self, labels: Dict[str, str], schema_name: str, reason: str,
                            index_definitions: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -2600,6 +2606,7 @@ class PostgresReportGenerator:
 
             # Sort by bloat percentage descending
             bloated_indexes_list.sort(key=lambda x: x['bloat_pct'], reverse=True)
+            self._f005_add_index_facts(bloated_indexes_list, cluster, node_name, db_name)
 
             db_size_bytes = database_sizes.get(db_name, 0)
             bloated_indexes_by_db[db_name] = {
@@ -2610,6 +2617,15 @@ class PostgresReportGenerator:
                 "database_size_bytes": db_size_bytes,
                 "database_size_pretty": self.format_bytes(db_size_bytes)
             }
+            table_facts = self._f005_table_facts(bloated_indexes_list, cluster, node_name, db_name)
+            if table_facts:
+                bloated_indexes_by_db[db_name]["table_facts"] = table_facts
+            history = self._f004_history(cluster, node_name, db_name, metric="pgwatch_pg_btree_bloat_bloat_size")
+            if history:
+                bloated_indexes_by_db[db_name]["history"] = history
+            traffic = self._f005_traffic_by_hour(cluster, node_name, db_name)
+            if traffic:
+                bloated_indexes_by_db[db_name]["traffic_by_hour_utc"] = traffic
 
         return self.format_report_data(
             "F005",
@@ -2617,6 +2633,130 @@ class PostgresReportGenerator:
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+
+    #: The tables F005 carries facts for: those of the indexes with the most estimated bloat.
+    F005_FACT_INDEXES = 10
+    F005_TRAFFIC_DAYS = 7
+
+    def _f005_index_series(self, query: str) -> Optional[Dict[tuple, float]]:
+        """One value per (schema, table, index) of a btree bloat query; None when it failed."""
+        result = self.query_instant(query)
+        if result.get('status') != 'success':
+            return None
+        out: Dict[tuple, float] = {}
+        for row in (result.get('data') or {}).get('result') or []:
+            metric = row.get('metric') or {}
+            value = self._f001_number(row)
+            if value is not None:
+                out[(metric.get('schemaname', ''), metric.get('tblname', ''), metric.get('idxname', ''))] = value
+        return out
+
+    def _f005_listed(self, query: str, db_name: Optional[str] = None, raw: bool = False) -> Optional[Dict[str, Any]]:
+        """The indexes an instant query lists: ``names`` as (schema, index), and ``capped`` when
+        pgwatch folded the rest into its ``$other$`` row, so a missing name is not known. None
+        when the query failed (not known, never "not listed"). ``db_name``: keep this database's
+        rows (the redundant_indexes metric labels the source's name dbname and the database's own
+        real_dbname). ``raw``: the labels are raw names (unused_indexes), not quote_ident()ed."""
+        result = self.query_instant(query)
+        if result.get('status') != 'success':
+            return None
+        names, capped = set(), False
+        for row in (result.get('data') or {}).get('result') or []:
+            metric = row.get('metric') or {}
+            if db_name is not None and db_name not in (
+                    metric.get('real_dbname'), metric.get('datname'), metric.get('dbname')):
+                continue
+            schema, index = metric.get('schema_name', ''), metric.get('index_name', '')
+            if "$other$" in (schema, index):
+                capped = True
+            elif raw:
+                names.add((schema, index))
+            else:
+                names.add(self._h004_name_parts(index, schema))
+        return {"names": names, "capped": capped}
+
+    @staticmethod
+    def _f005_on_list(listed: Optional[Dict[str, Any]], schema: str, index: str) -> Optional[bool]:
+        """True or False when the list says; None when it does not (a failed query, or a capped list without the name)."""
+        if listed is None:
+            return None
+        if (schema, index) in listed["names"]:
+            return True
+        return None if listed["capped"] else False
+
+    def _f005_add_index_facts(self, indexes: List[Dict[str, Any]], cluster: str, node_name: str,
+                              db_name: str) -> None:
+        """Per index, what the rebuild-or-drop decision reads (protocols F005-O1, O2, C2): the
+        estimate's and the file's lowest and highest value over F004_WINDOW, and whether the
+        index is on the unused (H002) or the redundant (H004) list. A key is null when not known."""
+        if not indexes:
+            return
+        _esc = self._escape_promql_label
+        node = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        sel = f'{node}, datname="{_esc(db_name)}"'
+        win = self.F004_WINDOW
+        by = "by (schemaname, tblname, idxname)"  # labels such as sys_id can change within the window
+        facts = {
+            "bloat_size_min_in_window_bytes": f'min {by} (min_over_time(pgwatch_pg_btree_bloat_bloat_size{{{sel}}}[{win}]))',
+            "bloat_size_max_in_window_bytes": f'max {by} (max_over_time(pgwatch_pg_btree_bloat_bloat_size{{{sel}}}[{win}]))',
+        }
+        values = {name: self._f005_index_series(query) or {} for name, query in facts.items()}
+        # The index size: the MiB gauge newer pgwatch configs publish, else the older bytes gauge.
+        for name, agg in (("real_size_min_in_window_bytes", "min"), ("real_size_max_in_window_bytes", "max")):
+            mib = self._f005_index_series(
+                f'{agg} {by} ({agg}_over_time(pgwatch_pg_btree_bloat_real_size_mib{{{sel}}}[{win}]))') or {}
+            values[name] = ({key: value * 1024 * 1024 for key, value in mib.items()} or self._f005_index_series(
+                f'{agg} {by} ({agg}_over_time(pgwatch_pg_btree_bloat_real_size{{{sel}}}[{win}]))') or {})
+        unused = self._f005_listed(f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{{sel}}}[3h])', raw=True)
+        redundant = self._f005_listed(
+            f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{{node}}}[3h])', db_name)
+        for index in indexes:
+            key = (index.get('schema_name', ''), index.get('table_name', ''), index.get('index_name', ''))
+            other = "$other$" in key  # pgwatch's row for the indexes past its top N
+            for name, series in values.items():
+                value = None if other else series.get(key)
+                index[name] = int(round(value)) if value is not None else None
+            index["on_unused_list"] = None if other else self._f005_on_list(unused, key[0], key[2])
+            index["on_redundant_list"] = None if other else self._f005_on_list(redundant, key[0], key[2])
+
+    def _f005_table_facts(self, indexes: List[Dict[str, Any]], cluster: str, node_name: str,
+                          db_name: str) -> List[Dict[str, Any]]:
+        """The F004 per-table vacuum facts (protocols F005-O2: writes, HOT share, dead tuples) of
+        the tables behind the indexes with the most estimated bloat, heaviest first."""
+        top = sorted((i for i in indexes if "$other$" not in (i.get('schema_name'), i.get('index_name'))),
+                     key=lambda i: -(i.get('bloat_size') or 0))[:self.F005_FACT_INDEXES]
+        tables: Dict[tuple, Dict[str, Any]] = {}
+        for index in top:
+            key = (index.get('schema_name', ''), index.get('table_name', ''))
+            tables.setdefault(key, {"schema_name": key[0], "table_name": key[1]})
+        rows = list(tables.values())
+        self._f004_add_table_facts(rows, cluster, node_name, db_name)
+        for row in rows:  # those two are the table's heap estimate: F004's, not this report's
+            row.pop("bloat_size_min_in_window_bytes", None)
+            row.pop("bloat_size_max_in_window_bytes", None)
+        return rows
+
+    def _f005_traffic_by_hour(self, cluster: str, node_name: str, db_name: str) -> List[Dict[str, Any]]:
+        """Mean commits per second by UTC hour over F005_TRAFFIC_DAYS (protocols F005-R2: an observed
+        low-traffic window for a rebuild); [] unless every hour of the day has a reading. A sample's
+        rate covers the hour before it, so it counts for the hour of the window's midpoint."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        end = datetime.now(timezone.utc)
+        rows = self.query_range(f'sum(rate(pgwatch_db_stats_xact_commit{{{sel}}}[1h]))',
+                                end - timedelta(days=self.F005_TRAFFIC_DAYS), end, step="1h")
+        hours: Dict[int, List[float]] = {}
+        for stamp, raw in (rows[0].get('values') or []) if rows else []:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                hours.setdefault(datetime.fromtimestamp(float(stamp) - 1800, timezone.utc).hour, []).append(value)
+        if len(hours) < 24:
+            return []
+        return [{"hour": h, "xact_commit_per_s": round(sum(v) / len(v), 3), "readings": len(v)}
+                for h, v in sorted(hours.items())]
 
     def generate_g001_memory_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
@@ -3193,9 +3333,10 @@ class PostgresReportGenerator:
                     out[name] = value
         return out if len(out) == 2 else {}
 
-    def _f004_history(self, cluster: str, node_name: str, db_name: str) -> Dict[str, Any]:
-        """The database's estimated heap bloat once a day over F004_HISTORY_DAYS
-        (protocols F004-O1: the previous value, the min-max across the window)
+    def _f004_history(self, cluster: str, node_name: str, db_name: str,
+                      metric: str = "pgwatch_pg_table_bloat_bloat_size") -> Dict[str, Any]:
+        """The database's estimated bloat (``metric``: heap, or btree for F005-O1) once a day over
+        F004_HISTORY_DAYS (protocols F004-O1: the previous value, the min-max across the window)
         and the time of the first reading within 35 days; {} without data."""
         _esc = self._escape_promql_label
         sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
@@ -3204,7 +3345,7 @@ class PostgresReportGenerator:
         for days in range(self.F004_HISTORY_DAYS + 1):
             offset = f" offset {days}d" if days else ""
             result = self.query_instant(
-                f'sum(last_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[3h]{offset}))')
+                f'sum(last_over_time({metric}{{{sel}}}[3h]{offset}))')
             rows = (result.get('data') or {}).get('result') or [] if result.get('status') == 'success' else []
             value = self._f001_number(rows[0]) if rows else None
             if value is not None:
@@ -3213,7 +3354,7 @@ class PostgresReportGenerator:
         if not daily:
             return {}
         first = self.query_instant(
-            f'min(min_over_time(timestamp(pgwatch_pg_table_bloat_bloat_size{{{sel}}})[35d:10m]))')
+            f'min(min_over_time(timestamp({metric}{{{sel}}})[35d:10m]))')
         rows = (first.get('data') or {}).get('result') or [] if first.get('status') == 'success' else []
         first_at = self._f001_number(rows[0]) if rows else None
         # The tables' *_in_window facts cover window_seconds, or less when the first reading is later.
