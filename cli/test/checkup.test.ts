@@ -4937,8 +4937,10 @@ describe("Postgres version compatibility (PG13-PG19)", () => {
           autovacuum_vacuum_scale_factor: expectedAutovacuumAlteredSetting,
         });
         expect(reports.A013.results["test-node"].data).toEqual({ version: expectedVersion });
+        // D001 keeps deadlock_timeout too: the wait after which log_lock_waits logs (D001-O1).
         expect(reports.D001.results["test-node"].data).toEqual({
           log_min_duration_statement: expectedLogMinDurationSetting,
+          deadlock_timeout: expectedDeadlockTimeoutSetting,
         });
         expect(reports.D004.results["test-node"].data).toEqual({
           settings: {},

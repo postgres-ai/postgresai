@@ -58,12 +58,283 @@
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/setting" }
     },
+    "counterWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "days",
+        "total"
+      ],
+      "properties": {
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "end": {
+          "type": "string"
+        },
+        "days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "total": {
+          "type": "number"
+        },
+        "floor": {
+          "type": "boolean"
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read_as": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "database"
+          ],
+          "properties": {
+            "role": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            }
+          }
+        },
+        "setting_sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "is_default",
+              "pending_restart"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "is_default": {
+                "type": "boolean"
+              },
+              "pending_restart": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rows_read",
+            "values"
+          ],
+          "properties": {
+            "rows_read": {
+              "type": "integer"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "scope",
+                  "role",
+                  "database",
+                  "setting",
+                  "value"
+                ],
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "role",
+                      "database",
+                      "role in database",
+                      "all"
+                    ]
+                  },
+                  "role": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "setting": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "login_roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "superuser",
+              "member_of",
+              "sessions",
+              "oldest_session_start",
+              "applications"
+            ],
+            "properties": {
+              "role": {
+                "type": "string"
+              },
+              "superuser": {
+                "type": "boolean"
+              },
+              "sessions": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "oldest_session_start": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "applications": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "member_of": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "statements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "thresholds_ms",
+            "by_role"
+          ],
+          "properties": {
+            "thresholds_ms": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "dealloc": {
+              "type": "integer"
+            },
+            "stats_reset": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "by_role": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "role",
+                  "groups",
+                  "calls",
+                  "longest_call_ms",
+                  "stats_since",
+                  "groups_at_or_over_ms",
+                  "calls_of_groups_at_or_over_ms"
+                ],
+                "properties": {
+                  "role": {
+                    "type": "string"
+                  },
+                  "groups": {
+                    "type": "integer"
+                  },
+                  "calls": {
+                    "type": "integer"
+                  },
+                  "longest_call_ms": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "stats_since": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "groups_at_or_over_ms": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "integer"
+                    }
+                  },
+                  "calls_of_groups_at_or_over_ms": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "temp_files": {
+          "$ref": "#/$defs/counterWindow"
+        },
+        "temp_bytes": {
+          "$ref": "#/$defs/counterWindow"
+        },
+        "autovacuum_runs": {
+          "$ref": "#/$defs/counterWindow"
+        }
+      },
+      "patternProperties": {
+        "_error$": {
+          "type": "string"
+        }
+      }
+    },
     "nodeResult": {
       "type": "object",
       "additionalProperties": false,
       "required": ["data"],
       "properties": {
         "data": { "$ref": "#/$defs/data" },
+        "logging": { "$ref": "#/$defs/logging" },
         "postgres_version": { "$ref": "#/$defs/postgresVersion" }
       }
     }

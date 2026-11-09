@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Query-text retention cleanup no longer deletes recent rows. It selected rows by `ctid`, which is unique only within one partition of `pgss_queryid_queries`, so each batch also removed rows at the same position in other partitions (postgres-ai/postgresai#495).
+- D001 "Logging settings": the box reporter now writes a D001 file, and the CLI's file holds the same facts.
+  - `data`: every `log_*` and `auto_explain.*` setting, `logging_collector`, both preload lists and `deadlock_timeout`, with `pg_settings.context` (read from the node).
+  - New `logging`, beside `data`: each setting's source; role, database, role-in-database and all-role values of these settings and of `statement_timeout`; login roles with their open sessions; per role, the statements whose longest call reached 1 s, 10 s, the node's own thresholds or values stored per role and per database; temporary files, their bytes and autovacuum runs (box: the last 7 days from monitoring, with autovacuum runs a floor: per table, without tables past rank 100, a table's first reading, or runs counted only on a partition root; CLI: since the statistics reset).
 - H001 "Invalid indexes":
   - `index_definition` comes from the metric's own label when the sink database has none (it read "Definition not available").
   - The invalid-index metric gains `is_ready` (`pg_index.indisready`: false means writes do not maintain the index) and `build_in_progress` (a `CREATE INDEX` for it is running, `pg_stat_progress_create_index`). Both are in the report only when the box collects them, never defaulted.
