@@ -62,6 +62,7 @@ import boto3
 from requests_aws4auth import AWS4Auth
 
 from reporter import a005 as a005_facts
+from reporter import d001 as d001_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
@@ -190,6 +191,8 @@ class PostgresReportGenerator:
     ]
     #: The window of G003's deadlocks and lock waits.
     G003_WINDOW_DAYS = 7
+    #: The window of D001's temporary files and autovacuum runs.
+    D001_WINDOW_DAYS = 7
 
     G001_SETTINGS = [
         'shared_buffers',
@@ -730,6 +733,78 @@ class PostgresReportGenerator:
                 result = a005_facts.unreachable_node(err, conn_str)
                 logger.warning(f"A005: node {node_name} not read: {result['data']['logical_slots_error']}")
         return self.format_report_data("A005", {node_name: result}, node_name)
+
+    def generate_d001_logging_report(self, a003_report: Dict[str, Any], cluster: str = "local",
+                                     node_name: str = "node-01") -> Dict[str, Any]:
+        """
+        Generate D001 Logging settings: the logging settings with what a change reaches
+        (pg_settings.context), read from the node, plus what a logging decision needs
+        (reporter/d001.py): the values stored per role and database, the login roles and
+        their open sessions, the longest calls per role against the thresholds, and the
+        temporary files and autovacuum runs of the last D001_WINDOW_DAYS from monitoring.
+        Without the node the settings come from A003, with no context. A fact that cannot
+        be read is left out with its reason, never written as none.
+        """
+        logger.info(f"Generating D001 report for cluster='{cluster}', node_name='{node_name}'...")
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        node = (a003_report.get('results') or {}).get(node_name) or {}
+        settings = {name: dict(info) for name, info in (node.get('data') or {}).items()
+                    if re.match(d001_facts.SETTING_PATTERN, name)}
+        facts: Dict[str, Any] = {}
+
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        if conn_str is None:
+            facts["node_error"] = "no connection for this node in the sources file"
+        else:
+            try:
+                facts.update(d001_facts.catalog_facts(conn_str))
+            except Exception as err:  # the node: recorded in the file, the run goes on
+                facts["node_error"] = a005_facts.error_text(err, a005_facts._secrets(conn_str))
+                logger.warning(f"D001: node {node_name} not read: {facts['node_error']}")
+        read = facts.pop("settings", None)
+        if read:
+            # The node's values are what a session starts with; the A003 entry is monitoring's.
+            settings = {}
+            for name, info in read.items():
+                settings[name] = {
+                    "setting": str(info["setting"]),
+                    "unit": info["unit"],
+                    "category": info["category"],
+                    "context": info["context"],
+                    "vartype": info["vartype"],
+                    "pretty_value": self.format_setting_value(name, str(info["setting"]), info["unit"]),
+                }
+                facts.setdefault("setting_sources", {})[name] = {
+                    "source": info["source"], "is_default": info["is_default"],
+                    "pending_restart": info["pending_restart"]}
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=self.D001_WINDOW_DAYS)
+        # Autovacuum, per table: a table the metric skips (under a lock) leaves a gap, where a per-database
+        # sum dips and then reads its lifetime count as new runs. No partition root (its row sums its leaves)
+        # and no '$other$', which sums whatever ranks past 100, roots included. A floor: runs past rank 100
+        # and on a table's first reading are not counted.
+        runs = (f'pgwatch_table_stats_autovacuum_count{{{where}, schema!="$other$"}} unless on (datname, schema, table_name) '
+                f'(pgwatch_table_stats_is_part_root{{{where}}} == 1)')
+        for key, query, labels, floor in (
+                ("temp_files", f'pgwatch_db_stats_temp_files{{{where}}}', ("datname",), False),
+                ("temp_bytes", f'pgwatch_db_stats_temp_bytes{{{where}}}', ("datname",), False),
+                ("autovacuum_runs", runs, ("datname", "schema", "table_name"), True)):
+            window = d001_facts.counter_window(self.query_range(query, start, end, step="1h"), labels=labels)
+            if window and floor:
+                window["floor"] = True
+            if window:
+                facts[key] = window
+            else:
+                facts[f"{key}_error"] = "monitoring has fewer than two readings of the counter"
+
+        node_result: Dict[str, Any] = {"data": settings, "logging": facts}
+        version = self.extract_postgres_version_from_a003(a003_report, node_name)
+        if version:
+            node_result["postgres_version"] = version
+        return self.format_report_data("D001", {node_name: node_result}, node_name)
 
     def generate_g003_timeouts_report(self, a003_report: Dict[str, Any], cluster: str = "local",
                                       node_name: str = "node-01") -> Dict[str, Any]:
@@ -5879,6 +5954,19 @@ class PostgresReportGenerator:
         except Exception as err:
             logger.warning(f"A005 not generated: {a005_facts.error_text(err)}")
 
+        # D001 reads the nodes and monitoring beside A003; its failure never costs
+        # the other reports or the upload.
+        if reports.get('A003'):
+            try:
+                d001_results = {}
+                for node in nodes_to_process:
+                    node_report = self.generate_d001_logging_report(reports['A003'], cluster, node)
+                    d001_results[node] = node_report['results'][node]
+                reports['D001'] = self.format_report_data(
+                    'D001', d001_results, all_nodes["primary"] if all_nodes["primary"] else nodes_to_process[0], all_nodes)
+            except Exception as err:
+                logger.warning(f"D001 not generated: {a005_facts.error_text(err)}")
+
         # G003 reads the nodes and monitoring beside A003; its failure never costs
         # the other reports or the upload.
         if reports.get('A003'):
@@ -6760,7 +6848,7 @@ def main():
     parser.add_argument('--no-combine-nodes', action='store_true', default=False,
                         help='Disable combining primary and replica reports into single report')
     parser.add_argument('--check-id',
-                        choices=['A002', 'A003', 'A004', 'A005', 'A007', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'G003', 'H001', 'H002',
+                        choices=['A002', 'A003', 'A004', 'A005', 'A007', 'D001', 'D004', 'F001', 'F002', 'F004', 'F005', 'G001', 'G003', 'H001', 'H002',
                                  'H004', 'K001', 'K003', 'K004', 'K005', 'K006', 'K007', 'K008', 'M001', 'M002', 'M003', 'N001', 'ALL'],
                         help='Specific check ID to generate (default: ALL)')
     parser.add_argument('--sources-path', default=None,
@@ -6898,7 +6986,7 @@ def main():
 
                 # For D004, F001, G001 - generate A003 first and derive from it
                 a003_report = None
-                if args.check_id in ('D004', 'F001', 'G001', 'G003'):
+                if args.check_id in ('D001', 'D004', 'F001', 'G001', 'G003'):
                     print(f"Generating A003 first for {args.check_id}...")
                     a003_report = generator.generate_a003_settings_report(cluster, args.node_name)
 
@@ -6908,6 +6996,8 @@ def main():
                     report = generator.generate_a005_extensions_report(cluster, args.node_name)
                 elif args.check_id == 'G003':
                     report = generator.generate_g003_timeouts_report(a003_report, cluster, args.node_name)
+                elif args.check_id == 'D001':
+                    report = generator.generate_d001_logging_report(a003_report, cluster, args.node_name)
                 elif args.check_id == 'A003':
                     report = generator.generate_a003_settings_report(cluster, args.node_name)
                 elif args.check_id == 'A004':

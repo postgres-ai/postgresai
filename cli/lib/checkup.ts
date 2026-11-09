@@ -649,6 +649,8 @@ export interface NodeResult {
   conclusions?: string[];
   recommendations?: string[];
   settings_analysis?: Record<string, any>;
+  // D001: role values, login roles, longest calls, counters (sibling of `data`).
+  logging?: Record<string, unknown>;
 }
 
 /**
@@ -2541,31 +2543,285 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
   return report;
 }
 
+// D001: the same facts as the reporter's D001 file (reporter/d001.py); the CLI has no
+// monitoring, so temporary files and autovacuum runs are the counters since their reset.
+const D001_SETTING_PATTERN =
+  "^(log_.*|logging_collector|auto_explain\\..*|shared_preload_libraries|session_preload_libraries|deadlock_timeout)$";
+const D001_OVERRIDE_PATTERN = /^(log_.*|auto_explain\..*|session_preload_libraries|statement_timeout)$/;
+const D001_BASE_THRESHOLDS_MS = [1000, 10000];
+const D001_MAX_ROLES = 60;
+
+const D001_SETTINGS_SQL = `
+select name, reset_val as setting, coalesce(unit, '') as unit, category, context, vartype, source,
+  boot_val, pending_restart
+from pg_settings
+where name ~ $1
+order by name`;
+
+const D001_OVERRIDES_SQL = `
+select r.rolname as role, d.datname as database, s.setconfig as config
+from pg_db_role_setting as s
+left join pg_roles as r on r.oid = s.setrole
+left join pg_database as d on d.oid = s.setdatabase
+order by r.rolname nulls first, d.datname nulls first`;
+
+const D001_LOGIN_ROLES_SQL = `
+select r.rolname as role, r.rolsuper as superuser,
+  coalesce((select array_agg(g.rolname::text order by g.rolname)
+            from pg_auth_members as m join pg_roles as g on g.oid = m.roleid
+            where m.member = r.oid), '{}') as member_of,
+  count(a.pid) filter (where a.backend_type = 'client backend') as sessions,
+  min(a.backend_start) filter (where a.backend_type = 'client backend') as oldest_session_start,
+  (array_agg(distinct a.application_name) filter (where a.backend_type = 'client backend'
+                                                 and a.application_name <> ''))[1:5] as applications
+from pg_roles as r
+left join pg_stat_activity as a on a.usesysid = r.oid
+where r.rolcanlogin and r.rolname !~ '^pg_'
+group by r.oid, r.rolname, r.rolsuper
+order by count(a.pid) filter (where a.backend_type = 'client backend') desc, r.rolname
+limit 60`;
+
+// Without pg_read_all_stats, other roles' sessions read back with a null backend_type.
+const D001_SEES_SESSIONS_SQL = "select pg_has_role(current_user, 'pg_read_all_stats', 'usage') as visible";
+
+function d001StatementsSql(pgss: string): string {
+  return `
+with s as (
+  select p.userid, p.calls,
+    coalesce((to_jsonb(p) ->> 'max_exec_time'), (to_jsonb(p) ->> 'max_time'))::float8 as max_ms,
+    coalesce(to_jsonb(p) ->> 'minmax_stats_since', to_jsonb(p) ->> 'stats_since') as since
+  from ${pgss} as p
+)
+select r.rolname as role, count(*) as groups, sum(s.calls)::bigint as calls, max(s.max_ms) as longest_ms,
+  min(s.since) as stats_since,
+  (select jsonb_object_agg(t::text, (select count(*) from s as x where x.userid = s.userid and x.max_ms >= t) order by t)
+   from unnest($1::float8[]) as t) as groups_at_or_over,
+  (select jsonb_object_agg(t::text, (select coalesce(sum(x.calls), 0) from s as x
+                                     where x.userid = s.userid and x.max_ms >= t) order by t)
+   from unnest($1::float8[]) as t) as calls_of_groups_at_or_over
+from s join pg_roles as r on r.oid = s.userid
+group by r.rolname, s.userid
+order by 4 desc nulls last
+limit ${D001_MAX_ROLES}`;
+}
+
+// The counters since their reset: a window from the reset to now.
+const D001_COUNTERS_SQL = `
+select d.stats_reset, now() as read_at, d.temp_files, d.temp_bytes,
+  (select coalesce(sum(t.autovacuum_count), 0) from pg_stat_all_tables as t) as autovacuum_runs
+from pg_stat_database as d
+where d.datname = current_database()`;
+
+function d001Iso(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+/** The node's own positive duration thresholds join the base ones (ms). */
+const D001_DURATION_SETTINGS = ["log_min_duration_statement", "auto_explain.log_min_duration", "log_min_duration_sample"];
+const D001_MS_PER: Record<string, number> = { us: 0.001, ms: 1, s: 1000, min: 60_000, h: 3_600_000, d: 86_400_000 };
+/** Postgres takes no duration above this; a value past it can only be a placeholder. */
+const D001_MAX_MS = 2147483647;
+/** Each threshold is a subquery per role: dozens of stored values are not worth a slow read. */
+export const D001_MAX_STORED_THRESHOLDS = 20;
+
+/** Half to even, as the reporter's Python rounds, after removing the float's noise. */
+function d001RoundMs(value: number): number {
+  const clean = Math.round(value * 1e6) / 1e6;
+  const floor = Math.floor(clean);
+  if (clean - floor !== 0.5) return Math.round(clean);
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/** Whole ms of a stored duration, rounded as Postgres rounds it: `5s`, `500ms`, `250` (a bare number is ms); null if it is no duration Postgres would hold. */
+export function d001StoredMs(value: unknown): number | null {
+  const match = /^[ \t\n\r\f\v]*([0-9]+(?:\.[0-9]+)?)[ \t\n\r\f\v]*([a-z]*)[ \t\n\r\f\v]*$/.exec(String(value));
+  const factor = match ? D001_MS_PER[match[2] || "ms"] : undefined;
+  if (!match || factor === undefined || match[1].length > 20) return null;
+  const ms = d001RoundMs(parseFloat(match[1]) * factor);
+  return ms <= D001_MAX_MS ? ms : null;
+}
+
+export function d001Thresholds(
+  settings: Record<string, { setting: string; unit: string }>,
+  overrides?: { values?: { setting?: unknown; value?: unknown }[] } | null,
+): number[] {
+  const out = new Set(D001_BASE_THRESHOLDS_MS);
+  for (const name of D001_DURATION_SETTINGS) {
+    const info = settings[name];
+    const value = info ? parseInt(info.setting, 10) : NaN;
+    if (value > 0 && (info.unit || "ms") === "ms") out.add(value);
+  }
+  // A role's gap is counted against its own stored value. Past the cap the platform gets an upper bound.
+  const stored = new Set<number>();
+  for (const item of overrides?.values ?? []) {
+    if (!D001_DURATION_SETTINGS.includes(String(item.setting))) continue;
+    const value = d001StoredMs(item.value);
+    if (value) stored.add(value);
+  }
+  for (const value of [...stored].sort((a, b) => a - b).slice(0, D001_MAX_STORED_THRESHOLDS)) out.add(value);
+  return [...out].sort((a, b) => a - b);
+}
+
+/** {name: value} of a setconfig array, the names D001 reads only. */
+export function d001Config(config: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of Array.isArray(config) ? config : []) {
+    const text = String(item);
+    const at = text.indexOf("=");
+    const name = at < 0 ? text : text.slice(0, at);
+    if (D001_OVERRIDE_PATTERN.test(name)) out[name] = at < 0 ? "" : text.slice(at + 1);
+  }
+  return out;
+}
+
+/** Counters since their reset. PG15+ has no reset time until the first reset: the total stands, with no window. */
+function d001Window(start: unknown, end: unknown, total: unknown): Record<string, unknown> | null {
+  const to = end ? new Date(String(end)) : null;
+  if (!to || isNaN(to.getTime())) return null;
+  const from = start ? new Date(String(start)) : null;
+  const bounded = from !== null && !isNaN(from.getTime()) && to > from;
+  return {
+    start: bounded ? from.toISOString().replace(/\.\d{3}Z$/, "Z") : null,
+    end: to.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    days: bounded ? Math.round(((to.getTime() - from.getTime()) / 86400000) * 100) / 100 : null,
+    total: Number(total) || 0,
+  };
+}
+
+/** The D001 settings and the `logging` facts: a fact that cannot be read is left out with its reason. */
+async function d001CatalogFacts(client: Client): Promise<{ settings: Record<string, SettingInfo> | null; logging: Record<string, unknown> }> {
+  const out: Record<string, unknown> = {};
+  const fact = async <T>(key: string, read: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      const value = await read();
+      out[key] = value;
+      return value;
+    } catch (err) {
+      out[`${key}_error`] = a005Error(err);
+      return undefined;
+    }
+  };
+  await fact("read_as", async () => (await client.query("select current_user as role, current_database() as database")).rows[0]);
+  let settings: Record<string, SettingInfo> | null = null;
+  const sources: Record<string, unknown> = {};
+  await fact("settings", async () => {
+    const rows = (await client.query(D001_SETTINGS_SQL, [D001_SETTING_PATTERN])).rows;
+    settings = {};
+    for (const row of rows) {
+      const setting = row.setting === null ? "" : String(row.setting);
+      settings[row.name] = {
+        setting, unit: row.unit || "", category: row.category || "", context: row.context || "",
+        vartype: row.vartype || "", pretty_value: row.unit ? `${setting} ${row.unit}` : setting,
+      };
+      sources[row.name] = { source: row.source, is_default: setting === row.boot_val, pending_restart: Boolean(row.pending_restart) };
+    }
+    return true;
+  });
+  delete out.settings;
+  if (settings) out.setting_sources = sources;
+  const overrides = await fact("overrides", async () => {
+    const rows = (await client.query(D001_OVERRIDES_SQL)).rows;
+    const values: Record<string, unknown>[] = [];
+    for (const row of rows) {
+      for (const [name, value] of Object.entries(d001Config(row.config))) {
+        const scope = row.role && row.database ? "role in database" : row.role ? "role" : row.database ? "database" : "all";
+        values.push({ scope, role: row.role ?? null, database: row.database ?? null, setting: name, value });
+      }
+    }
+    return { rows_read: rows.length, values };
+  });
+  const roles = await fact("login_roles", async () =>
+    (await client.query(D001_LOGIN_ROLES_SQL)).rows.map((row: any) => ({
+      role: row.role,
+      superuser: Boolean(row.superuser),
+      member_of: Array.isArray(row.member_of) ? row.member_of : [],
+      sessions: parseInt(row.sessions, 10) || 0,
+      oldest_session_start: d001Iso(row.oldest_session_start),
+      applications: Array.isArray(row.applications) ? row.applications : [],
+    })));
+  if (roles) {
+    let reason: string | null = null;
+    try {
+      const sees = (await client.query(D001_SEES_SESSIONS_SQL)).rows[0];
+      if (sees && sees.visible === false) reason = "the reading role has no pg_read_all_stats: other roles' sessions are not visible";
+    } catch (err) {
+      reason = a005Error(err); // unknown, so never read as "no session"
+    }
+    if (reason) {
+      // Unknown, never 0: this reader cannot see other roles' sessions.
+      for (const role of roles as Record<string, unknown>[]) Object.assign(role, { sessions: null, oldest_session_start: null, applications: [] });
+      out.sessions_error = reason;
+    }
+  }
+  await fact("statements", async () => {
+    const schema = (await client.query(G003_PGSS_SCHEMA_SQL)).rows[0]?.schema;
+    if (!schema) throw new Error("pg_stat_statements is not installed");
+    const quoted = `"${String(schema).replace(/"/g, '""')}"`;
+    const thresholds = d001Thresholds(settings || {}, overrides as { values?: { setting?: unknown; value?: unknown }[] } | null);
+    const byRole = (await client.query(d001StatementsSql(`${quoted}.pg_stat_statements`), [thresholds])).rows.map((row: any) => {
+      const counts = (value: unknown) =>
+        Object.fromEntries(Object.entries((value || {}) as Record<string, unknown>).map(([k, v]) => [String(parseFloat(k)), Number(v) || 0]));
+      return {
+        role: row.role,
+        groups: parseInt(row.groups, 10) || 0,
+        calls: parseInt(row.calls, 10) || 0,
+        longest_call_ms: row.longest_ms === null ? null : Math.round(parseFloat(row.longest_ms) * 10) / 10,
+        stats_since: d001Iso(row.stats_since),
+        groups_at_or_over_ms: counts(row.groups_at_or_over),
+        calls_of_groups_at_or_over_ms: counts(row.calls_of_groups_at_or_over),
+      };
+    });
+    const result: Record<string, unknown> = { thresholds_ms: thresholds, by_role: byRole };
+    try {
+      const info = (await client.query(`select dealloc, stats_reset from ${quoted}.pg_stat_statements_info`)).rows[0];
+      if (info) {
+        result.dealloc = parseInt(info.dealloc, 10) || 0;
+        result.stats_reset = d001Iso(info.stats_reset);
+      }
+    } catch {
+      // pg_stat_statements_info is from 14; the rest stands
+    }
+    return result;
+  });
+  try {
+    const row = (await client.query(D001_COUNTERS_SQL)).rows[0];
+    for (const [key, total] of [["temp_files", row?.temp_files], ["temp_bytes", row?.temp_bytes], ["autovacuum_runs", row?.autovacuum_runs]]) {
+      const window = row ? d001Window(row.stats_reset, row.read_at, total) : null;
+      if (window) out[key as string] = window;
+      else out[`${key}_error`] = "the counters could not be read";
+    }
+  } catch (err) {
+    for (const key of ["temp_files", "temp_bytes", "autovacuum_runs"]) out[`${key}_error`] = a005Error(err);
+  }
+  return { settings, logging: out };
+}
+
 /**
  * Generate D001 report - Logging settings
  *
- * Collects all PostgreSQL logging-related settings including:
- * - Log destination and collector settings
- * - Log file rotation and naming
- * - Log verbosity and filtering
- * - Statement and duration logging
+ * The logging and auto_explain settings with what a change reaches (pg_settings.context),
+ * and what a logging decision needs (`logging`): the values stored per role and database,
+ * the login roles and their sessions, the longest calls per role against the thresholds,
+ * and the temporary files and autovacuum runs since the statistics reset.
  */
 async function generateD001(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("D001", "Logging settings", nodeName);
   const postgresVersion = await getPostgresVersion(client);
-  const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
-  const allSettings = await getSettings(client, pgMajorVersion);
-
-  // Filter logging-related settings (log_* and logging_*)
-  const loggingSettings: Record<string, SettingInfo> = {};
-  for (const [name, setting] of Object.entries(allSettings)) {
-    if (name.startsWith("log_") || name.startsWith("logging_")) {
-      loggingSettings[name] = setting;
+  const { settings, logging } = await d001CatalogFacts(client);
+  let data: Record<string, SettingInfo> = settings || {};
+  if (!settings || !Object.keys(settings).length) {
+    // pg_settings not readable: the settings metric's logging rows, with no context
+    const pgMajorVersion = parseInt(postgresVersion.server_major_ver, 10) || 16;
+    data = {};
+    for (const [name, setting] of Object.entries(await getSettings(client, pgMajorVersion))) {
+      if (new RegExp(D001_SETTING_PATTERN).test(name)) data[name] = setting;
     }
   }
 
   report.results[nodeName] = {
-    data: loggingSettings,
+    data,
+    logging,
     postgres_version: postgresVersion,
   };
 
