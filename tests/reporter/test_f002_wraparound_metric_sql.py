@@ -133,6 +133,8 @@ def test_pg_database_wraparound_executes(wraparound_cur):
     assert {"tag_datname", "age_datfrozenxid", "age_datminmxid"} <= set(colnames)
     rows = wraparound_cur.fetchall()
     assert len(rows) >= 1
+    # template0 sets the wraparound limit too (it accepts no connections): it must be read.
+    assert "template0" in {row[colnames.index("tag_datname")] for row in rows}
     # Ages must be non-negative int8s (the mxid_age fix guards against the
     # ~2^31 wrap that plain age(relminmxid) produced on fresh clusters).
     xid_i = colnames.index("age_datfrozenxid")

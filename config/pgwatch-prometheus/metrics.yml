@@ -1717,7 +1717,7 @@ metrics:
         from
           pg_catalog.pg_database d
         where
-          d.datallowconn
+          d.datconnlimit <> -2
     gauges:
       - age_datfrozenxid
       - age_datminmxid
