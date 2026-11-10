@@ -4,6 +4,11 @@
 
 ### Added
 
+- Console permalinks for Joe results (https://gitlab.com/postgres-ai/platform-all/-/work_items/1171): `pgai joe <verb>`
+  and `pgai joe result` print `console: <url>` right under the `command N · ok` line (on stderr after the error line
+  when a failed command has a stored result), and `--json` carries `session_id`, `console_command_id` and
+  `console_url`. Nothing is printed when the platform sends no link (older platform, no stored result, budget expired,
+  no console address).
 - "Seen by" on issues (https://gitlab.com/postgres-ai/platform-all/-/work_items/1085): `pgai issues view` records that
   the token owner opened the issue, via CLI, or via AI agent when an AI coding agent runs pgai (`AI_AGENT`,
   `CLAUDECODE`, `CURSOR_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX` or `CODEX_THREAD_ID` set; `PGAI_VIA=cli|agent` decides

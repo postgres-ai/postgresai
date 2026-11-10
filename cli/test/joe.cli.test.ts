@@ -63,6 +63,14 @@ function startFakeApi() {
   const ERROR_INSTANCE = 33;
   const FLAKY_INSTANCE = 44;
   const INVERTED_INSTANCE = 22;
+  // #1171: a backend that returns the Console permalink. LINKED answers ok with
+  // it, LINKED_ERROR answers a terminal error that HAS a result row (so it also
+  // carries a link), NO_CONSOLE answers ok with console_url null (no console
+  // address configured on the platform).
+  const LINKED_INSTANCE = 88;
+  const LINKED_ERROR_INSTANCE = 89;
+  const NO_CONSOLE_INSTANCE = 90;
+  const CONSOLE_BASE = "https://console.example.com/acme/projects/main-db/sessions/4242/commands/";
   let nextId = 9007199254740993000n; // > Number.MAX_SAFE_INTEGER
   const commands = new Map<string, { command: string; instanceId: number }>();
 
@@ -92,6 +100,9 @@ function startFakeApi() {
           { project_id: 15, alias: "err-db", name: "Err DB", joe_ready: true, tunnel: true, instance_id: ERROR_INSTANCE },
           { project_id: 16, alias: "flaky-db", name: "Flaky DB", joe_ready: true, tunnel: true, instance_id: FLAKY_INSTANCE },
           { project_id: 18, alias: "inverted-db", name: "Inverted DB", joe_ready: true, tunnel: false, instance_id: INVERTED_INSTANCE },
+          { project_id: 19, alias: "linked-db", name: "Linked DB", joe_ready: true, tunnel: true, instance_id: LINKED_INSTANCE },
+          { project_id: 20, alias: "linked-err-db", name: "Linked Err DB", joe_ready: true, tunnel: true, instance_id: LINKED_ERROR_INSTANCE },
+          { project_id: 21, alias: "no-console-db", name: "No Console DB", joe_ready: true, tunnel: true, instance_id: NO_CONSOLE_INSTANCE },
         ]);
       }
 
@@ -167,6 +178,41 @@ function startFakeApi() {
             plan_json: null,
             plan_text: null,
             error: "ERROR: relation \"nope\" does not exist",
+          });
+        }
+        if (cmd.instanceId === LINKED_ERROR_INSTANCE) {
+          return respond({
+            command_id: commandId,
+            status: "error",
+            created_at: "2026-07-22T10:00:00",
+            queryid: null,
+            plan_json: null,
+            plan_text: null,
+            error: "ERROR: canceling statement due to statement timeout",
+            session_id: "4242",
+            console_command_id: "777001",
+            console_url: `${CONSOLE_BASE}777001`,
+          });
+        }
+        if (cmd.instanceId === LINKED_INSTANCE || cmd.instanceId === NO_CONSOLE_INSTANCE) {
+          return respond({
+            command_id: commandId,
+            status: "ok",
+            created_at: "2026-07-22T10:00:00",
+            command: cmd.command.split(" ")[0],
+            query: cmd.command.replace(/^\S+\s*/, "") || null,
+            queryid: null,
+            response: null,
+            plan_text: "Index Scan using orders_pkey on orders",
+            plan_json: null,
+            plan_execution_text: null,
+            plan_execution_json: null,
+            stats: null,
+            recommendations: null,
+            error: null,
+            session_id: "4242",
+            console_command_id: "777000",
+            console_url: cmd.instanceId === LINKED_INSTANCE ? `${CONSOLE_BASE}777000` : null,
           });
         }
         if (cmd.instanceId === FLAKY_INSTANCE) {
@@ -698,5 +744,111 @@ describe("CLI Joe command surface (grouped under `pgai joe …`)", () => {
     const r = runCli(["joe", "plan", "select 1", "--project", "12"], isolatedEnv());
     expect(r.status).toBe(1);
     expect(`${r.stdout}\n${r.stderr}`).toContain("API key is required");
+  });
+
+  describe("Console permalink (#1171)", () => {
+    const LINK_OK = "console: https://console.example.com/acme/projects/main-db/sessions/4242/commands/777000";
+    const LINK_ERR = "console: https://console.example.com/acme/projects/main-db/sessions/4242/commands/777001";
+
+    test("explain prints `console: <url>` right under the ok header, on stdout", async () => {
+      const api = startFakeApi();
+      const env = isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl });
+      try {
+        const r = await runCliAsync(["joe", "explain", "select * from orders where id = 1", "--project", "linked-db"], env);
+        expect(r.status).toBe(0);
+        const lines = r.stdout.split("\n");
+        expect(lines[0]).toMatch(/^command \d+ · ok$/);
+        expect(lines[1]).toBe(LINK_OK);
+        expect(r.stdout).toContain("Index Scan using orders_pkey");
+        expect(r.stderr).not.toContain("console:");
+      } finally {
+        api.stop();
+      }
+    });
+
+    test("--json passes session_id, console_command_id and console_url through and prints no extra line", async () => {
+      const api = startFakeApi();
+      const env = isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl });
+      try {
+        const r = await runCliAsync(["joe", "plan", "select 1", "--project", "linked-db", "--json"], env);
+        expect(r.status).toBe(0);
+        const row = JSON.parse(r.stdout) as { session_id: string; console_command_id: string; console_url: string };
+        expect(row.session_id).toBe("4242");
+        expect(row.console_command_id).toBe("777000");
+        expect(row.console_url).toBe(LINK_OK.replace("console: ", ""));
+        expect(r.stderr).not.toContain("console:");
+      } finally {
+        api.stop();
+      }
+    });
+
+    test("a terminal error with a result row prints the link on stderr after the error, stdout empty", async () => {
+      const api = startFakeApi();
+      const env = isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl });
+      try {
+        const r = await runCliAsync(["joe", "explain", "select pg_sleep(99)", "--project", "linked-err-db"], env);
+        expect(r.status).toBe(1);
+        expect(r.stdout).toBe("");
+        const lines = r.stderr.trim().split("\n");
+        expect(lines[0]).toMatch(/^command \d+ error: ERROR: canceling statement/);
+        expect(lines[1]).toBe(LINK_ERR);
+
+        // --json: the link is in the object on stdout; stderr carries only the error.
+        const j = await runCliAsync(["joe", "explain", "select pg_sleep(99)", "--project", "linked-err-db", "--json"], env);
+        expect(j.status).toBe(1);
+        expect((JSON.parse(j.stdout) as { console_url: string }).console_url).toBe(LINK_ERR.replace("console: ", ""));
+        expect(j.stderr).not.toContain("console:");
+      } finally {
+        api.stop();
+      }
+    });
+
+    test("pgai joe result prints the link for ok (stdout) and for error (stderr)", async () => {
+      const api = startFakeApi();
+      const env = isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl });
+      try {
+        const okRun = await runCliAsync(["joe", "plan", "select 1", "--project", "linked-db", "--json"], env);
+        const okId = (JSON.parse(okRun.stdout) as { command_id: string }).command_id;
+        const ok = await runCliAsync(["joe", "result", okId], env);
+        expect(ok.status).toBe(0);
+        expect(ok.stdout.split("\n")[0]).toBe(`command ${okId} · ok`);
+        expect(ok.stdout.split("\n")[1]).toBe(LINK_OK);
+
+        const errRun = await runCliAsync(["joe", "plan", "select 1", "--project", "linked-err-db", "--json"], env);
+        const errId = (JSON.parse(errRun.stdout) as { command_id: string }).command_id;
+        const err = await runCliAsync(["joe", "result", errId], env);
+        expect(err.status).toBe(1);
+        expect(err.stdout).toBe("");
+        expect(err.stderr.trim().split("\n")[1]).toBe(LINK_ERR);
+      } finally {
+        api.stop();
+      }
+    });
+
+    test("no link from an older backend, a null console_url, an error without a row, or a budget-expired run", async () => {
+      const api = startFakeApi();
+      const env = isolatedEnv({ PGAI_API_KEY: "k", PGAI_API_BASE_URL: api.baseUrl });
+      try {
+        const older = await runCliAsync(["joe", "plan", "select 1", "--project", "main-db"], env);
+        expect(older.status).toBe(0);
+        expect(`${older.stdout}${older.stderr}`).not.toContain("console:");
+
+        const unset = await runCliAsync(["joe", "plan", "select 1", "--project", "no-console-db"], env);
+        expect(unset.status).toBe(0);
+        expect(`${unset.stdout}${unset.stderr}`).not.toContain("console:");
+        expect(unset.stdout).toContain("Index Scan using orders_pkey");
+
+        const noRow = await runCliAsync(["joe", "result", "424242"], env);
+        expect(noRow.status).toBe(1);
+        expect(`${noRow.stdout}${noRow.stderr}`).not.toContain("console:");
+
+        const cold = await runCliAsync(["joe", "plan", "select 1", "--project", "cold-db", "--budget", "0"], env);
+        expect(cold.status).toBe(0);
+        expect(cold.stdout).toContain("resume:");
+        expect(`${cold.stdout}${cold.stderr}`).not.toContain("console:");
+      } finally {
+        api.stop();
+      }
+    });
   });
 });

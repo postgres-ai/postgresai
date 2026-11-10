@@ -20,6 +20,7 @@ import {
   listProjects,
   getCommandOutput,
   formatJoeOutput,
+  formatJoeConsoleLine,
   formatProjectsTable,
   DEFAULT_BUDGET_MS,
   type JoeCommand,
@@ -8676,6 +8677,9 @@ function printJoeOutcome(outcome: ExecuteJoeOutcome, json: boolean, budgetMs?: n
     if (json) console.log(JSON.stringify(output, null, 2));
     else {
       console.log(`command ${outcome.commandId} · ok`);
+      // The Console permalink sits right under the header (#1171).
+      const link = formatJoeConsoleLine(output);
+      if (link) console.log(link);
       const body = formatJoeOutput(output);
       if (body) console.log(body);
     }
@@ -8685,6 +8689,10 @@ function printJoeOutcome(outcome: ExecuteJoeOutcome, json: boolean, budgetMs?: n
   // Terminal error.
   if (json && output) console.log(JSON.stringify(output, null, 2));
   console.error(`command ${outcome.commandId} error: ${output?.error ?? "command failed"}`);
+  // On the error's own stream, so stdout stays results-only. With --json the
+  // link is already in the object on stdout.
+  const errLink = json ? null : formatJoeConsoleLine(output);
+  if (errLink) console.error(errLink);
   process.exitCode = 1;
 }
 
@@ -8846,10 +8854,14 @@ withOrgOptions(joe.command("result <commandId>"))
       }
       if (output.status === "ok") {
         console.log(`command ${output.command_id} · ok`);
+        const link = formatJoeConsoleLine(output);
+        if (link) console.log(link);
         const body = formatJoeOutput(output);
         if (body) console.log(body);
       } else if (output.status === "error") {
         console.error(`command ${output.command_id} error: ${output.error ?? "command failed"}`);
+        const errLink = formatJoeConsoleLine(output);
+        if (errLink) console.error(errLink);
         process.exitCode = 1;
       } else {
         console.error(`command ${output.command_id} · ${output.status} — result is not ready`);
