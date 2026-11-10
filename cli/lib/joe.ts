@@ -99,6 +99,31 @@ export interface JoeCommandOutput {
   stats?: string | null;
   recommendations?: string | null;
   error?: string | null;
+  /**
+   * The Console's ids and permalink for this result (platform-all #1171). Present
+   * only once Joe has posted a structured result row; absent from an older backend
+   * and from pending/help/undelivered replies. `session_id` is null for a command
+   * run outside a session; `console_url` is null when the platform has no console
+   * address configured.
+   */
+  session_id?: string | null;
+  console_command_id?: string;
+  console_url?: string | null;
+}
+
+const CONSOLE_URL_SAFE = /^https?:\/\/[^\s\x00-\x1f\x7f-\x9f]+$/;
+
+/**
+ * The `console: <url>` line printed under a result's `command N · …` header, or
+ * null when the reply carries no link (older backend, no result row, no console
+ * address). Agents should read `console_url` from `--json` instead.
+ */
+export function formatJoeConsoleLine(output: JoeCommandOutput | null | undefined): string | null {
+  const url = typeof output?.console_url === "string" ? output.console_url.trim() : "";
+  // The value comes from the server and goes straight to a terminal: only a plain
+  // http(s) URL with no whitespace or control characters (no escape sequences, no
+  // fake extra lines) is printed. Anything else prints no line; --json still has it.
+  return CONSOLE_URL_SAFE.test(url) ? `console: ${url}` : null;
 }
 
 export interface ProjectListItem {

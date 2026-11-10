@@ -11,6 +11,7 @@ import {
   clientSidePlanFlags,
   formatProjectsTable,
   formatJoeOutput,
+  formatJoeConsoleLine,
   DEFAULT_BUDGET_MS,
   JOE_COMMANDS,
   DESCRIBE_VARIANTS,
@@ -1322,5 +1323,27 @@ describe("--debug credential redaction (joe rpc surface)", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("formatJoeConsoleLine (#1171)", () => {
+  test("prints a plain https link", () => {
+    expect(formatJoeConsoleLine({ console_url: " https://postgres.ai/console/acme/projects/main/sessions/7/commands/42 " } as any))
+      .toBe("console: https://postgres.ai/console/acme/projects/main/sessions/7/commands/42");
+  });
+  test("no line for absent, null, empty or non-string values", () => {
+    for (const v of [undefined, null, "", "   ", 42]) expect(formatJoeConsoleLine({ console_url: v } as any)).toBeNull();
+    expect(formatJoeConsoleLine(null)).toBeNull();
+  });
+  test("no line for a value that could rewrite the terminal or is not http(s)", () => {
+    for (const v of [
+      "https://x/\x1b]8;;https://evil/\x07click\x1b]8;;\x07",
+      "https://x/a\nfake: line",
+      "https://x/a\rb",
+      "https://x/a b",
+      "https://x/\x9b31m",
+      "javascript:alert(1)",
+      "ftp://x/y",
+    ]) expect(formatJoeConsoleLine({ console_url: v } as any)).toBeNull();
   });
 });
