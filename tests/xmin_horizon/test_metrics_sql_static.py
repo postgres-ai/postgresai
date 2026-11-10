@@ -434,7 +434,16 @@ class PgDatabaseWraparoundTest(unittest.TestCase):
         sql_text = normalized(metric_sql("pg_database_wraparound"))
         self.assertIn("age(d.datfrozenxid) as age_datfrozenxid", sql_text)
         self.assertIn("mxid_age(d.datminmxid) as age_datminmxid", sql_text)
-        self.assertIn("d.datallowconn", sql_text)
+
+    def test_sql_reads_every_database_template0_included(self) -> None:
+        # Postgres sets its wraparound limit from the oldest datfrozenxid of ALL databases,
+        # template0 included (it does not accept connections, autovacuum still freezes it):
+        # a datallowconn filter hid that database from the F002 report.
+        sql_text = normalized(metric_sql("pg_database_wraparound"))
+        self.assertNotIn("datallowconn", sql_text)
+        # An invalid database (an interrupted DROP DATABASE, datconnlimit -2) is skipped by
+        # Postgres when it computes the limit (vac_truncate_clog): skip it here too.
+        self.assertIn("d.datconnlimit <> -2", sql_text)
 
 
 class MultixactSizeTest(unittest.TestCase):
