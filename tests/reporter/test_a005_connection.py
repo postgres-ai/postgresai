@@ -167,3 +167,36 @@ def test_a_nested_name_key_does_not_rename_the_item(tmp_path):
 def test_double_quoted_escapes_js_yaml_writes():
     from reporter.wait_ready import _scalar
     assert _scalar('"p\\x41\\u00e9\\r\\\\z"') == "pA\u00e9\r\\z"
+
+
+def test_a_long_error_keeps_its_cause_at_the_end():
+    """libpq names the cause last; a head-only cut showed `root certificate file "/etc/ssl/certs/rds-gl`
+    on an RDS collector box."""
+    err = RuntimeError(
+        'connection to server at "mydb.abcdefghijkl.us-west-2.rds.amazonaws.com" '
+        '(172.31.25.166), port 5432 failed: root certificate file "/etc/ssl/certs/rds-global-bundle.pem" '
+        'does not exist\nEither provide the file, use the system\'s trusted roots with sslrootcert=system, '
+        'or change sslmode to disable server certificate verification.')
+    text = a005.error_text(err)
+    assert len(text) == a005.ERROR_CHARS and text.startswith("connection to server at")
+    assert text.endswith("disable server certificate verification.")
+    reason = a005.unreachable_node(err)["data"]["logical_slots_error"]
+    assert len(reason) == a005.ERROR_CHARS and reason.startswith("the node could not be read: ")
+    assert reason.endswith("disable server certificate verification.")
+    assert "connection to server at" in reason  # one clip: the head survives the prefix
+    assert a005.error_text(RuntimeError("short")) == "short"
+
+
+def test_the_image_ships_the_rds_ca_bundle_at_the_collector_conn_str_path():
+    """The RDS collector's conn_str names sslrootcert=/etc/ssl/certs/rds-global-bundle.pem
+    (postgres_ai-ansible rds_privatelink_ca_path) and the reporter connects with it, so the
+    image carries the file; a host bind mount still replaces it."""
+    import os
+    import ssl
+    reporter_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reporter")
+    dockerfile = open(os.path.join(reporter_dir, "Dockerfile")).read()
+    assert "COPY certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem" in dockerfile
+    ctx = ssl.create_default_context(cafile=os.path.join(reporter_dir, "certs", "rds-global-bundle.pem"))
+    subjects = [dict(x[0] for x in c["subject"]).get("commonName", "") for c in ctx.get_ca_certs()]
+    assert len(subjects) > 50 and all(s.startswith("Amazon RDS") for s in subjects)
+    assert any("us-west-2" in s for s in subjects)
