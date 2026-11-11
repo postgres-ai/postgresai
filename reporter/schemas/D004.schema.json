@@ -121,16 +121,329 @@
         "pg_stat_kcache_status": { "$ref": "#/$defs/kcacheStatus" }
       }
     },
+    "catalogSetting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "unit",
+        "category",
+        "context",
+        "vartype",
+        "source",
+        "is_default",
+        "pending_restart"
+      ],
+      "properties": {
+        "setting": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "vartype": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "is_default": {
+          "type": "boolean"
+        },
+        "pending_restart": {
+          "type": "boolean"
+        }
+      }
+    },
+    "installed": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "schema"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_error": {
+          "type": "string"
+        },
+        "read_as": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "database"
+          ],
+          "properties": {
+            "role": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            }
+          }
+        },
+        "read_as_error": {
+          "type": "string"
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/catalogSetting"
+          }
+        },
+        "settings_error": {
+          "type": "string"
+        },
+        "available": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "default_version"
+            ],
+            "properties": {
+              "default_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "available_error": {
+          "type": "string"
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rows_read",
+            "values"
+          ],
+          "properties": {
+            "rows_read": {
+              "type": "integer"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "scope",
+                  "role",
+                  "database",
+                  "setting",
+                  "value"
+                ],
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "all",
+                      "role",
+                      "database",
+                      "role in database"
+                    ]
+                  },
+                  "role": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "setting": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "overrides_error": {
+          "type": "string"
+        },
+        "databases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "installed": {
+                "$ref": "#/$defs/installed"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "statements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "entries",
+            "by_database"
+          ],
+          "properties": {
+            "schema": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "entries": {
+              "type": "integer"
+            },
+            "by_database": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "database",
+                  "entries",
+                  "calls",
+                  "called_once"
+                ],
+                "properties": {
+                  "database": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "entries": {
+                    "type": "integer"
+                  },
+                  "calls": {
+                    "type": "integer"
+                  },
+                  "called_once": {
+                    "type": "integer"
+                  },
+                  "temp_table_text": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "temp_table_text_error": {
+              "type": "string"
+            },
+            "dealloc": {
+              "type": "integer"
+            },
+            "stats_reset": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "read_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dealloc_error": {
+              "type": "string"
+            },
+            "per_round_at_max": {
+              "type": "integer"
+            },
+            "days_since_reset": {
+              "type": "number"
+            }
+          }
+        },
+        "statements_error": {
+          "type": "string"
+        },
+        "databases_error": {
+          "type": "string"
+        },
+        "monitored_calls_window": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start",
+              "end",
+              "days",
+              "total",
+              "database",
+              "statements"
+            ],
+            "properties": {
+              "start": {
+                "type": "string"
+              },
+              "end": {
+                "type": "string"
+              },
+              "days": {
+                "type": "number"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "database": {
+                "type": "string"
+              },
+              "statements": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "monitored_calls_window_error": {
+          "type": "string"
+        }
+      }
+    },
     "nodeResult": {
       "type": "object",
       "additionalProperties": false,
       "required": ["data"],
       "properties": {
         "data": { "$ref": "#/$defs/data" },
+        "observability": { "$ref": "#/$defs/observability" },
         "postgres_version": { "$ref": "#/$defs/postgresVersion" }
       }
     }
   }
 }
-
-

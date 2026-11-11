@@ -63,6 +63,7 @@ from requests_aws4auth import AWS4Auth
 
 from reporter import a005 as a005_facts
 from reporter import d001 as d001_facts
+from reporter import d004 as d004_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
@@ -193,6 +194,8 @@ class PostgresReportGenerator:
     G003_WINDOW_DAYS = 7
     #: The window of D001's temporary files and autovacuum runs.
     D001_WINDOW_DAYS = 7
+    #: The window over which D004 checks that the statement statistics grow.
+    D004_WINDOW_DAYS = 7
 
     G001_SETTINGS = [
         'shared_buffers',
@@ -1858,7 +1861,8 @@ class PostgresReportGenerator:
     def generate_d004_pgstat_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
         str, Any]:
         """
-        Generate D004 pgstatstatements and pgstatkcache Settings report.
+        Generate D004 pgstatstatements and pgstatkcache Settings report, plus the node's
+        `observability` facts and the calls window (see _d004_report).
 
         Args:
             cluster: Cluster name
@@ -1923,16 +1927,59 @@ class PostgresReportGenerator:
         # Check if pg_stat_statements is available and working by querying its metrics
         pgss_status = self._check_pg_stat_statements_status(cluster, node_name)
 
-        return self.format_report_data(
-            "D004",
-            {
-                "settings": pgstat_data,
+        return self._d004_report(cluster, node_name, pgstat_data, pgss_status, kcache_status,
+                                 self._get_postgres_version_info(cluster, node_name))
+
+    def _d004_report(self, cluster: str, node_name: str, settings: Dict[str, Any], pgss_status: Dict[str, Any],
+                     kcache_status: Dict[str, Any], postgres_version: Optional[Dict[str, str]]) -> Dict[str, Any]:
+        """The D004 file: the monitoring part as before, plus what an extension decision needs
+        (reporter/d004.py) under `observability`: read from the node as for A005, and the rise of
+        the monitored statements' calls over the last D004_WINDOW_DAYS. A fact that cannot be read
+        is left out with its reason, never written as none."""
+        facts: Dict[str, Any] = {}
+        conn_str = None
+        try:
+            conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                             if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+            if conn_str is None:
+                facts["node_error"] = "no connection for this node in the sources file"
+            else:
+                facts.update(d004_facts.catalog_facts(conn_str))
+        except Exception as err:  # the node: recorded in the file, the run and the other reports go on
+            facts["node_error"] = a005_facts.error_text(err, a005_facts._secrets(conn_str) if conn_str else None)
+            logger.warning(f"D004: node {node_name} not read: {facts['node_error']}")
+        statements = facts.get("statements")
+        cap = (facts.get("settings") or {}).get("pg_stat_statements.max", {}).get("setting")
+        if statements and statements.get("dealloc") and str(cap or "").isdigit():
+            # A round runs when the entries reach the maximum (entry_dealloc): what it removes there (D004-O3).
+            statements["per_round_at_max"] = d004_facts.per_round(int(cap))
+        try:
+            _esc = self._escape_promql_label
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=self.D004_WINDOW_DAYS)
+            query = f'pgwatch_pg_stat_statements_calls{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}'
+            windows = d004_facts.monitored_calls_window(self.query_range(query, start, end, step="1h"),
+                                                        d001_facts.counter_window)
+        except Exception as err:  # monitoring: recorded, the file and the other reports go on
+            windows = None
+            facts["monitored_calls_window_error"] = a005_facts.error_text(err)
+        if windows:
+            facts["monitored_calls_window"] = windows
+        elif "monitored_calls_window_error" not in facts:
+            # query_range returns [] on a failed query too: never read this as "not collecting".
+            facts["monitored_calls_window_error"] = ("monitoring returned fewer than two readings of the statement "
+                                                     "calls, or the query failed")
+        node_result: Dict[str, Any] = {
+            "data": {
+                "settings": settings,
                 "pg_stat_statements_status": pgss_status,
                 "pg_stat_kcache_status": kcache_status,
             },
-            node_name,
-            postgres_version=self._get_postgres_version_info(cluster, node_name),
-        )
+            "observability": facts,
+        }
+        if postgres_version:
+            node_result["postgres_version"] = postgres_version
+        return self.format_report_data("D004", {node_name: node_result}, node_name)
 
     def _check_pg_stat_kcache_status(self, cluster: str, node_name: str) -> Dict[str, Any]:
         """
@@ -2018,13 +2065,13 @@ class PostgresReportGenerator:
             results = result['data']['result']
             pgss_status["metrics_count"] = len(results)
 
+            # Every monitored statement counts in the total; five of them are the sample.
+            pgss_status["total_calls"] = sum(float(i['value'][1]) for i in results if i.get('value'))
             for item in results[:5]:  # Get sample of top 5 queries
                 queryid = item['metric'].get('queryid', 'unknown')
                 user = item['metric'].get('tag_user', 'unknown')
                 datname = item['metric'].get('datname', 'unknown')
                 calls = float(item['value'][1]) if item.get('value') else 0
-
-                pgss_status["total_calls"] += calls
 
                 # Store sample query info
                 if len(pgss_status["sample_queries"]) < 5:
@@ -5520,16 +5567,7 @@ class PostgresReportGenerator:
         # Extract postgres version from A003
         postgres_version = self.extract_postgres_version_from_a003(a003_report, node_name)
 
-        return self.format_report_data(
-            "D004",
-            {
-                "settings": pgstat_data,
-                "pg_stat_statements_status": pgss_status,
-                "pg_stat_kcache_status": kcache_status,
-            },
-            node_name,
-            postgres_version=postgres_version,
-        )
+        return self._d004_report(cluster, node_name, pgstat_data, pgss_status, kcache_status, postgres_version)
 
     def generate_f001_from_a003(self, a003_report: Dict[str, Any], node_name: str = "node-01",
                                 cluster: str = "local") -> Dict[str, Any]:
