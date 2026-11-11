@@ -651,6 +651,8 @@ export interface NodeResult {
   settings_analysis?: Record<string, any>;
   // D001: role values, login roles, longest calls, counters (sibling of `data`).
   logging?: Record<string, unknown>;
+  // D004: extension states per database, entries and deallocation rounds (sibling of `data`).
+  observability?: Record<string, unknown>;
 }
 
 /**
@@ -2394,7 +2396,8 @@ export const generateH004 = (client: Client, nodeName = "node-01") =>
   generateIndexReport(client, nodeName, "H004", "Redundant indexes", "redundant_indexes", getRedundantIndexes);
 
 /**
- * Generate D004 report - pg_stat_statements and pg_stat_kcache settings.
+ * Generate D004 report - pg_stat_statements and pg_stat_kcache settings, plus `observability`
+ * (d004CatalogFacts): extension states per database, entries and deallocation rounds.
  *
  * Uses graceful degradation: extension queries are wrapped in try-catch
  * because extensions may not be installed. Errors are included in the
@@ -2537,10 +2540,205 @@ async function generateD004(client: Client, nodeName: string): Promise<Report> {
         ...(kcacheError && { error: kcacheError }),
       },
     },
+    observability: await d004CatalogFacts(client),
     postgres_version: postgresVersion,
   };
 
   return report;
+}
+
+// D004: the same facts as the reporter's D004 file (reporter/d004.py): each observability
+// extension available, installed per database, the settings with context and source, the
+// pg_stat_statements entries and deallocation rounds. The CLI has no monitoring, so whether
+// the statistics grow over a window is not read (monitored_calls_window_error).
+const D004_EXTENSIONS = ["pg_stat_statements", "pg_stat_kcache", "pg_wait_sampling", "pg_stat_monitor", "pg_qualstats", "pg_store_plans"];
+const D004_SETTING_PATTERN =
+  "^(pg_stat_statements|pg_stat_kcache|pg_wait_sampling|pg_stat_monitor|pg_qualstats|pg_store_plans)\\..*$" +
+  "|^(shared_preload_libraries|session_preload_libraries)$";
+const D004_OVERRIDE_PATTERN = /^(pg_stat_statements|pg_stat_kcache|pg_wait_sampling|pg_stat_monitor|pg_qualstats|pg_store_plans)\..*$/;
+
+const D004_AVAILABLE_SQL = `
+select name, default_version, installed_version
+from pg_available_extensions
+where name = any($1)
+order by name`;
+
+const D004_INSTALLED_SQL = `
+select e.extname as name, e.extversion as version, n.nspname as schema
+from pg_extension as e join pg_namespace as n on n.oid = e.extnamespace
+where e.extname = any($1)
+order by e.extname`;
+
+function d004EntriesSql(pgss: string): string {
+  return `
+select d.datname as database, count(*)::bigint as entries, coalesce(sum(p.calls), 0)::bigint as calls,
+  (count(*) filter (where p.calls = 1))::bigint as called_once,
+  (count(*) filter (where p.query ~* '\\m(pg_temp(_[0-9]+)?|temp|temporary)\\M'))::bigint as temp_table_text,
+  bool_and(p.query <> '<insufficient privilege>') as texts_visible
+from ${pgss} as p left join pg_database as d on d.oid = p.dbid
+group by d.datname
+order by count(*) desc`;
+}
+
+/** Entries one deallocation round removes at `entries` (pg_stat_statements.c entry_dealloc, PostgreSQL 13-18).
+ * A round runs when the entries reach `pg_stat_statements.max`: pass the maximum. */
+export function d004PerRound(entries: number): number {
+  return Math.min(entries, Math.max(10, Math.floor((entries * 5) / 100)));
+}
+
+async function d004Installed(client: Client): Promise<Record<string, { version: string; schema: string }>> {
+  const out: Record<string, { version: string; schema: string }> = {};
+  for (const row of (await client.query(D004_INSTALLED_SQL, [D004_EXTENSIONS])).rows) {
+    out[row.name] = { version: String(row.version), schema: String(row.schema) };
+  }
+  return out;
+}
+
+// The databases to read installed extensions in: no per-role privilege scan (A005's list has one), no
+// template (an open connection to template1 makes a concurrent CREATE DATABASE fail).
+const D004_DATABASES_SQL = `
+select d.datname, d.datname = current_database() as is_current,
+  has_database_privilege(d.oid, 'CONNECT') as can_connect
+from pg_database as d
+where d.datallowconn and not d.datistemplate
+order by d.datname`;
+
+async function d004Statements(client: Client, schema: string, max: number | null): Promise<Record<string, unknown>> {
+  const quoted = `"${schema.replace(/"/g, '""')}"`;
+  const rows = (await client.query(d004EntriesSql(`${quoted}.pg_stat_statements`))).rows;
+  const visible = rows.every((row: any) => row.texts_visible !== false);
+  const out: Record<string, unknown> = {
+    schema,
+    entries: rows.reduce((sum: number, row: any) => sum + (parseInt(row.entries, 10) || 0), 0),
+    by_database: rows.map((row: any) => ({
+      database: row.database ?? null,
+      entries: parseInt(row.entries, 10) || 0,
+      calls: parseInt(row.calls, 10) || 0,
+      called_once: parseInt(row.called_once, 10) || 0,
+      ...(visible ? { temp_table_text: parseInt(row.temp_table_text, 10) || 0 } : {}),
+    })),
+  };
+  if (!visible) out.temp_table_text_error = "the reading role has no pg_read_all_stats: statement texts are hidden";
+  try {
+    const info = (await client.query(`select dealloc, stats_reset, now() as read_at from ${quoted}.pg_stat_statements_info`)).rows[0];
+    if (info) {
+      out.dealloc = parseInt(info.dealloc, 10) || 0;
+      out.stats_reset = d001Iso(info.stats_reset);
+      out.read_at = d001Iso(info.read_at);
+      const reset = info.stats_reset instanceof Date ? info.stats_reset.getTime() : NaN;
+      const read = info.read_at instanceof Date ? info.read_at.getTime() : NaN;
+      // The span the rounds cover, so a rate a day is derived from figures the file holds.
+      if (Number.isFinite(reset) && Number.isFinite(read)) out.days_since_reset = Math.round((read - reset) / 864_000) / 100;
+      if (out.dealloc && max) out.per_round_at_max = d004PerRound(max);
+    }
+  } catch (err) {
+    out.dealloc_error = a005Error(err); // pg_stat_statements_info is from 14; the rest stands
+  }
+  return out;
+}
+
+async function d004CatalogFacts(client: Client): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const fact = async <T>(key: string, read: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      const value = await read();
+      out[key] = value;
+      return value;
+    } catch (err) {
+      out[`${key}_error`] = a005Error(err);
+      return undefined;
+    }
+  };
+  await fact("read_as", async () => (await client.query("select current_user as role, current_database() as database")).rows[0]);
+  const settingsRead = await fact("settings", async () => {
+    const settings: Record<string, Record<string, unknown>> = {};
+    for (const row of (await client.query(D001_SETTINGS_SQL, [D004_SETTING_PATTERN])).rows) {
+      const setting = row.setting === null ? "" : String(row.setting);
+      settings[row.name] = {
+        setting, unit: row.unit || "", category: row.category || "", context: row.context || "",
+        vartype: row.vartype || "", source: row.source || "", is_default: setting === row.boot_val,
+        pending_restart: Boolean(row.pending_restart),
+      };
+    }
+    return settings;
+  });
+  await fact("available", async () => {
+    const available: Record<string, { default_version: string | null }> = {};
+    for (const row of (await client.query(D004_AVAILABLE_SQL, [D004_EXTENSIONS])).rows) {
+      available[row.name] = { default_version: row.default_version ?? null };
+    }
+    return available;
+  });
+  await fact("overrides", async () => {
+    const rows = (await client.query(D001_OVERRIDES_SQL)).rows;
+    const values: Record<string, unknown>[] = [];
+    for (const row of rows) {
+      for (const [name, value] of Object.entries(d001Config(row.config, D004_OVERRIDE_PATTERN))) {
+        const scope = row.role && row.database ? "role in database" : row.role ? "role" : row.database ? "database" : "all";
+        values.push({ scope, role: row.role ?? null, database: row.database ?? null, setting: name, value });
+      }
+    }
+    return { rows_read: rows.length, values };
+  });
+
+  // Installed is per database: an extension is created in each database that uses it.
+  const databases: Record<string, { installed?: Record<string, { version: string; schema: string }>; error?: string }> = {};
+  let pgssDb: string | null = null;
+  let pgssSchema: string | null = null;
+  let pgssOther: Client | null = null;
+  let listed: any[] | null = null;
+  try {
+    listed = (await client.query(D004_DATABASES_SQL)).rows;
+  } catch (err) {
+    out.databases_error = a005Error(err); // the facts read so far stand
+  }
+  const started = Date.now();
+  let opened = 0;
+  try {
+    for (const row of listed || []) {
+      const entry: { installed?: Record<string, { version: string; schema: string }>; error?: string } = {};
+      databases[row.datname] = entry;
+      let other: Client | null = null;
+      try {
+        if (toBool(row.is_current)) {
+          entry.installed = await d004Installed(client);
+        } else {
+          if (!toBool(row.can_connect)) throw new Error("the checkup role has no CONNECT privilege on this database");
+          if (opened >= A005_MAX_DATABASES) throw new Error(`not read: more than ${A005_MAX_DATABASES} databases`);
+          if (Date.now() - started > A005_TIME_BUDGET_MS) throw new Error("not read: the time budget ran out");
+          opened += 1;
+          other = await a005OpenDatabase(client, row.datname);
+          entry.installed = await d004Installed(other);
+        }
+      } catch (err) {
+        entry.error = a005Error(err); // one database: recorded, the rest go on
+      }
+      const found = entry.installed?.pg_stat_statements;
+      if (found && (pgssDb === null || toBool(row.is_current))) {
+        if (pgssOther) await pgssOther.end().catch(() => {});
+        pgssDb = row.datname;
+        pgssSchema = found.schema;
+        pgssOther = toBool(row.is_current) ? null : other;
+        other = null;
+      }
+      if (other) await other.end().catch(() => {});
+    }
+    if (listed) out.databases = databases;
+    if (listed && (pgssDb === null || pgssSchema === null)) {
+      out.statements_error = "pg_stat_statements is not created in any database read";
+    } else if (listed) {
+      const cap = parseInt(String(settingsRead?.["pg_stat_statements.max"]?.setting ?? ""), 10);
+      const statements = await fact("statements", () =>
+        d004Statements(pgssOther ?? client, pgssSchema as string, Number.isFinite(cap) ? cap : null));
+      if (statements) statements.database = pgssDb;
+    }
+  } catch (err) {
+    out.databases_error = a005Error(err);
+  } finally {
+    if (pgssOther) await (pgssOther as Client).end().catch(() => {});
+  }
+  out.monitored_calls_window_error = "the express checkup has no monitoring: one reading, no window";
+  return out;
 }
 
 // D001: the same facts as the reporter's D001 file (reporter/d001.py); the CLI has no
@@ -2664,13 +2862,13 @@ export function d001Thresholds(
 }
 
 /** {name: value} of a setconfig array, the names D001 reads only. */
-export function d001Config(config: unknown): Record<string, string> {
+export function d001Config(config: unknown, pattern: RegExp = D001_OVERRIDE_PATTERN): Record<string, string> {
   const out: Record<string, string> = {};
   for (const item of Array.isArray(config) ? config : []) {
     const text = String(item);
     const at = text.indexOf("=");
     const name = at < 0 ? text : text.slice(0, at);
-    if (D001_OVERRIDE_PATTERN.test(name)) out[name] = at < 0 ? "" : text.slice(at + 1);
+    if (pattern.test(name)) out[name] = at < 0 ? "" : text.slice(at + 1);
   }
   return out;
 }

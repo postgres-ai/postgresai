@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- D004 "Observability extensions" (postgres-ai/postgresai#498): the D004 file of the box and the CLI gains `observability`, beside `data`, read from the node.
+  - Each observability extension the server offers (`pg_stat_statements`, `pg_stat_kcache`, `pg_wait_sampling`, `pg_stat_monitor`, `pg_qualstats`, `pg_store_plans`) with its default version, and the version installed in each database; their settings and both preload lists with `pg_settings.context` and source; the values stored per role and per database.
+  - `pg_stat_statements`: entries per database (with those called once and those whose text mentions temp, temporary or pg_temp: a heuristic for temporary-table churn) against `pg_stat_statements.max`, `dealloc`, `stats_reset` and `days_since_reset` from `pg_stat_statements_info`, the read time.
+  - Box only: `monitored_calls_window`, the rise of the monitored statements' calls per database over the last 7 days.
+  - `pg_stat_statements_status.total_calls` now sums every monitored statement; it summed the first five. On a box it is monitoring's figure (the statements pgwatch keeps); the CLI's sums every entry. `observability.statements.by_database[].calls` is the same on both. A fact that cannot be read is left out with its reason (`*_error`).
 - Query-text retention cleanup no longer deletes recent rows. It selected rows by `ctid`, which is unique only within one partition of `pgss_queryid_queries`, so each batch also removed rows at the same position in other partitions (postgres-ai/postgresai#495).
 - D001 "Logging settings": the box reporter now writes a D001 file, and the CLI's file holds the same facts.
   - `data`: every `log_*` and `auto_explain.*` setting, `logging_collector`, both preload lists and `deadlock_timeout`, with `pg_settings.context` (read from the node).

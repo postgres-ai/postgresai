@@ -125,8 +125,8 @@ def _iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def read_settings(conn) -> Dict[str, Dict[str, Any]]:
-    rows = _rows(conn, SETTINGS_SQL, (SETTING_PATTERN,))
+def read_settings(conn, pattern: str = SETTING_PATTERN) -> Dict[str, Dict[str, Any]]:
+    rows = _rows(conn, SETTINGS_SQL, (pattern,))
     return {
         row["name"]: {
             "setting": row["setting"],
@@ -142,13 +142,14 @@ def read_settings(conn) -> Dict[str, Dict[str, Any]]:
     }
 
 
-def read_overrides(conn) -> Dict[str, Any]:
-    """Every stored role, database and role-in-database value of a D001 setting, and how
-    many rows the catalog holds (so "none of them sets logging" is a read, not a guess)."""
+def read_overrides(conn, pattern: str = OVERRIDE_PATTERN) -> Dict[str, Any]:
+    """Every stored role, database and role-in-database value of a setting matching `pattern`
+    (default: D001's), and how many rows the catalog holds (so "none of them sets logging" is a
+    read, not a guess)."""
     rows = _rows(conn, OVERRIDES_SQL)
     found = []
     for row in rows:
-        for name, value in _config(row["config"], OVERRIDE_PATTERN).items():
+        for name, value in _config(row["config"], pattern).items():
             scope = ("role in database" if row["role"] and row["database"]
                      else "role" if row["role"] else "database" if row["database"] else "all")
             found.append({"scope": scope, "role": row["role"], "database": row["database"],
