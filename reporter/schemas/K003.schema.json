@@ -144,9 +144,81 @@
         "summary": { "$ref": "#/$defs/summary" }
       }
     },
+    "hourlyNumbers": { "type": "array", "items": { "type": "number" } },
+    "hourlyQueryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queryid", "total_time_ms", "total_exec_time_ms", "total_plan_time_ms", "hourly_time_ms", "hourly_exec_time_ms", "hourly_plan_time_ms"],
+      "properties": {
+        "queryid": { "type": "string" },
+        "total_time_ms": { "type": "number" },
+        "total_exec_time_ms": { "type": "number" },
+        "total_plan_time_ms": { "type": "number" },
+        "hourly_time_ms": { "$ref": "#/$defs/hourlyNumbers" },
+        "hourly_exec_time_ms": { "$ref": "#/$defs/hourlyNumbers" },
+        "hourly_plan_time_ms": { "type": ["array", "null"], "items": { "type": "number" } },
+        "calls": { "type": "number" },
+        "rows": { "type": "number" },
+        "shared_blks_hit_bytes": { "type": "number" },
+        "shared_blks_read_bytes": { "type": "number" },
+        "wal_bytes": { "type": "number" },
+        "temp_bytes_written": { "type": "number" },
+        "query_text": { "type": "string" },
+        "is_monitoring": { "type": "boolean" },
+        "relations": { "type": "array", "items": { "type": "string" }, "maxItems": 3 }
+      }
+    },
+    "exportRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_n_per_database", "ranked_by", "min_calls", "min_exec_time_ms", "interval_seconds"],
+      "properties": {
+        "top_n_per_database": { "type": "integer" },
+        "ranked_by": { "type": "string" },
+        "min_calls": { "type": "integer" },
+        "min_exec_time_ms": { "type": "number" },
+        "interval_seconds": { "type": "integer" }
+      }
+    },
+    "hourlySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queries_returned", "total_time_ms", "total_time_tracked_queries_ms", "total_time_other_ms", "time_range_hours", "hourly_timestamps", "limit", "plan_time_available", "note"],
+      "properties": {
+        "queries_returned": { "type": "integer" },
+        "total_time_ms": { "type": "number" },
+        "total_time_tracked_queries_ms": { "type": "number" },
+        "total_time_other_ms": { "type": "number" },
+        "time_range_hours": { "type": "integer" },
+        "hourly_timestamps": { "type": "array", "items": { "type": "integer" } },
+        "limit": { "type": "integer" },
+        "plan_time_available": { "type": "boolean" },
+        "note": { "type": "string" },
+        "window_start": { "type": "string" },
+        "window_end": { "type": "string" },
+        "window_seconds": { "type": "integer" },
+        "export_rule": { "$ref": "#/$defs/exportRule" },
+        "total_calls": { "type": "number" },
+        "statements_exported_max": { "type": "integer" },
+        "statements_reset_max": { "type": "integer" },
+        "statements_reset_at": { "type": "string" }
+      }
+    },
+    "hourlyDbEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_queries", "other_time_hourly", "other_exec_time_hourly", "other_plan_time_hourly", "summary"],
+      "properties": {
+        "top_queries": { "type": "array", "items": { "$ref": "#/$defs/hourlyQueryEntry" } },
+        "other_time_hourly": { "$ref": "#/$defs/hourlyNumbers" },
+        "other_exec_time_hourly": { "$ref": "#/$defs/hourlyNumbers" },
+        "other_plan_time_hourly": { "type": ["array", "null"], "items": { "type": "number" } },
+        "summary": { "$ref": "#/$defs/hourlySummary" }
+      }
+    },
     "data": {
       "type": "object",
-      "additionalProperties": { "$ref": "#/$defs/dbEntry" }
+      "additionalProperties": { "anyOf": [{ "$ref": "#/$defs/hourlyDbEntry" }, { "$ref": "#/$defs/dbEntry" }] }
     },
     "nodeResult": {
       "type": "object",
@@ -159,5 +231,3 @@
     }
   }
 }
-
-
