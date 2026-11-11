@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- K003 "Top queries by total time" (postgres-ai/postgresai#499), for CheckupLoop's K003 report:
+  - Each top statement now carries, over the same hourly window as its time: `calls`, `rows`, `shared_blks_hit_bytes`, `shared_blks_read_bytes`, `wal_bytes`, `temp_bytes_written`, its text on one line (`query_text`, 200 characters), `is_monitoring` (our collector's statement) and `relations` (the first 3 it reads or writes). A field that cannot be read is absent, never 0.
+  - The summary adds the window (`window_start`, `window_end`, `window_seconds`), `total_calls`, `statements_exported_max`, `statements_reset_max` / `statements_reset_at` (a lower bound) and `export_rule` (the collector's pg_stat_statements export).
+  - A statement with no time in the window (it ranked only in an idle hour's top 3) is no longer listed.
+  - `reporter/schemas/K003.schema.json` describes the hourly file.
 - D004 "Observability extensions" (postgres-ai/postgresai#498): the D004 file of the box and the CLI gains `observability`, beside `data`, read from the node.
   - Each observability extension the server offers (`pg_stat_statements`, `pg_stat_kcache`, `pg_wait_sampling`, `pg_stat_monitor`, `pg_qualstats`, `pg_store_plans`) with its default version, and the version installed in each database; their settings and both preload lists with `pg_settings.context` and source; the values stored per role and per database.
   - `pg_stat_statements`: entries per database (with those called once and those whose text mentions temp, temporary or pg_temp: a heuristic for temporary-table churn) against `pg_stat_statements.max`, `dealloc`, `stats_reset` and `days_since_reset` from `pg_stat_statements_info`, the read time.

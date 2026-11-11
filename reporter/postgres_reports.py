@@ -76,6 +76,156 @@ except ImportError:  # pragma: no cover
         return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+# K003 per-statement window facts: report key -> pg_stat_statements metric (pgwatch).
+K003_WINDOW_METRICS = {
+    "calls": "pgwatch_pg_stat_statements_calls",
+    "rows": "pgwatch_pg_stat_statements_rows",
+    "shared_blks_hit_bytes": "pgwatch_pg_stat_statements_shared_bytes_hit_total",
+    "shared_blks_read_bytes": "pgwatch_pg_stat_statements_shared_bytes_read_total",
+    "wal_bytes": "pgwatch_pg_stat_statements_wal_bytes",
+    "temp_bytes_written": "pgwatch_pg_stat_statements_temp_bytes_written",
+}
+# The collector's pg_stat_statements export (config/pgwatch-prometheus/metrics.yml, metric
+# pg_stat_statements, preset interval): a K003 reader needs it to say what "all" means.
+# tests/reporter/test_k003_window_facts.py checks it against the config.
+K003_EXPORT_RULE = {"top_n_per_database": 100, "ranked_by": "total_exec_time", "min_calls": 3,
+                    "min_exec_time_ms": 1000, "interval_seconds": 30}
+K003_TEXT_CHARS = 200  # a statement's text in K003: enough to name it, small enough for 100 rows
+K003_TEXT_FETCH_CHARS = 20000  # read this much to find the monitoring marker (test: every collector SQL fits)
+MONITORING_MARKER = "pgwatch_generated"  # the comment every collector statement carries
+
+
+#: One SQL token: a comment, a string (quoted or dollar-quoted), a quoted name, a word, a parenthesis or
+#: punctuation. An unclosed comment, string or name runs to the end (a cut text).
+_K003_TOKEN = re.compile(
+    r"(?P<skip>/\*.*?(?:\*/|\Z)|--[^\n]*|[Ee]'(?:[^'\\]|\\.|'')*(?:'|\Z)|'(?:[^']|'')*(?:'|\Z)"
+    r"|\$(?P<tag>(?:[A-Za-z_]\w*)?)\$.*?(?:\$(?P=tag)\$|\Z))"
+    r'|(?P<name>"(?:[^"]|"")*(?:"|\Z)|[A-Za-z_][\w$]*)'
+    r"|(?P<punct>[().,;])|(?P<other>\S)", re.S)
+#: Words that follow FROM/JOIN/INTO/UPDATE and are not relations (upserts, row locks, LATERAL, subqueries).
+_K003_NOT_RELATIONS = frozenset({"lateral", "select", "set", "skip", "of", "nowait", "only", "values", "limit",
+                                 "offset", "fetch", "from", "join", "into", "update",
+                                 # reserved: never an unquoted relation (a bare "update" alias, trigger/rule text)
+                                 "order", "group", "having", "window", "where", "union", "intersect", "except",
+                                 "for", "as", "on", "to", "using", "returning"})
+#: Words that may follow INTO before the table (SELECT ... INTO TEMP TABLE t, INSERT INTO ONLY t).
+_K003_INTO_MODIFIERS = ("only", "temp", "temporary", "unlogged", "table")
+#: COPY ... FROM <source>: not relations there (they are legal table names elsewhere).
+_K003_COPY_SOURCES = frozenset({"stdin", "program"})
+#: Keywords a subquery's "(" follows ("as (", "in (", "exists ("): a "(" after them is not a call.
+_K003_SQL_WORDS = frozenset({"as", "in", "exists", "any", "all", "some", "from", "join", "where", "on", "and", "or",
+                             "not", "select", "union", "intersect", "except", "values", "lateral", "materialized",
+                             "using", "by", "with", "recursive", "then", "else", "when", "case", "set", "returning",
+                             "having", "into", "is", "array", "limit", "offset", "between", "like", "ilike"})
+
+
+def _k003_tokens(text: str) -> List[Tuple[str, str]]:
+    """(kind, text) per token: kind "name" (a word or quoted name), "punct" or "other"; comments and strings
+    become one "other" token (nothing inside them is SQL)."""
+    out: List[Tuple[str, str]] = []
+    for m in _K003_TOKEN.finditer(text or ""):
+        if m.group("skip") is not None:
+            out.append(("other", "'"))
+        elif m.group("name") is not None:
+            out.append(("name", m.group("name")))
+        elif m.group("punct") is not None:
+            out.append(("punct", m.group("punct")))
+        else:
+            out.append(("other", m.group("other")))
+    return out
+
+
+def _k003_ctes(toks: List[Tuple[str, str]]) -> set:
+    """The names a statement defines with WITH (`name [(cols)] as [not] [materialized] (`), lower case."""
+    names = set()
+    for i, (kind, value) in enumerate(toks):
+        if kind != "name" or value.lower() != "as":
+            continue
+        k = i + 1
+        while k < len(toks) and toks[k][0] == "name" and toks[k][1].lower() in ("not", "materialized"):
+            k += 1
+        if k >= len(toks) or toks[k][1] != "(":
+            continue
+        j = i - 1
+        if j >= 0 and toks[j][1] == ")":  # a column list: back to its "("
+            depth = 0
+            while j >= 0:
+                depth += toks[j][1] == ")"
+                depth -= toks[j][1] == "("
+                if depth == 0:
+                    break
+                j -= 1
+            j -= 1
+        if j >= 1 and toks[j][0] == "name" and toks[j - 1][1].lower() in ("with", "recursive", ","):
+            names.add(toks[j][1].lower())
+    return names
+
+
+def k003_relations(text: str, limit: int = 3, truncated: bool = False) -> List[str]:
+    """The first relations a statement reads or writes (FROM, JOIN, INTO, UPDATE), its own CTE names, functions,
+    keywords and anything inside a function call left out: what names a statement whose text is cut (K003 report,
+    #499). One pass over the tokens. ``truncated``: the text was cut (the sink's "..."): its last token may be a
+    split name and is not read."""
+    if truncated and text.endswith("..."):
+        text = text[:-3]
+    toks = _k003_tokens(text)
+    if truncated and toks:  # the last token, and the qualified name it may end, may be split
+        if toks.pop()[1] == "." and toks:
+            toks.pop()
+        while toks and toks[-1][1] == ".":
+            toks.pop()
+            if toks:
+                toks.pop()
+    first = next((v.lower() for k, v in toks if k == "name"), "")
+    if first in ("fetch", "move"):
+        return []  # FETCH/MOVE ... FROM <cursor>: no relation
+    ctes = _k003_ctes(toks)
+    calls: List[bool] = []  # per open "(": whether it opens a function call
+    out: List[str] = []
+    for i, (kind, value) in enumerate(toks):
+        if value == "(":
+            prev = toks[i - 1] if i else ("", "")
+            calls.append(prev[0] == "name" and prev[1].lower() not in _K003_SQL_WORDS)
+            continue
+        if value == ")":
+            if calls:
+                calls.pop()
+            continue
+        word = value.lower() if kind == "name" else ""
+        if word not in ("from", "join", "into", "update") or (
+                word != "update" and i and toks[i - 1][1].lower() == "as"):
+            continue  # not a keyword, or a column alias ("as from"); "prepare p as update t" is a statement
+        if word == "from" and ((calls and calls[-1]) or (i and toks[i - 1][1].lower() == "distinct")):
+            continue  # extract(epoch from x), trim(both $1 from x), a is distinct from b
+        j = i + 1
+        select_into = word == "into" and not (i and toks[i - 1][1].lower() in ("insert", "merge"))
+        while j < len(toks) and toks[j][1].lower() in (_K003_INTO_MODIFIERS if select_into else ("only",)):
+            j += 1
+        if j >= len(toks) or toks[j][0] != "name":
+            continue  # from (select ...), update; at the end
+        parts = [toks[j][1]]
+        while j + 2 < len(toks) and toks[j + 1][1] == "." and toks[j + 2][0] == "name":
+            parts.append(toks[j + 2][1])
+            j += 2
+        name = ".".join(parts)
+        follows = toks[j + 1][1] if j + 1 < len(toks) else ""
+        if (parts[0].lower() in _K003_NOT_RELATIONS or (len(parts) == 1 and name.lower() in ctes)
+                or (first == "copy" and word == "from" and name.lower() in _K003_COPY_SOURCES)
+                or (word in ("from", "join") and follows == "(") or not name.strip('"')):
+            continue
+        if name not in out:
+            out.append(name)
+        if len(out) == limit:
+            break
+    return out
+
+
+def _one_line(text: str, limit: int) -> str:
+    """A statement's text on one line (whitespace collapsed), cut to `limit` characters."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[:limit - 1] + "…"
+
+
 # Schemas owned by PostgreSQL itself. Catalog and temp indexes cannot be
 # dropped, so H001/H002/H004 must never recommend removing them (#345).
 _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
@@ -3608,6 +3758,7 @@ class PostgresReportGenerator:
             Dictionary containing top queries sorted by total execution time (exec + plan)
         """
         logger.info("Generating K003 Top Queries by total_time (exec + plan) report...")
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -3666,8 +3817,17 @@ class PostgresReportGenerator:
                         "hourly_plan_time_ms": plan_values if plan_time_available else None
                     })
 
-                # Sort by total_time (descending) and limit to top N
-                sorted_metrics = sorted(query_totals, key=lambda x: x.get('total_time_ms', 0), reverse=True)[:limit]
+                # Sort by total_time (descending) and limit to top N. A statement in an hour's top 3
+                # with no time in the window (an idle hour ranks zeros) is not a top statement.
+                sorted_metrics = [q for q in sorted(query_totals, key=lambda x: x.get('total_time_ms', 0),
+                                                    reverse=True) if q.get('total_time_ms', 0) > 0][:limit]
+
+                # Per statement, over the same hourly window: calls, rows, buffers, WAL, temp,
+                # and its text, so a reader gets per-call and per-second figures (K003 table).
+                window = self._k003_window_facts(cluster, node_name, db_name,
+                                                 [q['queryid'] for q in sorted_metrics], timeline)
+                for q in sorted_metrics:
+                    q.update(window["per_query"].get(q['queryid'], {}))
 
                 # Calculate other time (exec + plan)
                 other_time_hourly = [e + p for e, p in zip(exec_other, plan_other)]
@@ -3689,7 +3849,8 @@ class PostgresReportGenerator:
                         "hourly_timestamps": timeline,
                         "limit": limit,
                         "plan_time_available": plan_time_available,
-                        "note": "Includes both exec and plan time" if plan_time_available else "Plan time unavailable, showing exec time only"
+                        "note": "Includes both exec and plan time" if plan_time_available else "Plan time unavailable, showing exec time only",
+                        **window["summary"],
                     }
                 }
         else:
@@ -5210,6 +5371,100 @@ class PostgresReportGenerator:
             qid: [series_pts.get(qid, {}).get(ts, fill) for ts in timeline]
             for qid in qids
         }
+
+    def _k003_window_facts(self, cluster: str, node_name: str, db_name: str, queryids: List[str],
+                           timeline: List[int]) -> Dict[str, Any]:
+        """K003's per-statement facts over the hourly window: the sum of each hour's increase (the
+        same sums as total_time_ms), so per-call and per-second figures share one window.
+
+        Returns {"per_query": {queryid: {...}}, "summary": {...}}. A metric that fails or has no
+        series stays out (absent = not known; 0 = measured zero)."""
+        per_query: Dict[str, Dict[str, Any]] = {qid: {} for qid in queryids}
+        summary: Dict[str, Any] = {}
+        if not timeline:
+            return {"per_query": per_query, "summary": summary}
+        _esc = self._escape_promql_label
+        base = [f'cluster="{_esc(cluster)}"', f'node_name="{_esc(node_name)}"', f'datname="{_esc(db_name)}"']
+        start, end = datetime.fromtimestamp(timeline[0]), datetime.fromtimestamp(timeline[-1])
+        hours = len(timeline)
+        summary["window_start"] = datetime.fromtimestamp(timeline[0] - 3600, tz=timezone.utc).isoformat()
+        summary["window_end"] = datetime.fromtimestamp(timeline[-1], tz=timezone.utc).isoformat()
+        summary["window_seconds"] = hours * 3600
+        summary["export_rule"] = dict(K003_EXPORT_RULE)
+
+        def _summed(expr: str) -> Dict[str, float]:
+            try:
+                result = self.query_range(expr, start, end, step="3600s")
+            except Exception as e:  # one failed metric must not lose the report
+                logger.warning(f"K003 window query failed ({db_name}): {e}")
+                return {}
+            return {qid: sum(pts.values()) for qid, pts in self._to_series_map(result).items()}
+
+        f_all = '{' + ','.join(base) + '}'
+        calls = _summed(f"sum(increase(pgwatch_pg_stat_statements_calls{f_all}[1h]))").get("__single__")
+        if calls is not None:
+            summary["total_calls"] = calls
+        # Statements exported at once, the most in any hour (the collector's top-N per database).
+        try:
+            counted = self.query_range(f"count(count by (queryid) (pgwatch_pg_stat_statements_calls{f_all}))",
+                                       start, end, step="3600s")
+            counts = [v for pts in self._to_series_map(counted).values() for v in pts.values()]
+            if counts:
+                summary["statements_exported_max"] = int(max(counts))
+        except Exception as e:
+            logger.warning(f"K003 statement count failed ({db_name}): {e}")
+        # Counter resets (K003-O1): per hour, the statements whose calls counter went back; a
+        # pg_stat_statements_reset() resets nearly all at once. `or vector(0)` answers every hour, so an
+        # empty result is a failed query (query_range returns [] on an error): the key stays absent. A drop
+        # across an hour boundary falls in neither [1h] window: the count is a lower bound.
+        if "total_calls" in summary:
+            try:
+                reset = self.query_range(
+                    f"count(resets(pgwatch_pg_stat_statements_calls{f_all}[1h]) > 0) or vector(0)", start, end,
+                    step="3600s")
+                points = {ts: v for pts in self._to_series_map(reset).values() for ts, v in pts.items()}
+                if points:
+                    summary["statements_reset_max"] = int(max(points.values()))
+                if points and max(points.values()) > 0:
+                    at = max(points, key=lambda ts: (points[ts], ts))
+                    summary["statements_reset_at"] = datetime.fromtimestamp(at, tz=timezone.utc).isoformat()
+            except Exception as e:
+                logger.warning(f"K003 counter resets failed ({db_name}): {e}")
+
+        if queryids:
+            f_q = '{' + ','.join(base + [f'queryid=~"{self._build_qid_regex(queryids)}"']) + '}'
+            for key, metric in K003_WINDOW_METRICS.items():
+                for qid, value in _summed(f"sum by (queryid) (increase({metric}{f_q}[1h]))").items():
+                    if qid in per_query:
+                        per_query[qid][key] = value
+            texts = self._k003_texts(db_name, queryids)
+            for qid, text in texts.items():
+                per_query[qid]["query_text"] = _one_line(text, K003_TEXT_CHARS)
+                per_query[qid]["is_monitoring"] = MONITORING_MARKER in text
+                relations = k003_relations(text, truncated=len(text) > K003_TEXT_FETCH_CHARS)
+                if relations:
+                    per_query[qid]["relations"] = relations
+        return {"per_query": per_query, "summary": summary}
+
+    def _k003_texts(self, db_name: str, queryids: List[str]) -> Dict[str, str]:
+        """The statements' texts from the sink: this database first, then any (the sink's dbname can
+        differ from Prometheus's datname). Empty when the sink is not reachable."""
+        by_db = getattr(self, "_k003_text_cache", None)
+        if by_db is None:  # one sink read per report, not one per database
+            try:
+                by_db = self.get_queryid_queries_from_sink(K003_TEXT_FETCH_CHARS) or {}
+            except Exception as e:
+                logger.warning(f"K003 statement texts unavailable: {e}")
+                by_db = {}
+            self._k003_text_cache = by_db
+        out: Dict[str, str] = {}
+        for qid in queryids:
+            text = (by_db.get(db_name) or {}).get(qid)
+            if not text:
+                text = next((q[qid] for q in by_db.values() if q and q.get(qid)), None)
+            if text:
+                out[qid] = text
+        return out
 
     def _get_hourly_topk_pgss_data_multi(
         self,
