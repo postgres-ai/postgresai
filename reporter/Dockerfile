@@ -23,6 +23,13 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 RUN mkdir -p /app/reporter
 COPY . /app/reporter
 
+# The AWS RDS CA bundle at the path the RDS collector's conn_str names
+# (sslrootcert=/etc/ssl/certs/rds-global-bundle.pem): the reporter connects to the
+# node itself for catalog facts (A005, D001, D004, G003). A host bind mount still
+# overrides it. Source: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+# (refresh when AWS adds a region or rotates its roots).
+COPY certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
+
 # Make script executable
 RUN chmod +x /app/reporter/postgres_reports.py
 
@@ -35,4 +42,3 @@ RUN mkdir -p /app/reports
 
 # Default command
 CMD ["python", "-m", "reporter.postgres_reports"]
-

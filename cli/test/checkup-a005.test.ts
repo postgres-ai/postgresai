@@ -171,9 +171,9 @@ describe("A005 Extensions", () => {
     expect(db.error).toContain("cannot open another connection");
   });
 
-  test("an error message is one line of at most 200 characters", async () => {
+  test("an error message is one line of at most 200 characters and keeps its cause at the end", async () => {
     checkup.setA005OpenDatabase(async () => {
-      throw new Error("first line\n" + "x".repeat(500));
+      throw new Error("first line\n" + "x".repeat(500) + " does not exist");
     });
     const client = createMockClient({
       a005DatabasesRows: [{ datname: "other", is_current: false, can_connect: true, roles_with_create: 0 }],
@@ -182,6 +182,21 @@ describe("A005 Extensions", () => {
     const error = report.results["node-01"].data.databases.other.error;
     expect(error.length).toBe(200);
     expect(error).not.toContain("\n");
+    expect(error.startsWith("first line x")).toBe(true);
+    expect(error.endsWith("x does not exist")).toBe(true);
+  });
+
+  test("a clipped error never splits a surrogate pair", async () => {
+    checkup.setA005OpenDatabase(async () => {
+      throw new Error("😀".repeat(300));
+    });
+    const client = createMockClient({
+      a005DatabasesRows: [{ datname: "other", is_current: false, can_connect: true, roles_with_create: 0 }],
+    });
+    const report = await checkup.generateA005(client as any, "node-01");
+    const error = report.results["node-01"].data.databases.other.error;
+    expect(Array.from(error).length).toBe(200);
+    expect(error).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 
   test("conclusions: the reporter's shared vectors give the same output (postgresai#474)", () => {

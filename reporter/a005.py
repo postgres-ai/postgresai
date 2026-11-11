@@ -116,14 +116,27 @@ def _secrets(conn_str: str) -> List[str]:
     return [p for p in {password, quote(password, safe="")} if p]
 
 
-def error_text(err: BaseException, secrets: Optional[List[str]] = None) -> str:
-    """One line of at most ERROR_CHARS characters, without any password."""
+def clip(text: str) -> str:
+    """At most ERROR_CHARS characters, keeping the end: libpq names the cause last."""
+    if len(text) <= ERROR_CHARS:
+        return text
+    head = (ERROR_CHARS - 3) // 3
+    return text[:head] + "..." + text[len(text) - (ERROR_CHARS - 3 - head):]
+
+
+def _redacted(err: BaseException, secrets: Optional[List[str]] = None) -> str:
+    """The whole message on one line, without any password."""
     message = " ".join(str(err).split()) or type(err).__name__
     message = _PASSWORD_IN_DSN.sub(lambda m: (m.group(1) + "***@") if m.group(1) else m.group(2) + "***", message)
     for secret in secrets or []:
         if secret:
             message = message.replace(secret, "***")
-    return message[:ERROR_CHARS] or "unknown error"
+    return message
+
+
+def error_text(err: BaseException, secrets: Optional[List[str]] = None) -> str:
+    """One line of at most ERROR_CHARS characters, without any password."""
+    return clip(_redacted(err, secrets)) or "unknown error"
 
 
 def system_ca_file() -> Optional[str]:
@@ -339,7 +352,7 @@ def unreachable_node(err: BaseException, conn_str: str = "") -> Dict[str, Any]:
     """The A005 result of a node that could not be read: no database is listed,
     every fact is unknown with the reason (the platform then reads no fact from it)."""
     secrets = _secrets(conn_str) if conn_str else []
-    reason = f"the node could not be read: {error_text(err, secrets)}"[:ERROR_CHARS]
+    reason = clip(f"the node could not be read: {_redacted(err, secrets) or 'unknown error'}")
     data: Dict[str, Any] = {
         "databases": {}, "logical_slots": [], "logical_slots_error": reason,
         "roles": {"replication": None, "replication_error": reason, "md5_passwords": None,

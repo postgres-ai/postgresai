@@ -2201,8 +2201,12 @@ export interface A005Database {
 }
 
 function a005Error(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/\s+/g, " ").trim().slice(0, A005_ERROR_CHARS) || "unknown error";
+  // Code points, as reporter/a005.py clip() counts: a cut never splits a surrogate pair.
+  const chars = Array.from((err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim());
+  if (chars.length <= A005_ERROR_CHARS) return chars.join("") || "unknown error";
+  // Keep the end: libpq names the cause last.
+  const head = Math.floor((A005_ERROR_CHARS - 3) / 3);
+  return chars.slice(0, head).join("") + "..." + chars.slice(chars.length - (A005_ERROR_CHARS - 3 - head)).join("");
 }
 
 /**
