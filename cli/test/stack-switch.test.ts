@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import { resolve } from "path";
-import { composeDefinesService, composeProjectName, oldStackVolumeNames, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, oldStackVolumeNames, parseComposePs, redactStoreUrl, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 
 /**
  * The switch of an existing install from the old pgwatch + VictoriaMetrics
@@ -244,13 +244,14 @@ describe("mon local-install", () => {
     expect(fs.readFileSync(resolve(p.dir, "docker-compose.yml"), "utf8")).toBe(fs.readFileSync(OLD_COMPOSE, "utf8"));
   });
 
-  test("on the new stack: no switch, no notice about old volumes; a set store says nothing", () => {
+  test("on the new stack: no switch, no notice about old volumes; a set store is named", () => {
     const p = makeProject("li-new", NEW_COMPOSE, "PGAI_TAG=0.18.0\nPGAI_MON_STORE=s3://bucket/prefix\n");
     const r = p.run(["mon", "local-install", "-y"]);
     expect(r.status).toBe(0);
     expect(composeCalls(p.calls()).some((c) => / down /.test(c))).toBe(false);
     expect(r.stdout).not.toContain("Switched this install");
     expect(r.stdout).not.toContain(storeNotice(undefined)!);
+    expect(r.stdout).toContain("Metrics history goes to s3://bucket/prefix");
     expect(readEnv(p.dir)).toContain("PGAI_MON_STORE=s3://bucket/prefix");
   });
 });
@@ -275,9 +276,45 @@ describe("stack helpers", () => {
     expect(stackSwitchNotice([])).not.toContain("docker volume rm");
   });
 
-  test("the store notice is for an unset or blank store only", () => {
+  test("the store notice: the local volume when unset or blank, else the store without credentials", () => {
     expect(storeNotice(undefined)).toContain("PGAI_MON_STORE");
     expect(storeNotice("  ")).toContain("PGAI_MON_STORE");
-    expect(storeNotice("s3://b/p")).toBeNull();
+    expect(storeNotice("s3://b/p")).toBe("Metrics history goes to s3://b/p");
+    expect(redactStoreUrl("s3://AKIA:secret@bucket/prefix?X-Amz-Security-Token=t")).toBe("s3://bucket/prefix");
+    expect(storeNotice("s3://key:secret@b/p?token=t")).not.toMatch(/key|secret|token/);
+  });
+
+  test("parseComposePs reads both compose output shapes and skips noise", () => {
+    const a = { Service: "pgai-mon", State: "running", Health: "healthy", ExitCode: 0 };
+    const b = { Service: "config-init", State: "exited", Health: "", ExitCode: 0 };
+    expect(parseComposePs(JSON.stringify([a, b]))).toEqual([a, b]);
+    expect(parseComposePs(`${JSON.stringify(a)}\nWARN something\n${JSON.stringify(b)}\n`)).toEqual([a, b]);
+    expect(parseComposePs("")).toEqual([]);
+    expect(parseComposePs("[not json")).toEqual([]);
+  });
+
+  test("stackProblems: every expected service running and healthy, one-shots exited 0", () => {
+    const ok = [
+      { Service: "config-init", State: "exited", ExitCode: 0 },
+      { Service: "pgai-mon", State: "running", Health: "healthy" },
+      { Service: "postgres-reports", State: "running", Health: "" },
+    ];
+    const expected = ["config-init", "pgai-mon", "postgres-reports"];
+    expect(stackProblems(expected, ok)).toEqual([]);
+    expect(stackProblems([...expected, "grafana"], ok)).toEqual(["grafana: missing"]);
+    expect(stackProblems(expected, ok.slice(1))).toEqual([]);
+    const broken = [
+      { Service: "config-init", State: "exited", ExitCode: 1 },
+      { Service: "pgai-mon", State: "restarting" },
+      { Service: "postgres-reports", State: "created" },
+      { Service: "grafana", State: "running", Health: "unhealthy" },
+      { Service: "target-db", State: "running", Health: "starting" },
+    ];
+    expect(stackProblems([...expected, "grafana", "target-db"], broken)).toEqual([
+      "config-init: exited (1)", "pgai-mon: restarting", "postgres-reports: created", "grafana: unhealthy", "target-db: starting",
+    ]);
+    // Only the failed ones get their logs printed after a failed `up`.
+    expect(failedServices(broken)).toEqual(["config-init", "pgai-mon", "grafana"]);
+    expect(failedServices(ok)).toEqual([]);
   });
 });

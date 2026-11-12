@@ -53,11 +53,12 @@ import {
   isTerminal,
   renderSql,
   resolveMonitoringInstanceId,
+  runLocalSql,
 } from "../lib/instance-query";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { composeDefinesService, composeProjectName, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, PGAI_MON_SERVICE, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 import { PGAI_MON_URL, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
@@ -3465,6 +3466,7 @@ function applyApiKey(projectDir: string, apiKey: string, opts?: CliOptions): boo
 }
 
 interface SqlOptions extends OrgOptions {
+  local?: boolean;
   instance?: string;
   project?: string;
   timeout?: string;
@@ -4235,6 +4237,52 @@ function runningComposeServices(projectDir: string): string[] {
     { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
   );
   return ps.status === 0 ? String(ps.stdout ?? "").split(/\s+/).filter(Boolean) : [];
+}
+
+/** `docker compose` in the project directory with output captured; null without compose. */
+function composeCapture(projectDir: string, args: string[]): { status: number | null; stdout: string } | null {
+  const cmd = getComposeCmd();
+  if (!cmd) return null;
+  const r = spawnSync(
+    cmd[0],
+    [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), ...args],
+    { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+  );
+  return { status: r.status, stdout: String(r.stdout ?? "") };
+}
+
+/**
+ * The stack's services that are not running and healthy ("pgai-mon:
+ * restarting", "postgres-reports: created", ...); empty when all are. The
+ * expected set is what compose would start (profiles from .env), without
+ * Grafana under GRAFANA_SCALE=0. Null when compose cannot tell.
+ */
+function stackProblemsNow(projectDir: string): string[] | null {
+  const config = composeCapture(projectDir, ["config", "--services"]);
+  if (!config || config.status !== 0) return null;
+  let expected = config.stdout.split(/\s+/).filter(Boolean);
+  if (expected.length === 0) return null;
+  if (!grafanaEnabled(readEnvValue(projectDir, GRAFANA_SCALE_KEY))) expected = expected.filter((s) => s !== "grafana");
+  const ps = composeCapture(projectDir, ["ps", "-a", "--format", "json"]);
+  if (!ps || ps.status !== 0) return null;
+  return stackProblems(expected, parseComposePs(ps.stdout));
+}
+
+/**
+ * After a failed `up`: name each service whose container failed (unhealthy,
+ * restarting, exited non-zero) and print its last 20 log lines.
+ */
+function reportFailedServices(projectDir: string): void {
+  const ps = composeCapture(projectDir, ["ps", "-a", "--format", "json"]);
+  if (!ps || ps.status !== 0) return;
+  const states = parseComposePs(ps.stdout);
+  for (const service of failedServices(states)) {
+    const why = stackProblems([service], states).map((p) => p.slice(service.length + 2)).join(", ");
+    console.error(`\n✗ Service ${service} failed (${why}). Its last 20 log lines:`);
+    const logs = composeCapture(projectDir, ["logs", "--tail", "20", "--no-color", service]);
+    const text = logs && logs.status === 0 ? logs.stdout.trimEnd() : "";
+    console.error(text ? text : "(no log output)");
+  }
 }
 
 /**
@@ -5254,9 +5302,14 @@ mon
       console.log("(this stack was not started with --prestart: installing as usual)\n");
     }
 
-    // Check if containers are already running
+    // Check if containers are already running. A stack with a service
+    // missing, stopped, restarting or unhealthy is installed over instead, so
+    // a re-run recovers a failed install.
     const { running, containers } = checkRunningContainers();
-    if (running && !onPrestarted) {
+    const problems = running && !onPrestarted ? stackProblemsNow(projectDir) : null;
+    if (problems && problems.length > 0) {
+      console.log(`Monitoring services are not all running and healthy (${problems.join(", ")}): installing over them\n`);
+    } else if (running && !onPrestarted) {
       console.error(`⚠ Monitoring services are already running: ${containers.join(", ")}`);
       console.log("Use 'postgres-ai mon restart' to restart them\n");
       // This path returns without any `up`, so a profile change written to
@@ -5452,7 +5505,7 @@ mon
 
     // Step 3: Ensure Grafana password is configured. pgai-mon reads
     // instances.yml itself: there is no generated configuration to update.
-    console.log("Step 3: Configuring Grafana security...");
+    if (grafanaOn) console.log("Step 3: Configuring Grafana security...");
     const cfgPath = path.resolve(projectDir, ".pgwatch-config");
     const grafanaPassword = await ensureGrafanaPassword(cfgPath);
 
@@ -5498,6 +5551,7 @@ mon
       code2 = await runCompose(["up", "-d", "--force-recreate", "--remove-orphans"], grafanaPassword);
     }
     if (code2 !== 0) {
+      reportFailedServices(projectDir);
       process.exitCode = code2;
       return;
     }
@@ -5671,7 +5725,8 @@ mon
     } else {
       console.log("Demo mode next steps:");
       if (grafanaOn) console.log("  • Explore Grafana dashboards at http://localhost:3000");
-      console.log("  • Connect to demo database: postgresql://postgres:postgres@localhost:55432/target_database");
+      // target-db publishes no port: it is reachable inside the compose network only.
+      console.log("  • Connect to the demo database: docker exec -it target-db psql -U postgres target_database");
       console.log("  • Generate some load on the demo database to see metrics\n");
     }
 
@@ -5688,18 +5743,27 @@ mon
   .command("start")
   .description("start monitoring services")
   .action(async () => {
-    // Check if containers are already running
+    const { projectDir, instancesFile } = await resolveOrInitPaths();
+    // Already running only when every service is running and healthy; anything
+    // missing, stopped, restarting or unhealthy gets the (idempotent) `up -d`.
     const { running, containers } = checkRunningContainers();
     if (running) {
-      console.log(`Monitoring services are already running: ${containers.join(", ")}`);
-      console.log("Use 'postgres-ai mon restart' to restart them");
-      return;
+      const problems = stackProblemsNow(projectDir);
+      if (problems && problems.length > 0) {
+        console.log(`Not all services are running and healthy (${problems.join(", ")}): starting the stack`);
+      } else {
+        console.log(`Monitoring services are already running: ${containers.join(", ")}`);
+        console.log("Use 'postgres-ai mon restart' to restart them");
+        return;
+      }
     }
 
-    const { projectDir, instancesFile } = await resolveOrInitPaths();
     await syncDemoProfile(projectDir, instancesFile);
     const code = await runCompose(["up", "-d"]);
-    if (code !== 0) process.exitCode = code;
+    if (code !== 0) {
+      reportFailedServices(projectDir);
+      process.exitCode = code;
+    }
   });
 
 // Known container names for cleanup: this stack's, then the old pgwatch +
@@ -7305,6 +7369,39 @@ orgsCommand.command("create")
     }
   });
 
+/**
+ * `mon sql --local`: the query goes straight to this install's pgai-mon. The
+ * token is read from the project's .env and sent as a header only.
+ */
+async function runMonSqlLocal(query: string, opts: SqlOptions): Promise<void> {
+  try {
+    if (opts.instance || opts.project) {
+      console.error("--local queries this box's pgai-mon: it takes no --instance or --project.");
+      process.exitCode = 1;
+      return;
+    }
+    const timeoutS = opts.timeout ? parseDurationSeconds(opts.timeout) : 120;
+    if (timeoutS === null || timeoutS < 1) {
+      console.error(`Invalid --timeout ${opts.timeout}: expected a duration like 60s or 2m.`);
+      process.exitCode = 1;
+      return;
+    }
+    // The project around the working directory, else the default install's.
+    const projectDir = healthProjectDir();
+    const token = readEnvValue(projectDir, PGAI_MON_TOKEN_KEY);
+    if (!token) {
+      console.error(`No PGAI_MON_TOKEN in ${path.join(projectDir, ".env")}: is this a monitoring install? ('postgresai mon local-install' writes it)`);
+      process.exitCode = 1;
+      return;
+    }
+    const result = await runLocalSql(process.env.PGAI_MON_URL || PGAI_MON_URL, token, query, timeoutS * 1000);
+    console.log(opts.json ? JSON.stringify(result, null, 2) : renderSql(result));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+}
+
 withOrgOptions(mon.command("sql"))
   .description("run a read-only SQL query on a monitoring instance's own metric store (pgai-mon)")
   .argument("<query>", "one read-only SQL statement over pgai-mon's views (see its /schema)")
@@ -7312,11 +7409,17 @@ withOrgOptions(mon.command("sql"))
   .option("--project <id|alias>", "the project's monitoring instance, by project id, alias or name; not with --instance")
   .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
   .option("--json", "output the raw result payload")
+  .option("--local", "query this box's pgai-mon directly (127.0.0.1:8765, token from the install's .env); no API key needed")
   .addHelpText("after", `
 Example:
   pgai mon sql --project my-db "select metric, count(*) from series group by 1 order by 2 desc limit 10"
+  pgai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"
 `)
   .action(async (query: string, opts: SqlOptions) => {
+    if (opts.local) {
+      await runMonSqlLocal(query, opts);
+      return;
+    }
     // The job id once there is one, so an error before the slow-answer line
     // still names the job (postgresai!479 REV).
     let queuedJobId: string | null = null;
@@ -7326,6 +7429,7 @@ Example:
       const { apiKey } = getConfig(rootOpts);
       if (!apiKey) {
         console.error("API key is required. Run 'pgai auth' first or set --api-key.");
+        console.error("On the monitoring box itself, 'pgai mon sql --local' queries pgai-mon directly without one.");
         process.exitCode = 1;
         return;
       }

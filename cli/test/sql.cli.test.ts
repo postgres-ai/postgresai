@@ -1,14 +1,15 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "path";
-import { mkdtempSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 
 // Async spawn, not spawnSync: the fake API below is an in-process Bun.serve,
 // and spawnSync would block the event loop that has to answer the CLI.
-async function runCli(args: string[], env: Record<string, string>) {
+async function runCli(args: string[], env: Record<string, string>, cwd?: string) {
   const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
   const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
   const proc = Bun.spawn([bunBin, cliPath, ...args], {
+    cwd,
     env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
@@ -207,5 +208,91 @@ describe("pgai promql", () => {
     } finally {
       api.stop();
     }
+  });
+});
+
+// --local: straight to this box's pgai-mon with the .env token (F5). A fake
+// pgai-mon on 127.0.0.1 stands in for the real one through PGAI_MON_URL.
+describe("pgai mon sql --local", () => {
+  const TOKEN = "tok-local-secret-1234";
+  function project(env = `PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=${TOKEN}\n`) {
+    const dir = mkdtempSync(resolve(tmpdir(), "sql-local-"));
+    writeFileSync(resolve(dir, "docker-compose.yml"), "services: {}\n");
+    if (env) writeFileSync(resolve(dir, ".env"), env);
+    return { ...isolatedEnv(), PGAI_PROJECT_DIR: dir, PGAI_API_KEY: "" };
+  }
+  function startFakeMon(reply: (body: string) => Response) {
+    const seen: { auth: string | null; path: string; body: string }[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const body = await req.text();
+        seen.push({ auth: req.headers.get("authorization"), path: new URL(req.url).pathname, body });
+        return reply(body);
+      },
+    });
+    return { seen, url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+  }
+  // Run from inside the project, as on the box.
+  const runLocal = (args: string[], env: Record<string, string>, extra: Record<string, string> = {}) =>
+    runCli(args, { ...env, ...extra }, env.PGAI_PROJECT_DIR);
+  const ROWS = { columns: ["metric", "n"], types: ["VARCHAR", "BIGINT"], rows: [["pgwatch_db_size_size_b", 12]], row_count: 1, truncated: false, elapsed_ms: 3 };
+
+  test("posts the query with the .env token and prints the platform path's table; no API key needed", async () => {
+    const mon = startFakeMon(() => Response.json(ROWS));
+    try {
+      const r = await runLocal(["mon", "sql", "--local", "select metric, count(*) n from series group by 1"], project(), { PGAI_MON_URL: mon.url });
+      expect(r.status).toBe(0);
+      expect(mon.seen).toEqual([{ auth: `Bearer ${TOKEN}`, path: "/sql", body: "select metric, count(*) n from series group by 1" }]);
+      expect(r.stdout).toContain("pgwatch_db_size_size_b  12");
+      expect(r.stdout).toContain("1 row");
+      expect(r.stdout + r.stderr).not.toContain(TOKEN);
+      const json = await runLocal(["mon", "sql", "--local", "--json", "select 1"], project(), { PGAI_MON_URL: mon.url });
+      expect(JSON.parse(json.stdout)).toEqual(ROWS);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("the store's error message is shown; a rejected token says so; neither prints the token", async () => {
+    const mon = startFakeMon((body) =>
+      body === "bad"
+        ? Response.json({ error: { type: "parse_error", message: "syntax error at or near bad" } }, { status: 400 })
+        : new Response("", { status: 401 }),
+    );
+    try {
+      const bad = await runLocal(["mon", "sql", "--local", "bad"], project(), { PGAI_MON_URL: mon.url });
+      expect(bad.status).toBe(1);
+      expect(bad.stderr).toContain("Query failed (HTTP 400): parse_error: syntax error at or near bad");
+      const denied = await runLocal(["mon", "sql", "--local", "select 1"], project(), { PGAI_MON_URL: mon.url });
+      expect(denied.status).toBe(1);
+      expect(denied.stderr).toContain("pgai-mon rejected the token (HTTP 401)");
+      expect(bad.stderr + denied.stderr + bad.stdout + denied.stdout).not.toContain(TOKEN);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("without a token in .env it stops before any request", async () => {
+    const mon = startFakeMon(() => Response.json(ROWS));
+    try {
+      const r = await runLocal(["mon", "sql", "--local", "select 1"], project("PGAI_TAG=1.0.0\n"), { PGAI_MON_URL: mon.url });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("No PGAI_MON_TOKEN in");
+      expect(mon.seen).toEqual([]);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("--local takes no --project; without --local and without an API key the error points to --local", async () => {
+    const both = await runLocal(["mon", "sql", "--local", "--project", "x", "select 1"], project());
+    expect(both.status).toBe(1);
+    expect(both.stderr).toContain("takes no --instance or --project");
+    const noKey = await runLocal(["mon", "sql", "select 1"], project());
+    expect(noKey.status).toBe(1);
+    expect(noKey.stderr).toContain("API key is required");
+    expect(noKey.stderr).toContain("pgai mon sql --local");
   });
 });

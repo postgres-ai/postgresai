@@ -79,11 +79,101 @@ export function stackSwitchNotice(volumes: string[]): string {
 }
 
 /**
- * The one line saying where metrics are kept when `PGAI_MON_STORE` is unset
- * (blank counts as unset), else null. Unset means the local volume: fine for a
- * laptop demo, while the product default is a bucket.
+ * The one line saying where metrics are kept. Unset (blank counts as unset)
+ * means the local volume: fine for a laptop demo, while the product default is
+ * a bucket. A set store is named without credentials or query string.
  */
-export function storeNotice(store: string | null | undefined): string | null {
-  if (store && store.trim()) return null;
+export function storeNotice(store: string | null | undefined): string {
+  if (store && store.trim()) return `Metrics history goes to ${redactStoreUrl(store.trim())}`;
   return "Metrics are stored on this machine (volume pgai_mon_data); set PGAI_MON_STORE=s3://<bucket>/<prefix> in .env to keep them in S3.";
+}
+
+/** A store URL without user info or query string. */
+export function redactStoreUrl(store: string): string {
+  const noQuery = store.split(/[?#]/)[0];
+  return noQuery.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
+}
+
+/** One container as `docker compose ps -a --format json` reports it. */
+export interface ComposePsEntry {
+  Service: string;
+  State: string;
+  Health?: string;
+  ExitCode?: number;
+}
+
+/** Services that run once and exit 0 when they did their job. */
+export const ONE_SHOT_SERVICES = ["config-init"];
+
+/**
+ * Parse `docker compose ps --format json`: a JSON array (compose < 2.21) or
+ * one JSON object per line. Lines that are not JSON objects are skipped.
+ */
+export function parseComposePs(out: string): ComposePsEntry[] {
+  const text = out.trim();
+  if (!text) return [];
+  const keep = (v: unknown): v is ComposePsEntry =>
+    !!v && typeof v === "object" && typeof (v as ComposePsEntry).Service === "string";
+  if (text.startsWith("[")) {
+    try {
+      const arr = JSON.parse(text);
+      return Array.isArray(arr) ? arr.filter(keep) : [];
+    } catch {
+      return [];
+    }
+  }
+  const entries: ComposePsEntry[] = [];
+  for (const line of text.split("\n")) {
+    try {
+      const v = JSON.parse(line);
+      if (keep(v)) entries.push(v);
+    } catch {
+      // not JSON: skip
+    }
+  }
+  return entries;
+}
+
+/**
+ * The expected services that are not running and healthy, as
+ * "<service>: <state>" (missing, created, exited (1), restarting, unhealthy,
+ * starting, ...). Empty means the whole stack is up. A one-shot service is
+ * fine once it exited 0, or when its container is gone.
+ */
+export function stackProblems(expected: string[], ps: ComposePsEntry[]): string[] {
+  const problems: string[] = [];
+  for (const service of expected) {
+    const entries = ps.filter((e) => e.Service === service);
+    if (entries.length === 0) {
+      // A one-shot removed after its run (`rm -f -s config-init`) did its job.
+      if (!ONE_SHOT_SERVICES.includes(service)) problems.push(`${service}: missing`);
+      continue;
+    }
+    for (const e of entries) {
+      const state = (e.State || "").toLowerCase();
+      const health = (e.Health || "").toLowerCase();
+      if (ONE_SHOT_SERVICES.includes(service)) {
+        if (state === "exited" && (e.ExitCode ?? 0) === 0) continue;
+        if (state === "running") continue;
+      } else if (state === "running" && (health === "" || health === "healthy")) {
+        continue;
+      }
+      const why = state === "running" ? health : state === "exited" ? `exited (${e.ExitCode ?? "?"})` : state || "unknown";
+      problems.push(`${service}: ${why}`);
+    }
+  }
+  return problems;
+}
+
+/** Services whose containers failed: unhealthy, restarting, or exited non-zero. */
+export function failedServices(ps: ComposePsEntry[]): string[] {
+  const failed = new Set<string>();
+  for (const e of ps) {
+    const state = (e.State || "").toLowerCase();
+    const health = (e.Health || "").toLowerCase();
+    if (health === "unhealthy" || state === "restarting" || state === "dead" || (state === "exited" && (e.ExitCode ?? 0) !== 0)) {
+      failed.add(e.Service);
+    }
+  }
+  return [...failed];
 }
