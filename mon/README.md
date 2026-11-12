@@ -107,6 +107,17 @@ forces it). A writer whose commit finds another owner exits with code 4. `file:/
 single-host bucket (tests, dev). See `src/bucket.rs`; `/health` shows the write path under
 `s3_write`.
 
+Operator facts for an object store:
+
+- Worst-case loss when the machine dies (S3 healthy): the data acknowledged in the last
+  `upload_interval_s` plus one upload round, about 300 s + 1-3 s with the defaults. A process
+  crash with the local disk intact loses nothing. During an S3 outage data stays on the local
+  disk and the bound grows with the outage.
+- Local disk: plan about 3 GB. The store files take about 200-250 MB for a store of ~76 M
+  samples/day with `store.s3.keep_local_days: 2` (about 100 MB with 0, which works: jobs fetch
+  what they need); most of the rest is the reader's local copy of the small kinds (logs history),
+  capped by `http.s3.mirror_mb` (default 2048). Lower that cap for a smaller disk.
+
 ## Tests
 
 ```bash

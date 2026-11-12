@@ -875,9 +875,17 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         })?;
     }
 
+    let final_tx = tx.clone();
     let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text);
-    // the final flush is done: commit it, so a clean stop loses nothing
+    // Stop order: serve_loop has stopped HTTP, flushed, and dropped its runtime (the collector
+    // manager and its tasks with it). Flush once more what they sent meanwhile, then commit,
+    // so a clean stop leaves nothing flushed and not uploaded (log tailers resume from the
+    // committed offsets).
     if let Some(b) = &bucket {
+        let (a, r) = tokio::sync::oneshot::channel();
+        if final_tx.blocking_send(Msg::Flush(Some(a))).is_ok() {
+            let _ = r.blocking_recv();
+        }
         if let Err(e) = b.sync(&shared, None) {
             eprintln!("bucket: final upload failed (data stays in {}): {e:#}", b.local.display());
         }
