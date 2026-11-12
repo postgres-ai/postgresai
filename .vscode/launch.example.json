@@ -7,34 +7,18 @@
       "request": "launch",
       "module": "reporter.postgres_reports",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}",
+        "PGAI_MON_TOKEN": "${env:PGAI_MON_TOKEN}"
       },
       "args": [
-        "--prometheus-url",
-        "http://127.0.0.1:59090",
-        "--postgres-sink-url",
-        "postgresql://pgwatch@127.0.0.1:55433/measurements",
+        "--mon-url",
+        "http://127.0.0.1:8765",
         "--no-upload",
         "--output",
         "-"
       ],
       "console": "integratedTerminal",
       "justMyCode": true
-    },
-    {
-      "name": "Attach (Flask in Docker: debugpy 5678)",
-      "type": "debugpy",
-      "request": "attach",
-      "connect": { "host": "127.0.0.1", "port": 5678 },
-      "pathMappings": [
-        {
-          "localRoot": "${workspaceFolder}/monitoring_flask_backend",
-          "remoteRoot": "/app"
-        }
-      ],
-      "justMyCode": true
     }
   ]
 }
-
-

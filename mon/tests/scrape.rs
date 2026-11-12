@@ -95,7 +95,6 @@ fn files_cfg(dir: &std::path::Path) -> ScrapeCfg {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supabase_relay_with_the_cli_scrape_file() {
-    // the exposition of cli/test/supabase-scrape.integration.test.ts
     let exposition = fixture("supabase_metrics.prom")
         + "go_goroutines 7\n"
         + "node_time_seconds{supabase_project_ref=\"abcdefghijklmnopqrst\",supabase_identifier=\"abcdefghijklmnopqrst\",service_type=\"db\"} 1.7907312e+09\n"

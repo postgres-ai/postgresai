@@ -134,6 +134,23 @@ else
 fi
 
 
+section "3b. pgai-mon Tests (Rust)"
+
+if command -v cargo &>/dev/null; then
+    cd "$PROJECT_ROOT/mon"
+
+    if cargo test --no-fail-fast --quiet 2>/dev/null; then
+        pass "pgai-mon tests pass"
+    else
+        fail "pgai-mon tests failed"
+    fi
+
+    cd "$PROJECT_ROOT"
+else
+    warn "cargo not available — skipping pgai-mon tests"
+fi
+
+
 section "4. CLI Build"
 
 if command -v bun &>/dev/null; then
