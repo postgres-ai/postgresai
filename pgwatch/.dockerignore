@@ -1,2 +1,3 @@
 *
 !Dockerfile
+!certs/rds-global-bundle.pem
