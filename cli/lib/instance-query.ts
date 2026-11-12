@@ -1,41 +1,41 @@
 /**
- * `pgai promql` — run a PromQL query on a monitoring instance's own metric
- * store, over the instance job channel.
+ * `pgai sql` — run a read-only SQL query on a monitoring instance's own metric
+ * store (pgai-mon), over the instance job channel.
  *
  * The platform never connects to the instance: the query is enqueued as a job,
- * the box polls for it, runs it against its local store and submits the result.
- * So the first answer cannot be faster than the box's poll interval, and this
- * polls rather than blocking a connection open.
+ * the box polls for it, runs it against its local pgai-mon (`POST /sql`) and
+ * submits the result. So the first answer cannot be faster than the box's poll
+ * interval, and this polls rather than blocking a connection open.
  *
- * Issue: https://gitlab.com/postgres-ai/postgresai/-/issues/378
- * Platform half: https://gitlab.com/postgres-ai/platform-all/-/merge_requests/809
- * (v1.instance_query_enqueue / v1.instance_query_result).
+ * Platform half: v1.instance_query_enqueue / v1.instance_query_result, with
+ * the job kind `sql`.
  */
 
 import { asyncPollDelayMs, resolveBaseUrls, SLOW_ANSWER_MS } from "./util";
 import { orgScopeHeaders, getActiveOrgScope } from "./org-scope";
 import { listProjects, isNumericProjectRef } from "./joe";
 
-export type PromQLKind = "promql_instant" | "promql_range";
+/** The job kind for a SQL query; the box runs it through pgai-mon's `POST /sql`. */
+export const SQL_JOB_KIND = "sql";
 
-export type PromQLSample = [number, string];
-
-export interface PromQLSeries {
-  metric: Record<string, string>;
-  value?: PromQLSample;
-  values?: PromQLSample[];
+/**
+ * What the box submits for a `sql` job: pgai-mon's `/sql` reply in its row
+ * format, rows cut to the job channel's byte budget and `truncated` set when
+ * they were.
+ */
+export interface SqlPayload {
+  columns: string[];
+  types?: string[];
+  rows: unknown[][];
+  row_count?: number;
+  truncated: boolean;
+  elapsed_ms?: number;
 }
 
-export interface PromQLPayload {
-  resultType: "vector" | "matrix" | string;
-  result: PromQLSeries[];
-  stats: { truncated: boolean };
-}
-
-export interface PromQLJobResult {
+export interface QueryJobResult {
   status: string;
   outcome: string | null;
-  result: PromQLPayload | null;
+  result: SqlPayload | null;
   error: string | null;
   failure_class: string | null;
   started_at: string | null;
@@ -44,12 +44,7 @@ export interface PromQLJobResult {
 
 export interface EnqueueArgs {
   instanceId: string;
-  kind: PromQLKind;
   query: string;
-  at?: string;
-  start?: string;
-  end?: string;
-  stepS?: number;
 }
 
 /** A PostgREST error body, which carries the real reason in `message`/`details`. */
@@ -178,26 +173,19 @@ export async function resolveMonitoringInstanceId(params: ResolveMonitoringInsta
   return ids[0];
 }
 
-/** Enqueue one query. */
+/** Enqueue one SQL query. */
 export async function enqueueQuery(
   apiKey: string,
   args: EnqueueArgs,
   opts?: { apiBaseUrl?: string },
 ): Promise<EnqueuedQuery> {
-  // Only the keys this kind uses are sent: PostgREST resolves an RPC by the
+  // Only the keys a `sql` job uses are sent: PostgREST resolves an RPC by the
   // exact set of argument names in the body, so a stray null would not match.
   const body: Record<string, unknown> = {
     p_instance_id: args.instanceId,
-    p_kind: args.kind,
+    p_kind: SQL_JOB_KIND,
     p_query: args.query,
   };
-  if (args.kind === "promql_range") {
-    body.p_start = args.start;
-    body.p_end = args.end;
-    body.p_step_s = args.stepS;
-  } else if (args.at) {
-    body.p_at = args.at;
-  }
 
   const reply = (await callRpc("instance_query_enqueue", apiKey, body, opts)) as
     | { job_id?: string; first_answer_estimate_s?: unknown }
@@ -227,9 +215,9 @@ export async function readQueryResult(
   apiKey: string,
   jobId: string,
   opts?: { apiBaseUrl?: string },
-): Promise<PromQLJobResult> {
+): Promise<QueryJobResult> {
   const reply = (await callRpc("instance_query_result", apiKey, { p_job_id: jobId }, opts)) as
-    | PromQLJobResult
+    | QueryJobResult
     | null;
   if (!reply || typeof reply.status !== "string") {
     throw new Error("instance_query_result returned an unexpected reply");
@@ -270,7 +258,7 @@ export async function awaitQueryResult(
     // caller says why it is waiting only when there is a wait to explain.
     onSlow?: () => void;
   },
-): Promise<PromQLJobResult> {
+): Promise<QueryJobResult> {
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const started = now();
@@ -291,66 +279,35 @@ export async function awaitQueryResult(
   }
 }
 
-/** The label set as Prometheus prints it: `name{a="1", b="2"}`. */
-export function formatMetric(metric: Record<string, string>): string {
-  const name = metric.__name__ ?? "";
-  const labels = Object.entries(metric)
-    .filter(([k]) => k !== "__name__")
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}="${v}"`);
-  if (!labels.length) return name || "{}";
-  return `${name}{${labels.join(", ")}}`;
-}
-
 function pad(s: string, width: number): string {
   return s.length >= width ? s : s + " ".repeat(width - s.length);
 }
 
+/** One cell as text: SQL NULL as "NULL", objects and arrays as JSON. */
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
 /**
- * Render a payload as a table.
- *
- * A matrix prints the first and last sample per series rather than every point:
- * a day at one-minute step is 1440 rows per series and would bury the answer.
- * `--json` is there for the whole thing, and the summary line says so.
+ * Render a `sql` job's result as a table, with the row count under it.
+ * `--json` prints the payload as the box sent it.
  */
-export function renderPromQL(payload: PromQLPayload): string {
+export function renderSql(payload: SqlPayload): string {
   const lines: string[] = [];
-
-  if (!payload.result.length) {
-    lines.push("Empty result set.");
-  } else if (payload.resultType === "vector") {
-    const rows = payload.result.map((s) => [formatMetric(s.metric), s.value ? s.value[1] : ""]);
-    const w = Math.max(6, ...rows.map((r) => r[0].length));
-    lines.push(`${pad("SERIES", w)}  VALUE`);
-    for (const [m, v] of rows) lines.push(`${pad(m, w)}  ${v}`);
+  const rows = payload.rows.map((r) => r.map(cellText));
+  if (!rows.length) {
+    lines.push(payload.columns.length ? payload.columns.join("  ") : "", "Empty result set.");
   } else {
-    const rows = payload.result.map((s) => {
-      const vs = s.values ?? [];
-      const first = vs.length ? vs[0][1] : "";
-      const last = vs.length ? vs[vs.length - 1][1] : "";
-      return [formatMetric(s.metric), String(vs.length), first, last];
-    });
-    const w = Math.max(6, ...rows.map((r) => r[0].length));
-    lines.push(`${pad("SERIES", w)}  POINTS  FIRST  LAST`);
-    for (const [m, n, f, l] of rows) lines.push(`${pad(m, w)}  ${pad(n, 6)}  ${f}  ${l}`);
-    if (rows.length) lines.push("(first and last sample per series; use --json for every point)");
+    const widths = payload.columns.map((c, i) => Math.max(c.length, ...rows.map((r) => (r[i] ?? "").length)));
+    lines.push(payload.columns.map((c, i) => pad(c, widths[i])).join("  ").trimEnd());
+    for (const r of rows) lines.push(r.map((v, i) => pad(v, widths[i] ?? 0)).join("  ").trimEnd());
   }
-
-  // Counted here rather than transmitted: both are derivable from the payload,
-  // and sending them was the only reason the box had to maintain running totals.
-  const series = payload.result.length;
-  const points = payload.result.reduce(
-    (n, s) => n + (s.values?.length ?? 0) + (s.value ? 1 : 0),
-    0,
-  );
-  lines.push(`\n${series} series, ${points} points`);
-  if (payload.stats.truncated) {
-    // Never let a partial answer look complete, and say what to do about it:
-    // with no point cap, truncation is a normal outcome on a wide range query.
-    lines.push(
-      "⚠ TRUNCATED: too large to return whole. Raise --step, narrow the time range, " +
-        "or select fewer series.",
-    );
+  lines.push(`\n${rows.length} ${rows.length === 1 ? "row" : "rows"}`);
+  if (payload.truncated) {
+    // Never let a partial answer look complete, and say what to do about it.
+    lines.push("⚠ TRUNCATED: too large to return whole. Select fewer columns or rows (LIMIT, a narrower time range).");
   }
-  return lines.join("\n");
+  return lines.filter((l, i) => !(i === 0 && l === "")).join("\n");
 }

@@ -51,14 +51,14 @@ import {
   enqueueQuery,
   awaitQueryResult,
   isTerminal,
-  renderPromQL,
+  renderSql,
   resolveMonitoringInstanceId,
-  type EnqueueArgs,
-} from "../lib/promql";
+} from "../lib/instance-query";
 import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { HOST_METRICS_VERIFY_SCRIPT, hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, scrapeRevision, SUPABASE_JOB, writeScrapeFile } from "../lib/host-metrics";
+import { composeDefinesService, composeProjectName, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, PGAI_MON_SERVICE, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
@@ -150,34 +150,30 @@ type EnvKeyDefault = {
 };
 
 /**
- * VictoriaMetrics admin-endpoint keys (#359). Listed once: they are a required
- * env key, a `mon local-install`-managed key, and the set that must be treated
- * as missing when present-but-empty.
+ * The bearer token pgai-mon demands on every route but its liveness probe.
+ * Grafana, the reporter and instance-jobs send it; compose passes it to each
+ * from `.env`. Hex, so it survives any quoting a consumer applies.
  */
-const VM_ADMIN_AUTH_KEYS = [
+const PGAI_MON_TOKEN_KEY = "PGAI_MON_TOKEN";
+
+const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
+  { key: "REPLICATOR_PASSWORD", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.13" },
+  { key: PGAI_MON_TOKEN_KEY, defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.18" },
+];
+
+/**
+ * `.env` keys of the old pgwatch + VictoriaMetrics stack: basic auth for the
+ * metric store and its admin-endpoint keys. Nothing in the new stack reads
+ * them. `mon local-install` drops them when it rewrites `.env`; the additive
+ * `mon update` path leaves them where they are.
+ */
+const OLD_STACK_ENV_KEYS = [
+  "VM_AUTH_USERNAME",
+  "VM_AUTH_PASSWORD",
   "VM_DELETE_AUTH_KEY",
   "VM_SNAPSHOT_AUTH_KEY",
   "VM_FORCE_MERGE_AUTH_KEY",
   "VM_PPROF_AUTH_KEY",
-];
-
-const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
-  { key: "REPLICATOR_PASSWORD", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.13" },
-  { key: "VM_AUTH_USERNAME", defaultValue: () => "vmauth", introducedIn: "0.15" },
-  { key: "VM_AUTH_PASSWORD", defaultValue: () => crypto.randomBytes(18).toString("base64"), introducedIn: "0.15" },
-  // VictoriaMetrics admin-endpoint keys (#359). Hex, because they are spliced
-  // into the sink-prometheus shell command line. Held by nobody: no collector,
-  // datasource or reporter reads them, so an operator who wants to call
-  // /api/v1/admin/tsdb/* reads the key out of .env on the box.
-  { key: "VM_DELETE_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
-  { key: "VM_SNAPSHOT_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
-  { key: "VM_FORCE_MERGE_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
-  // Part of the fix, not extra hardening: /debug/pprof/* is reachable with the
-  // credentials the Grafana proxy already holds, and heap/goroutine dumps are
-  // both an introspection leak and a DoS lever. (It also used to expose the
-  // other keys via /debug/pprof/cmdline back when they were flag values; the
-  // file:// sourcing in docker-compose.yml closed that half.)
-  { key: "VM_PPROF_AUTH_KEY", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.17" },
 ];
 
 /**
@@ -190,7 +186,7 @@ const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
  *
  * Used by `mon local-install`, `mon update`, and `mon update-config` so the
  * in-place upgrade path picks up newly-required env vars without surprising
- * the user with a silent boot failure on `sink-prometheus` / `grafana`.
+ * the user with a silent boot failure on `pgai-mon` / `grafana`.
  */
 function ensureRequiredEnvVars(projectDir: string): string[] {
   const envFile = path.resolve(projectDir, ".env");
@@ -210,19 +206,16 @@ function ensureRequiredEnvVars(projectDir: string): string[] {
       continue;
     }
 
-    // A present-but-empty admin key is the vulnerability itself, not a
-    // configured value: `cp .env.example .env` ships them all blank (#359).
-    // Fill it in place rather than appending a second line for the same key.
-    // Only these keys: a blank VM_AUTH_PASSWORD already fails the stack, since
-    // grafana declares it `${VM_AUTH_PASSWORD:?...}` and compose rejects an
-    // empty value, so it cannot silently leave basic auth off.
+    // A present-but-empty token is not a configured value: pgai-mon refuses
+    // to start without one, and `cp .env.example .env` ships it blank. Fill it
+    // in place rather than appending a second line for the same key.
     //
     // `KEY=""` and `KEY=''` count as blank - compose interpolates both to the
     // empty string. The `g` flag matters because compose reads the LAST
     // assignment of a duplicated key, so filling only the first would leave the
     // effective value empty while we reported the key as fixed. The replacement
     // is a function so a `$&` in a future default cannot be re-substituted.
-    if (VM_ADMIN_AUTH_KEYS.includes(spec.key)) {
+    if (spec.key === PGAI_MON_TOKEN_KEY) {
       const blank = new RegExp(
         `^([ \t]*(?:export[ \t]+)?${spec.key}=)[ \t]*(?:""|'')?[ \t]*\r?$`,
         "gm",
@@ -304,20 +297,16 @@ function writeEnvFile(envFile: string, content: string): void {
  * Env keys that `mon local-install` owns: it rewrites them on every run.
  * Everything else found in an existing `.env` is operator-owned (set by
  * ansible or by hand) and must survive the rewrite — silently dropping keys
- * such as VM_RETENTION_PERIOD / QUERYID_RETENTION_HOURS reverted customers to
- * the short compose defaults, which deleted their metrics weeks later.
+ * such as QUERYID_RETENTION_HOURS reverted customers to the short compose
+ * defaults, which deleted their metrics weeks later. The old stack's keys
+ * (OLD_STACK_ENV_KEYS) are dropped rather than preserved.
  */
 const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   "PGAI_TAG",
   "PGAI_REGISTRY",
   "GF_SECURITY_ADMIN_PASSWORD",
   "REPLICATOR_PASSWORD",
-  "VM_AUTH_USERNAME",
-  "VM_AUTH_PASSWORD",
-  "VM_DELETE_AUTH_KEY",
-  "VM_SNAPSHOT_AUTH_KEY",
-  "VM_FORCE_MERGE_AUTH_KEY",
-  "VM_PPROF_AUTH_KEY",
+  PGAI_MON_TOKEN_KEY,
   // Owned here so the managed block writes it once, rather than preserving a
   // stale copy alongside the new one. postgresai#366.
   "PGAI_INSTANCE_ID",
@@ -357,22 +346,14 @@ const PRESTARTED_MARKER = ".prestarted";
 const PRESTARTED_DONE_MARKER = ".prestarted.done";
 
 /**
- * What `--prestart` starts: storage, Grafana and self-monitoring. Not the
- * services that read the target (pgwatch, the reporter): they must start with
- * the deploy's sources, or they keep the empty boot-time list.
+ * What `--prestart` starts: pgai-mon and Grafana. pgai-mon reloads
+ * instances.yml when it changes, so it can start with an empty target list.
+ * Not the reporter: it reads the target at start (TARGET_READER_SERVICES).
  */
-const PRESTART_SERVICES = [
-  "sink-postgres",
-  "sink-prometheus",
-  "grafana",
-  "monitoring_flask_backend",
-  "self-cadvisor",
-  "self-node-exporter",
-  "self-postgres-exporter",
-];
+const PRESTART_SERVICES = [PGAI_MON_SERVICE, "grafana"];
 
 /** Containers that read the target list at start, recreated when they already run. */
-const TARGET_READER_SERVICES = ["pgwatch-postgres", "pgwatch-prometheus", "postgres-reports"];
+const TARGET_READER_SERVICES = ["postgres-reports"];
 
 /**
  * The COMPOSE_PROFILES value to write, given what `.env` already has and what
@@ -503,8 +484,8 @@ function buildLocalInstallEnv(
   const readRaw = (key: string): string | null => {
     // Read the way compose does: tolerate `export `/indentation and take the
     // LAST assignment. A value that reduces to "" (including `KEY=""`) counts
-    // as absent, so a blank admin key is minted rather than carried forward
-    // (#359) - `ensureRequiredEnvVars` treats it the same way. Not
+    // as absent, so a blank token is minted rather than carried forward -
+    // `ensureRequiredEnvVars` treats it the same way. Not
     // `parseEnvValue`: the value is written back to the new .env as it was
     // (quotes and an inline comment included), so compose reads the new file
     // as it read the old one.
@@ -526,12 +507,11 @@ function buildLocalInstallEnv(
   envLines.push(
     `REPLICATOR_PASSWORD=${replicatorPassword || crypto.randomBytes(32).toString("hex")}`,
   );
-  const vmAuthUsername = readRaw("VM_AUTH_USERNAME");
-  envLines.push(`VM_AUTH_USERNAME=${vmAuthUsername ? stripMatchingQuotes(vmAuthUsername) : "vmauth"}`);
-  const vmAuthPassword = readRaw("VM_AUTH_PASSWORD");
-  envLines.push(
-    `VM_AUTH_PASSWORD=${vmAuthPassword ? stripMatchingQuotes(vmAuthPassword) : crypto.randomBytes(18).toString("base64")}`,
-  );
+  // pgai-mon's bearer token: carried over when present, minted when not.
+  // Rotating it on every re-install would force every consumer to be
+  // recreated for nothing.
+  const monToken = readRaw(PGAI_MON_TOKEN_KEY);
+  envLines.push(`${PGAI_MON_TOKEN_KEY}=${monToken ? stripMatchingQuotes(monToken) : crypto.randomBytes(32).toString("hex")}`);
   // The monitoring instance id. It reaches this process as --instance-id or
   // PGAI_INSTANCE_ID and was written nowhere on the box, so a service started
   // by compose could not see it: the systemd unit the AWS install writes is a
@@ -574,16 +554,6 @@ function buildLocalInstallEnv(
   );
   if (composeProfiles) envLines.push(`COMPOSE_PROFILES=${composeProfiles}`);
 
-  // VictoriaMetrics admin-endpoint keys (#359): carried over when present,
-  // minted when not. Rotating them on every re-install would be harmless but
-  // pointless, and would invalidate a key an operator noted down.
-  for (const key of VM_ADMIN_AUTH_KEYS) {
-    const existing = readRaw(key);
-    envLines.push(
-      `${key}=${existing ? stripMatchingQuotes(existing) : crypto.randomBytes(32).toString("hex")}`,
-    );
-  }
-
   // Preserve everything this command does not own, verbatim and in order.
   const preservedKeys: string[] = [];
   for (const line of existingEnv.split(/\r?\n/)) {
@@ -592,7 +562,7 @@ function buildLocalInstallEnv(
     // re-appended after the minted one - and compose reads the last assignment.
     const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/);
     if (m) {
-      if (LOCAL_INSTALL_MANAGED_ENV_KEYS.includes(m[1])) continue;
+      if (LOCAL_INSTALL_MANAGED_ENV_KEYS.includes(m[1]) || OLD_STACK_ENV_KEYS.includes(m[1])) continue;
       preservedKeys.push(m[1]);
     }
     envLines.push(line);
@@ -1140,8 +1110,9 @@ function readDeployedTag(projectDir: string): string | null {
  * Requires:
  *   - non-empty, and not an obvious HTML document (<!DOCTYPE / <html ...);
  *   - parseable YAML resolving to an object;
- *   - a `services` map that contains the keystone `sink-prometheus` service
- *     (the very service whose VM_AUTH wiring this refresh exists to deliver).
+ *   - a `services` map that contains the keystone `pgai-mon` service. A
+ *     compose without it is the old stack's (or not ours), and installing it
+ *     would undo the switch this refresh exists to deliver.
  */
 function isValidComposeYaml(text: string): boolean {
   const trimmed = text.trim();
@@ -1158,9 +1129,7 @@ function isValidComposeYaml(text: string): boolean {
   if (!doc || typeof doc !== "object") return false;
   const services = (doc as { services?: unknown }).services;
   if (!services || typeof services !== "object") return false;
-  // The keystone service must be present — this is what carries the VM_AUTH_*
-  // wiring that the whole refresh exists to deliver.
-  return Object.prototype.hasOwnProperty.call(services, "sink-prometheus");
+  return Object.prototype.hasOwnProperty.call(services, PGAI_MON_SERVICE);
 }
 
 /**
@@ -1207,13 +1176,14 @@ function composeContentEqual(a: string, b: string): boolean {
  * Refresh the bundled, CLI-owned docker-compose.yml for NON-GIT installs when it
  * is stale relative to the target stack version (the CLI's own pkg.version).
  *
- * Why this exists: docker-compose.yml is a version-coupled static asset. 0.15
- * added VM basic auth, wiring VM_AUTH_* into the sink-prometheus (VictoriaMetrics)
- * service and the Grafana datasource. `mon update` already refreshes the compose
- * for git checkouts via `git pull`, and green-field installs fetch it once via
+ * Why this exists: docker-compose.yml is a version-coupled static asset: the
+ * services, their wiring and their `.env` variables change with the stack
+ * version (the switch from pgwatch + VictoriaMetrics to pgai-mon replaced most
+ * of them). `mon update` already refreshes the compose for git checkouts via
+ * `git pull`, and green-field installs fetch it once via
  * ensureDefaultMonitoringProject(). But npx / global-npm upgrades are non-git and
- * only advance PGAI_TAG — leaving the OLD compose in place. That mismatch crashes
- * sink-prometheus (`missing "VM_AUTH_USERNAME" env var`) and blanks all dashboards.
+ * only advance PGAI_TAG — leaving the OLD compose in place, which then runs
+ * images of the new version against the old wiring.
  *
  * Contract:
  *   - No-op for git checkouts (.git present) — they refresh via `git pull`.
@@ -1253,7 +1223,7 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   // Same candidate refs as the green-field bootstrap — including the final
   // `main` fallback, so a non-git upgrade to a version whose tag is not (yet)
   // published still refreshes the compose instead of silently keeping a stale
-  // pre-0.15 one (the exact failure this function exists to prevent).
+  // one (the exact failure this function exists to prevent).
   const refs = composeRefCandidates();
 
   const fetched = await fetchTargetCompose(refs);
@@ -3117,22 +3087,6 @@ function isDockerRunning(): boolean {
  * because docker-compose V1 (<=1.29) is incompatible with modern Docker engines
  * (KeyError: 'ContainerConfig' on container recreation).
  */
-/**
- * Should `runCompose` append the macOS `--scale self-node-exporter=0` workaround?
- *
- * Only for a whole-stack `up`. self-node-exporter cannot mount the host root
- * filesystem on macOS, but `--scale` alongside an explicit service list makes
- * compose fail with "no such service: self-node-exporter", so a service-scoped
- * `up` must not get it - that broke `mon update` on macOS (#359).
- */
-export function shouldScaleOutNodeExporter(args: string[]): boolean {
-  const upIndex = args.indexOf("up");
-  if (upIndex === -1) return false;
-  // Any bare word after `up` is a service name. Every call site uses
-  // `--flag=value` form, so a lone `-` prefix is reliably a flag here.
-  return !args.slice(upIndex + 1).some((a) => !a.startsWith("-"));
-}
-
 function getComposeCmd(): string[] | null {
   const tryCmd = (cmd: string, args: string[]): boolean =>
     spawnSync(cmd, args, { stdio: "ignore", timeout: 5000, env: { ...process.env, PGAI_DB_URL: undefined } } as Parameters<typeof spawnSync>[2]).status === 0;
@@ -3142,13 +3096,21 @@ function getComposeCmd(): string[] | null {
 }
 
 /**
- * Check if monitoring containers are already running
+ * Check if monitoring containers are already running: this stack's, or the old
+ * pgwatch + VictoriaMetrics stack's (an install that has not been updated yet).
  */
 function checkRunningContainers(): { running: boolean; containers: string[] } {
   try {
     const result = spawnSync(
       "docker",
-      ["ps", "--filter", "name=grafana-with-datasources", "--filter", "name=pgwatch", "--format", "{{.Names}}"],
+      [
+        "ps",
+        "--filter", "name=grafana-with-datasources",
+        "--filter", `name=${PGAI_MON_SERVICE}`,
+        "--filter", "name=postgres-reports",
+        "--filter", "name=pgwatch",
+        "--format", "{{.Names}}",
+      ],
       { stdio: "pipe", encoding: "utf8", timeout: 5000 } as Parameters<typeof spawnSync>[2]
     );
 
@@ -3485,14 +3447,9 @@ function applyApiKey(projectDir: string, apiKey: string, opts?: CliOptions): boo
   return true;
 }
 
-interface PromQLOptions extends OrgOptions {
+interface SqlOptions extends OrgOptions {
   instance?: string;
   project?: string;
-  at?: string;
-  range?: boolean;
-  start?: string;
-  end?: string;
-  step?: string;
   timeout?: string;
   json?: boolean;
 }
@@ -3505,7 +3462,7 @@ interface PromQLOptions extends OrgOptions {
  * Used only as the fallback now -- when the platform sends an estimate, the
  * wait is sized from that instead.
  */
-const DEFAULT_PROMQL_TIMEOUT_S = 11 * 60;
+const DEFAULT_SQL_TIMEOUT_S = 11 * 60;
 
 /** "90s", "4m", "1h10m" — for telling a human how long they are waiting. */
 function formatSeconds(total: number): string {
@@ -3533,7 +3490,7 @@ function parseDurationSeconds(v: string): number | null {
 /**
  * The instance id this box was registered as, from `.pgwatch-config`.
  *
- * Makes `pgai promql` work with no flags when run on a monitoring box, which is
+ * Makes `pgai sql` work with no flags when run on a monitoring box, which is
  * where it is most useful. Returns null off-box rather than guessing.
  */
 function readInstanceIdFromProject(): string | null {
@@ -3739,26 +3696,22 @@ async function selfRegisterAndPersist(
 }
 
 /**
- * Regenerate pgwatch sources and recreate collectors so target changes take effect without `mon restart`.
+ * Make a target change take effect. pgai-mon watches instances.yml and reloads
+ * it by itself, so nothing is regenerated and no collector is restarted.
+ *
+ * The reporter runs once a day after its first run. A restart runs it again
+ * after its initial delay and readiness wait, so a new target gets its first
+ * report then, not the next day. Not on remove: discovery sees a removed node
+ * for 3 h more, so a run then would report it again. Only a RUNNING reporter
+ * is restarted: `compose restart` would start it on a stopped stack.
  */
-async function applyMonitoringTargetsConfig(restartReporter = false): Promise<number> {
-  console.log("Applying monitoring target configuration...");
-  const generateCode = await runCompose(["run", "--rm", "sources-generator"]);
-  if (generateCode !== 0) return generateCode;
-
-  console.log("Restarting pgwatch collectors to pick up target changes...");
-  const upCode = await runCompose(["up", "-d", "--force-recreate", "pgwatch-prometheus", "pgwatch-postgres"]);
-  if (upCode !== 0) return upCode;
-
-  // The reporter runs once a day after its first run. A restart runs it again
-  // after its initial delay and readiness wait, so a new target gets its first
-  // report then, not the next day. Not on remove: discovery sees a removed
-  // node for 3 h more, so a run then would report it again.
-  if (!restartReporter) return 0;
+async function applyMonitoringTargetsConfig(projectDir: string, restartReporter = false): Promise<void> {
+  console.log("✓ Saved; pgai-mon reloads instances.yml by itself");
+  if (!restartReporter) return;
+  if ((await composeServiceRunning(projectDir, "postgres-reports")) !== true) return;
   if ((await runCompose(["restart", "postgres-reports"])) !== 0) {
     console.error("⚠ Could not restart postgres-reports; the target's first report comes with its next daily run");
   }
-  return 0;
 }
 
 /**
@@ -3819,39 +3772,14 @@ async function runCompose(
     }
   }
 
-  // Load VM auth credentials from .env if not already set
-  const envFilePath = path.resolve(projectDir, ".env");
-  if (fs.existsSync(envFilePath)) {
-    try {
-      const envContent = fs.readFileSync(envFilePath, "utf8");
-      if (!env.VM_AUTH_USERNAME) {
-        const m = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
-        if (m) env.VM_AUTH_USERNAME = stripMatchingQuotes(m[1]);
-      }
-      if (!env.VM_AUTH_PASSWORD) {
-        const m = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
-        if (m) env.VM_AUTH_PASSWORD = stripMatchingQuotes(m[1]);
-      }
-    } catch (err) {
-      if (process.env.DEBUG) {
-        console.warn(`Warning: Could not read VM auth from .env: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
-
   // Compose reads its own variables (COMPOSE_PROFILES, ...) from the
   // environment in preference to `.env`, which is how a caller addresses a
   // service whose profile is no longer listed in the file. Applied last so it
   // wins over anything loaded above.
   if (extraEnv) Object.assign(env, extraEnv);
 
-  const finalArgs = [...args];
-  if (process.platform === "darwin" && shouldScaleOutNodeExporter(args)) {
-    finalArgs.push("--scale", "self-node-exporter=0");
-  }
-
   return new Promise<number>((resolve) => {
-    const child = spawn(cmd[0], [...cmd.slice(1), "-f", composeFile, ...finalArgs], {
+    const child = spawn(cmd[0], [...cmd.slice(1), "-f", composeFile, ...args], {
       stdio: "inherit",
       env: env,
       cwd: projectDir
@@ -3861,67 +3789,130 @@ async function runCompose(
   });
 }
 
-/**
- * Bring a running `sink-prometheus` in line with the compose file and `.env`.
- *
- * The admin keys live on the container command line, and `mon restart` is
- * `docker compose restart`, which re-runs the container as recorded - so an
- * upgrade that only restarts leaves the box exposed while reporting success
- * (#359). Driven by observed state, not by "did this run add a key", so a
- * failed attempt is retried next run. `--no-deps` is safe here precisely
- * because we only act on a running container: that proves `config-init`
- * already ran, and re-running it would re-seed a live-patched prometheus.yml.
- */
-async function applySinkPrometheusConfig(projectDir: string): Promise<boolean> {
-  const composeCmd = getComposeCmd();
-  if (!composeCmd) {
-    console.error("\n✗ docker compose not found, so the sink-prometheus config was not applied.");
-    return false;
-  }
-
-  let running: boolean;
+/** The project's docker-compose.yml as text, or null when it cannot be read. */
+function readComposeText(projectDir: string): string | null {
   try {
-    const { stdout } = await execFilePromise(
-      composeCmd[0],
-      [
-        ...composeCmd.slice(1),
-        "-f",
-        path.resolve(projectDir, "docker-compose.yml"),
-        "ps",
-        "-q",
-        "sink-prometheus",
-      ],
-      // Match runCompose: older compose versions resolved .env from the CWD.
-      { cwd: projectDir },
-    );
-    running = stdout.trim().length > 0;
-  } catch (error) {
-    // Distinguish "could not tell" from "not running": reporting a probe
-    // failure as a stopped stack would hide an unapplied security fix.
-    console.error("\n✗ Could not determine whether sink-prometheus is running.");
-    console.error("  The admin-endpoint keys may NOT be in effect. To apply them:");
-    console.error("  docker compose up -d --no-deps sink-prometheus");
-    if (process.env.DEBUG) {
-      console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+    return fs.readFileSync(path.resolve(projectDir, "docker-compose.yml"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** The old stack's volumes that exist in this project (all of them when docker cannot tell). */
+async function existingOldStackVolumes(projectDir: string): Promise<string[]> {
+  const project = composeProjectName(
+    path.basename(projectDir),
+    process.env.COMPOSE_PROJECT_NAME ?? readEnvValue(projectDir, "COMPOSE_PROJECT_NAME"),
+  );
+  const candidates = oldStackVolumeNames(project);
+  try {
+    const { stdout } = await execFilePromise("docker", ["volume", "ls", "-q"]);
+    const present = new Set(stdout.split(/\s+/).filter(Boolean));
+    return candidates.filter((v) => present.has(v));
+  } catch {
+    return candidates;
+  }
+}
+
+/**
+ * Switch an install whose compose file was the old stack's to pgai-mon, once
+ * the new compose file is in place. `oldCompose` is the old file's text; its
+ * containers are removed (removeOldStackContainers), their volumes stay. The
+ * new stack is started only when the old one
+ * was running: `mon stop && mon update` leaves a stopped box stopped. Prints
+ * what happened and how to remove the old volumes. False when a step failed.
+ */
+async function switchFromOldStack(
+  projectDir: string,
+  oldCompose: string,
+  oldRunning: boolean | null,
+): Promise<boolean> {
+  if (!(await removeOldStackContainers(projectDir, oldCompose))) return false;
+
+  let ok = true;
+  if (oldRunning === true) {
+    console.log("\nStarting pgai-mon and the rest of the stack...");
+    if ((await runCompose(["up", "-d", "--remove-orphans"])) !== 0) {
+      console.error("✗ The new stack did not start. See the error above, then run 'postgresai mon start'.");
+      ok = false;
     }
+  } else {
+    console.log(oldRunning === false
+      ? "\n(the old stack was not running, so the new one was not started: 'postgresai mon start' starts it)"
+      : "\n(could not tell whether the old stack was running, so the new one was not started: run 'postgresai mon start')");
+  }
+  console.log(`\n${stackSwitchNotice(await existingOldStackVolumes(projectDir))}`);
+  const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
+  if (store) console.log(store);
+  return ok;
+}
+
+/**
+ * Remove the old stack's containers through its own compose text (`down`
+ * without `-v`, every old profile active), so nothing depends on the new file
+ * naming the project the same way, and their volumes stay. False, having said
+ * why, when that failed.
+ */
+async function removeOldStackContainers(projectDir: string, oldCompose: string): Promise<boolean> {
+  const cmd = getComposeCmd();
+  if (!cmd) {
+    console.error("✗ docker compose not found: the old stack's containers were not removed");
     return false;
   }
-
-  if (!running) {
-    console.log("\n(sink-prometheus is not running - the new config applies when you start the stack)");
-    return true;
+  console.log("\nRemoving the old stack's containers (pgwatch, VictoriaMetrics; their volumes are kept)...");
+  // In the project directory, so compose names the project as it did when the
+  // old stack ran, and reads the same .env.
+  const oldFile = path.resolve(projectDir, `.docker-compose.old-stack.${process.pid}.yml`);
+  fs.writeFileSync(oldFile, oldCompose, { encoding: "utf8", mode: 0o600 });
+  let downCode: number;
+  try {
+    const down = spawnSync(cmd[0], [...cmd.slice(1), "-f", oldFile, "down", "--remove-orphans"], {
+      cwd: projectDir,
+      // The old file declares Grafana's VM_AUTH_* as required, and `down`
+      // interpolates it too; `mon local-install` has dropped them from .env
+      // by now. `down` uses no value, so any will do.
+      env: {
+        ...process.env,
+        COMPOSE_PROFILES: OLD_STACK_PROFILES.join(","),
+        VM_AUTH_USERNAME: "unused",
+        VM_AUTH_PASSWORD: "unused",
+      },
+      stdio: "inherit",
+    });
+    downCode = down.status ?? 1;
+  } finally {
+    fs.rmSync(oldFile, { force: true });
   }
-
-  console.log("\nApplying sink-prometheus config (VictoriaMetrics admin keys, #359)...");
-  const code = await runCompose(["up", "-d", "--no-deps", "sink-prometheus"]);
-  if (code !== 0) {
-    console.error("✗ Could not apply the sink-prometheus config.");
-    console.error("  The admin-endpoint keys are NOT in effect until you run:");
-    console.error("  docker compose up -d --no-deps sink-prometheus");
+  if (downCode !== 0) {
+    console.error("✗ Could not remove the old stack's containers. Remove them, then start the stack:");
+    console.error("  docker compose -f <the old compose file> down --remove-orphans");
     return false;
   }
-  console.log("✓ sink-prometheus is running the current config");
   return true;
+}
+
+/**
+ * Refresh docker-compose.yml with `refresh`, noting whether it was the old
+ * stack's before. `switchFrom` is the old file's text when this refresh
+ * replaced the old stack's compose with pgai-mon's; `ok` is false (having said
+ * why) when the file is still the old stack's, which this CLI cannot drive.
+ */
+async function refreshStackCompose(
+  projectDir: string,
+  refresh: () => Promise<unknown>,
+): Promise<{ ok: boolean; switchFrom: string | null; oldRunning: boolean | null }> {
+  const before = readComposeText(projectDir);
+  const wasOld = composeDefinesService(before, OLD_STACK_KEYSTONE);
+  // Asked now: once the file is replaced, compose no longer knows the service.
+  const oldRunning = wasOld ? await composeServiceRunning(projectDir, OLD_STACK_KEYSTONE) : null;
+  await refresh();
+  if (!wasOld) return { ok: true, switchFrom: null, oldRunning };
+  if (!composeDefinesService(readComposeText(projectDir), PGAI_MON_SERVICE)) {
+    console.error("✗ docker-compose.yml is still the old pgwatch + VictoriaMetrics stack's; this CLI runs pgai-mon.");
+    console.error("  The old stack was left as it is. Re-run this command once the new compose file can be fetched.");
+    return { ok: false, switchFrom: null, oldRunning };
+  }
+  return { ok: true, switchFrom: before, oldRunning };
 }
 
 /**
@@ -4057,8 +4048,7 @@ export function instanceJobsStartSkipReason(storeRunning: boolean | null): strin
  * Is a compose service's container running, as far as compose can tell?
  *
  * `null` means "could not tell" and is deliberately distinct from `false`:
- * the caller acts on the two differently. Mirrors the probe
- * `applySinkPrometheusConfig` uses.
+ * the caller acts on the two differently.
  */
 async function composeServiceRunning(
   projectDir: string,
@@ -4190,10 +4180,10 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
 }
 
 /**
- * Why `--prestart` must not run here, or null. A configured stack runs pgwatch
- * (--prestart never starts it), and a marker means a prestart already
- * finished. A partly started prestart (Grafana up, no marker) may be retried:
- * its `up -d` is idempotent.
+ * Why `--prestart` must not run here, or null. A configured stack runs the
+ * reporter, or is the old stack's pgwatch (--prestart starts neither), and a
+ * marker means a prestart already finished. A partly started prestart
+ * (Grafana up, no marker) may be retried: its `up -d` is idempotent.
  */
 function prestartRefusal(projectDir: string): string | null {
   for (const marker of [PRESTARTED_MARKER, PRESTARTED_DONE_MARKER]) {
@@ -4202,9 +4192,9 @@ function prestartRefusal(projectDir: string): string | null {
     }
   }
   const { containers } = checkRunningContainers();
-  const pgwatch = containers.filter((c) => c.startsWith("pgwatch"));
-  if (pgwatch.length > 0) {
-    return `A configured monitoring stack is already running (${pgwatch.join(", ")}); --prestart is only for a fresh box`;
+  const configured = containers.filter((c) => c.startsWith("pgwatch") || c.includes("postgres-reports"));
+  if (configured.length > 0) {
+    return `A configured monitoring stack is already running (${configured.join(", ")}); --prestart is only for a fresh box`;
   }
   return null;
 }
@@ -4272,36 +4262,6 @@ async function runPrestart(projectDir: string, instancesPath: string, imageTag: 
 }
 
 /**
- * Reload sink-prometheus (SIGHUP to VictoriaMetrics, PID 1 in the container).
- *
- * The signal is sent from INSIDE the container, never with `docker kill` /
- * `docker compose kill`: dockerd marks a container it signals as stopped by
- * hand, whatever the signal (moby daemon/kill.go: HasBeenManuallyStopped, and
- * ExitOnNext when no StopSignal is set). A HUP through the daemon therefore
- * turns off `restart: unless-stopped` for that container: it was not started
- * again after the next reboot and the box stopped storing metrics (#473).
- */
-const SINK_PROMETHEUS_RELOAD = ["exec", "-T", "sink-prometheus", "kill", "-HUP", "1"];
-
-/**
- * SIGHUP sink-prometheus when host-metrics scrape files exist: on a prestarted
- * stack it was already running when the target wrote them, and it reads them
- * only at start or on reload. Best effort: the files stay for the next start.
- */
-async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
-  let files: string[] = [];
-  try {
-    files = fs.readdirSync(path.join(projectDir, "host-metrics")).filter((f) => f.endsWith(".yml"));
-  } catch {
-    return;
-  }
-  if (files.length === 0) return;
-  if (await runCompose(SINK_PROMETHEUS_RELOAD) !== 0) {
-    console.error("⚠ Could not reload the metrics store; host metrics start after 'postgresai mon restart'");
-  }
-}
-
-/**
  * Make the running stack match what `.env` now says about the instance-jobs
  * profile.
  *
@@ -4310,10 +4270,10 @@ async function reloadHostMetricsFiles(projectDir: string): Promise<void> {
  * Enabling is a SCOPED `up -d --no-deps instance-jobs`, never a full `up -d`:
  * a whole-stack up recreates grafana (its admin password is re-randomised on
  * every install, so the container env differs and datasource ids renumber) and
- * strips the RDS CA-bundle override mount from running pgwatch. `--no-deps`
- * stops compose bringing this service's dependencies up alongside it, which at
- * postgresai@main is `sink-prometheus` -- recreating the metric store on every
- * run is the same hazard one service along.
+ * strips the RDS CA-bundle override mount from a running collector. `--no-deps`
+ * stops compose bringing this service's dependencies up alongside it, which is
+ * `pgai-mon` -- recreating the metric store on every run is the same hazard
+ * one service along.
  *
  * It is guarded on the stack ACTUALLY RUNNING. A scoped `up` against a stopped
  * project does not fail: compose creates the network and the volumes and
@@ -4347,7 +4307,7 @@ async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): 
 
   if (enabled) {
     const skip = instanceJobsStartSkipReason(
-      await composeServiceRunning(projectDir, "sink-prometheus"),
+      await composeServiceRunning(projectDir, PGAI_MON_SERVICE),
     );
     if (skip) {
       console.log(`\n(${skip})`);
@@ -5150,6 +5110,18 @@ mon
       }
     }
 
+    // An install still on the old pgwatch + VictoriaMetrics stack. A running
+    // one is switched by `mon update`, which keeps it up; this command would
+    // rewrite .env under it. A stopped one is switched by this run.
+    const oldCompose = readComposeText(projectDir);
+    const fromOldStack = composeDefinesService(oldCompose, OLD_STACK_KEYSTONE);
+    if (fromOldStack && (await composeServiceRunning(projectDir, OLD_STACK_KEYSTONE)) === true) {
+      console.error("✗ The old pgwatch + VictoriaMetrics stack is running here. Switch it to pgai-mon with");
+      console.error("  'postgresai mon update', or stop it first ('postgresai mon stop'). Nothing was changed.");
+      process.exitCode = 1;
+      return;
+    }
+
     // Save project name to .pgwatch-config if provided (used by reporter container)
     if (opts.project && !applyProjectName(projectDir, opts.project)) {
       process.exitCode = 1;
@@ -5200,13 +5172,24 @@ mon
       console.log(`Preserved existing .env settings: ${preservedKeys.join(", ")}\n`);
     }
 
-    // Non-git upgrade safety: bring the CLI-owned compose up to the target version
-    // so newly-required service wiring (e.g. VM_AUTH_* on sink-prometheus) is present.
+    // Non-git upgrade safety: bring the CLI-owned compose up to the target version,
+    // which is what switches an old pgwatch + VictoriaMetrics install to pgai-mon.
     // Compares deployed compose CONTENT against the target, so it's correct even
     // though PGAI_TAG was just rewritten above. No-op for git checkouts / when current.
     // Pass the OLD tag (captured before the .env rewrite) so the backup is labeled
     // with the version we're upgrading FROM, not the new one.
     await refreshBundledComposeIfStale(projectDir, previousTag);
+    // The old stack's compose text when this run switches the install.
+    let switchedFrom: string | null = null;
+    if (fromOldStack) {
+      if (!composeDefinesService(readComposeText(projectDir), PGAI_MON_SERVICE)) {
+        console.error("✗ docker-compose.yml is still the old pgwatch + VictoriaMetrics stack's; this CLI runs pgai-mon.");
+        console.error("  Re-run this command once the new compose file can be fetched.");
+        process.exitCode = 1;
+        return;
+      }
+      switchedFrom = oldCompose;
+    }
 
     if (opts.tag) {
       console.log(`Using image tag: ${imageTag}\n`);
@@ -5436,65 +5419,13 @@ mon
       }
     }
 
-    // Step 3: Update configuration
-    console.log(opts.demo ? "Step 3: Updating configuration..." : "Step 3: Updating configuration...");
-    const code1 = await runCompose(["run", "--rm", "sources-generator"]);
-    if (code1 !== 0) {
-      process.exitCode = code1;
-      return;
-    }
-    console.log("✓ Configuration updated\n");
-
-    // Step 4: Ensure Grafana password is configured
-    console.log(opts.demo ? "Step 4: Configuring Grafana security..." : "Step 4: Configuring Grafana security...");
+    // Step 3: Ensure Grafana password is configured. pgai-mon reads
+    // instances.yml itself: there is no generated configuration to update.
+    console.log("Step 3: Configuring Grafana security...");
     const cfgPath = path.resolve(projectDir, ".pgwatch-config");
     const grafanaPassword = await ensureGrafanaPassword(cfgPath);
-    let vmAuthUsername = "";
-    let vmAuthPassword = "";
 
-    // Generate VictoriaMetrics auth credentials
-    try {
-      const envFile = path.resolve(projectDir, ".env");
-
-      // Read existing VM auth from .env if present
-      if (fs.existsSync(envFile)) {
-        const envContent = fs.readFileSync(envFile, "utf8");
-        const userMatch = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
-        const passMatch = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
-        if (userMatch) vmAuthUsername = stripMatchingQuotes(userMatch[1]);
-        if (passMatch) vmAuthPassword = stripMatchingQuotes(passMatch[1]);
-      }
-
-      if (!vmAuthUsername || !vmAuthPassword) {
-        console.log("Generating VictoriaMetrics auth credentials...");
-        vmAuthUsername = vmAuthUsername || "vmauth";
-        if (!vmAuthPassword) {
-          const { stdout: vmPass } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
-          vmAuthPassword = vmPass.trim().replace(/\n/g, "");
-        }
-
-        // Update .env file with VM auth credentials
-        let envContent = "";
-        if (fs.existsSync(envFile)) {
-          envContent = fs.readFileSync(envFile, "utf8");
-        }
-        const envLines = envContent.split(/\r?\n/)
-          .filter((l) => !/^VM_AUTH_USERNAME=/.test(l) && !/^VM_AUTH_PASSWORD=/.test(l))
-          .filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
-        envLines.push(`VM_AUTH_USERNAME=${vmAuthUsername}`);
-        envLines.push(`VM_AUTH_PASSWORD=${vmAuthPassword}`);
-        writeEnvFile(envFile, envLines.join("\n") + "\n");
-      }
-
-      console.log("✓ VictoriaMetrics auth configured\n");
-    } catch (error) {
-      console.error("⚠ Could not generate VictoriaMetrics auth credentials automatically");
-      if (process.env.DEBUG) {
-        console.warn(`  ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    // Step 5: Start services
+    // Step 4: Start services
     // Remove stopped containers left by "run --rm" dependencies (e.g. config-init)
     // to avoid docker-compose v1 'ContainerConfig' error on recreation.
     // Best-effort: ignore exit code — container may not exist, failure here is non-fatal.
@@ -5506,14 +5437,20 @@ mon
       }
       await removeDemoContainers(projectDir);
     }
+    // The old stack's stopped containers go before the new stack starts;
+    // their volumes stay.
+    if (switchedFrom !== null && !(await removeOldStackContainers(projectDir, switchedFrom))) {
+      process.exitCode = 1;
+      return;
+    }
     await runCompose(["rm", "-f", "-s", "config-init"]);
     let code2: number;
     if (onPrestarted) {
       // Plain `up -d` recreates only the services whose config changed (Grafana
-      // for OAuth, VictoriaMetrics for retention or binds) and creates the ones
+      // for OAuth, pgai-mon for its store or binds) and creates the ones
       // --prestart left out. The target readers load their sources at start,
       // so any of them already running (a re-run) is recreated explicitly.
-      console.log("Step 5: Applying the configuration to the prestarted stack...");
+      console.log("Step 4: Applying the configuration to the prestarted stack...");
       // Readers already running (a re-run) are recreated first, so the plain
       // `up -d` after it finds them current instead of recreating them twice.
       const readersRunning = runningComposeServices(projectDir).filter((s) => TARGET_READER_SERVICES.includes(s));
@@ -5521,14 +5458,13 @@ mon
         ? await runCompose(["up", "-d", "--force-recreate", "--no-deps", ...readersRunning], grafanaPassword)
         : 0;
       if (code2 === 0) code2 = await runCompose(["up", "-d"], grafanaPassword);
-      if (code2 === 0) await reloadHostMetricsFiles(projectDir);
       // Configured now: a later run over this stack refuses again, as on any running stack.
       if (code2 === 0) {
         fs.renameSync(path.join(projectDir, PRESTARTED_MARKER), path.join(projectDir, PRESTARTED_DONE_MARKER));
       }
     } else {
-      console.log("Step 5: Starting monitoring services...");
-      code2 = await runCompose(["up", "-d", "--force-recreate"], grafanaPassword);
+      console.log("Step 4: Starting monitoring services...");
+      code2 = await runCompose(["up", "-d", "--force-recreate", "--remove-orphans"], grafanaPassword);
     }
     if (code2 !== 0) {
       process.exitCode = code2;
@@ -5684,12 +5620,12 @@ mon
     if (opts.demo) {
       console.log("  ✅ Demo PostgreSQL database (monitoring target)");
     }
-    console.log("  ✅ PostgreSQL monitoring infrastructure");
+    console.log("  ✅ pgai-mon: metrics collection, storage and SQL");
     console.log("  ✅ Grafana dashboards (with secure password)");
-    console.log("  ✅ Prometheus metrics storage");
-    console.log("  ✅ Flask API backend");
-    console.log("  ✅ Automated report generation (every 24h)");
-    console.log("  ✅ Host stats monitoring (CPU, memory, disk, I/O)\n");
+    console.log("  ✅ Automated report generation (every 24h)\n");
+    const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
+    if (store) console.log(`${store}\n`);
+    if (switchedFrom !== null) console.log(`${stackSwitchNotice(await existingOldStackVolumes(projectDir))}\n`);
 
     if (!opts.demo) {
       console.log("Next steps:");
@@ -5707,9 +5643,6 @@ mon
     console.log("🚀 MAIN ACCESS POINT - Start here:");
     console.log("   Grafana Dashboard: http://localhost:3000");
     console.log(`   Login: monitor / ${grafanaPassword}`);
-    if (vmAuthUsername && vmAuthPassword) {
-      console.log(`   VictoriaMetrics Auth: ${vmAuthUsername} / ${vmAuthPassword}`);
-    }
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   });
 
@@ -5731,26 +5664,28 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
-// Known container names for cleanup
+// Known container names for cleanup: this stack's, then the old pgwatch +
+// VictoriaMetrics stack's, which an install that was never updated still has.
 const MONITORING_CONTAINERS = [
   "postgres-ai-config-init",
-  "self-node-exporter",
-  "self-cadvisor",
   "grafana-with-datasources",
-  "sink-postgres",
-  "sink-prometheus",
+  PGAI_MON_SERVICE,
   "target-db",
   "target-standby",
-  "pgwatch-postgres",
-  "pgwatch-prometheus",
-  "self-postgres-exporter",
-  "flask-pgss-api",
-  "sources-generator",
   "postgres-reports",
   // Profile-gated (postgresai#366): absent on a box that never enabled it,
   // which this list already tolerates - `docker rm -f` on a missing container
   // is caught and ignored below.
   "instance-jobs",
+  "self-node-exporter",
+  "self-cadvisor",
+  "sink-postgres",
+  "sink-prometheus",
+  "pgwatch-postgres",
+  "pgwatch-prometheus",
+  "self-postgres-exporter",
+  "flask-pgss-api",
+  "sources-generator",
   "rds-host-stats",
   "vmalert",
 ];
@@ -5855,7 +5790,7 @@ export type MonitoringService = {
 /**
  * Decide one service's line in `mon health`, given what `docker inspect` said.
  *
- * Split out of the command so it can be tested: the six long-standing services
+ * Split out of the command so it can be tested: the long-standing services
  * keep the status-only check they have always had, and the two new behaviours
  * (a profile-gated service that is simply absent, and a container whose own
  * healthcheck has a verdict) are pinned rather than assumed.
@@ -5898,16 +5833,12 @@ export function judgeServiceHealth(
 export function monitoringHealthServices(instanceJobsEnabled = false, demoEnabled = false): MonitoringService[] {
   return [
     { name: "Grafana", container: "grafana-with-datasources" },
-    { name: "Prometheus", container: "sink-prometheus" },
-    { name: "PGWatch (Postgres)", container: "pgwatch-postgres" },
-    { name: "PGWatch (Prometheus)", container: "pgwatch-prometheus" },
+    { name: "pgai-mon", container: PGAI_MON_SERVICE },
     // The demo database runs only with the demo profile; without it, an
     // absent target-db is "not enabled", not a fault.
     { name: "Demo DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
-    { name: "Sink Postgres", container: "sink-postgres" },
-    // Profile-gated and self-reporting; see judgeServiceHealth. The six above
-    // stay on the status-only check - reading their health status is a
-    // fleet-wide behaviour change and belongs in its own MR. postgresai#366.
+    // Profile-gated and self-reporting; see judgeServiceHealth. The ones above
+    // stay on the status-only check. postgresai#366.
     {
       name: "Instance jobs",
       container: "instance-jobs",
@@ -5998,7 +5929,7 @@ mon
   });
 mon
   .command("update-config")
-  .description("apply monitoring services configuration (generate sources, migrate .env)")
+  .description("apply monitoring services configuration (migrate .env, refresh the compose file)")
   .action(async () => {
     let projectDir: string;
     try {
@@ -6011,9 +5942,8 @@ mon
     }
 
     // Migrate .env first: append any required keys introduced by newer stack
-    // versions (e.g. VM_AUTH_* added in 0.15). This is what makes in-place
-    // upgrades from older deployments not break with `missing "VM_AUTH_USERNAME"
-    // env var` when sink-prometheus boots.
+    // versions (PGAI_MON_TOKEN with pgai-mon), so the next `up` does not fail
+    // on a missing variable.
     const added = ensureRequiredEnvVars(projectDir);
     if (added.length > 0) {
       console.log(`Added missing .env keys for this stack version: ${added.join(", ")}`);
@@ -6021,20 +5951,15 @@ mon
     }
 
     // Non-git installs: refresh the CLI-owned compose so it matches the target
-    // stack version. Otherwise newly-required service wiring (e.g. VM_AUTH_* on
-    // sink-prometheus, added in 0.15) is missing and VictoriaMetrics crashes.
-    // No-op for git checkouts and when the compose already matches.
-    await refreshBundledComposeIfStale(projectDir);
-
-    const code = await runCompose(["run", "--rm", "sources-generator"]);
-    if (code !== 0) {
-      process.exitCode = code;
+    // stack version. No-op for git checkouts and when the compose already
+    // matches. pgai-mon reloads instances.yml by itself, so there is nothing to
+    // generate here.
+    const stack = await refreshStackCompose(projectDir, () => refreshBundledComposeIfStale(projectDir));
+    if (!stack.ok) {
+      process.exitCode = 1;
       return;
     }
-    // This command is what the README recommends for filling in newly-required
-    // keys, so it has to apply them too: writing the admin keys to .env while
-    // leaving the old container running is the exposure, not the fix (#359).
-    if (!(await applySinkPrometheusConfig(projectDir))) {
+    if (stack.switchFrom !== null && !(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning))) {
       process.exitCode = 1;
     }
   });
@@ -6061,9 +5986,9 @@ mon
       await syncDemoProfile(projectDir, instancesFile);
 
       // Step 1: migrate .env so newer stack versions that require additional
-      // env vars (e.g. VM_AUTH_USERNAME / VM_AUTH_PASSWORD introduced in 0.15)
-      // don't make `docker compose up` fail silently for users who installed
-      // before those vars existed. Purely additive: existing values are kept.
+      // env vars (PGAI_MON_TOKEN with pgai-mon) don't make `docker compose up`
+      // fail for users who installed before those vars existed. Purely
+      // additive: existing values are kept.
       console.log("Checking .env for newly-required keys...");
       const added = ensureRequiredEnvVars(projectDir);
       if (added.length > 0) {
@@ -6074,43 +5999,52 @@ mon
       }
       console.log();
 
-
       // Step 2: refresh repo if this is a git-based deployment. Some users
       // upgrade purely via `npm install -g postgresai@latest` and don't have a
       // git checkout - in that case we skip git operations and still do the
       // env migration + docker pull.
-      const gitDir = path.resolve(projectDir, ".git");
-      if (fs.existsSync(gitDir)) {
-        console.log("Fetching latest changes...");
-        await execFilePromise("git", ["fetch", "origin"]);
+      const stack = await refreshStackCompose(projectDir, async () => {
+        const gitDir = path.resolve(projectDir, ".git");
+        if (fs.existsSync(gitDir)) {
+          console.log("Fetching latest changes...");
+          await execFilePromise("git", ["fetch", "origin"]);
 
-        const { stdout: branch } = await execFilePromise("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
-        const currentBranch = branch.trim();
-        console.log(`Current branch: ${currentBranch}`);
+          const { stdout: branch } = await execFilePromise("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+          const currentBranch = branch.trim();
+          console.log(`Current branch: ${currentBranch}`);
 
-        console.log("Pulling latest changes...");
-        const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
-        console.log(pullOut);
-      } else {
-        // npx / global-npm installs are non-git: `git pull` can't refresh the
-        // compose, so bring the CLI-owned docker-compose.yml up to the target
-        // version in place (with a backup). This is what wires VM_AUTH_* into
-        // sink-prometheus for users upgrading from a pre-0.15 (no-VM-auth) stack.
-        // The helper logs only when it actually refreshes/warns, so don't
-        // pre-announce a refresh that may turn out to be a no-op.
-        console.log("(not a git checkout — checking bundled docker-compose.yml)");
-        await refreshBundledComposeIfStale(projectDir);
+          console.log("Pulling latest changes...");
+          const { stdout: pullOut } = await execFilePromise("git", ["pull", "origin", currentBranch]);
+          console.log(pullOut);
+        } else {
+          // npx / global-npm installs are non-git: `git pull` can't refresh the
+          // compose, so bring the CLI-owned docker-compose.yml up to the target
+          // version in place (with a backup). This is what switches an old
+          // pgwatch + VictoriaMetrics install to pgai-mon. The helper logs only
+          // when it actually refreshes/warns, so don't pre-announce a refresh
+          // that may turn out to be a no-op.
+          console.log("(not a git checkout — checking bundled docker-compose.yml)");
+          await refreshBundledComposeIfStale(projectDir);
+        }
+      });
+      if (!stack.ok) {
+        process.exitCode = 1;
+        return;
       }
 
       // Step 3: pull new images.
       console.log("\nUpdating Docker images...");
       const code = await runCompose(["pull"]);
 
-      if (code === 0) {
-        if (!(await applySinkPrometheusConfig(projectDir))) {
+      if (code === 0 && stack.switchFrom !== null) {
+        // The switch starts the whole stack when the old one ran, which
+        // covers the instance-jobs profile through .env.
+        if (!(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning))) {
           process.exitCode = 1;
           return;
         }
+        console.log("\n✓ Update completed successfully");
+      } else if (code === 0) {
         // `pull` cannot create a service that was not there before, and the
         // `mon restart` suggested below is `docker compose restart`, which
         // re-runs containers as recorded: neither would give the instance-jobs
@@ -6129,6 +6063,13 @@ mon
         console.log("  postgres-ai mon restart");
       } else {
         console.error("\n✗ Docker image update failed");
+        // The old stack still runs, from a compose file that is gone. Put the
+        // file back (CLI-owned on a non-git install) so the next run detects
+        // the old stack again and retries the switch.
+        if (stack.switchFrom !== null && !fs.existsSync(path.resolve(projectDir, ".git"))) {
+          fs.writeFileSync(path.resolve(projectDir, "docker-compose.yml"), stack.switchFrom, { encoding: "utf8", mode: 0o600 });
+          console.error("  The old stack was left running and its docker-compose.yml put back; re-run 'postgresai mon update' to switch.");
+        }
         process.exitCode = 1;
       }
     } catch (error) {
@@ -6284,59 +6225,6 @@ mon
     if (code !== 0) process.exitCode = code;
   });
 
-/**
- * Whether sink-prometheus may be up: it has a running or paused container, or
- * compose cannot tell (docker-compose v1 has no `ps --status`).
- */
-async function sinkPrometheusMaybeUp(): Promise<boolean> {
-  const cmd = getComposeCmd();
-  if (!cmd) return true;
-  let composeFile: string;
-  try {
-    ({ composeFile } = await resolveOrInitPaths());
-  } catch {
-    return true;
-  }
-  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "ps", "-a", "-q", "--status", "running", "--status", "paused", "sink-prometheus"]);
-  return ps.status !== 0 || ps.stdout.trim() !== "";
-}
-
-// Stacks older than host metrics support lack the ./host-metrics mount or
-// scrape_config_files, so check that the running sink-prometheus can see the
-// new scrape file before reporting success.
-// `file` is the scrape file just written for `job`; without it, the job's file was removed.
-async function reloadHostMetrics(projectDir: string, job: string, file?: string): Promise<boolean> {
-  const revision = file && scrapeRevision(projectDir, file);
-  if (revision && await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c",
-    `grep -q '^scrape_config_files:' /postgres_ai_configs/prometheus/prometheus.yml && test -f "$1"`,
-    "sh", `/etc/pgai/host-metrics/${file}`]) !== 0) {
-    // stop/start re-runs config-init, which a restart does not.
-    console.error(`sink-prometheus cannot load host metrics: it is not running, or this monitoring stack predates host metrics support. To upgrade the stack to ${pkg.version}, set PGAI_TAG=${pkg.version} in .env, then run 'postgresai mon update', 'postgresai mon stop' and 'postgresai mon start'. The scrape files are saved and will be picked up.`);
-    return false;
-  }
-  // A stopped sink-prometheus cannot be reloaded, and it will not load the
-  // deleted file when it starts, so a removal needs nothing more. Any other
-  // goes through reload and verification.
-  if (!revision) {
-    if (!(await sinkPrometheusMaybeUp())) {
-      console.log(`sink-prometheus is not running; it will not load '${job}' when it starts.`);
-      return true;
-    }
-  }
-  if (await runCompose(SINK_PROMETHEUS_RELOAD) !== 0) {
-    console.error("Reloading sink-prometheus failed. Run 'postgresai mon restart' to load the host metrics change.");
-    return false;
-  }
-  const needle = revision ? `"__pgai_rev":"${revision}"` : `"scrapePool":"${job}"`;
-  if (await runCompose(["exec", "-T", "sink-prometheus", "sh", "-c", HOST_METRICS_VERIFY_SCRIPT, "sh", needle, revision ? "present" : "absent"]) !== 0) {
-    console.error(revision
-      ? `sink-prometheus did not load the scrape job '${job}' after the reload. Check 'docker logs sink-prometheus' for the error. The scrape files are saved.`
-      : `sink-prometheus still scrapes '${job}' after the reload. Check 'docker logs sink-prometheus' for the error.`);
-    return false;
-  }
-  return true;
-}
-
 const CONN_STR_FORMAT = "Invalid connection string format: use postgresql://user:password@host[:port]/database";
 
 /** `<host>-<db>` for a postgres:// URL with user:password@host[:port]/db, else why it is refused. */
@@ -6411,45 +6299,44 @@ function setEnvValues(projectDir: string, values: Record<string, string | null>)
   writeEnvFile(envFile, content);
 }
 
+type RdsHostStatsKey = "RDS_DB_INSTANCE_IDENTIFIER" | "AWS_REGION" | "PGAI_CLUSTER" | "PGAI_NODE_NAME";
+
 /**
- * Writes rds-host-stats' settings to .env (null clears them). A running
- * rds-host-stats keeps the environment it started with, so it is recreated with
- * these values, passed explicitly because an exported variable would win over
- * .env. Returns false when that failed.
+ * Writes the RDS host metrics settings to .env (null clears them). pgai-mon
+ * polls RDS with them, read from its environment, and a running container
+ * keeps the environment it started with: when a value changed, a running
+ * pgai-mon is recreated with these values, passed explicitly because an
+ * exported variable would win over .env. Returns false when that failed.
  */
-async function setRdsHostStats(projectDir: string, values: Record<"RDS_DB_INSTANCE_IDENTIFIER" | "AWS_REGION" | "PGAI_CLUSTER" | "PGAI_NODE_NAME", string | null>): Promise<boolean> {
+async function setRdsHostStats(projectDir: string, values: Record<RdsHostStatsKey, string | null>): Promise<boolean> {
+  const changed = Object.entries(values).some(([key, value]) => (readEnvValue(projectDir, key) ?? null) !== value);
   setEnvValues(projectDir, values);
-  const cmd = getComposeCmd();
-  if (!cmd) return true;
-  const { composeFile } = await resolveOrInitPaths();
-  const ps = spawnSync(cmd[0], [...cmd.slice(1), "-f", composeFile, "--profile", "rds", "ps", "-q", "--status", "running", "rds-host-stats"]);
-  if (ps.status !== 0) {
-    console.error("If rds-host-stats is running, recreate it: docker compose --profile rds up -d rds-host-stats");
+  if (!changed) return true;
+  const running = await composeServiceRunning(projectDir, PGAI_MON_SERVICE);
+  if (running === null) {
+    console.error(`If pgai-mon is running, recreate it so it reads the new RDS settings: docker compose up -d --no-deps ${PGAI_MON_SERVICE}`);
     return true;
   }
-  if (!ps.stdout.trim()) return true;
+  if (!running) return true;
   const env = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value ?? ""]));
-  if (await runCompose(["--profile", "rds", "up", "-d", "--no-deps", "rds-host-stats"], undefined, env) === 0) return true;
-  console.error("Recreating rds-host-stats failed. Run: docker compose --profile rds up -d rds-host-stats");
+  if (await runCompose(["up", "-d", "--no-deps", PGAI_MON_SERVICE], undefined, env) === 0) return true;
+  console.error(`Recreating pgai-mon failed. Run: docker compose up -d --no-deps ${PGAI_MON_SERVICE}`);
   return false;
 }
 
 /**
- * Copies the target's cluster/node_name into what its host metrics collector
- * reads: the ClickHouse and Supabase scrape files in host-metrics/, and .env for
- * rds-host-stats (it pushes past samples, so nothing scrapes it). Returns false
- * when host metrics failed.
+ * Copies the target's cluster/node_name into what pgai-mon reads for its host
+ * metrics: the ClickHouse and Supabase scrape files in host-metrics/ (it
+ * reloads them when they change), and .env for RDS. Returns false when host
+ * metrics failed.
  */
-async function setUpHostMetrics(projectDir: string, instance: Instance, connStr: string, env: NodeJS.ProcessEnv, apply: boolean): Promise<boolean> {
+async function setUpHostMetrics(projectDir: string, instance: Instance, connStr: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   const name = instance.name;
   const cluster = instance.custom_tags?.cluster ?? "default";
   const nodeName = instance.custom_tags?.node_name ?? name;
   try {
     if (detectProvider(connStr) === "clickhouse") {
-      const message = await addHostMetrics({ projectDir, name, conn: connStr, env, cluster, nodeName });
-      const file = `clickhouse-${name}.yml`;
-      if (apply && message.startsWith("Host metrics: ClickHouse Cloud") && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`, file))) return false;
-      console.log(message);
+      console.log(await addHostMetrics({ projectDir, name, conn: connStr, env, cluster, nodeName }));
       return true;
     }
     const projectRef = extractProjectRefFromUrl(connStr);
@@ -6462,7 +6349,6 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
       for (const f of stale) fs.rmSync(path.join(dir, f), { force: true });
       if (on) writeScrapeFile(dir, file, renderSupabaseScrapeConfig({ projectRef: projectRef.toLowerCase(), cluster, nodeName }));
       else if (stale.length === 0) return true;
-      if (apply && !(await reloadHostMetrics(projectDir, SUPABASE_JOB, on ? file : undefined))) return false;
       console.log(on ? "Host metrics: Supabase, relayed by instance-jobs (scraped every 60s)" : "Host metrics: Supabase relay job removed (PGAI_SUPABASE_HOST_METRICS is not true)");
       if (on && !instanceJobsProfileEnabled(env.COMPOSE_PROFILES ?? readEnvValue(projectDir, "COMPOSE_PROFILES"))) {
         console.error("Host metrics: the relay runs in instance-jobs, which is not enabled. Enable it with 'postgresai mon local-install --instance-jobs'.");
@@ -6475,40 +6361,13 @@ async function setUpHostMetrics(projectDir: string, instance: Instance, connStr:
     } else if (rds) {
       if (![cluster, nodeName].every((v) => /^[\w.@:\/-]+$/.test(v))) throw new Error(`Host metrics: cluster '${cluster}' or node_name '${nodeName}' cannot be written to .env; set PGAI_CLUSTER and PGAI_NODE_NAME there yourself.`);
       if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: rds.id, AWS_REGION: rds.region, PGAI_CLUSTER: cluster, PGAI_NODE_NAME: nodeName }))) return false;
-      console.log(`Host metrics: rds-host-stats polls RDS instance ${rds.id} (${rds.region}). Start it with: docker compose --profile rds up -d rds-host-stats`);
+      console.log(`Host metrics: pgai-mon polls RDS instance ${rds.id} (${rds.region}) with the instance's AWS credentials`);
     }
     return true;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return false;
   }
-}
-
-/**
- * vmalert maps ClickHouse and Supabase series to host_*; RDS writes host_*
- * itself. So its profile is in .env exactly while such a scrape file exists.
- * With `apply`, vmalert is started (a no-op when it runs) or removed first,
- * and .env follows only on success. `addOnly` records a needed profile but
- * never drops one. Returns false when compose failed.
- */
-async function syncVmalert(projectDir: string, apply: boolean, addOnly = false): Promise<boolean> {
-  const dir = path.join(projectDir, "host-metrics");
-  const want = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^(clickhouse|supabase)-.*\.yml$/.test(f));
-  const current = readEnvValue(projectDir, "COMPOSE_PROFILES") ?? "";
-  const exported = process.env.COMPOSE_PROFILES;
-  if (want && exported !== undefined && !instanceJobsProfileEnabled(exported, "host-metrics")) {
-    console.error(`COMPOSE_PROFILES=${exported} is exported and has no host-metrics, so compose will not keep vmalert running: add host-metrics to it or unset it`);
-  }
-  const has = instanceJobsProfileEnabled(current, "host-metrics");
-  if (apply && (want || has)) {
-    const args = want ? ["up", "-d", "--no-deps", "vmalert"] : ["rm", "-sf", "vmalert"];
-    if (await runCompose(args, undefined, { COMPOSE_PROFILES: "host-metrics" }) !== 0) {
-      console.error(`Host metrics: 'docker compose --profile host-metrics ${args.join(" ")}' failed.`);
-      return false;
-    }
-  }
-  if (has !== want && !(addOnly && has)) setEnvValues(projectDir, { COMPOSE_PROFILES: composeProfilesValue(current, want, "host-metrics") });
-  return true;
 }
 
 // targets add takes a postgres:// URL only; anything else (even "region=west") is a name.
@@ -6561,26 +6420,13 @@ export async function addTarget(
       addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
     }
-    const hostMetrics = await setUpHostMetrics(projectDir, instance, connStr, env, apply);
-    // A failed setup may have saved a scrape file for the next start: record the profile, start nothing.
-    if (!(await syncVmalert(projectDir, hostMetrics && apply, !hostMetrics)) || !hostMetrics) {
+    if (!(await setUpHostMetrics(projectDir, instance, connStr, env))) {
       process.exitCode = 1;
-      // Applying runs `up -d pgwatch-*`, which would also start a stopped
-      // sink-prometheus as a dependency: a failed add leaves the stack alone.
-      console.error(apply
-        ? "The Postgres target is saved but not applied. Fix the error above and re-run this command."
-        : "The Postgres target was added; host metrics were not.");
+      console.error("The Postgres target was added; host metrics were not. Fix the error above and re-run this command.");
       return true;
     }
 
-    if (!apply) return true;
-    const applyCode = await applyMonitoringTargetsConfig(true);
-    if (applyCode !== 0) {
-      console.error("Monitoring target was saved, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
-      process.exitCode = 1;
-      return true;
-    }
-    console.log("✓ Monitoring target configuration applied");
+    if (apply) await applyMonitoringTargetsConfig(projectDir, true);
     return true;
   } catch (err) {
     // Surface InstancesParseError as-is so we don't silently overwrite a
@@ -6649,7 +6495,8 @@ host-metrics/clickhouse-my-db.secret (the key secret, mode 0600).
 Re-running with the same name and connection string is safe; retry after fixing credentials or service state.
 
 Supabase: with PGAI_SUPABASE_HOST_METRICS=true (environment or .env), writes host-metrics/supabase-<name>.yml.
-RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env for rds-host-stats.
+RDS instance endpoint: writes RDS_DB_INSTANCE_IDENTIFIER, AWS_REGION, PGAI_CLUSTER and PGAI_NODE_NAME to .env; pgai-mon polls RDS with them.
+pgai-mon reloads instances.yml and the host-metrics files by itself: nothing is restarted.
 
 Environment:
   PGAI_DB_URL  the connection string, unless a postgres:// or postgresql:// URL is given
@@ -6724,13 +6571,10 @@ targets
         return;
       }
       console.log(`Monitoring target '${name}' removed`);
-      if (removeHostMetrics(projectDir, name) && !(await reloadHostMetrics(projectDir, `clickhouse-${name}`))) process.exitCode = 1;
+      // pgai-mon stops scraping a host-metrics file once it is gone.
+      removeHostMetrics(projectDir, name);
       const supabaseFile = path.join(projectDir, "host-metrics", `supabase-${name}.yml`);
-      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) {
-        fs.rmSync(supabaseFile);
-        if (!(await reloadHostMetrics(projectDir, SUPABASE_JOB))) process.exitCode = 1;
-      }
-      if (!(await syncVmalert(projectDir, true))) process.exitCode = 1;
+      if (SUPABASE_TARGET_NAME_RE.test(name) && fs.existsSync(supabaseFile)) fs.rmSync(supabaseFile);
       let rds: ReturnType<typeof rdsInstance>;
       try {
         rds = rdsInstance(new URL(target?.conn_str ?? "").hostname);
@@ -6739,16 +6583,10 @@ targets
       }
       if (rds && readEnvValue(projectDir, "RDS_DB_INSTANCE_IDENTIFIER") === rds.id) {
         if (!(await setRdsHostStats(projectDir, { RDS_DB_INSTANCE_IDENTIFIER: null, AWS_REGION: null, PGAI_CLUSTER: null, PGAI_NODE_NAME: null }))) process.exitCode = 1;
-        console.log(`Host metrics: rds-host-stats no longer has an instance to poll (${rds.id} removed from .env)`);
+        console.log(`Host metrics: pgai-mon no longer polls RDS instance ${rds.id} (removed from .env)`);
       }
 
-      const applyCode = await applyMonitoringTargetsConfig();
-      if (applyCode !== 0) {
-        console.error("Monitoring target was removed, but applying the generated pgwatch sources failed. Run 'postgresai mon restart' to apply manually.");
-        process.exitCode = 1;
-        return;
-      }
-      console.log("✓ Monitoring target configuration applied");
+      await applyMonitoringTargetsConfig(projectDir);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Error processing instances.yml: ${message}`);
@@ -7318,17 +7156,9 @@ mon
     console.log("  Username: monitor");
     console.log(`  Password: ${password}`);
 
-    // Show VM auth credentials from .env
-    const envFile = path.resolve(projectDir, ".env");
-    if (fs.existsSync(envFile)) {
-      const envContent = fs.readFileSync(envFile, "utf8");
-      const vmUser = envContent.match(/^VM_AUTH_USERNAME=([^\r\n]+)/m);
-      const vmPass = envContent.match(/^VM_AUTH_PASSWORD=([^\r\n]+)/m);
-      if (vmUser && vmPass) {
-        console.log("\nVictoriaMetrics credentials:");
-        console.log(`  Username: ${stripMatchingQuotes(vmUser[1])}`);
-        console.log(`  Password: ${stripMatchingQuotes(vmPass[1])}`);
-      }
+    // pgai-mon's token is never printed: say where it is.
+    if (readEnvValue(projectDir, PGAI_MON_TOKEN_KEY)) {
+      console.log(`\npgai-mon bearer token: ${PGAI_MON_TOKEN_KEY} in ${path.resolve(projectDir, ".env")}`);
     }
     console.log("");
   });
@@ -7408,19 +7238,18 @@ orgsCommand.command("create")
     }
   });
 
-withOrgOptions(program.command("promql"))
-  .description("run a PromQL query on a monitoring instance's own metric store")
-  .argument("<expr>", "PromQL expression")
+withOrgOptions(program.command("sql"))
+  .description("run a read-only SQL query on a monitoring instance's own metric store (pgai-mon)")
+  .argument("<query>", "one read-only SQL statement over pgai-mon's views (see its /schema)")
   .option("--instance <uuid>", "monitoring instance id (default: this box's .pgwatch-config); not with --project")
   .option("--project <id|alias>", "the project's monitoring instance, by project id, alias or name; not with --instance")
-  .option("--at <rfc3339>", "evaluate an instant query at this time (default: now; ignored with --range)")
-  .option("--range", "run a range query (requires --start, --end, --step)")
-  .option("--start <rfc3339>", "range start")
-  .option("--end <rfc3339>", "range end")
-  .option("--step <duration>", "range step, e.g. 60s or 5m")
   .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
   .option("--json", "output the raw result payload")
-  .action(async (expr: string, opts: PromQLOptions) => {
+  .addHelpText("after", `
+Example:
+  pgai sql --project my-db "select metric, count(*) from series group by 1 order by 2 desc limit 10"
+`)
+  .action(async (query: string, opts: SqlOptions) => {
     // The job id once there is one, so an error before the slow-answer line
     // still names the job (postgresai!479 REV).
     let queuedJobId: string | null = null;
@@ -7457,27 +7286,6 @@ withOrgOptions(program.command("promql"))
         return;
       }
 
-      const kind = opts.range ? "promql_range" : "promql_instant";
-      const enqueue: EnqueueArgs = { instanceId, kind, query: expr };
-      if (opts.range) {
-        if (!opts.start || !opts.end || !opts.step) {
-          console.error("--range needs --start, --end and --step.");
-          process.exitCode = 1;
-          return;
-        }
-        const stepS = parseDurationSeconds(opts.step);
-        if (stepS === null || stepS < 1) {
-          console.error(`Invalid --step ${opts.step}: expected a duration like 60s, 5m or 1h.`);
-          process.exitCode = 1;
-          return;
-        }
-        enqueue.start = opts.start;
-        enqueue.end = opts.end;
-        enqueue.stepS = stepS;
-      } else if (opts.at) {
-        enqueue.at = opts.at;
-      }
-
       // 11m, not 60s. The first answer cannot arrive before the instance's
       // next poll, and `app.settings.instance_job_poll_idle_ms` defaults to
       // 600000 -- ten minutes. A 60s default therefore timed out on a
@@ -7489,7 +7297,7 @@ withOrgOptions(program.command("promql"))
         return;
       }
 
-      const { jobId, firstAnswerEstimateS } = await enqueueQuery(apiKey, enqueue, { apiBaseUrl });
+      const { jobId, firstAnswerEstimateS } = await enqueueQuery(apiKey, { instanceId, query }, { apiBaseUrl });
       queuedJobId = jobId;
 
       // Size the wait from what the server SAID rather than from a constant
@@ -7500,7 +7308,7 @@ withOrgOptions(program.command("promql"))
       const timeoutS =
         explicitTimeoutS ??
         (firstAnswerEstimateS === null
-          ? DEFAULT_PROMQL_TIMEOUT_S
+          ? DEFAULT_SQL_TIMEOUT_S
           : Math.min(Math.max(Math.ceil(firstAnswerEstimateS * 1.5) + 30, 60), 1800));
 
       // One line, not three: the id makes the answer recoverable if the user
@@ -7554,12 +7362,23 @@ withOrgOptions(program.command("promql"))
         console.log(JSON.stringify(res.result, null, 2));
         return;
       }
-      console.log(renderPromQL(res.result));
+      console.log(renderSql(res.result));
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       if (queuedJobId) console.error(`Job ${queuedJobId} was queued; it was not re-sent.`);
       process.exitCode = 1;
     }
+  });
+
+// Kept so a script that still calls it fails with a pointer, not "unknown command".
+program
+  .command("promql", { hidden: true })
+  .description("removed: use 'pgai sql'")
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(() => {
+    console.error("pgai promql was removed with VictoriaMetrics: query the metric store with 'pgai sql' instead (see 'pgai sql --help').");
+    process.exitCode = 1;
   });
 
 const issues = program.command("issues").description("issues management");

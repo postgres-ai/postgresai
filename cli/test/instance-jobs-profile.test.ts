@@ -194,17 +194,14 @@ describe("mon health follows the profile", () => {
     expect(verdict.label).toBe("enabled but not running");
   });
 
-  test("the default is still off, and the other six are untouched either way", () => {
+  test("the default is still off, and the other services are untouched either way", () => {
     expect(monitoringHealthServices().find((s) => s.container === "instance-jobs")!.optional).toBe(true);
     for (const enabled of [true, false]) {
       const others = monitoringHealthServices(enabled).filter((s) => s.container !== "instance-jobs");
       expect(others.map((s) => s.container)).toEqual([
         "grafana-with-datasources",
-        "sink-prometheus",
-        "pgwatch-postgres",
-        "pgwatch-prometheus",
+        "pgai-mon",
         "target-db",
-        "sink-postgres",
       ]);
       for (const s of others) {
         // target-db is gated by the demo profile, not by this one.
