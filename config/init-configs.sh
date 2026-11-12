@@ -57,6 +57,11 @@ fi
 #   docker exec config-init rm /target/.pgai-configs-version
 TARGET_VERSION_FILE="${TARGET_DIR}/.pgai-configs-version"
 
+# Dev builds (0.0.0-dev*) all share one version, so they always re-provision.
+case "$SOURCE_VERSION" in
+  0.0.0-dev*) rm -f "$TARGET_VERSION_FILE" ;;
+esac
+
 if [ -f "$TARGET_VERSION_FILE" ] && \
    [ "$(cat "$TARGET_VERSION_FILE" 2>/dev/null)" = "$SOURCE_VERSION" ]; then
   echo "Configs already initialized at version $SOURCE_VERSION; skipping."
