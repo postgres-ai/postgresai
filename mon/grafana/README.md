@@ -45,3 +45,21 @@ python3 mon/grafana/test_compile.py
 
 Ranges of 7 days or more pin the step to the 1 h rollup tier (90 days or more: 1 d), so long
 ranges read rollups instead of raw samples; there `$__rate_interval` equals the step.
+
+## Check every panel
+
+`check_panels.py` runs each panel the way Grafana would: the dashboard's default range ending at
+`--now-ms` (default: the newest sample), `$__interval` from the range and the panel's
+`maxDataPoints` / min interval, the template variables in order (each query variable through
+`/sql`, its current value if among the options, else the first one; All as Grafana expands it),
+then every target's SQL with the variables interpolated. Each panel is classified `data`,
+`empty` or `error`; the exit status is 1 on any error (or on a mismatch with `--expect`).
+
+```bash
+python3 mon/grafana/check_panels.py --url http://127.0.0.1:8765 [--range 7d] \
+    [--var db_name=mydb --var query_id=123] [--only Dashboard_8_:45] [--json out.json]
+```
+
+CI runs it against a small fixture store (`tests/grafana_dashboards/test_sql_panels_run.py`,
+with `PGAI_MON_BIN` pointing at a built binary); every panel must show data there.
+
