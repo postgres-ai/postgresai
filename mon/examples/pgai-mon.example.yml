@@ -25,7 +25,7 @@ store:
   flush_interval_s: 60
 http:
   listen: 0.0.0.0:8765
-  # Every route but /healthz needs these credentials (or PGAI_MON_AUTH_* in the environment).
+  # Every route but /livez needs these credentials (or PGAI_MON_TOKEN(_FILE) / PGAI_MON_AUTH_* in the environment).
   auth:
     token_file: /run/secrets/pgai-mon-token
     # username: pgai

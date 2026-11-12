@@ -1,4 +1,4 @@
-//! HTTP authentication. Every route needs credentials except the liveness probe (`/healthz`):
+//! HTTP authentication. Every route needs credentials except the liveness probe (`/livez`):
 //! a bearer token, HTTP basic auth, or either when both are configured. Credentials come from
 //! files or the environment, never from the YAML itself. Running without authentication must be
 //! asked for explicitly (`http.auth.disabled: true` or `PGAI_MON_AUTH_DISABLED=1`), for local
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// `http.auth` in the YAML. Environment variables override each field:
-/// PGAI_MON_AUTH_TOKEN, PGAI_MON_AUTH_TOKEN_FILE, PGAI_MON_AUTH_USERNAME,
+/// PGAI_MON_TOKEN, PGAI_MON_TOKEN_FILE, PGAI_MON_AUTH_USERNAME,
 /// PGAI_MON_AUTH_PASSWORD, PGAI_MON_AUTH_PASSWORD_FILE, PGAI_MON_AUTH_DISABLED.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -68,7 +68,7 @@ impl Auth {
     pub fn resolve(cfg: &AuthCfg, env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let env = |k: &str| env(k).filter(|v| !v.is_empty());
         let disabled = env("PGAI_MON_AUTH_DISABLED").map_or(cfg.disabled, |v| truthy(&v));
-        let token = match (env("PGAI_MON_AUTH_TOKEN"), env("PGAI_MON_AUTH_TOKEN_FILE")) {
+        let token = match (env("PGAI_MON_TOKEN"), env("PGAI_MON_TOKEN_FILE")) {
             (Some(t), _) => Some(t.trim().to_string()),
             (None, Some(f)) => Some(read_secret(std::path::Path::new(&f), "token")?),
             (None, None) => match &cfg.token_file {
@@ -106,7 +106,7 @@ impl Auth {
         let token = token.map(|t| digest(t.as_bytes()));
         if !disabled && token.is_none() && basic.is_none() {
             anyhow::bail!(
-                "http.auth: no credentials. Set PGAI_MON_AUTH_TOKEN(_FILE) or PGAI_MON_AUTH_USERNAME + \
+                "http.auth: no credentials. Set PGAI_MON_TOKEN(_FILE) or PGAI_MON_AUTH_USERNAME + \
                  PGAI_MON_AUTH_PASSWORD(_FILE) (or http.auth in the config); for local development only, \
                  PGAI_MON_AUTH_DISABLED=1 / http.auth.disabled: true serves without authentication"
             );
@@ -185,7 +185,7 @@ pub async fn require(State(auth): State<Arc<Auth>>, req: Request, next: Next) ->
 }
 
 /// Liveness probe: no credentials, no state, no details.
-pub async fn healthz() -> &'static str {
+pub async fn livez() -> &'static str {
     "ok\n"
 }
 
@@ -227,7 +227,7 @@ mod tests {
     fn bearer_token() {
         let a = Auth::resolve(
             &AuthCfg::default(),
-            &env_of(&[("PGAI_MON_AUTH_TOKEN", "0123456789abcdef-tok")]),
+            &env_of(&[("PGAI_MON_TOKEN", "0123456789abcdef-tok")]),
         )
         .unwrap();
         assert!(a.check(Some(b"Bearer 0123456789abcdef-tok")));
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn short_secrets_are_refused() {
-        assert!(Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_AUTH_TOKEN", "short")])).is_err());
+        assert!(Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_TOKEN", "short")])).is_err());
         assert!(Auth::resolve(
             &AuthCfg::default(),
             &env_of(&[("PGAI_MON_AUTH_USERNAME", "u"), ("PGAI_MON_AUTH_PASSWORD", "short")])
@@ -271,7 +271,7 @@ mod tests {
         assert!(!a.check(Some(b"Basic !!!notbase64")));
         assert!(!a.check(Some(b"Digest x")));
         // environment wins over the file
-        let a = Auth::resolve(&cfg, &env_of(&[("PGAI_MON_AUTH_TOKEN", "env-0123456789abcdef")])).unwrap();
+        let a = Auth::resolve(&cfg, &env_of(&[("PGAI_MON_TOKEN", "env-0123456789abcdef")])).unwrap();
         assert!(a.check(Some(b"Bearer env-0123456789abcdef")));
         assert!(!a.check(Some(b"Bearer tok-0123456789abcdef")));
         // a missing file is an error, not "no auth"

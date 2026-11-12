@@ -12,9 +12,9 @@ embedded DuckDB.
   PromQL-shaped table functions (`prom_rate`, `prom_topk`, ...) are in `src/eval/` and
   `sql/macros.sql`.
 
-Every HTTP route requires credentials except the liveness probe `GET /healthz`: a bearer
+Every HTTP route requires credentials except the liveness probe `GET /livez`: a bearer
 token, HTTP basic auth, or either. They come from the environment or files
-(`PGAI_MON_AUTH_TOKEN` / `PGAI_MON_AUTH_TOKEN_FILE`, `PGAI_MON_AUTH_USERNAME` +
+(`PGAI_MON_TOKEN` / `PGAI_MON_TOKEN_FILE`, `PGAI_MON_AUTH_USERNAME` +
 `PGAI_MON_AUTH_PASSWORD` / `PGAI_MON_AUTH_PASSWORD_FILE`, or `http.auth` in the config); secrets
 are at least 16 characters. Without credentials the server refuses to start, unless
 authentication is turned off explicitly for local development (`PGAI_MON_AUTH_DISABLED=1`,
@@ -117,13 +117,13 @@ $B run --config my.yml
 # SQL over an existing store, no collection
 $B serve --store DIR --listen 127.0.0.1:8765 \
     --metrics-yml config/pgwatch-prometheus/metrics.yml --macros-sql mon/sql/macros.sql
-export PGAI_MON_AUTH_TOKEN=$(openssl rand -hex 24)   # or --no-auth for local development
-H="Authorization: Bearer $PGAI_MON_AUTH_TOKEN"
+export PGAI_MON_TOKEN=$(openssl rand -hex 24)   # or --no-auth for local development
+H="Authorization: Bearer $PGAI_MON_TOKEN"
 curl -s -H "$H" localhost:8765/sql -d "select metric, count(*) from series group by 1 order by 2 desc limit 5"
 curl -s -H "$H" localhost:8765/sql -H 'content-type: application/json' -d '{"sql":"select 1"}'
 curl -s -H "$H" 'localhost:8765/sql?format=objects' -d "select 1 as x"   # the format Grafana's Infinity reads
 curl -s -H "$H" localhost:8765/schema    # views, columns, metric names with type/interval/description
-curl -s localhost:8765/healthz   # liveness, no credentials
+curl -s localhost:8765/livez   # liveness, no credentials
 curl -s -H "$H" localhost:8765/health    # ingest counters, files, bytes, reader state
 
 # one read-only query, same guardrails as POST /sql, no server

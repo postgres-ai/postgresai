@@ -198,7 +198,7 @@ pub struct HttpCfg {
     pub eval_worker_mb_per_day: u64,
     /// Object-store read path, for a store root `s3://bucket/prefix` (objstore.rs).
     pub s3: crate::objstore::S3Cfg,
-    /// Credentials every route but `/healthz` requires (auth.rs).
+    /// Credentials every route but `/livez` requires (auth.rs).
     pub auth: crate::auth::AuthCfg,
 }
 

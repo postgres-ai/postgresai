@@ -1,4 +1,4 @@
-//! HTTP authentication over the real app: every route needs credentials except /healthz.
+//! HTTP authentication over the real app: every route needs credentials except /livez.
 mod ingest_common;
 use base64::Engine;
 use pgai_mon::auth::{Auth, AuthCfg};
@@ -6,7 +6,7 @@ use pgai_mon::auth::{Auth, AuthCfg};
 fn auth(token: Option<&str>, basic: Option<(&str, &str)>) -> Auth {
     let mut env = vec![];
     if let Some(t) = token {
-        env.push(("PGAI_MON_AUTH_TOKEN".to_string(), t.to_string()));
+        env.push(("PGAI_MON_TOKEN".to_string(), t.to_string()));
     }
     if let Some((u, p)) = basic {
         env.push(("PGAI_MON_AUTH_USERNAME".to_string(), u.to_string()));
@@ -22,7 +22,7 @@ const TOKEN: &str = "test-token-0123456789";
 const PW: &str = "test-password-0123456789";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_route_but_healthz_needs_credentials() {
+async fn every_route_but_livez_needs_credentials() {
     let d = tempfile::tempdir().unwrap();
     let s = ingest_common::serve(d.path(), auth(Some(TOKEN), Some(("pgai", PW))), |_, _| {
         axum::Router::new()
@@ -38,9 +38,12 @@ async fn every_route_but_healthz_needs_credentials() {
         base64::engine::general_purpose::STANDARD.encode("pgai:nope-nope-nope-nope")
     );
 
-    let r = c.get(format!("{}/healthz", s.base)).send().await.unwrap();
+    let r = c.get(format!("{}/livez", s.base)).send().await.unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(r.text().await.unwrap(), "ok\n");
+    // the old name is not a second unauthenticated route
+    let r = c.get(format!("{}/healthz", s.base)).send().await.unwrap();
+    assert_ne!(r.status(), 200);
 
     for (m, path) in [
         ("GET", "/health"),
@@ -107,7 +110,10 @@ async fn token_only_advertises_bearer_and_disabled_serves_everything() {
 
     let d2 = tempfile::tempdir().unwrap();
     let s2 = ingest_common::serve(d2.path(), Auth::disabled(), |_, _| axum::Router::new()).await;
-    assert_eq!(c.get(format!("{}/health", s2.base)).send().await.unwrap().status(), 200);
+    let r = c.get(format!("{}/health", s2.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let h: serde_json::Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(h["version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]
@@ -121,8 +127,8 @@ fn binary_refuses_to_serve_without_credentials() {
             "--listen",
             "127.0.0.1:0",
         ])
-        .env_remove("PGAI_MON_AUTH_TOKEN")
-        .env_remove("PGAI_MON_AUTH_TOKEN_FILE")
+        .env_remove("PGAI_MON_TOKEN")
+        .env_remove("PGAI_MON_TOKEN_FILE")
         .env_remove("PGAI_MON_AUTH_USERNAME")
         .env_remove("PGAI_MON_AUTH_PASSWORD")
         .env_remove("PGAI_MON_AUTH_PASSWORD_FILE")

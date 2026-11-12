@@ -68,7 +68,7 @@ enum Cmd {
         /// Don't run background compaction (benchmarks of a fixed store).
         #[arg(long)]
         no_compact: bool,
-        /// Bearer token file (or PGAI_MON_AUTH_* in the environment; see auth.rs).
+        /// Bearer token file (or PGAI_MON_TOKEN(_FILE) / PGAI_MON_AUTH_* in the environment; see auth.rs).
         #[arg(long)]
         auth_token_file: Option<PathBuf>,
         /// Serve without authentication (local development only).
