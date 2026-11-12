@@ -73,12 +73,13 @@ assert_grafana_datasources() {
 
   DATASOURCES_JSON="${datasources_json}" node <<'NODE'
 const datasources = JSON.parse(process.env.DATASOURCES_JSON || "[]");
+// config/grafana/provisioning/datasources/pgai-mon.yml provisions exactly one
+// datasource; the old stack's PGWatch-* and Infinity ones must be gone (an
+// upgraded volume deletes them through deleteDatasources).
 const expected = new Map([
-  ["PGWatch-PostgreSQL", { uid: "P031DD592934B2F1F", orgId: 1, isDefault: false }],
-  ["PGWatch-Prometheus", { uid: "P7A0D6631BB10B34F", orgId: 1, isDefault: true }],
-  ["Infinity", { uid: "aerffb0z8rjlsc", orgId: 1, isDefault: false }],
+  ["pgai-mon", { uid: "pgai-mon", orgId: 1, isDefault: false, type: "yesoreyeram-infinity-datasource" }],
 ]);
-const staleUids = new Set(["stale-postgresql", "stale-prometheus", "stale-infinity"]);
+const staleUids = new Set(["stale-pgai-mon"]);
 const byName = new Map(datasources.map((datasource) => [datasource.name, datasource]));
 
 if (datasources.length !== expected.size) {
@@ -101,6 +102,9 @@ for (const [name, expectedConfig] of expected) {
   }
   if (datasource.orgId !== expectedConfig.orgId) {
     throw new Error(`${name} orgId drifted: expected ${expectedConfig.orgId}, got ${datasource.orgId}`);
+  }
+  if (datasource.type !== expectedConfig.type) {
+    throw new Error(`${name} type drifted: expected ${expectedConfig.type}, got ${datasource.type}`);
   }
   if (datasource.isDefault !== expectedConfig.isDefault) {
     throw new Error(`${name} default flag drifted: expected ${expectedConfig.isDefault}, got ${datasource.isDefault}`);
@@ -201,24 +205,20 @@ set -eu
 apk add --no-cache sqlite
 changed="$(sqlite3 "${GRAFANA_DB_PATH}" <<'SQL'
 UPDATE data_source
-SET uid = CASE name
-    WHEN 'PGWatch-PostgreSQL' THEN 'stale-postgresql'
-    WHEN 'PGWatch-Prometheus' THEN 'stale-prometheus'
-    WHEN 'Infinity' THEN 'stale-infinity'
-  END,
-  is_default = CASE name WHEN 'PGWatch-PostgreSQL' THEN 1 ELSE 0 END,
+SET uid = 'stale-pgai-mon',
+  is_default = 1,
   updated = datetime('now')
-WHERE name IN ('PGWatch-PostgreSQL', 'PGWatch-Prometheus', 'Infinity');
+WHERE name = 'pgai-mon';
 SELECT changes();
 SQL
 )"
-if [ "${changed}" != "3" ]; then
-  echo "ERROR: expected to corrupt three Grafana datasources, changed=${changed}" >&2
+if [ "${changed}" != "1" ]; then
+  echo "ERROR: expected to corrupt one Grafana datasource, changed=${changed}" >&2
   exit 1
 fi
 stale_count="$(sqlite3 "${GRAFANA_DB_PATH}" "SELECT count(*) FROM data_source WHERE uid LIKE 'stale-%';")"
-if [ "${stale_count}" != "3" ]; then
-  echo "ERROR: expected three stale Grafana datasource UIDs, got ${stale_count}" >&2
+if [ "${stale_count}" != "1" ]; then
+  echo "ERROR: expected one stale Grafana datasource UID, got ${stale_count}" >&2
   exit 1
 fi
 SH
