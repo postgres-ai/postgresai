@@ -1,4 +1,4 @@
-"""Static regression tests for xmin horizon pgwatch SQL/dashboard definitions."""
+"""Static regression tests for the xmin horizon SQL in mon/metrics.yml and the pgai-mon Dashboard 7."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 METRICS_PATH = ROOT / "mon" / "metrics.yml"
 DASHBOARD_7_PATH = (
-    ROOT / "old" / "config" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_xmin_horizon.json"
+    ROOT / "mon" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_xmin_horizon_pgai_mon.json"
 )
 
 
@@ -42,6 +42,11 @@ def dashboard_panel(title: str) -> dict[str, Any]:
         if panel.get("title") == title:
             return panel
     raise AssertionError(f"Dashboard panel {title!r} not found")
+
+
+def target_sql(target: dict[str, Any]) -> str:
+    """The SQL body an Infinity target POSTs to pgai-mon /sql."""
+    return target.get("url_options", {}).get("data", "")
 
 
 def normalized(sql_text: str) -> str:
@@ -299,12 +304,16 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         targets = panel.get("targets", [])
 
         self.assertEqual(len(targets), 1)
-        self.assertTrue(targets[0].get("instant"))
-        self.assertIn(
-            "last_over_time(pgwatch_pg_autovacuum_blocked_wait_seconds",
-            targets[0]["expr"],
+        self.assertEqual(targets[0].get("format"), "table")
+        sql_text = normalized(target_sql(targets[0]))
+        self.assertIn("prom_last_over_time(('pgwatch_pg_autovacuum_blocked_wait_seconds')", sql_text)
+        # Instant: evaluated once, at the end of the range, over a 1m lookback.
+        self.assertRegex(
+            sql_text,
+            r"\(cast\(\(\$\{__to\} - \$\{__to\} % \$\{__interval_ms\}\) as bigint\)\), "
+            r"\(cast\(\(\$\{__to\} - \$\{__to\} % \$\{__interval_ms\}\) as bigint\)\)",
         )
-        self.assertIn("[1m]", targets[0]["expr"])
+        self.assertIn("(60000::bigint))", sql_text)
 
     def test_replication_slots_metric_preserves_null_xmin_age(self) -> None:
         sql_text = metric_sql("replication_slots")
@@ -639,7 +648,7 @@ class PgVacuumProgressTest(unittest.TestCase):
 class Dashboard7TemplateVarsTest(unittest.TestCase):
     """Pin Dashboard 7 template variables that the new top-N panels rely on.
 
-    `top_n` controls every `topk()` panel and `db_name` scopes per-database
+    `top_n` controls every `prom_topk()` panel and `db_name` scopes per-database
     series; renaming or removing either silently breaks the dashboard with
     no other test catching the regression.
     """
@@ -673,9 +682,9 @@ class Dashboard7TemplateVarsTest(unittest.TestCase):
         self.assertEqual(variable.get("type"), "query")
         # The dropdown must filter to monitored databases visible to the
         # selected cluster/node, excluding the always-empty `template1`.
-        query_text = variable.get("query", {}).get("query", "")
-        self.assertIn("pgwatch_db_size_size_b", query_text)
-        self.assertIn("datname!=\"template1\"", query_text)
+        query_text = target_sql(variable.get("query", {}).get("infinityQuery", {}))
+        self.assertIn("metric = 'pgwatch_db_size_size_b'", query_text)
+        self.assertIn("coalesce(labels['datname'], '') <> 'template1'", query_text)
 
     def test_top_n_panels_apply_topk_with_variable(self) -> None:
         with DASHBOARD_7_PATH.open() as dashboard_file:
@@ -694,8 +703,8 @@ class Dashboard7TemplateVarsTest(unittest.TestCase):
             seen.add(title)
             targets = panel.get("targets", [])
             self.assertTrue(
-                any("topk($top_n," in (t.get("expr") or "") for t in targets),
-                f"Panel {title!r} does not apply `topk($top_n, ...)`",
+                any("prom_topk((CAST(${top_n:sqlstring} AS BIGINT))," in target_sql(t) for t in targets),
+                f"Panel {title!r} does not apply `prom_topk(${{top_n}}, ...)`",
             )
 
         missing = expected_panels - seen
