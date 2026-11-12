@@ -1,0 +1,90 @@
+{"kind":"constraint","schema":"app","name":"t10.t10_pkey","definition":"ALTER TABLE app.t10 ADD CONSTRAINT t10_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t100.t100_pkey","definition":"ALTER TABLE app.t100 ADD CONSTRAINT t100_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t110.t110_pkey","definition":"ALTER TABLE app.t110 ADD CONSTRAINT t110_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t112.t112_pkey","definition":"ALTER TABLE app.t112 ADD CONSTRAINT t112_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t117.t117_pkey","definition":"ALTER TABLE app.t117 ADD CONSTRAINT t117_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t118.t118_pkey","definition":"ALTER TABLE app.t118 ADD CONSTRAINT t118_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t137.t137_pkey","definition":"ALTER TABLE app.t137 ADD CONSTRAINT t137_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t15.t15_pkey","definition":"ALTER TABLE app.t15 ADD CONSTRAINT t15_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t252.t252_pkey","definition":"ALTER TABLE app.t252 ADD CONSTRAINT t252_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t280.t280_pkey","definition":"ALTER TABLE app.t280 ADD CONSTRAINT t280_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t30.t30_pkey","definition":"ALTER TABLE app.t30 ADD CONSTRAINT t30_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t47.t47_pkey","definition":"ALTER TABLE app.t47 ADD CONSTRAINT t47_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t60.t60_pkey","definition":"ALTER TABLE app.t60 ADD CONSTRAINT t60_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"app","name":"t79.t79_pkey","definition":"ALTER TABLE app.t79 ADD CONSTRAINT t79_pkey PRIMARY KEY (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"public","name":"pgbench_accounts.pgbench_accounts_pkey","definition":"ALTER TABLE public.pgbench_accounts ADD CONSTRAINT pgbench_accounts_pkey PRIMARY KEY (aid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"public","name":"pgbench_branches.pgbench_branches_pkey","definition":"ALTER TABLE public.pgbench_branches ADD CONSTRAINT pgbench_branches_pkey PRIMARY KEY (bid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"constraint","schema":"public","name":"pgbench_tellers.pgbench_tellers_pkey","definition":"ALTER TABLE public.pgbench_tellers ADD CONSTRAINT pgbench_tellers_pkey PRIMARY KEY (tid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t100_a","definition":"CREATE INDEX t100_a ON app.t100 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t100_ab","definition":"CREATE INDEX t100_ab ON app.t100 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t100_b","definition":"CREATE INDEX t100_b ON app.t100 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t100_pkey","definition":"CREATE UNIQUE INDEX t100_pkey ON app.t100 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t10_a","definition":"CREATE INDEX t10_a ON app.t10 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t10_ab","definition":"CREATE INDEX t10_ab ON app.t10 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t10_b","definition":"CREATE INDEX t10_b ON app.t10 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t10_pkey","definition":"CREATE UNIQUE INDEX t10_pkey ON app.t10 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t110_a","definition":"CREATE INDEX t110_a ON app.t110 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t110_ab","definition":"CREATE INDEX t110_ab ON app.t110 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t110_b","definition":"CREATE INDEX t110_b ON app.t110 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t110_pkey","definition":"CREATE UNIQUE INDEX t110_pkey ON app.t110 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t112_a","definition":"CREATE INDEX t112_a ON app.t112 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t112_b","definition":"CREATE INDEX t112_b ON app.t112 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t112_pkey","definition":"CREATE UNIQUE INDEX t112_pkey ON app.t112 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t112_unused","definition":"CREATE INDEX t112_unused ON app.t112 USING btree (c)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t117_a","definition":"CREATE INDEX t117_a ON app.t117 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t117_b","definition":"CREATE INDEX t117_b ON app.t117 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t117_pkey","definition":"CREATE UNIQUE INDEX t117_pkey ON app.t117 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t118_a","definition":"CREATE INDEX t118_a ON app.t118 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t118_b","definition":"CREATE INDEX t118_b ON app.t118 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t118_pkey","definition":"CREATE UNIQUE INDEX t118_pkey ON app.t118 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t137_a","definition":"CREATE INDEX t137_a ON app.t137 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t137_b","definition":"CREATE INDEX t137_b ON app.t137 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t137_pkey","definition":"CREATE UNIQUE INDEX t137_pkey ON app.t137 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t15_a","definition":"CREATE INDEX t15_a ON app.t15 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t15_b","definition":"CREATE INDEX t15_b ON app.t15 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t15_pkey","definition":"CREATE UNIQUE INDEX t15_pkey ON app.t15 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t252_a","definition":"CREATE INDEX t252_a ON app.t252 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t252_b","definition":"CREATE INDEX t252_b ON app.t252 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t252_pkey","definition":"CREATE UNIQUE INDEX t252_pkey ON app.t252 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t252_unused","definition":"CREATE INDEX t252_unused ON app.t252 USING btree (c)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t280_a","definition":"CREATE INDEX t280_a ON app.t280 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t280_ab","definition":"CREATE INDEX t280_ab ON app.t280 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t280_b","definition":"CREATE INDEX t280_b ON app.t280 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t280_pkey","definition":"CREATE UNIQUE INDEX t280_pkey ON app.t280 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t280_unused","definition":"CREATE INDEX t280_unused ON app.t280 USING btree (c)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t30_a","definition":"CREATE INDEX t30_a ON app.t30 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t30_ab","definition":"CREATE INDEX t30_ab ON app.t30 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t30_b","definition":"CREATE INDEX t30_b ON app.t30 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t30_pkey","definition":"CREATE UNIQUE INDEX t30_pkey ON app.t30 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t47_a","definition":"CREATE INDEX t47_a ON app.t47 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t47_b","definition":"CREATE INDEX t47_b ON app.t47 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t47_pkey","definition":"CREATE UNIQUE INDEX t47_pkey ON app.t47 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t60_a","definition":"CREATE INDEX t60_a ON app.t60 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t60_ab","definition":"CREATE INDEX t60_ab ON app.t60 USING btree (a, b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t60_b","definition":"CREATE INDEX t60_b ON app.t60 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t60_pkey","definition":"CREATE UNIQUE INDEX t60_pkey ON app.t60 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t79_a","definition":"CREATE INDEX t79_a ON app.t79 USING btree (a)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t79_b","definition":"CREATE INDEX t79_b ON app.t79 USING btree (b)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"app","name":"t79_pkey","definition":"CREATE UNIQUE INDEX t79_pkey ON app.t79 USING btree (id)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"public","name":"pgbench_accounts_pkey","definition":"CREATE UNIQUE INDEX pgbench_accounts_pkey ON public.pgbench_accounts USING btree (aid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"public","name":"pgbench_branches_pkey","definition":"CREATE UNIQUE INDEX pgbench_branches_pkey ON public.pgbench_branches USING btree (bid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"index","schema":"public","name":"pgbench_tellers_pkey","definition":"CREATE UNIQUE INDEX pgbench_tellers_pkey ON public.pgbench_tellers USING btree (tid)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t10","definition":"CREATE TABLE app.t10 (id bigint NOT NULL DEFAULT nextval('app.t10_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t100","definition":"CREATE TABLE app.t100 (id bigint NOT NULL DEFAULT nextval('app.t100_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t110","definition":"CREATE TABLE app.t110 (id bigint NOT NULL DEFAULT nextval('app.t110_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t112","definition":"CREATE TABLE app.t112 (id bigint NOT NULL DEFAULT nextval('app.t112_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t117","definition":"CREATE TABLE app.t117 (id bigint NOT NULL DEFAULT nextval('app.t117_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t118","definition":"CREATE TABLE app.t118 (id bigint NOT NULL DEFAULT nextval('app.t118_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t137","definition":"CREATE TABLE app.t137 (id bigint NOT NULL DEFAULT nextval('app.t137_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t15","definition":"CREATE TABLE app.t15 (id bigint NOT NULL DEFAULT nextval('app.t15_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t252","definition":"CREATE TABLE app.t252 (id bigint NOT NULL DEFAULT nextval('app.t252_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t280","definition":"CREATE TABLE app.t280 (id bigint NOT NULL DEFAULT nextval('app.t280_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t30","definition":"CREATE TABLE app.t30 (id bigint NOT NULL DEFAULT nextval('app.t30_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t47","definition":"CREATE TABLE app.t47 (id bigint NOT NULL DEFAULT nextval('app.t47_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t60","definition":"CREATE TABLE app.t60 (id bigint NOT NULL DEFAULT nextval('app.t60_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"app","name":"t79","definition":"CREATE TABLE app.t79 (id bigint NOT NULL DEFAULT nextval('app.t79_id_seq'::regclass), a integer, b integer, c text, d timestamp with time zone DEFAULT now(), e jsonb)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"public","name":"pgbench_accounts","definition":"CREATE TABLE public.pgbench_accounts (aid integer NOT NULL, bid integer, abalance integer, filler character(84)) WITH (fillfactor=100)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"public","name":"pgbench_branches","definition":"CREATE TABLE public.pgbench_branches (bid integer NOT NULL, bbalance integer, filler character(88)) WITH (fillfactor=100)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"public","name":"pgbench_history","definition":"CREATE TABLE public.pgbench_history (tid integer, bid integer, aid integer, delta integer, mtime timestamp without time zone, filler character(22))","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"table","schema":"public","name":"pgbench_tellers","definition":"CREATE TABLE public.pgbench_tellers (tid integer NOT NULL, bid integer, tbalance integer, filler character(84)) WITH (fillfactor=100)","ts_ms":1794221982694,"dbname":"target_database"}
+{"kind":"view","schema":"postgres_ai","name":"pg_statistic","definition":" SELECT n.nspname AS schemaname,\n    c.relname AS tablename,\n    a.attname,\n    s.stanullfrac AS null_frac,\n    s.stawidth AS avg_width,\n    false AS inherited\n   FROM (((pg_statistic s\n     JOIN pg_class c ON ((c.oid = s.starelid)))\n     JOIN pg_namespace n ON ((n.oid = c.relnamespace)))\n     JOIN pg_attribute a ON (((a.attrelid = s.starelid) AND (a.attnum = s.staattnum))))\n  WHERE ((a.attnum > 0) AND (NOT a.attisdropped));","ts_ms":1794221982694,"dbname":"target_database"}

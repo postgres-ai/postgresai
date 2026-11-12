@@ -67,6 +67,7 @@ from reporter import d004 as d004_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
+from reporter.mon_client import MonClient
 from reporter.wait_ready import read_sources
 try:
     from monitoring_flask_backend.promql_utils import escape_promql_label as _promql_escape_label
@@ -391,7 +392,9 @@ class PostgresReportGenerator:
                  postgres_sink_url: str = "postgresql://pgwatch@sink-postgres:5432/measurements",
                  excluded_databases: Optional[List[str]] = None,
                  use_current_time: bool = False,
-                 sources_path: Optional[str] = None):
+                 sources_path: Optional[str] = None,
+                 mon_url: Optional[str] = None,
+                 mon_token: Optional[str] = None):
         """
         Initialize the PostgreSQL report generator.
 
@@ -402,7 +405,16 @@ class PostgresReportGenerator:
             excluded_databases: Additional databases to exclude from reports
             use_current_time: If True, use current time instead of flooring to hour boundary.
                              Useful for testing with recently collected data.
+            mon_url: pgai-mon URL (default: $PGAI_MON_URL). When set, metrics, query texts and
+                     index definitions come from pgai-mon's POST /sql, and neither Prometheus nor
+                     the Postgres sink is used.
+            mon_token: bearer token for pgai-mon (default: $PGAI_MON_TOKEN)
         """
+        mon_url = mon_url or os.environ.get('PGAI_MON_URL') or None
+        # Instant queries evaluate at this module's clock (tests freeze it).
+        self.mon: Optional[MonClient] = MonClient(
+            mon_url, mon_token or os.environ.get('PGAI_MON_TOKEN') or None,
+            clock=lambda: time.time()) if mon_url else None
         self.prometheus_url = prometheus_url
         self.base_url = f"{prometheus_url}/api/v1"
         self.postgres_sink_url = postgres_sink_url
@@ -478,7 +490,9 @@ class PostgresReportGenerator:
         return _promql_escape_label(str(value))
 
     def test_connection(self) -> bool:
-        """Test connection to Prometheus."""
+        """Test connection to Prometheus (pgai-mon when configured)."""
+        if self.mon:
+            return self.mon.healthy()
         try:
             response = requests.get(f"{self.base_url}/status/config", timeout=10, auth=self.auth)
             return response.status_code == 200
@@ -516,6 +530,12 @@ class PostgresReportGenerator:
         Returns:
             Dictionary mapping index names to their definitions
         """
+        if self.mon:
+            try:
+                return self.mon.index_definitions(db_name)
+            except Exception as e:
+                logger.error(f"Error fetching index definitions from pgai-mon: {e}")
+                return {}
         if not self.pg_conn:
             if not self.connect_postgres_sink():
                 return {}
@@ -578,6 +598,12 @@ class PostgresReportGenerator:
         Returns:
             Dictionary with database names as keys, containing queryid->query mappings
         """
+        if self.mon:
+            try:
+                return self.mon.query_texts(query_text_limit, db_names)
+            except Exception as e:
+                logger.error(f"Error fetching query texts from pgai-mon: {e}")
+                return {}
         if not self.pg_conn:
             if not self.connect_postgres_sink():
                 return {}
@@ -652,6 +678,8 @@ class PostgresReportGenerator:
         Returns:
             Dictionary containing the query results
         """
+        if self.mon:
+            return self.mon.query_instant(query)
         params = {'query': query}
 
         try:
@@ -5140,6 +5168,8 @@ class PostgresReportGenerator:
         Returns:
             List of query results
         """
+        if self.mon:
+            return self.mon.query_range(query, start_time.timestamp(), end_time.timestamp(), step)
         params = {
             'query': query,
             'start': start_time.timestamp(),
@@ -7132,6 +7162,8 @@ def main():
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument('--prometheus-url', default='http://sink-prometheus:9090',
                         help='Prometheus URL (default: http://sink-prometheus:9090)')
+    parser.add_argument('--mon-url', default=os.environ.get('PGAI_MON_URL') or None,
+                        help='pgai-mon URL (default: $PGAI_MON_URL); replaces --prometheus-url and --postgres-sink-url')
     parser.add_argument('--postgres-sink-url', default='postgresql://pgwatch@sink-postgres:5432/measurements',
                         help='Postgres sink connection string (default: postgresql://pgwatch@sink-postgres:5432/measurements)')
     parser.add_argument('--cluster', default=None,
@@ -7172,12 +7204,14 @@ def main():
 
     generator = PostgresReportGenerator(
         args.prometheus_url, args.postgres_sink_url, excluded_databases,
-        use_current_time=args.use_current_time, sources_path=args.sources_path
+        use_current_time=args.use_current_time, sources_path=args.sources_path,
+        mon_url=args.mon_url
     )
 
     # Test connection
     if not generator.test_connection():
-        logger.error("Cannot connect to Prometheus. Make sure it's running and accessible.")
+        logger.error("Cannot connect to pgai-mon. Make sure it's running and accessible." if getattr(generator, 'mon', None) else
+                     "Cannot connect to Prometheus. Make sure it's running and accessible.")
         sys.exit(1)
 
     try:
