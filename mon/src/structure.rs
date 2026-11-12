@@ -49,8 +49,15 @@ where n.nspname not in ('pg_catalog', 'information_schema') and p.prokind in ('f
   and not exists (select 1 from pg_depend dp where dp.objid = p.oid and dp.deptype = 'e')
 "#;
 
-/// Current (latest, not dropped) object definition hashes per database, read from the store
-/// at startup so a restart doesn't rewrite every object.
+/// Key of one database's object state: the source name and the database name. Rows written
+/// before the source was recorded have no source: their key has an empty one, so the first
+/// snapshot after an upgrade writes every object of that database once more, with its source.
+pub fn objects_key(source: Option<&str>, dbname: &str) -> String {
+    format!("{}\u{1f}{dbname}", source.unwrap_or(""))
+}
+
+/// Current (latest, not dropped) object definition hashes per `objects_key`, read from the
+/// store at startup so a restart doesn't rewrite every object.
 pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, HashMap<ObjKey, u64>>> {
     let files: Vec<_> = {
         let c = shared.catalog.lock().unwrap();
@@ -65,15 +72,17 @@ pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, H
     db.execute_batch("SET memory_limit='64MB'; SET threads=1;")?;
     let refs: Vec<_> = files.iter().collect();
     let mut st = db.prepare(&format!(
-        "SELECT dbname, kind, schema, name, definition FROM read_parquet({}) \
-         QUALIFY row_number() OVER (PARTITION BY dbname, kind, schema, name ORDER BY ts DESC) = 1",
-        file_list_sql(&shared.root, &refs)
+        "SELECT dbname, kind, schema, name, definition, source FROM {} \
+         QUALIFY row_number() OVER (PARTITION BY source, dbname, kind, schema, name ORDER BY ts DESC) = 1",
+        crate::store::parquet_src("objects", &file_list_sql(&shared.root, &refs))
     ))?;
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let def: Option<String> = r.get(4)?;
         if let Some(d) = def {
-            out.entry(r.get(0)?)
+            let source: Option<String> = r.get(5)?;
+            let dbname: String = r.get(0)?;
+            out.entry(objects_key(source.as_deref(), &dbname))
                 .or_default()
                 .insert((r.get(1)?, r.get(2)?, r.get(3)?), xxh3_64(d.as_bytes()));
         }
@@ -85,6 +94,7 @@ pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, H
 /// definitions are read; a cut snapshot reports no drops (objects past the cut were not seen).
 pub async fn snapshot_objects(
     c: &mut Client,
+    src: &SourceId,
     dbname: &str,
     state: &mut HashMap<ObjKey, u64>,
     max_rows: usize,
@@ -109,6 +119,7 @@ pub async fn snapshot_objects(
                 schema: key.1.clone(),
                 name: key.2.clone(),
                 definition: Some(def),
+                src: src.clone(),
             });
             state.insert(key.clone(), h);
         }
@@ -128,6 +139,7 @@ pub async fn snapshot_objects(
             schema: k.1,
             name: k.2,
             definition: None,
+            src: src.clone(),
         });
     }
     Ok(out)
@@ -140,6 +152,7 @@ pub type TextState = HashMap<(i64, String), (u64, i64)>;
 /// and refresh last_seen at most hourly per id. Texts are pgss-normalized ($1), so no values.
 pub async fn snapshot_query_texts(
     c: &Client,
+    src: &SourceId,
     state: &mut TextState,
     fp: &std::sync::Mutex<HashMap<String, i64>>,
 ) -> anyhow::Result<Vec<QueryText>> {
@@ -165,6 +178,7 @@ pub async fn snapshot_query_texts(
                     query: None,
                     first_seen: now,
                     last_seen: now,
+                    src: src.clone(),
                 });
                 *last = now;
             }
@@ -195,9 +209,141 @@ pub async fn snapshot_query_texts(
                 query: Some(q),
                 first_seen: now,
                 last_seen: now,
+                src: src.clone(),
             });
             state.insert(key, (h, now));
         }
     }
     Ok(out)
+}
+
+/// One `pgai-mon load --query-texts` line.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextLine {
+    queryid: i64,
+    dbname: String,
+    query: Option<String>,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    cluster: Option<String>,
+    #[serde(default)]
+    node_name: Option<String>,
+}
+
+/// One `pgai-mon load --objects` line (definition null = dropped).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObjectLine {
+    ts_ms: i64,
+    dbname: String,
+    kind: String,
+    schema: String,
+    name: String,
+    definition: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    cluster: Option<String>,
+    #[serde(default)]
+    node_name: Option<String>,
+}
+
+fn read_jsonl<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    mut f: impl FnMut(T) -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
+    use std::io::BufRead;
+    let rd: Box<dyn BufRead> = if path.as_os_str() == "-" {
+        Box::new(std::io::BufReader::new(std::io::stdin()))
+    } else {
+        Box::new(std::io::BufReader::new(std::fs::File::open(path)?))
+    };
+    let mut n = 0;
+    for (i, line) in rd.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: T = serde_json::from_str(&line).map_err(|e| anyhow::anyhow!("{}:{}: {e}", path.display(), i + 1))?;
+        f(v)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Load query texts and object events from JSON lines into a store (test fixtures):
+///   query texts: {"queryid", "dbname", "query", "first_seen_ms", "last_seen_ms"}
+///   objects:     {"ts_ms", "dbname", "kind", "schema", "name", "definition"}
+/// Both optionally with "source", "cluster", "node_name". Rows go through the WAL and a
+/// flush like collected ones; `compact` then compacts every day.
+pub fn load_jsonl(
+    store: &mut crate::store::StoreCore,
+    query_texts: Option<&std::path::Path>,
+    objects: Option<&std::path::Path>,
+    compact: bool,
+) -> anyhow::Result<serde_json::Value> {
+    const CHUNK: usize = 10_000;
+    let mut texts = 0;
+    if let Some(p) = query_texts {
+        let mut buf = Vec::new();
+        texts = read_jsonl(p, |l: TextLine| {
+            buf.push(QueryText {
+                queryid: l.queryid,
+                query_hash: xxh3_64(l.query.as_deref().unwrap_or("").as_bytes()),
+                dbname: l.dbname,
+                query: l.query,
+                first_seen: l.first_seen_ms,
+                last_seen: l.last_seen_ms,
+                src: SourceId {
+                    source: l.source,
+                    cluster: l.cluster,
+                    node_name: l.node_name,
+                },
+            });
+            if buf.len() >= CHUNK {
+                store.append(Record::QueryTexts(std::mem::take(&mut buf)))?;
+                store.flush_if_full()?;
+            }
+            Ok(())
+        })?;
+        if !buf.is_empty() {
+            store.append(Record::QueryTexts(buf))?;
+        }
+    }
+    let mut objs = 0;
+    if let Some(p) = objects {
+        let mut buf = Vec::new();
+        objs = read_jsonl(p, |l: ObjectLine| {
+            buf.push(ObjectEvent {
+                ts: l.ts_ms,
+                dbname: l.dbname,
+                kind: l.kind,
+                schema: l.schema,
+                name: l.name,
+                definition: l.definition,
+                src: SourceId {
+                    source: l.source,
+                    cluster: l.cluster,
+                    node_name: l.node_name,
+                },
+            });
+            if buf.len() >= CHUNK {
+                store.append(Record::Objects(std::mem::take(&mut buf)))?;
+                store.flush_if_full()?;
+            }
+            Ok(())
+        })?;
+        if !buf.is_empty() {
+            store.append(Record::Objects(buf))?;
+        }
+    }
+    store.flush()?;
+    if compact {
+        store.compactor()?.run_once(now_ms(), true)?;
+    }
+    Ok(serde_json::json!({"query_texts": texts, "objects": objs}))
 }

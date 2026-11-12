@@ -880,11 +880,22 @@ impl NodeState {
     }
 }
 
+/// A source's identity as its series label it: `dbname` (the source name), and the
+/// `cluster` / `node_name` custom tags.
+pub fn source_id(src: &Source) -> SourceId {
+    SourceId {
+        source: Some(src.name.clone()),
+        cluster: src.custom_tags.get("cluster").cloned(),
+        node_name: src.custom_tags.get("node_name").cloned(),
+    }
+}
+
 /// What the collector shares across sources.
 #[derive(Clone)]
 pub struct CollectorCtx {
     pub em: Emitter,
-    /// datname -> object definition hashes (structure snapshots diff against them).
+    /// structure::objects_key(source, datname) -> object definition hashes (snapshots diff
+    /// against them).
     pub objects: Arc<Mutex<HashMap<String, HashMap<crate::structure::ObjKey, u64>>>>,
 }
 
@@ -915,6 +926,11 @@ impl DbCtx {
         base.insert("sys_id".into(), info.sys_id);
         base.extend(self.src.scrape_labels.clone());
         Some(base.into_iter().collect())
+    }
+
+    /// The node identity structure rows (query_texts, objects) carry.
+    fn source_id(&self) -> SourceId {
+        source_id(&self.src)
     }
 
     fn status<R>(&self, f: impl FnOnce(&mut DbStatus) -> R) -> R {
@@ -1172,16 +1188,19 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
                 collect_metric(c, m, sql.as_deref().unwrap(), &base, em, st).await?;
             }
             (JobKind::QueryTexts, JobState::Texts(texts)) => {
-                let v = crate::structure::snapshot_query_texts(c, texts, &em.shared.fp_to_queryid).await?;
+                let v =
+                    crate::structure::snapshot_query_texts(c, &db.source_id(), texts, &em.shared.fp_to_queryid).await?;
                 if !v.is_empty() {
                     let _ = em.tx.send(Msg::Rec(Record::QueryTexts(v))).await;
                 }
             }
             (JobKind::Objects, _) => {
                 let datname = db.datname.read().unwrap().clone().unwrap_or_default();
-                let mut objs = db.ctx.objects.lock().unwrap().remove(&datname).unwrap_or_default();
-                let r = crate::structure::snapshot_objects(c, &datname, &mut objs, em.cfg.objects_max_rows).await;
-                db.ctx.objects.lock().unwrap().insert(datname, objs);
+                let sid = db.source_id();
+                let key = crate::structure::objects_key(sid.source.as_deref(), &datname);
+                let mut objs = db.ctx.objects.lock().unwrap().remove(&key).unwrap_or_default();
+                let r = crate::structure::snapshot_objects(c, &sid, &datname, &mut objs, em.cfg.objects_max_rows).await;
+                db.ctx.objects.lock().unwrap().insert(key, objs);
                 let v = r?;
                 if !v.is_empty() {
                     let _ = em.tx.send(Msg::Rec(Record::Objects(v))).await;
@@ -1696,5 +1715,22 @@ mod tests {
         assert_eq!(go_time_utc(1_704_164_645_123_400), "2024-01-02 03:04:05.1234 +0000 UTC");
         assert_eq!(go_time_utc(-1), "1969-12-31 23:59:59.999999 +0000 UTC");
         assert_eq!(go_time_utc(951_782_400_000_000), "2000-02-29 00:00:00 +0000 UTC");
+    }
+
+    #[test]
+    fn structure_rows_carry_the_series_identity() {
+        let src: Source =
+            serde_yaml::from_str("{name: prod1, conn_str: x, custom_tags: {cluster: main, node_name: n1, env: p}}")
+                .unwrap();
+        assert_eq!(
+            source_id(&src),
+            SourceId {
+                source: Some("prod1".into()),
+                cluster: Some("main".into()),
+                node_name: Some("n1".into()),
+            }
+        );
+        let bare: Source = serde_yaml::from_str("{name: x, conn_str: y}").unwrap();
+        assert_eq!(source_id(&bare).cluster, None);
     }
 }

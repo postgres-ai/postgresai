@@ -358,14 +358,25 @@ pub fn empty_select(kind: &str) -> &'static str {
         "logs" => "SELECT NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS level, NULL::VARCHAR AS sqlstate, NULL::BIGINT AS pid, NULL::VARCHAR AS dbname, NULL::VARCHAR AS username, NULL::VARCHAR AS application, NULL::VARCHAR AS message, NULL::VARCHAR AS query_fingerprint, NULL::VARCHAR AS plan_hash, NULL::BIGINT AS queryid, NULL::VARCHAR AS raw WHERE false",
         "plan_events" => "SELECT NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS plan_hash, NULL::BIGINT AS queryid, NULL::VARCHAR AS dbname, NULL::DOUBLE AS total_ms, NULL::VARCHAR AS top_node, NULL::BIGINT AS shared_hit, NULL::BIGINT AS shared_read, NULL::BIGINT AS shared_dirtied, NULL::BIGINT AS shared_written, NULL::BIGINT AS temp_read, NULL::BIGINT AS temp_written WHERE false",
         "plan_defs" => "SELECT NULL::VARCHAR AS plan_hash, NULL::TIMESTAMPTZ AS first_seen, NULL::VARCHAR AS plan WHERE false",
-        "query_texts" => "SELECT NULL::BIGINT AS queryid, NULL::VARCHAR AS dbname, NULL::UBIGINT AS query_hash, NULL::VARCHAR AS query, NULL::TIMESTAMPTZ AS first_seen, NULL::TIMESTAMPTZ AS last_seen WHERE false",
-        "objects" => "SELECT NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS dbname, NULL::VARCHAR AS kind, NULL::VARCHAR AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS definition WHERE false",
+        "query_texts" => "SELECT NULL::BIGINT AS queryid, NULL::VARCHAR AS dbname, NULL::UBIGINT AS query_hash, NULL::VARCHAR AS query, NULL::TIMESTAMPTZ AS first_seen, NULL::TIMESTAMPTZ AS last_seen, NULL::VARCHAR AS source, NULL::VARCHAR AS cluster, NULL::VARCHAR AS node_name WHERE false",
+        "objects" => "SELECT NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS dbname, NULL::VARCHAR AS kind, NULL::VARCHAR AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS definition, NULL::VARCHAR AS source, NULL::VARCHAR AS cluster, NULL::VARCHAR AS node_name WHERE false",
         _ => unreachable!(),
     }
 }
 
 /// Merge SQL used by compaction: same physical columns, sorted (and deduplicated where the
 /// kind is a registry).
+/// `read_parquet` over a kind's files. query_texts and objects files written before the
+/// source columns (source, cluster, node_name) were added lack them: union_by_name reads
+/// those as NULL, so old and new files mix in views and compaction (compaction then writes
+/// the new layout).
+pub fn parquet_src(kind: &str, list: &str) -> String {
+    match kind {
+        "query_texts" | "objects" => format!("read_parquet({list}, union_by_name = true)"),
+        _ => format!("read_parquet({list})"),
+    }
+}
+
 pub fn merge_select(kind: &str, src: &str) -> String {
     match kind {
         "samples" => format!("SELECT * FROM {src} ORDER BY series_id, ts"),
@@ -373,7 +384,8 @@ pub fn merge_select(kind: &str, src: &str) -> String {
         "plan_defs" => format!("SELECT DISTINCT ON (plan_hash) * FROM {src} ORDER BY plan_hash, first_seen"),
         "query_texts" => format!(
             "SELECT queryid, dbname, query_hash, max(query) AS query, min(first_seen) AS first_seen, \
-             max(last_seen) AS last_seen FROM {src} GROUP BY ALL ORDER BY dbname, queryid, query_hash"
+             max(last_seen) AS last_seen, source, cluster, node_name FROM {src} GROUP BY ALL \
+             ORDER BY dbname, queryid, query_hash"
         ),
         // Event kinds: inputs are each time-sorted; a streaming copy (no global sort) keeps
         // compaction memory flat for large log days.
@@ -1025,11 +1037,12 @@ impl Appendable for QueryText {
         64 + self.query.as_ref().map_or(0, |q| q.len())
     }
     fn buf_ddl() -> &'static str {
-        "queryid BIGINT, dbname VARCHAR, query_hash UBIGINT, query VARCHAR, first_seen BIGINT, last_seen BIGINT"
+        "queryid BIGINT, dbname VARCHAR, query_hash UBIGINT, query VARCHAR, first_seen BIGINT, last_seen BIGINT, \
+         source VARCHAR, cluster VARCHAR, node_name VARCHAR"
     }
     fn projection() -> &'static str {
         "queryid, dbname, query_hash, query, make_timestamptz(first_seen * 1000) AS first_seen, \
-         make_timestamptz(last_seen * 1000) AS last_seen"
+         make_timestamptz(last_seen * 1000) AS last_seen, source, cluster, node_name"
     }
     fn ts_col() -> &'static str {
         "last_seen"
@@ -1047,7 +1060,10 @@ impl Appendable for QueryText {
             self.query_hash,
             self.query,
             self.first_seen,
-            self.last_seen
+            self.last_seen,
+            self.src.source,
+            self.src.cluster,
+            self.src.node_name
         ])
     }
 }
@@ -1057,10 +1073,11 @@ impl Appendable for ObjectEvent {
         96 + self.definition.as_ref().map_or(0, |q| q.len())
     }
     fn buf_ddl() -> &'static str {
-        "ts BIGINT, dbname VARCHAR, kind VARCHAR, schema VARCHAR, name VARCHAR, definition VARCHAR"
+        "ts BIGINT, dbname VARCHAR, kind VARCHAR, schema VARCHAR, name VARCHAR, definition VARCHAR, \
+         source VARCHAR, cluster VARCHAR, node_name VARCHAR"
     }
     fn projection() -> &'static str {
-        "make_timestamptz(ts * 1000) AS ts, dbname, kind, schema, name, definition"
+        "make_timestamptz(ts * 1000) AS ts, dbname, kind, schema, name, definition, source, cluster, node_name"
     }
     fn ts_col() -> &'static str {
         "ts"
@@ -1078,7 +1095,10 @@ impl Appendable for ObjectEvent {
             self.kind,
             self.schema,
             self.name,
-            self.definition
+            self.definition,
+            self.src.source,
+            self.src.cluster,
+            self.src.node_name
         ])
     }
 }
@@ -1175,7 +1195,7 @@ impl Compactor {
     fn merge(&self, job: Job) -> anyhow::Result<()> {
         let layout = { self.shared.catalog.lock().unwrap().samples_layout.clone() };
         let refs: Vec<&FileEntry> = job.inputs.iter().collect();
-        let src = format!("read_parquet({})", file_list_sql(&self.shared.root, &refs));
+        let src = parquet_src(&job.kind, &file_list_sql(&self.shared.root, &refs));
         let file_layout = if job.kind == "samples" { layout.as_str() } else { "v2" };
         let total_rows: u64 = job.inputs.iter().map(|f| f.rows).sum();
         // Samples sort (bounded by splitting into parts); other kinds stream wide rows
@@ -1327,7 +1347,8 @@ impl Compactor {
             let sum = |list: String| -> anyhow::Result<(i64, String)> {
                 Ok(self.db.query_row(
                     &format!(
-                        "SELECT count(*), coalesce(sum(hash(t)::HUGEINT), 0)::VARCHAR FROM read_parquet({list}) t"
+                        "SELECT count(*), coalesce(sum(hash(t)::HUGEINT), 0)::VARCHAR FROM {} t",
+                        parquet_src(&job.kind, &list)
                     ),
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?)),

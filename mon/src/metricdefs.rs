@@ -171,6 +171,42 @@ impl MetricsFile {
     }
 }
 
+impl MetricsFile {
+    /// Collection interval per metric for the metric dictionary: from the given presets and
+    /// every source's primary and standby lists. A metric collected at several intervals gets
+    /// the longest (as a lookback it then finds a sample of every source).
+    pub fn dict_intervals(&self, presets: &[&str], sources: &[crate::config::Source]) -> BTreeMap<String, u64> {
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        let mut add = |list: Vec<Scheduled>| {
+            for m in list {
+                let e = out.entry(m.name).or_insert(0);
+                *e = (*e).max(m.interval_s);
+            }
+        };
+        for p in presets {
+            if let Some(pr) = self.presets.get(*p) {
+                add(pr
+                    .metrics
+                    .iter()
+                    .filter(|(n, i)| **i > 0 && self.metrics.contains_key(*n))
+                    .map(|(n, i)| Scheduled {
+                        name: n.clone(),
+                        interval_s: *i,
+                        def: self.metrics[n].clone(),
+                    })
+                    .collect());
+            }
+        }
+        for s in sources {
+            if let Ok((p, sb)) = self.for_source(s, presets.first().copied().unwrap_or("full")) {
+                add(p);
+                add(sb);
+            }
+        }
+        out
+    }
+}
+
 /// Prometheus name exactly as pgwatch's sink builds it: `pgwatch_<metric>_<field>`, or
 /// `pgwatch_<metric>` when the field equals the metric name.
 pub fn prom_name(metric: &str, field: &str) -> String {
@@ -296,5 +332,25 @@ presets:
             );
             assert!(!d.sqls.is_empty(), "{name}: no sqls");
         }
+    }
+
+    #[test]
+    fn dictionary_intervals_cover_every_source() {
+        let m = mf();
+        let src = |y: &str| -> crate::config::Source { serde_yaml::from_str(y).unwrap() };
+        let iv = m.dict_intervals(&["full"], &[]);
+        assert_eq!(iv.get("stored"), Some(&30));
+        assert_eq!(iv.get("pilot"), None);
+        let iv = m.dict_intervals(
+            &["full"],
+            &[
+                src("{name: a, preset_metrics: pg_index_pilot}"),
+                src("{name: b, custom_metrics: {stored: 120}, custom_metrics_standby: {versioned: 5}}"),
+            ],
+        );
+        assert_eq!(iv.get("pilot"), Some(&30));
+        assert_eq!(iv.get("pilot_config"), Some(&7200));
+        assert_eq!(iv.get("stored"), Some(&120), "the longest interval");
+        assert_eq!(iv.get("versioned"), Some(&60));
     }
 }

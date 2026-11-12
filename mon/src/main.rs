@@ -8,7 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "pgai-mon", version, about = "PostgresAI monitoring: collector, Parquet store and SQL endpoint (Rust + DuckDB)")]
+#[command(
+    name = "pgai-mon",
+    version,
+    about = "PostgresAI monitoring: collector, Parquet store and SQL endpoint (Rust + DuckDB)"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -132,12 +136,19 @@ enum Cmd {
         #[arg(long, default_value_t = 9)]
         zstd_level: i32,
     },
-    /// Import a VictoriaMetrics export (/api/v1/export JSON lines; "-" = stdin).
+    /// Import a VictoriaMetrics export (/api/v1/export JSON lines; "-" = stdin), and/or query
+    /// texts and object definitions as JSON lines (test fixtures; see structure::load_jsonl).
     Load {
         #[arg(long)]
         store: PathBuf,
+        #[arg(long, required_unless_present_any = ["query_texts", "objects"])]
+        input: Option<PathBuf>,
+        /// JSON lines: {"queryid","dbname","query","first_seen_ms","last_seen_ms"[,"source","cluster","node_name"]}
         #[arg(long)]
-        input: PathBuf,
+        query_texts: Option<PathBuf>,
+        /// JSON lines: {"ts_ms","dbname","kind","schema","name","definition"[,"source","cluster","node_name"]}
+        #[arg(long)]
+        objects: Option<PathBuf>,
         #[arg(long, default_value = store::DEFAULT_LAYOUT)]
         layout: String,
         #[arg(long, default_value_t = 1_000_000)]
@@ -307,7 +318,9 @@ fn main_cmd() -> anyhow::Result<()> {
                 cache_dir: match s3_cache_dir.as_deref() {
                     Some("") | Some("none") => None,
                     Some(d) => Some(PathBuf::from(d)),
-                    None if objstore::is_remote(&store) => Some(objstore::make_default_cache_dir(&store.to_string_lossy())?),
+                    None if objstore::is_remote(&store) => {
+                        Some(objstore::make_default_cache_dir(&store.to_string_lossy())?)
+                    }
                     None => None,
                 },
                 cache_gb: s3_cache_gb,
@@ -361,6 +374,8 @@ fn main_cmd() -> anyhow::Result<()> {
         Cmd::Load {
             store,
             input,
+            query_texts,
+            objects,
             layout,
             chunk,
             writer_memory_limit,
@@ -372,6 +387,16 @@ fn main_cmd() -> anyhow::Result<()> {
                 ..Default::default()
             };
             let mut core = store::StoreCore::open(&store, &cfg)?;
+            if query_texts.is_some() || objects.is_some() {
+                let st = structure::load_jsonl(
+                    &mut core,
+                    query_texts.as_deref(),
+                    objects.as_deref(),
+                    !no_compact && input.is_none(),
+                )?;
+                println!("{}", serde_json::json!({ "load_structure": st }));
+            }
+            let Some(input) = input else { return Ok(()) };
             let mut rd: Box<dyn std::io::BufRead> = if input.as_os_str() == "-" {
                 Box::new(std::io::BufReader::with_capacity(1 << 20, std::io::stdin()))
             } else {
@@ -456,7 +481,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 shared.clone(),
                 Default::default(),
                 query::EMBEDDED_VIEWS_SQL.to_string(),
-                query::build_dict(mf.as_ref(), "full"),
+                query::build_dict(mf.as_ref(), &mf.as_ref().map(|m| m.dict_intervals(&["full"], &[])).unwrap_or_default()),
             )?;
             match r.run(&sql) {
                 Ok(res) => println!("{}", serde_json::to_string(&res)?),
@@ -681,7 +706,15 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         views_sql.push_str("\n;\n");
         views_sql.push_str(&std::fs::read_to_string(p)?);
     }
-    let dict = query::build_dict(mf.as_ref(), &cfg.preset);
+    // intervals from the global preset and every source's own lists (pg_index_pilot, ...)
+    let dict_iv = match &mf {
+        Some(m) => {
+            let sources = if cfg.has_sources() { config::collect_sources(&cfg).unwrap_or_default() } else { vec![] };
+            m.dict_intervals(&[cfg.preset.as_str()], &sources)
+        }
+        None => Default::default(),
+    };
+    let dict = query::build_dict(mf.as_ref(), &dict_iv);
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
     let backend = if cfg.http.reader_process {
         let spec = sqlproc::Spec {
