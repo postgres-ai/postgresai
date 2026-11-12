@@ -9,9 +9,10 @@ import Ajv2020 from "ajv/dist/2020";
 
 import * as checkup from "../lib/checkup";
 import { createMockClient } from "./test-utils";
+import { REPORT_SCHEMAS_DIR } from "./build-inputs";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
+const schemasDir = REPORT_SCHEMAS_DIR;
 
 function validateAgainstSchema(report: any, checkId: string): void {
   const schemaPath = resolve(schemasDir, `${checkId}.schema.json`);

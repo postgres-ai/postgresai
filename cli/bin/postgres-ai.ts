@@ -2,6 +2,7 @@
 
 import { Command, Option } from "commander";
 import pkg from "../package.json";
+import buildInputs from "../build-inputs.json";
 import * as config from "../lib/config";
 import { isEpipe, writeStdout } from "../lib/stdout";
 import * as yaml from "js-yaml";
@@ -5418,8 +5419,8 @@ mon
       console.log("Step 2: Demo mode enabled - using included demo PostgreSQL database");
       const currentDir = path.dirname(fileURLToPath(import.meta.url));
       const demoCandidates = [
-        path.resolve(currentDir, "..", "..", "instances.demo.yml"),        // npm: dist/bin -> package root
-        path.resolve(currentDir, "..", "..", "..", "instances.demo.yml"),  // dev: cli/bin -> repo root
+        path.resolve(currentDir, "..", "..", path.basename(buildInputs.demoInstances)), // npm: dist/bin -> package root
+        path.resolve(currentDir, "..", "..", "..", buildInputs.demoInstances),         // dev: cli/bin -> repo root
       ];
       const demoSrc = demoCandidates.find(p => fs.existsSync(p));
       if (demoSrc) {

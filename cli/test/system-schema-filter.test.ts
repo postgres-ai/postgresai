@@ -18,6 +18,7 @@ import { resolve } from "path";
 import * as checkup from "../lib/checkup";
 import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loader";
 import { createMockClient } from "./test-utils";
+import { METRICS_YML } from "./build-inputs";
 
 const configDir = resolve(import.meta.dir, "../../config");
 
@@ -28,7 +29,7 @@ type MetricsYml = {
 const loadMetrics = (relPath: string) =>
   Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;
 
-const promMetrics = loadMetrics("pgwatch-prometheus/metrics.yml");
+const promMetrics = Bun.YAML.parse(readFileSync(METRICS_YML, "utf8")) as MetricsYml;
 const pgMetrics = loadMetrics("pgwatch-postgres/metrics.yml");
 
 /**

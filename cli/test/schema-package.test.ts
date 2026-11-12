@@ -10,9 +10,10 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { REPORT_SCHEMAS_DIR } from "./build-inputs";
 
 const cliDir = resolve(import.meta.dir, "..");
-const repoSchemasDir = resolve(cliDir, "../reporter/schemas");
+const repoSchemasDir = REPORT_SCHEMAS_DIR;
 const tempDir = mkdtempSync(join(tmpdir(), "postgresai-schema-package-"));
 const extractedPackageDir = join(tempDir, "package");
 

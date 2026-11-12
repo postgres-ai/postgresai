@@ -5,8 +5,9 @@ import Ajv2020 from "ajv/dist/2020";
 import * as checkup from "../lib/checkup";
 import { A005_MAX_DATABASES, d004PerRound, setA005OpenDatabase } from "../lib/checkup";
 import { createMockClient } from "./test-utils";
+import { REPORT_SCHEMAS_DIR } from "./build-inputs";
 
-const schema = JSON.parse(readFileSync(resolve(import.meta.dir, "../../reporter/schemas/D004.schema.json"), "utf8"));
+const schema = JSON.parse(readFileSync(resolve(REPORT_SCHEMAS_DIR, "D004.schema.json"), "utf8"));
 
 const SETTINGS = [
   { name: "pg_stat_statements.max", setting: "5000", unit: "", category: "c", context: "postmaster", vartype: "integer",

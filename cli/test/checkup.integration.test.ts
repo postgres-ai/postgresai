@@ -16,9 +16,10 @@ import Ajv2020 from "ajv/dist/2020";
 import * as checkup from "../lib/checkup";
 import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loader";
 import { checkCurrentUserPermissions, connectWithSslFallback, formatPermissionCheckMessages, resolveAdminConnection } from "../lib/init";
+import { METRICS_YML, REPORT_SCHEMAS_DIR } from "./build-inputs";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-const schemasDir = resolve(import.meta.dir, "../../reporter/schemas");
+const schemasDir = REPORT_SCHEMAS_DIR;
 
 // #345: rarely_used_indexes and index_definitions are not in the CLI's embedded
 // metrics (embed-metrics.ts ships only what express reports need), so their SQL
@@ -27,7 +28,7 @@ const configDir = resolve(import.meta.dir, "../../config");
 type MetricsYml = { metrics: Record<string, { sqls: Record<string, string> }> };
 const loadMetricsYml = (relPath: string) =>
   Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;
-const promMetricsYml = loadMetricsYml("pgwatch-prometheus/metrics.yml");
+const promMetricsYml = Bun.YAML.parse(readFileSync(METRICS_YML, "utf8")) as MetricsYml;
 const pgIndexDefinitions = loadMetricsYml("pgwatch-postgres/metrics.yml");
 
 /**

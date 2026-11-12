@@ -1,10 +1,11 @@
-import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const cliDir = resolve(scriptsDir, "..");
-const sourceDir = resolve(cliDir, "../reporter/schemas");
+const { reportSchemas } = JSON.parse(readFileSync(resolve(cliDir, "build-inputs.json"), "utf8"));
+const sourceDir = resolve(cliDir, "..", reportSchemas);
 const targetDir = resolve(cliDir, "schemas");
 
 rmSync(targetDir, { recursive: true, force: true });
