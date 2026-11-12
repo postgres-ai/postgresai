@@ -301,6 +301,14 @@ function writeEnvFile(envFile: string, content: string): void {
  * defaults, which deleted their metrics weeks later. The old stack's keys
  * (OLD_STACK_ENV_KEYS) are dropped rather than preserved.
  */
+/** compose's `scale:` for Grafana; "0" leaves Grafana out of the stack. */
+const GRAFANA_SCALE_KEY = "GRAFANA_SCALE";
+
+/** Is Grafana part of the stack, given GRAFANA_SCALE as compose reads it? */
+export function grafanaEnabled(scale: string | null | undefined): boolean {
+  return scale === null || scale === undefined || stripMatchingQuotes(scale.trim()) !== "0";
+}
+
 const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   "PGAI_TAG",
   "PGAI_REGISTRY",
@@ -317,6 +325,8 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   // existing value unchanged, so listing it here is what stops the preserve
   // loop appending a second copy. postgresai#381.
   "COMPOSE_PROFILES",
+  // Set by --no-grafana, removed by --grafana, carried over otherwise.
+  GRAFANA_SCALE_KEY,
 ];
 
 /**
@@ -480,6 +490,7 @@ function buildLocalInstallEnv(
   credentialFile?: string | null,
   instanceJobs?: boolean,
   demo?: boolean,
+  grafana?: boolean,
 ): { content: string; preservedKeys: string[] } {
   const readRaw = (key: string): string | null => {
     // Read the way compose does: tolerate `export `/indentation and take the
@@ -553,6 +564,11 @@ function buildLocalInstallEnv(
     DEMO_PROFILE,
   );
   if (composeProfiles) envLines.push(`COMPOSE_PROFILES=${composeProfiles}`);
+
+  // Grafana in or out: compose reads GRAFANA_SCALE from .env on every `up`,
+  // so later commands keep the choice without a flag.
+  const grafanaScale = grafana === false ? "0" : grafana === true ? null : readRaw(GRAFANA_SCALE_KEY);
+  if (grafanaScale !== null) envLines.push(`${GRAFANA_SCALE_KEY}=${grafanaScale}`);
 
   // Preserve everything this command does not own, verbatim and in order.
   const preservedKeys: string[] = [];
@@ -3929,6 +3945,15 @@ async function refreshStackCompose(
  * downloading a compose file to answer it would be a side effect nobody asked
  * for. A missing directory or file simply means "no profiles".
  */
+/** The stack directory `mon health` looks at: the resolved one, else the default. */
+function healthProjectDir(): string {
+  try {
+    return resolvePaths().projectDir;
+  } catch {
+    return getDefaultMonitoringProjectDir();
+  }
+}
+
 export function readComposeProfiles(knownProjectDir?: string): string | null {
   const fromProcess = process.env.COMPOSE_PROFILES;
   if (fromProcess !== undefined && fromProcess.trim() !== "") return fromProcess;
@@ -5061,6 +5086,9 @@ mon
     "enable the instance-jobs compose profile (outbound collection channel; PGAI_INSTANCE_JOBS env also works). Writes COMPOSE_PROFILES into the stack .env, so every later mon command covers the container"
   )
   .option("--no-instance-jobs", "disable the instance-jobs compose profile and remove its container")
+  // Positive form first, as for --instance-jobs: no flag leaves .env alone.
+  .option("--grafana", "run Grafana (the default); undoes an earlier --no-grafana")
+  .option("--no-grafana", "leave Grafana out of the stack (writes GRAFANA_SCALE=0 into .env; pgai-mon, the reporter and instance-jobs do not need it)")
   // Run by the image's first-boot unit and the deploy (postgres_ai-ansible#43).
   // Visible on purpose: the image bake reads this help to learn that the CLI
   // can prestart (images/bake.yml), so hiding them turns the feature off.
@@ -5075,7 +5103,7 @@ mon
     false,
   )
   .option("-y, --yes", "accept all defaults and skip interactive prompts", false)
-  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; prestart: boolean; continuePrestarted: boolean; yes: boolean; org?: string; orgId?: string }) => {
+  .action(async (opts: { demo: boolean; apiKey?: string; dbUrl?: string; tag?: string; project?: string; instanceId?: string; vcpus?: string; instanceJobs?: boolean; grafana?: boolean; prestart: boolean; continuePrestarted: boolean; yes: boolean; org?: string; orgId?: string }) => {
     // Get apiKey from global program options (--api-key is defined globally)
     // This is needed because Commander.js routes --api-key to the global option, not the subcommand's option
     const globalOpts = program.opts<CliOptions>();
@@ -5166,8 +5194,10 @@ mon
       path.resolve(projectDir, ".pgwatch-config"),
       instanceJobs,
       opts.demo ? true : undefined,
+      opts.grafana,
     );
     writeEnvFile(envFile, envContent);
+    const grafanaOn = grafanaEnabled(parseEnvValue(envContent, GRAFANA_SCALE_KEY));
     if (preservedKeys.length > 0) {
       console.log(`Preserved existing .env settings: ${preservedKeys.join(", ")}\n`);
     }
@@ -5541,7 +5571,11 @@ mon
         // instance the platform did not acknowledge would hand out a Grafana
         // token for a registration that never happened. An unknown vcpus does
         // NOT skip arming (#683) — the RPC accepts 0 and keeps its own value.
-        if (reg === null) {
+        if (!grafanaOn) {
+          console.error(
+            "⚠ Skipping AAS auto-collection arming: it needs the local Grafana, and this stack runs without it (--no-grafana)\n"
+          );
+        } else if (reg === null) {
           console.error(
             "⚠ Skipping AAS auto-collection arming because instance adoption failed; it can be enabled later by re-running 'postgresai mon local-install'\n"
           );
@@ -5621,8 +5655,9 @@ mon
       console.log("  ✅ Demo PostgreSQL database (monitoring target)");
     }
     console.log("  ✅ pgai-mon: metrics collection, storage and SQL");
-    console.log("  ✅ Grafana dashboards (with secure password)");
+    if (grafanaOn) console.log("  ✅ Grafana dashboards (with secure password)");
     console.log("  ✅ Automated report generation (every 24h)\n");
+    if (!grafanaOn) console.log("Grafana is left out (GRAFANA_SCALE=0 in .env); 'postgresai mon local-install --grafana' adds it back.\n");
     const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
     if (store) console.log(`${store}\n`);
     if (switchedFrom !== null) console.log(`${stackSwitchNotice(await existingOldStackVolumes(projectDir))}\n`);
@@ -5634,16 +5669,18 @@ mon
       console.log("  • Check service health: postgres-ai mon health\n");
     } else {
       console.log("Demo mode next steps:");
-      console.log("  • Explore Grafana dashboards at http://localhost:3000");
+      if (grafanaOn) console.log("  • Explore Grafana dashboards at http://localhost:3000");
       console.log("  • Connect to demo database: postgresql://postgres:postgres@localhost:55432/target_database");
       console.log("  • Generate some load on the demo database to see metrics\n");
     }
 
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("🚀 MAIN ACCESS POINT - Start here:");
-    console.log("   Grafana Dashboard: http://localhost:3000");
-    console.log(`   Login: monitor / ${grafanaPassword}`);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    if (grafanaOn) {
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      console.log("🚀 MAIN ACCESS POINT - Start here:");
+      console.log("   Grafana Dashboard: http://localhost:3000");
+      console.log(`   Login: monitor / ${grafanaPassword}`);
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    }
   });
 
 mon
@@ -5830,9 +5867,10 @@ export function judgeServiceHealth(
  * which is the most likely way the channel stops, and a health line that calls
  * it "not enabled" is blind to exactly that. postgresai#381.
  */
-export function monitoringHealthServices(instanceJobsEnabled = false, demoEnabled = false): MonitoringService[] {
+export function monitoringHealthServices(instanceJobsEnabled = false, demoEnabled = false, grafanaOn = true): MonitoringService[] {
   return [
-    { name: "Grafana", container: "grafana-with-datasources" },
+    // GRAFANA_SCALE=0 (--no-grafana): an absent Grafana is "not enabled".
+    { name: "Grafana", container: "grafana-with-datasources", ...(grafanaOn ? {} : { optional: true }) },
     { name: "pgai-mon", container: PGAI_MON_SERVICE },
     // The demo database runs only with the demo profile; without it, an
     // absent target-db is "not enabled", not a fault.
@@ -5858,6 +5896,7 @@ mon
     const services = monitoringHealthServices(
       instanceJobsProfileEnabled(profiles),
       profileEnabled(profiles, DEMO_PROFILE),
+      grafanaEnabled(readEnvValue(healthProjectDir(), GRAFANA_SCALE_KEY)),
     );
 
     const waitTime = opts.wait || 0;
@@ -5966,7 +6005,9 @@ mon
 mon
   .command("update")
   .description("update monitoring stack (migrate .env, pull images)")
-  .action(async () => {
+  .option("--grafana", "run Grafana again after an earlier --no-grafana")
+  .option("--no-grafana", "leave Grafana out of the stack (writes GRAFANA_SCALE=0 into .env)")
+  .action(async (opts: { grafana?: boolean }) => {
     console.log("Updating PostgresAI monitoring stack...\n");
 
     try {
@@ -5989,6 +6030,10 @@ mon
       // env vars (PGAI_MON_TOKEN with pgai-mon) don't make `docker compose up`
       // fail for users who installed before those vars existed. Purely
       // additive: existing values are kept.
+      if (opts.grafana !== undefined) {
+        setEnvValues(projectDir, { [GRAFANA_SCALE_KEY]: opts.grafana ? null : "0" });
+        console.log(opts.grafana ? "Grafana: on (GRAFANA_SCALE removed from .env)" : "Grafana: left out (GRAFANA_SCALE=0 in .env)");
+      }
       console.log("Checking .env for newly-required keys...");
       const added = ensureRequiredEnvVars(projectDir);
       if (added.length > 0) {
@@ -6057,6 +6102,13 @@ mon
             process.exitCode = 1;
             return;
           }
+        }
+        // A changed GRAFANA_SCALE takes effect now: `up` scales the service
+        // to it, removing the container at 0.
+        if (opts.grafana !== undefined && (await runCompose(["up", "-d", "--no-deps", "grafana"])) !== 0) {
+          console.error(`\n✗ Could not ${opts.grafana ? "start" : "remove"} Grafana`);
+          process.exitCode = 1;
+          return;
         }
         console.log("\n✓ Update completed successfully");
         console.log("\nTo apply updates, restart monitoring services:");
