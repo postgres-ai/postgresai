@@ -530,6 +530,18 @@ fn a_second_writer_is_refused_and_a_takeover_fences_the_first() {
         format!("{err:#}").contains("refusing to start a second writer"),
         "{err:#}"
     );
+    a.probe(std::time::Duration::from_secs(5)).unwrap();
+    // a clean stop releases the lease: the same refused directory now starts, with no wait
+    {
+        let (url, store) = ("mem://released/st", faulty());
+        let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+        a.release(&ca.shared).unwrap();
+        assert!(bucket_catalog(&store).unwrap().writer.unwrap().released);
+        let (b, cb) = start(url, &store, d2.path(), bcfg()).unwrap();
+        assert_eq!(b.epoch(), a.epoch() + 1);
+        b.sync(&cb.shared, None).unwrap();
+        assert!(!bucket_catalog(&store).unwrap().writer.unwrap().released);
+    }
     let (b, cb) = start(
         url,
         &store,

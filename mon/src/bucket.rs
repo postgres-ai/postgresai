@@ -169,6 +169,8 @@ pub struct Bucket {
     pub host: String,
     st: Mutex<St>,
     sync_lock: Mutex<()>,
+    /// Set by `release`: commits from now on mark the lease released.
+    releasing: std::sync::atomic::AtomicBool,
     /// Held (read) by a background job while it reads local files; eviction runs only when it
     /// can take it (write), so it never removes a file a job has just fetched.
     pub jobs: RwLock<()>,
@@ -309,6 +311,7 @@ impl Bucket {
             host: hostname(),
             st: Default::default(),
             sync_lock: Mutex::new(()),
+            releasing: Default::default(),
             jobs: RwLock::new(()),
             failpoint: Mutex::new(None),
         });
@@ -451,7 +454,34 @@ impl Bucket {
             epoch,
             host: self.host.clone(),
             heartbeat_ms: now_ms(),
+            released: self.releasing.load(Ordering::Relaxed),
         }
+    }
+
+    /// Read catalog.json within `timeout`, so a store that cannot be reached (no credentials,
+    /// wrong region, no route) fails the start with the reason; the client's own retries take
+    /// minutes and log nothing.
+    pub fn probe(self: &Arc<Self>, timeout: std::time::Duration) -> anyhow::Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let b = self.clone();
+        std::thread::spawn(move || tx.send(b.get_catalog().map(|_| ())));
+        match rx.recv_timeout(timeout) {
+            Ok(r) => r,
+            Err(_) => anyhow::bail!(
+                "{}: no answer from the object store in {} s. Check the credentials (AWS_ACCESS_KEY_ID and \
+                 AWS_SECRET_ACCESS_KEY, or an instance role; in a container on EC2 the role needs an instance \
+                 metadata hop limit of 2), AWS_REGION and the network path",
+                self.url,
+                timeout.as_secs()
+            ),
+        }
+    }
+
+    /// The last upload round of a clean stop: as `sync`, and the commit marks the lease released,
+    /// so a writer starting on this prefix (a new VM, a wiped local directory) takes over at once.
+    pub fn release(&self, shared: &crate::store::Shared) -> anyhow::Result<()> {
+        self.releasing.store(true, Ordering::Relaxed);
+        self.sync(shared, None)
     }
 
     /// Take the store over before `StoreCore::open` runs on the local directory: check the lease,
@@ -484,7 +514,7 @@ impl Bucket {
             Some((r, ver)) => {
                 if let Some(w) = &r.writer {
                     let age = now - w.heartbeat_ms;
-                    if w.id != self.id && age < self.cfg.lease_ms() && !self.cfg.takeover {
+                    if w.id != self.id && !w.released && age < self.cfg.lease_ms() && !self.cfg.takeover {
                         anyhow::bail!(
                             "{}: the store is written by another pgai-mon (writer {} on {:?}, last commit {} s ago); \
                              refusing to start a second writer on the same prefix. Stop the other writer, or wait \
@@ -505,7 +535,13 @@ impl Bucket {
                             w.host,
                             w.epoch,
                             age / 1000,
-                            if age < self.cfg.lease_ms() { ", forced" } else { ", lease expired" }
+                            if w.released {
+                                ", released"
+                            } else if age < self.cfg.lease_ms() {
+                                ", forced"
+                            } else {
+                                ", lease expired"
+                            }
                         );
                     }
                 }

@@ -726,6 +726,11 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             cfg.store.s3.clone(),
             &cfg.http.s3,
         )?;
+        eprintln!(
+            "pgai-mon: opening {} (credentials from the environment or the instance role)",
+            b.url
+        );
+        b.probe(std::time::Duration::from_secs(30))?;
         b.attach(&cfg.store.samples_layout)?;
         eprintln!(
             "pgai-mon: writing {} (epoch {}, local dir {}, upload every {} s)",
@@ -969,7 +974,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         if final_tx.blocking_send(Msg::Flush(Some(a))).is_ok() {
             let _ = r.blocking_recv();
         }
-        if let Err(e) = b.sync(&shared, None) {
+        if let Err(e) = b.release(&shared) {
             eprintln!(
                 "bucket: final upload failed (data stays in {}): {e:#}",
                 b.local.display()

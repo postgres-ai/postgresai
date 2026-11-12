@@ -73,6 +73,9 @@ pub struct WriterLease {
     pub host: String,
     /// Time of this writer's last commit, ms since the epoch.
     pub heartbeat_ms: i64,
+    /// Set by the writer's last commit of a clean stop: the next writer need not wait the lease out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub released: bool,
 }
 
 /// Largest catalog.json read from an object store (it is re-read every catalog TTL).
