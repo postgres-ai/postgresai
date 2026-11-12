@@ -21,15 +21,11 @@ import { METRICS_YML, REPORT_SCHEMAS_DIR } from "./build-inputs";
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const schemasDir = REPORT_SCHEMAS_DIR;
 
-// #345: rarely_used_indexes and index_definitions are not in the CLI's embedded
-// metrics (embed-metrics.ts ships only what express reports need), so their SQL
-// is read straight from the config YAML the pgwatch fleet uses.
-const configDir = resolve(import.meta.dir, "../../old/config");
+// #345: rarely_used_indexes is not in the CLI's embedded metrics (embed-metrics.ts
+// ships only what express reports need), so its SQL is read straight from
+// mon/metrics.yml, the file pgai-mon collects with.
 type MetricsYml = { metrics: Record<string, { sqls: Record<string, string> }> };
-const loadMetricsYml = (relPath: string) =>
-  Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;
 const promMetricsYml = Bun.YAML.parse(readFileSync(METRICS_YML, "utf8")) as MetricsYml;
-const pgIndexDefinitions = loadMetricsYml("pgwatch-postgres/metrics.yml");
 
 /**
  * Highest SQL version key not newer than the live server, as pgwatch selects.
@@ -50,13 +46,12 @@ function sqlFromYaml(doc: MetricsYml, metric: string, pgMajor: number): string {
   return sql;
 }
 
-/** All five per-index metrics whose SQL must exclude system schemas (#345). */
+/** All four per-index metrics whose SQL must exclude system schemas (#345). */
 const metricSqlsUnderTest = (pgMajor: number): Array<[string, string]> => [
   ["H001", getMetricSql(METRIC_NAMES.H001, pgMajor)],
   ["H002", getMetricSql(METRIC_NAMES.H002, pgMajor)],
   ["H004", getMetricSql(METRIC_NAMES.H004, pgMajor)],
   ["rarely_used_indexes", sqlFromYaml(promMetricsYml, "rarely_used_indexes", pgMajor)],
-  ["index_definitions", sqlFromYaml(pgIndexDefinitions, "index_definitions", pgMajor)],
 ];
 
 function findOnPath(cmd: string): string | null {
@@ -578,10 +573,10 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     }
   });
 
-  // On this harness's bare initdb cluster unused_indexes and index_definitions
-  // were vacuous: both gate on `ci.relpages > 5`, which their catalog indexes
-  // did not reach, so they returned 0 rows with or without the exclusion.
-  // Seeding catalog churn fixes those two. It does NOT rescue the other three
+  // On this harness's bare initdb cluster unused_indexes was vacuous: it gates
+  // on `ci.relpages > 5`, which the catalog indexes did not reach, so it
+  // returned 0 rows with or without the exclusion. Seeding catalog churn fixes
+  // that. It does NOT rescue the other three
   // — H001 needs an invalid index, while H004 and rarely_used_indexes need
   // index shapes the catalog may not have (a redundant non-unique pair; a
   // scanned index on a heavily written table) — and a single shared
@@ -605,11 +600,11 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
    * attempt to pin that down here has been a false assertion about the
    * environment, so this test asserts none of it.
    *
-   * What this test is for: the real-catalog sweep. All five metrics, run
+   * What this test is for: the real-catalog sweep. All four metrics, run
    * against an actually churned catalog, must emit zero system-schema rows.
    * What proves those runs are not vacuous lives elsewhere, per metric:
-   *   - the substitution control test below, for H002, H004,
-   *     rarely_used_indexes and index_definitions — it seeds public-schema
+   *   - the substitution control test below, for H002, H004 and
+   *     rarely_used_indexes — it seeds public-schema
    *     rows those metrics really do report, swaps 'public' into the exclusion
    *     list, and asserts they vanish, so the predicate is proven live in the
    *     executing plan rather than the result merely being empty;
@@ -621,7 +616,6 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     H002: "the substitution control test below",
     H004: "the substitution control test below",
     rarely_used_indexes: "the substitution control test below",
-    index_definitions: "the substitution control test below",
   };
 
   /**
@@ -763,7 +757,7 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     async () => {
       // Positive control: proves the predicate is live in the executing plan
       // rather than the result simply being empty. Seeds public-schema indexes
-      // that unused_indexes / redundant_indexes / index_definitions do report,
+      // that unused_indexes / redundant_indexes / rarely_used_indexes do report,
       // then re-runs each SQL with 'public' swapped into the exclusion list.
       const pgMajor = Number((await checkup.getPostgresVersion(client)).server_major_ver);
 
@@ -869,7 +863,6 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
           ["H002", getMetricSql(METRIC_NAMES.H002, pgMajor)],
           ["H004", getMetricSql(METRIC_NAMES.H004, pgMajor)],
           ["rarely_used_indexes", sqlFromYaml(promMetricsYml, "rarely_used_indexes", pgMajor)],
-          ["index_definitions", sqlFromYaml(pgIndexDefinitions, "index_definitions", pgMajor)],
         ];
 
         for (const [label, sql] of controls) {

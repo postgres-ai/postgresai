@@ -35,11 +35,7 @@ type DockerComposeConfig = {
 
 // These UIDs are referenced by provisioned Grafana dashboards.
 // Changing them without updating dashboard JSON silently breaks panels.
-const expectedGrafanaDatasourceUids = new Map([
-  ["PGWatch-PostgreSQL", "P031DD592934B2F1F"],
-  ["PGWatch-Prometheus", "P7A0D6631BB10B34F"],
-  ["Infinity", "aerffb0z8rjlsc"],
-]);
+const expectedGrafanaDatasourceUids = new Map([["pgai-mon", "pgai-mon"]]);
 
 /**
  * Normalizes raw Grafana datasource orgId values to a positive integer.
@@ -70,23 +66,14 @@ const datasourceKey = (name: unknown, orgId: unknown) =>
   `${name}:${normalizeGrafanaOrgId(orgId)}`;
 
 const configDir = resolve(import.meta.dir, "../../config");
-const oldConfigDir = resolve(import.meta.dir, "../../old/config");
 const metricsPath = resolve(import.meta.dir, "../../mon/metrics.yml");
-const datasourcePath = resolve(
-  oldConfigDir,
-  "grafana/provisioning/datasources/datasources.yml"
-);
 const pgaiMonDatasourcePath = resolve(
   configDir,
   "grafana/provisioning/datasources/pgai-mon.yml"
 );
 const composePath = resolve(import.meta.dir, "../../docker-compose.yml");
 const envExamplePath = resolve(import.meta.dir, "../../.env.example");
-const dashboardDir = resolve(oldConfigDir, "grafana/dashboards");
-const dashboardGeneratedMetricRefs = new Set([
-  // Exported by old/monitoring_flask_backend/app.py and joined into query dashboards.
-  "query_info",
-]);
+const dashboardDir = resolve(import.meta.dir, "../../mon/grafana/dashboards");
 const pgwatchMetricRefPattern = /\bpgwatch_([a-zA-Z_:][a-zA-Z0-9_:]*)\b/g;
 
 const loadPgwatchConfig = () =>
@@ -187,9 +174,9 @@ describe("Config consistency", () => {
     }
   });
 
-  test("datasources.yml delete entries match stable non-editable datasources", () => {
+  test("pgai-mon.yml delete entries match stable non-editable datasources", () => {
     const datasourceConfig = parseGrafanaDatasourceConfig(
-      readFileSync(datasourcePath, "utf8")
+      readFileSync(pgaiMonDatasourcePath, "utf8")
     );
     const deleteDatasources = datasourceConfig.deleteDatasources ?? [];
     const datasources = datasourceConfig.datasources ?? [];
@@ -235,23 +222,36 @@ describe("Config consistency", () => {
     }
   });
 
-  test("Grafana Postgres datasource pins connection database in jsonData", () => {
-    // The Postgres datasource plugin's SQL query editor reads the connection
-    // database from jsonData.database (its move of `database` into jsonData
-    // predates Grafana 10 and is specific to that plugin, not Grafana broadly).
-    // Without it every panel on this datasource fails client-side with "no
-    // default database configured" (postgresai#314, F-1). The top-level
-    // `database` key is retained for the backend/backward-compat.
-    const datasourceConfig = parseGrafanaDatasourceConfig(
-      readFileSync(datasourcePath, "utf8")
+  test("dashboards use only provisioned datasource uids", () => {
+    const dashboardFiles = readdirSync(dashboardDir).filter((file) =>
+      file.endsWith(".json")
     );
-    const postgresDatasource = (datasourceConfig.datasources ?? []).find(
-      (datasource) => datasource.name === "PGWatch-PostgreSQL"
-    );
-    expect(postgresDatasource).toBeDefined();
-    expect(postgresDatasource?.jsonData?.database).toBe("measurements");
-    // Keep the top-level key in sync for the backend/older Grafana API readers.
-    expect(postgresDatasource?.database).toBe("measurements");
+    const unknownUids = new Set<string>();
+    expect(dashboardFiles.length).toBeGreaterThan(0);
+
+    for (const dashboardFile of dashboardFiles) {
+      const visit = (node: unknown) => {
+        if (Array.isArray(node)) {
+          node.forEach(visit);
+          return;
+        }
+        if (!node || typeof node !== "object") return;
+        const record = node as Record<string, unknown>;
+        const datasource = record.datasource as { uid?: unknown } | undefined;
+        if (datasource && typeof datasource === "object" && typeof datasource.uid === "string") {
+          const uid = datasource.uid;
+          // Grafana's built-in annotation datasource and template variables are not provisioned.
+          if (uid !== "-- Grafana --" && !uid.startsWith("$") &&
+              ![...expectedGrafanaDatasourceUids.values()].includes(uid)) {
+            unknownUids.add(`${dashboardFile}: ${uid}`);
+          }
+        }
+        Object.values(record).forEach(visit);
+      };
+      visit(JSON.parse(readFileSync(resolve(dashboardDir, dashboardFile), "utf8")));
+    }
+
+    expect([...unknownUids].sort()).toEqual([]);
   });
 
   test("Grafana pgai-mon datasource sends the bearer token from PGAI_MON_TOKEN", () => {
@@ -368,10 +368,6 @@ describe("Config consistency", () => {
         for (const match of queryString.matchAll(pgwatchMetricRefPattern)) {
           observedDashboardMetricRefs += 1;
           const metricRef = match[1];
-          if (dashboardGeneratedMetricRefs.has(metricRef)) {
-            continue;
-          }
-
           if (!resolveMetricReference(metricRef, metricNamesByLength)) {
             unknownDashboardMetrics.add(`${dashboardFile}: pgwatch_${metricRef}`);
           }

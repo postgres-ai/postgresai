@@ -78,10 +78,10 @@ export function buildInstance(name: string, connStr: string): Instance {
       env: "production",
       cluster: "default",
       node_name: name,
-      // Sed-substituted placeholder by old/config/scripts/generate-pgwatch-sources.sh.
-      // js-yaml emits this unquoted on dump (~ is only special at the start of a
-      // scalar in the right context); sed s/~sink_type~/.../g still hits it as
-      // raw text regardless.
+      // Placeholder pgai-mon replaces as raw text when it reads this file
+      // (mon/src/config.rs parse_sources_file: `prometheus`), giving every series
+      // the sink_type label the dashboards show. js-yaml emits it unquoted on
+      // dump (~ is only special at the start of a scalar in the right context).
       sink_type: "~sink_type~",
     },
   };

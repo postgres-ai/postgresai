@@ -6,10 +6,8 @@ columns and opclasses are a leading prefix of the other's. It compared
 of `'12 3'`), and two indexes on different columns of any table with 10 or more
 columns were reported as redundant.
 
-The same SQL lives in two files:
-  - mon/metrics.yml, metric `redundant_indexes`;
-  - old/config/pgwatch-postgres/metrics.yml, metric `index_definitions`
-    (its `redundant_index_pairs` CTE).
+The SQL is mon/metrics.yml, metric `redundant_indexes`. The old stack's copy
+(pgwatch-postgres `index_definitions`) is covered in old/tests/reporter/.
 
 Each fixture index is built on enough rows to pass the SQL's `relpages > 5`
 filter. Marked `integration` + `requires_postgres`; the CI reporter:tests job
@@ -26,8 +24,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMETHEUS_METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
-POSTGRES_METRICS_YML = PROJECT_ROOT / "old/config/pgwatch-postgres/metrics.yml"
+METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
 
 ROWS = 20000
 
@@ -82,7 +79,7 @@ create index full_a_b on part (a, b);
 analyze;
 """
 
-# (candidate, covering index) pairs both SQLs must find.
+# (candidate, covering index) pairs the SQL must find.
 EXPECTED_PAIRS = {
     ("prefix_a", "prefix_a_b"),
     ("opc_s", "opc_s_x"),
@@ -160,24 +157,10 @@ def _prometheus_pairs(cur, sql_text: str) -> set:
     }
 
 
-def _postgres_sink_pairs(cur, sql_text: str) -> set:
-    # index_definitions mixes unused and redundant indexes in its output; every
-    # fixture index is unused, so read the pairs from its own CTE instead.
-    marker = "select /* pgwatch_generated */"
-    assert sql_text.count(marker) == 1
-    head = sql_text[: sql_text.index(marker)]
-    cur.execute(
-        head
-        + "select redundant_index_id::regclass::text, reason_index_id::regclass::text "
-        "from redundant_index_pairs where schema_name = 'public'"
-    )
-    return set(cur.fetchall())
-
-
 @pytest.mark.integration
 @pytest.mark.requires_postgres
 def test_redundant_indexes_metric_pairs(h004_cur):
-    for version, sql_text in _load_sqls(PROMETHEUS_METRICS_YML, "redundant_indexes").items():
+    for version, sql_text in _load_sqls(METRICS_YML, "redundant_indexes").items():
         pairs = _prometheus_pairs(h004_cur, sql_text)
         assert not pairs & FALSE_PAIRS, f"PG{version}+ SQL pairs different columns: {pairs & FALSE_PAIRS}"
         # Mutual duplicates are reported once, in either direction.
@@ -185,12 +168,3 @@ def test_redundant_indexes_metric_pairs(h004_cur):
         assert len(dups) == 1, f"PG{version}+ SQL: duplicates reported as {dups}"
         assert pairs - dups == EXPECTED_PAIRS, f"PG{version}+ SQL pairs: {sorted(pairs)}"
 
-
-@pytest.mark.integration
-@pytest.mark.requires_postgres
-def test_index_definitions_redundant_pairs(h004_cur):
-    for version, sql_text in _load_sqls(POSTGRES_METRICS_YML, "index_definitions").items():
-        pairs = _postgres_sink_pairs(h004_cur, sql_text)
-        assert not pairs & FALSE_PAIRS, f"PG{version}+ SQL pairs different columns: {pairs & FALSE_PAIRS}"
-        # This CTE still holds both directions of a mutual duplicate.
-        assert pairs == EXPECTED_PAIRS | DUPLICATES, f"PG{version}+ SQL pairs: {sorted(pairs)}"

@@ -462,7 +462,7 @@ describe("demo mode instances.demo.yml", () => {
     expect(content).toMatch(/^\s+conn_str:/m);
     expect(content).toMatch(/^\s+preset_metrics: full/m);
     expect(content).toMatch(/^\s+is_enabled: true/m);
-    // ~sink_type~ is a sed token substituted by generate-pgwatch-sources.sh; values: postgres, prometheus
+    // ~sink_type~ is replaced as raw text by pgai-mon when it reads the file (mon/src/config.rs)
     expect(content).toMatch(/^\s+sink_type: ~sink_type~/m);
   });
 
@@ -585,7 +585,7 @@ describe("addInstanceToFile / removeInstanceFromFile round-trip", () => {
     addInstanceToFile(instancesFile, buildInstance("t1", "postgresql://u:p@h:5432/db"));
     const content = fs.readFileSync(instancesFile, "utf8");
     // js-yaml emits ~sink_type~ unquoted (it's only special when standalone);
-    // sed s/~sink_type~/.../g still hits it as raw text regardless.
+    // pgai-mon replaces it as raw text regardless.
     expect(content).toContain("~sink_type~");
   });
 
