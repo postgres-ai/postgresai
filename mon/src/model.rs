@@ -87,6 +87,19 @@ pub struct PlanDef {
     pub plan: String, // JSON, literals redacted
 }
 
+/// Which monitored node a structure row came from, as the series label it: the source name
+/// (the `dbname` label of its main database) and its `cluster` / `node_name` custom tags.
+/// None in rows written before these columns existed (Parquet files without them read as NULL).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SourceId {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub cluster: Option<String>,
+    #[serde(default)]
+    pub node_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryText {
     pub queryid: i64,
@@ -95,6 +108,8 @@ pub struct QueryText {
     pub query: Option<String>, // only on the first row for a (queryid, dbname, hash)
     pub first_seen: i64,
     pub last_seen: i64,
+    #[serde(flatten, default)]
+    pub src: SourceId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +121,8 @@ pub struct ObjectEvent {
     pub name: String,
     /// None = dropped.
     pub definition: Option<String>,
+    #[serde(flatten, default)]
+    pub src: SourceId,
 }
 
 #[derive(Debug, Clone, PartialEq)]

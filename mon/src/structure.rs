@@ -49,8 +49,15 @@ where n.nspname not in ('pg_catalog', 'information_schema') and p.prokind in ('f
   and not exists (select 1 from pg_depend dp where dp.objid = p.oid and dp.deptype = 'e')
 "#;
 
-/// Current (latest, not dropped) object definition hashes per database, read from the store
-/// at startup so a restart doesn't rewrite every object.
+/// Key of one database's object state: the source name and the database name. Rows written
+/// before the source was recorded have no source: their key has an empty one, so the first
+/// snapshot after an upgrade writes every object of that database once more, with its source.
+pub fn objects_key(source: Option<&str>, dbname: &str) -> String {
+    format!("{}\u{1f}{dbname}", source.unwrap_or(""))
+}
+
+/// Current (latest, not dropped) object definition hashes per `objects_key`, read from the
+/// store at startup so a restart doesn't rewrite every object.
 pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, HashMap<ObjKey, u64>>> {
     let files: Vec<_> = {
         let c = shared.catalog.lock().unwrap();
@@ -65,15 +72,17 @@ pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, H
     db.execute_batch("SET memory_limit='64MB'; SET threads=1;")?;
     let refs: Vec<_> = files.iter().collect();
     let mut st = db.prepare(&format!(
-        "SELECT dbname, kind, schema, name, definition FROM read_parquet({}) \
-         QUALIFY row_number() OVER (PARTITION BY dbname, kind, schema, name ORDER BY ts DESC) = 1",
-        file_list_sql(&shared.root, &refs)
+        "SELECT dbname, kind, schema, name, definition, source FROM {} \
+         QUALIFY row_number() OVER (PARTITION BY source, dbname, kind, schema, name ORDER BY ts DESC) = 1",
+        crate::store::parquet_src("objects", &file_list_sql(&shared.root, &refs))
     ))?;
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let def: Option<String> = r.get(4)?;
         if let Some(d) = def {
-            out.entry(r.get(0)?)
+            let source: Option<String> = r.get(5)?;
+            let dbname: String = r.get(0)?;
+            out.entry(objects_key(source.as_deref(), &dbname))
                 .or_default()
                 .insert((r.get(1)?, r.get(2)?, r.get(3)?), xxh3_64(d.as_bytes()));
         }
@@ -85,6 +94,7 @@ pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, H
 /// definitions are read; a cut snapshot reports no drops (objects past the cut were not seen).
 pub async fn snapshot_objects(
     c: &mut Client,
+    src: &SourceId,
     dbname: &str,
     state: &mut HashMap<ObjKey, u64>,
     max_rows: usize,
@@ -109,6 +119,7 @@ pub async fn snapshot_objects(
                 schema: key.1.clone(),
                 name: key.2.clone(),
                 definition: Some(def),
+                src: src.clone(),
             });
             state.insert(key.clone(), h);
         }
@@ -128,6 +139,7 @@ pub async fn snapshot_objects(
             schema: k.1,
             name: k.2,
             definition: None,
+            src: src.clone(),
         });
     }
     Ok(out)
@@ -140,6 +152,7 @@ pub type TextState = HashMap<(i64, String), (u64, i64)>;
 /// and refresh last_seen at most hourly per id. Texts are pgss-normalized ($1), so no values.
 pub async fn snapshot_query_texts(
     c: &Client,
+    src: &SourceId,
     state: &mut TextState,
     fp: &std::sync::Mutex<HashMap<String, i64>>,
 ) -> anyhow::Result<Vec<QueryText>> {
@@ -165,6 +178,7 @@ pub async fn snapshot_query_texts(
                     query: None,
                     first_seen: now,
                     last_seen: now,
+                    src: src.clone(),
                 });
                 *last = now;
             }
@@ -195,6 +209,7 @@ pub async fn snapshot_query_texts(
                 query: Some(q),
                 first_seen: now,
                 last_seen: now,
+                src: src.clone(),
             });
             state.insert(key, (h, now));
         }

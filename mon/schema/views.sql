@@ -29,11 +29,14 @@ CREATE OR REPLACE VIEW metrics AS
 SELECT s.ts, r.metric, r.labels, s.value
 FROM _raw_samples s JOIN series r USING (series_id);
 
--- pg_stat_statements texts, stored once per (queryid, dbname, text); first/last seen
+-- pg_stat_statements texts, stored once per (source, queryid, dbname, text); first/last seen.
+-- source / cluster / node_name: the monitored node, as its series' dbname / cluster /
+-- node_name labels (NULL in rows collected before they were recorded).
 CREATE OR REPLACE VIEW query_texts AS
-SELECT queryid, dbname, max(query) AS query, min(first_seen) AS first_seen, max(last_seen) AS last_seen
+SELECT queryid, dbname, max(query) AS query, min(first_seen) AS first_seen, max(last_seen) AS last_seen,
+       source, cluster, node_name
 FROM _raw_query_texts
-GROUP BY queryid, dbname, query_hash;
+GROUP BY queryid, dbname, query_hash, source, cluster, node_name;
 
 -- Postgres jsonlog lines; parameter values dropped; auto_explain lines carry plan_hash.
 -- queryid (extra column) = auto_explain "Query Identifier" or jsonlog query_id.
@@ -58,12 +61,13 @@ SELECT ts, plan_hash, queryid, dbname, total_ms, top_node, shared_hit, shared_re
 FROM _raw_plan_events;
 
 -- table/index/constraint/view/function definitions with validity ranges; only changes are
--- stored. valid_to NULL = current. dbname is an extra column (names repeat across databases).
+-- stored. valid_to NULL = current. dbname is an extra column (names repeat across databases);
+-- source / cluster / node_name as in query_texts (names repeat across nodes too).
 CREATE OR REPLACE VIEW objects AS
-SELECT kind, schema, name, definition, valid_from, valid_to, dbname
+SELECT kind, schema, name, definition, valid_from, valid_to, dbname, source, cluster, node_name
 FROM (
-  SELECT kind, schema, name, definition, dbname, ts AS valid_from,
-         lead(ts) OVER (PARTITION BY dbname, kind, schema, name ORDER BY ts) AS valid_to
+  SELECT kind, schema, name, definition, dbname, source, cluster, node_name, ts AS valid_from,
+         lead(ts) OVER (PARTITION BY source, dbname, kind, schema, name ORDER BY ts) AS valid_to
   FROM _raw_objects
 )
 WHERE definition IS NOT NULL;

@@ -738,7 +738,7 @@ impl Reader {
             } else {
                 match paths(kind, &fs) {
                     Some(ps) if !ps.is_empty() => {
-                        let src = format!("read_parquet({})", sql_list(&ps));
+                        let src = crate::store::parquet_src(kind, &sql_list(&ps));
                         if *kind == "samples" {
                             samples_raw_select(&layout, &src)
                         } else {
