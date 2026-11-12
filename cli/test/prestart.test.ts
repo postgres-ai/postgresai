@@ -21,6 +21,9 @@ case "$*" in
   compose*" ps -a --format {{.Service}}") [ -n "$DEMO_CONTAINERS" ] && printf '%s\\n' $DEMO_CONTAINERS; exit 0 ;;
   compose*" ps --status running --services") [ -n "$READERS_RUNNING" ] && printf '%s\\n' $READERS_RUNNING; exit 0 ;;
   compose*" ps -q "*) svc="\${*##* }"; case " $READERS_RUNNING " in *" $svc "*) echo "id-$svc" ;; esac; exit 0 ;;
+  compose*" config --services") [ -n "$SERVICES" ] && printf '%s\\n' $SERVICES; exit 0 ;;
+  compose*" ps -a --format json") [ -n "$PS_JSON" ] && printf '%s\\n' "$PS_JSON"; exit 0 ;;
+  compose*" logs --tail 20 --no-color "*) for a; do last=$a; done; echo "last log line of $last"; exit 0 ;;
   inspect*) exit 1 ;;
   *) exit 0 ;;
 esac
@@ -306,5 +309,91 @@ describe("the demo profile", () => {
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nCOMPOSE_PROFILES=instance-jobs,demo\n");
     run(["mon", "local-install", "--db-url", DB_URL, "-y"]);
     expect(env()).toMatch(/^COMPOSE_PROFILES=instance-jobs$/m);
+  });
+});
+
+// A stack is "already running" only when every service compose would start
+// is running and healthy; anything else is brought up again (F7). A failed
+// `up` names the failed service and prints its last log lines (F2c).
+describe("recovering a partly running stack", () => {
+  const ps = (...entries: [string, string, string?, number?][]) =>
+    entries.map(([Service, State, Health = "", ExitCode = 0]) => JSON.stringify({ Service, State, Health, ExitCode })).join("\n");
+  const SERVICES = "config-init pgai-mon grafana postgres-reports";
+  const RUNNING = "grafana-with-datasources pgai-mon";
+  const healthy = ps(["config-init", "exited"], ["pgai-mon", "running", "healthy"], ["grafana", "running", "healthy"], ["postgres-reports", "running"]);
+  const broken = ps(["config-init", "exited"], ["pgai-mon", "restarting"], ["grafana", "running", "healthy"], ["postgres-reports", "created"]);
+  const ups = () => composeCalls("up").filter((c) => !c.includes("instance-jobs"));
+
+  test("local-install over a crash-looping pgai-mon installs instead of refusing", () => {
+    const r = run(["mon", "local-install", "--demo", "-y"], { RUNNING, SERVICES, PS_JSON: broken });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("not all running and healthy (pgai-mon: restarting, postgres-reports: created)");
+    expect(r.stderr).not.toContain("already running");
+    expect(ups().some((c) => c.endsWith(" up -d --force-recreate --remove-orphans"))).toBe(true);
+  });
+
+  test("local-install on a fully healthy stack still refuses and starts nothing", () => {
+    const r = run(["mon", "local-install", "--demo", "-y"], { RUNNING, SERVICES, PS_JSON: healthy });
+    expect(r.stderr).toContain("already running");
+    expect(ups()).toEqual([]);
+  });
+
+  test("a missing service counts: Grafana left out by GRAFANA_SCALE=0 does not", () => {
+    const noGrafana = ps(["config-init", "exited"], ["pgai-mon", "running", "healthy"], ["postgres-reports", "running"]);
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=x\n");
+    let r = run(["mon", "start"], { RUNNING, SERVICES, PS_JSON: noGrafana });
+    expect(r.stdout).toContain("grafana: missing");
+    expect(ups().some((c) => c.endsWith(" up -d"))).toBe(true);
+    writeFileSync(log, "");
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=x\nGRAFANA_SCALE=0\n");
+    r = run(["mon", "start"], { RUNNING, SERVICES, PS_JSON: noGrafana });
+    expect(r.stdout).toContain("already running");
+    expect(ups()).toEqual([]);
+  });
+
+  test("mon start brings up a reporter left in Created; a healthy stack is left alone", () => {
+    let r = run(["mon", "start"], { RUNNING, SERVICES, PS_JSON: broken });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("postgres-reports: created");
+    expect(ups().some((c) => c.endsWith(" up -d"))).toBe(true);
+    writeFileSync(log, "");
+    r = run(["mon", "start"], { RUNNING, SERVICES, PS_JSON: healthy });
+    expect(r.stdout).toContain("already running");
+    expect(ups()).toEqual([]);
+  });
+
+  test("a failed up names the unhealthy service and prints its last log lines, never the token", () => {
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=tok-should-not-print\n");
+    const unhealthy = ps(["config-init", "exited"], ["pgai-mon", "running", "unhealthy"], ["grafana", "created"]);
+    writeFileSync(`${dir}/bin/docker`, FAKE_DOCKER.replace('  *) exit 0 ;;', '  compose*" up "*) exit 1 ;;\n  *) exit 0 ;;'));
+    for (const args of [["mon", "start"], ["mon", "local-install", "--demo", "-y"]]) {
+      writeFileSync(log, "");
+      const r = run(args, { PS_JSON: unhealthy });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("Service pgai-mon failed (unhealthy). Its last 20 log lines:");
+      expect(r.stderr).toContain("last log line of pgai-mon");
+      // Created is not a failure: no logs for it.
+      expect(r.stderr).not.toContain("Service grafana failed");
+      expect(r.stdout + r.stderr).not.toContain("tok-should-not-print");
+      expect(calls().some((c) => / logs --tail 20 --no-color pgai-mon$/.test(c))).toBe(true);
+    }
+  });
+});
+
+describe("install output", () => {
+  test("--no-grafana: no Grafana step; the demo banner names no published port", () => {
+    const r = run(["mon", "local-install", "--demo", "-y", "--no-grafana"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).not.toContain("Configuring Grafana security");
+    expect(r.stdout).not.toContain("55432");
+    expect(r.stdout).toContain("docker exec -it target-db psql -U postgres target_database");
+    const withGrafana = run(["mon", "local-install", "--demo", "-y", "--grafana"]);
+    expect(withGrafana.stdout).toContain("Step 3: Configuring Grafana security");
+  });
+
+  test("a store in .env is named once, without credentials", () => {
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_STORE=s3://bucket/prefix\n");
+    const r = run(["mon", "local-install", "--demo", "-y"]);
+    expect(r.stdout.split("Metrics history goes to s3://bucket/prefix").length - 1).toBe(1);
   });
 });

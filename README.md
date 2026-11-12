@@ -505,12 +505,11 @@ statistics. Disable preview capture with
 
 After running local-install:
 
-- **🚀 MAIN: Grafana Dashboard**: http://localhost:3000 (login: `monitoring`; password is shown at the end of local-install)
+- **🚀 MAIN: Grafana Dashboard**: http://localhost:3000 (login: `monitor`; password is shown at the end of local-install)
 
-Technical URLs (for advanced users):
-- **Demo DB**: postgresql://postgres:postgres@localhost:55432/target_database
-- **Monitoring**: http://localhost:58080 (pgwatch)
-- **Metrics**: http://localhost:59090 (VictoriaMetrics)
+Technical access (for advanced users):
+- **pgai-mon SQL API**: http://127.0.0.1:8765 (bearer token `PGAI_MON_TOKEN` from `.env`); `postgresai mon sql --local "<query>"` uses it
+- **Demo DB** (`--demo`): no published port; `docker exec -it target-db psql -U postgres target_database`
 
 ## 📖 Help
 

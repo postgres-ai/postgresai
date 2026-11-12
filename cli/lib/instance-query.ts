@@ -311,3 +311,54 @@ export function renderSql(payload: SqlPayload): string {
   }
   return lines.filter((l, i) => !(i === 0 && l === "")).join("\n");
 }
+
+/**
+ * `pgai mon sql --local`: one query straight to this box's pgai-mon
+ * (`POST /sql`, row format), with the bearer token from the install's `.env`.
+ * The token goes in the header only; error messages never contain it.
+ */
+export async function runLocalSql(
+  baseUrl: string,
+  token: string,
+  query: string,
+  timeoutMs: number,
+): Promise<SqlPayload> {
+  const url = `${baseUrl.replace(/\/+$/, "")}/sql`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain; charset=utf-8", Accept: "application/json" },
+      body: query,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const why = err instanceof Error && err.name === "TimeoutError" ? `no answer within ${Math.round(timeoutMs / 1000)}s` : "unreachable";
+    throw new Error(`pgai-mon at ${baseUrl}: ${why}. Is the stack running? ('postgresai mon health')`);
+  }
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`pgai-mon rejected the token (HTTP ${res.status}): PGAI_MON_TOKEN in .env differs from pgai-mon's`);
+  }
+  if (!res.ok) {
+    let message = "";
+    try {
+      const body = JSON.parse(text) as { error?: { type?: string; message?: string } };
+      message = [body.error?.type, body.error?.message].filter(Boolean).join(": ");
+    } catch {
+      // not JSON: report the status only
+    }
+    throw new Error(`Query failed (HTTP ${res.status})${message ? `: ${message}` : ""}`);
+  }
+  let payload: SqlPayload;
+  try {
+    payload = JSON.parse(text) as SqlPayload;
+  } catch {
+    throw new Error("pgai-mon's answer is not JSON");
+  }
+  if (!Array.isArray(payload?.columns) || !Array.isArray(payload?.rows)) {
+    throw new Error("pgai-mon's answer is not a result set");
+  }
+  payload.truncated = !!payload.truncated;
+  return payload;
+}
