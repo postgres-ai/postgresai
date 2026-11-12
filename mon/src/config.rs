@@ -41,6 +41,9 @@ pub struct Config {
     /// Prometheus scrape targets (scrape.rs): files such as host-metrics/*.yml, inline jobs.
     #[serde(default)]
     pub scrape: crate::scrape::ScrapeCfg,
+    /// Recording rules materialised at ingest (rules.rs): host_* from scraped provider series.
+    #[serde(default)]
+    pub rules: crate::rules::RulesCfg,
 }
 
 fn d_metrics_yml() -> PathBuf {

@@ -368,6 +368,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 read_only: no_compact,
                 ingest: Default::default(),
                 scrape: Default::default(),
+                rules: Default::default(),
             };
             run(cfg)
         }
@@ -894,6 +895,7 @@ fn serve_loop(
                 }
             });
         }
+        let rules_backend = backend.clone();
         let state = query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text);
         // Ingest writes into the store: only with a store thread (not read-only).
         let mut extra = axum::Router::new();
@@ -904,6 +906,9 @@ fn serve_loop(
                 let sc = scrape::Scraper::new(cfg.scrape.clone(), ing.clone())?;
                 tokio::spawn(sc.clone().run());
                 extra = extra.merge(scrape::router(sc));
+            }
+            if cfg.rules.host.unwrap_or(scrape::Scraper::enabled(&cfg.scrape)) {
+                tokio::spawn(rules::run_host(cfg.rules.clone(), rules_backend, ing.clone(), tx.clone()));
             }
         }
         let app = query::app(state, extra, auth);

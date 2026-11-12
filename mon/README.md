@@ -58,6 +58,20 @@ scrape:
   files: [/etc/pgai/host-metrics/*.yml]
 ```
 
+## Host rules
+
+`sql/host_rules.sql` holds the 37 recording rules that mapped Supabase (node_exporter through the
+instance-jobs relay) and ClickHouse Cloud (`PostgresServer_*`) series to the `host_*` vocabulary
+of `docs/host-metrics.md` (formerly vmalert's `config/prometheus/host_rules.yml`). pgai-mon
+evaluates it every `rules.interval_s` (60 s) at the minute, `rules.delay_s` (5 s) later, after a
+store flush, and writes the rows back as `host_*{cluster, node_name}` series (`provider` on
+`host_provider_info`); a `host_*` series a later evaluation no longer produces gets a staleness
+marker. It runs when `scrape` is configured (`rules.host: true|false` forces it). The results
+are materialised rather than computed by views at query time: every consumer keeps reading
+`host_*` like other series (and RDS writes the same names directly), rollups apply, and long
+ranges read one series per node instead of re-deriving rates of every per-CPU and per-device
+counter. `tests/host_rules.rs` runs the vmalert golden cases against it.
+
 ## Layout
 
 | Path | What |
@@ -143,6 +157,7 @@ other field has a default. Unknown fields are rejected. See
 - `logs[]`: jsonlog directories to tail;
 - `views_sql` (default: the embedded copy), `macros_sql`, `read_only`;
 - `scrape`: `files`, `jobs`, `reload_interval_s`, `max_body_bytes`, `default_sample_limit`;
+- `rules`: `host` (default: on when `scrape` is configured), `interval_s`, `delay_s`;
 - `ingest`: push limits (`max_body_bytes`, `max_samples_per_request`, `max_series`, `max_age_s`,
   `max_future_s`, `max_labels`, `max_label_value_bytes`).
 
