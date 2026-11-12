@@ -125,6 +125,25 @@
           "pluginVersion": "12.0.2",
           "targets": [
             {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "aerffb0z8rjlsc"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://pgai-mon:8765/sql?format=objects",
+              "url_options": {
+                "method": "POST",
+                "data": "WITH v AS (\n  SELECT 'real_size_mib' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_real_size_mib',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'extra_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_extra_size',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'extra_pct' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_extra_pct',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'fillfactor' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_fillfactor',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'bloat_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_bloat_size',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'bloat_pct' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_bloat_pct',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'is_na' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_btree_bloat_is_na',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n)\nSELECT coalesce(labels['datname'], '') AS database, coalesce(labels['schemaname'], '') AS schemaname,\n       coalesce(labels['tblname'], '') AS tblname, coalesce(labels['idxname'], '') AS idxname,\n       max(value) FILTER (WHERE m = 'real_size_mib') AS real_size_mib,\n       max(value) FILTER (WHERE m = 'extra_size') AS extra_size,\n       max(value) FILTER (WHERE m = 'extra_pct') AS extra_pct,\n       max(value) FILTER (WHERE m = 'fillfactor') AS fillfactor,\n       max(value) FILTER (WHERE m = 'bloat_size') AS bloat_size,\n       max(value) FILTER (WHERE m = 'bloat_pct') AS bloat_pct,\n       CAST(max(value) FILTER (WHERE m = 'is_na') AS BIGINT) AS is_na\nFROM v\nGROUP BY ALL\nORDER BY bloat_size DESC NULLS LAST, database, schemaname, tblname, idxname",
+                "body_type": "raw",
+                "body_content_type": "text/plain",
+                "params": [],
+                "headers": []
+              },
+              "root_selector": "rows",
               "columns": [
                 {
                   "selector": "bloat_pct",
@@ -167,38 +186,10 @@
                   "type": "number"
                 }
               ],
-              "datasource": {
-                "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
-              },
-              "filterExpression": "is_na<1 && bloat_pct>0",
+              "computed_columns": [],
               "filters": [],
-              "format": "table",
               "global_query_id": "",
-              "parser": "backend",
-              "refId": "A",
-              "root_selector": "",
-              "source": "url",
-              "type": "csv",
-              "url": "http://flask-pgss-api:8000/btree_bloat/csv",
-              "url_options": {
-                "data": "",
-                "method": "GET",
-                "params": [
-                  {
-                    "key": "cluster_name",
-                    "value": "$cluster_name"
-                  },
-                  {
-                    "key": "node_name",
-                    "value": "$node_name"
-                  },
-                  {
-                    "key": "db_name",
-                    "value": "$db_name"
-                  }
-                ]
-              }
+              "filterExpression": "is_na<1 && bloat_pct>0"
             }
           ],
           "title": "",

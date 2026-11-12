@@ -11,14 +11,16 @@ Every target uses the Infinity datasource (`yesoreyeram-infinity-datasource`, ui
 `aerffb0z8rjlsc`, already provisioned in `config/grafana/provisioning/datasources/datasources.yml`).
 A target POSTs its SQL as a `text/plain` body to `http://pgai-mon:8765/sql?format=objects`,
 with Grafana variables (`${__from}`, `${__to}`, `${__interval_ms}`, `${cluster_name}`,
-`${node_name}`, `${db_name}`, ...) interpolated into the SQL. Three panels (Dashboards 2, 8
-and 10) still call the Flask backend at `http://flask-pgss-api:8000`.
+`${node_name}`, `${db_name}`, ...) interpolated into the SQL. No panel calls the Flask backend
+or the pgwatch Postgres sink: the four tables that did (Dashboard 2's pg_stat_statements table,
+Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat) run the SQL in
+`../sql/reports/panels/` (`TABLE_PANELS` in `compile.py`), keeping their column names.
 
 ## Inputs
 
 - `config/grafana/dashboards/Dashboard_<n>_*.json`: the PromQL originals (read only);
 - `cases.py`: maps each PromQL target to its ported SQL file and parameters;
-- `../sql/reports/`: the ported SQL.
+- `../sql/reports/`: the ported SQL (`panels/`: the tables that were not PromQL).
 
 ## Recompile
 

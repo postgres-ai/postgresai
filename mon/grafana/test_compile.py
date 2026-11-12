@@ -21,6 +21,8 @@ ALLOWED_VARS = {"${__from}", "${__to}", "${__interval_ms}", "${cluster_name}", "
                 # Dashboard_9, 11, 6 (matchers on a variable, e.g. index_name=~"$index_name")
                 "${schema_name}", "${table_name}", "${index_name}", "${index_name:regex}", "${datname}",
                 "${datname:regex}", "${replica:regex}",
+                # Dashboard_2's query text mode (its pg_stat_statements table)
+                "${legend_label}",
                 # Dashboard_6's custom threshold
                 "${lag_alert_s}"}
 
@@ -76,6 +78,8 @@ class Emitted(unittest.TestCase):
             for i, a in ps.items():
                 ta, tb = a.get("targets") or [], po[i].get("targets") or []
                 self.assertEqual([t["refId"] for t in ta], [t["refId"] for t in tb], f"panel {i}")
+                if (spec["census"], i) in C.TABLE_PANELS:
+                    continue  # test_table_panels
                 for x, y in zip(ta, tb):
                     if not x.get("expr") or (spec.get("partial") and y.get("expr")):
                         # non-Prometheus targets, and a partial port's unported ones, are copied
@@ -129,6 +133,46 @@ class Emitted(unittest.TestCase):
             counts[spec["census"]] = n
         self.assertEqual(counts, {"D2": 79, "D1": 23, "D4": 5, "D3": 16, "D7": 28, "D13": 8, "D12": 7, "D14": 17,
                                   "D5": 13, "D9": 32, "D11": 9, "D6": 24, "D8": 26, "D10": 7})
+
+    def test_table_panels(self):
+        """The panels that called the Flask backend or the Postgres sink run pgai-mon SQL instead, with
+        the original column selectors (the overrides and transformations name them)."""
+        seen = set()
+        for spec, src, out in self.pairs():
+            ps, po = panels(src), panels(out)
+            for i, a in ps.items():
+                tp = C.TABLE_PANELS.get((spec["census"], i))
+                if tp is None:
+                    continue
+                seen.add((spec["census"], i))
+                b = po[i]
+                self.assertEqual(b["datasource"], C.INFINITY)
+                ta, tb = a["targets"], b["targets"]
+                self.assertEqual([t["refId"] for t in ta], [t["refId"] for t in tb])
+                for x, y in zip(ta, tb):
+                    self.assertEqual(y["datasource"], C.INFINITY)
+                    self.assertEqual((y["type"], y["source"], y["parser"], y["format"], y["root_selector"]),
+                                     ("json", "url", "backend", "table", "rows"))
+                    self.assertTrue(y["url"].endswith(":8765/sql?format=objects"), y["url"])
+                    self.assertEqual(y["url_options"]["method"], "POST")
+                    if tp["columns"] is None:
+                        self.assertEqual(y["columns"], x["columns"])
+                    self.assertEqual(y.get("filterExpression"), x.get("filterExpression"))
+                    body = y["url_options"]["data"]
+                    self.assertNotIn("getvariable(", body)
+                    self.assertNotIn("flask", body)
+                    self.assertTrue(set(re.findall(r"\$\{[^}]+\}", body)) <= ALLOWED_VARS, body)
+                    # every column the panel reads is selected by the SQL (as a quoted name or an alias)
+                    for c in y["columns"]:
+                        sel = re.escape(c["selector"])
+                        self.assertRegex(body, r'(?i)\bAS\s+"%s"|\bAS\s+%s\b|[\s.]%s,' % (sel, sel, sel),
+                                         f"{spec['census']} panel {i}: {c['selector']}")
+        self.assertEqual(seen, set(C.TABLE_PANELS))
+        # nothing calls the Flask backend or the pgwatch Postgres sink any more
+        for spec, src, out in self.pairs():
+            text = json.dumps(out)
+            self.assertNotIn("flask-pgss-api", text)
+            self.assertNotIn("P031DD592934B2F1F", text)
 
     def test_variables(self):
         for spec, src, out in self.pairs():

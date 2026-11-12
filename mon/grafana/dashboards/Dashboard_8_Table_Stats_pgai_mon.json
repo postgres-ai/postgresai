@@ -333,6 +333,25 @@
           "pluginVersion": "12.0.2",
           "targets": [
             {
+              "refId": "A",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "aerffb0z8rjlsc"
+              },
+              "type": "json",
+              "source": "url",
+              "parser": "backend",
+              "format": "table",
+              "url": "http://pgai-mon:8765/sql?format=objects",
+              "url_options": {
+                "method": "POST",
+                "data": "WITH v AS (\n  SELECT 'total_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_class_total_relation_size_bytes',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'table_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_size_detailed_table_main_size_b',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'index_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_size_detailed_table_indexes_size_b',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'toast_size' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_size_detailed_total_toast_size_b',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'seq_scan' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_stat_all_tables_seq_scan',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'idx_scan' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_stat_all_tables_idx_scan',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'n_tup_ins' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_stats_n_tup_ins',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'n_tup_upd' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_stats_n_tup_upd',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'n_tup_del' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_stats_n_tup_del',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'n_tup_hot_upd' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_table_stats_n_tup_hot_upd',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'heap_blks_read' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_statio_all_tables_heap_blks_read',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'heap_blks_hit' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_statio_all_tables_heap_blks_hit',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'idx_blks_read' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_statio_all_tables_idx_blks_read',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n  UNION ALL\n  SELECT 'idx_blks_hit' AS m, labels, value\n  FROM prom_last_over_time('pgwatch_pg_statio_all_tables_idx_blks_hit',\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n         (CAST(${__to} AS BIGINT)), (CAST(${__to} AS BIGINT)), 60000, 86400000)\n), k AS (\n  SELECT m, value, coalesce(labels['datname'], '') AS database,\n         coalesce(labels['schemaname'], labels['schema'], '') AS schema,\n         coalesce(labels['relname'], labels['table_name'], labels['tblname'], '') AS table_name\n  FROM v\n  WHERE coalesce(labels['relkind'], '') <> 'i'\n)\nSELECT schema, table_name,\n       max(value) FILTER (WHERE m = 'total_size') AS total_size,\n       max(value) FILTER (WHERE m = 'table_size') AS table_size,\n       max(value) FILTER (WHERE m = 'index_size') AS index_size,\n       max(value) FILTER (WHERE m = 'toast_size') AS toast_size,\n       max(value) FILTER (WHERE m = 'seq_scan') AS seq_scan,\n       max(value) FILTER (WHERE m = 'idx_scan') AS idx_scan,\n       max(value) FILTER (WHERE m = 'n_tup_ins') AS n_tup_ins,\n       max(value) FILTER (WHERE m = 'n_tup_upd') AS n_tup_upd,\n       max(value) FILTER (WHERE m = 'n_tup_del') AS n_tup_del,\n       max(value) FILTER (WHERE m = 'n_tup_hot_upd') AS n_tup_hot_upd,\n       max(value) FILTER (WHERE m = 'heap_blks_read') AS heap_blks_read,\n       max(value) FILTER (WHERE m = 'heap_blks_hit') AS heap_blks_hit,\n       max(value) FILTER (WHERE m = 'idx_blks_read') AS idx_blks_read,\n       max(value) FILTER (WHERE m = 'idx_blks_hit') AS idx_blks_hit\nFROM k\nWHERE regexp_full_match(schema, ('${schema_name:regex}'))\nGROUP BY database, schema, table_name\nORDER BY total_size DESC NULLS LAST, database, schema, table_name",
+                "body_type": "raw",
+                "body_content_type": "text/plain",
+                "params": [],
+                "headers": []
+              },
+              "root_selector": "rows",
               "columns": [
                 {
                   "selector": "schema",
@@ -416,41 +435,8 @@
                 }
               ],
               "computed_columns": [],
-              "datasource": {
-                "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
-              },
               "filters": [],
-              "format": "table",
-              "global_query_id": "",
-              "parser": "backend",
-              "refId": "A",
-              "root_selector": "",
-              "source": "url",
-              "type": "csv",
-              "url": "http://flask-pgss-api:8000/table_info/csv",
-              "url_options": {
-                "data": "",
-                "method": "GET",
-                "params": [
-                  {
-                    "key": "db_name",
-                    "value": "${db_name}"
-                  },
-                  {
-                    "key": "cluster_name",
-                    "value": "${cluster_name}"
-                  },
-                  {
-                    "key": "node_name",
-                    "value": "${node_name}"
-                  },
-                  {
-                    "key": "schemaname",
-                    "value": "${schema_name}"
-                  }
-                ]
-              }
+              "global_query_id": ""
             }
           ],
           "title": "",

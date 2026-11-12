@@ -144,6 +144,41 @@ DASHBOARDS = [
     # a spec may set partial=True: the targets with no case then stay PromQL on the original
     # Prometheus datasource, and the panel becomes "-- Mixed --" (none does now)
 ]
+# Table panels that were not PromQL (the Flask backend's CSV endpoints and a raw SQL query on the
+# pgwatch Postgres sink): each is replaced by one Infinity target running a SQL file of
+# ../sql/reports/panels/ with TABLE_PARAMS. `columns` keeps the original target's column selectors
+# (the panel's overrides and transformations name them); None = take them from the original target.
+TABLE_PANELS = {
+    ("D1", 20): dict(sql_file="sql/reports/panels/pgss_window.sql", columns=None),        # /pgss_metrics/csv
+    ("D3", 18): dict(sql_file="sql/reports/panels/query_text.sql",                         # pgss_queryid_queries
+                     columns=[{"selector": "Query text", "text": "Query text", "type": "string"}]),
+    ("D8", 45): dict(sql_file="sql/reports/panels/table_info.sql", columns=None),         # /table_info/csv
+    ("D10", 24): dict(sql_file="sql/reports/panels/btree_bloat.sql", columns=None),       # /btree_bloat/csv
+}
+# their parameters: the dashboard range as is (a table is one window, no step grid)
+TABLE_PARAMS = {
+    "start_ms": "CAST(${__from} AS BIGINT)",
+    "end_ms": "CAST(${__to} AS BIGINT)",
+    "cluster": "'${cluster_name}'",
+    "node": "'${node_name}'",
+    "db_re": "'${db_name:regex}'",
+    "schema_re": "'${schema_name:regex}'",
+    "query_id": "'${query_id}'",
+    "legend_label": "'${legend_label}'",
+}
+
+
+def table_target(spec_panel, target):
+    """The Infinity target that replaces a TABLE_PANELS target (same refId, columns, filter)."""
+    sql = inline(case_sql(spec_panel), {}, TABLE_PARAMS)
+    cols = spec_panel["columns"] or [dict(c) for c in target.get("columns", [])]
+    t = infinity_target(target.get("refId", "A"), sql, target.get("hide"), [], table_keys=[])
+    t["columns"] = cols
+    if target.get("filterExpression"):
+        t["filterExpression"] = target["filterExpression"]
+    return t
+
+
 # censuses whose case ids are "<census>/<panel id><refId>_..." (D2 also has "D2/host/<...>")
 PANEL_KEYED = ("D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14")
 
@@ -503,13 +538,23 @@ def compile_dashboard(spec, by_id, probe_url):
     d_range, d_inst = dashboard_params(src)
     for p in walk(d["panels"]):
         targets = p.get("targets") or []
+        tp = TABLE_PANELS.get((spec["census"], p.get("id")))
+        if tp is not None:
+            p["targets"] = [table_target(tp, t) for t in targets]
+            p["datasource"] = dict(INFINITY)
+            queries.append({"panel": p["id"], "ref": p["targets"][0]["refId"], "case": None,
+                            "sql": p["targets"][0]["url_options"]["data"], "instant": True, "table": True,
+                            "columns": [c["selector"] for c in p["targets"][0]["columns"]],
+                            "qvars": {"${schema_name:regex}": ".*", "${query_id}": "0"}})
+            n += len(p["targets"])
+            continue
         if not any(t.get("expr") for t in targets):
             continue
         new = []
         for t in targets:
             case = match_case(spec["census"], p, t, by_id, spec.get("partial", False))
             if case is None:
-                new.append(t)  # e.g. Dashboard_2's Flask table (Infinity already): unchanged
+                new.append(t)  # not PromQL and not in TABLE_PANELS: unchanged
                 continue
             cols = probe_columns(probe_url, case)
             params = case.get("params") or {}
@@ -655,11 +700,14 @@ def main():
                 for q in queries:
                     j = post(args.probe_url, interpolate(q["sql"], {**q["qvars"], **vs}), "objects")
                     vcol = "Value" if q["table"] else "value"
-                    ok = "error" not in j and j.get("format") == "objects" and \
-                        (j["columns"][0] == "Time" and j["columns"][-1] == "Value" if q["table"]
-                         else j["columns"][:3] == ["time", "value", "series"])
+                    if q["case"] is None:  # a TABLE_PANELS table: its columns, no PromQL reference
+                        ok = "error" not in j and j.get("format") == "objects" and set(q["columns"]) <= set(j["columns"])
+                    else:
+                        ok = "error" not in j and j.get("format") == "objects" and \
+                            (j["columns"][0] == "Time" and j["columns"][-1] == "Value" if q["table"]
+                             else j["columns"][:3] == ["time", "value", "series"])
                     parity = ""
-                    if ok and dbre == SAMPLE["db"]:
+                    if ok and dbre == SAMPLE["db"] and q["case"] is not None:
                         rj = post(args.probe_url, reference(by_id[q["case"]], to, span, iv, q["instant"]))
                         if "rows" not in rj:  # the reference itself failed (e.g. the reader's memory cap)
                             j = {"error": f"reference: {rj.get('error')}"}

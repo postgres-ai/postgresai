@@ -37,7 +37,8 @@
   "panels": [
     {
       "datasource": {
-        "uid": "P031DD592934B2F1F"
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
       },
       "fieldConfig": {
         "defaults": {
@@ -90,28 +91,35 @@
       "pluginVersion": "12.0.2",
       "targets": [
         {
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH q AS ( SELECT data ->> 'query' AS qt FROM pgss_queryid_queries WHERE (data ->> 'queryid') = ${query_id:sqlstring} AND (data ? 'real_dbname') AND (data ->> 'real_dbname') = ANY(ARRAY[${db_name:sqlstring}]::text[]) ORDER BY time DESC LIMIT 1 ) SELECT qt AS \"Query text\" FROM q UNION ALL SELECT '(query text not yet collected for this queryid — pgwatch writes it on the next scrape; refresh in ~30s)' WHERE NOT EXISTS (SELECT 1 FROM q)",
           "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\n  SELECT query AS qt\n  FROM query_texts\n  WHERE CAST(queryid AS VARCHAR) = ('${query_id}') AND regexp_full_match(dbname, ('${db_name:regex}'))\n  ORDER BY last_seen DESC, dbname\n  LIMIT 1\n)\nSELECT qt AS \"Query text\" FROM q\nUNION ALL\nSELECT '(query text not yet collected for this queryid; pgai-mon stores it with its next pg_stat_statements snapshot)'\nWHERE NOT EXISTS (SELECT 1 FROM q)",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "Query text",
+              "text": "Query text",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
         }
       ],
       "title": "",
