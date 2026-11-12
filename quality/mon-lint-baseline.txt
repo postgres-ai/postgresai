@@ -1,0 +1,45 @@
+# pgai-mon lint baseline: quality/scripts/mon-lint.sh record
+# fmt <file>             rustfmt would change this file
+# clippy <file> <count>  warnings in this file
+fmt src/catalog.rs
+fmt src/eval/footer.rs
+fmt src/eval/rollup.rs
+fmt src/eval/topk.rs
+fmt src/main.rs
+fmt src/objstore.rs
+fmt src/query.rs
+fmt src/sqlproc.rs
+fmt src/store.rs
+fmt src/tile.rs
+fmt tests/eval.rs
+fmt tests/footer_subset.rs
+fmt tests/rollup_month.rs
+fmt tests/rowcache.rs
+fmt tests/tile.rs
+fmt tests/topk_chunks.rs
+fmt tests/topk_expr.rs
+clippy src/admission.rs 1
+clippy src/collector.rs 5
+clippy src/eval/footer.rs 1
+clippy src/eval/index.rs 1
+clippy src/eval/mod.rs 1
+clippy src/eval/rollup.rs 4
+clippy src/eval/rowcache.rs 3
+clippy src/eval/scan.rs 4
+clippy src/eval/topk.rs 2
+clippy src/kmerge.rs 1
+clippy src/logs.rs 1
+clippy src/main.rs 2
+clippy src/metricdefs.rs 1
+clippy src/objstore.rs 8
+clippy src/query.rs 4
+clippy src/registry.rs 1
+clippy src/sqlproc.rs 4
+clippy src/store.rs 1
+clippy src/tile.rs 1
+clippy src/tools.rs 3
+clippy tests/eval.rs 3
+clippy tests/footer_subset.rs 1
+clippy tests/rollup_month.rs 1
+clippy tests/tile.rs 2
+clippy tests/topk_expr.rs 1
