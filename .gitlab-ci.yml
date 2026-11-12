@@ -1178,6 +1178,7 @@ integration:xmin-horizon:
       command: ["--tls=false"]
   needs:
     - job: build:test:images
+    - job: build:test:pgai-mon-image
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
@@ -1188,11 +1189,14 @@ integration:xmin-horizon:
     - apk add --no-cache bash docker-cli docker-compose
     - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
     - REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-    - VM_AUTH_PASSWORD="$(dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '\n')"
-    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" "VM_AUTH_USERNAME=vmauth" "VM_AUTH_PASSWORD=$VM_AUTH_PASSWORD" > .env
-    - cp instances.demo.yml instances.yml
+    - PGAI_MON_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" "PGAI_MON_TOKEN=$PGAI_MON_TOKEN" > .env
+    # pgai-mon runs as an unprivileged uid: the demo instances.yml (demo
+    # credentials only) and the empty host-metrics/ must be readable by it.
+    - cp instances.demo.yml instances.yml && chmod 0644 instances.yml
+    - mkdir -p host-metrics && chmod 0755 host-metrics
   script:
-    - docker compose up -d target-db sink-prometheus
+    - docker compose up -d target-db
     - |
       bash <<'BASH'
       set -Eeuo pipefail
@@ -1238,21 +1242,29 @@ integration:xmin-horizon:
         sleep 2
       done
       test "$standby_recovery_ready" = "1"
-      PROMETHEUS_USERNAME="$(awk -F= '$1 == "VM_AUTH_USERNAME" { value = substr($0, index($0, "=") + 1) } END { print value }' .env)"
-      PROMETHEUS_PASSWORD="$(awk -F= '$1 == "VM_AUTH_PASSWORD" { value = substr($0, index($0, "=") + 1) } END { print value }' .env)"
-      test -n "$PROMETHEUS_USERNAME"
-      test -n "$PROMETHEUS_PASSWORD"
-      export PROMETHEUS_USERNAME PROMETHEUS_PASSWORD
-      docker compose up -d pgwatch-prometheus
+      # pgai-mon collects the demo target (instances.yml) with the full preset;
+      # the test reads the series through its POST /sql.
+      PGAI_MON_TOKEN="$(awk -F= '$1 == "PGAI_MON_TOKEN" { value = substr($0, index($0, "=") + 1) } END { print value }' .env)"
+      test -n "$PGAI_MON_TOKEN"
+      export PGAI_MON_TOKEN
+      docker compose up -d pgai-mon
+      mon_ready=0
+      for i in {1..60}; do
+        if [ "$(docker inspect -f '{{.State.Health.Status}}' pgai-mon)" = "healthy" ]; then
+          mon_ready=1
+          break
+        fi
+        sleep 2
+      done
+      test "$mon_ready" = "1"
       docker run --rm \
         --network "$NETWORK" \
         -v "$CI_PROJECT_DIR:/workspace" \
         -w /workspace \
         -e TARGET_DB_URL="postgresql://postgres:postgres@target-db:5432/target_database" \
         -e STANDBY_DB_URL="postgresql://postgres:postgres@target-standby:5432/target_database" \
-        -e PROMETHEUS_URL="http://sink-prometheus:9090" \
-        -e PROMETHEUS_USERNAME \
-        -e PROMETHEUS_PASSWORD \
+        -e PGAI_MON_URL="http://pgai-mon:8765" \
+        -e PGAI_MON_TOKEN \
         -e COLLECTION_WAIT_SECONDS="480" \
         -e REQUIRE_REPLICATION_SLOT_TEST="1" \
         -e REQUIRE_PREPARED_XACTS_TEST="1" \
@@ -1263,14 +1275,15 @@ integration:xmin-horizon:
   after_script:
     - docker ps -a || true
     - docker logs target-standby 2>&1 || true
-    - docker logs pgwatch-prometheus 2>&1 || true
-    - docker logs sink-prometheus 2>&1 || true
+    - docker logs pgai-mon 2>&1 | tail -200 || true
     - docker compose down -v || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - tests/xmin_horizon/**/*
-        - mon/metrics.yml
+        - mon/**/*
+        - reporter/mon_client.py
+        - reporter/promsql.py
         - config/target-db/**/*
         - docker-compose.yml
         - .gitlab-ci.yml
@@ -1285,17 +1298,20 @@ integration:xmin-horizon:standby-feedback:
     - |
       : "${XMIN_HORIZON_STANDBY_TARGET_DB_URL:?set in CI for standby-feedback xmin coverage}"
       : "${XMIN_HORIZON_STANDBY_DB_URL:?set in CI for standby-feedback xmin coverage}"
-      : "${XMIN_HORIZON_STANDBY_PROMETHEUS_URL:?set in CI for standby-feedback xmin coverage}"
+      : "${XMIN_HORIZON_STANDBY_MON_URL:?set in CI for standby-feedback xmin coverage}"
       TARGET_DB_URL="$XMIN_HORIZON_STANDBY_TARGET_DB_URL" \
       STANDBY_DB_URL="$XMIN_HORIZON_STANDBY_DB_URL" \
-      PROMETHEUS_URL="$XMIN_HORIZON_STANDBY_PROMETHEUS_URL" \
+      PGAI_MON_URL="$XMIN_HORIZON_STANDBY_MON_URL" \
+      PGAI_MON_TOKEN="${XMIN_HORIZON_STANDBY_MON_TOKEN:-}" \
       REQUIRE_STANDBY_FEEDBACK_TEST="1" \
       ./tests/xmin_horizon/run_test.sh
   rules:
-    - if: '$XMIN_HORIZON_STANDBY_TARGET_DB_URL && $XMIN_HORIZON_STANDBY_DB_URL && $XMIN_HORIZON_STANDBY_PROMETHEUS_URL'
+    - if: '$XMIN_HORIZON_STANDBY_TARGET_DB_URL && $XMIN_HORIZON_STANDBY_DB_URL && $XMIN_HORIZON_STANDBY_MON_URL'
       changes:
         - tests/xmin_horizon/**/*
         - mon/metrics.yml
+        - reporter/mon_client.py
+        - reporter/promsql.py
         - .gitlab-ci.yml
 
 cli:node:integration:

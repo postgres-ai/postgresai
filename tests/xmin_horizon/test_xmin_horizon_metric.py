@@ -2,23 +2,29 @@
 Integration checks for xmin_horizon metric collection.
 
 The test creates real PostgreSQL blockers where the target environment supports
-that blocker type, waits for pgwatch collection, and validates the exported
-Prometheus series. Optional paths can be made mandatory with REQUIRE_* flags so
-CI can fail instead of silently skipping coverage.
+that blocker type, waits for pgai-mon to collect them, and validates the series
+through pgai-mon's POST /sql: each instant selector is compiled to SQL by the
+reporter's PromQL compiler (reporter/promsql.py, via reporter.mon_client), so
+results keep the /api/v1/query shape. Optional paths can be made mandatory with
+REQUIRE_* flags so CI can fail instead of silently skipping coverage.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
+from pathlib import Path
 import traceback
 from dataclasses import dataclass
 from typing import Callable
 
 import psycopg
 from psycopg import IsolationLevel, sql
-import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from reporter.mon_client import MonClient  # noqa: E402
 
 POLL_INTERVAL_SECONDS = 5
 SNAPSHOT_XMIN_TIMEOUT_SECONDS = 30
@@ -35,13 +41,6 @@ DATA_COMPONENTS = {
     "pg_stat_replication",
     "pg_prepared_xacts",
 }
-
-def env_with_fallback(primary: str, fallback: str) -> str | None:
-    """Return primary env value when set, otherwise fall back to another key."""
-    if primary in os.environ:
-        return os.environ[primary]
-    return os.environ.get(fallback)
-
 
 COMPONENT_SUMMARY_METRICS = {
     "pg_stat_activity": "pgwatch_xmin_horizon_pg_stat_activity_age_tx",
@@ -85,24 +84,14 @@ class xminHorizonTest:
     def __init__(
         self,
         target_db_url: str,
-        prometheus_url: str,
+        mon_url: str,
         standby_db_url: str | None = None,
         collection_wait_seconds: int = 60,
-        prometheus_username: str | None = None,
-        prometheus_password: str | None = None,
+        mon_token: str | None = None,
     ):
         self.target_db_url = target_db_url
         self.standby_db_url = standby_db_url
-        self.prometheus_url = prometheus_url.rstrip("/")
-        if bool(prometheus_username) != bool(prometheus_password):
-            raise ValueError(
-                "Both prometheus_username and prometheus_password must be set together"
-            )
-        self.prometheus_auth = (
-            (prometheus_username, prometheus_password)
-            if prometheus_username and prometheus_password
-            else None
-        )
+        self.mon = MonClient(mon_url.rstrip("/"), token=mon_token, timeout=30)
         self.collection_wait_seconds = collection_wait_seconds
         self.started_at_seconds = time.time()
         self.target_conn: psycopg.Connection | None = None
@@ -144,13 +133,8 @@ class xminHorizonTest:
         self.target_conn = psycopg.connect(self.target_db_url)
         self.target_conn.autocommit = True
 
-        response = requests.get(
-            f"{self.prometheus_url}/api/v1/status/config",
-            auth=self.prometheus_auth,
-            timeout=5,
-        )
-        response.raise_for_status()
-        print("[ok] Prometheus connection verified")
+        self.mon.sql("select 1")
+        print("[ok] pgai-mon connection verified")
 
         with self.target_conn.cursor() as cur:
             cur.execute("select current_database(), current_user")
@@ -652,17 +636,10 @@ class xminHorizonTest:
         return False
 
     def query_prometheus(self, query: str) -> list[dict]:
-        """Run an instant query against Prometheus or VictoriaMetrics."""
-        response = requests.get(
-            f"{self.prometheus_url}/api/v1/query",
-            params={"query": query},
-            auth=self.prometheus_auth,
-            timeout=10,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        """Run an instant PromQL selector through pgai-mon POST /sql (/api/v1/query shape)."""
+        payload = self.mon.query_instant(query)
         if payload.get("status") != "success":
-            raise RuntimeError(f"Prometheus query failed: {payload}")
+            raise RuntimeError(f"pgai-mon query failed: {payload}")
         return payload.get("data", {}).get("result", [])
 
     def wait_for_collection(
@@ -670,7 +647,7 @@ class xminHorizonTest:
         description: str,
         predicate: Callable[[], bool],
     ) -> None:
-        """Poll Prometheus until predicate succeeds or the deadline expires."""
+        """Poll pgai-mon until predicate succeeds or the deadline expires."""
         print(
             f"\nPolling up to {self.collection_wait_seconds} seconds "
             f"for {description}..."
@@ -697,19 +674,26 @@ class xminHorizonTest:
         return self.query_prometheus(f"{metric_name}{{{database_selector}}}")
 
     def query_summary_snapshot(self) -> list[dict]:
-        """Fetch all xmin_horizon summary/count series in one instant query."""
+        """Fetch all xmin_horizon summary/count series, evaluated at one instant."""
         if not self.target_datname:
             raise RuntimeError("target database name was not captured")
         database_selector = self.prometheus_selector(datname=self.target_datname)
-        name_pattern = (
-            "pgwatch_xmin_horizon_"
-            "((pg_stat_activity|pg_replication_slots|pg_replication_slots_catalog|"
-            "pg_stat_replication|pg_prepared_xacts)_(age_tx|count)|"
-            "data_horizon_age_tx|catalog_horizon_age_tx|snapshot_xmin)"
-        )
-        return self.query_prometheus(
-            f'{{__name__=~"{name_pattern}",{database_selector}}}'
-        )
+        names = [
+            *COMPONENT_SUMMARY_METRICS.values(),
+            *COMPONENT_COUNT_METRICS.values(),
+            DATA_HORIZON_METRIC,
+            CATALOG_HORIZON_METRIC,
+            SNAPSHOT_XMIN_METRIC,
+        ]
+        # The compiler takes no __name__ matcher: one selector per metric, same time.
+        at = time.time()
+        results: list[dict] = []
+        for name in names:
+            payload = self.mon.query_instant(f"{name}{{{database_selector}}}", at=at)
+            if payload.get("status") != "success":
+                raise RuntimeError(f"pgai-mon query failed: {payload}")
+            results.extend(payload.get("data", {}).get("result", []))
+        return results
 
     def query_detail(self, **labels: str) -> list[dict]:
         if not self.target_datname:
@@ -1997,9 +1981,9 @@ def main() -> None:
         help="Target database connection URL",
     )
     parser.add_argument(
-        "--prometheus-url",
-        default=os.getenv("PROMETHEUS_URL", "http://localhost:59090"),
-        help="Prometheus/VictoriaMetrics API URL",
+        "--mon-url",
+        default=os.getenv("PGAI_MON_URL", "http://localhost:8765"),
+        help="pgai-mon URL (POST /sql)",
     )
     parser.add_argument(
         "--standby-db-url",
@@ -2010,28 +1994,18 @@ def main() -> None:
         "--collection-wait",
         type=int,
         default=int(os.getenv("COLLECTION_WAIT_SECONDS", "480")),
-        help="Seconds to wait for pgwatch to collect metrics",
-    )
-    parser.add_argument(
-        "--prometheus-username",
-        default=env_with_fallback("PROMETHEUS_USERNAME", "VM_AUTH_USERNAME"),
-        help="Optional Prometheus/VictoriaMetrics basic auth username",
-    )
-    parser.add_argument(
-        "--prometheus-password",
-        default=env_with_fallback("PROMETHEUS_PASSWORD", "VM_AUTH_PASSWORD"),
-        help="Optional Prometheus/VictoriaMetrics basic auth password",
+        help="Seconds to wait for pgai-mon to collect metrics",
     )
 
     args = parser.parse_args()
 
     test = xminHorizonTest(
         target_db_url=args.target_db_url,
-        prometheus_url=args.prometheus_url,
+        mon_url=args.mon_url,
         standby_db_url=args.standby_db_url,
         collection_wait_seconds=args.collection_wait,
-        prometheus_username=args.prometheus_username,
-        prometheus_password=args.prometheus_password,
+        # From the environment only, never argv.
+        mon_token=os.getenv("PGAI_MON_TOKEN") or None,
     )
 
     success = test.run()
