@@ -162,10 +162,10 @@ func parseRequest(args []byte) (Request, error) {
 	if req.ClusterName == "" || req.NodeName == "" {
 		return req, fmt.Errorf("%w: cluster_name and node_name are required", ErrInvalidArgs)
 	}
-	// A control character survives the trim above and then breaks the PromQL
-	// selector, which the store answers with a 400 -- reported as store_error,
-	// "metric store returned 400", blaming the store for a bad job arg. Reject
-	// it here, where the class is invalid_args and names the real cause.
+	// A control character survives the trim above; no cluster or node is named
+	// with one, so it is a bad job arg. Reject it here, where the class is
+	// invalid_args and names the real cause, rather than query the store for a
+	// selector that cannot match.
 	isControl := func(r rune) bool { return r < 0x20 || r == 0x7f }
 	for _, f := range []struct {
 		name  string
@@ -227,7 +227,8 @@ func clampWindow(req Request, now time.Time) (window, error) {
 //
 // A returned error means the job did not produce an answer; the caller decides
 // whether to retry it by asking the error (see UpstreamError.Retryable).
-// ErrInvalidArgs, ErrUnknownKind and ErrWindowTooLong are permanent.
+// ErrInvalidArgs, ErrUnknownKind, ErrPromQLNotSupported and ErrWindowTooLong are
+// permanent.
 func Run(ctx context.Context, c *Client, kind string, args []byte, now time.Time) (Outcome, error) {
 	// The kind is checked FIRST, before the args are even parsed and before the
 	// window gate. A kind this build cannot run has to be answered as unknown:
@@ -238,10 +239,13 @@ func Run(ctx context.Context, c *Client, kind string, args []byte, now time.Time
 	switch kind {
 	case KindAAS, KindTempfile:
 		// collection, below
-	case KindPromQLInstant, KindPromQLRange:
+	case KindSQL:
 		// A query, not a collection: its args are their own shape and its
 		// result is read back by a human rather than applied to anything.
-		return runPromQL(ctx, c, kind, args, now)
+		return runSQL(ctx, c, args)
+	case KindPromQLInstant, KindPromQLRange:
+		// Known, and refused by name: the store answers SQL only.
+		return Outcome{}, fmt.Errorf("%w (%s)", ErrPromQLNotSupported, kind)
 	default:
 		return Outcome{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}

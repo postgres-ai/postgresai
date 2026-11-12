@@ -2,29 +2,28 @@ package collect
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// StepSeconds is the fixed query_range step (1 minute). It is the bucket size of
+// StepSeconds is the fixed evaluation step (1 minute). It is the bucket size of
 // the peak (worst1m = max over 1-minute samples) AND the divisor in
 // expectedSlots = window / StepSeconds, so it also fixes the resolution of
 // avg / p99 / p999. Widening it would silently relabel the stored peak.
 const StepSeconds = 60
 
-// maxPointsPerRange mirrors VictoriaMetrics' DEFAULT
-// -search.maxPointsPerTimeseries=30000. The sink's compose command does not set
-// that flag, so the default is what is in force; a range asking for more comes
-// back 422 -- the failure that lost every monthly row once. See
-// https://gitlab.com/postgres-ai/platform-all/-/issues/681
+const stepMs = StepSeconds * 1000
+
+// maxPointsPerRange bounds the steps one query evaluates. The store holds the
+// reader to a memory cap and each answer to a byte cap, so a long window is
+// fetched in slices of at most this many points and stitched back together. It
+// was VictoriaMetrics' -search.maxPointsPerTimeseries when the store was
+// VictoriaMetrics, and the slices kept the same size so a month is still two
+// requests. See https://gitlab.com/postgres-ai/platform-all/-/issues/681
 const maxPointsPerRange = 30000
 
 // maxSlicesPerRange bounds the fan-out of one logical query. 8 slices is ~166
@@ -51,11 +50,11 @@ var ErrWindowTooLong = errors.New("collection window is too long")
 type UpstreamError struct {
 	StatusCode int
 	Message    string
-	// StoreMessage is the `error` field of the store's own JSON body, when it
-	// sent one. Empty for every non-JSON or bodyless failure. On a 4xx it names
-	// the syntax error, which is the whole diagnostic to someone who has just
-	// typed an expression -- so runPromQL forwards it rather than replacing it
-	// with a constant (#378).
+	// StoreMessage is the message of the store's own JSON error, when it sent
+	// one. Empty for every non-JSON or bodyless failure. On a 4xx it names the
+	// syntax error, which is the whole diagnostic to someone who has just typed
+	// a query -- so runSQL forwards it rather than replacing it with a constant
+	// (#378).
 	StoreMessage string
 }
 
@@ -65,25 +64,26 @@ func (e *UpstreamError) Error() string {
 
 // Retryable reports whether re-running the same query could plausibly succeed.
 // 401 is retryable here on purpose: the store is ours on the same compose
-// network, so a rejected basic auth means the credentials and the store's own
-// config are momentarily out of step (a restart mid-rotation), not a revoked
-// credential. A platform 401 is the opposite and is classified elsewhere.
+// network, so a rejected token means the token and the store's own config are
+// momentarily out of step (a restart mid-rotation), not a revoked credential. A
+// platform 401 is the opposite and is classified elsewhere. 408 is the store's
+// own query timeout, which a less loaded moment can clear.
 func (e *UpstreamError) Retryable() bool {
 	return e.StatusCode >= 500 || e.StatusCode == http.StatusUnauthorized ||
-		e.StatusCode == http.StatusTooManyRequests
+		e.StatusCode == http.StatusTooManyRequests || e.StatusCode == http.StatusRequestTimeout
 }
 
-// Client queries the monitoring instance's own metric store directly. The store
-// sits on the compose network, so none of the pull path's hostile-endpoint
-// machinery (Grafana datasource proxy, pinned datasource uid, dial-time SSRF
-// guard, host allowlist, bearer service-account token) exists here -- see
-// instance-jobs/README.md. Redirects ARE refused, for a different reason: the
-// request URL carries the job's labels inside the PromQL.
+// Client queries the monitoring instance's own metric store, pgai-mon, directly:
+// one read-only SELECT per request to its /sql endpoint. The store sits on the
+// compose network, so none of the pull path's hostile-endpoint machinery
+// (Grafana datasource proxy, pinned datasource uid, dial-time SSRF guard, host
+// allowlist) exists here -- see instance-jobs/README.md. Redirects ARE refused,
+// for a different reason: the request carries the store's bearer token and a
+// body built from the job's labels.
 type Client struct {
 	httpClient   *http.Client
 	baseURL      string
-	username     string
-	password     string
+	token        string
 	maxRespBytes int64
 
 	// OnEnrichmentError, when set, is called with a dropped query-text lookup
@@ -93,22 +93,21 @@ type Client struct {
 	OnEnrichmentError func(error)
 }
 
-// NewClient builds a store client. username/password are the VictoriaMetrics
-// basic-auth pair; both empty means the request goes out unauthenticated.
-func NewClient(baseURL, username, password string, timeout time.Duration) *Client {
+// NewClient builds a store client. token is pgai-mon's bearer token; empty
+// means the request goes out unauthenticated.
+func NewClient(baseURL, token string, timeout time.Duration) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: timeout,
-			// The request URL carries the PromQL, and the PromQL carries the job's
-			// cluster and node labels. Following a redirect would hand that URL to
-			// whatever host Location names; the store never redirects.
+			// The request carries the token and the job's cluster and node labels.
+			// Following a redirect would hand them to whatever host Location names;
+			// the store never redirects.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		},
 		baseURL:      strings.TrimRight(baseURL, "/"),
-		username:     username,
-		password:     password,
+		token:        token,
 		maxRespBytes: maxResponseBytes,
 	}
 }
@@ -133,30 +132,23 @@ type SeriesFilter struct {
 }
 
 // waitEventTypeRegex is the literal set of wait_event_type values. pgwatch
-// emits the literal string "CPU*", so the regex must match a literal asterisk.
-// The PromQL text carries TWO backslashes: PromQL's string-literal parser
-// unescapes `\\` -> `\`, leaving the regex `\*`. A single backslash makes the
-// store reject the query with `unknown escape sequence U+002A '*'`.
-const waitEventTypeRegex = `CPU\\*|IO|IPC|Lock|LWLock`
+// emits the literal string "CPU*", so the regex must match a literal asterisk:
+// `\*`. It goes into a SQL string literal, where a backslash is an ordinary
+// character, so it is written once (the PromQL form needed two).
+const waitEventTypeRegex = `CPU\*|IO|IPC|Lock|LWLock`
 
-// escapeLabelValue escapes a value for a PromQL double-quoted label. Backslash
-// first, or the quote's own escape would be escaped again.
-func escapeLabelValue(v string) string {
-	v = strings.ReplaceAll(v, `\`, `\\`)
-	v = strings.ReplaceAll(v, `"`, `\"`)
-	return v
-}
+// matcher is one [label, op, value] selector term of the store's evaluator.
+type matcher [3]string
 
-// baseMatcher is the cluster/node selector shared by every query, with no
+// baseMatchers is the cluster/node selector shared by every query, with no
 // wait_event_type filter.
-func (f SeriesFilter) baseMatcher() string {
-	return fmt.Sprintf(`cluster="%s", node_name="%s"`,
-		escapeLabelValue(f.Cluster), escapeLabelValue(f.NodeName))
+func (f SeriesFilter) baseMatchers() []matcher {
+	return []matcher{{"cluster", "=", f.Cluster}, {"node_name", "=", f.NodeName}}
 }
 
-// labelMatcher adds the five-type wait_event_type regex to baseMatcher.
-func (f SeriesFilter) labelMatcher() string {
-	return fmt.Sprintf(`wait_event_type=~"%s", %s`, waitEventTypeRegex, f.baseMatcher())
+// labelMatchers adds the five-type wait_event_type regex to baseMatchers.
+func (f SeriesFilter) labelMatchers() []matcher {
+	return append([]matcher{{"wait_event_type", "=~", waitEventTypeRegex}}, f.baseMatchers()...)
 }
 
 // queryIDClass pairs an output class key with its wait_event_type selector. An
@@ -179,9 +171,12 @@ var queryIDClasses = []queryIDClass{
 }
 
 // QueryPerType returns one TypeSeries per wait_event_type present in the window.
+// PromQL: sum by (wait_event_type)(pgwatch_wait_events_total{<five types>, cluster, node_name})
 func (c *Client) QueryPerType(ctx context.Context, f SeriesFilter, start, end time.Time) ([]TypeSeries, error) {
-	q := fmt.Sprintf(`sum by (wait_event_type)(pgwatch_wait_events_total{%s})`, f.labelMatcher())
-	matrix, err := c.queryRange(ctx, q, start, end)
+	matrix, err := c.queryRange(ctx, start, end, func(s, e int64) string {
+		return sumBySQL("aas_per_type", "last", "pgwatch_wait_events_total", f.labelMatchers(), s, e,
+			[]string{"wait_event_type"}, 0, "")
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +188,12 @@ func (c *Client) QueryPerType(ctx context.Context, f SeriesFilter, start, end ti
 }
 
 // QueryPerEvent returns one EventSeries per (wait_event_type, wait_event).
+// PromQL: sum by (wait_event_type, wait_event)(pgwatch_wait_events_total{...})
 func (c *Client) QueryPerEvent(ctx context.Context, f SeriesFilter, start, end time.Time) ([]EventSeries, error) {
-	q := fmt.Sprintf(`sum by (wait_event_type, wait_event)(pgwatch_wait_events_total{%s})`, f.labelMatcher())
-	matrix, err := c.queryRange(ctx, q, start, end)
+	matrix, err := c.queryRange(ctx, start, end, func(s, e int64) string {
+		return sumBySQL("aas_per_event", "last", "pgwatch_wait_events_total", f.labelMatchers(), s, e,
+			[]string{"wait_event_type", "wait_event"}, 0, "")
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -210,29 +208,30 @@ func (c *Client) QueryPerEvent(ctx context.Context, f SeriesFilter, start, end t
 	return out, nil
 }
 
-// QueryPerQueryID returns the per-class (query_id, datname) series. topk() is
+// QueryPerQueryID returns the per-class (query_id, datname) series. The top-k is
 // the cardinality guard: query_id x datname is otherwise unbounded. query_id
 // stays a STRING so an id above 2^53 round-trips byte-identical; blank ids are
-// dropped.
+// dropped -- AFTER the ranking, as PromQL's topk() kept them in it.
 //
-// topk() inside a range query is evaluated PER TIMESTAMP, so this returns the
-// union of every id that was top-N in any single slot -- more than TopQueryIDN
-// series -- and each is missing the slots where it ranked lower, which the
-// aggregator then zero-pads. p99/p999 is therefore a slight underestimate for
-// a borderline series. That is a known consequence of the guard, not a padding
-// bug, and the pull path does exactly the same: changing it on this side alone
-// would make the two paths disagree on the same data.
+// The top-k is taken PER TIMESTAMP, as topk() inside a range query is, so this
+// returns the union of every id that was top-N in any single slot -- more than
+// TopQueryIDN series -- and each is missing the slots where it ranked lower,
+// which the aggregator then zero-pads. p99/p999 is therefore a slight
+// underestimate for a borderline series. That is a known consequence of the
+// guard, not a padding bug, and the pull path does exactly the same: changing
+// it on this side alone would make the two paths disagree on the same data.
+// PromQL: topk(N, sum by (query_id, datname)(pgwatch_wait_events_total{...}))
 func (c *Client) QueryPerQueryID(ctx context.Context, f SeriesFilter, start, end time.Time) ([]QueryIDSeries, error) {
-	base := f.baseMatcher()
 	var out []QueryIDSeries
 	for _, cls := range queryIDClasses {
-		selector := f.labelMatcher()
+		matchers := f.labelMatchers()
 		if cls.WaitEventType != "" {
-			selector = fmt.Sprintf(`%s, wait_event_type="%s"`, base, escapeLabelValue(cls.WaitEventType))
+			matchers = append(f.baseMatchers(), matcher{"wait_event_type", "=", cls.WaitEventType})
 		}
-		q := fmt.Sprintf(`topk(%d, sum by (query_id, datname)(pgwatch_wait_events_total{%s}))`,
-			TopQueryIDN, selector)
-		matrix, err := c.queryRange(ctx, q, start, end)
+		matrix, err := c.queryRange(ctx, start, end, func(s, e int64) string {
+			return sumBySQL("aas_per_query_id_"+cls.Key, "last", "pgwatch_wait_events_total", matchers, s, e,
+				[]string{"query_id", "datname"}, TopQueryIDN, "")
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -254,9 +253,11 @@ func (c *Client) QueryPerQueryID(ctx context.Context, f SeriesFilter, start, end
 
 // QueryTotalSeries returns the per-timestamp sum across all five types. Its
 // length is also what the density gate counts.
+// PromQL: sum(pgwatch_wait_events_total{...})
 func (c *Client) QueryTotalSeries(ctx context.Context, f SeriesFilter, start, end time.Time) ([]float64, error) {
-	q := fmt.Sprintf(`sum(pgwatch_wait_events_total{%s})`, f.labelMatcher())
-	matrix, err := c.queryRange(ctx, q, start, end)
+	matrix, err := c.queryRange(ctx, start, end, func(s, e int64) string {
+		return sumBySQL("aas_total", "last", "pgwatch_wait_events_total", f.labelMatchers(), s, e, nil, 0, "")
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -267,134 +268,109 @@ func (c *Client) QueryTotalSeries(ctx context.Context, f SeriesFilter, start, en
 }
 
 // QueryTempfileWriteRate returns instance-wide temporary-file write throughput
-// in MiB/s. pgwatch_db_stats_temp_bytes is a cumulative counter; rate() handles
-// resets and sum() combines the databases on the selected cluster/node.
+// in MiB/s. pgwatch_db_stats_temp_bytes is a cumulative counter; the rate
+// handles resets and the sum combines the databases on the selected
+// cluster/node.
+// PromQL: sum(rate(pgwatch_db_stats_temp_bytes{cluster, node_name}[5m])) / 1024 / 1024
 func (c *Client) QueryTempfileWriteRate(ctx context.Context, f SeriesFilter, start, end time.Time) ([]float64, error) {
-	q := fmt.Sprintf(`sum(rate(pgwatch_db_stats_temp_bytes{%s}[5m])) / 1024 / 1024`, f.baseMatcher())
-	matrix, err := c.queryRange(ctx, q, start, end)
+	matrix, err := c.queryRange(ctx, start, end, func(s, e int64) string {
+		return sumBySQL("tempfile_write_rate", "rate", "pgwatch_db_stats_temp_bytes", f.baseMatchers(), s, e,
+			nil, 0, "300000") // [5m]
+	})
 	if err != nil {
 		return nil, err
 	}
 	if len(matrix) == 0 {
 		return nil, nil
 	}
-	return matrix[0].values, nil
+	values := matrix[0].values
+	for i := range values {
+		values[i] = values[i] / 1024 / 1024
+	}
+	return values, nil
 }
 
-// promSeries is one parsed matrix series.
+// alignRange is what VictoriaMetrics' /api/v1/query_range does to the window
+// before evaluating it (AdjustStartEnd, without nocache=1): a range of 50 points
+// or more is snapped to the step grid, start down and end up, keeping its point
+// count. The store's evaluator takes the window as given, so the snap is made
+// here and the steps stay where the PromQL path put them.
+func alignRange(startMs, endMs int64) (int64, int64) {
+	if (endMs-startMs)/stepMs+1 < 50 {
+		return startMs, endMs
+	}
+	down := startMs - startMs%stepMs
+	up := endMs
+	if r := endMs % stepMs; r > 0 {
+		up = endMs + stepMs - r
+	}
+	extra := (up-down)/stepMs - (endMs-startMs)/stepMs
+	if extra < 0 {
+		extra = 0
+	}
+	return down, up - stepMs*extra
+}
+
+// sumBySQL renders `sum by (by...)(<fn>(metric{matchers}[window]))` evaluated at
+// every step of [startMs, endMs] -- or topk(k, ...) of it per step when k > 0 --
+// as one SELECT returning a row per output series: its `by` labels as columns
+// and its values, in time order, as the list `vals`. A series has values only
+// at the steps where it exists, as in a Prometheus matrix.
+//
+// fn is the store's evaluator: "last" is a bare selector (VictoriaMetrics'
+// default_rollup), "rate" takes window (milliseconds, as SQL text), "timestamp"
+// is timestamp(). The leading comment names the query, so a test double can
+// tell the queries apart; the store ignores it.
+func sumBySQL(name, fn, metric string, matchers []matcher, startMs, endMs int64, by []string, k int, window string) string {
+	s, e := alignRange(startMs, endMs)
+	args := fmt.Sprintf("%s, %s, %d, %d, %d", sqlString(metric), matchersSQL(matchers), s, e, stepMs)
+	if fn == "rate" {
+		args += ", " + window
+	}
+	var cols, keys []string
+	for _, l := range by {
+		cols = append(cols, fmt.Sprintf("coalesce(labels[%s], '') AS %s", sqlString(l), l))
+		keys = append(keys, l)
+	}
+	sel := strings.Join(append(cols, "t", "sum(value) AS v"), ", ")
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- instance-jobs: %s\n", name)
+	fmt.Fprintf(&b, "WITH a AS (\n  SELECT %s\n  FROM prom_%s(%s)\n  WHERE NOT isnan(value)\n  GROUP BY ALL\n)", sel, fn, args)
+	from := "a"
+	if k > 0 {
+		order := strings.Join(append([]string{"v DESC"}, keys...), ", ")
+		fmt.Fprintf(&b, ", k AS (\n  SELECT * FROM a\n  QUALIFY row_number() OVER (PARTITION BY t ORDER BY %s) <= %d\n)", order, k)
+		from = "k"
+	}
+	out := strings.Join(append(append([]string{}, keys...), "list(v ORDER BY t) AS vals"), ", ")
+	if len(keys) > 0 {
+		fmt.Fprintf(&b, "\nSELECT %s\nFROM %s\nGROUP BY ALL\nORDER BY ALL", out, from)
+	} else {
+		// one series, or none at all: no row rather than a row with a NULL list
+		fmt.Fprintf(&b, "\nSELECT %s\nFROM %s\nHAVING count(*) > 0", out, from)
+	}
+	return b.String()
+}
+
+// sqlString quotes s as a SQL string literal. The store's dialect (DuckDB) takes
+// a backslash literally, so doubling the quote is the whole escape.
+func sqlString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// matchersSQL renders a selector as the evaluator's [[label, op, value], ...].
+func matchersSQL(ms []matcher) string {
+	parts := make([]string, 0, len(ms))
+	for _, m := range ms {
+		parts = append(parts, fmt.Sprintf("[%s, %s, %s]", sqlString(m[0]), sqlString(m[1]), sqlString(m[2])))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// promSeries is one parsed series.
 type promSeries struct {
 	labels map[string]string
 	values []float64
-}
-
-// promResponse is the subset of the query_range JSON we parse.
-type promResponse struct {
-	Status string `json:"status"`
-	Data   struct {
-		ResultType string `json:"resultType"`
-		Result     []struct {
-			Metric map[string]string `json:"metric"`
-			Values [][]any           `json:"values"`
-		} `json:"result"`
-	} `json:"data"`
-	ErrorType string `json:"errorType"`
-	Error     string `json:"error"`
-}
-
-// countingReader counts bytes read so doQuery can tell a body truncated at the
-// cap from one that is genuinely malformed.
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
-}
-
-// doQuery issues one GET against the store and returns the parsed response.
-func (c *Client) doQuery(ctx context.Context, subpath string, params url.Values) (*promResponse, error) {
-	var pr promResponse
-	if err := c.getJSON(ctx, subpath, params, &pr); err != nil {
-		return nil, err
-	}
-	if pr.Status != "success" {
-		return nil, &UpstreamError{StatusCode: http.StatusBadGateway, Message: "query returned a non-success status"}
-	}
-	return &pr, nil
-}
-
-// getJSON performs one store request and decodes the body into dst.
-//
-// Shared by every caller rather than copied, so the guards cannot drift apart:
-// the auth header, the Accept header, the status check, the size cap and the
-// truncated-versus-malformed distinction are all decided in exactly one place.
-// The subpath is always chosen by the CALLER from a fixed set -- it is never
-// built from anything a user supplied.
-func (c *Client) getJSON(ctx context.Context, subpath string, params url.Values, dst any) error {
-	endpoint := c.baseURL + "/" + subpath + "?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	// Either half alone still authenticates: a half-configured box sending no
-	// header at all would 401 every query with nothing to point at.
-	if c.username != "" || c.password != "" {
-		req.SetBasicAuth(c.username, c.password)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	// One byte past the cap, so a truncated body is distinguishable below.
-	limited := &countingReader{r: io.LimitReader(resp.Body, c.maxRespBytes+1)}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Read the body BEFORE giving up on it. This used to return on the
-		// status alone, which discarded the one thing a 4xx carries that the
-		// status does not: a store answers a bad expression with 422 (or 400
-		// upstream) and names the parse error in `error`. `limited` already caps
-		// the read, so this costs nothing. A body that is missing, not JSON, or
-		// not this shape leaves StoreMessage empty and changes nothing (#378).
-		var body struct {
-			Status    string `json:"status"`
-			ErrorType string `json:"errorType"`
-			Error     string `json:"error"`
-		}
-		// Bounded far tighter than the success path. No store error message is
-		// anywhere near 64 KiB, and decoding the full 8 MiB cap here would cost
-		// ~40 MiB of garbage on every non-2xx -- on the collection path too,
-		// once per slice per attempt, inside a 256 MiB container. Over the
-		// bound the JSON is truncated, the decode fails, StoreMessage stays
-		// empty and ue.Message is used: the degradation is silent by design.
-		_ = json.NewDecoder(io.LimitReader(limited, maxErrorBodyBytes)).Decode(&body)
-		return &UpstreamError{
-			StatusCode:   resp.StatusCode,
-			Message:      fmt.Sprintf("metric store returned status %d", resp.StatusCode),
-			StoreMessage: body.Error,
-		}
-	}
-
-	if err := json.NewDecoder(limited).Decode(dst); err != nil {
-		if limited.n > c.maxRespBytes {
-			// 413, deliberately: the body scales with series cardinality, so a
-			// window that overflows the cap overflows it every time. A 502
-			// would be retried three times for the same answer, and would look
-			// like a store fault instead of a window we cannot fetch.
-			return &UpstreamError{
-				StatusCode: http.StatusRequestEntityTooLarge,
-				Message:    "response exceeded the size limit",
-			}
-		}
-		return &UpstreamError{StatusCode: http.StatusBadGateway, Message: "failed to parse the response"}
-	}
-	return nil
 }
 
 // timeRange is one closed [start, end] slice of a query window.
@@ -453,25 +429,24 @@ func labelFingerprint(labels map[string]string) string {
 	return b.String()
 }
 
-// queryRange fetches the matrix for [start, end] at StepSeconds, slicing a long
+// queryRange fetches the series for [start, end] at StepSeconds, slicing a long
 // window and stitching the results back together BY LABEL SET, never by
 // position: pgwatch sparse-emits, so a series present in one slice can be
-// absent from the next.
-func (c *Client) queryRange(ctx context.Context, query string, start, end time.Time) ([]promSeries, error) {
+// absent from the next. build renders the SELECT for one slice, in epoch ms.
+func (c *Client) queryRange(ctx context.Context, start, end time.Time, build func(startMs, endMs int64) string) ([]promSeries, error) {
 	parts, err := splitWindow(start, end)
 	if err != nil {
 		return nil, err
 	}
-	if len(parts) == 1 {
-		return c.queryRangeOnce(ctx, query, start, end)
-	}
-
 	merged := []promSeries{}
 	at := make(map[string]int)
 	for _, sl := range parts {
-		slice, err := c.queryRangeOnce(ctx, query, sl.start, sl.end)
+		slice, err := c.querySeries(ctx, build(sl.start.UnixMilli(), sl.end.UnixMilli()))
 		if err != nil {
 			return nil, err
+		}
+		if len(parts) == 1 {
+			return slice, nil
 		}
 		for _, s := range slice {
 			key := labelFingerprint(s.labels)
@@ -484,76 +459,4 @@ func (c *Client) queryRange(ctx context.Context, query string, start, end time.T
 		}
 	}
 	return merged, nil
-}
-
-// queryRangeOnce performs a single GET /api/v1/query_range and parses the
-// matrix. Values that do not parse are skipped; +Inf/NaN DO parse and are kept
-// -- only the tempfile path filters them (see AggregateTempfile).
-func (c *Client) queryRangeOnce(ctx context.Context, query string, start, end time.Time) ([]promSeries, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("start", strconv.FormatInt(start.Unix(), 10))
-	params.Set("end", strconv.FormatInt(end.Unix(), 10))
-	params.Set("step", strconv.Itoa(StepSeconds))
-
-	pr, err := c.doQuery(ctx, "api/v1/query_range", params)
-	if err != nil {
-		return nil, err
-	}
-	// A vector where a matrix was asked for decodes to zero values per series,
-	// which the density gate then reads as "no data" -- a silent wrong answer
-	// rather than an error.
-	if pr.Data.ResultType != "matrix" {
-		return nil, &UpstreamError{
-			StatusCode: http.StatusBadGateway,
-			Message:    "query_range did not return a matrix",
-		}
-	}
-
-	out := make([]promSeries, 0, len(pr.Data.Result))
-	for _, r := range pr.Data.Result {
-		vals := make([]float64, 0, len(r.Values))
-		for _, pair := range r.Values {
-			if len(pair) != 2 {
-				continue
-			}
-			// pair[1] is the value as a string per the Prometheus JSON encoding.
-			str, ok := pair[1].(string)
-			if !ok {
-				continue
-			}
-			f, err := strconv.ParseFloat(str, 64)
-			if err != nil {
-				continue
-			}
-			vals = append(vals, f)
-		}
-		out = append(out, promSeries{labels: r.Metric, values: vals})
-	}
-	return out, nil
-}
-
-// queryInstant performs a single GET /api/v1/query at `at` and returns the label
-// set of every series. It is a label-only lookup: the caller (query-text
-// enrichment) reads a constant-1 gauge whose information is all in its labels.
-func (c *Client) queryInstant(ctx context.Context, query string, at time.Time) ([]map[string]string, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("time", strconv.FormatInt(at.Unix(), 10))
-
-	pr, err := c.doQuery(ctx, "api/v1/query", params)
-	if err != nil {
-		return nil, err
-	}
-	if pr.Data.ResultType != "vector" {
-		return nil, &UpstreamError{
-			StatusCode: http.StatusBadGateway,
-			Message:    "query did not return a vector",
-		}
-	}
-	out := make([]map[string]string, 0, len(pr.Data.Result))
-	for _, r := range pr.Data.Result {
-		out = append(out, r.Metric)
-	}
-	return out, nil
 }

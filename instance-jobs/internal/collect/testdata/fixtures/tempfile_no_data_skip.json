@@ -17,12 +17,16 @@
     "step": 60
   },
   "responses": {
-    "sum(rate(pgwatch_db_stats_temp_bytes{cluster=\"c1\", node_name=\"n1\"}[5m])) / 1024 / 1024": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "tempfile_write_rate": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     }
   },
   "expected": {

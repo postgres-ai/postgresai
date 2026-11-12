@@ -118,7 +118,7 @@ func newHarness(t *testing.T, configured bool, handle func(h *harness, w http.Re
 		t.Fatal(err)
 	}
 	t.Setenv("INSTANCE_JOBS_CONFIG_PATH", configPath)
-	t.Setenv("PROMETHEUS_URL", srv.URL)
+	t.Setenv("PGAI_MON_URL", srv.URL)
 	// These decide whether the instance counts as configured, and .env.example
 	// tells developers to set them, so a value on the machine running the tests
 	// must not decide the outcome.
@@ -128,8 +128,8 @@ func newHarness(t *testing.T, configured bool, handle func(h *harness, w http.Re
 	// the environment, these tests would otherwise dial the PRODUCTION platform
 	// with a fake token. Here a precedence regression fails locally and fast.
 	t.Setenv("PGAI_API_BASE_URL", "http://127.0.0.1:1")
-	t.Setenv("VM_AUTH_USERNAME", "")
-	t.Setenv("VM_AUTH_PASSWORD", "")
+	t.Setenv("PGAI_MON_TOKEN", "")
+	t.Setenv("PGAI_MON_TOKEN_FILE", "")
 
 	h.healthPath = filepath.Join(dir, "health")
 	h.runner = New(h.healthPath, "test")
@@ -551,7 +551,23 @@ const collectJobArgs = `{"cluster_name":"c","node_name":"n","vcpus":2,
 	"period_start":"2026-09-01T00:00:00Z","period_end":"2026-09-01T00:10:00Z",
 	"window_start":"2026-09-01T00:00:00Z"}`
 
-const emptyMatrix = `{"status":"success","data":{"resultType":"matrix","result":[]}}`
+const emptyMatrix = `{"columns":["vals"],"types":["DOUBLE[]"],"rows":[],"row_count":0,"truncated":false}`
+
+// storeSQL reads the statement a store request carries.
+func storeSQL(r *http.Request) string {
+	b, _ := io.ReadAll(r.Body)
+	return string(b)
+}
+
+// isStoreQuery reports whether sql is the box's query of that name.
+func isStoreQuery(sql, name string) bool {
+	return strings.HasPrefix(sql, "-- instance-jobs: "+name+"\n")
+}
+
+// oneSeries is a store answer of one series of wait_event_type IO.
+func oneSeries(vals string) string {
+	return `{"columns":["wait_event_type","vals"],"types":["VARCHAR","DOUBLE[]"],"rows":[["IO",` + vals + `]],"truncated":false}`
+}
 
 // storeHarness serves one collection job and lets the test decide what the
 // store answers on each request.
@@ -573,7 +589,7 @@ func storeHarness(t *testing.T, store func(n int, w http.ResponseWriter, r *http
 	storeRequests := 0
 	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
+		case r.URL.Path == "/sql":
 			storeRequests++
 			store(storeRequests, w, r)
 		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
@@ -667,14 +683,12 @@ func TestANonRetryableStoreErrorIsNotRetried(t *testing.T) {
 // platform's hourly sweep.
 func TestANonFiniteSampleIsAnsweredAsAFailedJob(t *testing.T) {
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query().Get("query")
+		q := storeSQL(r)
 		switch {
-		case strings.HasPrefix(q, "sum by (wait_event_type)("):
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"wait_event_type":"IO"},"values":[[1,"+Inf"]]}]}}`))
-		case strings.HasPrefix(q, "sum(pgwatch_wait_events_total"):
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{},"values":[[1,"1"]]}]}}`))
+		case isStoreQuery(q, "aas_per_type"):
+			w.Write([]byte(oneSeries(`["+Inf"]`)))
+		case isStoreQuery(q, "aas_total"):
+			w.Write([]byte(oneSeries(`[1]`)))
 		default:
 			w.Write([]byte(emptyMatrix))
 		}
@@ -1285,16 +1299,49 @@ func TestAFailedRenameLeavesNoDebris(t *testing.T) {
 
 // --- what actually goes on the wire ------------------------------------------
 
+// A `sql` job goes to pgai-mon as the body of POST /sql with the bearer token,
+// and the rows come back as the job's result.
+func TestASQLJobSubmitsTheRows(t *testing.T) {
+	var gotSQL, gotAuth string
+	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sql":
+			gotSQL, gotAuth = storeSQL(r), r.Header.Get("Authorization")
+			w.Write([]byte(`{"columns":["n"],"types":["BIGINT"],"rows":[[42]],"row_count":1,"truncated":false}`))
+		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
+			if h.polls > 1 {
+				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
+				return
+			}
+			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"sql","args":{"query":"select 42 as n"}}],"next_poll_ms":5000}`))
+		default:
+			w.Write(echoOutcome(r))
+		}
+	})
+	t.Setenv("PGAI_MON_TOKEN", "mon-token") // after newHarness, which clears it
+
+	h.runner.tick(context.Background())
+
+	if gotSQL != "select 42 as n" || gotAuth != "Bearer mon-token" {
+		t.Fatalf("store got %q with Authorization %q", gotSQL, gotAuth)
+	}
+	if len(h.submits) != 1 || h.submits[0]["outcome"] != "ok" {
+		t.Fatalf("submits = %v, want one ok", h.submits)
+	}
+	raw, _ := json.Marshal(h.submits[0]["result"])
+	if want := `{"columns":["n"],"rows":[[42]],"truncated":false,"types":["BIGINT"]}`; string(raw) != want {
+		t.Fatalf("result = %s, want %s", raw, want)
+	}
+}
+
 // The platform reads checkId and results at the TOP LEVEL of `result` and takes
 // the pin from the job row, so the payload is submitted bare. An envelope would
 // be recorded apply_rejected, in a column every member of the org can see.
 func TestASuccessfulCollectionSubmitsTheBarePayload(t *testing.T) {
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, r *http.Request) {
-		switch q := r.URL.Query().Get("query"); {
-		case strings.HasPrefix(q, "sum(pgwatch_wait_events_total"),
-			strings.HasPrefix(q, "sum by (wait_event_type)("):
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"wait_event_type":"IO"},"values":[[1,"3"]]}]}}`))
+		switch q := storeSQL(r); {
+		case isStoreQuery(q, "aas_total"), isStoreQuery(q, "aas_per_type"):
+			w.Write([]byte(oneSeries(`[3]`)))
 		default:
 			w.Write([]byte(emptyMatrix))
 		}
@@ -1405,9 +1452,8 @@ func TestAnAnswerRefusedWithPT400IsClosedAsFailed(t *testing.T) {
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, r *http.Request) {
 		// A real payload, so the refused answer is an `ok` carrying a result --
 		// the only kind of answer an oversize refusal can be about.
-		if strings.HasPrefix(r.URL.Query().Get("query"), "sum(pgwatch_wait_events_total") {
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"wait_event_type":"IO"},"values":[[1,"3"]]}]}}`))
+		if isStoreQuery(storeSQL(r), "aas_total") {
+			w.Write([]byte(oneSeries(`[3]`)))
 			return
 		}
 		w.Write([]byte(emptyMatrix))
@@ -1475,21 +1521,22 @@ func TestARefusedErrorAnswerIsNotClosedAgain(t *testing.T) {
 // This is the assertion the collect-level tests structurally cannot make: they
 // stop at `err.Error()`, one layer below `classifyFailure`, which is where a
 // constant string replaced the message and threw the whole fix away. `pgai
-// promql` prints the submitted `error` verbatim, so this is the text the user
+// mon sql` prints the submitted `error` verbatim, so this is the text the user
 // actually sees when they fat-finger an expression (#378).
 func TestTheStoresMessageReachesTheSubmittedError(t *testing.T) {
-	const storeMsg = `cannot parse "totl(up)": unsupported function "totl"`
+	const storeMsg = `Catalog Error: Scalar Function with name totl does not exist`
 	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			fmt.Fprintf(w, `{"status":"error","errorType":"422","error":%q}`, storeMsg)
+		case r.URL.Path == "/sql":
+			w.WriteHeader(http.StatusBadRequest)
+			b, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "binder_error", "message": storeMsg}})
+			w.Write(b)
 		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
 			if h.polls > 1 {
 				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
 				return
 			}
-			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"promql_instant","args":{"query":"totl(up)"}}],"next_poll_ms":5000}`))
+			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"sql","args":{"query":"select totl(1)"}}],"next_poll_ms":5000}`))
 		default:
 			w.Write(echoOutcome(r))
 		}
@@ -1504,30 +1551,30 @@ func TestTheStoresMessageReachesTheSubmittedError(t *testing.T) {
 		t.Fatalf("failure_class = %v, want invalid_args", got)
 	}
 	got, _ := h.submits[0]["error"].(string)
-	if !strings.Contains(got, "unsupported function") {
+	if !strings.Contains(got, "totl does not exist") {
 		t.Fatalf("the store's message never reached the wire: error = %q -- the user is told the platform's args are bad when the store told us exactly what was wrong", got)
 	}
 }
 
 // ...and it must arrive with the control characters removed. The store echoes
-// the submitted expression back inside its message, PromQL string literals take
-// Go-style escapes, and the CLI prints the field with no escaping of its own --
+// the submitted statement back inside its message, and the CLI prints the field
+// with no escaping of its own --
 // so an ESC in an expression would execute in whoever's terminal reads the job
 // back. Same hole round 9 found in cli/lib/promql.ts, on a second path.
 func TestTheStoresMessageIsStrippedOfControlCharacters(t *testing.T) {
 	const storeMsg = "cannot parse \"\x1b[2J\x1b[31mRED\r\n\": bad"
 	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			b, _ := json.Marshal(map[string]string{"status": "error", "error": storeMsg})
+		case r.URL.Path == "/sql":
+			w.WriteHeader(http.StatusBadRequest)
+			b, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "parser_error", "message": storeMsg}})
 			w.Write(b)
 		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
 			if h.polls > 1 {
 				w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[],"next_poll_ms":5000}`))
 				return
 			}
-			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"promql_instant","args":{"query":"up"}}],"next_poll_ms":5000}`))
+			w.Write([]byte(`{"server_time":"2026-09-16T00:00:00Z","jobs":[{"id":"j1","kind":"sql","args":{"query":"select 1"}}],"next_poll_ms":5000}`))
 		default:
 			w.Write(echoOutcome(r))
 		}
@@ -1598,7 +1645,7 @@ func TestTheShutdownBudgetFitsBetweenTheLockTimeoutAndTheStopGrace(t *testing.T)
 // not be able to outlast the grace between them.
 func TestTwoDetachedSubmitsShareOneBudget(t *testing.T) {
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		w.Write([]byte(emptyMatrix))
 	})
 	client, creds := h.platform(t)
 	base := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
@@ -1832,7 +1879,7 @@ func TestAnUnknownKindIsAnsweredWithoutTouchingTheStore(t *testing.T) {
 	storeRequests := 0
 	h := newHarness(t, true, func(h *harness, w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/"):
+		case r.URL.Path == "/sql":
 			storeRequests++
 			w.Write([]byte(emptyMatrix))
 		case strings.HasSuffix(r.URL.Path, "instance_job_poll"):
@@ -2073,7 +2120,7 @@ func TestAnAnswerSurvivesCancellationMidJob(t *testing.T) {
 	// finished and a dead context, submit still delivers THAT submission,
 	// unaltered. Everything about how the context died is someone else's test.
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		w.Write([]byte(emptyMatrix))
 	})
 	client, creds := h.platform(t)
 
@@ -2115,7 +2162,7 @@ func TestACancelledJobIsStillClosedOutThroughTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
 		cancel()
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		w.Write([]byte(emptyMatrix))
 	})
 
 	h.runner.tick(ctx)
@@ -2134,7 +2181,7 @@ func TestACancelledJobIsStillClosedOutThroughTick(t *testing.T) {
 // mutation survivor.
 func TestAFailedDetachedSubmitIsReported(t *testing.T) {
 	h, _ := storeHarness(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		w.Write([]byte(emptyMatrix))
 	})
 	h.submitHandler = func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

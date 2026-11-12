@@ -294,7 +294,7 @@ func New(healthPath, clientVersion string) *Runner {
 			return platform.NewClient(baseURL, clientVersion, platformTimeout)
 		},
 		storeClient: func(cfg config.Config) *collect.Client {
-			c := collect.NewClient(cfg.StoreURL, cfg.StoreUsername, cfg.StorePassword, storeRequestTimeout)
+			c := collect.NewClient(cfg.StoreURL, cfg.StoreToken, storeRequestTimeout)
 			c.OnEnrichmentError = func(err error) {
 				log.Printf("query-text enrichment dropped (non-fatal): %v", sanitize(err))
 			}
@@ -984,7 +984,7 @@ func (r *Runner) execute(ctx context.Context, cfg config.Config, job platform.Jo
 	// is relayed verbatim instead of applied to anything.
 	switch job.Kind {
 	case collect.KindQueryText:
-		return collect.QueryText(jobCtx, job.Args, r.now())
+		return collect.QueryText(jobCtx, r.storeClient(cfg), job.Args, r.now())
 	case dblab.KindCall:
 		return r.executeDBLab(jobCtx, cfg, job)
 	case joe.KindCall:
@@ -1232,6 +1232,7 @@ func retryableEngineError(err error) bool {
 func retryableStoreError(err error) bool {
 	if errors.Is(err, collect.ErrInvalidArgs) ||
 		errors.Is(err, collect.ErrUnknownKind) ||
+		errors.Is(err, collect.ErrPromQLNotSupported) ||
 		errors.Is(err, collect.ErrWindowTooLong) ||
 		// A panic is deterministic: retrying it just panics again, three times,
 		// and burns the job budget doing it.
@@ -1276,8 +1277,8 @@ func classWithStatus(class string, status int) string {
 
 // describeFailure turns an error into the short (error, failure_class) pair the
 // submit takes. The raw error is deliberately NOT forwarded: a transport error
-// carries the request URL, and that URL carries the PromQL built from the job's
-// labels. The platform gets a class; the local log gets the sanitized detail.
+// carries the request URL, which names hosts on this box's network. The
+// platform gets a class; the local log gets the sanitized detail.
 func describeFailure(err error) (string, string) {
 	text, class := classifyFailure(err)
 	return truncate(text, errorMaxBytes), class
@@ -1288,21 +1289,25 @@ func classifyFailure(err error) (string, string) {
 	case errors.Is(err, collect.ErrInvalidArgs):
 		// Forward the STORE's words when there are any. For a collection the
 		// args are machine-generated and "bad args" is the whole story; for a
-		// promql job the caller typed the expression, and the store's message
+		// sql job the caller typed the statement, and the store's message
 		// naming the parse error is the entire diagnostic. Without this the
 		// user is told the platform's args are bad, which points them at the
 		// one place the fault is not (#378).
 		//
-		// stripControls FIRST: the store echoes the submitted expression back
-		// inside the message and PromQL literals take Go-style escapes, so the
-		// text is attacker-influenced and is rendered on a terminal by
-		// `pgai promql`. truncate() then caps it and guarantees valid UTF-8.
+		// stripControls FIRST: the store echoes the submitted statement back
+		// inside the message, so the text is attacker-influenced and is
+		// rendered on a terminal by `pgai mon sql`. truncate() then caps it and
+		// guarantees valid UTF-8.
 		if msg := collect.StripControls(collect.StoreMessage(err)); msg != "" {
 			return "job args could not be used: " + msg, "invalid_args"
 		}
 		return "job args could not be used", "invalid_args"
 	case errors.Is(err, collect.ErrUnknownKind):
 		return "this instance does not know this job kind", "unknown_kind"
+	case errors.Is(err, collect.ErrPromQLNotSupported):
+		// The store on this box answers SQL only; the caller must send a `sql`
+		// job. A class of its own, so the platform and the CLI can say so.
+		return "not supported: use sql (the metric store answers SQL, not PromQL)", "not_supported"
 	case errors.Is(err, collect.ErrWindowTooLong):
 		return "collection window is too long", "window_too_long"
 	// Before the two arms below, which say "collection": a dblab_call is not
@@ -1394,8 +1399,7 @@ func classifyFailure(err error) (string, string) {
 }
 
 // sanitize strips the request URL out of a transport error before it reaches a
-// log line: the URL carries the PromQL, and the PromQL carries the job's
-// cluster and node labels.
+// log line: a URL can carry query parameters built from job args.
 func sanitize(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

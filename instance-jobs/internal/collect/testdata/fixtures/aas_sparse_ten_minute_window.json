@@ -19,297 +19,267 @@
     "step": 60
   },
   "responses": {
-    "sum by (wait_event_type)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {
-              "wait_event_type": "IO"
-            },
-            "values": [
-              [
-                1789516860,
-                "2"
-              ],
-              [
-                1789516920,
-                "4"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "Lock"
-            },
-            "values": [
-              [
-                1789516980,
-                "1"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "IPC"
-            },
-            "values": [
-              [
-                1789517040,
-                "6"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "LWLock"
-            },
-            "values": [
-              [
-                1789517100,
-                "8"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "CPU*"
-            },
-            "values": [
-              [
-                1789517160,
-                "5"
-              ]
-            ]
-          }
+    "aas_per_type": {
+      "columns": [
+        "wait_event_type",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          "IO",
+          [
+            2,
+            4
+          ]
+        ],
+        [
+          "Lock",
+          [
+            1
+          ]
+        ],
+        [
+          "IPC",
+          [
+            6
+          ]
+        ],
+        [
+          "LWLock",
+          [
+            8
+          ]
+        ],
+        [
+          "CPU*",
+          [
+            5
+          ]
         ]
-      }
+      ],
+      "row_count": 5,
+      "truncated": false
     },
-    "sum(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {},
-            "values": [
-              [
-                1789516860,
-                "2"
-              ],
-              [
-                1789516920,
-                "4"
-              ],
-              [
-                1789516980,
-                "1"
-              ],
-              [
-                1789517040,
-                "6"
-              ],
-              [
-                1789517100,
-                "8"
-              ],
-              [
-                1789517160,
-                "5"
-              ]
-            ]
-          }
+    "aas_total": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          [
+            2,
+            4,
+            1,
+            6,
+            8,
+            5
+          ]
         ]
-      }
+      ],
+      "row_count": 1,
+      "truncated": false
     },
-    "sum by (wait_event_type, wait_event)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"})": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {
-              "wait_event_type": "IO",
-              "wait_event": "DataFileRead"
-            },
-            "values": [
-              [
-                1789516860,
-                "2"
-              ],
-              [
-                1789516920,
-                "4"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "Lock",
-              "wait_event": "transactionid"
-            },
-            "values": [
-              [
-                1789516980,
-                "1"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "IPC",
-              "wait_event": "MessageQueueSend"
-            },
-            "values": [
-              [
-                1789517040,
-                "6"
-              ]
-            ]
-          },
-          {
-            "metric": {
-              "wait_event_type": "LWLock",
-              "wait_event": "BufferMapping"
-            },
-            "values": [
-              [
-                1789517100,
-                "8"
-              ]
-            ]
-          }
+    "aas_per_event": {
+      "columns": [
+        "wait_event_type",
+        "wait_event",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          "IO",
+          "DataFileRead",
+          [
+            2,
+            4
+          ]
+        ],
+        [
+          "Lock",
+          "transactionid",
+          [
+            1
+          ]
+        ],
+        [
+          "IPC",
+          "MessageQueueSend",
+          [
+            6
+          ]
+        ],
+        [
+          "LWLock",
+          "BufferMapping",
+          [
+            8
+          ]
         ]
-      }
+      ],
+      "row_count": 4,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {
-              "query_id": "123",
-              "datname": "db1"
-            },
-            "values": [
-              [
-                1789516860,
-                "2"
-              ],
-              [
-                1789516920,
-                "4"
-              ],
-              [
-                1789516980,
-                "1"
-              ]
-            ]
-          }
+    "aas_per_query_id_total": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          "123",
+          "db1",
+          [
+            2,
+            4,
+            1
+          ]
         ]
-      }
+      ],
+      "row_count": 1,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"IO\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {
-              "query_id": "777",
-              "datname": "db1"
-            },
-            "values": [
-              [
-                1789516860,
-                "2"
-              ],
-              [
-                1789516920,
-                "4"
-              ]
-            ]
-          }
+    "aas_per_query_id_io": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          "777",
+          "db1",
+          [
+            2,
+            4
+          ]
         ]
-      }
+      ],
+      "row_count": 1,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"IPC\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_per_query_id_ipc": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"Lock\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_per_query_id_lock": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"LWLock\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_per_query_id_lwlock": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     },
-    "topk(5, sum by (query_id, datname)(pgwatch_wait_events_total{cluster=\"c1\", node_name=\"n1\", wait_event_type=\"CPU*\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {
-              "query_id": "555",
-              "datname": "db2"
-            },
-            "values": [
-              [
-                1789517160,
-                "5"
-              ]
-            ]
-          }
+    "aas_per_query_id_cpu": {
+      "columns": [
+        "query_id",
+        "datname",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          "555",
+          "db2",
+          [
+            5
+          ]
         ]
-      }
+      ],
+      "row_count": 1,
+      "truncated": false
     },
-    "last_over_time(pgwatch_query_info{queryid=~\"123|777|555\"}[600s])": {
-      "status": "success",
-      "data": {
-        "resultType": "vector",
-        "result": [
-          {
-            "metric": {
-              "queryid": "123",
-              "displayname_full": "123 | select 1"
-            },
-            "value": [
-              1789517400,
-              "1"
-            ]
-          },
-          {
-            "metric": {
-              "queryid": "777",
-              "displayname_full": "777 | select io"
-            },
-            "value": [
-              1789517400,
-              "1"
-            ]
-          }
+    "query_texts": {
+      "columns": [
+        "queryid",
+        "query"
+      ],
+      "types": [
+        "VARCHAR",
+        "VARCHAR"
+      ],
+      "rows": [
+        [
+          "123",
+          "select 1"
+        ],
+        [
+          "777",
+          "select io"
         ]
-      }
+      ],
+      "row_count": 2,
+      "truncated": false
     },
-    "max(timestamp(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"c1\", node_name=\"n1\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_observation": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     }
   },
   "expected": {
