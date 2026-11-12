@@ -1,0 +1,25 @@
+# Example pgai-mon config: the demo target of instances.demo.yml.
+# Paths are the ones the image (mon/Dockerfile) ships; for a local run from the repo root use
+#   metrics_yml: config/pgwatch-prometheus/metrics.yml
+#   macros_sql: mon/sql/macros.sql
+#   store_dir: mon/.data/dev
+store_dir: /var/lib/pgai-mon
+metrics_yml: /etc/pgai-mon/metrics.yml
+macros_sql: /usr/share/pgai-mon/macros.sql
+preset: full
+sources:
+  - name: target_database
+    conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database
+    discover_databases: true
+    custom_tags: {env: demo, cluster: local, node_name: node-01}
+    # Labels VictoriaMetrics added at scrape time; keep them for series identical to the old stack.
+    scrape_labels: {job: pgwatch-prometheus, instance: "pgwatch:9091"}
+# jsonlog / auto_explain directories to tail (optional):
+# logs:
+#   - dir: /var/log/postgresql
+#     suffix: .json
+store:
+  flush_interval_s: 60
+http:
+  # No authentication: keep it on an internal network.
+  listen: 0.0.0.0:8765

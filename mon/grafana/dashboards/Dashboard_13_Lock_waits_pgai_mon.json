@@ -1,0 +1,1682 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 10,
+      "panels": [],
+      "title": "Blocking overview",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "Number of active lock conflicts (blocker→blocked pairs).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 1,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "fill": "solid"
+            },
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nWITH c AS (\n  SELECT t, CAST(count(value) AS DOUBLE) AS n\n  FROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n  GROUP BY t\n)\nSELECT g.t, coalesce(c.n, 0) AS value\nFROM (SELECT unnest(range((CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)) + 1, (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))) AS t) g\nLEFT JOIN c USING (t)\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Lock conflicts' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "Lock conflicts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "How long sessions have been waiting for locks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform(([]::VARCHAR[][]), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('avg') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Average wait time' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform(([]::VARCHAR[][]), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('max') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Max wait time' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "Wait duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "Distribution of blocking events by lock type.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 1,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform((['blocked_locktype']), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('count') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['blocked_locktype'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "By lock type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "How long blocking transactions have been running.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5000
+              },
+              {
+                "color": "red",
+                "value": 30000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform(([]::VARCHAR[][]), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('avg') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocker_tx_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Avg blocker age' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform(([]::VARCHAR[][]), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('max') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocker_tx_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Max blocker age' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "Blocker age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "Which tables have the most lock contention.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 1,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT prom_by(labels, list_transform((['blocked_table']), lambda k: CAST(k AS VARCHAR))) AS labels, t,\n       CASE ('count') WHEN 'sum' THEN sum(value) WHEN 'avg' THEN avg(value)\n            WHEN 'count' THEN CAST(count(value) AS DOUBLE) WHEN 'min' THEN min(value) WHEN 'max' THEN max(value) END AS value\nFROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}'], ['blocked_table', '!=', '']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nWHERE NOT isnan(value)\nGROUP BY 1, 2\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['blocked_table'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "By table",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 11,
+      "panels": [],
+      "title": "Blocking tree",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "description": "Current blocking relationships with process details.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "left",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_pid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked PID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_pid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker PID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_user"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked User"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_user"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker User"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_appname"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked App"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_appname"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker App"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_locktype"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked Lock Type"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_locktype"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker Lock Type"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_mode"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked Mode"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_mode"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker Mode"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_table"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked Table"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_table"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker Table"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "datname"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "displayName",
+                "value": "Database"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocked_query_id"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              },
+              {
+                "id": "displayName",
+                "value": "Blocked Query ID"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View query analysis",
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/03-single-queryid-analysis?var-cluster_name=${cluster_name}&var-node_name=${node_name}&var-db_name=${db_name}&var-query_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "blocker_query_id"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              },
+              {
+                "id": "displayName",
+                "value": "Blocker Query ID"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View query analysis",
+                    "url": "/d/db52944d-b025-4e18-b70b-89c0af3e7e41/03-single-queryid-analysis?var-cluster_name=${cluster_name}&var-node_name=${node_name}&var-db_name=${db_name}&var-query_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 4,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "enablePagination": true,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Blocked ms"
+          }
+        ]
+      },
+      "pluginVersion": "10.4.7",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_lock_waits_blocked_ms'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS \"Time\", q.labels['blocked_appname'] AS \"blocked_appname\", q.labels['blocked_locktype'] AS \"blocked_locktype\", q.labels['blocked_mode'] AS \"blocked_mode\", q.labels['blocked_pid'] AS \"blocked_pid\", q.labels['blocked_query_id'] AS \"blocked_query_id\", q.labels['blocked_table'] AS \"blocked_table\", q.labels['blocked_user'] AS \"blocked_user\", q.labels['blocker_appname'] AS \"blocker_appname\", q.labels['blocker_locktype'] AS \"blocker_locktype\", q.labels['blocker_mode'] AS \"blocker_mode\", q.labels['blocker_pid'] AS \"blocker_pid\", q.labels['blocker_query_id'] AS \"blocker_query_id\", q.labels['blocker_table'] AS \"blocker_table\", q.labels['blocker_user'] AS \"blocker_user\", q.labels['cluster'] AS \"cluster\", q.labels['datname'] AS \"datname\", q.labels['dbname'] AS \"dbname\", q.labels['env'] AS \"env\", q.labels['instance'] AS \"instance\", q.labels['job'] AS \"job\", q.labels['node_name'] AS \"node_name\", q.labels['real_dbname'] AS \"real_dbname\", q.labels['sink_type'] AS \"sink_type\", q.labels['sys_id'] AS \"sys_id\", CAST(q.value AS DOUBLE) AS \"Value\"\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "Time",
+              "text": "Time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "blocked_appname",
+              "text": "blocked_appname",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_locktype",
+              "text": "blocked_locktype",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_mode",
+              "text": "blocked_mode",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_pid",
+              "text": "blocked_pid",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_query_id",
+              "text": "blocked_query_id",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_table",
+              "text": "blocked_table",
+              "type": "string"
+            },
+            {
+              "selector": "blocked_user",
+              "text": "blocked_user",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_appname",
+              "text": "blocker_appname",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_locktype",
+              "text": "blocker_locktype",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_mode",
+              "text": "blocker_mode",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_pid",
+              "text": "blocker_pid",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_query_id",
+              "text": "blocker_query_id",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_table",
+              "text": "blocker_table",
+              "type": "string"
+            },
+            {
+              "selector": "blocker_user",
+              "text": "blocker_user",
+              "type": "string"
+            },
+            {
+              "selector": "cluster",
+              "text": "cluster",
+              "type": "string"
+            },
+            {
+              "selector": "datname",
+              "text": "datname",
+              "type": "string"
+            },
+            {
+              "selector": "dbname",
+              "text": "dbname",
+              "type": "string"
+            },
+            {
+              "selector": "env",
+              "text": "env",
+              "type": "string"
+            },
+            {
+              "selector": "instance",
+              "text": "instance",
+              "type": "string"
+            },
+            {
+              "selector": "job",
+              "text": "job",
+              "type": "string"
+            },
+            {
+              "selector": "node_name",
+              "text": "node_name",
+              "type": "string"
+            },
+            {
+              "selector": "real_dbname",
+              "text": "real_dbname",
+              "type": "string"
+            },
+            {
+              "selector": "sink_type",
+              "text": "sink_type",
+              "type": "string"
+            },
+            {
+              "selector": "sys_id",
+              "text": "sys_id",
+              "type": "string"
+            },
+            {
+              "selector": "Value",
+              "text": "Value",
+              "type": "number"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "Blocking tree",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "cluster": true,
+              "dbname": true,
+              "env": true,
+              "instance": true,
+              "job": true,
+              "node_name": true,
+              "real_dbname": true,
+              "sink_type": true,
+              "sys_id": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "blocked_pid": 1,
+              "blocker_pid": 2,
+              "Value": 3,
+              "blocked_user": 4,
+              "blocker_user": 5,
+              "blocked_appname": 6,
+              "blocker_appname": 7,
+              "blocked_locktype": 8,
+              "blocker_locktype": 9,
+              "blocked_mode": 10,
+              "blocker_mode": 11,
+              "blocked_table": 12,
+              "blocker_table": 13,
+              "blocked_query_id": 14,
+              "blocker_query_id": 15,
+              "datname": 16
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "postgres-ai",
+    "locks"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "cluster_name",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "node_name",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "name": "db_name",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "timezone": "",
+  "title": "13. Lock contention (pgai-mon)",
+  "uid": "pgai-mon-lock-waits",
+  "version": 1,
+  "weekStart": ""
+}

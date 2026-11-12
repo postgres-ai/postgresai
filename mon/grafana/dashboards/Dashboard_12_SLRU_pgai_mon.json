@@ -1,0 +1,1280 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "postgres-ai"
+      ],
+      "targetBlank": false,
+      "title": "Dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 53,
+      "panels": [],
+      "title": "SLRU stats",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_blks_hit'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU blocks hit",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 52,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_blks_exists'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU blocks exist",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 47,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_blks_read'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU blocks read",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 48,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_blks_written'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU blocks written",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 49,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_blks_zeroed'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU blocks zeroed",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_truncates'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU truncates",
+      "type": "timeseries",
+      "interval": "10s"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "aerffb0z8rjlsc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "${__field.labels.series}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "id": 51,
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "aerffb0z8rjlsc"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "http://pgai-mon:8765/sql?format=objects",
+          "url_options": {
+            "method": "POST",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_irate(('pgwatch_pg_stat_slru_flushes'),\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=~',('${db_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (CAST(CASE WHEN ${__to} - ${__from} >= 604800000 THEN CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) ELSE greatest(${__interval_ms} + 5000, 20000) END AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "body_type": "raw",
+            "body_content_type": "text/plain",
+            "params": [],
+            "headers": []
+          },
+          "root_selector": "rows",
+          "columns": [
+            {
+              "selector": "time",
+              "text": "time",
+              "type": "timestamp_epoch"
+            },
+            {
+              "selector": "value",
+              "text": "value",
+              "type": "number"
+            },
+            {
+              "selector": "series",
+              "text": "series",
+              "type": "string"
+            },
+            {
+              "selector": "label_set",
+              "text": "label_set",
+              "type": "string"
+            }
+          ],
+          "computed_columns": [],
+          "filters": [],
+          "global_query_id": ""
+        }
+      ],
+      "title": "SLRU flushes",
+      "type": "timeseries",
+      "interval": "10s"
+    }
+  ],
+  "preload": false,
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "postgres-ai",
+    "slru"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "default",
+          "value": "default"
+        },
+        "description": "",
+        "label": "Cluster",
+        "name": "cluster_name",
+        "refresh": 1,
+        "regex": "",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      },
+      {
+        "current": {
+          "text": "postgres_ai",
+          "value": "postgres_ai"
+        },
+        "label": "Node",
+        "name": "node_name",
+        "refresh": 1,
+        "regex": "",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      },
+      {
+        "current": {
+          "text": "workloaddb",
+          "value": "workloaddb"
+        },
+        "label": "DB name",
+        "name": "db_name",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 1,
+        "regex": "",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "aerffb0z8rjlsc"
+        },
+        "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+        "options": [],
+        "query": {
+          "queryType": "infinity",
+          "refId": "variable",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "http://pgai-mon:8765/sql?format=objects",
+            "url_options": {
+              "method": "POST",
+              "data": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+              "body_type": "raw",
+              "body_content_type": "text/plain",
+              "params": [],
+              "headers": []
+            },
+            "root_selector": "rows",
+            "columns": [
+              {
+                "selector": "value",
+                "text": "value",
+                "type": "string"
+              }
+            ],
+            "computed_columns": [],
+            "filters": []
+          }
+        }
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "12. SLRU cache stats (pgai-mon)",
+  "uid": "pgai-mon-slru",
+  "version": 1
+}

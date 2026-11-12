@@ -1,0 +1,10 @@
+# Build context is the repository root; send only what mon/Dockerfile copies.
+*
+!mon/Cargo.toml
+!mon/Cargo.lock
+!mon/rustfmt.toml
+!mon/src
+!mon/schema
+!mon/sql/macros.sql
+!mon/examples/pgai-mon.example.yml
+!config/pgwatch-prometheus/metrics.yml

@@ -1,0 +1,53 @@
+[package]
+name = "pgai-mon"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+
+[lib]
+name = "pgai_mon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pgai-mon"
+path = "src/main.rs"
+
+[dependencies]
+duckdb = { version = "=1.10506.1", features = ["bundled", "json", "parquet", "vtab"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "=0.9.34"
+clap = { version = "=4.6.7", features = ["derive"] }
+xxhash-rust = { version = "=0.8.19", features = ["xxh3"] }
+crc32fast = "=1.5.4"
+anyhow = "1"
+regex = "1"
+libc = "=0.2.191"
+parquet = { version = "=58.4.1", default-features = false, features = ["arrow", "zstd"] }
+arrow = { version = "=58.4.1", default-features = false }
+zstd = "=0.13.4"
+bytes = "=1.12.1"
+# S3 read path (objstore.rs); 0.13 matches parquet 58's optional object_store dependency.
+object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = false
+strip = true
+panic = "unwind"
+
+[profile.dev]
+debug = 0
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[dev-dependencies]
+tempfile = "=3.23.0"
