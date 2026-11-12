@@ -81,14 +81,19 @@ pub fn load_current_objects(shared: &Shared) -> anyhow::Result<HashMap<String, H
     Ok(out)
 }
 
-/// Snapshot definitions and return only changes (new/changed/dropped).
+/// Snapshot definitions and return only changes (new/changed/dropped). At most `max_rows`
+/// definitions are read; a cut snapshot reports no drops (objects past the cut were not seen).
 pub async fn snapshot_objects(
-    c: &Client,
+    c: &mut Client,
     dbname: &str,
     state: &mut HashMap<ObjKey, u64>,
+    max_rows: usize,
 ) -> anyhow::Result<Vec<ObjectEvent>> {
     let ts = now_ms();
-    let rows = c.query(OBJECTS_SQL, &[]).await?;
+    let (rows, cut) = crate::collector::query_capped(c, OBJECTS_SQL, &[], max_rows).await?;
+    if cut {
+        eprintln!("objects {dbname}: more than {max_rows} definitions, snapshot cut (collector.objects_max_rows)");
+    }
     let mut seen: HashSet<ObjKey> = HashSet::with_capacity(rows.len());
     let mut out = Vec::new();
     for r in rows {
@@ -109,7 +114,11 @@ pub async fn snapshot_objects(
         }
         seen.insert(key);
     }
-    let dropped: Vec<ObjKey> = state.keys().filter(|k| !seen.contains(*k)).cloned().collect();
+    let dropped: Vec<ObjKey> = if cut {
+        Vec::new()
+    } else {
+        state.keys().filter(|k| !seen.contains(*k)).cloned().collect()
+    };
     for k in dropped {
         state.remove(&k);
         out.push(ObjectEvent {

@@ -111,9 +111,11 @@ pub struct NodeInfo {
     pub sys_id: String,
 }
 
-pub async fn connect(conn_str: &str, app: &str) -> anyhow::Result<Client> {
+pub const APPLICATION_NAME: &str = "pgai-mon";
+
+pub async fn connect(conn_str: &str, cc: &CollectorCfg) -> anyhow::Result<Client> {
     let mut cfg: tokio_postgres::Config = conn_str.parse()?;
-    cfg.application_name(app);
+    cfg.application_name(APPLICATION_NAME);
     cfg.connect_timeout(Duration::from_secs(10));
     let (client, conn) = cfg.connect(NoTls).await?;
     tokio::spawn(async move {
@@ -121,7 +123,56 @@ pub async fn connect(conn_str: &str, app: &str) -> anyhow::Result<Client> {
             eprintln!("pg connection closed: {e}");
         }
     });
+    setup_session(&client, cc).await?;
     Ok(client)
+}
+
+/// Session settings for monitoring a production database, in one round trip:
+/// read-only transactions, a lock_timeout, a pinned search_path and the default
+/// statement_timeout (every job sets its own before it runs, see `set_timeout`).
+pub async fn setup_session(c: &Client, cc: &CollectorCfg) -> anyhow::Result<()> {
+    let sql = "select pg_catalog.set_config('default_transaction_read_only', 'on', false), \
+         pg_catalog.set_config('lock_timeout', $1, false), \
+         pg_catalog.set_config('statement_timeout', $2, false), \
+         pg_catalog.set_config('application_name', $3, false), \
+         pg_catalog.set_config('search_path', coalesce($4, 'pg_catalog' || coalesce(( \
+             select ', ' || pg_catalog.string_agg(pg_catalog.quote_ident(nspname), ', ' order by nspname) \
+             from (select distinct n.nspname::text as nspname from pg_catalog.pg_extension e \
+                   join pg_catalog.pg_namespace n on n.oid = e.extnamespace \
+                   where n.nspname not in ('pg_catalog', 'public')) s), '') || ', public'), false)";
+    let lock = format!("{}ms", cc.lock_timeout_ms);
+    let st = format!("{}s", cc.default_statement_timeout_s);
+    c.query_one(sql, &[&lock, &st, &APPLICATION_NAME, &cc.search_path]).await?;
+    Ok(())
+}
+
+/// The statement_timeout a connection was last set to (a SET only when it changes).
+pub async fn set_timeout(c: &Client, cur: &mut u64, secs: u64) -> anyhow::Result<()> {
+    if *cur != secs {
+        c.batch_execute(&format!("set statement_timeout = '{secs}s'")).await?;
+        *cur = secs;
+    }
+    Ok(())
+}
+
+/// Run one query in a read-only transaction and fetch at most `cap` rows. The rows come
+/// through a portal with a row limit, so the server stops at the cap instead of the client
+/// buffering the whole result. Returns the rows and whether more were left unread.
+pub async fn query_capped(
+    c: &mut Client,
+    sql: &str,
+    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    cap: usize,
+) -> anyhow::Result<(Vec<tokio_postgres::Row>, bool)> {
+    let tx = c.build_transaction().read_only(true).start().await?;
+    let portal = tx.bind(sql, params).await?;
+    let limit = cap.saturating_add(1).min(i32::MAX as usize) as i32;
+    let mut rows = tx.query_portal(&portal, limit).await?;
+    let cut = rows.len() > cap;
+    rows.truncate(cap);
+    drop(portal);
+    tx.commit().await?;
+    Ok((rows, cut))
 }
 
 /// Connection string for another database on the same node.
@@ -150,8 +201,11 @@ pub fn conn_str_for_db(base: &str, db: &str) -> anyhow::Result<String> {
 pub async fn node_info(c: &Client) -> anyhow::Result<NodeInfo> {
     let r = c
         .query_one(
-            "select current_setting('server_version_num')::int, pg_is_in_recovery(), \
-             (select system_identifier::text from pg_control_system())",
+            // pg_control_system() needs EXECUTE (superuser or an explicit grant): without it
+            // sys_id is empty instead of the source failing.
+            "select pg_catalog.current_setting('server_version_num')::int, pg_catalog.pg_is_in_recovery(), \
+             case when pg_catalog.has_function_privilege('pg_catalog.pg_control_system()', 'execute') \
+             then (select system_identifier::text from pg_catalog.pg_control_system()) end",
             &[],
         )
         .await?;
@@ -203,9 +257,24 @@ pub struct Emitter {
     pub seen_text: std::collections::HashSet<String>,
     /// Series of each metric in its previous successful run (for staleness markers).
     pub prev: HashMap<String, std::collections::HashSet<u64>>,
+    /// (metric) -> runs whose result hit max_rows_per_query (pgai_mon_rows_cut_total).
+    pub rows_cut: HashMap<String, u64>,
 }
 
 impl Emitter {
+    pub fn new(shared: Shared, tx: mpsc::Sender<Msg>, cfg: CollectorCfg) -> Self {
+        Self {
+            shared,
+            tx,
+            cfg,
+            cut: HashMap::new(),
+            errors: HashMap::new(),
+            seen_text: Default::default(),
+            prev: HashMap::new(),
+            rows_cut: HashMap::new(),
+        }
+    }
+
     /// Register new series, then send the samples. Series first, so the WAL never holds a
     /// sample whose series is unknown.
     pub async fn emit(&mut self, defs: Vec<(u64, String, Vec<(String, String)>)>, ts: i64, vals: Vec<(u64, f64)>) {
@@ -242,7 +311,7 @@ impl Emitter {
 
 /// Run one metric query and turn its rows into series/samples the pgwatch way.
 pub async fn collect_metric(
-    client: &Client,
+    client: &mut Client,
     m: &Scheduled,
     sql: &str,
     base_labels: &[(String, String)],
@@ -250,7 +319,7 @@ pub async fn collect_metric(
 ) -> anyhow::Result<usize> {
     let t0 = std::time::Instant::now();
     let start_ms = now_ms();
-    let rows = client.query(sql, &[]).await?;
+    let (rows, rows_cut) = query_capped(client, sql, &[], em.cfg.max_rows_per_query).await?;
     let mut ts = start_ms;
     let storage = m.def.storage_name(&m.name).to_string();
     let mut defs = Vec::new();
@@ -363,6 +432,19 @@ pub async fn collect_metric(
             eprintln!(
                 "collector: {}: cut {cut} series over the {} cap",
                 m.name, em.cfg.max_series_per_query
+            );
+        }
+    }
+    if rows_cut || em.rows_cut.contains_key(&m.name) {
+        let c = em.rows_cut.entry(m.name.clone()).or_insert(0);
+        *c += rows_cut as u64;
+        let id = series_id("pgai_mon_rows_cut_total", &lab);
+        selfm.push((id, "pgai_mon_rows_cut_total".to_string(), lab.clone()));
+        selfv.push((id, *c as f64));
+        if rows_cut {
+            eprintln!(
+                "collector: {}: result cut at {} rows (collector.max_rows_per_query)",
+                m.name, em.cfg.max_rows_per_query
             );
         }
     }
@@ -506,11 +588,11 @@ pub async fn run_db_worker(
         tokio::time::sleep_until(next).await;
         if client.is_none() {
             let permit = sessions.clone().acquire_owned().await.unwrap();
-            match connect(&target.conn_str, "pgai-mon").await {
+            match connect(&target.conn_str, &em.cfg).await {
                 Ok(c) => match node_info(&c).await {
                     Ok(info) => {
                         client = Some((c, info, permit));
-                        cur_timeout = 0;
+                        cur_timeout = em.cfg.default_statement_timeout_s;
                     }
                     Err(e) => eprintln!("collector {}: node info: {e}", target.source_label),
                 },
@@ -560,7 +642,23 @@ pub async fn run_db_worker(
                     skipped.push((m.name.clone(), n - 1));
                 }
             }
-            let (c, info, _) = client.as_ref().unwrap();
+            let (c, info, _) = client.as_mut().unwrap();
+            // Every job runs under its own statement_timeout, never the previous job's.
+            let to = match &d.job {
+                Job::Metric(m) => m
+                    .def
+                    .statement_timeout_seconds
+                    .unwrap_or(em.cfg.default_statement_timeout_s),
+                Job::Objects => em.cfg.objects_statement_timeout_s,
+                _ => em.cfg.default_statement_timeout_s,
+            };
+            if !matches!(d.job, Job::Up) {
+                if let Err(e) = set_timeout(c, &mut cur_timeout, to).await {
+                    eprintln!("collector {}: {e}", target.source_label);
+                    broken = true;
+                    break;
+                }
+            }
             let (name, res) = match &d.job {
                 Job::Metric(m) => {
                     match m.def.node_status.as_deref() {
@@ -569,18 +667,6 @@ pub async fn run_db_worker(
                         _ => {}
                     }
                     let Some(sql) = m.def.sql_for(info.major) else { continue };
-                    let to = m
-                        .def
-                        .statement_timeout_seconds
-                        .unwrap_or(em.cfg.default_statement_timeout_s);
-                    if to != cur_timeout {
-                        if let Err(e) = c.batch_execute(&format!("set statement_timeout = '{to}s'")).await {
-                            eprintln!("collector {}: {e}", target.source_label);
-                            broken = true;
-                            break;
-                        }
-                        cur_timeout = to;
-                    }
                     (
                         m.name.clone(),
                         collect_metric(c, m, sql, &base_labels, &mut em).await.map(|_| ()),
@@ -612,7 +698,13 @@ pub async fn run_db_worker(
                 }
                 Job::Objects => {
                     let r = async {
-                        let v = crate::structure::snapshot_objects(c, &target.datname, &mut objects_state).await?;
+                        let v = crate::structure::snapshot_objects(
+                            c,
+                            &target.datname,
+                            &mut objects_state,
+                            em.cfg.objects_max_rows,
+                        )
+                        .await?;
                         if !v.is_empty() {
                             let _ = em.tx.send(Msg::Rec(Record::Objects(v))).await;
                         }
@@ -672,7 +764,7 @@ pub async fn run_source(
     mut objects: HashMap<String, HashMap<crate::structure::ObjKey, u64>>,
 ) -> anyhow::Result<()> {
     let main = loop {
-        match connect(&src.conn_str, "pgai-mon").await {
+        match connect(&src.conn_str, &cfg).await {
             Ok(c) => break c,
             Err(e) => {
                 eprintln!("collector {}: {e}; retrying", src.name);
@@ -734,15 +826,7 @@ pub async fn run_source(
                 None
             },
         };
-        let em = Emitter {
-            shared: shared.clone(),
-            tx: tx.clone(),
-            cfg: cfg.clone(),
-            cut: HashMap::new(),
-            errors: HashMap::new(),
-            seen_text: Default::default(),
-            prev: HashMap::new(),
-        };
+        let em = Emitter::new(shared.clone(), tx.clone(), cfg.clone());
         tokio::spawn(run_db_worker(
             target,
             metrics.clone(),

@@ -257,6 +257,18 @@ pub struct CollectorCfg {
     /// metric/column: "label" | "drop". Query text must never be a label: list such columns
     /// as "drop" (they belong in query_texts).
     pub text_columns: BTreeMap<String, BTreeMap<String, String>>,
+    /// lock_timeout of every collector session, ms (pgwatch: SET LOCAL lock_timeout '100ms').
+    /// A catalog query queued behind DDL gives up instead of blocking the DDL's waiters.
+    pub lock_timeout_ms: u64,
+    /// search_path of every collector session. None: pg_catalog, the schemas of installed
+    /// extensions (pg_stat_statements may live outside public), then public; no "$user".
+    pub search_path: Option<String>,
+    /// Rows one metric query may return; the rest is not fetched (portal with a row limit)
+    /// and the cut is counted in pgai_mon_rows_cut_total.
+    pub max_rows_per_query: usize,
+    /// statement_timeout and row limit of the object-definition snapshot (catalog-wide).
+    pub objects_statement_timeout_s: u64,
+    pub objects_max_rows: usize,
 }
 impl Default for CollectorCfg {
     fn default() -> Self {
@@ -264,6 +276,11 @@ impl Default for CollectorCfg {
             max_series_per_query: 20_000,
             max_sessions_per_node: 4,
             default_statement_timeout_s: 15,
+            lock_timeout_ms: 100,
+            search_path: None,
+            max_rows_per_query: 100_000,
+            objects_statement_timeout_s: 60,
+            objects_max_rows: 500_000,
             drop_numeric: true,
             query_texts_interval_s: 300,
             objects_interval_s: 600,
