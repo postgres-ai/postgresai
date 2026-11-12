@@ -605,8 +605,8 @@ pgai mon sql "select metric, count(*) from series group by 1 order by 2 desc lim
   --instance <instance-uuid>
 
 # by project id, alias or name instead of the instance id; one metric's last hour
-pgai mon sql "select ts, labels['dbname'] as dbname, value from metrics
-  where metric = 'pgwatch_db_size_size_b' and ts > now() - interval 1 hour
+pgai mon sql "select ts, labels['dbname'] as dbname, value
+  from pgai_samples('pgwatch_db_size_size_b', [], epoch_ms(now() - interval 1 hour), epoch_ms(now()))
   order by ts desc limit 20" --project my-db
 
 # on the box itself, --instance is read from .pgwatch-config
@@ -617,8 +617,11 @@ pgai mon sql "select 1"
 pgai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"
 ```
 
-The views (`series`, `samples`, `metrics`, `query_texts`, ...) are defined in
-`mon/schema/views.sql`; `GET /schema` on pgai-mon lists them. `--json` prints
+The views (`series`, `query_texts`, ...) are defined in
+`mon/schema/views.sql`; `GET /schema` on pgai-mon lists them. Read raw samples
+with `pgai_samples(metric, matchers, start_ms, end_ms)` (columns `series_id`,
+`labels`, `ts`, `value`, `stale`): it works on every store, while the `samples`
+and `metrics` views raise an error on an S3 store. `--json` prints
 the raw result payload. The wait is sized from the instance's
 poll pacing; `--timeout` overrides it. A query error is printed as the instance
 reported it and the command exits 1.
