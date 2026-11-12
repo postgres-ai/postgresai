@@ -3,7 +3,9 @@
 FIXTURE_AT, answered by VictoriaMetrics (dev tool, not run in CI).
 
 Start a scratch VictoriaMetrics v1.140.0 with `-search.latencyOffset=0s` (the fixture is in the
-past; instant queries carry time=FIXTURE_AT), load it with vm_load.py, then run from the repo root:
+past; instant queries carry time=FIXTURE_AT), push samples.jsonl.gz and synthetic.jsonl.gz into it by
+Prometheus remote write (staleness markers as the StaleNaN bit pattern, which /api/v1/import
+drops), then run from the repo root:
 
     python tests/reporter/mon_fixture/record.py --vm http://127.0.0.1:PORT
 

@@ -5,7 +5,7 @@ samples.jsonl.gz does not have (dev tool; the output is committed, the tests do 
 The real demo box has no host metrics, no lock waits, no invalid indexes, no pg_stat_kcache and
 no stats_reset readings, so without these the reporter queries for them would compare empty
 with empty. Same line format as samples.jsonl.gz (null = staleness marker); loaded next to it by
-mon_harness.build_store and vm_load.py.
+mon_harness.build_store.
 
     python tests/reporter/mon_fixture/synthetic.py
 """
