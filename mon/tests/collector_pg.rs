@@ -217,6 +217,16 @@ impl Sink {
             .find(|(_, (m, l))| m == metric && l.iter().any(|(k, v)| k == label.0 && v == label.1))
             .and_then(|(id, _)| last.get(id).copied())
     }
+
+    /// Label sets of a metric's series.
+    fn label_sets(&self, metric: &str) -> Vec<Vec<(String, String)>> {
+        let names = self.names.lock().unwrap();
+        names
+            .values()
+            .filter(|(m, _)| m == metric)
+            .map(|(_, l)| l.clone())
+            .collect()
+    }
 }
 
 struct Harness {
@@ -542,6 +552,47 @@ async fn an_unreachable_source_backs_off_and_reports_down() {
         d.last_error
     );
     assert_eq!(h.sink.value("pgai_mon_source_up", ("dbname", "nowhere")), Some(0.0));
+    let _ = stop.send(true);
+}
+
+/// The collector's own series carry the source identity (cluster, node_name) besides dbname.
+/// Needs no Postgres: nothing listens on port 1.
+#[tokio::test]
+async fn own_series_carry_the_source_identity() {
+    let h = harness(CollectorCfg {
+        reconnect_min_s: 1,
+        reconnect_max_s: 2,
+        self_metrics_interval_s: 1,
+        ..Default::default()
+    });
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let mut src = source(
+        "ident",
+        "host=127.0.0.1 port=1 user=x dbname=x sslmode=disable connect_timeout=2",
+    );
+    src.custom_tags = [("cluster", "c1"), ("node_name", "n1"), ("env", "e")]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    tokio::spawn(collector::run_source(
+        src,
+        vec![metric("fast", 1, "sqls: {11: 'select 1 as v'}")],
+        vec![],
+        h.ctx.clone(),
+        rx,
+    ));
+    let t0 = Instant::now();
+    while h.sink.label_sets("pgai_mon_connect_failures_total").is_empty() && t0.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let want = vec![
+        ("cluster".to_string(), "c1".to_string()),
+        ("dbname".to_string(), "ident".to_string()),
+        ("node_name".to_string(), "n1".to_string()),
+    ];
+    for m in ["pgai_mon_source_up", "pgai_mon_connect_failures_total"] {
+        assert_eq!(h.sink.label_sets(m), vec![want.clone()], "{m}");
+    }
     let _ = stop.send(true);
 }
 

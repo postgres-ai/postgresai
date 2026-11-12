@@ -1251,13 +1251,14 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
 
 /// The collector's own series for one database, from its status:
 /// pgai_mon_source_up, pgai_mon_source_last_success_epoch_s, pgai_mon_connect_failures_total
-/// {dbname}; pgai_mon_errors_total, pgai_mon_timeouts_total, pgai_mon_skipped_slots_total
-/// {dbname, metric}. Written also while the database is down (up = 0).
+/// {cluster, dbname, node_name}; pgai_mon_errors_total, pgai_mon_timeouts_total,
+/// pgai_mon_skipped_slots_total {cluster, dbname, metric, node_name}. Written also while the
+/// database is down (up = 0).
 async fn emit_self_metrics(db: &DbCtx) {
     let Some(d) = source_status(&db.src.name).and_then(|s| s.databases.get(&db.label).cloned()) else {
         return;
     };
-    let dl = vec![("dbname".to_string(), db.label.clone())];
+    let dl = self_labels(db);
     let mut defs = Vec::new();
     let mut vals = Vec::new();
     let mut put = |metric: &str, labels: Vec<(String, String)>, v: f64| {
@@ -1273,6 +1274,7 @@ async fn emit_self_metrics(db: &DbCtx) {
     for (job, j) in &d.jobs {
         let mut l = dl.clone();
         l.push(("metric".into(), job.clone()));
+        l.sort();
         if j.errors > 0 {
             put("pgai_mon_errors_total", l.clone(), j.errors as f64);
         }
@@ -1284,6 +1286,18 @@ async fn emit_self_metrics(db: &DbCtx) {
         }
     }
     db.ctx.em.emit(defs, now_ms(), vals).await;
+}
+
+/// Labels of a database's collector series: `dbname` and the source's identity (`cluster`,
+/// `node_name` custom tags, when set), sorted; known before the node ever answered.
+fn self_labels(db: &DbCtx) -> Vec<(String, String)> {
+    let id = db.source_id();
+    let mut l = vec![("dbname".to_string(), db.label.clone())];
+    l.extend(id.cluster.map(|c| ("cluster".to_string(), c)));
+    l.extend(id.node_name.map(|n| ("node_name".to_string(), n)));
+    l.retain(|(_, v)| !v.is_empty());
+    l.sort();
+    l
 }
 
 /// The source's main database: version, role, system id and database name.
