@@ -40,21 +40,26 @@ DBLab channel** and **The Joe channel** below.
 
 Those two rows are not a typo. See **The contract** below.
 
-**Query** — a PromQL expression somebody typed, run against the same store and
-read back by a human through `pgai promql`. The result is stored on the job row
-and is **never applied to anything**: `kind` is not in the platform's
-`c_collection_kinds`, so `instance_job_apply_collection` is never reached.
+**Query** — one read-only SQL statement somebody typed, run against the same
+store (pgai-mon, `POST /sql`) and read back by a human through `pgai mon sql`.
+The result is stored on the job row and is **never applied to anything**: `kind`
+is not in the platform's `c_collection_kinds`, so
+`instance_job_apply_collection` is never reached.
 
-| kind | endpoint | shape |
+| kind | args | result |
 |---|---|---|
-| `promql_instant` | `api/v1/query` | a vector at one instant |
-| `promql_range` | `api/v1/query_range` | a matrix over a window at a fixed step |
+| `sql` | `{"query": "<one SELECT>"}` | `{columns, types, rows, truncated}` |
 
-The box picks the endpoint from the **kind**; the caller supplies only the
-expression and the time parameters (`at`, or `start`/`end`/`step_s`), never a
-path or a host. A result is trimmed to an
-850000-byte budget (not a point cap) and flagged `truncated` rather than
-refused — see **Caps on a query result** below.
+The box sends the statement as the request body to one fixed path with the
+bearer token; the caller never supplies a path or a host. pgai-mon refuses
+anything but a single read-only statement (`not_read_only`), and that refusal,
+like a syntax or binder error, comes back as `invalid_args` carrying the
+store's own message. A result is trimmed to an 850000-byte budget and flagged
+`truncated` rather than refused — see **Caps on a query result** below.
+
+`promql_instant` and `promql_range` are refused by name with failure class
+`not_supported` ("use sql"): the store has no PromQL API. Any other kind this
+build does not know is answered `unknown_kind`.
 
 ## Two gates, both closed by default
 
@@ -262,11 +267,11 @@ action is relayed verbatim or stores `NULL` as before.
 A `query_text` job asks for the full collected SQL text of one query. Its args
 are identifiers only: `cluster`, `node_name`, `datname`, `queryid` (a decimal
 pg_stat_statements id) and a `start`/`end` window of at most 93 days. Unknown
-fields, SQL or a URL are refused before anything is called. The worker POSTs
-the args to one fixed endpoint, `http://monitoring_flask_backend:8000/query_text`
-on the Compose network, without following redirects and without forwarding any
-Platform or Access credential, and returns the backend's answer only if it is
-for the same `queryid`, at most 64 KiB of text, and observed inside the window.
+fields, SQL or a URL are refused before anything is called. The worker reads
+pgai-mon's `query_texts` view with a statement it builds itself (the ids as
+quoted literals), without following redirects, and returns a text only if it is
+the one newest text of that `(queryid, datname)`, observed inside the window;
+over 64 KiB it is cut on a rune boundary and flagged `truncated`.
 
 By default the text is the latest one collected in `(start, end]`. A job can
 instead set `lookup_mode: "latest_collected"`: the text is then the latest
@@ -325,10 +330,11 @@ process **idles** — one log line an hour, no crash loop — and reports
 **unhealthy** with the reason, because a container someone enabled on purpose
 that is collecting nothing is exactly what must not look green in `mon health`.
 
-The metric store is `PROMETHEUS_URL` with `VM_AUTH_USERNAME` /
-`VM_AUTH_PASSWORD`. The compose service pins `PROMETHEUS_URL` to
-`http://sink-prometheus:9090`, the sink on its own network; the default in the
-code is the same value and applies only to the binary run outside compose.
+The metric store is pgai-mon at `PGAI_MON_URL` (default
+`http://pgai-mon:8765`, its compose address). Its bearer token is read from the
+file `PGAI_MON_TOKEN_FILE` names, else from `PGAI_MON_TOKEN`; it is sent only as
+an `Authorization` header and never logged. A token file that is named but
+unreadable is a configuration error, not a silent run without auth.
 
 Two hooks exist for tests and local runs and are not operator knobs:
 `INSTANCE_JOBS_CONFIG_PATH` overrides the config file, and
@@ -409,7 +415,7 @@ is a second implementation rather than a copy.
 Both HTTP clients do refuse to follow redirects, which is not about SSRF: Go
 drops only `Authorization` across hosts, so the `access-token` header would be
 replayed verbatim to a redirect target, and the store request carries the job's
-labels inside the PromQL in its URL. Neither endpoint legitimately redirects.
+labels in its SQL and the bearer token in its header. Neither endpoint legitimately redirects.
 
 ## What goes on the wire
 
@@ -471,9 +477,9 @@ why they are pinned by name in `internal/collect/contract_test.go` and by data i
   a retention skip, not a failure.
 - The `total` class of the per-queryid ranking uses the five-type regex, not a
   bare selector — the metric also carries idle wait types.
-- Label values escape backslash **before** quote, and the wait-event-type regex
-  keeps its two backslashes: PromQL's string parser turns them into one, leaving
-  a literal-asterisk regex. One backslash and the store rejects the query.
+- Label values are SQL string literals: a quote is doubled and a backslash is
+  an ordinary character, so the wait-event-type regex carries **one** backslash
+  (`CPU\*`), a literal-asterisk regex. The evaluator anchors it, as PromQL did.
 - Non-finite values reach the AAS samples unfiltered. **Only** the tempfile path
   drops them.
 - **TEMPFILE divides by the observed sample count** — deliberately the opposite
@@ -488,21 +494,17 @@ why they are pinned by name in `internal/collect/contract_test.go` and by data i
 
 ## Caps on a query result
 
-**Bytes are the only real bound.** `maxPromQLResultBytes` is **850000**, and it
+**Bytes are the only real bound.** `maxSQLResultBytes` is **850000**, and it
 is not the platform's 1 MiB limit rounded down for comfort: the platform
 measures `octet_length(result::text)` on the **jsonb** it stored, and Postgres's
-jsonb text output inflates our JSON by up to 19.6% on realistic label sets. 900000
-bytes of ours would be refused at 1048576 of theirs. The trim drops whole series
-from the end until the encoded result fits, and the answer comes back flagged
+jsonb text output inflates our JSON by up to ~20%. 900000 bytes of ours would be
+refused at 1048576 of theirs. The trim drops whole rows from the end until the
+encoded result fits, and the answer comes back flagged
 `truncated: true` rather than as an error — a partial answer is more use than
 none to someone reading a chart.
 
-There is deliberately **no point cap**. One was tried and removed: the platform
-validates 11000 points *per series* and does not bound the series count, so a
-total cap truncated a wide result at three series where the byte budget keeps
-the whole answer. `maxPromQLSeries` (1000) still bounds the series count as
-well — what changed is that the budget deciding how much comes back is the byte
-one.
+pgai-mon applies its own row, memory and time caps first; a result it cut is
+passed on with `truncated: true` as well.
 
 ## Known ceiling
 
