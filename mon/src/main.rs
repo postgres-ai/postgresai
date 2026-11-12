@@ -330,6 +330,8 @@ fn main_cmd() -> anyhow::Result<()> {
                 metrics_yml: metrics_yml.unwrap_or_else(|| PathBuf::from("/nonexistent")),
                 preset: "full".into(),
                 sources: vec![],
+                sources_file: None,
+                config_path: None,
                 store: Default::default(),
                 http: config::HttpCfg {
                     listen,
@@ -653,7 +655,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     cfg.http = cfg.http.clone().resolve();
     if cfg.read_only {
         anyhow::ensure!(
-            cfg.sources.is_empty() && cfg.logs.is_empty(),
+            !cfg.has_sources() && cfg.logs.is_empty(),
             "read-only: no sources or logs"
         );
     }
@@ -699,7 +701,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     };
     let log_offsets = core.as_ref().map(|c| c.log_offsets()).unwrap_or_default();
     let mf = metricdefs::load(&cfg.metrics_yml).ok();
-    if mf.is_none() && !cfg.sources.is_empty() {
+    if mf.is_none() && cfg.has_sources() {
         anyhow::bail!("cannot read metrics.yml at {}", cfg.metrics_yml.display());
     }
     let mut views_sql = match &cfg.views_sql {
@@ -900,23 +902,12 @@ fn serve_loop(
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        if let Some(mf) = &mf {
-            if !cfg.sources.is_empty() {
-                let metrics = Arc::new(mf.scheduled(&cfg.preset)?);
-                let mut objects = objects;
-                for src in cfg.sources.clone() {
-                    let tx = tx.clone();
-                    let sh = shared.clone();
-                    let cc = cfg.collector.clone();
-                    let m = metrics.clone();
-                    let objs = std::mem::take(&mut objects);
-                    tokio::spawn(async move {
-                        if let Err(e) = collector::run_source(src, m, sh, tx, cc, objs).await {
-                            eprintln!("collector: {e}");
-                        }
-                    });
-                }
-            }
+        if mf.is_some() && cfg.has_sources() {
+            let ctx = collector::CollectorCtx {
+                em: collector::Emitter::new(shared.clone(), tx.clone(), cfg.collector.clone()),
+                objects: Arc::new(std::sync::Mutex::new(objects)),
+            };
+            tokio::spawn(collector::run_manager(cfg.clone(), ctx));
         }
         // Flush ticker.
         {

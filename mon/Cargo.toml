@@ -36,6 +36,10 @@ object_store = { version = "=0.13.2", default-features = false, features = ["aws
 # ObjectStore impls: the file:// bucket's conditional PUT (objstore::LocalCas), test wrappers
 async-trait = "=0.1.92"
 futures-util = { version = "=0.3.34", default-features = false }
+# Collector TLS (pgconn.rs): rustls with ring, no OpenSSL; same versions object_store uses.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-native-certs = "=0.8.5"
 
 [profile.release]
 opt-level = 3
@@ -53,4 +57,5 @@ opt-level = 1
 opt-level = 2
 
 [dev-dependencies]
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
 tempfile = "=3.23.0"

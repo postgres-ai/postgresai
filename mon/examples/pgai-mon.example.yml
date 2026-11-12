@@ -8,6 +8,9 @@ metrics_yml: /etc/pgai-mon/metrics.yml
 macros_sql: /usr/share/pgai-mon/macros.sql
 preset: full
 sources:
+  # conn_str: libpq URL or key=value form. sslmode disable|allow|prefer|require|verify-ca|
+  # verify-full, sslrootcert (PEM file, or "system"), sslcert/sslkey; missing values come
+  # from PGHOST/PGPORT/PGUSER/PGPASSWORD/PGSSLMODE/... and the password from ~/.pgpass.
   - name: target_database
     conn_str: postgresql://monitor:monitor_pass@target-db:5432/target_database
     discover_databases: true

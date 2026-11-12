@@ -202,15 +202,7 @@ const METRICS: &[&str] = &["m_a", "m_b"];
 /// once per series and day) into `core`. Returns the WAL records the Emitter produced.
 fn ingest(core: &mut StoreCore, t0: i64, n: i64, seed: u64) -> (usize, usize) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(1 << 16);
-    let mut em = Emitter {
-        shared: core.shared.clone(),
-        tx,
-        cfg: CollectorCfg::default(),
-        cut: Default::default(),
-        errors: Default::default(),
-        seen_text: Default::default(),
-        prev: Default::default(),
-    };
+    let em = Emitter::new(core.shared.clone(), tx, CollectorCfg::default());
     let r = rt();
     for k in 0..n {
         let ts = t0 + k * 15_000;
