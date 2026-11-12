@@ -32,6 +32,7 @@ panels. Standard library Python only.
 
 ```bash
 # from the repository root, with pgai-mon serving on 127.0.0.1:8765
+# (its bearer token in PGAI_MON_TOKEN, or pgai-mon started with --no-auth)
 python3 mon/grafana/compile.py --probe-url http://127.0.0.1:8765
 #   --target-url URL   the URL baked into targets (default http://pgai-mon:8765/sql?format=objects)
 #   --out DIR          default mon/grafana/dashboards

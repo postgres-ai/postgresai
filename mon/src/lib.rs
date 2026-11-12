@@ -1,10 +1,13 @@
 //! pgai-mon library: everything the binary runs, exposed for integration tests.
 pub mod admission;
+pub mod auth;
 pub mod bucket;
 pub mod catalog;
 pub mod collector;
 pub mod config;
 pub mod eval;
+pub mod hoststats;
+pub mod ingest;
 pub mod kmerge;
 pub mod logs;
 pub mod metricdefs;
@@ -15,6 +18,8 @@ pub mod qcache;
 pub mod query;
 pub mod registry;
 pub mod rowjson;
+pub mod rules;
+pub mod scrape;
 pub mod sqlproc;
 pub mod store;
 pub mod structure;

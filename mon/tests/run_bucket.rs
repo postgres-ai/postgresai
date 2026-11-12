@@ -46,6 +46,7 @@ fn spawn(cfg: &Path, url: &str) -> Child {
         .args(["run", "--config", cfg.to_str().unwrap()])
         .env("PGAI_MON_STORE", url)
         .env("PGAI_NO_COMPACT", "1")
+        .env("PGAI_MON_TOKEN", "test-token-0123456789")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

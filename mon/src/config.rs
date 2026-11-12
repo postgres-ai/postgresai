@@ -42,6 +42,19 @@ pub struct Config {
     /// The file this config was loaded from (re-read on reload).
     #[serde(skip)]
     pub config_path: Option<PathBuf>,
+    /// Externally produced samples: push endpoint limits (ingest.rs).
+    #[serde(default)]
+    pub ingest: crate::ingest::IngestCfg,
+    /// Prometheus scrape targets (scrape.rs): files such as host-metrics/*.yml, inline jobs.
+    #[serde(default)]
+    pub scrape: crate::scrape::ScrapeCfg,
+    /// Recording rules materialised at ingest (rules.rs): host_* from scraped provider series.
+    #[serde(default)]
+    pub rules: crate::rules::RulesCfg,
+    /// RDS/Aurora instances whose host stats are polled from AWS (hoststats/). Empty: the
+    /// rds-host-stats environment (RDS_DB_INSTANCE_IDENTIFIER, ...) when it is set.
+    #[serde(default)]
+    pub rds: Vec<crate::hoststats::RdsTarget>,
 }
 
 fn d_metrics_yml() -> PathBuf {
@@ -349,6 +362,8 @@ pub struct HttpCfg {
     pub eval_worker_mb_per_day: u64,
     /// Object-store read path, for a store root `s3://bucket/prefix` (objstore.rs).
     pub s3: crate::objstore::S3Cfg,
+    /// Credentials every route but `/livez` requires (auth.rs).
+    pub auth: crate::auth::AuthCfg,
 }
 
 impl HttpCfg {
@@ -394,6 +409,7 @@ impl Default for HttpCfg {
             eval_workers: 1,
             eval_worker_mb_per_day: 3,
             s3: Default::default(),
+            auth: Default::default(),
         }
     }
 }

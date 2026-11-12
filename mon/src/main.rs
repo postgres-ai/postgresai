@@ -72,6 +72,12 @@ enum Cmd {
         /// Don't run background compaction (benchmarks of a fixed store).
         #[arg(long)]
         no_compact: bool,
+        /// Bearer token file (or PGAI_MON_TOKEN(_FILE) / PGAI_MON_AUTH_* in the environment; see auth.rs).
+        #[arg(long)]
+        auth_token_file: Option<PathBuf>,
+        /// Serve without authentication (local development only).
+        #[arg(long)]
+        no_auth: bool,
         /// Reader spill cap.
         #[arg(long, default_value = "2GB")]
         max_temp_directory_size: String,
@@ -299,6 +305,8 @@ fn main_cmd() -> anyhow::Result<()> {
             row_cache_mb,
             in_process,
             mut no_compact,
+            auth_token_file,
+            no_auth,
             max_temp_directory_size,
             s3_concurrency,
             s3_inflight_mb,
@@ -361,6 +369,11 @@ fn main_cmd() -> anyhow::Result<()> {
                     reader_process: !in_process,
                     max_temp_directory_size,
                     s3,
+                    auth: auth::AuthCfg {
+                        token_file: auth_token_file,
+                        disabled: no_auth,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 collector: Default::default(),
@@ -368,6 +381,10 @@ fn main_cmd() -> anyhow::Result<()> {
                 views_sql,
                 macros_sql,
                 read_only: no_compact,
+                ingest: Default::default(),
+                scrape: Default::default(),
+                rules: Default::default(),
+                rds: vec![],
             };
             run(cfg)
         }
@@ -678,6 +695,11 @@ fn layout_bench(store_dir: &std::path::Path, out: &std::path::Path, zstd_level: 
 
 fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     cfg.http = cfg.http.clone().resolve();
+    // Credentials first: no store is opened for a server that would refuse to start.
+    let auth = Arc::new(auth::Auth::from_env(&cfg.http.auth)?);
+    if auth.is_disabled() {
+        eprintln!("pgai-mon: WARNING: HTTP authentication is disabled (local development only)");
+    }
     if cfg.read_only {
         anyhow::ensure!(
             !cfg.has_sources() && cfg.logs.is_empty(),
@@ -784,7 +806,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
                 }
             }
         })?;
-        return serve_loop(cfg, mf, objects, shared, backend, tx, None, views_text);
+        return serve_loop(cfg, mf, objects, shared, backend, tx, None, views_text, auth);
     };
     // Store thread: sole owner of the WAL and the flush path.
     let compactor = core.compactor()?;
@@ -909,7 +931,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     }
 
     let final_tx = tx.clone();
-    let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text);
+    let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text, auth);
     // Stop order: serve_loop has stopped HTTP, flushed, and dropped its runtime (the collector
     // manager and its tasks with it). Flush once more what they sent meanwhile, then commit,
     // so a clean stop leaves nothing flushed and not uploaded (log tailers resume from the
@@ -936,7 +958,9 @@ fn serve_loop(
     tx: tokio::sync::mpsc::Sender<Msg>,
     store_thread: Option<std::thread::JoinHandle<()>>,
     views_text: String,
+    auth: Arc<auth::Auth>,
 ) -> anyhow::Result<()> {
+    let writable = store_thread.is_some();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(cfg.http.max_concurrent + 4)
@@ -965,8 +989,26 @@ fn serve_loop(
                 }
             });
         }
-        let app =
-            query::router(query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text));
+        let rules_backend = backend.clone();
+        let state = query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text);
+        // Ingest writes into the store: only with a store thread (not read-only).
+        let mut extra = axum::Router::new();
+        if writable {
+            let ing = ingest::Ingest::new(shared.clone(), tx.clone(), cfg.ingest.clone());
+            extra = extra.merge(ingest::router(ing.clone()));
+            if scrape::Scraper::enabled(&cfg.scrape) {
+                let sc = scrape::Scraper::new(cfg.scrape.clone(), ing.clone())?;
+                tokio::spawn(sc.clone().run());
+                extra = extra.merge(scrape::router(sc));
+            }
+            if cfg.rules.host.unwrap_or(scrape::Scraper::enabled(&cfg.scrape)) {
+                tokio::spawn(rules::run_host(cfg.rules.clone(), rules_backend, ing.clone(), tx.clone()));
+            }
+            for t in pgai_mon::hoststats::targets(&cfg.rds, &|k| std::env::var(k).ok()) {
+                tokio::spawn(pgai_mon::hoststats::run(t, ing.clone()));
+            }
+        }
+        let app = query::app(state, extra, auth);
         let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;
         eprintln!("pgai-mon: serving on http://{}", cfg.http.listen);
         let shutdown = async {

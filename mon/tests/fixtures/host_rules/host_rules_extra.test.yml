@@ -1,0 +1,36 @@
+# Cases pgai-mon adds to the vmalert golden file (same format, same evaluation).
+tests:
+  - name: a busy read replica of the project is not counted in the primary's CPU
+    interval: 1m
+    input_series:
+      # primary: 54 s idle, 6 s user per minute: 10 % busy
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="idle"}'
+        values: '1000+54x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst",service_type="db",cpu="0",mode="user"}'
+        values: '1000+6x10'
+      # replica: fully busy
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst-rr-us-east-1-abcde",service_type="db",cpu="0",mode="user"}'
+        values: '1000+60x10'
+      - series: 'node_cpu_seconds_total{job="supabase-host-metrics",cluster="prod",node_name="main-db",supabase_project_ref="abcdefghijklmnopqrst",supabase_identifier="abcdefghijklmnopqrst-rr-us-east-1-abcde",service_type="db",cpu="0",mode="idle"}'
+        values: '1000+0x10'
+      # another job's node_exporter is not Supabase
+      - series: 'node_cpu_seconds_total{job="self-node-exporter",cluster="prod",node_name="main-db",service_type="db",cpu="0",mode="user"}'
+        values: '0+60x10'
+    metricsql_expr_test:
+      - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+      - {expr: 'round(host_os_cpu_user_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_user_percent{cluster="prod",node_name="main-db"}', value: 10}]}
+
+  - name: host_* series end when the provider series stop
+    interval: 1m
+    input_series:
+      - series: 'PostgresServer_MemoryLimitBytes{job="clickhouse-ch1",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s"}'
+        values: '17179869184x4'
+      - series: 'PostgresServer_DiskReads_Total{job="clickhouse-ch1",cluster="default",node_name="ch1",clickhouse_org="o",postgres_service="s"}'
+        values: '0+600x4'
+    metricsql_expr_test:
+      - {expr: host_os_memory_total_bytes, eval_time: 4m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="default",node_name="ch1"}', value: 17179869184}]}
+      - {expr: 'round(host_disk_read_iops, 1e-9)', eval_time: 4m, exp_samples: [{labels: 'host_disk_read_iops{cluster="default",node_name="ch1"}', value: 10}]}
+      - {expr: host_provider_info, eval_time: 4m, exp_samples: [{labels: 'host_provider_info{cluster="default",node_name="ch1",provider="ClickHouse"}', value: 1}]}
+      # the inputs stop at 4m: 5 minutes later every rule is empty and a staleness marker ended each
+      # host_* series at the first empty evaluation, so nothing lingers for the 5 m lookback
+      - {expr: '{__name__=~"host_.+"}', eval_time: 10m, exp_samples: []}

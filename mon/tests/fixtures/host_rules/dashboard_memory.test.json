@@ -1,0 +1,351 @@
+{
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "name": "full detail",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_memory_total_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "100x10"
+        },
+        {
+          "series": "host_os_memory_free_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "10x10"
+        },
+        {
+          "series": "host_os_memory_cached_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_os_memory_buffers_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "5x10"
+        },
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "50x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 55
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 10
+            }
+          ]
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        }
+      ]
+    },
+    {
+      "name": "legacy missing buffers",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_memory_total_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "100x10"
+        },
+        {
+          "series": "host_os_memory_free_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "10x10"
+        },
+        {
+          "series": "host_os_memory_cached_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "50x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ClickHouse available only",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_memory_total_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "100x10"
+        },
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "40x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 60
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 40
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "RDS without Enhanced Monitoring",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "40x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 40
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "partial detail missing free",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_memory_total_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "100x10"
+        },
+        {
+          "series": "host_os_memory_cached_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "30x10"
+        },
+        {
+          "series": "host_os_memory_buffers_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "5x10"
+        },
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "50x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "partial detail missing cached",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "host_os_memory_total_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "100x10"
+        },
+        {
+          "series": "host_os_memory_free_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "10x10"
+        },
+        {
+          "series": "host_os_memory_buffers_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "5x10"
+        },
+        {
+          "series": "host_memory_available_bytes{cluster=\"test\",node_name=\"node\"}",
+          "values": "50x10"
+        }
+      ],
+      "metricsql_expr_test": [
+        {
+          "expr": "((host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} - host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"}) or on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} - host_memory_available_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        },
+        {
+          "expr": "(host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": []
+        },
+        {
+          "expr": "(host_memory_available_bytes{cluster=\"test\", node_name=\"node\"} unless on(cluster, node_name) (host_os_memory_total_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_free_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_cached_bytes{cluster=\"test\", node_name=\"node\"} and on(cluster, node_name) host_os_memory_buffers_bytes{cluster=\"test\", node_name=\"node\"})) + 0",
+          "eval_time": "10m",
+          "exp_samples": [
+            {
+              "labels": "{cluster=\"test\",node_name=\"node\"}",
+              "value": 50
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "rule_files": [
+    "../../config/prometheus/host_rules.yml"
+  ]
+}

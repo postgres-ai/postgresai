@@ -498,7 +498,11 @@ def compile_variable(v):
 # --------------------------------------------------------------------------------------------
 def post(url, sql, fmt=None):
     u = url.rstrip("/") + "/sql" + (f"?format={fmt}" if fmt else "")
-    req = urllib.request.Request(u, data=sql.encode(), headers={"Content-Type": "text/plain"}, method="POST")
+    headers = {"Content-Type": "text/plain"}
+    # pgai-mon needs credentials on every route but /livez
+    if os.environ.get("PGAI_MON_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["PGAI_MON_TOKEN"]
+    req = urllib.request.Request(u, data=sql.encode(), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=300) as r:
             return json.load(r)

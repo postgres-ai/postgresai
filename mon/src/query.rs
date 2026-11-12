@@ -1421,6 +1421,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
         )
     };
     Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
         "samples_in": s.samples_in.load(Ordering::Relaxed),
         "records_in": s.records_in.load(Ordering::Relaxed),
         "flushes": s.flushes.load(Ordering::Relaxed),
@@ -1453,6 +1454,15 @@ async fn get_health(State(st): State<AppState>) -> Response {
         },
     }))
     .into_response()
+}
+
+/// The whole HTTP surface: the SQL routes plus `extra` (ingest), all behind `auth`, and the
+/// liveness probe `/livez`, which needs no credentials and tells nothing.
+pub fn app(state: AppState, extra: Router, auth: Arc<crate::auth::Auth>) -> Router {
+    router(state)
+        .merge(extra)
+        .layer(axum::middleware::from_fn_with_state(auth, crate::auth::require))
+        .route("/livez", get(crate::auth::livez))
 }
 
 pub fn router(state: AppState) -> Router {

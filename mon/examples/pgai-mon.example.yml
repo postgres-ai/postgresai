@@ -21,8 +21,15 @@ sources:
 # logs:
 #   - dir: /var/log/postgresql
 #     suffix: .json
+# Prometheus scrape files written by `postgresai mon targets add` (Supabase, ClickHouse Cloud):
+scrape:
+  files: [/etc/pgai/host-metrics/*.yml]
 store:
   flush_interval_s: 60
 http:
-  # No authentication: keep it on an internal network.
   listen: 0.0.0.0:8765
+  # Every route but /livez needs these credentials (or PGAI_MON_TOKEN(_FILE) / PGAI_MON_AUTH_* in the environment).
+  auth:
+    token_file: /run/secrets/pgai-mon-token
+    # username: pgai
+    # password_file: /run/secrets/pgai-mon-password
