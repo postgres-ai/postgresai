@@ -78,31 +78,32 @@
 ## FM-3: silent monitoring failure
 
 **Severity**: P0 — Critical
-**Component**: Monitoring stack (pgwatch, Prometheus, Grafana)
+**Component**: Monitoring stack (pgai-mon, Grafana)
 **Customer impact**: Thinks monitoring is working, but metrics stopped flowing;
 misses critical issues
 
 ### What could go wrong
 
-- pgwatch collector crashes silently, no metrics collected
-- Prometheus scrape target becomes unreachable, no alert generated
+- pgai-mon collector crashes silently, no metrics collected
+- A target or scrape target becomes unreachable, no alert generated
 - Grafana dashboard shows stale data without "last updated" indicator
-- Sink database fills up, new metrics silently dropped
+- Metric store (local volume or S3 bucket) fills up or becomes unwritable, new metrics silently dropped
 - TLS certificate expires, metric push fails silently
 - Database password rotation breaks collector, no notification
 
 ### Required test coverage
 
-- [ ] `mon health` detects when pgwatch has stopped collecting metrics
-- [ ] `mon health` detects when Prometheus has no recent scrape results
-- [ ] `mon health` detects when sink database is unreachable
+- [ ] `mon health` detects when pgai-mon is down or rejects its token (`cli/test/pgai-mon-health.test.ts`)
+- [ ] `mon health` detects when pgai-mon has stopped collecting metrics (no test found)
+- [ ] An unreachable target is reported down (`mon/tests/collector_pg.rs`: `an_unreachable_source_backs_off_and_reports_down`); an unreachable scrape target is reported (`mon/tests/scrape.rs`)
+- [ ] `mon health` detects when the metric store is unwritable (no test found)
 - [ ] `mon status` shows accurate state of all services
-- [ ] Adding/removing targets properly updates pgwatch configuration
+- [ ] Adding/removing targets is picked up by pgai-mon (`mon/tests/collector_pg.rs`: `sources_file_changes_are_picked_up`; `mon/tests/scrape.rs`: `reload_starts_and_stops_targets_and_reports_bad_files`)
 - [ ] Target test (`mon targets test`) catches connection failures
 
 ### Automated checks
 
-- E2E test: `local-install --demo` → wait → verify metrics flowing in Prometheus
+- E2E test: compose stack up → verify metrics from the demo target in pgai-mon (`tests/e2e/compose_smoke.sh`, CI job `compose:smoke`)
 - E2E test: stop target-db → verify `mon health` reports unhealthy
 - E2E test: `mon targets add` → verify metrics appear within 2 collection cycles
 
@@ -129,9 +130,11 @@ misses critical issues
 - [ ] Config file: `config.json` created with 0600 permissions
 - [ ] Docker: no credentials visible in `docker inspect` environment section
 - [ ] All SQL: parameterized queries (no string interpolation for user input)
-- [ ] VictoriaMetrics: basic auth enabled, unauthenticated requests return 401
-- [ ] VictoriaMetrics: the destructive admin endpoints (`delete_series`, `snapshot`, `force_merge`) and `/debug/pprof/*` require a per-install key; a Grafana Viewer cannot reach them through the datasource proxy. Not yet covered (proxy-GET, degradation not destruction), tracked in #362: `/internal/force_flush`, `/internal/resetRollupResultCache`, `/internal/log_new_series`, `/api/v1/admin/status/metric_names_stats/reset`, `/-/reload`
-- [ ] VictoriaMetrics: no secret appears in the container command line, i.e. in `/debug/pprof/cmdline` or the host process table (they are still container env vars, so `docker inspect` shows them)
+- [ ] pgai-mon: every route but `/livez` requires credentials, and it refuses to start without them (`mon/tests/http_auth.rs`); `/sql` without or with a wrong token returns 401 (`tests/e2e/compose_smoke.sh`)
+- [ ] pgai-mon: `/sql` refuses writes and side effects (`mon/tests/guardrails.rs`: `refuses_writes_and_side_effects`)
+- [ ] No secret appears on any container command line (`tests/compliance_vectors/test_compose_stack.py`: `test_secrets_are_not_on_any_command_line`)
+- [ ] Ports are published on 127.0.0.1 only by default (`tests/compliance_vectors/test_compose_stack.py`: `test_only_loopback_ports_by_default`)
+- Retired with VictoriaMetrics: its basic auth, the per-install admin-endpoint keys (`delete_series`, `snapshot`, `force_merge`, `/debug/pprof/*`) and #362's remaining endpoints
 - [ ] Grafana: default credentials are randomized on `local-install`
 - [ ] Pre-commit: gitleaks catches secrets before they reach the repository
 
@@ -140,8 +143,8 @@ misses critical issues
 - SAST: GitLab SAST pipeline scans every PR
 - gitleaks: pre-commit hook + CI check
 - CLI tests: auth flow tests verify masking behavior
-- E2E tests: VM basic auth verification (already in `cli:node:full:dind`)
-- Compliance vectors: `tests/compliance_vectors/test_vm_auth.py` — `TestVictoriaMetricsAdminAuthKeys`, `TestVictoriaMetricsEntrypointBehaviour` (runs the entrypoint), `TestTerraformVMAdminAuthKeys`
+- E2E tests: pgai-mon token check in `compose:smoke` (`tests/e2e/compose_smoke.sh`)
+- Compliance vectors: `tests/compliance_vectors/test_compose_stack.py` (compose contract: token required, loopback ports, no secrets on command lines)
 
 ---
 
