@@ -271,6 +271,8 @@ pub struct StoreCfg {
     pub max_buffer_bytes: usize,
     /// Max bytes per DuckDB write batch inside a flush (one Parquet file per batch and day).
     pub write_chunk_bytes: usize,
+    /// Write path of a store whose `store_dir` is `s3://bucket/prefix` (bucket.rs).
+    pub s3: crate::bucket::BucketCfg,
 }
 impl Default for StoreCfg {
     fn default() -> Self {
@@ -290,6 +292,7 @@ impl Default for StoreCfg {
             compact_kmerge: true,
             max_buffer_bytes: 32 << 20,
             write_chunk_bytes: 8 << 20,
+            s3: Default::default(),
         }
     }
 }
@@ -469,23 +472,61 @@ impl Default for CollectorCfg {
     }
 }
 
+/// Environment variable that selects the store, overriding `store_dir` (compose and Terraform
+/// set it: `s3://bucket/prefix`, or unset for the local volume).
+pub const STORE_ENV: &str = "PGAI_MON_STORE";
+
 impl Config {
+    /// Read the YAML file, then apply `PGAI_MON_STORE` (`with_store_env`).
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)?;
         let mut c: Self = serde_yaml::from_str(&s)?;
         c.config_path = Some(path.to_path_buf());
-        Ok(c)
+        Ok(c.with_store_env(std::env::var(STORE_ENV).ok()))
     }
 
     /// Whether the collector has anything to run (inline sources or a sources file).
     pub fn has_sources(&self) -> bool {
         !self.sources.is_empty() || self.sources_file.is_some()
     }
+
+    /// `env` (the value of `PGAI_MON_STORE`), when set and not empty, replaces `store_dir`. An
+    /// object-store `store_dir` without `store.s3.local_dir` works in `bucket::DEFAULT_LOCAL_DIR`.
+    pub fn with_store_env(mut self, env: Option<String>) -> Self {
+        if let Some(v) = env.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            self.store_dir = PathBuf::from(v);
+        }
+        if crate::objstore::is_remote(&self.store_dir) && self.store.s3.local_dir.is_none() {
+            self.store.s3.local_dir = Some(PathBuf::from(crate::bucket::DEFAULT_LOCAL_DIR));
+        }
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg(yaml: &str, env: Option<&str>) -> Config {
+        serde_yaml::from_str::<Config>(yaml).unwrap().with_store_env(env.map(str::to_string))
+    }
+
+    #[test]
+    fn store_env_overrides_store_dir() {
+        let y = "store_dir: /data/local\n";
+        let c = cfg(y, None);
+        assert_eq!(c.store_dir, PathBuf::from("/data/local"));
+        assert_eq!(c.store.s3.local_dir, None);
+        assert_eq!(cfg(y, Some("")).store_dir, PathBuf::from("/data/local"));
+        let c = cfg(y, Some("s3://bkt/mon"));
+        assert_eq!(c.store_dir, PathBuf::from("s3://bkt/mon"));
+        assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/var/lib/pgai-mon")));
+        let c = cfg("store_dir: /x\nstore:\n  s3:\n    local_dir: /wd\n", Some("s3://bkt/mon"));
+        assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/wd")));
+        let c = cfg("store_dir: s3://a/b\n", None);
+        assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/var/lib/pgai-mon")));
+        assert_eq!(cfg("store_dir: s3://a/b\n", Some("/local")).store_dir, PathBuf::from("/local"));
+    }
 
     /// The file `pgai mon local-install --demo` writes (instances.demo.yml), as is.
     const DEMO: &str = r#"

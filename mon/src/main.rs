@@ -684,14 +684,45 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             "read-only: no sources or logs"
         );
     }
+    // store_dir s3://bucket/prefix: the writer works in store.s3.local_dir and commits to the
+    // bucket (bucket.rs); its reader reads the bucket with that directory as the overlay
+    let bucket = if objstore::is_remote(&cfg.store_dir) && !cfg.read_only {
+        let local = cfg
+            .store
+            .s3
+            .local_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(bucket::DEFAULT_LOCAL_DIR));
+        let b = bucket::Bucket::open(&cfg.store_dir.to_string_lossy(), &local, cfg.store.s3.clone(), &cfg.http.s3)?;
+        b.attach(&cfg.store.samples_layout)?;
+        eprintln!(
+            "pgai-mon: writing {} (epoch {}, local dir {}, upload every {} s)",
+            b.url,
+            b.epoch(),
+            b.local.display(),
+            b.cfg.upload_interval_s
+        );
+        Some(b)
+    } else {
+        None
+    };
     let core = if cfg.read_only {
         None
     } else {
-        Some(store::StoreCore::open(&cfg.store_dir, &cfg.store)?)
+        let root = bucket.as_ref().map_or(cfg.store_dir.clone(), |b| b.local.clone());
+        Some(store::StoreCore::open(&root, &cfg.store)?)
     };
     let shared = match &core {
         Some(c) => c.shared.clone(),
         None => store::Shared::open_read_only(&cfg.store_dir)?,
+    };
+    // what the reader reads: the bucket URL (same catalog and stats, local files win)
+    let reader_shared = match &bucket {
+        Some(b) => store::Shared {
+            root: PathBuf::from(&b.url),
+            ..shared.clone()
+        },
+        None => shared.clone(),
     };
     let log_offsets = core.as_ref().map(|c| c.log_offsets()).unwrap_or_default();
     let mf = metricdefs::load(&cfg.metrics_yml).ok();
@@ -718,11 +749,12 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
     let backend = if cfg.http.reader_process {
         let spec = sqlproc::Spec {
-            store: if objstore::is_remote(&shared.root) {
-                shared.root.clone()
+            store: if objstore::is_remote(&reader_shared.root) {
+                reader_shared.root.clone()
             } else {
-                shared.root.canonicalize()?
+                reader_shared.root.canonicalize()?
             },
+            overlay: bucket.as_ref().map(|b| b.local.clone()),
             scratch: shared.scratch.clone(),
             http: cfg.http.clone(),
             views_sql,
@@ -733,7 +765,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         query::Backend::Proc(sqlproc::ReaderProc::new(&spec, spec_path)?)
     } else {
         query::Backend::InProc(Arc::new(query::Reader::new(
-            shared.clone(),
+            reader_shared.clone(),
             cfg.http.clone(),
             views_sql,
             dict,
@@ -756,6 +788,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     };
     // Store thread: sole owner of the WAL and the flush path.
     let compactor = core.compactor()?;
+    let upload_compactor = if bucket.is_some() { Some(core.upload_compactor()?) } else { None };
     let store_thread = std::thread::Builder::new().name("store".into()).spawn(move || {
         let mut core = core;
         // Flush whatever the WAL replay produced right away.
@@ -821,6 +854,27 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             }
         }
     })?;
+    // Uploads on their own thread: never deferred by queries nor delayed by a compaction job.
+    if let (Some(b), Some(premerge)) = (&bucket, upload_compactor) {
+        let ftx = tx.clone();
+        bucket::spawn_uploader(
+            b.clone(),
+            shared.clone(),
+            premerge,
+            Box::new(move || {
+                // the WAL's records to local Parquet first, so the round commits all acked data
+                let (a, r) = tokio::sync::oneshot::channel();
+                if ftx.blocking_send(Msg::Flush(Some(a))).is_ok() {
+                    let _ = r.blocking_recv();
+                }
+            }),
+            Box::new(|e| {
+                eprintln!("bucket: {e}");
+                std::process::exit(4);
+            }),
+            Duration::from_secs(30),
+        )?;
+    }
 
     // Log tailers.
     for ls in &cfg.logs {
@@ -854,7 +908,22 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         })?;
     }
 
-    serve_loop(cfg, mf, objects, shared, backend, tx, Some(store_thread), views_text)
+    let final_tx = tx.clone();
+    let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text);
+    // Stop order: serve_loop has stopped HTTP, flushed, and dropped its runtime (the collector
+    // manager and its tasks with it). Flush once more what they sent meanwhile, then commit,
+    // so a clean stop leaves nothing flushed and not uploaded (log tailers resume from the
+    // committed offsets).
+    if let Some(b) = &bucket {
+        let (a, r) = tokio::sync::oneshot::channel();
+        if final_tx.blocking_send(Msg::Flush(Some(a))).is_ok() {
+            let _ = r.blocking_recv();
+        }
+        if let Err(e) = b.sync(&shared, None) {
+            eprintln!("bucket: final upload failed (data stays in {}): {e:#}", b.local.display());
+        }
+    }
+    res
 }
 
 #[allow(clippy::too_many_arguments)]

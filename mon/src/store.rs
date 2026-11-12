@@ -395,6 +395,11 @@ pub fn merge_select(kind: &str, src: &str) -> String {
 
 impl StoreCore {
     pub fn open(root: &Path, cfg: &StoreCfg) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !crate::objstore::is_remote(root),
+            "{}: a store on an object store is written only by `run` (with store.s3.local_dir)",
+            root.display()
+        );
         std::fs::create_dir_all(root)?;
         let mut cat = Catalog::load_or_new(root, &cfg.samples_layout)?;
         if cat.samples_layout.is_empty() {
@@ -838,7 +843,25 @@ impl StoreCore {
             db,
         })
     }
+
+    /// The uploader's own compactor (bucket.rs: the merge of not-yet-uploaded L0 files before
+    /// each upload). Its inputs are a few minutes of flushes: a small DuckDB instance.
+    pub fn upload_compactor(&self) -> anyhow::Result<Compactor> {
+        let mut cfg = self.cfg.clone();
+        cfg.compact_memory_limit = "32MB".into();
+        cfg.compact_events_memory_limit = "32MB".into();
+        let db = open_db(&self.shared.root, "upload", &cfg.compact_memory_limit, 1)?;
+        Ok(Compactor {
+            shared: self.shared.clone(),
+            cfg,
+            db,
+        })
+    }
 }
+
+/// Test hook: compaction merges (level 1 and 2) of the store at this root sleep this many ms
+/// first, as a slow job would take (tests/bucket.rs).
+pub static TEST_MERGE_DELAY: Mutex<Option<(PathBuf, u64)>> = Mutex::new(None);
 
 pub fn copy_atomic(db: &Connection, cfg: &StoreCfg, select: &str, abs: &Path, layout: &str) -> anyhow::Result<u64> {
     std::fs::create_dir_all(abs.parent().unwrap())?;
@@ -1170,6 +1193,9 @@ impl Compactor {
     /// One compaction pass. `all_closed` treats every past day as closed regardless of grace
     /// (the loader uses it). Returns the number of merges done.
     pub fn run_once(&self, now: i64, all_closed: bool) -> anyhow::Result<usize> {
+        // on an object store: no eviction while the jobs read local files
+        let bucket = crate::bucket::of(&self.shared.root);
+        let _jobs = bucket.as_ref().map(|b| b.jobs.read().unwrap());
         let jobs = self.plan(now, all_closed);
         let mut done = 0;
         for job in jobs {
@@ -1185,6 +1211,16 @@ impl Compactor {
         done += self.register(now, all_closed)?;
         done += self.series_months(now, all_closed)?;
         if self.cfg.compact_kmerge {
+            // on an object store, the month jobs' inputs may have left the local directory
+            if crate::bucket::of(&self.shared.root).is_some() {
+                let files = self.shared.catalog.lock().unwrap().files.clone();
+                for kind in [crate::eval::rollup::KIND_1D, crate::eval::rollup::KIND_1HM] {
+                    for job in crate::eval::rollup::jobs_tier(&files, kind) {
+                        let refs: Vec<&FileEntry> = job.inputs.iter().map(|x| &x.0).chain(job.old.iter()).collect();
+                        crate::bucket::ensure_local(&self.shared.root, &refs)?;
+                    }
+                }
+            }
             // 1 d rollup month files from the closed days' 1 h rollups
             done += crate::eval::rollup::update_1d(&self.shared, self.cfg.zstd_level, self.cfg.delete_grace_s as i64 * 1000)?;
         }
@@ -1192,9 +1228,54 @@ impl Compactor {
         Ok(done)
     }
 
+    /// Before an upload (bucket.rs): merge the level-0 files of each open (kind, day) written
+    /// this hour and not in `uploaded` into one level-0 file, so a round PUTs one file per kind and day instead of
+    /// one per flush. Returns the number of merges.
+    pub fn merge_unuploaded(&self, uploaded: &HashSet<String>) -> anyhow::Result<usize> {
+        let groups: BTreeMap<(String, i64), Vec<FileEntry>> = {
+            let cat = self.shared.catalog.lock().unwrap();
+            let mut g: BTreeMap<(String, i64), Vec<FileEntry>> = BTreeMap::new();
+            // only what the compactor leaves alone: open days' files of the current hour (it
+            // merges finished hours and closed days; at a boundary its merge check discards
+            // whichever of two merges of the same inputs commits second)
+            let now = now_ms();
+            let (today, hour_start) = (day_of(now), now - now.rem_euclid(3_600_000));
+            let open = |day: i64| day >= today || now < (day + 1) * DAY_MS + self.cfg.compact_grace_s as i64 * 1000;
+            for f in cat.files.iter().filter(|f| {
+                f.level == 0 && !uploaded.contains(&f.path) && f.created_ms >= hour_start && open(f.day)
+            }) {
+                g.entry((f.kind.clone(), f.day)).or_default().push(f.clone());
+            }
+            g
+        };
+        let mut n = 0;
+        for ((kind, day), inputs) in groups {
+            if inputs.len() < 2 {
+                continue;
+            }
+            self.merge(Job {
+                kind,
+                day,
+                level: 0,
+                inputs,
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     fn merge(&self, job: Job) -> anyhow::Result<()> {
         let layout = { self.shared.catalog.lock().unwrap().samples_layout.clone() };
         let refs: Vec<&FileEntry> = job.inputs.iter().collect();
+        crate::bucket::ensure_local(&self.shared.root, &refs)?;
+        let delay = TEST_MERGE_DELAY
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(r, ms)| (*r == self.shared.root).then_some(*ms));
+        if let (Some(ms), true) = (delay, job.level > 0) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         let src = parquet_src(&job.kind, &file_list_sql(&self.shared.root, &refs));
         let file_layout = if job.kind == "samples" { layout.as_str() } else { "v2" };
         let total_rows: u64 = job.inputs.iter().map(|f| f.rows).sum();
@@ -1453,7 +1534,9 @@ impl Compactor {
                     .collect()
             };
             let regs: Vec<&FileEntry> = reg.iter().collect();
-            let fresh = crate::registry::new_ids(&self.shared.root, &[&f], &regs)?;
+            crate::bucket::ensure_local(&self.shared.root, &[&f])?;
+            // registry files are read where they are (the bucket's, unless still local)
+            let fresh = crate::registry::new_ids(&crate::bucket::read_root(&self.shared.root), &[&f], &regs)?;
             let entry = if fresh.is_empty() {
                 None
             } else {
@@ -1546,6 +1629,7 @@ impl Compactor {
         };
         let mut n = 0;
         for (m, days, olds) in jobs {
+            crate::bucket::ensure_local(&self.shared.root, &days.iter().collect::<Vec<_>>())?;
             let id = self.shared.catalog.lock().unwrap().alloc_id();
             let rel = format!("{SERIES_MONTH}/date={}/M-{id:08}.parquet", day_str(m));
             let abs = self.shared.root.join(&rel);

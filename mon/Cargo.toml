@@ -32,7 +32,10 @@ arrow = { version = "=58.4.1", default-features = false }
 zstd = "=0.13.4"
 bytes = "=1.12.1"
 # S3 read path (objstore.rs); 0.13 matches parquet 58's optional object_store dependency.
-object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
+object_store = { version = "=0.13.2", default-features = false, features = ["aws", "fs"] }
+# ObjectStore impls: the file:// bucket's conditional PUT (objstore::LocalCas), test wrappers
+async-trait = "=0.1.92"
+futures-util = { version = "=0.3.34", default-features = false }
 # Collector TLS (pgconn.rs): rustls with ring, no OpenSSL; same versions object_store uses.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }

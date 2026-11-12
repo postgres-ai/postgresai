@@ -1435,6 +1435,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
         "admission": st.adm.stats(),
         "collector": crate::collector::health_json(),
         "late_flushes": s.late_flushes.load(Ordering::Relaxed),
+        "s3_write": crate::bucket::health_json(),
         "cache": {"l1": st.cache.stats_json(), "reader": reader_stats},
         "reader": match &st.backend {
             Backend::Proc(p) => {

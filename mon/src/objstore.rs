@@ -115,6 +115,15 @@ pub struct Stats {
     pub footer_disk_hits: AtomicU64,
     pub footer_fetches: AtomicU64,
     pub footer_gets: AtomicU64,
+    /// Write path (bucket.rs): PUTs (single, multipart parts and the catalog), their bytes,
+    /// DELETEs, LIST pages, catalog PUTs refused by their precondition (another writer).
+    pub puts: AtomicU64,
+    pub put_bytes: AtomicU64,
+    pub deletes: AtomicU64,
+    pub lists: AtomicU64,
+    pub cas_failures: AtomicU64,
+    /// Reads served from the local overlay (`set_overlay`) instead of the object store.
+    pub overlay_hits: AtomicU64,
 }
 
 enum PState {
@@ -201,6 +210,9 @@ pub struct Remote {
     footers: Mutex<FooterMem>,
     /// Memory bound on the window, bytes (`u64::MAX`: none; `set_window_limit`).
     window_limit: AtomicU64,
+    /// Local directory with the store's layout (a writer's working dir): a key whose file is
+    /// there is read from it, not fetched (`set_overlay`).
+    overlay: RwLock<Option<PathBuf>>,
     pub stats: Stats,
 }
 
@@ -350,6 +362,11 @@ pub fn open(url: &str, cfg: &S3Cfg) -> anyhow::Result<Arc<Remote>> {
                 .with_bucket_name(bucket)
                 .build()?,
         ),
+        // a directory as the bucket (tests, single-host dev): file:///abs/dir
+        "file" => {
+            anyhow::ensure!(rest.starts_with('/'), "{url}: use file:///absolute/dir");
+            Arc::new(LocalCas::default())
+        }
         _ => anyhow::bail!("unsupported store URL {url}: use s3://bucket/prefix"),
     };
     register(url, store, cfg.clone())
@@ -383,6 +400,7 @@ pub fn register(url: &str, store: Arc<dyn ObjectStore>, cfg: S3Cfg) -> anyhow::R
         cache,
         footers: Default::default(),
         window_limit: AtomicU64::new(u64::MAX),
+        overlay: RwLock::new(None),
         stats: Default::default(),
     });
     let mut g = REMOTES.write().unwrap();
@@ -415,10 +433,44 @@ fn remote_of(p: &Path) -> anyhow::Result<(Arc<Remote>, OPath)> {
     lookup(p).ok_or_else(|| anyhow::anyhow!("no object store registered for {}", p.display()))
 }
 
+/// Serve the store at `url` from local directory `dir` where it has the file: `dir` holds the
+/// store's layout (relative paths as in the catalog), and every file in it is complete (written
+/// to a temporary name, then renamed). The writer's own reader sees the files not uploaded yet,
+/// and the local catalog.json, this way. `None` turns it off.
+pub fn set_overlay(url: &str, dir: Option<PathBuf>) -> anyhow::Result<()> {
+    let url = url.trim_end_matches('/');
+    let g = REMOTES.read().unwrap();
+    let r = g
+        .iter()
+        .find(|r| r.url == url)
+        .ok_or_else(|| anyhow::anyhow!("no object store registered for {url}"))?;
+    *r.overlay.write().unwrap() = dir;
+    Ok(())
+}
+
+/// The local overlay file behind a remote path, when the overlay has it.
+pub fn overlay_of(p: &Path) -> Option<PathBuf> {
+    let (r, key) = lookup(p)?;
+    r.overlay_file(&key)
+}
+
+/// Open the overlay copy of a remote path, if there is one (counted as an overlay hit).
+fn open_overlay(p: &Path) -> Option<std::fs::File> {
+    let (r, key) = lookup(p)?;
+    let f = std::fs::File::open(r.overlay_file(&key)?).ok()?;
+    r.stats.overlay_hits.fetch_add(1, Ordering::Relaxed);
+    Some(f)
+}
+
 /// Whole file: `std::fs::read` for local paths, one GET for remote ones.
 pub fn read(p: &Path) -> anyhow::Result<Vec<u8>> {
     if !is_remote(p) {
         return Ok(std::fs::read(p)?);
+    }
+    if let Some(mut f) = open_overlay(p) {
+        let mut v = Vec::new();
+        f.read_to_end(&mut v)?;
+        return Ok(v);
     }
     let (r, key) = remote_of(p)?;
     let b = r.run(move |r| async move {
@@ -436,6 +488,13 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
         let n = std::fs::metadata(p)?.len();
         anyhow::ensure!(n <= max, "{}: {n} bytes, over the {max}-byte limit", p.display());
         return Ok(std::fs::read(p)?);
+    }
+    if let Some(f) = open_overlay(p) {
+        let n = f.metadata()?.len();
+        anyhow::ensure!(n <= max, "{}: {n} bytes, over the {max}-byte limit", p.display());
+        let mut v = Vec::with_capacity(n as usize);
+        f.take(max).read_to_end(&mut v)?;
+        return Ok(v);
     }
     let (r, key) = remote_of(p)?;
     let shown = p.display().to_string();
@@ -459,6 +518,27 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
 pub fn download(p: &Path, dst: &Path, expect: u64) -> anyhow::Result<u64> {
     anyhow::ensure!(expect > 0, "{}: catalog size 0", p.display());
     use std::io::Write;
+    if let Some(mut f) = open_overlay(p) {
+        let n = f.metadata()?.len();
+        anyhow::ensure!(n == expect, "{}: local file is {n} bytes, the catalog says {expect}", p.display());
+        let tmp = dst.with_extension(format!("part{}", std::process::id()));
+        let res = (|| -> anyhow::Result<u64> {
+            let mut out = std::fs::File::create(&tmp)?;
+            let n = std::io::copy(&mut f, &mut out)?;
+            out.sync_all()?;
+            Ok(n)
+        })();
+        return match res {
+            Ok(n) => {
+                std::fs::rename(&tmp, dst)?;
+                Ok(n)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        };
+    }
     let (r, key) = remote_of(p)?;
     let tmp = dst.with_extension(format!("part{}", std::process::id()));
     let res = (|| -> anyhow::Result<u64> {
@@ -522,6 +602,9 @@ pub fn exists(p: &Path) -> bool {
     if !is_remote(p) {
         return p.exists();
     }
+    if overlay_of(p).is_some() {
+        return true;
+    }
     let Ok((r, key)) = remote_of(p) else {
         return false;
     };
@@ -531,7 +614,7 @@ pub fn exists(p: &Path) -> bool {
 impl Remote {
     /// Run `f` on this store's runtime and wait for it from a plain thread (never `block_on`:
     /// callers may sit on another runtime's blocking pool).
-    fn run<T, F, Fut>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
+    pub fn run<T, F, Fut>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(Arc<Self>) -> Fut,
@@ -543,6 +626,41 @@ impl Remote {
             let _ = tx.send(fut.await);
         });
         rx.recv().map_err(|_| anyhow::anyhow!("object store task dropped"))?
+    }
+
+    /// The object store itself (the write path, bucket.rs).
+    pub fn object_store(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
+    }
+
+    /// Object key of a path relative to the store root.
+    pub fn key_of(&self, rel: &str) -> OPath {
+        let key = if self.prefix.is_empty() {
+            rel.to_string()
+        } else {
+            format!("{}/{rel}", self.prefix)
+        };
+        OPath::from_iter(key.split('/').filter(|x| !x.is_empty()))
+    }
+
+    /// Path relative to the store root of an object key under its prefix (None: outside it).
+    pub fn rel_of(&self, key: &OPath) -> Option<String> {
+        let k = key.as_ref();
+        if self.prefix.is_empty() {
+            return Some(k.to_string());
+        }
+        k.strip_prefix(self.prefix.as_str())?.strip_prefix('/').map(str::to_string)
+    }
+
+    /// The overlay's file for `key`, when there is an overlay and the file exists.
+    fn overlay_file(&self, key: &OPath) -> Option<PathBuf> {
+        let dir = self.overlay.read().unwrap().clone()?;
+        let rel = self.rel_of(key)?;
+        if !crate::catalog::plain_rel(&rel) {
+            return None;
+        }
+        let p = dir.join(rel);
+        p.is_file().then_some(p)
     }
 
     /// A whole-object GET outside the query path (catalog, mirror): not a demand GET.
@@ -804,6 +922,12 @@ impl Remote {
             "queued": queued,
             "wait_ms": l(&s.wait_ns) / 1_000_000,
             "get_ms_total": l(&s.get_ns) / 1_000_000,
+            "puts": l(&s.puts),
+            "put_bytes": l(&s.put_bytes),
+            "deletes": l(&s.deletes),
+            "lists": l(&s.lists),
+            "cas_failures": l(&s.cas_failures),
+            "overlay_hits": l(&s.overlay_hits),
             "footers": {
                 "mem_hits": l(&s.footer_mem_hits), "disk_hits": l(&s.footer_disk_hits),
                 "fetches": l(&s.footer_fetches), "gets": l(&s.footer_gets),
@@ -1322,11 +1446,17 @@ pub fn open_src(p: &Path) -> anyhow::Result<Src> {
     if !is_remote(p) {
         return Ok(Src::Local(Arc::new(std::fs::File::open(p)?)));
     }
+    if let Some(f) = open_overlay(p) {
+        return Ok(Src::Local(Arc::new(f)));
+    }
     open_many(&[p.to_path_buf()]).pop().unwrap()
 }
 
 /// Open a remote file whose length is known (a footer-cache hit): no request.
 pub fn open_known(p: &Path, len: u64) -> anyhow::Result<Src> {
+    if let Some(f) = open_overlay(p) {
+        return Ok(Src::Local(Arc::new(f)));
+    }
     let (r, key) = remote_of(p)?;
     Ok(Src::Remote(RFile::new(r, key, len)))
 }
@@ -1340,6 +1470,10 @@ pub fn open_many(paths: &[PathBuf]) -> Vec<anyhow::Result<Src>> {
     let mut by_store: HashMap<String, Vec<(usize, Arc<Remote>, OPath)>> = HashMap::new();
     for (i, p) in paths.iter().enumerate() {
         if !is_remote(p) {
+            continue;
+        }
+        if let Some(f) = open_overlay(p) {
+            out[i] = Some(Ok(Src::Local(Arc::new(f))));
             continue;
         }
         match remote_of(p) {
@@ -2139,5 +2273,119 @@ mod tests {
         let n = small.len();
         assert_eq!(&f.get_bytes((n - 200_008) as u64, 200_008).unwrap()[..], &small[n - 200_008..]);
         assert_eq!(l(&r3.stats.gets), 1);
+    }
+}
+
+/// `LocalFileSystem` rooted at `/` with the conditional PUT it lacks (`PutMode::Update`): the
+/// compare and the write run under an flock on `<object dir>/.cas-lock`, so writers on one host
+/// (processes included) are serialized as S3's If-Match serializes them. For `file://` stores
+/// (tests, single-host dev); not for a shared network filesystem.
+#[derive(Debug, Default)]
+pub struct LocalCas {
+    inner: object_store::local::LocalFileSystem,
+}
+
+impl std::fmt::Display for LocalCas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LocalCas({})", self.inner)
+    }
+}
+
+mod local_cas {
+    use super::LocalCas;
+    use bytes::Bytes;
+    use futures_util::stream::BoxStream;
+    use object_store::path::Path as OPath;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
+        PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result,
+    };
+    use std::ops::Range;
+
+    struct Flock(std::fs::File);
+
+    impl Flock {
+        fn take(key: &OPath) -> Result<Self> {
+            let p = std::path::Path::new("/").join(key.as_ref());
+            let dir = p.parent().unwrap_or(std::path::Path::new("/"));
+            let io = |e: std::io::Error| object_store::Error::Generic {
+                store: "LocalCas",
+                source: Box::new(e),
+            };
+            std::fs::create_dir_all(dir).map_err(io)?;
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.join(".cas-lock"))
+                .map_err(io)?;
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(io(std::io::Error::last_os_error()));
+            }
+            Ok(Flock(f))
+        }
+    }
+
+    impl Drop for Flock {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for LocalCas {
+        async fn put_opts(&self, location: &OPath, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
+            let PutMode::Update(v) = &opts.mode else {
+                return self.inner.put_opts(location, payload, opts).await;
+            };
+            let _g = Flock::take(location)?;
+            let cur = match self.inner.head(location).await {
+                Ok(m) => m.e_tag,
+                Err(object_store::Error::NotFound { .. }) => None,
+                Err(e) => return Err(e),
+            };
+            if cur.is_none() || cur != v.e_tag {
+                return Err(object_store::Error::Precondition {
+                    path: location.to_string(),
+                    source: format!("e_tag {cur:?}, expected {:?}", v.e_tag).into(),
+                });
+            }
+            let o = PutOptions {
+                mode: PutMode::Overwrite,
+                ..opts
+            };
+            self.inner.put_opts(location, payload, o).await
+        }
+        async fn put_multipart_opts(&self, location: &OPath, opts: PutMultipartOptions) -> Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(&self, location: &OPath, options: GetOptions) -> Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+        async fn get_ranges(&self, location: &OPath, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+        fn delete_stream(&self, locations: BoxStream<'static, Result<OPath>>) -> BoxStream<'static, Result<OPath>> {
+            self.inner.delete_stream(locations)
+        }
+        fn list(&self, prefix: Option<&OPath>) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+        fn list_with_offset(&self, prefix: Option<&OPath>, offset: &OPath) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list_with_offset(prefix, offset)
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&OPath>) -> Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(&self, from: &OPath, to: &OPath, options: CopyOptions) -> Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+        async fn rename_opts(&self, from: &OPath, to: &OPath, options: RenameOptions) -> Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
     }
 }

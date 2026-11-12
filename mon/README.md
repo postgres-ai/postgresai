@@ -95,8 +95,28 @@ other field has a default. Unknown fields are rejected. See
 - `logs[]`: jsonlog directories to tail;
 - `views_sql` (default: the embedded copy), `macros_sql`, `read_only`.
 
-A store root may also be `s3://bucket/prefix` for read-only serving (credentials and region
-from the AWS environment).
+A store root may also be `s3://bucket/prefix` (credentials and region from the AWS
+environment). The environment variable `PGAI_MON_STORE`, when set, replaces `store_dir` (compose
+and Terraform select the store with it). `serve` reads an object store. `run` writes it with
+`store.s3.local_dir` (default `/var/lib/pgai-mon`) as its local working directory (WAL, files not
+uploaded yet, cache) and commits to the bucket every `store.s3.upload_interval_s` (default 300 s)
+on its own thread: a lost machine loses at most that interval plus one upload round. One writer
+per prefix: a writer that has not committed for `store.s3.lease_intervals` (default 3) upload
+intervals is taken over at start; a fresher one refuses the start (`store.s3.takeover: true`
+forces it). A writer whose commit finds another owner exits with code 4. `file:///dir` works as a
+single-host bucket (tests, dev). See `src/bucket.rs`; `/health` shows the write path under
+`s3_write`.
+
+Operator facts for an object store:
+
+- Worst-case loss when the machine dies (S3 healthy): the data acknowledged in the last
+  `upload_interval_s` plus one upload round, about 300 s + 1-3 s with the defaults. A process
+  crash with the local disk intact loses nothing. During an S3 outage data stays on the local
+  disk and the bound grows with the outage.
+- Local disk: plan about 3 GB. The store files take about 200-250 MB for a store of ~76 M
+  samples/day with `store.s3.keep_local_days: 2` (about 100 MB with 0, which works: jobs fetch
+  what they need); most of the rest is the reader's local copy of the small kinds (logs history),
+  capped by `http.s3.mirror_mb` (default 2048). Lower that cap for a smaller disk.
 
 ## Tests
 
