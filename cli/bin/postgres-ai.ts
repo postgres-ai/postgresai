@@ -5729,6 +5729,26 @@ const MONITORING_CONTAINERS = [
 ];
 
 /**
+ * Volumes `mon clean` removes when left by installs under older compose
+ * project names ("monitoring", "postgres_ai_configs"): the old stack's and
+ * pgai-mon's. The current project's own volumes go with `down -v`.
+ */
+export const CLEAN_ORPHAN_VOLUMES = [
+  "monitoring_grafana_data",
+  "monitoring_pgai_mon_data",
+  "monitoring_postgres_ai_configs",
+  "monitoring_sink_postgres_data",
+  "monitoring_target_db_data",
+  "monitoring_victoria_metrics_data",
+  "postgres_ai_configs_grafana_data",
+  "postgres_ai_configs_pgai_mon_data",
+  "postgres_ai_configs_sink_postgres_data",
+  "postgres_ai_configs_target_db_data",
+  "postgres_ai_configs_victoria_metrics_data",
+  "postgres_ai_configs_postgres_ai_configs",
+];
+
+/**
  * Network cleanup constants.
  * Docker Compose creates a default network named "{project}_default".
  * In CI environments, network cleanup can fail if containers are slow to disconnect.
@@ -6223,22 +6243,9 @@ mon
 
       // Remove orphaned volumes from previous installs with different project names
       if (!options.keepVolumes) {
-        const volumePatterns = [
-          "monitoring_grafana_data",
-          "monitoring_postgres_ai_configs",
-          "monitoring_sink_postgres_data",
-          "monitoring_target_db_data",
-          "monitoring_victoria_metrics_data",
-          "postgres_ai_configs_grafana_data",
-          "postgres_ai_configs_sink_postgres_data",
-          "postgres_ai_configs_target_db_data",
-          "postgres_ai_configs_victoria_metrics_data",
-          "postgres_ai_configs_postgres_ai_configs",
-        ];
-
         const { stdout: existingVolumes } = await execFilePromise("docker", ["volume", "ls", "-q"]);
         const volumeList = existingVolumes.trim().split('\n').filter(Boolean);
-        const orphanedVolumes = volumeList.filter(v => volumePatterns.includes(v));
+        const orphanedVolumes = volumeList.filter(v => CLEAN_ORPHAN_VOLUMES.includes(v));
 
         if (orphanedVolumes.length > 0) {
           let removedCount = 0;
