@@ -481,7 +481,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 shared.clone(),
                 Default::default(),
                 query::EMBEDDED_VIEWS_SQL.to_string(),
-                query::build_dict(mf.as_ref(), "full"),
+                query::build_dict(mf.as_ref(), &mf.as_ref().map(|m| m.dict_intervals(&["full"], &[])).unwrap_or_default()),
             )?;
             match r.run(&sql) {
                 Ok(res) => println!("{}", serde_json::to_string(&res)?),
@@ -706,7 +706,15 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         views_sql.push_str("\n;\n");
         views_sql.push_str(&std::fs::read_to_string(p)?);
     }
-    let dict = query::build_dict(mf.as_ref(), &cfg.preset);
+    // intervals from the global preset and every source's own lists (pg_index_pilot, ...)
+    let dict_iv = match &mf {
+        Some(m) => {
+            let sources = if cfg.has_sources() { config::collect_sources(&cfg).unwrap_or_default() } else { vec![] };
+            m.dict_intervals(&[cfg.preset.as_str()], &sources)
+        }
+        None => Default::default(),
+    };
+    let dict = query::build_dict(mf.as_ref(), &dict_iv);
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
     let backend = if cfg.http.reader_process {
         let spec = sqlproc::Spec {

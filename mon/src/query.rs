@@ -386,15 +386,16 @@ pub struct DictEntry {
     pub description: String,
 }
 
-pub fn build_dict(mf: Option<&MetricsFile>, preset: &str) -> Vec<DictEntry> {
+/// The metric dictionary: every metric of metrics.yml, with the interval it is collected at
+/// (`MetricsFile::dict_intervals`: the global preset and every source's lists) where it is.
+pub fn build_dict(mf: Option<&MetricsFile>, intervals: &std::collections::BTreeMap<String, u64>) -> Vec<DictEntry> {
     let Some(mf) = mf else { return vec![] };
-    let p = mf.presets.get(preset);
     mf.metrics
         .iter()
         .map(|(name, d)| DictEntry {
             group: name.clone(),
-            prefix: format!("pgwatch_{name}"),
-            interval_s: p.and_then(|p| p.metrics.get(name).copied()),
+            prefix: format!("pgwatch_{}", d.storage_name(name)),
+            interval_s: intervals.get(name).copied(),
             instance_level: d.is_instance_level,
             gauges: d.gauges.clone().unwrap_or_default(),
             description: d.description.clone().unwrap_or_default().trim().to_string(),
