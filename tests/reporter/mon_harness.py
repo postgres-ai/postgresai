@@ -1,8 +1,7 @@
 """Test helpers: build the reporter's pgai-mon fixture store and serve it on 127.0.0.1.
 
 The fixture (tests/reporter/mon_fixture/) is a slice of real pgwatch data; see build_fixture.py.
-`pgai-mon load` turns samples.jsonl.gz and synthetic.jsonl.gz into a store; the query_texts and objects Parquet files are
-then registered in the store's catalog.json (pgai-mon has no loader for them yet).
+`pgai-mon load` turns samples.jsonl.gz and synthetic.jsonl.gz, query_texts.jsonl and objects.jsonl into a store.
 
 The binary comes from $PGAI_MON_BIN, else mon/target/{release,debug}/pgai-mon, else
 $CARGO_TARGET_DIR/{release,debug}/pgai-mon. Without one the tests that need it are skipped.
@@ -41,37 +40,25 @@ def find_binary() -> Optional[str]:
 
 
 def build_store(binary: str, store: Path) -> Path:
-    """Load the fixture samples into `store` and register query_texts / objects."""
+    """Load the fixture samples, query texts and objects into `store`."""
     if store.exists():
         shutil.rmtree(store)
     data = b"".join(gzip.open(FIXTURE / name, "rb").read() for name in SAMPLE_FILES)
-    proc = subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=data,
+    # The fixture keeps queryid as a string (pgwatch's label); `load` takes the integer.
+    query_texts = store.parent / "query_texts.jsonl"
+    with open(FIXTURE / "query_texts.jsonl") as src, open(query_texts, "w") as dst:
+        for line in src:
+            if line.strip():
+                row = json.loads(line)
+                row["queryid"] = int(row["queryid"])
+                dst.write(json.dumps(row) + "\n")
+    proc = subprocess.run([binary, "load", "--store", str(store), "--input", "-",
+                           "--query-texts", str(query_texts),
+                           "--objects", str(FIXTURE / "objects.jsonl")], input=data,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
     if proc.returncode != 0:
         raise RuntimeError(f"pgai-mon load failed: {proc.stderr.decode()[-2000:]}")
-    _register(store, "query_texts", "query_texts.parquet", "last_seen_ms", FIXTURE / "query_texts.jsonl")
-    _register(store, "objects", "objects.parquet", "ts_ms", FIXTURE / "objects.jsonl")
     return store
-
-
-def _register(store: Path, kind: str, parquet: str, ts_key: str, jsonl: Path) -> None:
-    rows = [json.loads(line) for line in jsonl.read_text().splitlines() if line.strip()]
-    ts = [int(r[ts_key]) for r in rows]
-    day = max(ts) // 86_400_000
-    date = time.strftime("%Y-%m-%d", time.gmtime(day * 86400))
-    cat_path = store / "catalog.json"
-    cat = json.loads(cat_path.read_text())
-    file_id = cat["next_file_id"]
-    cat["next_file_id"] = file_id + 1
-    rel = f"{kind}/date={date}/L2-{file_id:08d}.parquet"
-    (store / rel).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(FIXTURE / parquet, store / rel)
-    cat["files"].append({"kind": kind, "path": rel, "day": day, "level": 2, "rows": len(rows),
-                         "bytes": (store / rel).stat().st_size, "min_ts": min(ts), "max_ts": max(ts),
-                         "created_ms": max(ts)})
-    tmp = cat_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cat))
-    tmp.replace(cat_path)
 
 
 def _free_port() -> int:
@@ -93,7 +80,9 @@ class MonServer:
     def __enter__(self) -> "MonServer":
         out = open(self.log, "wb") if self.log else subprocess.DEVNULL
         self.proc = subprocess.Popen(
+            # 127.0.0.1 only, so no token (as tests/grafana_dashboards/test_sql_panels_run.py).
             [self.binary, "serve", "--store", str(self.store), "--listen", f"127.0.0.1:{self.port}", "--no-compact",
+             "--no-auth",
              "--metrics-yml", str(REPO / "mon" / "metrics.yml"),
              "--macros-sql", str(REPO / "mon" / "sql" / "macros.sql"), "--timeout-ms", "120000"],
             stdout=out, stderr=subprocess.STDOUT, cwd=str(REPO))
