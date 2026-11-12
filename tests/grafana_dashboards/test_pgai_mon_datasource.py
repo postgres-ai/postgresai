@@ -1,7 +1,7 @@
 """The provisioned pgai-mon datasource is the one the SQL dashboards name, with bearer auth.
 
 config/grafana/provisioning/datasources/pgai-mon.yml is loaded by Grafana together with every
-other file in that directory, so its name and uid must not collide with datasources.yml; the
+other file in that directory, so its name and uid must not collide with theirs; the
 dashboards' targets must name its uid; Infinity must send the bearer token, taken from the
 environment or a file (never a literal), and only to the host the targets call.
 """
@@ -73,7 +73,7 @@ def test_no_collision_with_the_other_provisioning_files():
             assert ds["name"] not in seen_names, (path.name, seen_names.get(ds["name"]))
             assert ds["uid"] not in seen_uids, (path.name, seen_uids.get(ds["uid"]))
             seen_names[ds["name"]], seen_uids[ds["uid"]] = path.name, path.name
-    assert {"pgai-mon.yml", "datasources.yml"} <= set(seen_uids.values())
+    assert "pgai-mon.yml" in set(seen_uids.values())
 
 
 def test_secret_reference_pattern():

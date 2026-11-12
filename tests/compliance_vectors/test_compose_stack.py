@@ -125,6 +125,20 @@ def test_pgai_mon_service_contract():
     assert svc["depends_on"]["config-init"]["condition"] == "service_completed_successfully"
 
 
+def test_own_images_follow_registry_and_tag():
+    services = raw()["services"]
+    for name, image in (("config-init", "postgres-ai-configs"), ("pgai-mon", "pgai-mon"),
+                        ("postgres-reports", "reporter"), ("instance-jobs", "instance-jobs")):
+        assert services[name]["image"] == f"${{PGAI_REGISTRY:-postgresai}}/{image}:${{PGAI_TAG:?PGAI_TAG is required}}", name
+
+
+def test_terraform_generates_the_token_or_stops():
+    """The Terraform VM writes PGAI_MON_TOKEN into .env itself; a failed generation is fatal."""
+    text = (PROJECT_ROOT / "terraform" / "aws" / "user_data.sh").read_text()
+    assert re.search(r"for secret_name in [^;\n]*\bPGAI_MON_TOKEN\b", text)
+    assert "openssl rand -hex 32" in text and "FATAL: cannot generate $secret_name" in text
+
+
 def test_consumers_point_at_pgai_mon():
     services = raw()["services"]
     for name in ("postgres-reports", "instance-jobs"):
