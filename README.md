@@ -124,7 +124,7 @@ The `prepare-db` step creates a read-only `postgres_ai_mon` user with minimal pe
 |-----------|---------|
 | **Express checkup** | Instant health checks — no setup needed |
 | **Grafana dashboards** | 13+ expert views: Node Overview, Query Analysis, Wait Events, Indexes, Tables, Replication, and more |
-| **Scheduled reports** | 45+ metrics collected continuously via pgwatch |
+| **Scheduled reports** | 45+ metrics collected continuously via pgai-mon |
 | **Metrics collection** | `pgai-mon`: one Rust binary that collects (pgwatch v3 metric semantics), stores history as Parquet and serves read-only SQL |
 | **AI-ready output** | Structured JSON for Claude, GPT, and other agents |
 | **Claude Code plugin** | Slash commands for health checks in your IDE |

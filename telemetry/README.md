@@ -98,7 +98,7 @@ Recommended mitigations:
   "api_token": "<double-base64 token>",
   "instance_id": "<uuid>",
   "oom_count_24h": 0,
-  "faulty_containers": ["cadvisor"],
+  "faulty_containers": ["grafana"],
   "free_ram_bytes": 8589934592,
   "free_disk_bytes": 100000000000,
   "metadata": { "collected_at": "2026-04-28T09:00:00.000Z" }
