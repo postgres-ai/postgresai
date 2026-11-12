@@ -185,7 +185,7 @@ fn a_tiled_store_repeats_full_days_back_from_the_recorded_end() {
         .downcast_ref::<arrow::array::TimestampMillisecondArray>()
         .unwrap();
     assert!(
-        fs.len() > 0 && (0..fs.len()).all(|i| day_of(fs.value(i)) == od),
+        !fs.is_empty() && (0..fs.len()).all(|i| day_of(fs.value(i)) == od),
         "first_seen on its day"
     );
 

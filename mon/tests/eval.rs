@@ -86,7 +86,7 @@ fn build_store(dir: &std::path::Path) -> StoreCore {
                 v = (rnd() % 5) as f64; // counter reset
             }
             if k % 151 == 70 {
-                v = v * 0.95; // partial reset (< 1/8 drop)
+                v *= 0.95; // partial reset (< 1/8 drop)
             }
             let value = if k % 89 == 30 {
                 stale_nan()
@@ -1617,9 +1617,7 @@ fn a_tampered_remote_catalog_is_refused() {
         to_bucket_with(d.path(), &url, move |c| c.files[0].path = bad);
         let e = Shared::open_read_only(Path::new(&url)).err().expect("refused");
         assert!(format!("{e:#}").contains("not a plain relative path"), "{e:#}");
-        let e = pgai_mon::catalog::Catalog::load_or_new(Path::new(&url), "")
-            .err()
-            .expect("refused");
+        let e = pgai_mon::catalog::Catalog::load_or_new(Path::new(&url), "").expect_err("refused");
         assert!(format!("{e:#}").contains("not a plain relative path"), "{e:#}");
     }
     // L1: a catalog.json over 64 MB is refused before it is read

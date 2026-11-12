@@ -115,7 +115,7 @@ fn topk_expr_and_last_match_sql_oracle() {
             for fn_ in ["irate", "rate"] {
                 for (ti, t) in terms.iter().enumerate() {
                     for (k, extra) in [(3, ""), (2, ", p_bottom := true"), (3, ", p_by := ['grp']")] {
-                        if ti >= 2 && ti <= 3 && extra.contains("p_by") {
+                        if (2..=3).contains(&ti) && extra.contains("p_by") {
                             continue; // sum by over a ratio: not supported
                         }
                         let args = format!("{k}, '{fn_}', {t}, {m}, {start}, {end}, {step}, {window}{extra}");

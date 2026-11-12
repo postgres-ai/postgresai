@@ -52,7 +52,7 @@ fn expand(values: &str) -> Vec<Option<f64>> {
         if let Some((head, n)) = tok.rsplit_once('x') {
             let n: usize = n.parse().unwrap();
             if head == "_" {
-                out.extend(std::iter::repeat(None).take(n + 1));
+                out.extend(std::iter::repeat_n(None, n + 1));
                 continue;
             }
             // a+b / a-b (the sign after the first character), or a alone

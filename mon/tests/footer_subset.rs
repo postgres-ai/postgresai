@@ -32,7 +32,7 @@ fn write_rows(dir: &std::path::Path, n_rg: usize, rg_rows: usize) -> std::path::
         schema,
         vec![
             Arc::new(UInt64Array::from_iter_values((0..n).map(|i| i / 10))),
-            Arc::new(Int64Array::from_iter_values((0..n as i64).map(|i| i))),
+            Arc::new(Int64Array::from_iter_values((0..n as i64))),
         ],
     )
     .unwrap();

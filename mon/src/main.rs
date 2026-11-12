@@ -884,7 +884,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
                 .active_queries
                 .load(std::sync::atomic::Ordering::Relaxed)
                 > 0;
-            if busy && deferred_since.map_or(true, |t| t.elapsed() < Duration::from_secs(600)) {
+            if busy && deferred_since.is_none_or(|t| t.elapsed() < Duration::from_secs(600)) {
                 deferred_since.get_or_insert_with(std::time::Instant::now);
                 continue;
             }

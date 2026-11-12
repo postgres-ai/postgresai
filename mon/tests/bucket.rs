@@ -533,7 +533,7 @@ fn a_second_writer_is_refused_and_a_takeover_fences_the_first() {
 
     ingest(&mut ca, t0 + 10 * 15_000, 10, 3);
     ca.flush().unwrap();
-    let err = a.sync(&ca.shared, None).err().expect("fenced");
+    let err = a.sync(&ca.shared, None).expect_err("fenced");
     assert!(err.downcast_ref::<Fenced>().is_some(), "{err:#}");
     assert!(
         format!("{err:#}").contains(&b.id),
@@ -577,7 +577,7 @@ fn failed_and_partial_uploads_commit_nothing() {
     let committed = bucket_catalog(&store).unwrap();
 
     // a large samples file (random values do not compress): uploaded in parts
-    let labels = vec![("i".to_string(), "big".to_string())];
+    let labels = [("i".to_string(), "big".to_string())];
     let ids: Vec<u64> = (0..100u64)
         .map(|k| series_id("m_big", &[labels[0].clone(), ("k".into(), k.to_string())]))
         .collect();
@@ -611,7 +611,7 @@ fn failed_and_partial_uploads_commit_nothing() {
     assert!(big > 5 << 20, "the file needs parts: {big} bytes");
 
     store.fail_part.store(2, Ordering::SeqCst);
-    let e = b.sync(&c.shared, None).err().expect("part 2 fails");
+    let e = b.sync(&c.shared, None).expect_err("part 2 fails");
     assert!(format!("{e:#}").contains("injected"), "{e:#}");
     assert_eq!(bucket_catalog(&store).unwrap().files, committed.files);
     let listed: BTreeSet<String> = committed.files.iter().map(|f| f.path.clone()).collect();
