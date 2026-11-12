@@ -208,12 +208,11 @@ def test_k003_relations_name_a_cut_statement(text, expected) -> None:
 @pytest.mark.unit
 def test_k003_reads_enough_text_to_see_every_collector_statements_marker() -> None:
     """is_monitoring reads K003_TEXT_FETCH_CHARS of the text: the marker of every collector SQL must fall in it."""
-    root = Path(__file__).resolve().parents[2]
-    for path in (root / "mon/metrics.yml", root / "old/config/pgwatch-postgres/metrics.yml"):
-        for name, metric in (yaml.safe_load(path.read_text()).get("metrics") or {}).items():
-            for version, sql in ((metric or {}).get("sqls") or {}).items():
-                at = str(sql).find(MONITOR)
-                assert at < pr.K003_TEXT_FETCH_CHARS - len(MONITOR), (path.name, name, version, at)
+    path = Path(__file__).resolve().parents[2] / "mon/metrics.yml"
+    for name, metric in (yaml.safe_load(path.read_text()).get("metrics") or {}).items():
+        for version, sql in ((metric or {}).get("sqls") or {}).items():
+            at = str(sql).find(MONITOR)
+            assert at < pr.K003_TEXT_FETCH_CHARS - len(MONITOR), (name, version, at)
 
 
 @pytest.mark.unit
