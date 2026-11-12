@@ -13,7 +13,7 @@ services:
     ports:
       - "127.0.0.1:8765:8765"
     environment:
-      PGAI_MON_AUTH_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
       PGAI_MON_STORE: ${PGAI_MON_STORE:-}
       RDS_DB_INSTANCE_IDENTIFIER: ${RDS_DB_INSTANCE_IDENTIFIER:-}
       AWS_REGION: ${AWS_REGION:-}
