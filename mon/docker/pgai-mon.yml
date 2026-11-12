@@ -1,0 +1,16 @@
+# pgai-mon config of the docker-compose stack (baked into the image as
+# /etc/pgai-mon/pgai-mon.yml). Secrets never go here: the bearer token comes from
+# PGAI_MON_TOKEN (or a token file), AWS credentials from the default chain.
+#
+# Store: the pgai_mon_data volume. PGAI_MON_STORE=s3://bucket/prefix moves the
+# Parquet files to the bucket; the volume then keeps the write-ahead log and cache.
+store_dir: /var/lib/pgai-mon/store
+metrics_yml: /etc/pgai-mon/metrics.yml
+macros_sql: /usr/share/pgai-mon/macros.sql
+preset: full
+# The targets `postgresai mon targets add/remove` maintain (compose mounts the
+# project's instances.yml here); re-read on change.
+sources_file: /etc/pgai-mon/instances.yml
+http:
+  # Inside the compose network only; compose publishes it on 127.0.0.1.
+  listen: 0.0.0.0:8765

@@ -6,5 +6,6 @@
 !mon/src
 !mon/schema
 !mon/sql/macros.sql
+!mon/docker/pgai-mon.yml
 !mon/examples/pgai-mon.example.yml
 !config/pgwatch-prometheus/metrics.yml
