@@ -573,34 +573,29 @@ postgresai mon check                          # System readiness check
 postgresai mon shell <service>                # Open shell to monitoring service
 ```
 
-### PromQL queries (`promql`)
+### SQL queries (`mon sql`)
 
-Ask a monitoring instance a PromQL question through the platform. The platform
-never connects to the instance: it queues the query as a job, the instance picks
-it up on its next poll, runs it against its own metric store, and posts the
-answer back.
+Ask a monitoring instance a read-only SQL question about its own metric store
+(pgai-mon) through the platform. The platform never connects to the instance: it
+queues the query as a job, the instance picks it up on its next poll, runs it
+against its own store, and posts the answer back.
 
 ```bash
-# instant query
-pgai promql 'up' --instance <instance-uuid>
+pgai mon sql "select metric, count(*) from series group by 1 order by 2 desc limit 10" \
+  --instance <instance-uuid>
 
-# range query
-pgai promql 'sum(rate(pgwatch_db_stats_xact_commit[5m]))' \
-  --instance <instance-uuid> \
-  --range --start 2026-09-21T00:00:00Z --end 2026-09-21T01:00:00Z --step 60
+# by project id, alias or name instead of the instance id
+pgai mon sql "select 1" --project my-db
 
 # on the box itself, --instance is read from .pgwatch-config
-pgai promql 'up'
+pgai mon sql "select 1"
 ```
 
-`--at <time>` evaluates an instant query at a given moment (ignored with
-`--range`). `--json` prints every point instead of the first and last per series.
-The wait is sized from the instance's poll pacing; `--timeout` overrides it. A
-result too large for the byte budget is trimmed and flagged `truncated`.
+`--json` prints the raw result payload. The wait is sized from the instance's
+poll pacing; `--timeout` overrides it. A query error is printed as the instance
+reported it and the command exits 1.
 
-Requires platform-all !809
-(https://gitlab.com/postgres-ai/platform-all/-/merge_requests/809); until it is
-deployed the command returns a PGRST202 404.
+`pgai promql` was removed with VictoriaMetrics; it exits 1 and points here.
 
 ### MCP server (`mcp` group)
 

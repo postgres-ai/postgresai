@@ -65,12 +65,12 @@ function startFakeApi(jobResult: JobResult = OK_RESULT) {
   return { requests, baseUrl: `http://localhost:${server.port}`, stop: () => server.stop(true) };
 }
 
-describe("pgai sql targeting", () => {
+describe("pgai mon sql targeting", () => {
   test("--project with exactly one instance queries that instance", async () => {
     const api = startFakeApi();
     try {
       const r = await runCli(
-        ["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1", "--project", "one-box"],
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--project", "one-box"],
         isolatedEnv(),
       );
       expect(r.status).toBe(0);
@@ -86,7 +86,7 @@ describe("pgai sql targeting", () => {
     const api = startFakeApi();
     try {
       const r = await runCli(
-        ["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1", "--project", "two-boxes"],
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--project", "two-boxes"],
         isolatedEnv(),
       );
       expect(r.status).toBe(1);
@@ -101,7 +101,7 @@ describe("pgai sql targeting", () => {
     const api = startFakeApi();
     try {
       const r = await runCli(
-        ["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1", "--instance", ONE],
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--instance", ONE],
         isolatedEnv(),
       );
       expect(r.status).toBe(0);
@@ -118,7 +118,7 @@ describe("pgai sql targeting", () => {
     const api = startFakeApi();
     try {
       const r = await runCli(
-        ["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1", "--org", "acme", "--project", "one-box"],
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--org", "acme", "--project", "one-box"],
         isolatedEnv(),
       );
       expect(r.status).toBe(0);
@@ -134,7 +134,7 @@ describe("pgai sql targeting", () => {
     const api = startFakeApi();
     try {
       const r = await runCli(
-        ["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1", "--project", "one-box", "--instance", ONE],
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--project", "one-box", "--instance", ONE],
         isolatedEnv(),
       );
       expect(r.status).toBe(1);
@@ -146,13 +146,62 @@ describe("pgai sql targeting", () => {
   });
 });
 
+describe("pgai mon sql output", () => {
+  test("--json prints the raw result payload on stdout", async () => {
+    const api = startFakeApi();
+    try {
+      const r = await runCli(
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--instance", ONE, "--json"],
+        isolatedEnv(),
+      );
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout)).toEqual(OK_RESULT.result);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("a failed query exits non-zero with the box's error verbatim", async () => {
+    const api = startFakeApi({
+      ...OK_RESULT,
+      outcome: "error",
+      result: null,
+      error: "Catalog Error: Table with name nope does not exist!",
+      failure_class: "query",
+    });
+    try {
+      const r = await runCli(
+        ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select * from nope", "--instance", ONE],
+        isolatedEnv(),
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("Query done (query).");
+      expect(r.stderr).toContain("Table with name nope does not exist");
+      expect(r.stdout).toBe("");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("the old top-level 'pgai sql' is not a command", async () => {
+    const api = startFakeApi();
+    try {
+      const r = await runCli(["--api-key", "k", "--api-base-url", api.baseUrl, "sql", "select 1"], isolatedEnv());
+      expect(r.status).not.toBe(0);
+      expect(api.requests).toEqual([]);
+    } finally {
+      api.stop();
+    }
+  });
+});
+
 describe("pgai promql", () => {
-  test("is gone: exits non-zero with a pointer to pgai sql, sends nothing", async () => {
+  test("is gone: exits non-zero with a one-line pointer to pgai mon sql, sends nothing", async () => {
     const api = startFakeApi();
     try {
       const r = await runCli(["--api-key", "k", "--api-base-url", api.baseUrl, "promql", "up", "--range"], isolatedEnv());
       expect(r.status).toBe(1);
-      expect(r.stderr).toContain("pgai sql");
+      expect(r.stderr).toContain("pgai mon sql");
       expect(r.stderr.trim().split("\n").length).toBe(1);
       expect(api.requests).toEqual([]);
     } finally {

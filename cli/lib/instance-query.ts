@@ -1,5 +1,5 @@
 /**
- * `pgai sql` — run a read-only SQL query on a monitoring instance's own metric
+ * `pgai mon sql` — run a read-only SQL query on a monitoring instance's own metric
  * store (pgai-mon), over the instance job channel.
  *
  * The platform never connects to the instance: the query is enqueued as a job,

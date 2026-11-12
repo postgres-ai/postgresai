@@ -3490,7 +3490,7 @@ function parseDurationSeconds(v: string): number | null {
 /**
  * The instance id this box was registered as, from `.pgwatch-config`.
  *
- * Makes `pgai sql` work with no flags when run on a monitoring box, which is
+ * Makes `pgai mon sql` work with no flags when run on a monitoring box, which is
  * where it is most useful. Returns null off-box rather than guessing.
  */
 function readInstanceIdFromProject(): string | null {
@@ -7238,7 +7238,7 @@ orgsCommand.command("create")
     }
   });
 
-withOrgOptions(program.command("sql"))
+withOrgOptions(mon.command("sql"))
   .description("run a read-only SQL query on a monitoring instance's own metric store (pgai-mon)")
   .argument("<query>", "one read-only SQL statement over pgai-mon's views (see its /schema)")
   .option("--instance <uuid>", "monitoring instance id (default: this box's .pgwatch-config); not with --project")
@@ -7247,7 +7247,7 @@ withOrgOptions(program.command("sql"))
   .option("--json", "output the raw result payload")
   .addHelpText("after", `
 Example:
-  pgai sql --project my-db "select metric, count(*) from series group by 1 order by 2 desc limit 10"
+  pgai mon sql --project my-db "select metric, count(*) from series group by 1 order by 2 desc limit 10"
 `)
   .action(async (query: string, opts: SqlOptions) => {
     // The job id once there is one, so an error before the slow-answer line
@@ -7373,11 +7373,11 @@ Example:
 // Kept so a script that still calls it fails with a pointer, not "unknown command".
 program
   .command("promql", { hidden: true })
-  .description("removed: use 'pgai sql'")
+  .description("removed: use 'pgai mon sql'")
   .allowUnknownOption()
   .allowExcessArguments()
   .action(() => {
-    console.error("pgai promql was removed with VictoriaMetrics: query the metric store with 'pgai sql' instead (see 'pgai sql --help').");
+    console.error("pgai promql was removed with VictoriaMetrics: query the metric store with 'pgai mon sql' instead (see 'pgai mon sql --help').");
     process.exitCode = 1;
   });
 
