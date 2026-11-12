@@ -163,3 +163,95 @@ fn texts_and_objects_are_scoped_by_source_and_old_files_still_read() {
         .collect();
     assert_eq!(files.len(), 1, "one compacted file");
 }
+
+#[test]
+fn load_query_texts_and_objects_from_json_lines() {
+    let d = tempfile::tempdir().unwrap();
+    let texts = d.path().join("texts.jsonl");
+    let objects = d.path().join("objects.jsonl");
+    std::fs::write(
+        &texts,
+        format!(
+            "{{\"queryid\": -8854122569253870148, \"dbname\": \"postgres\", \"query\": \"select $1\", \"first_seen_ms\": {T0}, \"last_seen_ms\": {}}}\n\n\
+             {{\"queryid\": 7, \"dbname\": \"app\", \"query\": \"select 2\", \"first_seen_ms\": {T0}, \"last_seen_ms\": {T0}, \"source\": \"s1\", \"cluster\": \"c\", \"node_name\": \"n\"}}\n",
+            T0 + 60_000
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &objects,
+        format!(
+            "{{\"ts_ms\": {T0}, \"kind\": \"index\", \"schema\": \"app\", \"name\": \"t10_b\", \"definition\": \"CREATE INDEX t10_b ON app.t10 (b)\", \"dbname\": \"target_database\"}}\n\
+             {{\"ts_ms\": {}, \"kind\": \"index\", \"schema\": \"app\", \"name\": \"t10_b\", \"definition\": null, \"dbname\": \"target_database\"}}\n",
+            T0 + 1000
+        ),
+    )
+    .unwrap();
+    let store = d.path().join("store");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_pgai-mon"))
+        .args(["load", "--store"])
+        .arg(&store)
+        .arg("--query-texts")
+        .arg(&texts)
+        .arg("--objects")
+        .arg(&objects)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        summary,
+        serde_json::json!({"load_structure": {"query_texts": 2, "objects": 2}})
+    );
+
+    let core = StoreCore::open(&store, &StoreCfg::default()).unwrap();
+    let r = Reader::new(
+        core.shared.clone(),
+        HttpCfg::default(),
+        EMBEDDED_VIEWS_SQL.into(),
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(
+        rows(
+            &r,
+            "SELECT queryid, dbname, query, epoch_ms(first_seen), epoch_ms(last_seen), source FROM query_texts ORDER BY queryid"
+        ),
+        vec![
+            serde_json::json!([-8854122569253870148i64, "postgres", "select $1", T0, T0 + 60_000, null]),
+            serde_json::json!([7, "app", "select 2", T0, T0, "s1"]),
+        ]
+    );
+    assert_eq!(
+        rows(
+            &r,
+            "SELECT name, definition, epoch_ms(valid_from), epoch_ms(valid_to) FROM objects"
+        ),
+        vec![serde_json::json!([
+            "t10_b",
+            "CREATE INDEX t10_b ON app.t10 (b)",
+            T0,
+            T0 + 1000
+        ])]
+    );
+
+    // a typo in a field name is an error, with the line
+    std::fs::write(
+        &texts,
+        "{\"queryid\": 1, \"dbname\": \"x\", \"querry\": \"s\", \"first_seen_ms\": 1, \"last_seen_ms\": 1}\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_pgai-mon"))
+        .args(["load", "--no-compact", "--store"])
+        .arg(&store)
+        .arg("--query-texts")
+        .arg(&texts)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("texts.jsonl:1"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

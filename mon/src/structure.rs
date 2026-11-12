@@ -216,3 +216,134 @@ pub async fn snapshot_query_texts(
     }
     Ok(out)
 }
+
+/// One `pgai-mon load --query-texts` line.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextLine {
+    queryid: i64,
+    dbname: String,
+    query: Option<String>,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    cluster: Option<String>,
+    #[serde(default)]
+    node_name: Option<String>,
+}
+
+/// One `pgai-mon load --objects` line (definition null = dropped).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObjectLine {
+    ts_ms: i64,
+    dbname: String,
+    kind: String,
+    schema: String,
+    name: String,
+    definition: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    cluster: Option<String>,
+    #[serde(default)]
+    node_name: Option<String>,
+}
+
+fn read_jsonl<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    mut f: impl FnMut(T) -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
+    use std::io::BufRead;
+    let rd: Box<dyn BufRead> = if path.as_os_str() == "-" {
+        Box::new(std::io::BufReader::new(std::io::stdin()))
+    } else {
+        Box::new(std::io::BufReader::new(std::fs::File::open(path)?))
+    };
+    let mut n = 0;
+    for (i, line) in rd.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: T = serde_json::from_str(&line).map_err(|e| anyhow::anyhow!("{}:{}: {e}", path.display(), i + 1))?;
+        f(v)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Load query texts and object events from JSON lines into a store (test fixtures):
+///   query texts: {"queryid", "dbname", "query", "first_seen_ms", "last_seen_ms"}
+///   objects:     {"ts_ms", "dbname", "kind", "schema", "name", "definition"}
+/// Both optionally with "source", "cluster", "node_name". Rows go through the WAL and a
+/// flush like collected ones; `compact` then compacts every day.
+pub fn load_jsonl(
+    store: &mut crate::store::StoreCore,
+    query_texts: Option<&std::path::Path>,
+    objects: Option<&std::path::Path>,
+    compact: bool,
+) -> anyhow::Result<serde_json::Value> {
+    const CHUNK: usize = 10_000;
+    let mut texts = 0;
+    if let Some(p) = query_texts {
+        let mut buf = Vec::new();
+        texts = read_jsonl(p, |l: TextLine| {
+            buf.push(QueryText {
+                queryid: l.queryid,
+                query_hash: xxh3_64(l.query.as_deref().unwrap_or("").as_bytes()),
+                dbname: l.dbname,
+                query: l.query,
+                first_seen: l.first_seen_ms,
+                last_seen: l.last_seen_ms,
+                src: SourceId {
+                    source: l.source,
+                    cluster: l.cluster,
+                    node_name: l.node_name,
+                },
+            });
+            if buf.len() >= CHUNK {
+                store.append(Record::QueryTexts(std::mem::take(&mut buf)))?;
+                store.flush_if_full()?;
+            }
+            Ok(())
+        })?;
+        if !buf.is_empty() {
+            store.append(Record::QueryTexts(buf))?;
+        }
+    }
+    let mut objs = 0;
+    if let Some(p) = objects {
+        let mut buf = Vec::new();
+        objs = read_jsonl(p, |l: ObjectLine| {
+            buf.push(ObjectEvent {
+                ts: l.ts_ms,
+                dbname: l.dbname,
+                kind: l.kind,
+                schema: l.schema,
+                name: l.name,
+                definition: l.definition,
+                src: SourceId {
+                    source: l.source,
+                    cluster: l.cluster,
+                    node_name: l.node_name,
+                },
+            });
+            if buf.len() >= CHUNK {
+                store.append(Record::Objects(std::mem::take(&mut buf)))?;
+                store.flush_if_full()?;
+            }
+            Ok(())
+        })?;
+        if !buf.is_empty() {
+            store.append(Record::Objects(buf))?;
+        }
+    }
+    store.flush()?;
+    if compact {
+        store.compactor()?.run_once(now_ms(), true)?;
+    }
+    Ok(serde_json::json!({"query_texts": texts, "objects": objs}))
+}
