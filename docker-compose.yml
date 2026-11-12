@@ -138,6 +138,13 @@ services:
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required (postgresai mon local-install generates it)}
       # Empty: the local store in pgai_mon_data. s3://bucket/prefix: the bucket.
       PGAI_MON_STORE: ${PGAI_MON_STORE:-}
+      # Days of metrics and of query texts kept (empty: 14 and 30; 0: forever).
+      PGAI_MON_RETENTION_DAYS: ${PGAI_MON_RETENTION_DAYS:-}
+      PGAI_MON_TEXTS_RETENTION_DAYS: ${PGAI_MON_TEXTS_RETENTION_DAYS:-}
+      # The old stack's retention settings: an upgraded install keeps what its
+      # operator set, unless the two variables above say otherwise.
+      VM_RETENTION_PERIOD: ${VM_RETENTION_PERIOD:-}
+      QUERYID_RETENTION_HOURS: ${QUERYID_RETENTION_HOURS:-}
       AWS_REGION: ${AWS_REGION:-}
       # Explicit S3 credentials. Empty: the SDK's default chain (an EC2
       # instance role reaches containers only with IMDS hop limit 2).

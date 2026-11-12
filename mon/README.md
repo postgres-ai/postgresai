@@ -160,6 +160,17 @@ other field has a default. Unknown fields are rejected. See
 - `ingest`: push limits (`max_body_bytes`, `max_samples_per_request`, `max_series`, `max_age_s`,
   `max_future_s`, `max_labels`, `max_label_value_bytes`).
 
+Retention: `store.retention_days` (metrics: samples, series, rollups, logs, plan events) and
+`store.texts_retention_days` (query texts); 0, the default, keeps everything, and the compose
+image's config sets 14 and 30. The environment variables `PGAI_MON_RETENTION_DAYS` and
+`PGAI_MON_TEXTS_RETENTION_DAYS` replace them; without those, the old stack's
+`VM_RETENTION_PERIOD` and `QUERYID_RETENTION_HOURS` apply, rounded up to days. Each compaction
+pass drops the files whose last day is older from the catalog and deletes them after
+`store.delete_grace_s`, in the bucket after its next commit. A month file (1 d and 1 h rollups,
+monthly series) goes once its whole month is older. The series registry, object definitions and
+plan definitions are not per day and are kept. A query's text is written again on each UTC day
+it is seen, so every day's file holds the texts of that day's queries.
+
 A store root may also be `s3://bucket/prefix` (credentials and region from the AWS
 environment). The environment variable `PGAI_MON_STORE`, when set, replaces `store_dir` (compose
 and Terraform select the store with it). `serve` reads an object store. `run` writes it with

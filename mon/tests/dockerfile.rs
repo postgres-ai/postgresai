@@ -40,3 +40,12 @@ fn the_image_build_copies_every_included_file() {
         assert!(covered(&ignore, "!"), "mon/Dockerfile.dockerignore excludes mon/{f}");
     }
 }
+
+/// The config baked into the image keeps the old stack's retention: 14 days of metrics, 30 days
+/// of query texts.
+#[test]
+fn the_image_config_sets_the_retention() {
+    let yml = Path::new(env!("CARGO_MANIFEST_DIR")).join("docker/pgai-mon.yml");
+    let cfg: pgai_mon::config::Config = serde_yaml::from_str(&std::fs::read_to_string(yml).unwrap()).unwrap();
+    assert_eq!((cfg.store.retention_days, cfg.store.texts_retention_days), (14, 30));
+}

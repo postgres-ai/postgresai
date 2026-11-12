@@ -768,6 +768,63 @@ fn compaction_with_evicted_inputs() {
     b.close();
 }
 
+/// Retention on an object store: the files the writer expires leave the bucket's catalog at the
+/// next commit and the bucket after the delete grace; what is kept still answers from the bucket.
+#[test]
+fn retention_deletes_from_the_bucket() {
+    let url = "mem://retention/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let b = Bucket::with_store(url, store.clone(), d.path(), bcfg()).unwrap();
+    b.attach(pgai_mon::store::DEFAULT_LAYOUT).unwrap();
+    let cfg = StoreCfg {
+        retention_days: 14,
+        ..scfg()
+    };
+    let mut c = StoreCore::open(&b.local, &cfg).unwrap();
+    let day = 86_400_000i64;
+    let today = now_ms() / day;
+    let (old, t0) = ((today - 40) * day + 3_600_000, start_ts(30));
+    ingest(&mut c, old, 120, 5);
+    ingest(&mut c, old + day, 120, 5);
+    ingest(&mut c, t0, 40, 5);
+    c.flush().unwrap();
+    b.sync(&c.shared, None).unwrap();
+    let day_kinds = ["samples", "series", pgai_mon::eval::rollup::KIND];
+    let old_files = |cat: &Catalog| -> BTreeSet<String> {
+        let f = cat
+            .files
+            .iter()
+            .filter(|f| day_kinds.contains(&f.kind.as_str()) && f.day < today - 14);
+        f.map(|f| f.path.clone()).collect()
+    };
+    let up = old_files(&bucket_catalog(&store).unwrap());
+    assert!(
+        !up.is_empty() && up.iter().all(|p| objects(&store).contains(p)),
+        "old days uploaded"
+    );
+    let (t1, q) = (t0 + 40 * 15_000, |a: i64, z: i64| {
+        format!("SELECT count(*) FROM pgai_samples('m_a', [], {a}, {z})")
+    });
+
+    // a pass compacts the old days, then expires them; two commits later they are deleted
+    assert!(c.compactor().unwrap().run_once(now_ms(), true).unwrap() > 0);
+    b.sync(&c.shared, None).unwrap();
+    b.sync(&c.shared, None).unwrap();
+    let cat = bucket_catalog(&store).unwrap();
+    assert_eq!(old_files(&cat), BTreeSet::new());
+    let listed: BTreeSet<String> = cat.files.iter().map(|f| f.path.clone()).collect();
+    let keys: BTreeSet<String> = objects(&store)
+        .into_iter()
+        .filter(|k| k.ends_with(".parquet"))
+        .collect();
+    assert_eq!(keys, listed, "the bucket holds exactly the catalog's files");
+    let rem = bucket_reader(url);
+    assert_eq!(rows(&rem, &q(t0, t1)), ["[800]"], "40 scrapes of 20 series kept");
+    assert_eq!(rows(&rem, &q(old, old + 2 * day)), ["[0]"]);
+    b.close();
+}
+
 /// The local-disk store does not touch the write path.
 #[test]
 fn a_local_store_has_no_bucket() {

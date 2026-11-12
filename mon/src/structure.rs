@@ -145,11 +145,32 @@ pub async fn snapshot_objects(
     Ok(out)
 }
 
-/// (queryid, dbname) -> (text hash, last time a row was written)
-pub type TextState = HashMap<(i64, String), (u64, i64)>;
+/// (queryid, dbname) -> (text hash, last time a row was written, last time its text was written)
+pub type TextState = HashMap<(i64, String), (u64, i64, i64)>;
 
-/// pg_stat_statements texts: list ids without text (cheap), fetch text only for new ids,
-/// and refresh last_seen at most hourly per id. Texts are pgss-normalized ($1), so no values.
+/// What to write for an id seen at `now`, given the last row and the last text written for it:
+/// the text again on a new UTC day (every day file then holds the text of every id seen that
+/// day, so retention can drop whole days), else a last_seen refresh at most hourly.
+#[derive(Debug, PartialEq)]
+enum TextDue {
+    Text,
+    Refresh,
+    Nothing,
+}
+
+fn text_due(now: i64, last_row: i64, last_text: i64) -> TextDue {
+    if crate::model::day_of(now) != crate::model::day_of(last_text) {
+        TextDue::Text
+    } else if now - last_row >= 3_600_000 {
+        TextDue::Refresh
+    } else {
+        TextDue::Nothing
+    }
+}
+
+/// pg_stat_statements texts: list ids without text (cheap), fetch text only for new ids and
+/// once per UTC day per id, and refresh last_seen at most hourly per id. Texts are
+/// pgss-normalized ($1), so no values.
 pub async fn snapshot_query_texts(
     c: &Client,
     src: &SourceId,
@@ -168,9 +189,13 @@ pub async fn snapshot_query_texts(
     let mut out = Vec::new();
     for r in &ids {
         let key: (i64, String) = (r.get(0), r.get(1));
-        match state.get_mut(&key) {
-            None => new_ids.push(key.0),
-            Some((h, last)) if now - *last >= 3_600_000 => {
+        match state.get(&key).map(|(_, row, text)| text_due(now, *row, *text)) {
+            None | Some(TextDue::Text) => {
+                state.remove(&key);
+                new_ids.push(key.0);
+            }
+            Some(TextDue::Refresh) => {
+                let (h, last, _) = state.get_mut(&key).unwrap();
                 out.push(QueryText {
                     queryid: key.0,
                     dbname: key.1.clone(),
@@ -182,7 +207,7 @@ pub async fn snapshot_query_texts(
                 });
                 *last = now;
             }
-            _ => {}
+            Some(TextDue::Nothing) => {}
         }
     }
     if !new_ids.is_empty() {
@@ -211,7 +236,7 @@ pub async fn snapshot_query_texts(
                 last_seen: now,
                 src: src.clone(),
             });
-            state.insert(key, (h, now));
+            state.insert(key, (h, now, now));
         }
     }
     Ok(out)
@@ -346,4 +371,20 @@ pub fn load_jsonl(
         store.compactor()?.run_once(now_ms(), true)?;
     }
     Ok(serde_json::json!({"query_texts": texts, "objects": objs}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_query_text_is_written_again_on_each_new_day() {
+        let (h, d) = (3_600_000i64, 86_400_000i64);
+        let t = 20_764 * d + 10 * h;
+        assert_eq!(text_due(t + h - 1, t, t), TextDue::Nothing);
+        assert_eq!(text_due(t + h, t, t), TextDue::Refresh);
+        // refreshed all day: the text is due at the first snapshot after midnight, not 24 h later
+        assert_eq!(text_due(t + 13 * h, t + 13 * h - 1, t), TextDue::Nothing);
+        assert_eq!(text_due(t + 14 * h + 1, t + 14 * h, t), TextDue::Text);
+    }
 }

@@ -470,6 +470,15 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             "read-only: no sources or logs"
         );
     }
+    let kept = |days: u32| match days {
+        0 => "everything".to_string(),
+        d => format!("{d} days"),
+    };
+    eprintln!(
+        "pgai-mon: retention: metrics {}, query texts {}",
+        kept(cfg.store.retention_days),
+        kept(cfg.store.texts_retention_days)
+    );
     // store_dir s3://bucket/prefix: the writer works in store.s3.local_dir and commits to the
     // bucket (bucket.rs); its reader reads the bucket with that directory as the overlay
     let bucket = if objstore::is_remote(&cfg.store_dir) && !cfg.read_only {

@@ -569,6 +569,22 @@ temporary credentials) in `.env` instead, which compose passes to pgai-mon.
 Without either, pgai-mon cannot reach the bucket and the install fails with
 pgai-mon unhealthy.
 
+##### Retention (`PGAI_MON_RETENTION_DAYS`)
+
+pgai-mon keeps 14 days of metrics and 30 days of query texts, as the previous
+stack did. Change it in the monitoring directory's `.env` (`0` keeps everything):
+
+```bash
+PGAI_MON_RETENTION_DAYS=60
+PGAI_MON_TEXTS_RETENTION_DAYS=90
+```
+
+Files older than that are deleted from the store, in the bucket too. Monthly
+rollup files are deleted once their whole month is older, so coarse (1 h and
+1 d) history can outlive the setting by up to a month. An install upgraded from
+the previous stack keeps its `VM_RETENTION_PERIOD` and `QUERYID_RETENTION_HOURS`
+(rounded up to days) until the variables above are set.
+
 #### Monitoring target databases (`mon targets` subgroup)
 ```bash
 postgresai mon targets list                       # List databases to monitor

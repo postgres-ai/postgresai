@@ -284,6 +284,11 @@ pub struct StoreCfg {
     pub max_buffer_bytes: usize,
     /// Max bytes per DuckDB write batch inside a flush (one Parquet file per batch and day).
     pub write_chunk_bytes: usize,
+    /// Days of metrics kept (samples, series, rollups, logs, plan events); 0 keeps everything.
+    /// A file leaves the store once its last day is older (month files: once the month is).
+    pub retention_days: u32,
+    /// Days of query texts kept; 0 keeps everything.
+    pub texts_retention_days: u32,
     /// Write path of a store whose `store_dir` is `s3://bucket/prefix` (bucket.rs).
     pub s3: crate::bucket::BucketCfg,
 }
@@ -305,6 +310,8 @@ impl Default for StoreCfg {
             compact_kmerge: true,
             max_buffer_bytes: 32 << 20,
             write_chunk_bytes: 8 << 20,
+            retention_days: 0,
+            texts_retention_days: 0,
             s3: Default::default(),
         }
     }
@@ -491,14 +498,76 @@ impl Default for CollectorCfg {
 /// Environment variable that selects the store, overriding `store_dir` (compose and Terraform
 /// set it: `s3://bucket/prefix`, or unset for the local volume).
 pub const STORE_ENV: &str = "PGAI_MON_STORE";
+/// Environment variables that set the retention, overriding `store.retention_days` and
+/// `store.texts_retention_days` (the compose image's config has 14 and 30 days).
+pub const RETENTION_ENV: &str = "PGAI_MON_RETENTION_DAYS";
+pub const TEXTS_RETENTION_ENV: &str = "PGAI_MON_TEXTS_RETENTION_DAYS";
+/// The old stack's retention variables (VictoriaMetrics' period, the query text sink's hours).
+pub const LEGACY_RETENTION_ENV: &str = "VM_RETENTION_PERIOD";
+pub const LEGACY_TEXTS_RETENTION_ENV: &str = "QUERYID_RETENTION_HOURS";
+
+/// A VictoriaMetrics `-retentionPeriod` value in days, rounded up: a number with the unit
+/// s, h, d, w or y, or without a unit for months (31 days).
+pub fn vm_period_days(v: &str) -> Option<u32> {
+    let i = v.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(v.len());
+    let n: f64 = v[..i].parse().ok()?;
+    let hours = n * match &v[i..] {
+        "s" => 1.0 / 3600.0,
+        "h" => 1.0,
+        "d" => 24.0,
+        "w" => 168.0,
+        "y" => 8760.0,
+        "" => 744.0,
+        _ => return None,
+    };
+    (hours > 0.0).then(|| (hours / 24.0).ceil() as u32)
+}
 
 impl Config {
-    /// Read the YAML file, then apply `PGAI_MON_STORE` (`with_store_env`).
+    /// Read the YAML file, then apply `PGAI_MON_STORE` (`with_store_env`) and the retention
+    /// variables (`with_retention_env`).
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)?;
         let mut c: Self = serde_yaml::from_str(&s)?;
         c.config_path = Some(path.to_path_buf());
-        Ok(c.with_store_env(std::env::var(STORE_ENV).ok()))
+        c.with_store_env(std::env::var(STORE_ENV).ok())
+            .with_retention_env(|name| std::env::var(name).ok())
+    }
+
+    /// Retention from the environment (`env` looks a variable up), replacing
+    /// `store.retention_days` and `store.texts_retention_days`. `PGAI_MON_RETENTION_DAYS` and
+    /// `PGAI_MON_TEXTS_RETENTION_DAYS` win; a value that is not a whole number of days is an
+    /// error (a typo must not silently keep or delete data). Without them, the old stack's
+    /// `VM_RETENTION_PERIOD` and `QUERYID_RETENTION_HOURS` apply, rounded up to days, so an
+    /// upgraded install keeps the retention its operator chose. Empty values count as unset.
+    pub fn with_retention_env(mut self, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let get = |name: &str| env(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let days = |name: &str| -> anyhow::Result<Option<u32>> {
+            get(name)
+                .map(|v| {
+                    v.parse().map_err(|_| {
+                        anyhow::anyhow!("{name}={v:?}: expected a whole number of days (0 keeps everything)")
+                    })
+                })
+                .transpose()
+        };
+        let legacy = |name: &str, to_days: fn(&str) -> Option<u32>| {
+            let v = get(name)?;
+            let d = to_days(&v);
+            match d {
+                Some(d) => eprintln!("pgai-mon: {name}={v} (old stack) taken as a retention of {d} days"),
+                None => eprintln!("pgai-mon: {name}={v} (old stack) is not understood and is ignored"),
+            }
+            d
+        };
+        if let Some(d) = days(RETENTION_ENV)?.or_else(|| legacy(LEGACY_RETENTION_ENV, vm_period_days)) {
+            self.store.retention_days = d;
+        }
+        let hours_days = |v: &str| v.parse::<u32>().ok().filter(|h| *h > 0).map(|h| h.div_ceil(24));
+        if let Some(d) = days(TEXTS_RETENTION_ENV)?.or_else(|| legacy(LEGACY_TEXTS_RETENTION_ENV, hours_days)) {
+            self.store.texts_retention_days = d;
+        }
+        Ok(self)
     }
 
     /// Whether the collector has anything to run (inline sources or a sources file).
@@ -522,6 +591,42 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_variables_override_the_file() {
+        let load = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let c: Config = serde_yaml::from_str("store_dir: /s\nstore: {retention_days: 7}").unwrap();
+            c.with_retention_env(|name| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+                .map(|c| (c.store.retention_days, c.store.texts_retention_days))
+        };
+        assert_eq!(load(&[]).unwrap(), (7, 0));
+        assert_eq!(
+            load(&[(RETENTION_ENV, " 14 "), (TEXTS_RETENTION_ENV, "30")]).unwrap(),
+            (14, 30)
+        );
+        // empty (compose passes unset variables as empty) changes nothing; 0 keeps everything
+        assert_eq!(
+            load(&[(RETENTION_ENV, ""), (TEXTS_RETENTION_ENV, "0")]).unwrap(),
+            (7, 0)
+        );
+        let e = load(&[(RETENTION_ENV, "14d")]).unwrap_err();
+        assert!(e.to_string().contains("PGAI_MON_RETENTION_DAYS"), "{e}");
+        // the old stack's variables apply when the new ones are unset, rounded up to days
+        let old = [(LEGACY_RETENTION_ENV, "336h"), (LEGACY_TEXTS_RETENTION_ENV, "9600")];
+        assert_eq!(load(&old).unwrap(), (14, 400));
+        assert_eq!(load(&[old[0], old[1], (RETENTION_ENV, "3")]).unwrap(), (3, 400));
+        assert_eq!(
+            load(&[(LEGACY_RETENTION_ENV, "13months")]).unwrap(),
+            (7, 0),
+            "not understood"
+        );
+        let days: Vec<_> = ["1", "2w", "1y", "25h", "1.5d", "0", "h"]
+            .iter()
+            .map(|v| vm_period_days(v))
+            .collect();
+        assert_eq!(days, [Some(31), Some(14), Some(365), Some(2), Some(2), None, None]);
+    }
 
     fn cfg(yaml: &str, env: Option<&str>) -> Config {
         serde_yaml::from_str::<Config>(yaml)

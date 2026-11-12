@@ -60,7 +60,9 @@ needs_compose = pytest.mark.skipif(not _docker_compose(), reason="docker compose
 
 _RESOURCE_VARS = {v for spec in SERVICE_LIMITS.values() for v in (spec[0], spec[2])}
 _STRIPPED = _RESOURCE_VARS | {"GRAFANA_BIND_HOST", "GRAFANA_SCALE", "PGAI_MON_USER", "INSTANCE_JOBS_USER",
-                              "PGAI_MON_STORE", "COMPOSE_PROFILES", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME"}
+                              "PGAI_MON_STORE", "COMPOSE_PROFILES", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME",
+                              "PGAI_MON_RETENTION_DAYS", "PGAI_MON_TEXTS_RETENTION_DAYS",
+                              "VM_RETENTION_PERIOD", "QUERYID_RETENTION_HOURS"}
 
 
 def render(extra: dict[str, str] | None = None, drop: tuple[str, ...] = (), profiles: tuple[str, ...] = ("demo", "instance-jobs")) -> subprocess.CompletedProcess:
@@ -162,7 +164,15 @@ def test_resource_limit_indirection(service, spec):
 def test_env_example_documents_the_stack():
     text = ENV_EXAMPLE.read_text()
     assert re.search(r"^PGAI_MON_TOKEN=$", text, re.M), "PGAI_MON_TOKEN must be an empty required placeholder"
-    for var in ("PGAI_MON_STORE", "PGAI_MON_USER", "GRAFANA_BIND_HOST", "GRAFANA_SCALE", "RDS_DB_INSTANCE_IDENTIFIER"):
+    for var in (
+        "PGAI_MON_STORE",
+        "PGAI_MON_RETENTION_DAYS",
+        "PGAI_MON_TEXTS_RETENTION_DAYS",
+        "PGAI_MON_USER",
+        "GRAFANA_BIND_HOST",
+        "GRAFANA_SCALE",
+        "RDS_DB_INSTANCE_IDENTIFIER",
+    ):
         assert re.search(rf"^#\s*{var}=", text, re.M), f".env.example must document {var}"
     documented = dict(re.findall(r"^#\s*([A-Z0-9_]+)=([^\s#]+)", text, re.M))
     for cpus_var, cpus, mem_var, mem in SERVICE_LIMITS.values():
@@ -236,6 +246,18 @@ def test_store_defaults_to_the_local_volume():
     assert env_of(services["pgai-mon"])["PGAI_MON_STORE"] == ""
     store = "s3://bucket/pgai-mon/x"
     assert env_of(rendered({"PGAI_MON_STORE": store})["services"]["pgai-mon"])["PGAI_MON_STORE"] == store
+
+
+@needs_compose
+def test_retention_settings_reach_pgai_mon():
+    """Unset: empty, so the image's config decides (14 and 30 days). The old stack's
+    variables are passed too: pgai-mon honours them when the new ones are unset."""
+    names = ("PGAI_MON_RETENTION_DAYS", "PGAI_MON_TEXTS_RETENTION_DAYS", "VM_RETENTION_PERIOD", "QUERYID_RETENTION_HOURS")
+    env = env_of(rendered()["services"]["pgai-mon"])
+    assert [env[n] for n in names] == ["", "", "", ""]
+    values = dict(zip(names, ("60", "90", "13w", "9600")))
+    env = env_of(rendered(values)["services"]["pgai-mon"])
+    assert {n: env[n] for n in names} == values
 
 
 @needs_compose

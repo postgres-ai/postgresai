@@ -5,6 +5,11 @@
 # Store: the pgai_mon_data volume. PGAI_MON_STORE=s3://bucket/prefix moves the
 # Parquet files to the bucket; the volume then keeps the write-ahead log and cache.
 store_dir: /var/lib/pgai-mon/store
+# Retention, as the old stack had it: 14 days of metrics, 30 days of query texts.
+# PGAI_MON_RETENTION_DAYS and PGAI_MON_TEXTS_RETENTION_DAYS override (0 keeps everything).
+store:
+  retention_days: 14
+  texts_retention_days: 30
 metrics_yml: /etc/pgai-mon/metrics.yml
 macros_sql: /usr/share/pgai-mon/macros.sql
 preset: full

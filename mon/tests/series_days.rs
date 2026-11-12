@@ -57,7 +57,7 @@ fn per_day_series_rows_across_midnight_flush_and_compaction() {
     };
     // day 0 22:00 .. day 1 02:00, one scrape every 10 min. Series 0-2 always; 10+k only in
     // day 0 (k < 3); 20+k appear after midnight (churn).
-    let day1 = 1_794_009_600_000i64; // 2026-11-11 00:00 UTC
+    let day1 = 1_794_009_600_000i64; // 2026-11-07 00:00 UTC
     let mut ts = day1 - 2 * 3_600_000;
     let mut k = 0;
     while ts <= day1 + 2 * 3_600_000 {

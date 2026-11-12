@@ -1237,8 +1237,45 @@ impl Compactor {
                 self.cfg.delete_grace_s as i64 * 1000,
             )?;
         }
+        self.expire(now)?;
         self.purge(now)?;
         Ok(done)
+    }
+
+    /// Retention: every file whose last day is older than its kind's retention leaves the
+    /// catalog; `purge` deletes it after the delete grace, and on an object store the bucket
+    /// follows at the next commit. Object definitions, plan definitions and the series registry
+    /// are kept: they are written on change, not per day. Returns the number of files dropped.
+    pub fn expire(&self, now: i64) -> anyhow::Result<usize> {
+        let today = day_of(now);
+        let keep_days = |kind: &str| match kind {
+            "objects" | "plan_defs" | crate::registry::KIND => 0,
+            "query_texts" => self.cfg.texts_retention_days,
+            _ => self.cfg.retention_days,
+        };
+        let expired = |f: &FileEntry| {
+            let days = keep_days(&f.kind) as i64;
+            days > 0 && crate::bucket::last_day(f) < today - days
+        };
+        let mut cat = self.shared.catalog.lock().unwrap();
+        let gone: Vec<String> = cat
+            .files
+            .iter()
+            .filter(|f| expired(f))
+            .map(|f| f.path.clone())
+            .collect();
+        if gone.is_empty() {
+            return Ok(0);
+        }
+        cat.files.retain(|f| !expired(f));
+        let after = now + self.cfg.delete_grace_s as i64 * 1000;
+        cat.pending_delete.extend(gone.iter().map(|p| (p.clone(), after)));
+        // answers computed from the dropped files must not outlive them
+        cat.data_epoch += 1;
+        cat.save(&self.shared.root)?;
+        self.shared.generation.store(cat.generation, Ordering::Release);
+        eprintln!("retention: {} files past their retention dropped", gone.len());
+        Ok(gone.len())
     }
 
     /// Before an upload (bucket.rs): merge the level-0 files of each open (kind, day) written
