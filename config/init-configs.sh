@@ -77,12 +77,23 @@ echo "Initializing configs (target version: $SOURCE_VERSION)..."
 # 0.15: Dashboard_7_Autovacuum_and_bloat.json -> Dashboard_7_Autovacuum_and_xmin_horizon.json,
 # both with the same top-level uid) would leave both files in the volume and
 # trigger a collision. Clean the dashboards directory before re-copy. We only
-# clean dashboards/ - other config files (grafana.ini, etc.) may have been
-# edited by the operator and must be preserved.
+# clean dashboards/ and provisioning/datasources/ (below) - other config files
+# (grafana.ini, etc.) may have been edited by the operator and must be preserved.
 DASHBOARDS_DIR="${TARGET_DIR}/grafana/dashboards"
 if [ -d "$DASHBOARDS_DIR" ]; then
   echo "Cleaning stale dashboards from $DASHBOARDS_DIR..."
   find "$DASHBOARDS_DIR" -mindepth 1 -delete
+fi
+
+# Datasource provisioning mirrors the image too: Grafana loads every file in
+# this directory, so a file a previous version shipped (the old stack's
+# datasources.yml, whose PGWatch-* datasources point at removed services) would
+# keep provisioning dead datasources. The datasources it created in Grafana's
+# database are removed by deleteDatasources in the image's files.
+DATASOURCES_DIR="${TARGET_DIR}/grafana/provisioning/datasources"
+if [ -d "$DATASOURCES_DIR" ]; then
+  echo "Cleaning stale datasource provisioning from $DATASOURCES_DIR..."
+  find "$DATASOURCES_DIR" -mindepth 1 -delete
 fi
 
 # Copy all configs preserving structure

@@ -25,6 +25,7 @@ import {
   whitespaceTolerantSecretPattern,
 } from "./util";
 import { orgScopeHeaders, type OrgScope } from "./org-scope";
+import { composeDefinesService, PGAI_MON_SERVICE } from "./stack";
 
 const SA_NAME = "pgai-aas-collect";
 
@@ -39,6 +40,21 @@ function grafanaAdminUser(): string {
   // Grafana's stock "admin" — otherwise AAS arming logs in as the wrong user
   // and every datasource lookup 401s. An explicit env override still wins.
   return process.env.GF_SECURITY_ADMIN_USER || "monitor";
+}
+
+/**
+ * Why AAS arming is skipped on this stack, or null when it can run.
+ *
+ * The platform collects AAS by sending PromQL through the box's Grafana to a
+ * Prometheus-typed datasource. pgai-mon serves SQL, not PromQL, and its stack
+ * provisions no such datasource, so arming would only poll Grafana until its
+ * timeout and register nothing. Until the platform learns pgai-mon's API, a
+ * pgai-mon stack (its compose defines the pgai-mon service) skips arming at once.
+ */
+export function aasArmingSkipReason(composeText: string | null | undefined): string | null {
+  return composeDefinesService(composeText, PGAI_MON_SERVICE)
+    ? "AAS auto-collection not armed: with pgai-mon it needs a platform update (the platform queries PromQL through Grafana); nothing was registered"
+    : null;
 }
 
 /** Parse a vcpus input (flag/env) to a non-negative integer; 0 = "unknown" fallback. */

@@ -37,6 +37,14 @@ type DockerComposeConfig = {
 // Changing them without updating dashboard JSON silently breaks panels.
 const expectedGrafanaDatasourceUids = new Map([["pgai-mon", "pgai-mon"]]);
 
+// Datasources the old pgwatch + VictoriaMetrics stack provisioned
+// (old/config/grafana/provisioning/datasources/datasources.yml). pgai-mon.yml
+// deletes them so an in-place upgrade does not keep dead datasources.
+const oldStackDatasourcesPath = resolve(
+  import.meta.dir,
+  "../../old/config/grafana/provisioning/datasources/datasources.yml"
+);
+
 /**
  * Normalizes raw Grafana datasource orgId values to a positive integer.
  *
@@ -174,7 +182,7 @@ describe("Config consistency", () => {
     }
   });
 
-  test("pgai-mon.yml delete entries match stable non-editable datasources", () => {
+  test("pgai-mon.yml deletes its own stable non-editable datasources and the old stack's", () => {
     const datasourceConfig = parseGrafanaDatasourceConfig(
       readFileSync(pgaiMonDatasourcePath, "utf8")
     );
@@ -192,11 +200,26 @@ describe("Config consistency", () => {
       ])
     );
 
-    expect(deleteDatasources.length).toBeGreaterThan(0);
-    expect(deleteDatasources.length).toBe(datasources.length);
+    const retiredKeys = new Set(
+      (
+        parseGrafanaDatasourceConfig(readFileSync(oldStackDatasourcesPath, "utf8"))
+          .datasources ?? []
+      ).map((datasource) => datasourceKey(datasource.name, datasource.orgId))
+    );
+
+    expect(retiredKeys.size).toBeGreaterThan(0);
     expect(datasourceByNameAndOrg.size).toBe(datasources.length);
+    // Every old-stack datasource is deleted on upgrade, and no name is both.
+    for (const key of retiredKeys) {
+      expect(deletedKeys.has(key)).toBe(true);
+      expect(datasourceByNameAndOrg.has(key)).toBe(false);
+    }
+    expect(deleteDatasources.length).toBe(datasources.length + retiredKeys.size);
 
     for (const deletedDatasource of deleteDatasources) {
+      if (retiredKeys.has(datasourceKey(deletedDatasource.name, deletedDatasource.orgId))) {
+        continue;
+      }
       const datasource = datasourceByNameAndOrg.get(
         datasourceKey(deletedDatasource.name, deletedDatasource.orgId)
       );

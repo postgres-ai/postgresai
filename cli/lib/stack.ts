@@ -79,6 +79,21 @@ export function stackSwitchNotice(volumes: string[]): string {
 }
 
 /**
+ * The one line an install switched from the old stack needs about Grafana's
+ * port, or null when nothing changed for it. The old compose published Grafana
+ * on every interface when GRAFANA_BIND_HOST was unset; this one publishes it on
+ * 127.0.0.1 then. A set value (empty included) means the same as before.
+ */
+export function grafanaBindNotice(bindHost: string | null | undefined): string | null {
+  if (bindHost !== undefined && bindHost !== null) return null;
+  return (
+    "Grafana now listens on 127.0.0.1:3000 only (before, on all interfaces): reach it through an SSH tunnel " +
+    "(ssh -L 3000:localhost:3000 <this host>), or, to expose it on purpose, set GRAFANA_BIND_HOST in .env " +
+    "(e.g. GRAFANA_BIND_HOST=0.0.0.0:) and run 'postgresai mon restart grafana'."
+  );
+}
+
+/**
  * The one line saying where metrics are kept. Unset (blank counts as unset)
  * means the local volume: fine for a laptop demo, while the product default is
  * a bucket. A set store is named without credentials or query string.
