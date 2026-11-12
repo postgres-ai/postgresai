@@ -43,13 +43,14 @@ class Emitted(unittest.TestCase):
             out = load(os.path.join(C.HERE, "dashboards", spec["out"]))
             yield spec, src, out
 
-    def test_identity_new_uid_and_title_same_tags(self):
+    def test_identity_same_uid_title_and_tags(self):
         uids = set()
         for spec, src, out in self.pairs():
-            self.assertNotEqual(out["uid"], src["uid"])
+            # the same uid and title as before: /d/<uid> links and bookmarks keep working
+            self.assertEqual(out["uid"], src["uid"])
             self.assertEqual(out["uid"], spec["uid"])
             self.assertLessEqual(len(out["uid"]), 40)
-            self.assertEqual(out["title"], src["title"] + " (pgai-mon)")
+            self.assertEqual(out["title"], src["title"])
             self.assertEqual(out["tags"], src["tags"])
             self.assertEqual(out["tags"][0], "postgres-ai")
             uids.add(out["uid"])
@@ -256,7 +257,7 @@ class SelfMonitoring(unittest.TestCase):
         self.assertEqual(self.out, json.loads(json.dumps(self.S.build())))
 
     def test_identity(self):
-        self.assertEqual((self.out["uid"], self.out["title"]), (self.S.UID, self.src["title"] + " (pgai-mon)"))
+        self.assertEqual((self.out["uid"], self.out["title"]), (self.S.UID, self.src["title"]))
         self.assertEqual(self.out["tags"], self.src["tags"])
         self.assertEqual(self.out["tags"][0], "postgres-ai")
         self.assertNotIn(self.out["uid"], {spec["uid"] for spec in C.DASHBOARDS})

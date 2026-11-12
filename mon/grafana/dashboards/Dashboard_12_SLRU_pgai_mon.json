@@ -1274,7 +1274,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "12. SLRU cache stats (pgai-mon)",
-  "uid": "pgai-mon-slru",
+  "title": "12. SLRU cache stats",
+  "uid": "slru_stats",
   "version": 1
 }

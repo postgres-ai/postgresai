@@ -3223,7 +3223,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "03. Single queryid analysis (pgai-mon)",
-  "uid": "pgai-mon-single-query",
+  "title": "03. Single queryid analysis",
+  "uid": "db52944d-b025-4e18-b70b-89c0af3e7e41",
   "version": 1
 }

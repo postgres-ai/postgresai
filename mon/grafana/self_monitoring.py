@@ -23,7 +23,7 @@ import compile as C
 
 SRC = "Self_Monitoring_Dashboard.json"
 OUT = "Self_Monitoring_Dashboard_pgai_mon.json"
-UID = "pgai-mon-self-monitoring"
+UID = "self-monitoring"
 
 E = "CAST([] AS VARCHAR[][])"  # no matchers: pgai-mon's process series carry no cluster/node_name
 R = "getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms')"
@@ -261,7 +261,7 @@ def target(ref, sql, fmt, instant, gp_range, gp_inst):
 def build():
     src = json.load(open(os.path.join(C.DASH_DIR, SRC)))
     d = {k: copy.deepcopy(v) for k, v in src.items() if k not in ("panels", "templating")}
-    d.update(uid=UID, title=src["title"] + " (pgai-mon)", id=None, version=1, templating={"list": []})
+    d.update(uid=UID, title=src["title"], id=None, version=1, templating={"list": []})
     gp_range, gp_inst = C.dashboard_params(d)
     panels = []
     for p in PANELS:

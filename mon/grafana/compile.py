@@ -6,7 +6,7 @@ but 99) on pgai-mon via the Infinity datasource. Standard library only.
   compile.py --check-url http://127.0.0.1:8765 [--out ...]     # run every emitted query
 
 Reads old/config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sql/reports/* and
-mon/grafana/cases.py, and writes copies with new uids and titles ending in " (pgai-mon)". The
+mon/grafana/cases.py, and writes them under the same uids and titles (links and bookmarks keep working). The
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
 Infinity target that POSTs `/sql?format=objects` with the ported SQL as a text/plain body:
 - getvariable() parameters become Grafana expressions (GRAFANA_PARAMS). start and end are
@@ -119,35 +119,35 @@ def dashboard_params(src):
     return keep(GRAFANA_PARAMS_RANGE), dict(gp, start_ms=gp["end_ms"])
 
 DASHBOARDS = [
-    dict(src="Dashboard_1_Node_performance_overview.json", census="D2", uid="pgai-mon-node-overview",
+    dict(src="Dashboard_1_Node_performance_overview.json", census="D2", uid="f90500a0-a12e-4081-a2f0-07ed96f27915",
          out="Dashboard_1_Node_performance_overview_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_2_Aggregated_query_analysis.json", census="D1", uid="pgai-mon-query-topn",
+    dict(src="Dashboard_2_Aggregated_query_analysis.json", census="D1", uid="3ceb2e98-639d-48df-8e1f-7686d2052170",
          out="Dashboard_2_Aggregated_query_analysis_pgai_mon.json", extra_labels=["queryid", "datname"]),
-    dict(src="Dashboard_4_Wait_Sampling_Dashboard.json", census="D4", uid="pgai-mon-wait-sampling",
+    dict(src="Dashboard_4_Wait_Sampling_Dashboard.json", census="D4", uid="a222b233-acef-4bac-a451-1591023e4d4f",
          out="Dashboard_4_Wait_Sampling_Dashboard_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_3_Single_query_analysis.json", census="D3", uid="pgai-mon-single-query",
+    dict(src="Dashboard_3_Single_query_analysis.json", census="D3", uid="db52944d-b025-4e18-b70b-89c0af3e7e41",
          out="Dashboard_3_Single_query_analysis_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_7_Autovacuum_and_xmin_horizon.json", census="D7", uid="pgai-mon-autovacuum-xmin",
+    dict(src="Dashboard_7_Autovacuum_and_xmin_horizon.json", census="D7", uid="caffad19-4605-41fe-87f7-484ab67200e8",
          out="Dashboard_7_Autovacuum_and_xmin_horizon_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_13_Lock_waits.json", census="D13", uid="pgai-mon-lock-waits",
+    dict(src="Dashboard_13_Lock_waits.json", census="D13", uid="lock-contention",
          out="Dashboard_13_Lock_waits_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_12_SLRU.json", census="D12", uid="pgai-mon-slru",
+    dict(src="Dashboard_12_SLRU.json", census="D12", uid="slru_stats",
          out="Dashboard_12_SLRU_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_14_IO_Statistics.json", census="D14", uid="pgai-mon-io-stats",
+    dict(src="Dashboard_14_IO_Statistics.json", census="D14", uid="io_statistics",
          out="Dashboard_14_IO_Statistics_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_5_Backup_stats.json", census="D5", uid="pgai-mon-backup-stats",
+    dict(src="Dashboard_5_Backup_stats.json", census="D5", uid="cb67ac04-67fa-4c70-968c-5bc5ece03aa7",
          out="Dashboard_5_Backup_stats_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_9_Single_table_analysis.json", census="D9", uid="pgai-mon-single-table",
+    dict(src="Dashboard_9_Single_table_analysis.json", census="D9", uid="9-single-table-analysis",
          out="Dashboard_9_Single_table_analysis_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_11_Single_index_analysis.json", census="D11", uid="pgai-mon-single-index",
+    dict(src="Dashboard_11_Single_index_analysis.json", census="D11", uid="aa0128c5-c5a0-4418-a99e-c941af10426e",
          out="Dashboard_11_Single_index_analysis_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_6_Replication_and_HA.json", census="D6", uid="pgai-mon-replication",
+    dict(src="Dashboard_6_Replication_and_HA.json", census="D6", uid="9086b3ba-a250-429e-a968-9eabee4fb68a",
          out="Dashboard_6_Replication_and_HA_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_8_Table_Stats.json", census="D8", uid="pgai-mon-table-stats",
+    dict(src="Dashboard_8_Table_Stats.json", census="D8", uid="92657f2a-985b-4d1a-99ed-2fac6e0c53e2",
          out="Dashboard_8_Table_Stats_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_10_Index health.json", census="D10", uid="pgai-mon-index-health",
+    dict(src="Dashboard_10_Index health.json", census="D10", uid="db3b37d1-1540-4f7e-95c9-4082f2ca349e",
          out="Dashboard_10_Index_health_pgai_mon.json", extra_labels=[]),
-    dict(src="Dashboard_99_Host_stats.json", census="D99", uid="pgai-mon-host-stats",
+    dict(src="Dashboard_99_Host_stats.json", census="D99", uid="host-stats",
          out="Dashboard_99_Host_stats_pgai_mon.json", extra_labels=[]),
     # a spec may set partial=True: the targets with no case then stay PromQL on the original
     # Prometheus datasource, and the panel becomes "-- Mixed --" (none does now)
@@ -557,7 +557,7 @@ def compile_dashboard(spec, by_id, probe_url):
     src = json.load(open(os.path.join(DASH_DIR, spec["src"])))
     d = copy.deepcopy(src)
     d["uid"] = spec["uid"]
-    d["title"] = src["title"] + " (pgai-mon)"
+    d["title"] = src["title"]
     d["id"] = None
     d["version"] = 1
     n = 0

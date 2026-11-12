@@ -48,8 +48,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Self-monitoring dashboard (pgai-mon)",
-  "uid": "pgai-mon-self-monitoring",
+  "title": "Self-monitoring dashboard",
+  "uid": "self-monitoring",
   "version": 1,
   "templating": {
     "list": []

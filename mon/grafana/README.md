@@ -2,7 +2,7 @@
 
 `dashboards/` holds the 16 ported dashboards, one per dashboard in `old/config/grafana/dashboards/`.
 They are generated; do not edit them by hand. Each keeps the original's panels, layout, units
-and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`. The exception is
+and legends, and the original's uid and title, so links and bookmarks keep working. The exception is
 the self-monitoring dashboard (below).
 
 ## Self-monitoring
@@ -10,7 +10,7 @@ the self-monitoring dashboard (below).
 The original charted components the pgai-mon stack does not run (cAdvisor, node-exporter,
 postgres-exporter, VictoriaMetrics, the sink Postgres, the Flask backend), so
 `self_monitoring.py` writes `Self_Monitoring_Dashboard_pgai_mon.json` (uid
-`pgai-mon-self-monitoring`) from what pgai-mon records about itself: `pgai_mon_source_up`,
+`self-monitoring`) from what pgai-mon records about itself: `pgai_mon_source_up`,
 `pgai_mon_source_last_success_epoch_s`, `pgai_mon_connect_failures_total` {cluster, dbname, node_name};
 `pgai_mon_errors_total`, `pgai_mon_timeouts_total`, `pgai_mon_skipped_slots_total` {cluster, dbname, node_name,
 metric};

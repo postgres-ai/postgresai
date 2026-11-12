@@ -3597,7 +3597,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "09. Single table analysis (pgai-mon)",
-  "uid": "pgai-mon-single-table",
+  "title": "09. Single table analysis",
+  "uid": "9-single-table-analysis",
   "version": 1
 }

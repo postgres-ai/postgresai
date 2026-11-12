@@ -4745,7 +4745,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "08. Aggregated table analysis (pgai-mon)",
-  "uid": "pgai-mon-table-stats",
+  "title": "08. Aggregated table analysis",
+  "uid": "92657f2a-985b-4d1a-99ed-2fac6e0c53e2",
   "version": 1
 }

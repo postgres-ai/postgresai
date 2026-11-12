@@ -1675,8 +1675,8 @@
     ]
   },
   "timezone": "",
-  "title": "13. Lock contention (pgai-mon)",
-  "uid": "pgai-mon-lock-waits",
+  "title": "13. Lock contention",
+  "uid": "lock-contention",
   "version": 1,
   "weekStart": ""
 }

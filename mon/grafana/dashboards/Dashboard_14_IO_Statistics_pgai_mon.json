@@ -2137,7 +2137,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "14. I/O statistics (pg_stat_io) (pgai-mon)",
-  "uid": "pgai-mon-io-stats",
+  "title": "14. I/O statistics (pg_stat_io)",
+  "uid": "io_statistics",
   "version": 1
 }

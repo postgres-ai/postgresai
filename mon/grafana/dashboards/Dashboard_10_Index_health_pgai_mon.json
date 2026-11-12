@@ -1662,7 +1662,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "10. Aggregated index analysis (pgai-mon)",
-  "uid": "pgai-mon-index-health",
+  "title": "10. Aggregated index analysis",
+  "uid": "db3b37d1-1540-4f7e-95c9-4082f2ca349e",
   "version": 1
 }

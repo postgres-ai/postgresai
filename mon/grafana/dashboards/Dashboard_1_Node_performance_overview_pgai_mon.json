@@ -8849,7 +8849,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "01. Single node performance overview (high-level) (pgai-mon)",
-  "uid": "pgai-mon-node-overview",
+  "title": "01. Single node performance overview (high-level)",
+  "uid": "f90500a0-a12e-4081-a2f0-07ed96f27915",
   "version": 1
 }

@@ -1426,7 +1426,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "04. Wait event analysis (Active Session History) (pgai-mon)",
-  "uid": "pgai-mon-wait-sampling",
+  "title": "04. Wait event analysis (Active Session History)",
+  "uid": "a222b233-acef-4bac-a451-1591023e4d4f",
   "version": 1
 }

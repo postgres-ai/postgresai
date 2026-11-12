@@ -3420,8 +3420,8 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "99. Host stats (pgai-mon)",
-  "uid": "pgai-mon-host-stats",
+  "title": "99. Host stats",
+  "uid": "host-stats",
   "version": 1,
   "description": "Host metrics for RDS, Aurora, Supabase and ClickHouse Managed Postgres. CPU, memory and storage are stacked and add up to 100 %, total RAM and volume size. Disk read and write are separate panels (IOPS, throughput, latency). Dashed red lines are limits where the source exposes them (RDS allocated storage, provisioned IOPS and throughput); no line means the limit is unknown. Series depend on provider and enabled monitoring, see docs/host-metrics.md. Performance Insights is in its own collapsed row. Empty on self-managed nodes and on the Helm chart."
 }

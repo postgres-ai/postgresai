@@ -3268,8 +3268,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "07. Autovacuum and xmin horizon (pgai-mon)",
-  "uid": "pgai-mon-autovacuum-xmin",
+  "title": "07. Autovacuum and xmin horizon",
+  "uid": "caffad19-4605-41fe-87f7-484ab67200e8",
   "version": 1,
   "description": "Autovacuum activity, long-running transaction age, xmin horizon pressure, and per-database / per-table wraparound risk (XID and MultiXID).",
   "refresh": "30s"

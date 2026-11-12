@@ -4937,7 +4937,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "02. Query performance analysis (top-N) (pgai-mon)",
-  "uid": "pgai-mon-query-topn",
+  "title": "02. Query performance analysis (top-N)",
+  "uid": "3ceb2e98-639d-48df-8e1f-7686d2052170",
   "version": 1
 }

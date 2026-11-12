@@ -1973,7 +1973,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "05. WAL, backups, DR (pgai-mon)",
-  "uid": "pgai-mon-backup-stats",
+  "title": "05. WAL, backups, DR",
+  "uid": "cb67ac04-67fa-4c70-968c-5bc5ece03aa7",
   "version": 1
 }
