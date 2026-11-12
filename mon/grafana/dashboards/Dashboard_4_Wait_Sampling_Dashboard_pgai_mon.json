@@ -38,7 +38,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -334,7 +334,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -380,7 +380,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -426,7 +426,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -475,7 +475,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -747,7 +747,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -796,7 +796,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1086,7 +1086,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1180,7 +1180,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
         "options": [],
@@ -1227,7 +1227,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} ORDER BY 1",
         "options": [],
@@ -1279,7 +1279,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
         "options": [],
@@ -1331,7 +1331,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['wait_event_type'] AS value FROM series WHERE metric = 'pgwatch_wait_events_total' AND labels['wait_event_type'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND regexp_full_match(coalesce(labels['datname'], ''), '${db_name:regex}') ORDER BY 1",
         "options": [],
@@ -1383,7 +1383,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['wait_event'] AS value FROM series WHERE metric = 'pgwatch_wait_events_total' AND labels['wait_event'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND regexp_full_match(coalesce(labels['datname'], ''), '${db_name:regex}') AND regexp_full_match(coalesce(labels['wait_event_type'], ''), '${wait_event_type:regex}') ORDER BY 1",
         "options": [],

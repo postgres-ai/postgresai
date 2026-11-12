@@ -39,7 +39,8 @@ MON = os.path.dirname(HERE)
 REPO = os.path.dirname(MON)
 DASH_DIR = os.path.join(REPO, "config", "grafana", "dashboards")
 
-INFINITY = {"type": "yesoreyeram-infinity-datasource", "uid": "aerffb0z8rjlsc"}
+# the pgai-mon datasource (config/grafana/provisioning/datasources/pgai-mon.yml)
+INFINITY = {"type": "yesoreyeram-infinity-datasource", "uid": "pgai-mon"}
 PGAI_URL = "http://pgai-mon:8765/sql?format=objects"
 SCRAPE_MS = 5000  # provisioning/datasources: scrapeInterval '5s'
 

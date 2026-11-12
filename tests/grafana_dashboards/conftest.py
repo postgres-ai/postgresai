@@ -29,7 +29,7 @@ DASHBOARD_DIR = REPO_ROOT / "mon" / "grafana" / "dashboards"
 
 # Where the SQL dashboards send their queries (mon/grafana/compile.py INFINITY and --target-url).
 INFINITY_TYPE = "yesoreyeram-infinity-datasource"
-INFINITY_UID = "aerffb0z8rjlsc"
+INFINITY_UID = "pgai-mon"
 PGAI_MON_SQL_URL = "http://pgai-mon:8765/sql?format=objects"
 
 # Matches a reference to the db_name template variable in any Grafana syntax,

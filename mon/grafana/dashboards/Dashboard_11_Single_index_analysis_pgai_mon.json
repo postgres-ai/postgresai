@@ -51,7 +51,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -155,7 +155,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -218,7 +218,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -321,7 +321,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -371,7 +371,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -486,7 +486,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -532,7 +532,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -595,7 +595,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -710,7 +710,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -756,7 +756,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -819,7 +819,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1022,7 +1022,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1068,7 +1068,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1114,7 +1114,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1208,7 +1208,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
         "options": [],
@@ -1255,7 +1255,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} ORDER BY 1",
         "options": [],
@@ -1302,7 +1302,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
         "options": [],
@@ -1349,7 +1349,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['schemaname'] AS value FROM series WHERE metric = 'pgwatch_pg_stat_all_indexes_idx_scan' AND labels['schemaname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${datname:sqlstring} ORDER BY 1",
         "options": [],
@@ -1396,7 +1396,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['indexrelname'] AS value FROM series WHERE metric = 'pgwatch_pg_stat_all_indexes_idx_scan' AND labels['indexrelname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${datname:sqlstring} AND coalesce(labels['schemaname'], '') = ${schema_name:sqlstring} ORDER BY 1",
         "options": [],

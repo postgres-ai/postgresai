@@ -7,11 +7,13 @@ and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`.
 
 ## Datasource
 
-Every target uses the Infinity datasource (`yesoreyeram-infinity-datasource`, uid
-`aerffb0z8rjlsc`, already provisioned in `config/grafana/provisioning/datasources/datasources.yml`).
-A target POSTs its SQL as a `text/plain` body to `http://pgai-mon:8765/sql?format=objects`,
-with Grafana variables (`${__from}`, `${__to}`, `${__interval_ms}`, `${cluster_name}`,
-`${node_name}`, `${db_name}`, ...) interpolated into the SQL. No panel calls the Flask backend
+Every target uses the Infinity datasource `pgai-mon` (`yesoreyeram-infinity-datasource`, uid
+`pgai-mon`, provisioned by `config/grafana/provisioning/datasources/pgai-mon.yml` with the bearer
+token from `PGAI_MON_TOKEN`). A target POSTs its SQL as a `text/plain` body to
+`http://pgai-mon:8765/sql?format=objects`, with Grafana variables (`${__from}`, `${__to}`,
+`${__interval_ms}`, `${cluster_name:sqlstring}`, `${db_name:regex}`, ...) interpolated into the
+SQL. A variable holding one value is written `${x:sqlstring}`, so Grafana quotes it and doubles a
+quote inside it; a filter matched as a regex is written `'${x:regex}'`. No panel calls the Flask backend
 or the pgwatch Postgres sink: the four tables that did (Dashboard 2's pg_stat_statements table,
 Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat) run the SQL in
 `../sql/reports/panels/` (`TABLE_PANELS` in `compile.py`), keeping their column names.

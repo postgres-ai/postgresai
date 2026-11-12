@@ -51,7 +51,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -378,7 +378,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -424,7 +424,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -470,7 +470,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -532,7 +532,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -742,7 +742,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -788,7 +788,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -837,7 +837,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1063,7 +1063,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1109,7 +1109,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1158,7 +1158,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1303,7 +1303,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1349,7 +1349,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1399,7 +1399,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1502,7 +1502,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1552,7 +1552,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "To see planning time, enable pg_stat_statements.track_planning",
       "fieldConfig": {
@@ -1668,7 +1668,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1714,7 +1714,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1764,7 +1764,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "To see planning time, enable pg_stat_statements.track_planning",
       "fieldConfig": {
@@ -1880,7 +1880,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1926,7 +1926,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1976,7 +1976,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -2091,7 +2091,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2137,7 +2137,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2187,7 +2187,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -2329,7 +2329,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2375,7 +2375,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2421,7 +2421,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2471,7 +2471,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -2598,7 +2598,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2644,7 +2644,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2690,7 +2690,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2810,7 +2810,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "To see planning time, enable track_io_timing",
       "fieldConfig": {
@@ -2926,7 +2926,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2972,7 +2972,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3022,7 +3022,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -3126,7 +3126,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3176,7 +3176,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -3279,7 +3279,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3329,7 +3329,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -3435,7 +3435,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3485,7 +3485,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -3582,7 +3582,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3631,7 +3631,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -3870,7 +3870,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3916,7 +3916,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -3962,7 +3962,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4008,7 +4008,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4057,7 +4057,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -4296,7 +4296,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4342,7 +4342,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4388,7 +4388,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4434,7 +4434,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4483,7 +4483,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "High-level data and catalog xmin horizon ages for the selected node. Use Dashboard 07 for source-level blocker details.",
       "fieldConfig": {
@@ -4592,7 +4592,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4638,7 +4638,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4687,7 +4687,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -4814,7 +4814,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4860,7 +4860,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4906,7 +4906,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -4956,7 +4956,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -5088,7 +5088,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5137,7 +5137,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -5305,7 +5305,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5351,7 +5351,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5397,7 +5397,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5443,7 +5443,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5489,7 +5489,7 @@
           "refId": "E",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5544,7 +5544,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -5682,7 +5682,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5728,7 +5728,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5777,7 +5777,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "High-level node signal showing the total size of regular files in pg_wal. Use dashboard 05. WAL, backups, DR for detailed WAL retention, archiving, and producer analysis. Subdirectories such as archive_status are excluded; check pgwatch_pg_wal_size_status_code if this series is missing.",
       "fieldConfig": {
@@ -5876,7 +5876,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -5925,7 +5925,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Explains why pg_wal size bytes are missing. 0 = OK, 1 = pg_ls_waldir() is unavailable, 2 = monitoring role lacks EXECUTE privilege.",
       "fieldConfig": {
@@ -6007,7 +6007,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -6091,7 +6091,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Database hosting provider. This fixed label identifies Amazon RDS, Supabase, or ClickHouse without exposing account, organization, service, instance, host, or credential identifiers.",
           "fieldConfig": {
@@ -6153,7 +6153,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6202,7 +6202,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Stacked CPU time by mode; the stack adds up to 100 %. user, system, iowait and steal are measured; other = busy − (user + system + iowait + steal), i.e. nice, irq and softirq; idle = 100 − busy. RDS with Enhanced Monitoring: all modes (busy = EM cpuUtilization.total). RDS without Enhanced Monitoring: CloudWatch CPUUtilization only, shown as \"busy (no mode split)\" + idle. Supabase and ClickHouse: per-mode CPU seconds. Self-managed: no host_* series, empty.",
           "fieldConfig": {
@@ -6446,7 +6446,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6492,7 +6492,7 @@
               "refId": "B",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6538,7 +6538,7 @@
               "refId": "C",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6584,7 +6584,7 @@
               "refId": "D",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6630,7 +6630,7 @@
               "refId": "E",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6676,7 +6676,7 @@
               "refId": "F",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6722,7 +6722,7 @@
               "refId": "G",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -6771,7 +6771,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Stacked memory; the stack adds up to total RAM (dashed line). With free, cached and buffers (RDS with Enhanced Monitoring, Supabase): used = total − free − cached − buffers, then buffers, cached, free. ClickHouse (no free or buffers): used = total − available, then available. RDS without Enhanced Monitoring: only CloudWatch FreeableMemory (\"available\"); total RAM is unknown, so the stack has no reference line. Swap is not part of RAM and is a separate line. The largest process RSS (RDS with Enhanced Monitoring only) is a dashed line, not part of the stack.",
           "fieldConfig": {
@@ -7113,7 +7113,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7159,7 +7159,7 @@
               "refId": "B",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7205,7 +7205,7 @@
               "refId": "C",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7251,7 +7251,7 @@
               "refId": "D",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7297,7 +7297,7 @@
               "refId": "E",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7343,7 +7343,7 @@
               "refId": "F",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7389,7 +7389,7 @@
               "refId": "G",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7435,7 +7435,7 @@
               "refId": "H",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7484,7 +7484,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Stacked used + free; the stack adds up to the volume size (dashed line, the limit). RDS: size = AllocatedStorage, free = FreeStorageSpace. Supabase: /data filesystem size and available bytes. ClickHouse: StorageLimitBytes. Aurora: storage grows on demand (limit unknown); local free storage and cluster volume used are lines. Without a size series only free is shown (limit unknown). Aurora cluster volume samples use completed 5-minute buckets and appear at least 10 minutes behind the current time; use a time range of at least 30 minutes.",
           "fieldConfig": {
@@ -7749,7 +7749,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7795,7 +7795,7 @@
               "refId": "B",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7841,7 +7841,7 @@
               "refId": "C",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7887,7 +7887,7 @@
               "refId": "D",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7933,7 +7933,7 @@
               "refId": "E",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -7982,7 +7982,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Read operations per second. Aurora cluster-volume values are 5-minute counts divided by 300 seconds and appear at least 10 minutes behind current time.",
           "fieldConfig": {
@@ -8060,7 +8060,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8106,7 +8106,7 @@
               "refId": "B",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8155,7 +8155,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Write operations per second. Aurora cluster-volume values are 5-minute counts divided by 300 seconds and appear at least 10 minutes behind current time.",
           "fieldConfig": {
@@ -8233,7 +8233,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8279,7 +8279,7 @@
               "refId": "B",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8328,7 +8328,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Network receive throughput. Amazon RDS and Supabase exclude loopback; ClickHouse includes it.",
           "fieldConfig": {
@@ -8394,7 +8394,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8443,7 +8443,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "Network transmit throughput. Amazon RDS and Supabase exclude loopback; ClickHouse includes it.",
           "fieldConfig": {
@@ -8509,7 +8509,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8572,7 +8572,7 @@
         {
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "description": "RDS and Aurora with Performance Insights on (db.load.avg): the average number of sessions active per minute, on CPU or waiting. Empty for other providers.",
           "fieldConfig": {
@@ -8638,7 +8638,7 @@
               "refId": "A",
               "datasource": {
                 "type": "yesoreyeram-infinity-datasource",
-                "uid": "aerffb0z8rjlsc"
+                "uid": "pgai-mon"
               },
               "type": "json",
               "source": "url",
@@ -8710,7 +8710,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
         "options": [],
@@ -8757,7 +8757,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} ORDER BY 1",
         "options": [],
@@ -8806,7 +8806,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
         "options": [],
