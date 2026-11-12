@@ -27,7 +27,10 @@ type GrafanaDatasourceConfig = {
 };
 
 type DockerComposeConfig = {
-  services?: Record<string, { restart?: unknown }>;
+  services?: Record<
+    string,
+    { restart?: unknown; environment?: Record<string, string> | string[] }
+  >;
 };
 
 // These UIDs are referenced by provisioned Grafana dashboards.
@@ -71,6 +74,10 @@ const metricsPath = resolve(configDir, "pgwatch-prometheus/metrics.yml");
 const datasourcePath = resolve(
   configDir,
   "grafana/provisioning/datasources/datasources.yml"
+);
+const pgaiMonDatasourcePath = resolve(
+  configDir,
+  "grafana/provisioning/datasources/pgai-mon.yml"
 );
 const composePath = resolve(import.meta.dir, "../../docker-compose.yml");
 const envExamplePath = resolve(import.meta.dir, "../../.env.example");
@@ -246,42 +253,44 @@ describe("Config consistency", () => {
     expect(postgresDatasource?.database).toBe("measurements");
   });
 
-  test("Grafana Prometheus datasource requires VM auth environment", () => {
+  test("Grafana pgai-mon datasource sends the bearer token from PGAI_MON_TOKEN", () => {
     const datasourceConfig = parseGrafanaDatasourceConfig(
-      readFileSync(datasourcePath, "utf8")
+      readFileSync(pgaiMonDatasourcePath, "utf8")
     );
-    const composeYml = readFileSync(composePath, "utf8");
-    const prometheusDatasource = datasourceConfig.datasources?.find(
-      (datasource) => datasource.name === "PGWatch-Prometheus"
+    const composeConfig = Bun.YAML.parse(
+      readFileSync(composePath, "utf8")
+    ) as DockerComposeConfig;
+    const pgaiMonDatasource = datasourceConfig.datasources?.find(
+      (datasource) => datasource.name === "pgai-mon"
     ) as
-      | {
-          basicAuth?: unknown;
-          basicAuthUser?: unknown;
-          secureJsonData?: { basicAuthPassword?: unknown };
-        }
+      | (GrafanaDatasource & { type?: unknown; secureJsonData?: { bearerToken?: unknown } })
       | undefined;
 
-    expect(prometheusDatasource?.basicAuth).toBe(true);
-    expect(prometheusDatasource?.basicAuthUser).toBe("${VM_AUTH_USERNAME}");
-    expect(prometheusDatasource?.secureJsonData?.basicAuthPassword).toBe(
-      "${VM_AUTH_PASSWORD}"
-    );
-    expect(composeYml).toContain(
-      "VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:?VM_AUTH_USERNAME is required for Grafana datasource provisioning}"
-    );
-    expect(composeYml).toContain(
-      "VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:?VM_AUTH_PASSWORD is required for Grafana datasource provisioning}"
-    );
+    expect(pgaiMonDatasource?.type).toBe("yesoreyeram-infinity-datasource");
+    expect(pgaiMonDatasource?.jsonData?.auth_method).toBe("bearerToken");
+    // Infinity sends the token only to these hosts.
+    expect(pgaiMonDatasource?.jsonData?.allowedHosts).toEqual(["http://pgai-mon:8765"]);
+    expect(pgaiMonDatasource?.secureJsonData?.bearerToken).toBe("${PGAI_MON_TOKEN}");
+
+    // Grafana and every service that talks to pgai-mon get the same token,
+    // and compose refuses to start without it.
+    for (const service of ["grafana", "pgai-mon", "postgres-reports", "instance-jobs"]) {
+      const env = composeConfig.services?.[service]?.environment;
+      const value = Array.isArray(env)
+        ? env.find((entry) => entry.startsWith("PGAI_MON_TOKEN="))?.slice("PGAI_MON_TOKEN=".length)
+        : env?.PGAI_MON_TOKEN;
+      expect(value, service).toMatch(/^\$\{PGAI_MON_TOKEN:\?.+\}$/);
+    }
   });
 
   test(".env.example documents direct Docker Compose credentials", () => {
     const envExample = readFileSync(envExamplePath, "utf8");
 
-    expect(envExample).toContain("REPLICATOR_PASSWORD=");
-    expect(envExample).toContain("VM_AUTH_USERNAME=vmauth");
-    expect(envExample).toContain("VM_AUTH_PASSWORD=");
+    expect(envExample).toMatch(/^REPLICATOR_PASSWORD=$/m);
+    expect(envExample).toMatch(/^PGAI_MON_TOKEN=$/m);
     expect(envExample).toContain("openssl rand -hex 32");
-    expect(envExample).toContain("openssl rand -base64 18");
+    // The old stack's VictoriaMetrics credentials are gone.
+    expect(envExample).not.toContain("VM_AUTH_");
   });
 
   test("long-running Docker Compose services survive host reboot", () => {
@@ -291,10 +300,12 @@ describe("Config consistency", () => {
     const services = composeConfig.services ?? {};
 
     // All services should survive host reboot unless they are one-shot setup jobs.
-    const oneShotServices = new Set(["config-init", "sources-generator"]);
+    const oneShotServices = new Set(["config-init"]);
     const serviceEntries = Object.entries(services);
 
-    expect(serviceEntries.length).toBeGreaterThan(0);
+    for (const serviceName of ["pgai-mon", "grafana", "postgres-reports", "instance-jobs"]) {
+      expect(services[serviceName], serviceName).toBeDefined();
+    }
 
     for (const serviceName of oneShotServices) {
       expect(services[serviceName]).toBeDefined();
@@ -306,7 +317,7 @@ describe("Config consistency", () => {
         continue;
       }
 
-      expect(serviceConfig.restart).toBe("unless-stopped");
+      expect(serviceConfig.restart, serviceName).toBe("unless-stopped");
     }
   });
 

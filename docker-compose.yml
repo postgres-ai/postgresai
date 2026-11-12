@@ -198,7 +198,7 @@ services:
       # Optional: disable login form when OAuth is primary auth
       GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_DISABLE_LOGIN_FORM:-false}
       GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-}
-      # Read by datasources.yml (the Infinity datasource's bearer token).
+      # Read by provisioning/datasources/pgai-mon.yml (the pgai-mon datasource's bearer token).
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required for Grafana datasource provisioning}
     ports:
       # Unset: 127.0.0.1 only. GRAFANA_BIND_HOST= (empty, as terraform's
