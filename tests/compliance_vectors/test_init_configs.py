@@ -272,3 +272,62 @@ def test_pgai_mon_owner_must_be_numeric(owner):
         _, r = _run_with_owner(tmp, owner, check=False)
         assert r.returncode != 0
         assert 'PGAI_MON_OWNER must be uid:gid' in r.stdout
+
+
+def test_stale_datasource_provisioning_removed_on_upgrade():
+    """The old stack's datasources.yml must not survive an upgrade next to pgai-mon.yml.
+
+    Grafana loads every file in provisioning/datasources/, so the old file would keep
+    provisioning PGWatch-* datasources (one of them default) pointing at removed services.
+    Other provisioning files (grafana.ini) keep the operator's edits.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        source_dir = os.path.join(tmp, 'src')
+        target_dir = os.path.join(tmp, 'tgt')
+        version_file = os.path.join(tmp, 'VERSION')
+        os.makedirs(source_dir)
+        os.makedirs(target_dir)
+        _make_source_tree(source_dir)
+        src_ds = os.path.join(source_dir, 'grafana', 'provisioning', 'datasources')
+        os.makedirs(src_ds)
+        with open(os.path.join(src_ds, 'pgai-mon.yml'), 'w') as f:
+            f.write('# image pgai-mon.yml\n')
+        with open(os.path.join(source_dir, 'grafana', 'provisioning', 'grafana.ini'), 'w') as f:
+            f.write('# image grafana.ini\n')
+
+        # Configs volume as the old stack left it.
+        tgt_ds = os.path.join(target_dir, 'grafana', 'provisioning', 'datasources')
+        os.makedirs(tgt_ds)
+        stale = os.path.join(tgt_ds, 'datasources.yml')
+        with open(stale, 'w') as f:
+            f.write('datasources:\n  - name: PGWatch-Prometheus\n    isDefault: true\n')
+        with open(os.path.join(target_dir, VERSION_MARKER), 'w') as f:
+            f.write('0.14.0')
+
+        _run_script(source_dir, target_dir, version_file, version='2.0.0')
+
+        assert not os.path.exists(stale), 'old datasources.yml must be removed on upgrade'
+        assert sorted(os.listdir(tgt_ds)) == ['pgai-mon.yml']
+        with open(os.path.join(tgt_ds, 'pgai-mon.yml')) as f:
+            assert f.read() == '# image pgai-mon.yml\n'
+
+
+def test_same_version_keeps_datasource_provisioning():
+    """The cleanup runs only when re-initializing, not on every start."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source_dir = os.path.join(tmp, 'src')
+        target_dir = os.path.join(tmp, 'tgt')
+        version_file = os.path.join(tmp, 'VERSION')
+        os.makedirs(source_dir)
+        _make_source_tree(source_dir)
+        tgt_ds = os.path.join(target_dir, 'grafana', 'provisioning', 'datasources')
+        os.makedirs(tgt_ds)
+        extra = os.path.join(tgt_ds, 'operator.yml')
+        with open(extra, 'w') as f:
+            f.write('# added by the operator\n')
+        with open(os.path.join(target_dir, VERSION_MARKER), 'w') as f:
+            f.write('2.0.0')
+
+        _run_script(source_dir, target_dir, version_file, version='2.0.0')
+
+        assert os.path.isfile(extra)
