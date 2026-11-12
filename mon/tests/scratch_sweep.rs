@@ -26,7 +26,7 @@ fn sweeps_dead_scratch_dirs_only() {
     let kept = [
         mk(format!("pgai-mon-{}", std::process::id())),
         mk(format!("pgai-mon-{}", live.id())),
-        mk(format!("pgai-mon-tile-fmt-{dead}")),
+        mk(format!("pgai-mon-x-{dead}")),
         mk("pgai-mon-topk".into()),
         mk("pgai-mon-s3cache".into()),
         mk("pgai-mon-".into()),

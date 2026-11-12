@@ -122,26 +122,6 @@ enum Cmd {
         #[arg(long, default_value_t = 2048)]
         s3_mirror_mb: u64,
     },
-    /// Build an N-day store from a recorded one (long-window benchmarks): it ends at the
-    /// source's last day; earlier days repeat the source's full days with time columns shifted
-    /// by whole days. Rollup tiers (1 h, and 1 d when built) and the series registry come from
-    /// the store's own compaction. Writes `format_version` to catalog.json and a FORMAT file.
-    Tile {
-        #[arg(long, required_unless_present = "format_version")]
-        src: Option<PathBuf>,
-        #[arg(long, required_unless_present = "format_version")]
-        out: Option<PathBuf>,
-        #[arg(long, required_unless_present = "format_version")]
-        days: Option<usize>,
-        /// Print the store format this binary writes (v<rollup format>-base or -tier1d, e.g. v4-tier1d) and exit.
-        #[arg(long)]
-        format_version: bool,
-        /// Parallel file rewrites (0 = cores, at most 4).
-        #[arg(long, default_value_t = 0)]
-        jobs: usize,
-        #[arg(long, default_value_t = 9)]
-        zstd_level: i32,
-    },
     /// Import a VictoriaMetrics export (/api/v1/export JSON lines; "-" = stdin), and/or query
     /// texts and object definitions as JSON lines (test fixtures; see structure::load_jsonl).
     Load {
@@ -432,39 +412,6 @@ fn main_cmd() -> anyhow::Result<()> {
                 "{}",
                 serde_json::json!({"load": st, "samples_parquet_bytes": bytes,
                     "bytes_per_sample": bytes as f64 / st.samples.max(1) as f64})
-            );
-            Ok(())
-        }
-        Cmd::Tile {
-            src,
-            out,
-            days,
-            format_version,
-            jobs,
-            zstd_level,
-        } => {
-            if format_version {
-                println!("{}", tile::format_version()?);
-                return Ok(());
-            }
-            let r = tile::tile(&tile::Opts {
-                src: src.unwrap(),
-                out: out.unwrap(),
-                days: days.unwrap(),
-                jobs,
-                zstd_level,
-                verbose: true,
-            })?;
-            println!(
-                "{} days ({} .. {}), {} files, {} bytes, format {} (tiers {}), {} merges",
-                r.map.len(),
-                model::day_str(r.map.last().unwrap().0),
-                model::day_str(r.map[0].0),
-                r.files,
-                r.bytes,
-                r.format,
-                r.tiers.join(","),
-                r.merges
             );
             Ok(())
         }

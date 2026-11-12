@@ -24,7 +24,6 @@ pub mod selfmon;
 pub mod sqlproc;
 pub mod store;
 pub mod structure;
-pub mod tile;
 pub mod tools;
 pub mod wal;
 
