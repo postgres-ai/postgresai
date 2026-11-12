@@ -138,19 +138,19 @@ ssh deploy@<VM> "/opt/postgres-ai-previews/manager/cleanup-ttl.sh"
 
 ### Metrics not showing in Grafana
 
-1. Check pgwatch is running:
+1. Check pgai-mon is healthy:
    ```bash
-   ssh deploy@<VM> "docker ps | grep preview-{BRANCH_SLUG}-pgwatch"
+   ssh deploy@<VM> "docker ps --filter name=preview-{BRANCH_SLUG}-pgai-mon"
    ```
 
-2. Check pgwatch logs:
+2. Check pgai-mon logs (collector connection errors, store errors):
    ```bash
-   ssh deploy@<VM> "docker logs preview-{BRANCH_SLUG}-pgwatch-1 --tail=50"
+   ssh deploy@<VM> "docker logs preview-{BRANCH_SLUG}-pgai-mon-1 --tail=50"
    ```
 
-3. Check VictoriaMetrics is receiving data:
+3. Check pgai-mon has data (token from the preview's `.env`, sent from inside the container network):
    ```bash
-   ssh deploy@<VM> "docker exec preview-{BRANCH_SLUG}-sink-prometheus-1 wget -qO- 'http://localhost:9090/api/v1/query?query=up'"
+   ssh deploy@<VM> 'cd /opt/postgres-ai-previews/previews/{BRANCH_SLUG} && set -a && . ./.env && docker run --rm --network preview-{BRANCH_SLUG} -e PGAI_MON_TOKEN curlimages/curl:8.11.1 -sS -H "Authorization: Bearer $PGAI_MON_TOKEN" --data-binary "select count(*) from series" http://pgai-mon:8765/sql'
    ```
 
 ## Recovery procedures

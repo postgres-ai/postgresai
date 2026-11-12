@@ -1,33 +1,21 @@
 # Preview environment for PostgresAI monitoring
-# Uses the same architecture as main project with CI-built config images
-# Variables: BRANCH_SLUG, GRAFANA_PASSWORD, PGAI_REGISTRY, PGAI_TAG
+# Uses the same architecture as main project with CI-built images:
+# pgai-mon (collector, store, SQL), Grafana, the reporter, a demo target.
+# envsubst variables: BRANCH_SLUG, GRAFANA_PASSWORD, PGAI_REGISTRY, PGAI_TAG.
+# PGAI_MON_TOKEN is left for compose to read from the preview's .env
+# (deploy.sh generates it).
 #
 # NOTE: GF_SERVER_ROOT_URL is required for Grafana to work behind Traefik reverse proxy
 # NOTE: Anonymous access enabled with Viewer role for preview verification
 
 services:
-  # Config Initializer - Copies static configs from CI-built image to volume
+  # Config Initializer - Copies Grafana provisioning, dashboards and scripts from the CI-built image
   config-init:
     image: ${PGAI_REGISTRY}/postgres-ai-configs:${PGAI_TAG}
     volumes:
       - postgres_ai_configs:/target
     environment:
       - TARGET_DIR=/target
-    labels:
-      - "pgai.preview=true"
-
-  # Sources Generator - Generates sources.yml for pgwatch
-  sources-generator:
-    image: bash:5.2
-    working_dir: /app
-    volumes:
-      - ./instances.yml:/app/instances.yaml:ro
-      - postgres_ai_configs:/postgres_ai_configs
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-    command:
-      ["bash", "/postgres_ai_configs/scripts/generate-pgwatch-sources.sh"]
     labels:
       - "pgai.preview=true"
 
@@ -65,108 +53,34 @@ services:
     labels:
       - "pgai.preview=true"
 
-  # Sink Postgres - Metrics storage
-  sink-postgres:
-    image: postgres:17
+  # pgai-mon - collects instances.yml, stores Parquet (local volume: previews
+  # are short-lived), serves SQL to Grafana and the reporter
+  pgai-mon:
+    image: ${PGAI_REGISTRY}/pgai-mon:${PGAI_TAG}
     mem_limit: 768m
-    cpus: 0.3
+    cpus: 0.5
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST_AUTH_METHOD: trust
-    entrypoint:
-      [
-        "bash",
-        "/postgres_ai_configs/scripts/postgres-entrypoint.sh",
-        "sink-postgres",
-      ]
+      PGAI_MON_TOKEN: "${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}"
     volumes:
-      - sink_postgres_data:/var/lib/postgresql/data
-      - postgres_ai_configs:/postgres_ai_configs:ro
+      - pgai_mon_data:/var/lib/pgai-mon
+      - ./instances.yml:/etc/pgai-mon/instances.yml:ro
     depends_on:
       config-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8765 && printf 'GET /livez HTTP/1.0\r\n\r\n' >&3 && head -n 1 <&3 | grep -q ' 200 '
+      interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 10s
-    labels:
-      - "pgai.preview=true"
-
-  # VictoriaMetrics - Prometheus-compatible metrics storage
-  sink-prometheus:
-    image: victoriametrics/victoria-metrics:v1.140.0
-    mem_limit: 768m
-    cpus: 0.4
-    volumes:
-      - victoria_metrics_data:/victoria-metrics-data
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    command:
-      - "-storageDataPath=/victoria-metrics-data"
-      - "-retentionPeriod=72h"
-      - "-httpListenAddr=:9090"
-      - "-promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml"
-      - "-promscrape.config.strictParse=false"
-      - "-promscrape.maxScrapeSize=128000000"
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/metrics || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-    labels:
-      - "pgai.preview=true"
-
-  # PGWatch - Postgres sink
-  pgwatch-postgres:
-    image: cybertecpostgresql/pgwatch:4.1.0
-    mem_limit: 384m
-    cpus: 0.25
-    command:
-      [
-        "--sources=/postgres_ai_configs/pgwatch/sources.yml",
-        "--metrics=/postgres_ai_configs/pgwatch/metrics.yml",
-        "--sink=postgresql://pgwatch@sink-postgres:5432/measurements?sslmode=disable",
-        "--web-addr=:8080",
-        "--log-level=error",
-      ]
-    depends_on:
-      sources-generator:
-        condition: service_completed_successfully
-      sink-postgres:
-        condition: service_healthy
-    volumes:
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    restart: unless-stopped
-    labels:
-      - "pgai.preview=true"
-
-  # PGWatch - Prometheus sink
-  pgwatch-prometheus:
-    image: cybertecpostgresql/pgwatch:4.1.0
-    mem_limit: 512m
-    cpus: 0.5
-    command:
-      [
-        "--sources=/postgres_ai_configs/pgwatch-prometheus/sources.yml",
-        "--metrics=/postgres_ai_configs/pgwatch-prometheus/metrics.yml",
-        "--sink=prometheus://0.0.0.0:9091/pgwatch",
-        "--web-addr=:8089",
-        "--log-level=error",
-      ]
-    depends_on:
-      sources-generator:
-        condition: service_completed_successfully
-      sink-prometheus:
-        condition: service_healthy
-    volumes:
-      - postgres_ai_configs:/postgres_ai_configs:ro
+      start_period: 30s
     restart: unless-stopped
     labels:
       - "pgai.preview=true"
@@ -186,13 +100,15 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_SERVER_ROOT_URL: "https://preview-${BRANCH_SLUG}.pgai.watch/"
+      # Infinity datasource bearer token (datasources.yml)
+      PGAI_MON_TOKEN: "${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}"
     volumes:
       - grafana_data:/var/lib/grafana
       - postgres_ai_configs:/postgres_ai_configs:ro
     depends_on:
       config-init:
         condition: service_completed_successfully
-      sink-postgres:
+      pgai-mon:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -233,61 +149,34 @@ services:
     labels:
       - "pgai.preview=true"
 
-  # Reporter - Generates health check reports (K003, etc.)
-  # Runs every 10 minutes via cron, or run manually with:
-  #   docker exec preview-${BRANCH_SLUG}-reporter-1 python -m reporter.postgres_reports --check-id K003 --use-current-time
+  # Reporter - Generates health check reports (K003, etc.) every 10 minutes,
+  # with the entrypoint of the main stack. Uploads only when deploy.sh wrote an
+  # API key into .pgwatch-config (PGAI_API_TOKEN set for the deploy).
+  #   docker logs preview-${BRANCH_SLUG}-reporter-1
   reporter:
     image: ${PGAI_REGISTRY}/reporter:${PGAI_TAG}
-    mem_limit: 256m
+    mem_limit: 512m
     cpus: 0.2
     depends_on:
-      sink-postgres:
-        condition: service_healthy
-      sink-prometheus:
+      config-init:
+        condition: service_completed_successfully
+      pgai-mon:
         condition: service_healthy
     environment:
-      # Reporter configuration
-      PROMETHEUS_URL: "http://sink-prometheus:9090"
-      POSTGRES_SINK_URL: "postgresql://pgwatch@sink-postgres:5432/measurements"
-      # Platform API (optional - leave empty to skip upload)
-      PGAI_API_URL: "${PGAI_API_URL:-}"
-      PGAI_API_TOKEN: "${PGAI_API_TOKEN:-}"
-      PGAI_PROJECT_NAME: "${PGAI_PROJECT_NAME:-preview-${BRANCH_SLUG}}"
+      PGAI_MON_URL: "http://pgai-mon:8765"
+      PGAI_MON_TOKEN: "${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}"
+      REPORTER_SOURCES_PATH: /app/instances.yml
+      REPORTER_INITIAL_DELAY_SECONDS: "120"
+      REPORTER_READINESS_TIMEOUT_SECONDS: "600"
+      REPORTER_INTERVAL_SECONDS: "600"
+      REPORTER_OUTPUT_TEMPLATE: "/app/reports/all_reports_%Y%m%d_%H%M%S.json"
+      REPORTER_API_URL: "${PGAI_API_URL:-}"
     volumes:
+      - ./instances.yml:/app/instances.yml:ro
+      - ./.pgwatch-config:/app/.pgwatch-config:ro
+      - postgres_ai_configs:/postgres_ai_configs:ro
       - reporter_data:/app/reports
-    # Run reporter every 10 minutes, generating all reports
-    # Uses --use-current-time for preview since data is fresh
-    # Uses --no-upload by default (set PGAI_API_TOKEN to enable uploads)
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "Reporter starting - will generate reports every 10 minutes"
-        echo "Reports stored in /app/reports"
-        echo "To run manually: docker exec <container> python -m reporter.postgres_reports --check-id K003 --use-current-time"
-        # Wait for some metrics to be collected
-        sleep 120
-        while true; do
-          echo "[$(date)] Generating reports..."
-          if [ -n "$$PGAI_API_TOKEN" ]; then
-            python -m reporter.postgres_reports \
-              --prometheus-url "$$PROMETHEUS_URL" \
-              --postgres-sink-url "$$POSTGRES_SINK_URL" \
-              --api-url "$${PGAI_API_URL:-https://postgres.ai/api/general}" \
-              --token "$$PGAI_API_TOKEN" \
-              --project-name "$$PGAI_PROJECT_NAME" \
-              --use-current-time \
-              --output /app/reports/
-          else
-            python -m reporter.postgres_reports \
-              --prometheus-url "$$PROMETHEUS_URL" \
-              --postgres-sink-url "$$POSTGRES_SINK_URL" \
-              --no-upload \
-              --use-current-time \
-              --output /app/reports/
-          fi
-          echo "[$(date)] Reports generated, sleeping 10 minutes..."
-          sleep 600
-        done
+    command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]
     restart: unless-stopped
     labels:
       - "pgai.preview=true"
@@ -301,7 +190,6 @@ networks:
 volumes:
   postgres_ai_configs:
   target_db_data:
-  sink_postgres_data:
-  victoria_metrics_data:
+  pgai_mon_data:
   grafana_data:
   reporter_data:

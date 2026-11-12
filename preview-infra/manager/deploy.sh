@@ -43,8 +43,9 @@ flock -w 30 200 || { log "ERROR: Could not acquire global lock"; exit 1; }
 if [ "$UPDATE_MODE" != "--update" ]; then
   # Count RUNNING preview containers (not directories)
   CURRENT=$(docker ps --filter 'label=pgai.preview=true' --format '{{.ID}}' | wc -l)
-  # Divide by ~9 services per preview to get preview count (updated from 7)
-  CURRENT_PREVIEWS=$((CURRENT / 9))
+  # Divide by the 5 long-running services per preview (target-db, pgai-mon,
+  # grafana, workload, reporter) to get the preview count
+  CURRENT_PREVIEWS=$((CURRENT / 5))
 
   if [ "$CURRENT_PREVIEWS" -ge "$MAX_PREVIEWS" ]; then
     log "ERROR: Maximum preview limit ($MAX_PREVIEWS) reached. Running: $CURRENT_PREVIEWS"
@@ -92,11 +93,13 @@ if [ ! -f ".env" ]; then
   GRAFANA_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
   PGAI_REGISTRY="${CI_PGAI_REGISTRY:-registry.gitlab.com/postgres-ai/postgresai}"
   PGAI_TAG="${CI_PGAI_TAG:-${BRANCH_SLUG}}"
+  PGAI_MON_TOKEN=$(openssl rand -hex 32)
   cat > ".env" << EOF
 BRANCH_SLUG=${BRANCH_SLUG}
 GRAFANA_PASSWORD=${GRAFANA_PASSWORD}
 PGAI_REGISTRY=${PGAI_REGISTRY}
 PGAI_TAG=${PGAI_TAG}
+PGAI_MON_TOKEN=${PGAI_MON_TOKEN}
 EOF
   chmod 600 .env
   log "Generated new credentials"
@@ -109,6 +112,11 @@ else
   # Update .env with current values
   sed -i "s|^PGAI_REGISTRY=.*|PGAI_REGISTRY=${PGAI_REGISTRY}|" .env
   sed -i "s|^PGAI_TAG=.*|PGAI_TAG=${PGAI_TAG}|" .env
+  # A preview deployed before pgai-mon has no token yet
+  if ! grep -q '^PGAI_MON_TOKEN=.' .env; then
+    sed -i '/^PGAI_MON_TOKEN=/d' .env
+    echo "PGAI_MON_TOKEN=$(openssl rand -hex 32)" >> .env
+  fi
 fi
 
 log "Using registry: ${PGAI_REGISTRY}, tag: ${PGAI_TAG}"
@@ -126,6 +134,16 @@ fi
 mkdir -p workload
 cp -r "${PREVIEW_BASE_DIR}/shared/workload/"* workload/ 2>/dev/null || true
 cp "${PREVIEW_BASE_DIR}/shared/instances.yml" instances.yml 2>/dev/null || true
+
+# The reporter's credential file: an API key only when the deploy was given one
+# (PGAI_API_TOKEN), else empty and the reporter does not upload. 0600; the
+# reporter container reads it as root.
+( umask 077
+  if [ -n "${PGAI_API_TOKEN:-}" ]; then
+    printf 'api_key=%s\nproject_name=%s\n' "$PGAI_API_TOKEN" "${PGAI_PROJECT_NAME:-preview-${BRANCH_SLUG}}" > .pgwatch-config
+  else
+    : > .pgwatch-config
+  fi )
 
 # =============================================================================
 # GENERATE COMPOSE FILE
