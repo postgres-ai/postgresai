@@ -59,4 +59,4 @@ The rollups over expressions evaluate the inner expression on the subquery grid 
 multiples of the inner step, prom_sq_start to prom_sq_end; MetricsQL's `(expr)[d]` with no
 step uses the query step) and window it in SQL. topk over an expression ranks per step with
 `QUALIFY row_number() OVER (PARTITION BY t ORDER BY value DESC, labels as text) <= top_n`,
-after dropping NaN. See NOTE_subquery_topk.md.
+after dropping NaN.

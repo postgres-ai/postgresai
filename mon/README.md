@@ -80,7 +80,7 @@ counter. `tests/host_rules.rs` runs the vmalert golden cases against it.
 | `tests/` | integration tests (`tests/fixtures/`: sample jsonlog lines) |
 | `schema/views.sql` | the consumer views; embedded in the binary (`include_str!`) |
 | `sql/macros.sql` | SQL macros loaded after the views (`macros_sql` / `--macros-sql`) |
-| `sql/reports/` | ported reporter and dashboard queries (`proposed/`: evaluator variants of R1 and R9) |
+| `sql/reports/` | ported dashboard queries |
 | `grafana/` | dashboard compiler and the 14 compiled SQL dashboards (see `grafana/README.md`) |
 | `examples/pgai-mon.example.yml` | example config (the demo target) |
 | `Dockerfile` | container image |
