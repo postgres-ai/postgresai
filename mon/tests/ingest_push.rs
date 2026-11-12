@@ -179,6 +179,9 @@ async fn push_needs_credentials_and_honours_extra_labels_and_receive_time() {
         got[0].2 >= t0 && got[0].2 <= pgai_mon::model::now_ms(),
         "no timestamp: receive time"
     );
+    // an oversized extra label is refused before it is copied onto the samples
+    let big = format!("?extra_label=a={}", "v".repeat(5000));
+    assert_eq!(push(&s, &big, "x 1\n".into()).await.status(), 400);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

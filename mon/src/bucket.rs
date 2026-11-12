@@ -271,7 +271,7 @@ fn write_local_catalog(dir: &Path, c: &Catalog) -> anyhow::Result<()> {
 }
 
 /// The day after which a file is no longer written or read by the background jobs.
-fn last_day(f: &FileEntry) -> i64 {
+pub fn last_day(f: &FileEntry) -> i64 {
     if MONTH_KINDS.contains(&f.kind.as_str()) {
         crate::store::month_of(f.day).1 - 1
     } else {
@@ -480,8 +480,10 @@ impl Bucket {
     /// The last upload round of a clean stop: as `sync`, and the commit marks the lease released,
     /// so a writer starting on this prefix (a new VM, a wiped local directory) takes over at once.
     pub fn release(&self, shared: &crate::store::Shared) -> anyhow::Result<()> {
+        // under the lock: a round the uploader thread is in finishes as an ordinary commit
+        let _g = self.sync_lock.lock().unwrap();
         self.releasing.store(true, Ordering::Relaxed);
-        self.sync(shared, None)
+        self.sync_locked(shared, None)
     }
 
     /// Take the store over before `StoreCore::open` runs on the local directory: check the lease,
@@ -737,6 +739,14 @@ impl Bucket {
         compactor: Option<&crate::store::Compactor>,
     ) -> anyhow::Result<()> {
         let _g = self.sync_lock.lock().unwrap();
+        self.sync_locked(shared, compactor)
+    }
+
+    fn sync_locked(
+        &self,
+        shared: &crate::store::Shared,
+        compactor: Option<&crate::store::Compactor>,
+    ) -> anyhow::Result<()> {
         if let Some(m) = &self.st.lock().unwrap().fenced {
             return Err(Fenced(m.clone()).into());
         }
@@ -834,7 +844,8 @@ impl Bucket {
             let st = self.st.lock().unwrap();
             now - st.last_sweep_ms >= self.cfg.sweep_interval_s as i64 * 1000
         };
-        if due_sweep {
+        // not on the releasing round: the next writer may already be uploading
+        if due_sweep && !self.releasing.load(Ordering::Relaxed) {
             if let Err(e) = self.sweep() {
                 eprintln!("bucket: sweep: {e:#}");
             }

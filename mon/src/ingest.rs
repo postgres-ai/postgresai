@@ -470,11 +470,19 @@ pub fn parse_line(line: &str) -> Result<PromLine, String> {
 /// Parse an exposition body: comments, HELP/TYPE and blank lines are skipped. Err: (line
 /// number, reason) of the first bad line.
 pub fn parse_text(body: &str) -> Result<Vec<PromLine>, (usize, String)> {
+    parse_text_capped(body, usize::MAX)
+}
+
+/// `parse_text` that stops at the first sample past `max`, before the rest is held in memory.
+pub fn parse_text_capped(body: &str, max: usize) -> Result<Vec<PromLine>, (usize, String)> {
     let mut out = Vec::new();
     for (n, raw) in body.lines().enumerate() {
         let l = raw.trim();
         if l.is_empty() || l.starts_with('#') {
             continue;
+        }
+        if out.len() >= max {
+            return Err((n + 1, format!("more than {max} samples in one request")));
         }
         out.push(parse_line(l).map_err(|e| (n + 1, e))?);
     }
@@ -568,10 +576,20 @@ async fn import_prometheus(
         Ok(e) => e,
         Err(e) => return reject(StatusCode::BAD_REQUEST, e),
     };
+    // checked before they are copied onto every sample
+    if extra.len() > ing.cfg.max_labels || extra.iter().any(|(_, v)| v.len() > ing.cfg.max_label_value_bytes) {
+        return reject(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "extra_label: at most {} labels of at most {} bytes",
+                ing.cfg.max_labels, ing.cfg.max_label_value_bytes
+            ),
+        );
+    }
     let Ok(text) = std::str::from_utf8(&body) else {
         return reject(StatusCode::BAD_REQUEST, "body is not UTF-8".into());
     };
-    let lines = match parse_text(text) {
+    let lines = match parse_text_capped(text, ing.cfg.max_samples_per_request) {
         Ok(l) => l,
         Err((n, e)) => return reject(StatusCode::BAD_REQUEST, format!("line {n}: {e}")),
     };
@@ -662,6 +680,8 @@ mod tests {
         let all = parse_text("# HELP x y\n# TYPE x gauge\n\nx 1\n  y{a=\"b\"} 2 3\n# EOF\n").unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(parse_text("x 1\ny{\n").unwrap_err().0, 2);
+        assert_eq!(parse_text_capped("x 1\n# c\ny 2\n", 2).unwrap().len(), 2);
+        assert_eq!(parse_text_capped("x 1\ny 2\nz 3\n", 2).unwrap_err().0, 3);
     }
 
     #[test]
