@@ -54,6 +54,12 @@
 # OPTIONAL PARAMETERS
 # -------------------------
 
+# pgai-mon store (default: S3, a bucket Terraform creates; the instance role can
+# touch only the prefix). false keeps the store on the instance.
+# store_s3        = true
+# store_s3_bucket = ""                  # existing bucket; empty = create one
+# store_s3_prefix = ""                  # empty = pgai-mon/<environment>
+
 # postgres_ai version (optional, defaults to actual)
 # postgres_ai_version = "0.10" # branch or specific tag like "0.10"
 

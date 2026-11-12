@@ -152,6 +152,121 @@ resource "aws_ebs_volume" "data" {
   }
 }
 
+# pgai-mon store in S3 (store_s3, default): a bucket (or a given one) and an
+# instance role that can list, read, write and delete under the store prefix
+# only. The role reaches the containers through IMDSv2, which needs one more
+# hop than the instance itself (the Docker bridge): hop limit 2 when it exists.
+locals {
+  store_bucket_name = var.store_s3_bucket != "" ? var.store_s3_bucket : (
+    var.store_s3 ? aws_s3_bucket.store[0].bucket : ""
+  )
+  store_prefix   = var.store_s3_prefix != "" ? var.store_s3_prefix : "pgai-mon/${var.environment}"
+  pgai_mon_store = var.store_s3 ? "s3://${local.store_bucket_name}/${local.store_prefix}" : ""
+
+  store_bucket_arn = "arn:aws:s3:::${local.store_bucket_name}"
+  store_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ListStorePrefix"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = [local.store_bucket_arn]
+        Condition = {
+          StringLike = { "s3:prefix" = [local.store_prefix, "${local.store_prefix}/*"] }
+        }
+      },
+      {
+        Sid      = "StoreObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
+        Resource = ["${local.store_bucket_arn}/${local.store_prefix}/*"]
+      },
+    ]
+  })
+}
+
+resource "aws_s3_bucket" "store" {
+  count = var.store_s3 && var.store_s3_bucket == "" ? 1 : 0
+  # bucket_prefix is at most 37 characters; bucket names are lowercase.
+  bucket_prefix = substr("${replace(lower(var.environment), "/[^a-z0-9-]/", "-")}-pgai-store-", 0, 37)
+
+  tags = {
+    Name = "${var.environment}-postgres-ai-store"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "store" {
+  count                   = length(aws_s3_bucket.store)
+  bucket                  = aws_s3_bucket.store[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "store" {
+  count  = length(aws_s3_bucket.store)
+  bucket = aws_s3_bucket.store[0].id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "store" {
+  count  = length(aws_s3_bucket.store)
+  bucket = aws_s3_bucket.store[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Refuse plain-HTTP access to the store bucket.
+resource "aws_s3_bucket_policy" "store_tls" {
+  count  = length(aws_s3_bucket.store)
+  bucket = aws_s3_bucket.store[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.store[0].arn, "${aws_s3_bucket.store[0].arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+  depends_on = [aws_s3_bucket_public_access_block.store]
+}
+
+resource "aws_iam_role" "instance" {
+  count = var.store_s3 ? 1 : 0
+  name  = "${var.environment}-postgres-ai-instance"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "store" {
+  count  = var.store_s3 ? 1 : 0
+  name   = "pgai-mon-store"
+  role   = aws_iam_role.instance[0].id
+  policy = local.store_policy
+}
+
+resource "aws_iam_instance_profile" "instance" {
+  count = var.store_s3 ? 1 : 0
+  name  = "${var.environment}-postgres-ai-instance"
+  role  = aws_iam_role.instance[0].name
+}
+
 # EC2 Instance
 resource "aws_instance" "main" {
   ami           = data.aws_ami.ubuntu.id
@@ -159,6 +274,7 @@ resource "aws_instance" "main" {
   subnet_id     = aws_subnet.main.id
 
   vpc_security_group_ids = [aws_security_group.main.id]
+  iam_instance_profile   = var.store_s3 ? aws_iam_instance_profile.instance[0].name : null
 
   key_name = var.ssh_key_name
 
@@ -170,15 +286,15 @@ resource "aws_instance" "main" {
   }
 
   user_data = templatefile("${path.module}/user_data.sh", {
-    grafana_password     = var.grafana_password
-    postgres_ai_api_key  = var.postgres_ai_api_key
-    enable_demo_db       = var.enable_demo_db
-    postgres_ai_version  = var.postgres_ai_version
-    bind_host            = var.bind_host
-    grafana_bind_host    = var.grafana_bind_host
-    vm_auth_username     = var.vm_auth_username
-    vm_auth_password     = var.vm_auth_password
-    instances_yml        = templatefile("${path.module}/instances.yml.tpl", {
+    grafana_password    = var.grafana_password
+    postgres_ai_api_key = var.postgres_ai_api_key
+    enable_demo_db      = var.enable_demo_db
+    postgres_ai_version = var.postgres_ai_version
+    bind_host           = var.bind_host
+    grafana_bind_host   = var.grafana_bind_host
+    aws_region          = var.aws_region
+    pgai_mon_store      = local.pgai_mon_store
+    instances_yml = templatefile("${path.module}/instances.yml.tpl", {
       monitoring_instances = var.monitoring_instances
       enable_demo_db       = var.enable_demo_db
     })
@@ -187,7 +303,7 @@ resource "aws_instance" "main" {
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    http_put_response_hop_limit = var.store_s3 ? 2 : 1
     instance_metadata_tags      = "enabled"
   }
 
@@ -248,7 +364,7 @@ resource "terraform_data" "deploy_config" {
       "sudo -u postgres_ai /home/postgres_ai/postgres_ai/postgres_ai update-config",
       "echo 'Config updated successfully'"
     ]
-    
+
     connection {
       type        = "ssh"
       user        = "ubuntu"

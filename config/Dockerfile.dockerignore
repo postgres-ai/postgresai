@@ -1,0 +1,8 @@
+# Build context is the repository root; send only what config/Dockerfile copies.
+*
+!config/grafana/provisioning
+!config/target-db
+!config/scripts/postgres-entrypoint.sh
+!config/scripts/postgres-reports.sh
+!config/init-configs.sh
+!mon/grafana/dashboards

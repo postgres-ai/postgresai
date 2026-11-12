@@ -1,6 +1,6 @@
-# docker-compose.yml refuses to start without PGAI_TAG and VM auth, and the
-# demo DB's replication needs REPLICATOR_PASSWORD: user_data must write all of
-# them to .env (postgresai#292).
+# docker-compose.yml refuses to start without PGAI_TAG and PGAI_MON_TOKEN, and
+# the demo DB's replication needs REPLICATOR_PASSWORD: user_data must write all
+# of them to .env (postgresai#292).
 # Run with: terraform test -filter=tests/env_required.tftest.hcl
 
 mock_provider "aws" {
@@ -33,40 +33,19 @@ variables {
   postgres_ai_version = "0.18.0-rc.1"
 }
 
-run "generated_vm_password_and_replicator_password" {
+run "tag_and_generated_secrets" {
   command = plan
-
-  variables {
-    vm_auth_password = ""
-  }
 
   assert {
     condition     = strcontains(aws_instance.main.user_data, "PGAI_TAG=0.18.0-rc.1")
     error_message = "user_data must set PGAI_TAG to the release tag"
   }
   assert {
-    condition     = strcontains(aws_instance.main.user_data, "VM_AUTH_USERNAME=vmauth")
-    error_message = "user_data must always set VM_AUTH_USERNAME"
+    condition     = strcontains(aws_instance.main.user_data, "for secret_name in PGAI_MON_TOKEN REPLICATOR_PASSWORD; do")
+    error_message = "the instance must generate PGAI_MON_TOKEN and REPLICATOR_PASSWORD"
   }
   assert {
-    condition     = strcontains(aws_instance.main.user_data, "for secret_name in VM_AUTH_PASSWORD REPLICATOR_PASSWORD; do")
-    error_message = "without vm_auth_password the instance must generate VM_AUTH_PASSWORD and REPLICATOR_PASSWORD"
-  }
-}
-
-run "given_vm_password_is_used" {
-  command = plan
-
-  variables {
-    vm_auth_password = "given-vm-password" # gitleaks:allow (mock value)
-  }
-
-  assert {
-    condition     = strcontains(aws_instance.main.user_data, "VM_AUTH_PASSWORD=given-vm-password")
-    error_message = "a given vm_auth_password must be written to .env"
-  }
-  assert {
-    condition     = strcontains(aws_instance.main.user_data, "for secret_name in REPLICATOR_PASSWORD; do")
-    error_message = "with vm_auth_password set only REPLICATOR_PASSWORD is generated"
+    condition     = !strcontains(aws_instance.main.user_data, "VM_AUTH")
+    error_message = "the pgai-mon stack has no VictoriaMetrics credentials"
   }
 }

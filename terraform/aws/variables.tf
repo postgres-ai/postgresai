@@ -97,7 +97,7 @@ variable "encryption_kms_key_arn" {
 }
 
 variable "bind_host" {
-  description = "Bind host for internal service ports (127.0.0.1: for localhost only, empty for all interfaces)"
+  description = "Written to .env as BIND_HOST for older tooling; the pgai-mon stack publishes pgai-mon on 127.0.0.1 regardless"
   type        = string
   default     = "127.0.0.1:"
 }
@@ -108,15 +108,30 @@ variable "grafana_bind_host" {
   default     = "127.0.0.1:"
 }
 
-variable "vm_auth_username" {
-  description = "VictoriaMetrics HTTP Basic Auth username"
-  type        = string
-  default     = "vmauth"
+variable "store_s3" {
+  description = "Keep pgai-mon's Parquet store in S3 (default), so the instance is disposable: the instance role may read and write only the store prefix. false: the store stays in a Docker volume on the instance."
+  type        = bool
+  default     = true
 }
 
-variable "vm_auth_password" {
-  description = "VictoriaMetrics HTTP Basic Auth password. Leave empty to generate one on the instance."
+variable "store_s3_bucket" {
+  description = "Existing S3 bucket for the store (in aws_region). Empty: Terraform creates a private, SSE-S3 encrypted bucket named <environment>-pgai-store-<suffix>."
   type        = string
   default     = ""
-  sensitive   = true
+
+  validation {
+    condition     = var.store_s3_bucket == "" || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.store_s3_bucket))
+    error_message = "store_s3_bucket must be a valid S3 bucket name (lowercase letters, digits, dots, hyphens; 3-63 characters) or empty."
+  }
+}
+
+variable "store_s3_prefix" {
+  description = "Key prefix of the store in the bucket; the instance role's permissions are limited to it. Empty: pgai-mon/<environment>."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.store_s3_prefix == "" || can(regex("^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$", var.store_s3_prefix))
+    error_message = "store_s3_prefix must be path segments of letters, digits, '.', '_' or '-' separated by single '/', with no leading or trailing '/' and no wildcards."
+  }
 }

@@ -101,18 +101,20 @@ GRAFANA_BIND_HOST=${grafana_bind_host}
 ENV_EOF
 
 # docker-compose.yml requires PGAI_TAG (the image tag: the release tag cloned
-# above) and VM auth (Grafana's datasource provisioning); the demo DB's
-# replication needs REPLICATOR_PASSWORD. Passwords not given are generated here.
+# above) and PGAI_MON_TOKEN (pgai-mon's bearer token: Grafana, the reporter and
+# instance-jobs send it); the demo DB's replication needs REPLICATOR_PASSWORD.
+# Both secrets are generated here. PGAI_MON_STORE is the S3 store
+# (s3://bucket/prefix, credentials from the instance role) or empty for the
+# local Docker volume.
 cat >> .env <<ENV_EOF
 PGAI_TAG=${postgres_ai_version}
-VM_AUTH_USERNAME=${vm_auth_username}
+PGAI_MON_STORE=${pgai_mon_store}
+AWS_REGION=${aws_region}
 ENV_EOF
-%{ if vm_auth_password != "" ~}
-cat >> .env <<ENV_EOF
-VM_AUTH_PASSWORD=${vm_auth_password}
-ENV_EOF
-%{ endif ~}
-for secret_name in %{ if vm_auth_password == "" }VM_AUTH_PASSWORD %{ endif }REPLICATOR_PASSWORD; do
+# Assign first and check. The `|| true` is what keeps `set -e` from exiting on
+# the spot (an assignment from a failed substitution does trip it), so the loop
+# can report which secret it could not mint rather than write a blank one.
+for secret_name in PGAI_MON_TOKEN REPLICATOR_PASSWORD; do
   secret_value=$(openssl rand -hex 32 || true)
   if [ -z "$secret_value" ]; then
     echo "FATAL: cannot generate $secret_name" >&2
@@ -122,27 +124,11 @@ for secret_name in %{ if vm_auth_password == "" }VM_AUTH_PASSWORD %{ endif }REPL
 done
 unset secret_name secret_value
 
-# VictoriaMetrics admin-endpoint keys (#359). sink-prometheus mints a throwaway
-# key when these are absent, which shuts the endpoints but leaves the operator
-# no usable key; generate them here so they survive a restart. Held by nothing
-# that reads metrics.
-# Assign first and check. The `|| true` is what keeps `set -e` from exiting on
-# the spot (an assignment from a failed substitution does trip it), so the loop
-# can report which key it could not mint rather than write a blank one silently.
-for vm_key_name in VM_DELETE_AUTH_KEY VM_SNAPSHOT_AUTH_KEY VM_FORCE_MERGE_AUTH_KEY VM_PPROF_AUTH_KEY; do
-  vm_key_value=$(openssl rand -hex 32 || true)
-  if [ -z "$vm_key_value" ]; then
-    echo "FATAL: cannot generate $vm_key_name" >&2
-    exit 1
-  fi
-  echo "$vm_key_name=$vm_key_value" >> .env
-done
-unset vm_key_name vm_key_value
-
-# The instance-jobs container bind-mounts .pgwatch-config, which is 0600, so it
-# has to run as that file's owner -- everything here is chowned to postgres_ai
-# below. Compose reads this from .env. See postgresai#366.
-# Assign first and check, like the VM keys above. The `|| true` is what keeps
+# The instance-jobs container bind-mounts .pgwatch-config, and pgai-mon reads
+# instances.yml; both are 0600, so both containers run as the files' owner --
+# everything here is chowned to postgres_ai below. Compose reads this from .env.
+# See postgresai#366.
+# Assign first and check, like the secrets above. The `|| true` is what keeps
 # `set -e` from exiting on the spot, so the script can say what went wrong
 # rather than dying silently -- and `INSTANCE_JOBS_USER=:` would make the
 # container refuse to start.
@@ -206,7 +192,7 @@ echo "Installation complete!"
 echo "Access Grafana at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):3000"
 echo "Username: monitor"
 echo "Password: ${grafana_password}"
-if [ -n "${vm_auth_username}" ] && [ -n "${vm_auth_password}" ]; then
-  echo ""
-  echo "VictoriaMetrics Auth: enabled (username: ${vm_auth_username})"
-fi
+%{ if pgai_mon_store != "" ~}
+echo ""
+echo "pgai-mon store: ${pgai_mon_store}"
+%{ endif ~}

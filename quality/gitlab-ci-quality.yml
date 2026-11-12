@@ -16,7 +16,8 @@
 #   - Duplicate targets within a panel (legend duplicates)
 #   - Default time ranges wider than 1 hour (empty-looking graphs on demo)
 #   - Grafana auto-update / "new version available" banner not disabled
-# The tests live under tests/grafana_dashboards/ and run on every MR.
+# The tests live under tests/grafana_dashboards/ and run on every MR, with
+# mon/grafana/test_compile.py (the SQL dashboards compile.py emitted).
 quality:grafana-dashboards-lint:
   stage: test
   image: python:3.11-bookworm
@@ -28,6 +29,8 @@ quality:grafana-dashboards-lint:
     - pip install pytest pyyaml
   script:
     - python -m pytest tests/grafana_dashboards -v --tb=short
+    # The pgai-mon dashboards and their compiler (offline: no pgai-mon, no Grafana).
+    - cd mon/grafana && python -m unittest -v test_compile
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'

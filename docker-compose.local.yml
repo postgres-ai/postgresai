@@ -1,21 +1,23 @@
+
 services:
-  # Local development override: build configs from source
+  # Local development override: build configs from source (context: repo root,
+  # the image ships mon/grafana/dashboards)
   config-init:
     build:
-      context: ./config
+      context: .
+      dockerfile: config/Dockerfile
       args:
         VERSION: local-dev
         BUILD_TS: "${BUILD_TS:-local}"
     image: local/configs:dev
 
-  # Local development override: build Flask backend from source
-  monitoring_flask_backend:
+  # Local development override: build pgai-mon from source (a cold build
+  # compiles DuckDB: several minutes)
+  pgai-mon:
     build:
-      context: ./monitoring_flask_backend
-      args:
-        VERSION: local-dev
-        BUILD_TS: "${BUILD_TS:-local}"
-    image: local/monitoring_flask_backend:dev
+      context: .
+      dockerfile: mon/Dockerfile
+    image: local/pgai-mon:dev
 
   # Local development override: build reporter from source
   postgres-reports:
@@ -25,11 +27,6 @@ services:
         VERSION: local-dev
         BUILD_TS: "${BUILD_TS:-local}"
     image: local/reporter:dev
-
-  # Expose sink-postgres to host for local reporter runs
-  sink-postgres:
-    ports:
-      - "127.0.0.1:55433:5432"
 
   # Override Grafana port to avoid conflict with local dev server
   grafana:

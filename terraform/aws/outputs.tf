@@ -13,6 +13,11 @@ output "root_volume_id" {
   value       = one(aws_instance.main.root_block_device).volume_id
 }
 
+output "store_url" {
+  description = "pgai-mon store (PGAI_MON_STORE): s3://bucket/prefix, or empty for the instance's Docker volume"
+  value       = local.pgai_mon_store
+}
+
 output "public_ip" {
   description = "Public IP address"
   value       = var.use_elastic_ip ? aws_eip.main[0].public_ip : aws_instance.main.public_ip
