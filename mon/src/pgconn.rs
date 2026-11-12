@@ -165,7 +165,11 @@ impl ConnParams {
     }
 
     /// tokio-postgres config and the TLS connector for resolved parameters.
-    pub fn build(&self, application_name: &str, home: Option<&Path>) -> anyhow::Result<(tokio_postgres::Config, MakeRustls)> {
+    pub fn build(
+        &self,
+        application_name: &str,
+        home: Option<&Path>,
+    ) -> anyhow::Result<(tokio_postgres::Config, MakeRustls)> {
         let mut cfg = tokio_postgres::Config::new();
         let hosts: Vec<&str> = self.get("host").map(|h| h.split(',').collect()).unwrap_or_default();
         for h in &hosts {
@@ -215,7 +219,9 @@ impl ConnParams {
             cfg.keepalives(k != "0");
         }
         if let Some(k) = self.get("keepalives_idle") {
-            cfg.keepalives_idle(Duration::from_secs(k.parse().map_err(|_| anyhow::anyhow!("invalid keepalives_idle {k}"))?));
+            cfg.keepalives_idle(Duration::from_secs(
+                k.parse().map_err(|_| anyhow::anyhow!("invalid keepalives_idle {k}"))?,
+            ));
         }
         if let Some(t) = self.get("target_session_attrs") {
             cfg.target_session_attrs(match t {
@@ -250,7 +256,9 @@ fn pct_decode(s: &str) -> anyhow::Result<String> {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' {
-            let h = s.get(i + 1..i + 3).ok_or_else(|| anyhow::anyhow!("bad percent-encoding in connection URL"))?;
+            let h = s
+                .get(i + 1..i + 3)
+                .ok_or_else(|| anyhow::anyhow!("bad percent-encoding in connection URL"))?;
             out.push(u8::from_str_radix(h, 16).map_err(|_| anyhow::anyhow!("bad percent-encoding in connection URL"))?);
             i += 3;
         } else {
@@ -294,7 +302,9 @@ fn parse_url(s: &str) -> anyhow::Result<ConnParams> {
         let mut ports = Vec::new();
         for h in hostspec.split(',') {
             let (host, port) = if let Some(r) = h.strip_prefix('[') {
-                let (v6, after) = r.split_once(']').ok_or_else(|| anyhow::anyhow!("unterminated [ in connection URL"))?;
+                let (v6, after) = r
+                    .split_once(']')
+                    .ok_or_else(|| anyhow::anyhow!("unterminated [ in connection URL"))?;
                 (v6.to_string(), after.strip_prefix(':').unwrap_or("").to_string())
             } else {
                 match h.rsplit_once(':') {
@@ -317,7 +327,9 @@ fn parse_url(s: &str) -> anyhow::Result<ConnParams> {
     }
     if let Some(q) = query {
         for kv in q.split('&').filter(|x| !x.is_empty()) {
-            let (k, v) = kv.split_once('=').ok_or_else(|| anyhow::anyhow!("connection URL parameter without '=': {k}", k = kv))?;
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("connection URL parameter without '=': {k}", k = kv))?;
             p.set(&pct_decode(k)?, pct_decode(v)?);
         }
     }
@@ -345,7 +357,10 @@ fn parse_kv(s: &str) -> anyhow::Result<ConnParams> {
         while it.peek().is_some_and(|c| c.is_whitespace()) {
             it.next();
         }
-        anyhow::ensure!(it.next() == Some('='), "missing \"=\" after \"{key}\" in connection string");
+        anyhow::ensure!(
+            it.next() == Some('='),
+            "missing \"=\" after \"{key}\" in connection string"
+        );
         while it.peek().is_some_and(|c| c.is_whitespace()) {
             it.next();
         }
@@ -384,7 +399,9 @@ fn parse_kv(s: &str) -> anyhow::Result<ConnParams> {
 /// `\:` and `\\` escape. A Unix-socket host matches `localhost`. Ignored (with a warning)
 /// when group or others can read it, as libpq does.
 pub fn pgpass_lookup(file: &Path, p: &ConnParams) -> anyhow::Result<Option<String>> {
-    let Ok(meta) = std::fs::metadata(file) else { return Ok(None) };
+    let Ok(meta) = std::fs::metadata(file) else {
+        return Ok(None);
+    };
     if !meta.is_file() {
         return Ok(None);
     }
@@ -401,8 +418,16 @@ pub fn pgpass_lookup(file: &Path, p: &ConnParams) -> anyhow::Result<Option<Strin
     }
     let text = std::fs::read_to_string(file)?;
     let host = p.get("host").and_then(|h| h.split(',').next()).unwrap_or("localhost");
-    let host = if host.is_empty() || host.starts_with('/') { "localhost" } else { host };
-    let port = p.get("port").and_then(|h| h.split(',').next()).filter(|x| !x.is_empty()).unwrap_or("5432");
+    let host = if host.is_empty() || host.starts_with('/') {
+        "localhost"
+    } else {
+        host
+    };
+    let port = p
+        .get("port")
+        .and_then(|h| h.split(',').next())
+        .filter(|x| !x.is_empty())
+        .unwrap_or("5432");
     let want = [host, port, p.get("dbname").unwrap_or(""), p.get("user").unwrap_or("")];
     for line in text.lines() {
         if line.trim_start().starts_with('#') || line.trim().is_empty() {
@@ -461,7 +486,10 @@ fn load_roots(spec: &str) -> anyhow::Result<RootCertStore> {
         for c in r.certs {
             let _ = roots.add(c);
         }
-        anyhow::ensure!(!roots.is_empty(), "sslrootcert=system: no certificates in the system store");
+        anyhow::ensure!(
+            !roots.is_empty(),
+            "sslrootcert=system: no certificates in the system store"
+        );
     } else {
         for c in CertificateDer::pem_file_iter(spec).map_err(|e| anyhow::anyhow!("sslrootcert {spec}: {e}"))? {
             roots.add(c.map_err(|e| anyhow::anyhow!("sslrootcert {spec}: {e}"))?)?;
@@ -502,7 +530,8 @@ impl MakeRustls {
                         }
                     }
                 };
-                let inner = WebPkiServerVerifier::builder_with_provider(Arc::new(load_roots(&spec)?), prov.clone()).build()?;
+                let inner =
+                    WebPkiServerVerifier::builder_with_provider(Arc::new(load_roots(&spec)?), prov.clone()).build()?;
                 if verify == Verify::Full {
                     inner
                 } else {
@@ -713,8 +742,10 @@ mod tests {
 
     #[test]
     fn url_form() {
-        let p = ConnParams::parse("postgresql://mon%40x:p%3Ass@db1:5433,[::1]:5434/my%20db?sslmode=verify-full&sslrootcert=/ca.pem")
-            .unwrap();
+        let p = ConnParams::parse(
+            "postgresql://mon%40x:p%3Ass@db1:5433,[::1]:5434/my%20db?sslmode=verify-full&sslrootcert=/ca.pem",
+        )
+        .unwrap();
         assert_eq!(
             kv(&p),
             vec![
@@ -786,7 +817,10 @@ mod tests {
         assert_eq!(p.get("password"), Some("se:cret"));
         assert_eq!(p.get("sslmode"), Some("require"));
         // the string wins over the environment; another user falls through to `*`
-        let p = ConnParams::parse("user=x dbname=app sslmode=disable").unwrap().resolve(&env).unwrap();
+        let p = ConnParams::parse("user=x dbname=app sslmode=disable")
+            .unwrap()
+            .resolve(&env)
+            .unwrap();
         assert_eq!(p.get("password"), Some("fallback"));
         assert_eq!(p.get("sslmode"), Some("disable"));
         // PGPASSWORD before the file
@@ -814,9 +848,14 @@ mod tests {
         assert!(e.contains("root certificate"), "{e}");
         assert!(b("host=h sslmode=verify-ca sslrootcert=/nonexistent").is_err());
         assert!(b("host=h sslcert=/a").is_err(), "sslcert without sslkey");
-        let r = ConnParams::parse("host=h sslrootcert=system sslmode=require").unwrap().resolve(&|_| None);
+        let r = ConnParams::parse("host=h sslrootcert=system sslmode=require")
+            .unwrap()
+            .resolve(&|_| None);
         assert!(r.is_err());
-        let r = ConnParams::parse("host=h sslrootcert=system").unwrap().resolve(&|_| None).unwrap();
+        let r = ConnParams::parse("host=h sslrootcert=system")
+            .unwrap()
+            .resolve(&|_| None)
+            .unwrap();
         assert_eq!(r.get("sslmode"), Some("verify-full"));
     }
 }

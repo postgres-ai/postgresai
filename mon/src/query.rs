@@ -1432,6 +1432,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
         "series_known": st.shared.known_series.lock().unwrap().len(),
         "rss_bytes": crate::sqlproc::rss_bytes(std::process::id()),
         "admission": st.adm.stats(),
+        "collector": crate::collector::health_json(),
         "late_flushes": s.late_flushes.load(Ordering::Relaxed),
         "cache": {"l1": st.cache.stats_json(), "reader": reader_stats},
         "reader": match &st.backend {

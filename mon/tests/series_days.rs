@@ -43,7 +43,7 @@ fn per_day_series_rows_across_midnight_flush_and_compaction() {
     let mut core = StoreCore::open(d.path(), &StoreCfg::default()).unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(1 << 16);
-    let mut em = Emitter::new(core.shared.clone(), tx, Default::default());
+    let em = Emitter::new(core.shared.clone(), tx, Default::default());
     let r = Reader::new(
         core.shared.clone(),
         HttpCfg::default(),
