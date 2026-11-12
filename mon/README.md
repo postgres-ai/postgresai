@@ -138,8 +138,7 @@ $B compact --store DIR --all
 ```
 
 `$B --help` and `$B <command> --help` list every command and option, including the
-benchmark and crash-test helpers (`layout-bench`, `crashtest-write`,
-`crashtest-verify`, `synth-*`).
+crash-test helpers (`crashtest-write`, `crashtest-verify`).
 
 ## Config
 

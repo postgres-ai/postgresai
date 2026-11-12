@@ -179,15 +179,6 @@ enum Cmd {
         metrics_yml: Option<PathBuf>,
         sql: String,
     },
-    /// Rewrite a store's samples in every layout variant and report bytes/sample.
-    LayoutBench {
-        #[arg(long)]
-        store: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long, default_value_t = 9)]
-        zstd_level: i32,
-    },
     /// Crash test writer: append deterministic samples and flush until killed.
     CrashtestWrite {
         #[arg(long)]
@@ -201,47 +192,6 @@ enum Cmd {
         /// Leave the last records only in the WAL (for the negative test).
         #[arg(long)]
         no_final_flush: bool,
-    },
-    /// Rewrite series files as per-day files (stores written before per-day series).
-    MigrateSeries {
-        #[arg(long)]
-        store: PathBuf,
-    },
-    /// Test data: add N never-sampled series of a metric (queryid churn) over the last D days.
-    SynthChurn {
-        #[arg(long)]
-        store: PathBuf,
-        /// metric, or a comma list to spread the series over
-        #[arg(long, default_value = "pgwatch_pg_stat_statements_calls")]
-        metric: String,
-        #[arg(long)]
-        series: u64,
-        #[arg(long, default_value_t = 395)]
-        days: i64,
-        /// last day (days since 1970-01-01); default: the newest samples day
-        #[arg(long)]
-        last_day: Option<i64>,
-    },
-    /// Review B6 gate (b): churned pgss series with samples, written as final day files.
-    SynthSampled {
-        #[arg(long)]
-        store: PathBuf,
-        #[arg(
-            long,
-            default_value = "pgwatch_pg_stat_statements_calls,pgwatch_pg_stat_statements_exec_time_total,pgwatch_pg_stat_statements_plan_time_total"
-        )]
-        metrics: String,
-        #[arg(long, default_value_t = 30)]
-        days: i64,
-        /// last day (days since 1970-01-01)
-        #[arg(long)]
-        last_day: i64,
-        #[arg(long, default_value_t = 2000)]
-        base: u64,
-        #[arg(long, default_value_t = 4000)]
-        new_per_day: u64,
-        #[arg(long, default_value_t = 30)]
-        step_s: i64,
     },
     /// Internal: the SQL reader child process (spawned by run/serve).
     #[command(hide = true)]
@@ -479,82 +429,6 @@ fn main_cmd() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::SqlWorker { spec } => sqlproc::child_main(&spec),
-        Cmd::SynthSampled {
-            store,
-            metrics,
-            days,
-            last_day,
-            base,
-            new_per_day,
-            step_s,
-        } => {
-            let ms: Vec<&str> = metrics.split(',').collect();
-            println!(
-                "{}",
-                tools::synth_sampled(&store, &ms, days, last_day, base, new_per_day, step_s)?
-            );
-            Ok(())
-        }
-        Cmd::MigrateSeries { store } => {
-            let mut core = store::StoreCore::open(&store, &Default::default())?;
-            println!("{}", tools::migrate_series_per_day(&mut core)?);
-            println!("{}", tools::series_fix_and_register(&mut core)?);
-            Ok(())
-        }
-        Cmd::SynthChurn {
-            store,
-            metric,
-            series,
-            days,
-            last_day,
-        } if metric.contains(',') => {
-            // spread over several metrics (e.g. every pg_stat_statements metric)
-            let mut core = store::StoreCore::open(&store, &Default::default())?;
-            let ld = match last_day {
-                Some(d) => d,
-                None => core
-                    .shared
-                    .catalog
-                    .lock()
-                    .unwrap()
-                    .files_of("samples")
-                    .map(|f| f.day)
-                    .max()
-                    .unwrap_or(0),
-            };
-            let ms: Vec<&str> = metric.split(',').collect();
-            for m in &ms {
-                println!(
-                    "{m}: {}",
-                    tools::synth_churn(&mut core, m, series / ms.len() as u64, days, ld)?
-                );
-            }
-            Ok(())
-        }
-        Cmd::SynthChurn {
-            store,
-            metric,
-            series,
-            days,
-            last_day,
-        } => {
-            let mut core = store::StoreCore::open(&store, &Default::default())?;
-            let ld = match last_day {
-                Some(d) => d,
-                None => core
-                    .shared
-                    .catalog
-                    .lock()
-                    .unwrap()
-                    .files_of("samples")
-                    .map(|f| f.day)
-                    .max()
-                    .unwrap_or(0),
-            };
-            println!("{}", tools::synth_churn(&mut core, &metric, series, days, ld)?);
-            Ok(())
-        }
-        Cmd::LayoutBench { store, out, zstd_level } => layout_bench(&store, &out, zstd_level),
         Cmd::CrashtestWrite {
             store,
             series,
@@ -581,68 +455,6 @@ fn main_cmd() -> anyhow::Result<()> {
             Ok(())
         }
     }
-}
-
-fn layout_bench(store_dir: &std::path::Path, out: &std::path::Path, zstd_level: i32) -> anyhow::Result<()> {
-    let core = store::StoreCore::open(store_dir, &Default::default())?;
-    let cat = core.shared.catalog.lock().unwrap().clone();
-    let files: Vec<_> = cat.files_of("samples").collect();
-    anyhow::ensure!(!files.is_empty(), "no samples");
-    let src = format!("read_parquet({})", store::file_list_sql(&core.shared.root, &files));
-    let db = core.conn();
-    db.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE buf_samples AS SELECT series_id, epoch_ms(ts) AS ts, value, stale FROM ({}) ORDER BY series_id, ts",
-        store::samples_raw_select(&cat.samples_layout, &src)
-    ))?;
-    let n: i64 = db.query_row("SELECT count(*) FROM buf_samples", [], |r| r.get(0))?;
-    std::fs::create_dir_all(out)?;
-    let mut res = Vec::new();
-    for layout in store::LAYOUTS {
-        let cfg = config::StoreCfg {
-            zstd_level,
-            ..Default::default()
-        };
-        let p = out.join(format!("{layout}.parquet"));
-        let proj = match *layout {
-            l if l.contains("split") && l.ends_with("_tz") => "series_id, make_timestamptz(ts * 1000) AS ts, CASE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN value::BIGINT END AS ival, CASE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN NULL ELSE value END AS fval",
-            l if l.contains("split") => "series_id, epoch_ms(ts)::TIMESTAMP_MS AS ts, CASE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN value::BIGINT END AS ival, CASE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN NULL ELSE value END AS fval",
-            l if l.ends_with("_tz") => "series_id, make_timestamptz(ts * 1000) AS ts, value",
-            _ => "series_id, epoch_ms(ts)::TIMESTAMP_MS AS ts, value",
-        };
-        let t0 = std::time::Instant::now();
-        let bytes = store::copy_atomic(
-            db,
-            &cfg,
-            &format!("SELECT {proj} FROM buf_samples ORDER BY series_id, ts"),
-            &p,
-            layout,
-        )?;
-        let cols: Vec<(String, i64, String)> = {
-            let mut st = db.prepare(&format!(
-                "SELECT path_in_schema, sum(total_compressed_size)::BIGINT, string_agg(DISTINCT encodings, ' ') \
-                 FROM parquet_metadata('{}') GROUP BY 1 ORDER BY 1",
-                p.display()
-            ))?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-            rows.collect::<Result<_, _>>()?
-        };
-        let col_bps: serde_json::Map<String, serde_json::Value> = cols
-            .iter()
-            .map(|(c, b, e)| {
-                (
-                    c.clone(),
-                    serde_json::json!({"bytes_per_sample": *b as f64 / n as f64, "encodings": e}),
-                )
-            })
-            .collect();
-        res.push(serde_json::json!({
-            "layout": layout, "bytes": bytes, "samples": n,
-            "bytes_per_sample": bytes as f64 / n as f64, "write_ms": t0.elapsed().as_millis() as u64,
-            "columns": col_bps,
-        }));
-    }
-    println!("{}", serde_json::to_string_pretty(&res)?);
-    Ok(())
 }
 
 fn run(mut cfg: config::Config) -> anyhow::Result<()> {
