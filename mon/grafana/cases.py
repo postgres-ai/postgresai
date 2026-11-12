@@ -631,14 +631,19 @@ def _st(kind):
 dash("D9", "46A_hit_ratio", "statio_ratio.sql", f"({_st('hit')})/({_st('read')} + ({_st('hit')}))", num="hit", matchers=_s9)
 dash("D9", "46B_read_ratio", "statio_ratio.sql", f"({_st('read')})/({_st('read')} + ({_st('hit')}))", num="read", matchers=_s9)
 
+# relkind: metrics.yml exports it as text (c.relkind::text: "r", "i"); the PromQL dashboards match
+# the char's code ("114", "105"), which pgwatch exported before that cast and no store written since
+# has. Both are matched, so stores with either keep working.
+RELKIND_TABLE, RELKIND_INDEX = ["relkind", "=~", "114|r"], ["relkind", "=~", "105|i"]
+
 # --- Dashboard_11_Single_index_analysis.json ($datname, $schema_name, $index_name) ---
 D11_SCHEMA, D11_INDEX = "public", "pgbench_accounts_pkey"
 _i11 = _CNmv + [["datname", "=", "target_database"], ["schemaname", "=", D11_SCHEMA]]
 _pi11 = '{cluster="$cluster", node_name="$node", datname="$db", schemaname="' + D11_SCHEMA + '", indexrelname="' + D11_INDEX + '"}'
 dash("D11", "3A_raw", "sql/reports/d2/raw_selector.sql",
-     f'pgwatch_pg_class_relation_size_bytes{{relkind="105", cluster="$cluster", node_name="$node", datname="$db", '
+     f'pgwatch_pg_class_relation_size_bytes{{relkind=~"105|i", cluster="$cluster", node_name="$node", datname="$db", '
      f'schemaname="{D11_SCHEMA}", relname="{D11_INDEX}"}}',
-     metric="pgwatch_pg_class_relation_size_bytes", matchers=[["relkind", "=", "105"]] + _i11 + [["relname", "=", D11_INDEX]])
+     metric="pgwatch_pg_class_relation_size_bytes", matchers=[RELKIND_INDEX] + _i11 + [["relname", "=", D11_INDEX]])
 for ref, m in (("5A", "idx_scan"), ("6A", "idx_tup_read"), ("6B", "idx_tup_fetch")):
     dash("D11", f"{ref}_irate", "irate_matchers.sql", f"irate(pgwatch_pg_stat_all_indexes_{m}{_pi11}{_RI})",
          metric=f"pgwatch_pg_stat_all_indexes_{m}", matchers=_i11 + [["indexrelname", "=", D11_INDEX]])
@@ -746,8 +751,8 @@ _t8 = _CNDq + [["schemaname", "=~", D8_SCHEMA]]
 _p8 = '{schemaname=~"' + D8_SCHEMA + '", datname=~"$db_re", cluster="$cluster", node_name="$node"}'
 _t8s = _CNDq + [["schema", "=~", D8_SCHEMA]]
 _p8s = '{schema=~"' + D8_SCHEMA + '", datname=~"$db_re", cluster="$cluster", node_name="$node"}'
-_t8k = _t8 + [["relkind", "=", "114"]]
-_p8k = '{relkind="114", schemaname=~"' + D8_SCHEMA + '", datname=~"$db_re", cluster="$cluster", node_name="$node"}'
+_t8k = _t8 + [RELKIND_TABLE]
+_p8k = '{relkind=~"114|r", schemaname=~"' + D8_SCHEMA + '", datname=~"$db_re", cluster="$cluster", node_name="$node"}'
 for ref, m, ms, ps in (("1A", "pg_class_total_relation_size_bytes", _t8k, _p8k),
                        ("23A", "table_size_detailed_table_main_size_b", _t8s, _p8s),
                        ("28A", "table_size_detailed_toast_indexes_size_b", _t8s, _p8s),
@@ -802,8 +807,8 @@ for ref, m in (("36A", "heap_blks_hit"), ("38A", "toast_blks_hit"), ("33A", "idx
 # --- Dashboard_10_Index health.json ($top_n) ---
 _p10 = '{cluster="$cluster", node_name="$node", datname=~"$db_re"}'
 dash("D10", "23A_topk_last", "topk_last.sql",
-     '''topk($top_n, pgwatch_pg_class_relation_size_bytes{relkind="105", cluster="$cluster", node_name="$node", datname=~"$db_re"})''',
-     metric="pgwatch_pg_class_relation_size_bytes", matchers=_CNDq + [["relkind", "=", "105"]], top_n=10, mode="topk")
+     '''topk($top_n, pgwatch_pg_class_relation_size_bytes{relkind=~"105|i", cluster="$cluster", node_name="$node", datname=~"$db_re"})''',
+     metric="pgwatch_pg_class_relation_size_bytes", matchers=_CNDq + [RELKIND_INDEX], top_n=10, mode="topk")
 for ref, m in (("2A", "bloat_pct"), ("22A", "bloat_size")):
     dash("D10", f"{ref}_topk_last", "topk_last.sql", f"topk($top_n, pgwatch_pg_btree_bloat_{m}{_p10})",
          metric=f"pgwatch_pg_btree_bloat_{m}", matchers=_CNDq, top_n=10, mode="topk")

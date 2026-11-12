@@ -1,109 +1,75 @@
 -- Dashboard_2 panel 20 (pg_stat_statements over the dashboard range, one row per statement),
--- formerly the Flask backend's /pgss_metrics/csv. For each statement series, the counter value
--- nearest the range start and nearest the range end (the newest sample within 1 minute either
--- side of each, as Flask's +-1 minute lookups), and from them per column: the difference
--- (end - start; a statement with no sample near the start counts from 0, as there; one with
--- none near the end is left out, where Flask counted the end as 0 and showed negative values;
--- an end value below the start value is a reset (pg_stat_statements_reset, eviction) and counts
--- from 0, where Flask showed the negative difference), per second
--- (over the actual time between the two `calls` samples, else the range) and per call. Bytes
--- become 8 KiB blocks. Rows are sorted by exec_time descending.
+-- formerly the Flask backend's /pgss_metrics/csv. Per statement series and column: the counter's
+-- increase over the range (prom_increase_pure: VictoriaMetrics' increase_pure, no extrapolation,
+-- a series that starts inside the range counts from 0, a counter reset counts from 0), per second
+-- (over the range) and per call. Bytes become 8 KiB blocks. Rows are sorted by exec_time
+-- descending. Flask subtracted the sample nearest the range start from the one nearest the end:
+-- the same numbers on a range without resets, where Flask showed negative values across a
+-- reset (pg_stat_statements_reset, eviction) and dropped statements not sampled at the end.
+-- The evaluation reads rollups for long ranges (about 0.2 s per column at 30 days).
 -- query_text: the statement text from query_texts, whitespace-normalized; with legend_label
 -- containing 'raw' cut at 150 characters (147 + '...'), else shortened the way Flask's
 -- smart_truncate_query does (comments dropped; "select ... from <tables>", "with <ctes> select
 -- ... from <tables>", "insert into <t> ...", "update <t> ...", "delete from <t> ..."). The main
 -- statement after a WITH is the text after the last ') select', where Flask counts parentheses.
--- Both edges come from one two-point range evaluation per metric (step = end - start).
 -- Params: cluster, node, db_re, start_ms, end_ms, legend_label.
 WITH v AS (
-  SELECT m, labels, CASE WHEN t = getvariable('start_ms') + 60000 THEN 'a' ELSE 'b' END AS edge, value FROM (
-  SELECT 'calls' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_calls', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'calls' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_calls', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'exec_time' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_exec_time_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'exec_time' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_exec_time_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'plan_time' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_plan_time_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'plan_time' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_plan_time_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'rows' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_rows', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'rows' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_rows', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'shared_blks_hit' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_shared_bytes_hit_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'shared_blks_hit' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_shared_bytes_hit_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'shared_blks_read' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_shared_bytes_read_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'shared_blks_read' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_shared_bytes_read_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'shared_blks_dirtied' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_shared_bytes_dirtied_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'shared_blks_dirtied' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_shared_bytes_dirtied_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'shared_blks_written' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_shared_bytes_written_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'shared_blks_written' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_shared_bytes_written_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'blk_read_time' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_block_read_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
+  SELECT 'blk_read_time' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_block_read_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
   UNION ALL
-  SELECT 'blk_write_time' AS m, labels, t, value
-  FROM prom_last_over_time('pgwatch_pg_stat_statements_block_write_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
-  UNION ALL
-  SELECT 'ts' AS m, labels, t, value
-  FROM prom_tlast_over_time('pgwatch_pg_stat_statements_calls', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
-         getvariable('start_ms') + 60000, getvariable('end_ms') + 60000,
-         greatest(getvariable('end_ms') - getvariable('start_ms'), 1), 120000)
-  )
-), e AS (
+  SELECT 'blk_write_time' AS m, labels, value
+  FROM prom_increase_pure('pgwatch_pg_stat_statements_block_write_total', [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
+         getvariable('end_ms'), getvariable('end_ms'), 60000, greatest(getvariable('end_ms') - getvariable('start_ms'), 1))
+), d AS (
   SELECT coalesce(labels['datname'], '') AS datname, coalesce(labels['queryid'], '') AS queryid,
          coalesce(labels['user'], '') AS usr, coalesce(labels['instance'], '') AS inst,
-         count(*) FILTER (WHERE edge = 'b') AS n_end,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'calls') AS a_calls, max(value) FILTER (WHERE edge = 'b' AND m = 'calls') AS b_calls,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'exec_time') AS a_exec_time, max(value) FILTER (WHERE edge = 'b' AND m = 'exec_time') AS b_exec_time,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'plan_time') AS a_plan_time, max(value) FILTER (WHERE edge = 'b' AND m = 'plan_time') AS b_plan_time,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'rows') AS a_rows, max(value) FILTER (WHERE edge = 'b' AND m = 'rows') AS b_rows,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'shared_blks_hit') AS a_shared_blks_hit, max(value) FILTER (WHERE edge = 'b' AND m = 'shared_blks_hit') AS b_shared_blks_hit,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'shared_blks_read') AS a_shared_blks_read, max(value) FILTER (WHERE edge = 'b' AND m = 'shared_blks_read') AS b_shared_blks_read,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'shared_blks_dirtied') AS a_shared_blks_dirtied, max(value) FILTER (WHERE edge = 'b' AND m = 'shared_blks_dirtied') AS b_shared_blks_dirtied,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'shared_blks_written') AS a_shared_blks_written, max(value) FILTER (WHERE edge = 'b' AND m = 'shared_blks_written') AS b_shared_blks_written,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'blk_read_time') AS a_blk_read_time, max(value) FILTER (WHERE edge = 'b' AND m = 'blk_read_time') AS b_blk_read_time,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'blk_write_time') AS a_blk_write_time, max(value) FILTER (WHERE edge = 'b' AND m = 'blk_write_time') AS b_blk_write_time,
-         max(value) FILTER (WHERE edge = 'a' AND m = 'ts') AS a_ts, max(value) FILTER (WHERE edge = 'b' AND m = 'ts') AS b_ts
+         (getvariable('end_ms') - getvariable('start_ms')) / 1000.0 AS duration_seconds,
+         coalesce(max(value) FILTER (WHERE m = 'calls'), 0) AS calls,
+         coalesce(max(value) FILTER (WHERE m = 'exec_time'), 0) AS exec_time,
+         coalesce(max(value) FILTER (WHERE m = 'plan_time'), 0) AS plan_time,
+         coalesce(max(value) FILTER (WHERE m = 'rows'), 0) AS rows,
+         coalesce(max(value) FILTER (WHERE m = 'shared_blks_hit'), 0) / 8192 AS shared_blks_hit,
+         coalesce(max(value) FILTER (WHERE m = 'shared_blks_read'), 0) / 8192 AS shared_blks_read,
+         coalesce(max(value) FILTER (WHERE m = 'shared_blks_dirtied'), 0) / 8192 AS shared_blks_dirtied,
+         coalesce(max(value) FILTER (WHERE m = 'shared_blks_written'), 0) / 8192 AS shared_blks_written,
+         coalesce(max(value) FILTER (WHERE m = 'blk_read_time'), 0) AS blk_read_time,
+         coalesce(max(value) FILTER (WHERE m = 'blk_write_time'), 0) AS blk_write_time
   FROM v
+  WHERE NOT isnan(value)
   GROUP BY ALL
-), d AS (
-  SELECT datname, queryid, usr, inst,
-         coalesce(b_ts - a_ts, (getvariable('end_ms') - getvariable('start_ms')) / 1000.0) AS duration_seconds,
-         CASE WHEN coalesce(b_calls, 0) >= coalesce(a_calls, 0) THEN coalesce(b_calls, 0) - coalesce(a_calls, 0) ELSE b_calls END AS calls,
-         CASE WHEN coalesce(b_exec_time, 0) >= coalesce(a_exec_time, 0) THEN coalesce(b_exec_time, 0) - coalesce(a_exec_time, 0) ELSE b_exec_time END AS exec_time,
-         CASE WHEN coalesce(b_plan_time, 0) >= coalesce(a_plan_time, 0) THEN coalesce(b_plan_time, 0) - coalesce(a_plan_time, 0) ELSE b_plan_time END AS plan_time,
-         CASE WHEN coalesce(b_rows, 0) >= coalesce(a_rows, 0) THEN coalesce(b_rows, 0) - coalesce(a_rows, 0) ELSE b_rows END AS rows,
-         CASE WHEN coalesce(b_shared_blks_hit, 0) >= coalesce(a_shared_blks_hit, 0) THEN coalesce(b_shared_blks_hit, 0) - coalesce(a_shared_blks_hit, 0) ELSE b_shared_blks_hit END / 8192 AS shared_blks_hit,
-         CASE WHEN coalesce(b_shared_blks_read, 0) >= coalesce(a_shared_blks_read, 0) THEN coalesce(b_shared_blks_read, 0) - coalesce(a_shared_blks_read, 0) ELSE b_shared_blks_read END / 8192 AS shared_blks_read,
-         CASE WHEN coalesce(b_shared_blks_dirtied, 0) >= coalesce(a_shared_blks_dirtied, 0) THEN coalesce(b_shared_blks_dirtied, 0) - coalesce(a_shared_blks_dirtied, 0) ELSE b_shared_blks_dirtied END / 8192 AS shared_blks_dirtied,
-         CASE WHEN coalesce(b_shared_blks_written, 0) >= coalesce(a_shared_blks_written, 0) THEN coalesce(b_shared_blks_written, 0) - coalesce(a_shared_blks_written, 0) ELSE b_shared_blks_written END / 8192 AS shared_blks_written,
-         CASE WHEN coalesce(b_blk_read_time, 0) >= coalesce(a_blk_read_time, 0) THEN coalesce(b_blk_read_time, 0) - coalesce(a_blk_read_time, 0) ELSE b_blk_read_time END AS blk_read_time,
-         CASE WHEN coalesce(b_blk_write_time, 0) >= coalesce(a_blk_write_time, 0) THEN coalesce(b_blk_write_time, 0) - coalesce(a_blk_write_time, 0) ELSE b_blk_write_time END AS blk_write_time
-  FROM e
-  WHERE n_end > 0
 ), t AS (
   SELECT CAST(queryid AS VARCHAR) AS queryid, dbname,
          trim(regexp_replace(any_value(query), '\s+', ' ', 'g')) AS norm,
