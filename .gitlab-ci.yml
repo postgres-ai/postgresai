@@ -1071,11 +1071,16 @@ cli:node:full:dind:
       PY
       NET=$(docker inspect postgres-reports -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
       IMG="$CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
-      VM_USER=$(grep '^VM_AUTH_USERNAME=' .env | cut -d= -f2)
-      VM_PASS=$(grep '^VM_AUTH_PASSWORD=' .env | cut -d= -f2-)
+      TOKEN=$(grep '^PGAI_MON_TOKEN=' .env | cut -d= -f2-)
       docker run -d --name stub-api --network "$NET" "$IMG" python -u -c "$(cat /tmp/stub_api.py)" >/dev/null
-      # An empty VictoriaMetrics: Prometheus answers, no series.
-      docker run -d --name empty-vm --network "$NET" "$(docker inspect sink-prometheus -f '{{.Config.Image}}')" -httpListenAddr=:9090 >/dev/null
+      # An empty pgai-mon (same token): SQL answers, no series.
+      docker run -d --name empty-mon --network "$NET" -e PGAI_MON_TOKEN="$TOKEN" "$CI_REGISTRY_IMAGE/pgai-mon:$PGAI_TAG" \
+        serve --store /var/lib/pgai-mon/store --listen 0.0.0.0:8765 \
+        --metrics-yml /etc/pgai-mon/metrics.yml --macros-sql /usr/share/pgai-mon/macros.sql >/dev/null
+      for i in $(seq 1 30); do
+        docker exec empty-mon bash -c "exec 3<>/dev/tcp/127.0.0.1/8765 && printf 'GET /livez HTTP/1.0\r\n\r\n' >&3 && head -n 1 <&3 | grep -q ' 200 '" && break
+        sleep 2
+      done
       UPLOAD="-e STUB_KEY=ci-stub-key -e REPORTER_PGWATCH_CONFIG_PATH=/tmp/pgwatch-config -e REPORTER_API_URL=http://stub-api:8080 -e REPORTER_PROJECT_NAME=ci-stub"
       # run_case NAME PATTERN MIN_COUNT MAX_SECONDS [docker run args]: start
       # the script, wait until PATTERN is logged MIN_COUNT times, print the log.
@@ -1084,7 +1089,7 @@ cli:node:full:dind:
         echo "--- case $name ---"
         stub_from=$(docker logs stub-api 2>&1 | wc -l)
         docker run -d --name "$name" --network "$NET" --volumes-from postgres-reports \
-          -e PROMETHEUS_URL=http://sink-prometheus:9090 -e VM_AUTH_USERNAME="$VM_USER" -e VM_AUTH_PASSWORD="$VM_PASS" \
+          -e PGAI_MON_URL=http://pgai-mon:8765 -e PGAI_MON_TOKEN="$TOKEN" \
           -e REPORTER_INITIAL_DELAY_SECONDS=0 -e REPORTER_OUTPUT_TEMPLATE=/tmp/all_reports_%Y%m%d_%H%M%S.json \
           "$@" "$IMG" bash -c 'if [ -n "${STUB_KEY:-}" ]; then printf "api_key=%s\n" "$STUB_KEY" > /tmp/pgwatch-config; fi; exec bash /postgres_ai_configs/scripts/postgres-reports.sh' >/dev/null
         n=0
@@ -1123,9 +1128,9 @@ cli:node:full:dind:
         -e REPORTER_SOURCES_PATH=/nonexistent -e REPORTER_READINESS_TIMEOUT_SECONDS=60
       require /tmp/rep-e-no-targets.log "postgres-reports: no enabled targets in the sources file; not waiting"
       require /tmp/rep-e-no-targets.log "postgres-reports: sleeping 86400s"
-      echo "(b) no target has data (empty Prometheus), upload enabled"
+      echo "(b) no target has data (empty pgai-mon), upload enabled"
       run_case rep-b-no-data "postgres-reports: (sleeping|run failed)" 1 180 \
-        -e PROMETHEUS_URL=http://empty-vm:9090 -e REPORTER_READINESS_TIMEOUT_SECONDS=20 -e REPORTER_READINESS_POLL_SECONDS=10 $UPLOAD
+        -e PGAI_MON_URL=http://empty-mon:8765 -e REPORTER_READINESS_TIMEOUT_SECONDS=20 -e REPORTER_READINESS_POLL_SECONDS=10 $UPLOAD
       require /tmp/rep-b-no-data.log "no data after 20s for: .*; running anyway"
       require /tmp/rep-b-no-data.log "generating reports \(upload enabled\)"
       require /tmp/rep-b-no-data.log "No target has data in Prometheus; skipping the upload"
@@ -1138,11 +1143,11 @@ cli:node:full:dind:
       require /tmp/rep-c-upload.log "Created report ID: 101"
       require /tmp/rep-c-upload.log "Report 101 marked completed"
       require /tmp/rep-c-upload.stub "checkup_report_file_post .*A002.json"
-      echo "(d) Prometheus does not resolve: the run fails and is retried"
+      echo "(d) pgai-mon does not resolve: the run fails and is retried"
       run_case rep-d-retry "postgres-reports: run failed" 2 120 \
-        -e PROMETHEUS_URL=http://no-such-prometheus:9090 -e REPORTER_READINESS_TIMEOUT_SECONDS=0 -e REPORTER_RETRY_SECONDS=5
+        -e PGAI_MON_URL=http://no-such-pgai-mon:8765 -e REPORTER_READINESS_TIMEOUT_SECONDS=0 -e REPORTER_RETRY_SECONDS=5
       require /tmp/rep-d-retry.log "run failed; retrying in 5s"
-      docker rm -f stub-api empty-vm >/dev/null
+      docker rm -f stub-api empty-mon >/dev/null
     - echo ""
     - echo "=== Testing pgai-mon authentication ==="
     # pgai-mon is published on the dind host's 127.0.0.1 only: ask from the
@@ -1167,6 +1172,7 @@ cli:node:full:dind:
     - docker logs pgai-mon 2>&1 | tail -200 || true
     - docker logs -t postgres-reports 2>&1 | tail -200 || true
     - docker logs stub-api 2>&1 | tail -100 || true
+    - docker logs empty-mon 2>&1 | tail -50 || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
