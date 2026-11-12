@@ -391,7 +391,20 @@ def wrap_table(sql, cols, keys):
             f"ORDER BY {auto_legend(cols)}")
 
 
+# A variable that holds one plain value (not :regex) goes into the SQL in Grafana's sqlstring
+# format: Grafana adds the quotes and doubles a quote inside the value, so a value typed into a
+# textbox or set by ?var-x= stays one string literal. Built-ins ($__from, ...) are numbers.
+QUOTED_VAR = re.compile(r"'\$\{((?!__)\w+)\}'")
+CAST_VAR = re.compile(r"CAST\(\$\{((?!__)\w+)\} AS ")
+
+
+def sqlstring_vars(sql):
+    sql = QUOTED_VAR.sub(r"${\1:sqlstring}", sql)
+    return CAST_VAR.sub(r"CAST(${\1:sqlstring} AS ", sql)
+
+
 def infinity_target(ref, body, hide, extra, table_keys=None):
+    body = sqlstring_vars(body)
     if table_keys is not None:
         cols = [{"selector": "Time", "text": "Time", "type": "timestamp_epoch"}]
         cols += [{"selector": k, "text": k, "type": "string"} for k in table_keys]
@@ -455,6 +468,7 @@ def compile_variable(v):
     sql = label_values_sql(q)
     out = {k: copy.deepcopy(x) for k, x in v.items() if k not in ("query", "definition", "datasource", "options")}
     out["datasource"] = dict(INFINITY)
+    sql = sqlstring_vars(sql)
     out["definition"] = sql
     out["options"] = []
     out["query"] = {
@@ -643,6 +657,10 @@ def reference(case, to_ms, span_ms, iv, instant):
 
 
 def interpolate(sql, vs):
+    # ${x:sqlstring}: the value of ${x} as a quoted literal, as Grafana renders it
+    sql = re.sub(r"\$\{(\w+):sqlstring\}",
+                 lambda m: "'" + vs[f"${{{m.group(1)}}}"].replace("'", "''") + "'" if f"${{{m.group(1)}}}" in vs
+                 else m.group(0), sql)
     for k, v in vs.items():
         sql = sql.replace(k, v)
     left = re.findall(r"\$\{[^}]+\}", sql)

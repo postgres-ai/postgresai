@@ -8,7 +8,8 @@
 --
 -- v2: the group_left(displayname...) join against pgwatch_query_info (Flask-produced) becomes a
 -- LEFT JOIN to query_texts; the `or ... unless` fallback disappears (a LEFT JOIN keeps rows
--- without text). Display columns are prefixed with '_' so the diff harness ignores them.
+-- without text). query_texts holds one row per stored text, so the join reads the newest text of
+-- each (queryid, dbname): a queryid whose text changed must not split into two series. Display columns are prefixed with '_' so the diff harness ignores them.
 -- The full query text is not on the points (it cost 30-40 MiB of the 192 MB reader at 24h/30s):
 -- the legend/hover fetches it once per queryid with d1_query_texts.sql.
 -- top-k per step (as in PromQL range queries) via the generic prom_topk: the SQL macro
@@ -21,5 +22,5 @@ FROM prom_topk(getvariable('top_n'), 'irate', getvariable('metric'),
        [['cluster','=',getvariable('cluster')],['node_name','=',getvariable('node')],['datname','=~',getvariable('db_re')]],
        getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms'), getvariable('rate_interval_ms'),
        p_den_metric := CASE WHEN getvariable('per_call') THEN 'pgwatch_pg_stat_statements_calls' ELSE '' END) top
-LEFT JOIN query_texts qt
+LEFT JOIN (SELECT queryid, dbname, arg_max(query, last_seen) AS query FROM query_texts GROUP BY ALL) qt
   ON qt.queryid = TRY_CAST(top.labels['queryid'] AS BIGINT) AND qt.dbname = top.labels['datname'];

@@ -13,18 +13,18 @@ import unittest
 
 import compile as C
 
-ALLOWED_VARS = {"${__from}", "${__to}", "${__interval_ms}", "${cluster_name}", "${node_name}",
-                "${db_name:regex}", "${db_name}", "${top_n}",
+ALLOWED_VARS = {"${__from}", "${__to}", "${__interval_ms}", "${cluster_name:sqlstring}", "${node_name:sqlstring}",
+                "${db_name:regex}", "${db_name:sqlstring}", "${top_n:sqlstring}",
                 # Dashboard_4, 3, 7 filter variables
-                "${wait_event_type:regex}", "${wait_event:regex}", "${query_id}", "${schema_name:regex}",
+                "${wait_event_type:regex}", "${wait_event:regex}", "${query_id:sqlstring}", "${schema_name:regex}",
                 "${table_name:regex}",
                 # Dashboard_9, 11, 6 (matchers on a variable, e.g. index_name=~"$index_name")
-                "${schema_name}", "${table_name}", "${index_name}", "${index_name:regex}", "${datname}",
-                "${datname:regex}", "${replica:regex}",
+                "${schema_name:sqlstring}", "${table_name:sqlstring}", "${index_name:sqlstring}",
+                "${index_name:regex}", "${datname:sqlstring}", "${datname:regex}", "${replica:regex}",
                 # Dashboard_2's query text mode (its pg_stat_statements table)
-                "${legend_label}",
+                "${legend_label:sqlstring}",
                 # Dashboard_6's custom threshold
-                "${lag_alert_s}"}
+                "${lag_alert_s:sqlstring}"}
 
 
 def load(name):
@@ -187,13 +187,23 @@ class Emitted(unittest.TestCase):
                 self.assertEqual(b["datasource"], C.INFINITY)
                 self.assertEqual(b["query"]["infinityQuery"]["url_options"]["data"], b["definition"])
 
+    def test_plain_variables_are_sql_strings(self):
+        """A one-value variable reaches the SQL only as ${x:sqlstring} (Grafana quotes it), never
+        inside quotes of the compiler's own, where a ' in the value would end the literal."""
+        for spec, src, out in self.pairs():
+            bodies = [v["definition"] for v in out["templating"]["list"] if v["type"] == "query"]
+            bodies += [(t.get("url_options") or {}).get("data", "")
+                       for p in C.walk(out["panels"]) for t in p.get("targets") or []]
+            for body in bodies:
+                self.assertIsNone(re.search(r"'\$\{(?!__)\w+\}'|CAST\(\$\{(?!__)\w+\} ", body), body)
+
     def test_filter_variables_only_where_the_dashboard_has_them(self):
         for spec, src, out in self.pairs():
             names = {v["name"] for v in src["templating"]["list"]}
             for p in C.walk(out["panels"]):
                 for t in p.get("targets") or []:
                     body = (t.get("url_options") or {}).get("data", "")
-                    for var in re.findall(r"\$\{(\w+)(?::regex)?\}", body):
+                    for var in re.findall(r"\$\{(\w+)(?::\w+)?\}", body):
                         if not var.startswith("__"):
                             self.assertIn(var, names, f"{spec['census']} panel {p['id']}{t['refId']}")
 
@@ -232,6 +242,15 @@ class Pieces(unittest.TestCase):
                       C.label_values_sql('label_values(m{wait_event_type=~"$wait_event_type"}, wait_event)'))
         self.assertIn("coalesce(labels['datname'], '') = '${db_name}'",
                       C.label_values_sql('label_values(m{datname="$db_name"}, schema)'))
+
+    def test_sqlstring_vars(self):
+        self.assertEqual(C.sqlstring_vars("a = '${query_id}' AND n = CAST(${top_n} AS BIGINT)"),
+                         "a = ${query_id:sqlstring} AND n = CAST(${top_n:sqlstring} AS BIGINT)")
+        # regex-formatted variables and built-ins are left alone
+        s = "regexp_full_match(x, '${db_name:regex}') AND t < CAST(${__to} AS BIGINT)"
+        self.assertEqual(C.sqlstring_vars(s), s)
+        # --check renders ${x:sqlstring} the way Grafana does
+        self.assertEqual(C.interpolate("${query_id:sqlstring}", {"${query_id}": "o'k"}), "'o''k'")
 
     def test_legend(self):
         cols = ["labels", "t", "value"]

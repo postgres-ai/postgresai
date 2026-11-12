@@ -72,8 +72,8 @@ WITH v AS (
   GROUP BY ALL
 ), t AS (
   SELECT CAST(queryid AS VARCHAR) AS queryid, dbname,
-         trim(regexp_replace(any_value(query), '\s+', ' ', 'g')) AS norm,
-         trim(regexp_replace(regexp_replace(regexp_replace(any_value(query), '/\*.*?\*/', ' ', 'gs'),
+         trim(regexp_replace(arg_max(query, last_seen), '\s+', ' ', 'g')) AS norm,
+         trim(regexp_replace(regexp_replace(regexp_replace(arg_max(query, last_seen), '/\*.*?\*/', ' ', 'gs'),
               '--[^\n]*', ' ', 'g'), '\s+', ' ', 'g')) AS bare
   FROM query_texts
   WHERE regexp_full_match(dbname, getvariable('db_re'))
