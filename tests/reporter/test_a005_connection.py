@@ -187,16 +187,24 @@ def test_a_long_error_keeps_its_cause_at_the_end():
     assert a005.error_text(RuntimeError("short")) == "short"
 
 
-def test_the_image_ships_the_rds_ca_bundle_at_the_collector_conn_str_path():
+@pytest.mark.parametrize("image", ["reporter", "pgwatch"])
+def test_the_image_ships_the_rds_ca_bundle_at_the_collector_conn_str_path(image):
     """The RDS collector's conn_str names sslrootcert=/etc/ssl/certs/rds-global-bundle.pem
-    (postgres_ai-ansible rds_privatelink_ca_path) and the reporter connects with it, so the
-    image carries the file; a host bind mount still replaces it."""
-    import os
+    (postgres_ai-ansible rds_privatelink_ca_path); pgwatch and the reporter connect with it,
+    so both images carry the file (in pgwatch's final stage); a host bind mount still
+    replaces it. The two copies are the same file."""
     import ssl
-    reporter_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reporter")
-    dockerfile = open(os.path.join(reporter_dir, "Dockerfile")).read()
-    assert "COPY certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem" in dockerfile
-    ctx = ssl.create_default_context(cafile=os.path.join(reporter_dir, "certs", "rds-global-bundle.pem"))
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = "\n" + (root / image / "Dockerfile").read_text()
+    final_stage = dockerfile[dockerfile.rindex("\nFROM "):]
+    assert "\nCOPY certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem\n" in final_stage
+    ignore = root / image / ".dockerignore"  # the build context must keep the file
+    if ignore.exists() and "*" in ignore.read_text().split():
+        assert "!certs/rds-global-bundle.pem" in ignore.read_text().split()
+    bundle = root / image / "certs" / "rds-global-bundle.pem"
+    assert bundle.read_bytes() == (root / "reporter" / "certs" / "rds-global-bundle.pem").read_bytes()
+    ctx = ssl.create_default_context(cafile=str(bundle))
     subjects = [dict(x[0] for x in c["subject"]).get("commonName", "") for c in ctx.get_ca_certs()]
     assert len(subjects) > 50 and all(s.startswith("Amazon RDS") for s in subjects)
     assert any("us-west-2" in s for s in subjects)
