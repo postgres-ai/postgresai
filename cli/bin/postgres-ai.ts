@@ -58,6 +58,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { composeDefinesService, composeProjectName, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, PGAI_MON_SERVICE, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { PGAI_MON_URL, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
@@ -5893,11 +5894,15 @@ mon
   .option("--wait <seconds>", "wait time in seconds for services to become healthy", parseInt, 0)
   .action(async (opts: { wait: number }) => {
     const profiles = readComposeProfiles();
+    const projectDir = healthProjectDir();
     const services = monitoringHealthServices(
       instanceJobsProfileEnabled(profiles),
       profileEnabled(profiles, DEMO_PROFILE),
-      grafanaEnabled(readEnvValue(healthProjectDir(), GRAFANA_SCALE_KEY)),
+      grafanaEnabled(readEnvValue(projectDir, GRAFANA_SCALE_KEY)),
     );
+    // Read from .env only, sent as a header only, never printed.
+    const monToken = readEnvValue(projectDir, PGAI_MON_TOKEN_KEY) || undefined;
+    const monUrl = process.env.PGAI_MON_URL || PGAI_MON_URL;
 
     const waitTime = opts.wait || 0;
     const maxAttempts = waitTime > 0 ? Math.ceil(waitTime / 5) : 1;
@@ -5927,6 +5932,9 @@ mon
           allHealthy = false;
         }
       }
+      const mon = await probePgaiMon(monUrl, monToken);
+      for (const line of mon.lines) console.log(line);
+      if (!mon.ok) allHealthy = false;
 
       if (allHealthy) {
         break;
