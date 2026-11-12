@@ -201,8 +201,9 @@ services:
       # Read by datasources.yml (the Infinity datasource's bearer token).
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required for Grafana datasource provisioning}
     ports:
-      # GRAFANA_BIND_HOST=0.0.0.0: (with the colon) opens it beyond this host.
-      - "${GRAFANA_BIND_HOST:-127.0.0.1:}3000:3000"
+      # Unset: 127.0.0.1 only. GRAFANA_BIND_HOST= (empty, as terraform's
+      # grafana_bind_host = "") or 0.0.0.0: opens it beyond this host.
+      - "${GRAFANA_BIND_HOST-127.0.0.1:}3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - postgres_ai_configs:/postgres_ai_configs:ro

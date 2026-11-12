@@ -66,8 +66,9 @@ bind_host             = "127.0.0.1:"      # Internal services on localhost (defa
 # bind_host           = ""                # OR: Bind to all interfaces
 grafana_bind_host     = "127.0.0.1:"      # Grafana on localhost only (default, use SSH tunnel)
 # grafana_bind_host   = ""                # OR: Grafana accessible from outside
-vm_auth_username      = "vmauth"                     # VictoriaMetrics Basic Auth username (default: "vmauth")
-vm_auth_password      = "CHANGE_ME_vm_auth_password"  # VictoriaMetrics Basic Auth password (empty = generated on the instance)
+store_s3              = true              # pgai-mon's store in S3 (default); false = on the instance
+# store_s3_bucket     = "my-bucket"       # Existing bucket (default: Terraform creates one)
+# store_s3_prefix     = "pgai-mon/prod"   # Key prefix (default: pgai-mon/<environment>)
 
 monitoring_instances = [
   {
@@ -173,7 +174,7 @@ Method 1: Update `terraform.tfvars` and apply changes:
 ```bash
 # Edit terraform.tfvars, add to monitoring_instances array
 terraform apply
-# Automatically updates instances.yml and restarts pgwatch services
+# Automatically updates instances.yml; pgai-mon re-reads it on change
 ```
 
 Method 2: Manual configuration (avoids credentials in state):
@@ -181,8 +182,7 @@ Method 2: Manual configuration (avoids credentials in state):
 ssh ubuntu@your-ip
 cd /home/postgres_ai/postgres_ai
 sudo -u postgres_ai vim instances.yml
-sudo -u postgres_ai docker-compose run --rm sources-generator
-sudo -u postgres_ai docker-compose restart pgwatch-postgres pgwatch-prometheus
+# pgai-mon picks up the change within its reload interval; no restart needed
 ```
 
 ### Backup
@@ -210,25 +210,18 @@ sudo docker-compose up -d
 
 ## Security
 
-### VictoriaMetrics authentication
+### pgai-mon authentication
 
-VictoriaMetrics (metrics storage) is protected with HTTP Basic Auth (Grafana's datasource needs it). Set `vm_auth_password` in `terraform.tfvars` to choose the password; left empty, the instance generates one into `.env`:
+pgai-mon's SQL endpoint needs a bearer token on every route but `/livez`. `user_data.sh` generates `PGAI_MON_TOKEN` into `.env` on the instance; Grafana, the reporter and instance-jobs read it from there. pgai-mon is published on the instance's `127.0.0.1:8765` only.
 
-```hcl
-vm_auth_username = "vmauth"           # Default
-vm_auth_password = "CHANGE_ME"        # Leave empty to generate one on the instance
-```
+### pgai-mon store in S3
 
-All VictoriaMetrics API endpoints require authentication. The health endpoint (`/health`) remains accessible without auth for container health checks.
+By default (`store_s3 = true`) pgai-mon keeps its Parquet files in S3, so the instance is disposable: replacing it loses at most the last upload interval. Terraform creates a private bucket (public access blocked, owner-enforced, SSE-S3, TLS required) unless you name one in `store_s3_bucket`, and gives the instance a role whose policy allows only:
 
-### VictoriaMetrics admin endpoints
+- `s3:ListBucket` on the bucket, for keys under the prefix (`store_s3_prefix`, default `pgai-mon/<environment>`);
+- `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` on `bucket/prefix/*`.
 
-Independently of basic auth, `user_data.sh` always generates `VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY` and `VM_PPROF_AUTH_KEY` into `.env` on the instance (see #359). They gate `/api/v1/admin/tsdb/*`, `/snapshot/*`, `/internal/force_merge` and `/debug/pprof/*`, which would otherwise be reachable by any Grafana Viewer through the datasource proxy.
-
-A key is passed as the generic `authKey=<value>` query argument and **overrides** basic auth for those endpoints, so treat it as separately sensitive. To rotate one, edit `.env` on the instance and run `sudo docker-compose up -d --no-deps sink-prometheus` while the stack is running.
-
-Grafana, the Flask backend, and the Reporter are automatically configured to use the credentials.
-
+The bucket is not destroyed with the stack while it holds data (no `force_destroy`). With a bucket of your own that uses SSE-KMS, also allow the role `kms:Decrypt` and `kms:GenerateDataKey` on that key. `store_s3 = false` keeps the store in a Docker volume on the instance, with no bucket and no role. `terraform output store_url` shows the store.
 
 ### Encryption at rest
 
@@ -242,7 +235,7 @@ All monitoring data is encrypted at rest using AES-256:
   ```
   > **WARNING — data loss risk:** Changing `encryption_kms_key_arn` in **any direction** (empty → ARN, ARN → empty, or ARN → different ARN) on an existing deployment will cause Terraform to **destroy and recreate** both the EBS data volume and the EC2 instance (`kms_key_id` is a `ForceNew` attribute). Take a snapshot of **both** the data volume and the root volume before applying this change to a live environment, then restore from snapshots after Terraform completes.
 
-Postgres (sink-postgres) and VictoriaMetrics store data on the encrypted EBS data volume mounted at `/data`. No application-level encryption is needed — the storage layer handles it transparently.
+With `store_s3 = false`, pgai-mon's store is on the encrypted EBS volumes; with the S3 store, the Parquet files are encrypted by S3 (SSE-S3) and only the write-ahead log and cache stay on EBS.
 
 To verify encryption on a running instance:
 
@@ -492,11 +485,11 @@ This ensures the state file (which contains credentials) is encrypted at rest in
 
 **Note:** For existing deployments with local state, run `terraform init -migrate-state` after adding the backend block.
 
-**Note:** The application (Postgres, VictoriaMetrics) does not use S3 buckets for data storage — all data resides on the encrypted EBS data volume at `/data`.
+**Note:** This state bucket is separate from pgai-mon's store bucket (see "pgai-mon store in S3").
 
 ### IMDSv2
 
-EC2 instances are configured to require IMDSv2 (Instance Metadata Service v2) for enhanced security against SSRF attacks.
+EC2 instances are configured to require IMDSv2 (Instance Metadata Service v2) for enhanced security against SSRF attacks. With the S3 store the hop limit is 2, so pgai-mon's container (one hop behind the Docker bridge) can get the instance role's credentials; any container on the instance can then use that role, which is why its policy is limited to the store prefix. Without the S3 store the hop limit stays 1 and there is no role.
 
 ### Cleanup
 

@@ -463,6 +463,7 @@ terraform:aws:tests:
     - terraform test -filter=tests/kms_encryption.tftest.hcl
     - terraform test -filter=tests/demo_profile.tftest.hcl
     - terraform test -filter=tests/env_required.tftest.hcl
+    - terraform test -filter=tests/store_s3.tftest.hcl
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
