@@ -42,7 +42,7 @@ Every PR must pass these gates before merge:
 | CLI unit tests + coverage | Bun test runner | Yes |
 | CLI smoke tests | Node.js + built CLI | Yes |
 | E2E monitoring stack tests | Docker-in-Docker | Yes |
-| Helm/config validation | pytest + helm template | Yes |
+| Compose config validation | pytest + `docker compose config` (`compose:contract:tests`) | Yes |
 | SAST security scanning | GitLab SAST | Yes |
 | Secret detection | gitleaks | Yes |
 | JSON schema validation | ajv / jsonschema | Yes |
@@ -303,8 +303,8 @@ sufficient — reviewers should not have to spin up the demo to confirm a visual
 claim.
 
 **Scope (which surfaces trigger this rule):** Grafana dashboards
-(`old/config/grafana/dashboards/*.json`,
-`old/postgres_ai_helm/.../dashboards/*.json`), the Console UI (`console/` or
+(`mon/grafana/dashboards/*.json` and their sources in
+`old/config/grafana/dashboards/*.json`), the Console UI (`console/` or
 similar frontend directories), Joe UI, and marketing or landing pages. See
 rule 11 in [`quality/pr-review-prompt.md`](./pr-review-prompt.md) for the
 authoritative list of path globs the AI reviewer uses.
