@@ -139,6 +139,11 @@ services:
       # Empty: the local store in pgai_mon_data. s3://bucket/prefix: the bucket.
       PGAI_MON_STORE: ${PGAI_MON_STORE:-}
       AWS_REGION: ${AWS_REGION:-}
+      # Explicit S3 credentials. Empty: the SDK's default chain (an EC2
+      # instance role reaches containers only with IMDS hop limit 2).
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       # RDS / Aurora host stats (CloudWatch, Performance Insights, Enhanced
       # Monitoring) for one instance, written as host_* series.
       RDS_DB_INSTANCE_IDENTIFIER: ${RDS_DB_INSTANCE_IDENTIFIER:-}
