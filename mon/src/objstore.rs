@@ -357,11 +357,7 @@ pub fn open(url: &str, cfg: &S3Cfg) -> anyhow::Result<Arc<Remote>> {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let (bucket, _) = rest.split_once('/').unwrap_or((rest, ""));
     let store: Arc<dyn ObjectStore> = match scheme {
-        "s3" => Arc::new(
-            object_store::aws::AmazonS3Builder::from_env()
-                .with_bucket_name(bucket)
-                .build()?,
-        ),
+        "s3" => Arc::new(s3_builder(std::env::vars()).with_bucket_name(bucket).build()?),
         // a directory as the bucket (tests, single-host dev): file:///abs/dir
         "file" => {
             anyhow::ensure!(rest.starts_with('/'), "{url}: use file:///absolute/dir");
@@ -370,6 +366,20 @@ pub fn open(url: &str, cfg: &S3Cfg) -> anyhow::Result<Arc<Remote>> {
         _ => anyhow::bail!("unsupported store URL {url}: use s3://bucket/prefix"),
     };
     register(url, store, cfg.clone())
+}
+
+/// `AmazonS3Builder::from_env` without the empty variables: Compose passes `AWS_*: ${AWS_*:-}`,
+/// and an empty AWS_ACCESS_KEY_ID would count as a static credential and hide the instance role.
+pub fn s3_builder(vars: impl Iterator<Item = (String, String)>) -> object_store::aws::AmazonS3Builder {
+    let mut b = object_store::aws::AmazonS3Builder::new();
+    for (k, v) in vars {
+        if k.starts_with("AWS_") && !v.is_empty() {
+            if let Ok(key) = k.to_ascii_lowercase().parse() {
+                b = b.with_config(key, v);
+            }
+        }
+    }
+    b
 }
 
 /// Register `store` under `url` (`scheme://bucket/prefix`; the bucket part is not part of the
@@ -1837,6 +1847,26 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
     use object_store::PutPayload;
+
+    #[test]
+    fn empty_aws_variables_are_not_credentials() {
+        use object_store::aws::AmazonS3ConfigKey as K;
+        let v = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let b = s3_builder(
+            [
+                v("AWS_ACCESS_KEY_ID", ""),
+                v("AWS_SECRET_ACCESS_KEY", ""),
+                v("AWS_REGION", "us-west-1"),
+                v("HOME", "x"),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(b.get_config_value(&K::AccessKeyId), None);
+        assert_eq!(b.get_config_value(&K::SecretAccessKey), None);
+        assert_eq!(b.get_config_value(&K::Region).as_deref(), Some("us-west-1"));
+        let b = s3_builder([v("AWS_ACCESS_KEY_ID", "k")].into_iter());
+        assert_eq!(b.get_config_value(&K::AccessKeyId).as_deref(), Some("k"));
+    }
 
     fn data(n: usize) -> Vec<u8> {
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
