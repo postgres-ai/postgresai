@@ -6,95 +6,56 @@ services:
   #
   # Docker Compose automatically loads docker-compose.override.yml (no -f needed).
 
-  # Use local repo configs instead of the published postgres-ai-configs image.
-  # This copies files from ./config into the shared volume (postgres_ai_configs).
-  #
-  # IMPORTANT: this copy is careful to NOT delete generated files (like sources.yml).
+  # Use local repo Grafana provisioning, dashboards and demo-DB scripts instead
+  # of the published postgres-ai-configs image. Copies into the shared volume
+  # (postgres_ai_configs); the dashboards directory mirrors the source exactly.
   config-init:
     image: alpine:3.22.0
     container_name: postgres-ai-config-init
     volumes:
       - postgres_ai_configs:/target
-      - ./config:/src:ro
+      - ./config:/src/config:ro
+      - ./mon/grafana/dashboards:/src/dashboards:ro
+      - pgai_mon_data:/pgai_mon_data
     environment:
       - TARGET_DIR=/target
+      - PGAI_MON_OWNER=${PGAI_MON_USER:-${INSTANCE_JOBS_USER:-10001:10001}}
     command:
       [
         "sh",
         "-lc",
         "set -eu; \
-         mkdir -p /target/grafana /target/pgwatch /target/pgwatch-prometheus /target/prometheus /target/sink-postgres /target/target-db /target/scripts; \
-         cp -a /src/grafana/. /target/grafana/; \
-         cp -a /src/prometheus/. /target/prometheus/; \
-         cp -a /src/sink-postgres/. /target/sink-postgres/; \
-         cp -a /src/target-db/. /target/target-db/; \
-         cp -a /src/scripts/. /target/scripts/; \
-         cp -f /src/pgwatch-postgres/metrics.yml /target/pgwatch/metrics.yml; \
-         cp -f /src/pgwatch-prometheus/metrics.yml /target/pgwatch-prometheus/metrics.yml; \
-         echo \"config-init (local): copied ./config -> postgres_ai_configs volume\""
+         mkdir -p /target/grafana/provisioning /target/grafana/dashboards /target/target-db /target/scripts; \
+         cp -a /src/config/grafana/provisioning/. /target/grafana/provisioning/; \
+         find /target/grafana/dashboards -mindepth 1 -delete; \
+         cp -a /src/dashboards/. /target/grafana/dashboards/; \
+         cp -a /src/config/target-db/. /target/target-db/; \
+         cp -a /src/config/scripts/. /target/scripts/; \
+         chown \"$${PGAI_MON_OWNER}\" /pgai_mon_data; \
+         echo \"config-init (local): copied ./config and mon/grafana/dashboards -> postgres_ai_configs volume\""
       ]
 
-  # Local dev override for the Flask backend:
-  # - bind-mount local code for instant iteration
-  # - expose HTTP port to host
-  # - enable debugpy for debugger attach (opt-in via DEBUGPY_FLASK=1)
-  monitoring_flask_backend:
-    ports:
-      # HTTP (gunicorn)
-      - "127.0.0.1:55000:8000"
-      # Debugger attach (debugpy)
-      - "127.0.0.1:5678:5678"
-    volumes:
-      - ./monitoring_flask_backend:/app
-    environment:
-      - PROMETHEUS_URL=http://sink-prometheus:9090
-      # Set to 1 to enable debugpy attach on port 5678
-      - DEBUGPY_FLASK=${DEBUGPY_FLASK:-0}
-    command:
-      [
-        "bash",
-        "-lc",
-        "if [ \"${DEBUGPY_FLASK:-0}\" = \"1\" ]; then python -m pip install --no-cache-dir debugpy && exec python -m debugpy --listen 0.0.0.0:5678 -m gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 120 --reload app:app; else exec gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 120 --reload app:app; fi"
-      ]
+  # Run pgai-mon from a locally built image (see docker-compose.local.yml), or
+  # point it at a config of your own:
+  # pgai-mon:
+  #   image: local/pgai-mon:dev
+  #   volumes:
+  #     - ./my-pgai-mon.yml:/etc/pgai-mon/pgai-mon.yml:ro
 
-  # Alternate mode: run/debug the reporter inside Docker.
-  #
-  # NOTE: The primary dev workflow is running reports on the host via:
-  #   ./scripts/run_reporter_local.sh
-  #
-  # The host-run workflow is faster and easier to debug, and is enabled by:
-  # - exposing sink-postgres on 127.0.0.1:55433 (see below)
-  # - exposing VictoriaMetrics on http://127.0.0.1:59090 (from docker-compose.yml)
-  #
-  # If you specifically want the *container-based* reporter to use your local code, uncomment:
+  # Alternate mode: run/debug the reporter inside Docker with local code.
   #
   # postgres-reports:
   #   volumes:
   #     - ./reporter/postgres_reports.py:/app/postgres_reports.py
   #     - ./reporter/reporter:/app/reporter
   #   environment:
-  #     - PROMETHEUS_URL=http://sink-prometheus:9090
   #     - REPORTER_INITIAL_DELAY_SECONDS=0
   #     # Set to 1 to enable debugpy attach on port 5679
   #     - DEBUGPY_REPORTER=${DEBUGPY_REPORTER:-0}
   #   ports:
   #     - "127.0.0.1:5679:5679"
-  #   command:
-  #     [
-  #       "bash",
-  #       "-lc",
-  #       "if [ \"${DEBUGPY_REPORTER:-0}\" = \"1\" ]; then python -m pip install --no-cache-dir debugpy && exec python -m debugpy --listen 0.0.0.0:5679 /app/postgres_reports.py --prometheus-url http://sink-prometheus:9090 --postgres-sink-url postgresql://pgwatch@sink-postgres:5432/measurements --no-upload --output /app/reports/dev_report_%Y%m%d_%H%M%S.json; else exec python /app/postgres_reports.py --prometheus-url http://sink-prometheus:9090 --postgres-sink-url postgresql://pgwatch@sink-postgres:5432/measurements --no-upload --output /app/reports/dev_report_%Y%m%d_%H%M%S.json; fi"
-  #     ]
-
-  # Expose sink-postgres to the host so you can run/debug reporter locally.
-  # Bound to localhost only (safe for local dev).
-  sink-postgres:
-    ports:
-      - "127.0.0.1:55433:5432"
 
   # Optional: expose demo DB too (only useful if you run `target-db`)
   # target-db:
   #   ports:
   #     - "127.0.0.1:55432:5432"
-
-

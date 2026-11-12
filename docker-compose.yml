@@ -1,33 +1,35 @@
-# Resource limits are configured for a 4 vCPU / 8 GiB RAM host.
-# Total allocation: ~4.1 vCPUs, ~7.3 GiB RAM (with headroom for host OS).
-# CPU overcommitment is intentional - containers rarely hit limits simultaneously.
+# PostgresAI monitoring: pgai-mon (collector, Parquet store, SQL endpoint, push
+# ingest, RDS host stats) + Grafana + the checkup reporter.
 #
-# pgwatch-prometheus collects metrics including pg_stat_statements
-# (top 100 queries by exec_time_total, filtered: calls >= 3 AND exec_time >= 1000ms).
+# Resource limits: pgai-mon 1 vCPU / 1.5 GiB, Grafana 0.5 / 0.5 GiB, reporter
+# 1 / 1.75 GiB (it runs once a day), instance-jobs 0.25 / 0.25 GiB: about
+# 4 GiB of limits in all, against ~7.3 GiB for the pgwatch + VictoriaMetrics
+# stack this replaces. Limits are caps, not reservations; the services rarely
+# peak together. Every limit can be overridden from .env (see .env.example).
+#
+# Storage: PGAI_MON_STORE. Unset: the pgai_mon_data volume holds the store.
+# s3://bucket/prefix: Parquet goes to the bucket (credentials from the instance
+# role / default AWS chain); the volume keeps only the write-ahead log and cache.
+#
+# Ports are published on 127.0.0.1 only. pgai-mon needs a bearer token
+# (PGAI_MON_TOKEN) on every route but /livez.
+
+x-pgai-mon-owner: &pgai_mon_owner "${PGAI_MON_USER:-${INSTANCE_JOBS_USER:-10001:10001}}"
 
 services:
-  # Config Initializer - Copies static configs from image to volume
+  # Copies Grafana provisioning, dashboards and demo-DB scripts from the image
+  # into the postgres_ai_configs volume, and hands pgai_mon_data to the user
+  # pgai-mon runs as. Idempotent; exits when done.
   config-init:
     image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
     container_name: postgres-ai-config-init
     volumes:
       - postgres_ai_configs:/target
+      - pgai_mon_data:/pgai_mon_data
     environment:
       - TARGET_DIR=/target
-
-  # Sources Generator - Generates sources.yml files from instances.yaml template
-  sources-generator:
-    image: bash:5.2
-    container_name: sources-generator
-    working_dir: /app
-    volumes:
-      - ./instances.yml:/app/instances.yaml:ro
-      - postgres_ai_configs:/postgres_ai_configs
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-    command:
-      ["bash", "/postgres_ai_configs/scripts/generate-pgwatch-sources.sh"]
+      - PGAI_MON_DATA_DIR=/pgai_mon_data
+      - PGAI_MON_OWNER=${PGAI_MON_USER:-${INSTANCE_JOBS_USER:-10001:10001}}
 
   # Target Database - The PostgreSQL database being monitored (demo only).
   # Behind the demo profile: `mon local-install --demo` turns it on.
@@ -65,6 +67,11 @@ services:
     volumes:
       - target_db_data:/var/lib/postgresql/data
       - postgres_ai_configs:/postgres_ai_configs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d target_database"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       config-init:
         condition: service_completed_successfully
@@ -105,228 +112,75 @@ services:
       - target-db
     restart: unless-stopped
 
-  # Postgres Sink - Storage for metrics in PostgreSQL format
-  # Note: pg_hba.conf is configured to allow passwordless connections (trust)
-  # for local connections within the Docker network. This simplifies pgwatch
-  # and postgres-exporter connectivity without compromising security since
-  # the database is not exposed externally.
-  sink-postgres:
-    image: postgres:17
-    container_name: sink-postgres
-    cpus: ${SINK_POSTGRES_CPUS:-0.4}
-    mem_limit: ${SINK_POSTGRES_MEM:-1073741824}
-    environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST_AUTH_METHOD: trust
-    entrypoint:
-      [
-        "bash",
-        "/postgres_ai_configs/scripts/postgres-entrypoint.sh",
-        "sink-postgres",
-      ]
-    volumes:
-      - sink_postgres_data:/var/lib/postgresql/data
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  # VictoriaMetrics Sink - Storage for metrics in Prometheus format
-  sink-prometheus:
-    image: victoriametrics/victoria-metrics:v1.140.0
-    container_name: sink-prometheus
-    cpus: ${SINK_PROMETHEUS_CPUS:-0.75}
-    mem_limit: ${SINK_PROMETHEUS_MEM:-1610612736}
-    ports:
-      - "${BIND_HOST:-}59090:9090"
-    volumes:
-      - ./host-metrics:/etc/pgai/host-metrics:ro
-      - victoria_metrics_data:/victoria-metrics-data
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    environment:
-      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
-      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
-      - VM_RETENTION_PERIOD=${VM_RETENTION_PERIOD:-336h}
-      - VM_QUERY_DURATION=${VM_QUERY_DURATION:-30s}
-      - VM_MAX_CONCURRENT_REQUESTS=${VM_MAX_CONCURRENT_REQUESTS:-16}
-      # Query guardrails: a runaway dashboard query must fail with an error,
-      # not OOM-kill the whole store (infra#98, verified live on a customer host:
-      # maxUniqueTimeseries=50000 did not engage, 20000 did). Coherence rule:
-      # VM_MAX_MEMORY_PER_QUERY <= SINK_PROMETHEUS_MEM / 3; raise both together.
-      - VM_MAX_MEMORY_PER_QUERY=${VM_MAX_MEMORY_PER_QUERY:-512MiB}
-      - VM_MAX_UNIQUE_TIMESERIES=${VM_MAX_UNIQUE_TIMESERIES:-20000}
-      - VM_MEMORY_ALLOWED_PERCENT=${VM_MEMORY_ALLOWED_PERCENT:-60}
-      # Free-form extra flags, so a host-level tuning survives `mon update`
-      # re-downloading this file. Example: VM_EXTRA_ARGS=-search.maxSeries=40000
-      - VM_EXTRA_ARGS=${VM_EXTRA_ARGS:-}
-      # Admin-endpoint keys (#359). Grafana's datasource proxy filters POST but
-      # passes every GET through, and VictoriaMetrics demands no key when these
-      # are empty, so a Viewer token could wipe the store through the proxy.
-      # VM_PPROF_AUTH_KEY closes /debug/pprof/*, which the proxy could otherwise
-      # reach: heap and goroutine dumps are both a disclosure and a DoS lever.
-      # It is also what made the first cut of this fix bypassable, back when the
-      # keys were flag values and /debug/pprof/cmdline served them verbatim.
-      # Minted per install by `postgresai mon local-install` / `mon update`;
-      # deliberately given to nothing that reads metrics.
-      - VM_DELETE_AUTH_KEY=${VM_DELETE_AUTH_KEY:-}
-      - VM_SNAPSHOT_AUTH_KEY=${VM_SNAPSHOT_AUTH_KEY:-}
-      - VM_FORCE_MERGE_AUTH_KEY=${VM_FORCE_MERGE_AUTH_KEY:-}
-      - VM_PPROF_AUTH_KEY=${VM_PPROF_AUTH_KEY:-}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        # Secrets go to files, never onto the command line: argv is served
-        # verbatim by /debug/pprof/cmdline, which the Grafana datasource proxy
-        # can reach with the credentials it already holds, and shows up in the
-        # host process table (#359). They remain container env vars, so
-        # `docker inspect` still shows them - that needs the Docker socket.
-        set -e
-        KEYS=/tmp/vm-keys
-        umask 077
-        mkdir -p "$$KEYS"
-        rand_key() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
-        # An EMPTY key file is the one fail-OPEN case: VictoriaMetrics then
-        # requires no key at all, while a missing file is refused. So check the
-        # file after writing it, not just the value we meant to write - a full
-        # disk on a box whose job is storing metrics is not hypothetical.
-        put_key() {
-          val=$$2
-          [ -n "$$val" ] || val=$$(rand_key)
-          printf '%s' "$$val" > "$$KEYS/$$1" || true
-          if [ ! -s "$$KEYS/$$1" ]; then
-            echo "sink-prometheus: admin key '$$1' is empty, refusing to start (#359)" >&2
-            exit 1
-          fi
-          # Explicit, not umask-dependent: every caller must get 0600 whatever
-          # the surrounding umask happens to be.
-          chmod 600 "$$KEYS/$$1"
-        }
-        put_key delete "$$VM_DELETE_AUTH_KEY"
-        put_key snapshot "$$VM_SNAPSHOT_AUTH_KEY"
-        put_key force_merge "$$VM_FORCE_MERGE_AUTH_KEY"
-        put_key pprof "$$VM_PPROF_AUTH_KEY"
-        ADMIN_ARGS="-deleteAuthKey=file://$$KEYS/delete -snapshotAuthKey=file://$$KEYS/snapshot -forceMergeAuthKey=file://$$KEYS/force_merge -pprofAuthKey=file://$$KEYS/pprof"
-        AUTH_ARGS=""
-        if [ -n "$$VM_AUTH_USERNAME" ] && [ -n "$$VM_AUTH_PASSWORD" ]; then
-          put_key http_password "$$VM_AUTH_PASSWORD"
-          AUTH_ARGS="-httpAuth.username=$$VM_AUTH_USERNAME -httpAuth.password=file://$$KEYS/http_password"
-        fi
-        # Restore the default umask before exec: VictoriaMetrics inherits it,
-        # and 077 would silently tighten the metrics volume, which outlives the
-        # container. The key files are chmod'ed explicitly, so this is safe.
-        umask 022
-        # ADMIN_ARGS is last on purpose: Go's flag package lets a flag repeat
-        # and the last occurrence wins, so VM_EXTRA_ARGS must not be able to
-        # disarm the admin keys the way it can override a tuning flag.
-        exec /victoria-metrics-prod -storageDataPath=/victoria-metrics-data -retentionPeriod="$$VM_RETENTION_PERIOD" -httpListenAddr=:9090 -promscrape.config=/postgres_ai_configs/prometheus/prometheus.yml -promscrape.config.strictParse=false -promscrape.maxScrapeSize=128000000 -search.maxQueryDuration="$${VM_QUERY_DURATION}" -search.maxConcurrentRequests="$${VM_MAX_CONCURRENT_REQUESTS}" -search.maxMemoryPerQuery="$${VM_MAX_MEMORY_PER_QUERY}" -search.maxUniqueTimeseries="$${VM_MAX_UNIQUE_TIMESERIES}" -memory.allowedPercent="$${VM_MEMORY_ALLOWED_PERCENT}" $$AUTH_ARGS $$VM_EXTRA_ARGS $$ADMIN_ARGS
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  # Host metrics vocabulary: evaluates config/prometheus/host_rules.yml, which
-  # maps Supabase node_* and ClickHouse PostgresServer_* series to the host_*
-  # names rds-host-stats writes, and stores the results in sink-prometheus.
-  # `mon targets add` enables the profile while a ClickHouse or Supabase scrape
-  # file exists. See docs/host-metrics.md.
-  vmalert:
-    profiles: ["host-metrics"]
-    image: victoriametrics/vmalert:v1.140.0
-    container_name: vmalert
-    cpus: ${VMALERT_CPUS:-0.1}
-    mem_limit: ${VMALERT_MEM:-134217728}
-    read_only: true
+  # pgai-mon: collects the targets in instances.yml (re-read on change), stores
+  # Parquet, serves read-only SQL to Grafana, the reporter and instance-jobs, and
+  # takes pushed samples (host metrics). Config: /etc/pgai-mon/pgai-mon.yml in
+  # the image (mon/docker/pgai-mon.yml).
+  pgai-mon:
+    image: ${PGAI_REGISTRY:-postgresai}/pgai-mon:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: pgai-mon
+    # instances.yml and host-metrics/ are owner-only (they hold passwords and
+    # API keys), so pgai-mon runs as their owner: the install user that
+    # `mon local-install` writes as INSTANCE_JOBS_USER (or PGAI_MON_USER).
+    # Unset: the image's unprivileged user.
+    user: *pgai_mon_owner
+    cpus: ${PGAI_MON_CPUS:-1.0}
+    mem_limit: ${PGAI_MON_MEM:-1610612736}
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    volumes:
-      - postgres_ai_configs:/postgres_ai_configs:ro
+    ports:
+      - "127.0.0.1:8765:8765"
     environment:
-      # -envflag.enable reads these as -datasource.basicAuth.* and
-      # -remoteWrite.basicAuth.*; empty means no auth, as for sink-prometheus.
-      - datasource_basicAuth_username=${VM_AUTH_USERNAME:-}
-      - datasource_basicAuth_password=${VM_AUTH_PASSWORD:-}
-      - remoteWrite_basicAuth_username=${VM_AUTH_USERNAME:-}
-      - remoteWrite_basicAuth_password=${VM_AUTH_PASSWORD:-}
-    command:
-      - -envflag.enable
-      - -rule=/postgres_ai_configs/prometheus/host_rules.yml
-      - -datasource.url=http://sink-prometheus:9090
-      - -remoteWrite.url=http://sink-prometheus:9090
-      - -evaluationInterval=60s
-      # Only recording rules: nothing to notify, and no listener off the box.
-      - -notifier.blackhole
-      - -httpListenAddr=127.0.0.1:8880
+      # Never logged and never in argv; Grafana, the reporter and instance-jobs
+      # send the same value.
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required (postgresai mon local-install generates it)}
+      # Empty: the local store in pgai_mon_data. s3://bucket/prefix: the bucket.
+      PGAI_MON_STORE: ${PGAI_MON_STORE:-}
+      AWS_REGION: ${AWS_REGION:-}
+      # RDS / Aurora host stats (CloudWatch, Performance Insights, Enhanced
+      # Monitoring) for one instance, written as host_* series.
+      RDS_DB_INSTANCE_IDENTIFIER: ${RDS_DB_INSTANCE_IDENTIFIER:-}
+      RDS_ROLE_ARN: ${RDS_ROLE_ARN:-}
+      RDS_EXTERNAL_ID: ${RDS_EXTERNAL_ID:-}
+      RDS_POLL_INTERVAL_SECONDS: ${RDS_POLL_INTERVAL_SECONDS:-60}
+      PGAI_CLUSTER: ${PGAI_CLUSTER:-}
+      PGAI_NODE_NAME: ${PGAI_NODE_NAME:-}
+      HOME: /var/lib/pgai-mon
+    volumes:
+      - pgai_mon_data:/var/lib/pgai-mon
+      - ./instances.yml:/etc/pgai-mon/instances.yml:ro
+      # Supabase / ClickHouse scrape files written by `mon targets add`.
+      - ./host-metrics:/etc/pgai-mon/host-metrics:ro
+    healthcheck:
+      # /livez needs no credentials and returns no data. The image has bash but
+      # no HTTP client.
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8765 && printf 'GET /livez HTTP/1.0\r\n\r\n' >&3 && head -n 1 <&3 | grep -q ' 200 '
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       config-init:
         condition: service_completed_successfully
-      sink-prometheus:
-        condition: service_started
     restart: unless-stopped
 
-  # PGWatch Instance 1 - Monitoring service (Postgres sink)
-  pgwatch-postgres:
-    image: ${PGAI_REGISTRY:-postgresai}/pgwatch:${PGAI_TAG:?PGAI_TAG is required}
-    build:
-      context: ./pgwatch
-    container_name: pgwatch-postgres
-    cpus: ${PGWATCH_POSTGRES_CPUS:-0.35}
-    mem_limit: ${PGWATCH_POSTGRES_MEM:-536870912}
-    command:
-      [
-        "--sources=/postgres_ai_configs/pgwatch/sources.yml",
-        "--metrics=/postgres_ai_configs/pgwatch/metrics.yml",
-        "--sink=postgresql://pgwatch@sink-postgres:5432/measurements?sslmode=disable",
-        "--web-addr=:8080",
-        "--log-level=error",
-      ]
-    depends_on:
-      sources-generator:
-        condition: service_completed_successfully
-      sink-postgres:
-        condition: service_started
-    volumes:
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    restart: unless-stopped
-
-  # PGWatch Instance 2 - Monitoring service (Prometheus sink)
-  pgwatch-prometheus:
-    image: ${PGAI_REGISTRY:-postgresai}/pgwatch:${PGAI_TAG:?PGAI_TAG is required}
-    build:
-      context: ./pgwatch
-    container_name: pgwatch-prometheus
-    cpus: ${PGWATCH_PROMETHEUS_CPUS:-0.5}
-    mem_limit: ${PGWATCH_PROMETHEUS_MEM:-536870912}
-    command:
-      [
-        "--sources=/postgres_ai_configs/pgwatch-prometheus/sources.yml",
-        "--metrics=/postgres_ai_configs/pgwatch-prometheus/metrics.yml",
-        "--sink=prometheus://0.0.0.0:9091/pgwatch",
-        "--web-addr=:8089",
-        "--log-level=error",
-      ]
-    depends_on:
-      sources-generator:
-        condition: service_completed_successfully
-      sink-prometheus:
-        condition: service_started
-    volumes:
-      - postgres_ai_configs:/postgres_ai_configs:ro
-    restart: unless-stopped
-
-  # Grafana with datasources - Visualization layer
+  # Grafana. On by default; GRAFANA_SCALE=0 leaves it out (nothing depends on it).
   grafana:
     image: grafana/grafana:12.3.2
     container_name: grafana-with-datasources
+    scale: ${GRAFANA_SCALE:-1}
     cpus: ${GRAFANA_CPUS:-0.5}
     mem_limit: ${GRAFANA_MEM:-536870912}
     environment:
       GF_SECURITY_ADMIN_USER: monitor
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-demo}
+      # Infinity: the datasource that runs pgai-mon SQL.
       GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
       GF_PATHS_PROVISIONING: /postgres_ai_configs/grafana/provisioning
       GF_PATHS_CONFIG: /postgres_ai_configs/grafana/provisioning/grafana.ini
@@ -344,39 +198,25 @@ services:
       # Optional: disable login form when OAuth is primary auth
       GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_DISABLE_LOGIN_FORM:-false}
       GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-}
-      VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:?VM_AUTH_USERNAME is required for Grafana datasource provisioning}
-      VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:?VM_AUTH_PASSWORD is required for Grafana datasource provisioning}
+      # Read by datasources.yml (the Infinity datasource's bearer token).
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required for Grafana datasource provisioning}
     ports:
-      - "${GRAFANA_BIND_HOST:-}3000:3000"
+      # GRAFANA_BIND_HOST=0.0.0.0: (with the colon) opens it beyond this host.
+      - "${GRAFANA_BIND_HOST:-127.0.0.1:}3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - postgres_ai_configs:/postgres_ai_configs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       config-init:
         condition: service_completed_successfully
-      sink-postgres:
+      pgai-mon:
         condition: service_started
-      sink-prometheus:
-        condition: service_started
-    restart: unless-stopped
-  monitoring_flask_backend:
-    image: ${PGAI_REGISTRY:-postgresai}/monitoring-flask-backend:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: flask-pgss-api
-    cpus: ${FLASK_CPUS:-0.5}
-    mem_limit: ${FLASK_MEM:-1073741824}
-    environment:
-      - FLASK_ENV=production
-      - PROMETHEUS_URL=http://sink-prometheus:9090
-      - POSTGRES_SINK_URL=postgresql://pgwatch@sink-postgres:5432/measurements
-      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
-      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
-      - QUERYID_RETENTION_HOURS=${QUERYID_RETENTION_HOURS:-720}
-      # Optional overrides:
-      # - ENABLE_AMP=true (enable Amazon Managed Prometheus support)
-      # - AWS_REGION=us-east-1 (AWS region for Amazon Managed Prometheus)
-    depends_on:
-      - sink-prometheus
-      - sink-postgres
     restart: unless-stopped
 
   # PostgreSQL Reports Generator - first run 3 minutes after start once every
@@ -389,11 +229,13 @@ services:
     working_dir: /app
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
+      - ./instances.yml:/app/instances.yml:ro
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
-      - PROMETHEUS_URL=http://sink-prometheus:9090
-      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
-      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+      - PGAI_MON_URL=http://pgai-mon:8765
+      - PGAI_MON_TOKEN=${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+      # The target list: the same file pgai-mon collects.
+      - REPORTER_SOURCES_PATH=/app/instances.yml
       # Upload checkup reports to the SAME platform that provisioned the
       # instance. The console/SI passes the platform URL to the CLI as
       # PGAI_API_BASE_URL (postgres-ai/postgres_ai-ansible) and it is in the
@@ -412,21 +254,16 @@ services:
       # - REPORTER_READINESS_TIMEOUT_SECONDS=1800 (0 = no wait for data)
       # - REPORTER_READINESS_POLL_SECONDS=15
       # - REPORTER_RETRY_SECONDS=1800 (after a failed run)
-      # - REPORTER_SOURCES_PATH=/postgres_ai_configs/pgwatch-prometheus/sources.yml
       # - REPORTER_INTERVAL_SECONDS=86400
       # - REPORTER_OUTPUT_TEMPLATE=/app/all_reports_%Y%m%d_%H%M%S.json
       # - REPORTER_API_URL=https://postgres.ai/api/general
       # - REPORTER_PROJECT_NAME=postgres-ai-monitoring
       # - REPORTER_PGWATCH_CONFIG_PATH=/app/.pgwatch-config
-      # - ENABLE_AMP=true (enable Amazon Managed Prometheus support)
-      # - AWS_REGION=us-east-1 (AWS region for Amazon Managed Prometheus)
     depends_on:
       config-init:
         condition: service_completed_successfully
-      sink-prometheus:
-        condition: service_started
-      pgwatch-prometheus:
-        condition: service_started
+      pgai-mon:
+        condition: service_healthy
     command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]
     restart: unless-stopped
 
@@ -463,9 +300,8 @@ services:
       - PGAI_SUPABASE_HOST_METRICS=${PGAI_SUPABASE_HOST_METRICS:-false}
       # Internal compose listener only; never publish this port.
       - PGAI_SUPABASE_METRICS_LISTEN=:9188
-      - PROMETHEUS_URL=http://sink-prometheus:9090
-      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
-      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+      - PGAI_MON_URL=http://pgai-mon:8765
+      - PGAI_MON_TOKEN=${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
       # Post results to the SAME platform that provisioned this instance, the
       # way the reporter does. Empty falls back to the production default, and
       # a HAND-WRITTEN api_base_url in .pgwatch-config wins over both (nothing
@@ -480,96 +316,16 @@ services:
       - PGAI_INSTANCE_ID=${PGAI_INSTANCE_ID:-}
       - PGAI_MONITORING_INSTANCE_ID=${PGAI_MONITORING_INSTANCE_ID:-}
     depends_on:
-      sink-prometheus:
-        condition: service_started
-    restart: unless-stopped
-
-  # RDS host stats polls AWS metrics and writes host_* series to VictoriaMetrics.
-  # AWS base credentials come from the VM instance profile.
-  rds-host-stats:
-    image: ${PGAI_REGISTRY:-postgresai}/rds-host-stats:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: rds-host-stats
-    profiles: ["rds"]
-    cpus: ${RDS_HOST_STATS_CPUS:-0.5}
-    mem_limit: ${RDS_HOST_STATS_MEM:-134217728}
-    read_only: true
-    tmpfs:
-      - /tmp:noexec,nosuid,nodev,size=16m
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    environment:
-      - RDS_DB_INSTANCE_IDENTIFIER=${RDS_DB_INSTANCE_IDENTIFIER:-}
-      - AWS_REGION=${AWS_REGION:-}
-      - RDS_ROLE_ARN=${RDS_ROLE_ARN:-}
-      - RDS_EXTERNAL_ID=${RDS_EXTERNAL_ID:-}
-      - RDS_POLL_INTERVAL_SECONDS=${RDS_POLL_INTERVAL_SECONDS:-60}
-      - PGAI_CLUSTER=${PGAI_CLUSTER:-}
-      - PGAI_NODE_NAME=${PGAI_NODE_NAME:-}
-      - PROMETHEUS_URL=http://sink-prometheus:9090
-      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
-      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
-    depends_on:
-      sink-prometheus:
-        condition: service_started
-    restart: unless-stopped
-
-  # Self-monitoring components (may have reduced functionality on macOS)
-
-  # cAdvisor - Container metrics (self-monitoring)
-  # Note: ghcr.io/google/cadvisor tags omit the 'v' prefix
-  # (upstream registry convention; different from other images here).
-  self-cadvisor:
-    image: ghcr.io/google/cadvisor:0.56.2
-    container_name: self-cadvisor
-    cpus: ${CADVISOR_CPUS:-0.25}
-    mem_limit: ${CADVISOR_MEM:-402653184}
-    privileged: true
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    command:
-      - "--housekeeping_interval=30s"
-      - "--docker_only=true"
-      - "--disable_metrics=percpu,sched,tcp,udp,hugetlb,referenced_memory,cpu_topology,resctrl"
-      - "--store_container_labels=false"
-    restart: unless-stopped
-
-  # Node Exporter - System metrics (self-monitoring)
-  self-node-exporter:
-    image: prom/node-exporter:v1.11.1
-    container_name: self-node-exporter
-    cpus: ${NODE_EXPORTER_CPUS:-0.05}
-    mem_limit: ${NODE_EXPORTER_MEM:-100663296}
-    command:
-      - "--path.rootfs=/host"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-    volumes:
-      - /:/host:ro,rslave
-    restart: unless-stopped
-
-  # Postgres Exporter - Metrics for sink-postgres (self-monitoring)
-  self-postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.19.1
-    container_name: self-postgres-exporter
-    cpus: ${POSTGRES_EXPORTER_CPUS:-0.1}
-    mem_limit: ${POSTGRES_EXPORTER_MEM:-134217728}
-    environment:
-      DATA_SOURCE_NAME: "postgresql://postgres:postgres@sink-postgres:5432/measurements?sslmode=disable"
-    depends_on:
-      - sink-postgres
+      pgai-mon:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   postgres_ai_configs:
   target_db_data:
   target_standby_data:
-  sink_postgres_data:
-  victoria_metrics_data:
+  # The store (local mode) or the write-ahead log and cache (S3 mode).
+  pgai_mon_data:
   grafana_data:
 
 networks:
