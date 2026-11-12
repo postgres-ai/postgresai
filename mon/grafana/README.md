@@ -77,6 +77,12 @@ python3 mon/grafana/test_compile.py
 Ranges of 7 days or more pin the step to the 1 h rollup tier (90 days or more: 1 d), so long
 ranges read rollups instead of raw samples; there `$__rate_interval` equals the step.
 
+Instant targets (stat and table panels) evaluate one point at the range end (aligned down to
+`$__interval`) with a step of 5 minutes: Grafana's Prometheus datasource sends an instant query
+without a step and VictoriaMetrics then uses 5 minutes, so a bare selector looks back 5 minutes
+(settings are sampled every 5 minutes, most metrics every 30-60 s). `$__interval` and
+`$__rate_interval` written in the PromQL keep their values.
+
 ## Check every panel
 
 `check_panels.py` runs each panel the way Grafana would: the dashboard's default range ending at

@@ -14,7 +14,9 @@ Infinity target that POSTs `/sql?format=objects` with the ported SQL as a text/p
   max(interval + scrape, 4 x scrape) with scrape = 5 s, the Prometheus datasource's
   scrapeInterval. Range targets of 7 d or more pin the step to the rollup tier (STEP), and
   there $__rate_interval is the step itself (README.md: rates differ slightly from Grafana's
-  Prometheus datasource there).
+  Prometheus datasource there). Instant targets (stat/table panels) evaluate one point at the
+  range end with a 5 min step (INSTANT_STEP_MS), VictoriaMetrics' default when Grafana sends no
+  step: a bare selector there looks back 5 minutes, not $__interval.
 - The per-target constants (metric, divisor, variant, ...) come from the matching case in
   cases.py, as SQL literals: the same inlining as diff.py --engine http.
 - The query is wrapped to return (time epoch ms, value, series[, label columns]); `series` is
@@ -95,9 +97,12 @@ def grafana_params(step):
     }
 
 
-# instant targets (stat/table panels) keep $__interval: their one point needs no grid, and the
-# step is a bare selector's lookback there
-GRAFANA_PARAMS = grafana_params("${__interval_ms}")
+# Instant targets (stat/table panels): one point at the range end, aligned to $__interval so it
+# stays fresh. Grafana's Prometheus datasource sends an instant query without a step, and
+# VictoriaMetrics then uses its default step of 5 minutes, which is a bare selector's lookback
+# there; $__interval and $__rate_interval inside the expression keep their values.
+INSTANT_STEP_MS = 300_000
+GRAFANA_PARAMS = dict(grafana_params("${__interval_ms}"), step_ms=f"CAST({INSTANT_STEP_MS} AS BIGINT)")
 GRAFANA_PARAMS_RANGE = grafana_params(STEP)
 # the filter parameters and the dashboard variable each needs: a dashboard without that variable
 # gets the case's literal instead (the parameter then sits in a branch the query does not take)
@@ -653,7 +658,7 @@ def reference(case, to_ms, span_ms, iv, instant):
     end = to_ms - to_ms % iv
     p = dict(case.get("params") or {})
     p.update({"start_ms": end if instant else (to_ms - span_ms) - (to_ms - span_ms) % iv, "end_ms": end,
-              "step_ms": iv, "interval_ms": iv,
+              "step_ms": INSTANT_STEP_MS if instant else iv, "interval_ms": iv,
               "rate_interval_ms": iv if not instant and span_ms >= PIN_TIERS[-1][0] else max(iv + SCRAPE_MS, 4 * SCRAPE_MS),
               "cluster": SAMPLE["cluster"], "node": SAMPLE["node"], "db": SAMPLE["db"], "db_re": SAMPLE["db"],
               "top_n": 10, "range_ms": round(span_ms / 1000) * 1000})
