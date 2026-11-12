@@ -4,7 +4,7 @@ The end-to-end test loads tests/grafana_dashboards/fixtures/panel_store.jsonl.gz
 recorded store plus synthetic series for what it lacks; see make_panel_store.py there) into a
 temporary store, serves it with the pgai-mon binary named by PGAI_MON_BIN, and runs
 mon/grafana/check_panels.py: Grafana's variable resolution and interpolation, then each panel's
-SQL. It fails on any error and on any panel without data. Without PGAI_MON_BIN it is skipped.
+SQL. It fails on any error and on any panel without data. Without PGAI_MON_BIN it is skipped, or fails when CI is set.
 
 The other tests cover check_panels' reproduction of Grafana (formats, intervals, filters) and
 need nothing.
@@ -101,7 +101,9 @@ def _free_port():
 def pgai_mon(tmp_path_factory):
     binary = os.environ.get("PGAI_MON_BIN")
     if not binary:
-        pytest.skip("PGAI_MON_BIN is not set (path to a built pgai-mon)")
+        # CI builds the binary (mon:build) for this test: a missing one is an error there.
+        (pytest.fail if os.environ.get("CI") else pytest.skip)(
+            "PGAI_MON_BIN is not set (path to a built pgai-mon)")
     store = tmp_path_factory.mktemp("panel_store") / "store"
     with gzip.open(FIXTURE, "rb") as src:
         subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=src.read(),

@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-# First run: wait REPORTER_INITIAL_DELAY_SECONDS (180 s), then poll Prometheus
+# First run: wait REPORTER_INITIAL_DELAY_SECONDS (180 s), then poll pgai-mon
 # every REPORTER_READINESS_POLL_SECONDS (15 s) until each enabled target in
 # instances.yml has `settings` and `db_stats` samples, at most
 # REPORTER_READINESS_TIMEOUT_SECONDS (30 min; 0 skips the wait). Collection
@@ -12,13 +12,17 @@ IFS=$'\n\t'
 initial_delay_seconds="${REPORTER_INITIAL_DELAY_SECONDS:-180}"
 readiness_timeout_seconds="${REPORTER_READINESS_TIMEOUT_SECONDS:-1800}"
 readiness_poll_seconds="${REPORTER_READINESS_POLL_SECONDS:-15}"
-sources_path="${REPORTER_SOURCES_PATH:-/postgres_ai_configs/pgwatch-prometheus/sources.yml}"
+# The target list: the instances.yml pgai-mon collects (docker-compose.yml mounts it here).
+sources_path="${REPORTER_SOURCES_PATH:-/app/instances.yml}"
 # A failed run (e.g. the platform is down) is retried after this, not daily
 # and not by a container restart every few minutes.
 retry_seconds="${REPORTER_RETRY_SECONDS:-1800}"
 interval_seconds="${REPORTER_INTERVAL_SECONDS:-86400}"
 
-prometheus_url="${PROMETHEUS_URL:-http://sink-prometheus:9090}"
+# pgai-mon's SQL endpoint; the bearer token comes from PGAI_MON_TOKEN in the
+# environment (the reporter reads it there, never from argv).
+mon_url="${PGAI_MON_URL:-http://pgai-mon:8765}"
+export PGAI_MON_URL="${mon_url}"
 output_template="${REPORTER_OUTPUT_TEMPLATE:-/app/all_reports_%Y%m%d_%H%M%S.json}"
 use_current_time="${USE_CURRENT_TIME:-false}"
 
@@ -105,13 +109,15 @@ sleep_seconds "$initial_delay_seconds"
 
 if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seconds > 0 )); then
   # Always exits 0: on timeout the run goes ahead.
-  python -m reporter.wait_ready "${prometheus_url}" "${sources_path}" \
+  # wait_ready's URL argument is the Prometheus fallback; with PGAI_MON_URL
+  # exported the generator queries pgai-mon.
+  python -m reporter.wait_ready "${mon_url}" "${sources_path}" \
     "${readiness_timeout_seconds}" "${readiness_poll_seconds}" || true
 fi
 
 while true; do
   output_path="$(date -u +"${output_template}")"
-  reporter_args=(--prometheus-url "${prometheus_url}" --output "${output_path}")
+  reporter_args=(--mon-url "${mon_url}" --output "${output_path}")
   if [[ "${use_current_time}" == "true" ]]; then
     reporter_args+=(--use-current-time)
   fi
