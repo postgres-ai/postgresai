@@ -9,6 +9,7 @@ pub mod logs;
 pub mod metricdefs;
 pub mod model;
 pub mod objstore;
+pub mod pgconn;
 pub mod qcache;
 pub mod query;
 pub mod registry;

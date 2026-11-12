@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_postgres::types::{FromSql, Type};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 /// A Postgres value decoded the way pgwatch (pgx) would see it.
 #[derive(Debug, Clone)]
@@ -113,16 +113,9 @@ pub struct NodeInfo {
 
 pub const APPLICATION_NAME: &str = "pgai-mon";
 
+/// Connect (libpq-style string, TLS per sslmode: pgconn.rs) and apply the session settings.
 pub async fn connect(conn_str: &str, cc: &CollectorCfg) -> anyhow::Result<Client> {
-    let mut cfg: tokio_postgres::Config = conn_str.parse()?;
-    cfg.application_name(APPLICATION_NAME);
-    cfg.connect_timeout(Duration::from_secs(10));
-    let (client, conn) = cfg.connect(NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            eprintln!("pg connection closed: {e}");
-        }
-    });
+    let client = crate::pgconn::connect(conn_str, APPLICATION_NAME).await?;
     setup_session(&client, cc).await?;
     Ok(client)
 }
@@ -175,27 +168,10 @@ pub async fn query_capped(
     Ok((rows, cut))
 }
 
-/// Connection string for another database on the same node.
+/// Connection string for another database on the same node (key=value form; every other
+/// option, TLS included, kept).
 pub fn conn_str_for_db(base: &str, db: &str) -> anyhow::Result<String> {
-    // Works for URL-style strings: replace the path.
-    if let Some(rest) = base
-        .strip_prefix("postgresql://")
-        .or_else(|| base.strip_prefix("postgres://"))
-    {
-        let (hostpart, query) = match rest.split_once('?') {
-            Some((h, q)) => (h, Some(q)),
-            None => (rest, None),
-        };
-        let host = hostpart.split('/').next().unwrap_or(hostpart);
-        let mut s = format!("postgresql://{host}/{db}");
-        if let Some(q) = query {
-            s.push('?');
-            s.push_str(q);
-        }
-        Ok(s)
-    } else {
-        Ok(format!("{base} dbname={db}"))
-    }
+    Ok(crate::pgconn::ConnParams::parse(base)?.with_dbname(db).to_kv_string())
 }
 
 pub async fn node_info(c: &Client) -> anyhow::Result<NodeInfo> {
