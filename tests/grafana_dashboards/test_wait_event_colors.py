@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from tests.grafana_dashboards.conftest import iter_panels
+from tests.grafana_dashboards.conftest import iter_panels, target_query
 
 ROOT = Path(__file__).resolve().parents[2]
 PALETTE = json.loads((ROOT / "docs/wait-event-colors.json").read_text())
@@ -33,7 +33,7 @@ def color_for(panel, label):
 def test_ash_colors(dashboard_path):
     dashboard = json.loads(dashboard_path.read_text())
     for panel in iter_panels(dashboard):
-        if not any("pgwatch_wait_events_total" in t.get("expr", "")
+        if not any("pgwatch_wait_events_total" in target_query(t)
                    for t in panel.get("targets", [])):
             continue
         for category, expected in PALETTE.items():
@@ -69,6 +69,6 @@ def test_ash_panels_are_present(dashboards):
     # Avoid a vacuous pass if metric names or provisioning paths change.
     found = {str(path.resolve()) + ":" + str(panel["id"])
              for path, dashboard in dashboards for panel in iter_panels(dashboard)
-             if any("pgwatch_wait_events_total" in t.get("expr", "")
+             if any("pgwatch_wait_events_total" in target_query(t)
                     for t in panel.get("targets", []))}
     assert len(found) >= 5

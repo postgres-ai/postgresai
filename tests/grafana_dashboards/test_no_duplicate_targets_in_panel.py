@@ -15,16 +15,16 @@ Three rules enforced here:
    silently merge.
 
 2. Within a single panel, no two non-hidden targets may share the same
-   normalized `expr` (Prometheus) or `rawSql` (Postgres). A textual
+   normalized query (the SQL body POSTed to pgai-mon). A textual
    duplicate is always a bug.
 
-3. Within a single panel, if two non-hidden Prometheus targets reference
-   the same metric name, both must include at least one label selector
-   (a `{...}` block with content). An unfiltered selector on a metric
+3. Within a single panel, if two non-hidden targets read the same metric
+   (`prom_*('<metric>', <matchers>, ...)` or `pgai_samples`), every read
+   must pass a non-empty matcher list. An unfiltered read of a metric
    that is filtered elsewhere produces a superset and thus duplicate
    series in the legend. This is the rule that catches the Dashboard 1
    ASH bug — target D (`sum by (wait_event_type)
-   (pgwatch_wait_events_total)>0`) overlaps targets A/B/C which filter
+   (pgwatch_wait_events_total)>0`) overlapped targets A/B/C which filter
    the same metric.
 """
 from __future__ import annotations
@@ -36,31 +36,37 @@ from pathlib import Path
 
 import pytest
 
-from tests.grafana_dashboards.conftest import iter_panels
+from tests.grafana_dashboards.conftest import call_args, iter_panels, target_query
 
 
 def _normalize(s: str | None) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
-# Heuristic: extract Prometheus metric names that appear in an expr.
-# Matches identifiers followed by `{` (with selector) or by `)`/whitespace
-# (no selector). pgwatch metrics all start with `pgwatch_` which keeps the
-# match precise; this lint is opt-in to that prefix to avoid false positives
-# on aggregation functions like `sum`, `rate`, etc.
-_PROM_METRIC_RE = re.compile(r"\b(pgwatch_[a-zA-Z0-9_]+)(\s*\{([^}]*)\})?")
+# A metric read: an evaluator table function or pgai_samples, whose first two arguments are the
+# metric name and the matcher list.
+_METRIC_CALL_RE = re.compile(r"\b(prom_[a-z_]+|pgai_samples)\(\s*\(?'(pgwatch_\w+|pg_\w+)'")
+_EMPTY_MATCHERS = {"[]", "[]::VARCHAR[][]", "CAST([] AS VARCHAR[][])"}
 
 
-def _prom_metric_uses(expr: str) -> list[tuple[str, bool]]:
-    """Return [(metric, has_label_selector), ...] for every pgwatch metric
-    referenced in the expression. has_label_selector is True iff the metric
-    is followed by a `{...}` block whose contents are non-empty.
-    """
+def _metric_uses(sql: str) -> list[tuple[str, bool]]:
+    """Return [(metric, has_matchers), ...] for every metric the query reads. has_matchers is
+    False when the matcher list is empty."""
     out: list[tuple[str, bool]] = []
-    for m in _PROM_METRIC_RE.finditer(expr or ""):
-        selector_contents = (m.group(3) or "").strip()
-        out.append((m.group(1), bool(selector_contents)))
+    for m in _METRIC_CALL_RE.finditer(sql or ""):
+        args = call_args(sql[m.start():], m.group(1))
+        matchers = args[1] if len(args) > 1 else ""
+        while matchers.startswith("(") and matchers.endswith(")"):
+            matchers = matchers[1:-1].strip()
+        out.append((m.group(2), matchers not in _EMPTY_MATCHERS))
     return out
+
+
+def test_metric_uses_parser():
+    assert _metric_uses("FROM prom_last(('pgwatch_a'), ([['cluster', '=', 'x']]), 1, 2, 3)") == [("pgwatch_a", True)]
+    assert _metric_uses("FROM prom_irate('pgwatch_a', []::VARCHAR[][], 1, 2, 3)") == [("pgwatch_a", False)]
+    assert _metric_uses("FROM prom_sum_over_time('pgwatch_a', [['a','=','b']] || CASE ('a') WHEN 'a' "
+                        "THEN [] END, 1)") == [("pgwatch_a", True)]
 
 
 def test_no_duplicate_refids_in_panel(dashboard_path: Path):
@@ -93,7 +99,7 @@ def test_no_duplicate_expressions_in_panel(dashboard_path: Path):
         for ti, t in enumerate(panel.get("targets", []) or []):
             if t.get("hide"):
                 continue
-            body = _normalize(t.get("expr") or t.get("rawSql") or "")
+            body = _normalize(target_query(t))
             if not body:
                 continue
             if body in seen:
@@ -111,10 +117,9 @@ def test_no_duplicate_expressions_in_panel(dashboard_path: Path):
 
 
 def test_no_unfiltered_metric_overlapping_filtered_in_panel(dashboard_path: Path):
-    """If a Prometheus metric appears in multiple targets within a single
-    panel, every target referencing that metric must include a non-empty
-    `{label="..."}` selector. Otherwise the unfiltered target produces a
-    superset and the legend shows duplicates.
+    """If a metric is read by several targets of one panel, every read must
+    pass matchers. Otherwise the unfiltered target produces a superset and
+    the legend shows duplicates.
     """
     with open(dashboard_path) as f:
         dashboard = json.load(f)
@@ -126,10 +131,10 @@ def test_no_unfiltered_metric_overlapping_filtered_in_panel(dashboard_path: Path
         for t in panel.get("targets", []) or []:
             if t.get("hide"):
                 continue
-            expr = t.get("expr") or ""
-            for metric, has_sel in _prom_metric_uses(expr):
+            sql = target_query(t)
+            for metric, has_sel in _metric_uses(sql):
                 usage[metric].append(
-                    (str(t.get("refId")), has_sel, _normalize(expr)[:140])
+                    (str(t.get("refId")), has_sel, _normalize(sql)[:140])
                 )
 
         for metric, uses in usage.items():
@@ -144,12 +149,12 @@ def test_no_unfiltered_metric_overlapping_filtered_in_panel(dashboard_path: Path
                 offenders.append(
                     f"panel id={panel.get('id')!r} title={panel.get('title')!r} "
                     f"metric={metric!r} appears in {len(uses)} targets, "
-                    f"{len(unfiltered)} without a label selector; "
+                    f"{len(unfiltered)} without matchers; "
                     f"unfiltered target overlaps the filtered ones — {snippets}"
                 )
 
     assert not offenders, (
         f"{dashboard_path.name}: {len(offenders)} panel(s) where an "
-        f"unfiltered Prometheus metric overlaps a filtered one in the "
+        f"unfiltered metric read overlaps a filtered one in the "
         f"same panel:\n  " + "\n  ".join(offenders)
     )

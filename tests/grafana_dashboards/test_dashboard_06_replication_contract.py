@@ -5,7 +5,9 @@ The 2026-08-20 live review found the detail panels indistinguishable from the
 summary panels and silently rendering a blend of every standby when the
 selector was left on All. The fix is structural (a `replica` template variable
 plus a range-wide PromQL gate that erases the detail series unless the selection
-resolves to exactly one application name), so it is worth pinning. Logical
+resolves to exactly one application name), so it is worth pinning. In the SQL
+dashboard the gate is a CTE keeping only the steps where the $__range-wide
+window holds exactly one application_name, joined to every detail series. Logical
 per-standby graphs are also keyed only by application_name so client-port churn
 does not create duplicate legends; the connection table deliberately retains
 client_info as its physical-connection identity.
@@ -13,15 +15,21 @@ client_info as its physical-connection identity.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from tests.grafana_dashboards.conftest import iter_panels
+from tests.grafana_dashboards.conftest import is_dashboard, iter_panels, target_query
 
-DASHBOARD_FILENAME = "Dashboard_6_Replication_and_HA.json"
 DETAIL_MARKER = "select one standby"
-GATE_MARKER = "count by (application_name)"
+REPLICA_FILTER = "['application_name', '=~', '${replica:regex}']"
+# the gate: steps whose $__range-wide window holds exactly one standby
+GATE_MARKER = "HAVING count(DISTINCT coalesce(labels[('application_name')], '')) = 1"
+RANGE_WINDOW = "CAST(round((${__to} - ${__from}) / 1000.0) * 1000 AS BIGINT)"
+BY_APPLICATION = re.compile(
+    r"p_by := CAST\(\(\['application_name'\]\) AS VARCHAR\[\]\)|prom_by\(labels, \['application_name'\]\)")
+SERIES_BY_APPLICATION = ", coalesce(q.labels['application_name'], '') AS series,"
 PROMPT = "select one standby to analyze replication stages"
 DETAIL_PANEL_TITLES = {
     221: "Replay lag by stage (bytes)",
@@ -33,7 +41,7 @@ CONNECTION_IDENTITY_PANEL_ID = 251
 
 
 def _load_d6(dashboard_path: Path) -> dict | None:
-    if dashboard_path.name != DASHBOARD_FILENAME:
+    if not is_dashboard(dashboard_path, 6):
         return None
     with open(dashboard_path) as f:
         return json.load(f)
@@ -72,7 +80,7 @@ def test_replica_filter_is_limited_to_detail_panels(dashboard_path: Path):
         panel["id"]
         for panel in iter_panels(d)
         for target in panel.get("targets") or []
-        if 'application_name=~"$replica"' in (target.get("expr") or "")
+        if REPLICA_FILTER in target_query(target)
     }
     assert filtered_panel_ids == REPLICA_FILTER_PANEL_IDS, (
         "the Standby selector must filter only the detail and per-standby "
@@ -108,13 +116,14 @@ def test_detail_panels_are_gated_and_prompt(dashboard_path: Path):
                 != PROMPT):
             problems.append(f"{where}: fieldConfig.defaults.noValue must be {PROMPT!r}")
         for target in panel.get("targets") or []:
-            expr = target.get("expr") or ""
+            sql = target_query(target)
             # The reference-line target is intentionally ungated: it is a
             # constant, not a per-standby series.
-            if "pgwatch_settings_" in expr:
+            if "pgwatch_settings_" in sql:
                 continue
-            if (GATE_MARKER not in expr or "max_over_time" not in expr
-                    or "[$__range]" not in expr or "== 1" not in expr):
+            gate = sql[sql.find("), c AS ("):]
+            if (GATE_MARKER not in gate or RANGE_WINDOW not in gate
+                    or not re.search(r"FROM \w+ JOIN c USING \(t\)", sql)):
                 problems.append(
                     f"{where} target {target.get('refId')}: missing the "
                     f"'exactly one standby' gate"
@@ -136,23 +145,23 @@ def test_per_standby_graphs_key_series_by_application_name(dashboard_path: Path)
         if "identity is `application_name`" not in (panel.get("description") or ""):
             problems.append(f"{where}: description must state the logical identity")
         for target in panel.get("targets") or []:
-            expr = target.get("expr") or ""
-            if "pgwatch_replication_" not in expr:
+            sql = target_query(target)
+            if "pgwatch_replication_" not in sql:
                 continue
-            if "max by (application_name)" not in expr:
+            if not BY_APPLICATION.search(sql):
                 problems.append(
                     f"{where} target {target.get('refId')}: must aggregate "
                     "reconnects by application_name"
                 )
-            if "client_info" in expr:
+            if "client_info" in sql:
                 problems.append(
                     f"{where} target {target.get('refId')}: client_info must "
                     "not split a logical standby"
                 )
-            if target.get("legendFormat") != "{{application_name}}":
+            if SERIES_BY_APPLICATION not in sql:
                 problems.append(
-                    f"{where} target {target.get('refId')}: legend must be "
-                    "{{application_name}}"
+                    f"{where} target {target.get('refId')}: series must be "
+                    "named by application_name"
                 )
 
     connection_panel = panels_by_id[CONNECTION_IDENTITY_PANEL_ID]
@@ -170,8 +179,12 @@ def test_per_standby_graphs_key_series_by_application_name(dashboard_path: Path)
             f"panel {CONNECTION_IDENTITY_PANEL_ID}: connection table must "
             "retain client_info"
         )
-    connection_expr = connection_panel["targets"][0].get("expr") or ""
-    if "max by (application_name)" in connection_expr:
+    connection_sql = target_query(connection_panel["targets"][0])
+    if """q.labels['client_info'] AS "client_info\"""" not in connection_sql:
+        problems.append(
+            f"panel {CONNECTION_IDENTITY_PANEL_ID}: the query must return client_info"
+        )
+    if BY_APPLICATION.search(connection_sql):
         problems.append(
             f"panel {CONNECTION_IDENTITY_PANEL_ID}: physical connections "
             "must not be collapsed by application_name"
