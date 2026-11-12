@@ -58,7 +58,7 @@ import {
 import { registerAasCollection, parseVcpus, aasSuccessMessage, aasArmingSkipReason } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { composeDefinesService, composeProjectName, failedServices, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 import { PGAI_MON_URL, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
@@ -3861,9 +3861,20 @@ async function switchFromOldStack(
       : "\n(could not tell whether the old stack was running, so the new one was not started: run 'postgresai mon start')");
   }
   console.log(`\n${stackSwitchNotice(await existingOldStackVolumes(projectDir))}`);
+  const bindNotice = switchedGrafanaBindNotice(projectDir);
+  if (bindNotice) console.log(bindNotice);
   const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
   if (store) console.log(store);
   return ok;
+}
+
+/**
+ * grafanaBindNotice for this install, read as compose reads it (the
+ * environment, else .env); null when Grafana is left out of the stack.
+ */
+function switchedGrafanaBindNotice(projectDir: string): string | null {
+  if (!grafanaEnabled(process.env[GRAFANA_SCALE_KEY] ?? readEnvValue(projectDir, GRAFANA_SCALE_KEY))) return null;
+  return grafanaBindNotice(process.env.GRAFANA_BIND_HOST ?? readEnvValue(projectDir, "GRAFANA_BIND_HOST"));
 }
 
 /**
@@ -5720,7 +5731,11 @@ mon
     if (!grafanaOn) console.log("Grafana is left out (GRAFANA_SCALE=0 in .env); 'postgresai mon local-install --grafana' adds it back.\n");
     const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
     if (store) console.log(`${store}\n`);
-    if (switchedFrom !== null) console.log(`${stackSwitchNotice(await existingOldStackVolumes(projectDir))}\n`);
+    if (switchedFrom !== null) {
+      console.log(`${stackSwitchNotice(await existingOldStackVolumes(projectDir))}\n`);
+      const bindNotice = switchedGrafanaBindNotice(projectDir);
+      if (bindNotice) console.log(`${bindNotice}\n`);
+    }
 
     if (!opts.demo) {
       console.log("Next steps:");

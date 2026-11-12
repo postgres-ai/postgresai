@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import { resolve } from "path";
-import { composeDefinesService, composeProjectName, failedServices, oldStackVolumeNames, parseComposePs, redactStoreUrl, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, oldStackVolumeNames, parseComposePs, redactStoreUrl, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 
 /**
  * The switch of an existing install from the old pgwatch + VictoriaMetrics
@@ -152,6 +152,24 @@ describe("mon update on an old-stack install", () => {
     expect(r.stdout).toContain("docker volume rm old-running_victoria_metrics_data\n");
     expect(r.stdout).not.toContain("old-running_sink_postgres_data");
     expect(r.stdout).toContain(storeNotice(undefined)!);
+    // GRAFANA_BIND_HOST was unset: the old stack published Grafana on every
+    // interface, this one on 127.0.0.1 only. Said once; .env is not changed.
+    expect(r.stdout.split(grafanaBindNotice(undefined)!).length).toBe(2);
+    expect(env).not.toContain("GRAFANA_BIND_HOST");
+  });
+
+  test("a GRAFANA_BIND_HOST the old install set, or Grafana left out, gets no bind notice", () => {
+    const set = makeProject("old-bind-set", OLD_COMPOSE, `${OLD_ENV}GRAFANA_BIND_HOST=10.0.0.5:\n`);
+    const r1 = set.run(["mon", "update"], { OLD_RUNNING: "1" });
+    expect(r1.status).toBe(0);
+    expect(r1.stdout).toContain("Switched this install");
+    expect(r1.stdout).not.toContain("Grafana now listens");
+    const empty = makeProject("old-bind-empty", OLD_COMPOSE, `${OLD_ENV}GRAFANA_BIND_HOST=\n`);
+    expect(empty.run(["mon", "update"], { OLD_RUNNING: "1" }).stdout).not.toContain("Grafana now listens");
+    const off = makeProject("old-no-grafana", OLD_COMPOSE, `${OLD_ENV}GRAFANA_SCALE=0\n`);
+    const r3 = off.run(["mon", "update"], { OLD_RUNNING: "1" });
+    expect(r3.stdout).toContain("Switched this install");
+    expect(r3.stdout).not.toContain("Grafana now listens");
   });
 
   test("a stopped old stack is switched but not started", () => {
@@ -231,6 +249,7 @@ describe("mon local-install", () => {
 
     expect(r.stdout).toContain("pgai-mon: metrics collection, storage and SQL");
     expect(r.stdout).toContain("docker volume rm li-old-stopped_victoria_metrics_data li-old-stopped_sink_postgres_data");
+    expect(r.stdout).toContain(grafanaBindNotice(undefined)!);
     expect(r.stdout).toContain(storeNotice(undefined)!);
     expect(r.stdout).not.toContain("VictoriaMetrics Auth");
   });
@@ -251,6 +270,7 @@ describe("mon local-install", () => {
     expect(composeCalls(p.calls()).some((c) => / down /.test(c))).toBe(false);
     expect(r.stdout).not.toContain("Switched this install");
     expect(r.stdout).not.toContain(storeNotice(undefined)!);
+    expect(r.stdout).not.toContain("Grafana now listens");
     expect(r.stdout).toContain("Metrics history goes to s3://bucket/prefix");
     expect(readEnv(p.dir)).toContain("PGAI_MON_STORE=s3://bucket/prefix");
   });
@@ -270,6 +290,18 @@ describe("stack helpers", () => {
     expect(composeProjectName("My.Box_1")).toBe("mybox_1");
     expect(composeProjectName("monitoring", "Postgres_AI")).toBe("postgres_ai");
     expect(oldStackVolumeNames("monitoring")).toEqual(["monitoring_victoria_metrics_data", "monitoring_sink_postgres_data"]);
+  });
+
+  test("the Grafana bind notice: only when GRAFANA_BIND_HOST is unset, one line, no reopening", () => {
+    const n = grafanaBindNotice(undefined)!;
+    expect(n).toContain("127.0.0.1:3000 only");
+    expect(n).toContain("SSH tunnel");
+    expect(n).toContain("GRAFANA_BIND_HOST");
+    expect(n).not.toContain("\n");
+    expect(grafanaBindNotice(null)).toBe(n);
+    expect(grafanaBindNotice("")).toBeNull();
+    expect(grafanaBindNotice("127.0.0.1:")).toBeNull();
+    expect(grafanaBindNotice("0.0.0.0:")).toBeNull();
   });
 
   test("the switch notice names no volume when none is left", () => {
