@@ -166,9 +166,9 @@ func newJoeHarness(t *testing.T, jobs string) *joeHarness {
 	t.Setenv("PGAI_JOE_URL", "http://127.0.0.1:1")
 	t.Setenv("PGAI_JOE_VERIFY_TOKEN", "")
 	t.Setenv("PGAI_API_BASE_URL", "http://127.0.0.1:1")
-	t.Setenv("PROMETHEUS_URL", "http://127.0.0.1:1")
-	t.Setenv("VM_AUTH_USERNAME", "")
-	t.Setenv("VM_AUTH_PASSWORD", "")
+	t.Setenv("PGAI_MON_URL", "http://127.0.0.1:1")
+	t.Setenv("PGAI_MON_TOKEN", "")
+	t.Setenv("PGAI_MON_TOKEN_FILE", "")
 
 	h.runner = New(filepath.Join(dir, "health"), "test")
 	h.runner.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }

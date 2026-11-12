@@ -13,16 +13,18 @@ import unittest
 
 import compile as C
 
-ALLOWED_VARS = {"${__from}", "${__to}", "${__interval_ms}", "${cluster_name}", "${node_name}",
-                "${db_name:regex}", "${db_name}", "${top_n}",
+ALLOWED_VARS = {"${__from}", "${__to}", "${__interval_ms}", "${cluster_name:sqlstring}", "${node_name:sqlstring}",
+                "${db_name:regex}", "${db_name:sqlstring}", "${top_n:sqlstring}",
                 # Dashboard_4, 3, 7 filter variables
-                "${wait_event_type:regex}", "${wait_event:regex}", "${query_id}", "${schema_name:regex}",
+                "${wait_event_type:regex}", "${wait_event:regex}", "${query_id:sqlstring}", "${schema_name:regex}",
                 "${table_name:regex}",
                 # Dashboard_9, 11, 6 (matchers on a variable, e.g. index_name=~"$index_name")
-                "${schema_name}", "${table_name}", "${index_name}", "${index_name:regex}", "${datname}",
-                "${datname:regex}", "${replica:regex}",
+                "${schema_name:sqlstring}", "${table_name:sqlstring}", "${index_name:sqlstring}",
+                "${index_name:regex}", "${datname:sqlstring}", "${datname:regex}", "${replica:regex}",
+                # Dashboard_2's query text mode (its pg_stat_statements table)
+                "${legend_label:sqlstring}",
                 # Dashboard_6's custom threshold
-                "${lag_alert_s}"}
+                "${lag_alert_s:sqlstring}"}
 
 
 def load(name):
@@ -76,6 +78,8 @@ class Emitted(unittest.TestCase):
             for i, a in ps.items():
                 ta, tb = a.get("targets") or [], po[i].get("targets") or []
                 self.assertEqual([t["refId"] for t in ta], [t["refId"] for t in tb], f"panel {i}")
+                if (spec["census"], i) in C.TABLE_PANELS:
+                    continue  # test_table_panels
                 for x, y in zip(ta, tb):
                     if not x.get("expr") or (spec.get("partial") and y.get("expr")):
                         # non-Prometheus targets, and a partial port's unported ones, are copied
@@ -130,6 +134,46 @@ class Emitted(unittest.TestCase):
         self.assertEqual(counts, {"D2": 79, "D1": 23, "D4": 5, "D3": 16, "D7": 28, "D13": 8, "D12": 7, "D14": 17,
                                   "D5": 13, "D9": 32, "D11": 9, "D6": 24, "D8": 26, "D10": 7})
 
+    def test_table_panels(self):
+        """The panels that called the Flask backend or the Postgres sink run pgai-mon SQL instead, with
+        the original column selectors (the overrides and transformations name them)."""
+        seen = set()
+        for spec, src, out in self.pairs():
+            ps, po = panels(src), panels(out)
+            for i, a in ps.items():
+                tp = C.TABLE_PANELS.get((spec["census"], i))
+                if tp is None:
+                    continue
+                seen.add((spec["census"], i))
+                b = po[i]
+                self.assertEqual(b["datasource"], C.INFINITY)
+                ta, tb = a["targets"], b["targets"]
+                self.assertEqual([t["refId"] for t in ta], [t["refId"] for t in tb])
+                for x, y in zip(ta, tb):
+                    self.assertEqual(y["datasource"], C.INFINITY)
+                    self.assertEqual((y["type"], y["source"], y["parser"], y["format"], y["root_selector"]),
+                                     ("json", "url", "backend", "table", "rows"))
+                    self.assertTrue(y["url"].endswith(":8765/sql?format=objects"), y["url"])
+                    self.assertEqual(y["url_options"]["method"], "POST")
+                    if tp["columns"] is None:
+                        self.assertEqual(y["columns"], x["columns"])
+                    self.assertEqual(y.get("filterExpression"), x.get("filterExpression"))
+                    body = y["url_options"]["data"]
+                    self.assertNotIn("getvariable(", body)
+                    self.assertNotIn("flask", body)
+                    self.assertTrue(set(re.findall(r"\$\{[^}]+\}", body)) <= ALLOWED_VARS, body)
+                    # every column the panel reads is selected by the SQL (as a quoted name or an alias)
+                    for c in y["columns"]:
+                        sel = re.escape(c["selector"])
+                        self.assertRegex(body, r'(?i)\bAS\s+"%s"|\bAS\s+%s\b|[\s.]%s,' % (sel, sel, sel),
+                                         f"{spec['census']} panel {i}: {c['selector']}")
+        self.assertEqual(seen, set(C.TABLE_PANELS))
+        # nothing calls the Flask backend or the pgwatch Postgres sink any more
+        for spec, src, out in self.pairs():
+            text = json.dumps(out)
+            self.assertNotIn("flask-pgss-api", text)
+            self.assertNotIn("P031DD592934B2F1F", text)
+
     def test_variables(self):
         for spec, src, out in self.pairs():
             vs, vo = src["templating"]["list"], out["templating"]["list"]
@@ -143,13 +187,23 @@ class Emitted(unittest.TestCase):
                 self.assertEqual(b["datasource"], C.INFINITY)
                 self.assertEqual(b["query"]["infinityQuery"]["url_options"]["data"], b["definition"])
 
+    def test_plain_variables_are_sql_strings(self):
+        """A one-value variable reaches the SQL only as ${x:sqlstring} (Grafana quotes it), never
+        inside quotes of the compiler's own, where a ' in the value would end the literal."""
+        for spec, src, out in self.pairs():
+            bodies = [v["definition"] for v in out["templating"]["list"] if v["type"] == "query"]
+            bodies += [(t.get("url_options") or {}).get("data", "")
+                       for p in C.walk(out["panels"]) for t in p.get("targets") or []]
+            for body in bodies:
+                self.assertIsNone(re.search(r"'\$\{(?!__)\w+\}'|CAST\(\$\{(?!__)\w+\} ", body), body)
+
     def test_filter_variables_only_where_the_dashboard_has_them(self):
         for spec, src, out in self.pairs():
             names = {v["name"] for v in src["templating"]["list"]}
             for p in C.walk(out["panels"]):
                 for t in p.get("targets") or []:
                     body = (t.get("url_options") or {}).get("data", "")
-                    for var in re.findall(r"\$\{(\w+)(?::regex)?\}", body):
+                    for var in re.findall(r"\$\{(\w+)(?::\w+)?\}", body):
                         if not var.startswith("__"):
                             self.assertIn(var, names, f"{spec['census']} panel {p['id']}{t['refId']}")
 
@@ -188,6 +242,15 @@ class Pieces(unittest.TestCase):
                       C.label_values_sql('label_values(m{wait_event_type=~"$wait_event_type"}, wait_event)'))
         self.assertIn("coalesce(labels['datname'], '') = '${db_name}'",
                       C.label_values_sql('label_values(m{datname="$db_name"}, schema)'))
+
+    def test_sqlstring_vars(self):
+        self.assertEqual(C.sqlstring_vars("a = '${query_id}' AND n = CAST(${top_n} AS BIGINT)"),
+                         "a = ${query_id:sqlstring} AND n = CAST(${top_n:sqlstring} AS BIGINT)")
+        # regex-formatted variables and built-ins are left alone
+        s = "regexp_full_match(x, '${db_name:regex}') AND t < CAST(${__to} AS BIGINT)"
+        self.assertEqual(C.sqlstring_vars(s), s)
+        # --check renders ${x:sqlstring} the way Grafana does
+        self.assertEqual(C.interpolate("${query_id:sqlstring}", {"${query_id}": "o'k"}), "'o''k'")
 
     def test_legend(self):
         cols = ["labels", "t", "value"]

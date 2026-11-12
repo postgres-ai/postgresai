@@ -17,23 +17,37 @@
     "step": 60
   },
   "responses": {
-    "sum by (wait_event_type)(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"a\\\"b\\\\c\", node_name=\"n1\"})": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_per_type": {
+      "columns": [
+        "wait_event_type",
+        "vals"
+      ],
+      "types": [
+        "VARCHAR",
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     },
-    "sum(pgwatch_wait_events_total{wait_event_type=~\"CPU\\\\*|IO|IPC|Lock|LWLock\", cluster=\"a\\\"b\\\\c\", node_name=\"n1\"})": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "aas_total": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     }
   },
   "expected": {
     "outcome": "skipped",
     "skip_reason": "density"
-  }
+  },
+  "expect_sql_contains": [
+    "['cluster', '=', 'a\"b\\c']",
+    "['node_name', '=', 'n1']"
+  ]
 }

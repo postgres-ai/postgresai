@@ -79,19 +79,18 @@ func TestZeroFillingTheGapsWouldDefeatTheDensityGate(t *testing.T) {
 	run := func(t *testing.T, totalSeries string) Outcome {
 		t.Helper()
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			q := r.URL.Query().Get("query")
-			if strings.HasPrefix(q, "sum(pgwatch_wait_events_total") {
+			if isQuery(sqlText(r), "aas_total") {
 				w.Write([]byte(totalSeries))
 				return
 			}
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+			w.Write([]byte(noRows))
 		}))
 		defer srv.Close()
 
 		args := `{"cluster_name":"c","node_name":"n","vcpus":2,
 			"period_start":"2026-09-01T00:00:00Z","period_end":"2026-09-01T00:10:00Z",
 			"window_start":"2026-09-01T00:00:00Z"}`
-		out, err := Run(context.Background(), NewClient(srv.URL, "", "", time.Second),
+		out, err := Run(context.Background(), NewClient(srv.URL, "", time.Second),
 			KindAAS, []byte(args), time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC))
 		if err != nil {
 			t.Fatal(err)
@@ -99,19 +98,17 @@ func TestZeroFillingTheGapsWouldDefeatTheDensityGate(t *testing.T) {
 		return out
 	}
 
-	empty := `{"status":"success","data":{"resultType":"matrix","result":[]}}`
-	if out := run(t, empty); out.Status != OutcomeSkipped || out.SkipReason != SkipDensity {
+	if out := run(t, noRows); out.Status != OutcomeSkipped || out.SkipReason != SkipDensity {
 		t.Fatalf("a window the store had nothing for came back %q/%q, want skipped/density",
 			out.Status, out.SkipReason)
 	}
 
 	// The same window, with the ten missing slots materialised as zeros.
-	var points []string
-	for i := 1; i <= 10; i++ {
-		points = append(points, fmt.Sprintf(`[%d,"0"]`, i))
+	zeros := make([]any, 10)
+	for i := range zeros {
+		zeros[i] = 0
 	}
-	zeroFilled := `{"status":"success","data":{"resultType":"matrix","result":[
-		{"metric":{},"values":[` + strings.Join(points, ",") + `]}]}}`
+	zeroFilled := rowsJSON([]string{"vals"}, []any{zeros})
 	if out := run(t, zeroFilled); out.Status != OutcomeOK {
 		t.Fatalf("zero-filled input came back %q/%q; this test only means something "+
 			"while zero-filling would have produced a stored payload", out.Status, out.SkipReason)
@@ -148,14 +145,14 @@ func TestTempfileFiltersNonFiniteAndNegative(t *testing.T) {
 // The AAS path does NOT filter non-finite values -- deliberately the opposite of
 // the tempfile path. They are real samples of a real gauge there.
 func TestAASSamplesKeepNonFiniteValues(t *testing.T) {
-	body := `{"status":"success","data":{"resultType":"matrix","result":[
-		{"metric":{"wait_event_type":"IO"},"values":[[1,"1"],[2,"NaN"],[3,"+Inf"]]}]}}`
+	// The store writes a non-finite double as a string: JSON has no such number.
+	body := rowsJSON([]string{"wait_event_type", "vals"}, []any{"IO", []any{1, "NaN", "+Inf"}})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
-	series, err := NewClient(srv.URL, "", "", time.Second).
+	series, err := NewClient(srv.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
 	if err != nil {
 		t.Fatal(err)
@@ -170,19 +167,25 @@ func TestAASSamplesKeepNonFiniteValues(t *testing.T) {
 
 // --- the queries themselves ---------------------------------------------------
 
-// The wait-event-type regex must reach PromQL with TWO backslashes: the string
-// parser unescapes them to one, leaving the regex a literal asterisk. With one
-// the store rejects the query outright.
-func TestWaitEventTypeRegexKeepsItsDoubleBackslash(t *testing.T) {
-	q := SeriesFilter{"c", "n"}.labelMatcher()
-	if !strings.Contains(q, `CPU\\*`) {
-		t.Fatalf("matcher lost the double backslash: %s", q)
+// The wait-event-type regex reaches the store's evaluator with ONE backslash: it
+// sits in a SQL string literal, where a backslash is an ordinary character, and
+// the regex must match the literal asterisk pgwatch emits in "CPU*".
+func TestWaitEventTypeRegexKeepsItsSingleBackslash(t *testing.T) {
+	got := matchersSQL(SeriesFilter{"c", "n"}.labelMatchers())
+	want := `[['wait_event_type', '=~', 'CPU\*|IO|IPC|Lock|LWLock'], ['cluster', '=', 'c'], ['node_name', '=', 'n']]`
+	if got != want {
+		t.Fatalf("matchers = %s\nwant       %s", got, want)
 	}
 }
 
-func TestEscapeLabelValueEscapesBackslashBeforeQuote(t *testing.T) {
-	if got, want := escapeLabelValue(`a"b\c`), `a\"b\\c`; got != want {
-		t.Fatalf("escapeLabelValue = %q, want %q", got, want)
+// A label value is a SQL string literal: a quote is doubled, and a backslash
+// stays as it is (DuckDB has no backslash escapes in a plain literal).
+func TestSQLStringDoublesQuotesAndKeepsBackslashes(t *testing.T) {
+	if got, want := sqlString(`a'b"c\d`), `'a''b"c\d'`; got != want {
+		t.Fatalf("sqlString = %s, want %s", got, want)
+	}
+	if got, want := matchersSQL([]matcher{{"cluster", "=", `x'); DROP`}}), `[['cluster', '=', 'x''); DROP']]`; got != want {
+		t.Fatalf("matchersSQL = %s, want %s", got, want)
 	}
 }
 
@@ -192,12 +195,12 @@ func TestEscapeLabelValueEscapesBackslashBeforeQuote(t *testing.T) {
 func TestTotalQueryIDClassUsesTheFiveTypeRegex(t *testing.T) {
 	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		queries = append(queries, r.URL.Query().Get("query"))
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		queries = append(queries, sqlText(r))
+		w.Write([]byte(noRows))
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, "", "", time.Second).
+	_, err := NewClient(srv.URL, "", time.Second).
 		QueryPerQueryID(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
 	if err != nil {
 		t.Fatal(err)
@@ -205,10 +208,10 @@ func TestTotalQueryIDClassUsesTheFiveTypeRegex(t *testing.T) {
 	if len(queries) != len(queryIDClasses) {
 		t.Fatalf("issued %d queries, want one per class (%d)", len(queries), len(queryIDClasses))
 	}
-	if !strings.Contains(queries[0], `wait_event_type=~"CPU\\*|IO|IPC|Lock|LWLock"`) {
+	if !strings.Contains(queries[0], `['wait_event_type', '=~', 'CPU\*|IO|IPC|Lock|LWLock']`) {
 		t.Fatalf("the total class is not filtered by the five types: %s", queries[0])
 	}
-	if !strings.Contains(queries[len(queries)-1], `wait_event_type="CPU*"`) {
+	if !strings.Contains(queries[len(queries)-1], `['wait_event_type', '=', 'CPU*']`) {
 		t.Fatalf("the cpu class lost its exact-type selector: %s", queries[len(queries)-1])
 	}
 }
@@ -261,18 +264,16 @@ func TestSplitWindowRefusesAnAbsurdWindow(t *testing.T) {
 func TestQueryRangeMergesSlicesByLabelSet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The first slice carries both series, the second only the later one.
-		if r.URL.Query().Get("start") == "0" {
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"wait_event_type":"IO"},"values":[[1,"1"],[2,"2"]]},
-				{"metric":{"wait_event_type":"Lock"},"values":[[3,"3"]]}]}}`))
+		cols := []string{"wait_event_type", "vals"}
+		if strings.Contains(sqlText(r), "]], 0, ") { // the slice starting at epoch 0
+			w.Write([]byte(rowsJSON(cols, []any{"IO", []any{1, 2}}, []any{"Lock", []any{3}})))
 			return
 		}
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-			{"metric":{"wait_event_type":"Lock"},"values":[[4,"4"],[5,"5"]]}]}}`))
+		w.Write([]byte(rowsJSON(cols, []any{"Lock", []any{4, 5}})))
 	}))
 	defer srv.Close()
 
-	series, err := NewClient(srv.URL, "", "", time.Second).
+	series, err := NewClient(srv.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(25*24*3600))
 	if err != nil {
 		t.Fatal(err)
@@ -345,22 +346,18 @@ func TestUnknownKindIsPermanent(t *testing.T) {
 func TestQueryTextEnrichmentFailureDoesNotFailTheCollection(t *testing.T) {
 	var dropped error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/query" {
+		switch q := sqlText(r); {
+		case isQuery(q, "query_texts"):
 			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		switch q := r.URL.Query().Get("query"); {
-		case strings.HasPrefix(q, "topk("):
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"query_id":"9","datname":"db"},"values":[[1,"3"]]}]}}`))
+		case strings.HasPrefix(q, "-- instance-jobs: aas_per_query_id_"):
+			w.Write([]byte(rowsJSON([]string{"query_id", "datname", "vals"}, []any{"9", "db", []any{3}})))
 		default:
-			w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{"wait_event_type":"IO"},"values":[[1,"3"]]}]}}`))
+			w.Write([]byte(rowsJSON([]string{"wait_event_type", "vals"}, []any{"IO", []any{3}})))
 		}
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "", "", time.Second)
+	client := NewClient(srv.URL, "", time.Second)
 	client.OnEnrichmentError = func(err error) { dropped = err }
 
 	args := `{"cluster_name":"c","node_name":"n","vcpus":2,
@@ -387,9 +384,9 @@ func TestQueryTextEnrichmentFailureDoesNotFailTheCollection(t *testing.T) {
 }
 
 // The ids are gathered in the canonical class order (QueryIDClassKeys), never by
-// ranging the class map, so the enrichment PromQL is byte-identical every run.
-// Ranging the map instead would still resolve the same texts, but the regex
-// alternation order would vary run to run -- which a fixture that pins the query
+// ranging the class map, so the enrichment SQL is byte-identical every run.
+// Ranging the map instead would still resolve the same texts, but the id list
+// order would vary run to run -- which a fixture that pins the query
 // exactly turns into a flaky test rather than a caught bug.
 func TestCollectQueryIDsIsDeterministicAndCanonical(t *testing.T) {
 	// Two classes, each with ids in a different class so the class order is what
@@ -441,14 +438,14 @@ func TestStoreErrorsAreRetryableOnlyWhenARetryCouldHelp(t *testing.T) {
 	}
 }
 
-// The request URL carries the PromQL, and the PromQL carries the job's cluster
-// and node labels. Following a redirect would hand that URL to whatever host
-// Location names.
+// The request body carries the SQL, and the SQL carries the job's cluster and
+// node labels (and the bearer token rides along). Following a redirect would
+// hand both to whatever host Location names.
 func TestARedirectNeverForwardsTheQueryToAnotherHost(t *testing.T) {
 	var forwarded string
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		forwarded = r.URL.Query().Get("query")
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		forwarded = sqlText(r)
+		w.Write([]byte(noRows))
 	}))
 	defer elsewhere.Close()
 
@@ -457,7 +454,7 @@ func TestARedirectNeverForwardsTheQueryToAnotherHost(t *testing.T) {
 	}))
 	defer store.Close()
 
-	_, err := NewClient(store.URL, "", "", time.Second).
+	_, err := NewClient(store.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"acme-prod", "n"}, tm(0), tm(600))
 	var upstream *UpstreamError
 	if !errors.As(err, &upstream) {
@@ -549,44 +546,43 @@ func TestTopQueryIDsAreCappedAndTieBrokenDeterministically(t *testing.T) {
 	}
 }
 
-// The store requires basic auth on a real box (compose wires VM_AUTH_USERNAME /
-// VM_AUTH_PASSWORD into the container), so a break anywhere on this path fails
-// every collection with a 401 while nothing local notices.
-func TestTheStoreCredentialsAreSent(t *testing.T) {
-	var gotUser, gotPass string
-	var hadAuth bool
+// pgai-mon requires its bearer token on a real box (compose wires PGAI_MON_TOKEN
+// into the container), so a break anywhere on this path fails every collection
+// with a 401 while nothing local notices.
+func TestTheStoreTokenIsSent(t *testing.T) {
+	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUser, gotPass, hadAuth = r.BasicAuth()
-		if !hadAuth || gotUser != "vmauth" || gotPass != "s3cret" {
+		got = r.Header.Get("Authorization")
+		if got != "Bearer s3cret" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		w.Write([]byte(noRows))
 	}))
 	defer srv.Close()
 
-	if _, err := NewClient(srv.URL, "vmauth", "s3cret", time.Second).
+	if _, err := NewClient(srv.URL, "s3cret", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600)); err != nil {
-		t.Fatalf("the store rejected the request: %v (user=%q sent=%v)", err, gotUser, hadAuth)
+		t.Fatalf("the store rejected the request: %v (Authorization=%q)", err, got)
 	}
 }
 
-// Both empty means no header at all: a store without auth configured must not
-// receive an empty Authorization.
-func TestNoStoreCredentialsMeansNoHeader(t *testing.T) {
+// No token means no header at all: a store without auth configured must not
+// receive an empty "Bearer ".
+func TestNoStoreTokenMeansNoHeader(t *testing.T) {
 	sawHeader := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _, sawHeader = r.BasicAuth()
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		_, sawHeader = r.Header["Authorization"]
+		w.Write([]byte(noRows))
 	}))
 	defer srv.Close()
 
-	if _, err := NewClient(srv.URL, "", "", time.Second).
+	if _, err := NewClient(srv.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600)); err != nil {
 		t.Fatal(err)
 	}
 	if sawHeader {
-		t.Fatal("an Authorization header was sent although no credentials were configured")
+		t.Fatal("an Authorization header was sent although no token was configured")
 	}
 }
 
@@ -604,7 +600,7 @@ func TestASubStepWindowIsARetentionSkip(t *testing.T) {
 	args := `{"cluster_name":"c","node_name":"n","vcpus":1,
 		"period_start":"2026-09-01T00:00:00Z","period_end":"2026-09-01T00:00:30Z",
 		"window_start":"2026-09-01T00:00:00Z"}`
-	out, err := Run(context.Background(), NewClient(srv.URL, "", "", time.Second),
+	out, err := Run(context.Background(), NewClient(srv.URL, "", time.Second),
 		KindAAS, []byte(args), time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -616,8 +612,8 @@ func TestASubStepWindowIsARetentionSkip(t *testing.T) {
 
 // --- what comes back from the store ------------------------------------------
 
-// The store can answer 200 with a failure, and a body too large has to be
-// distinguishable from a malformed one: they mean different things and only one
+// The store can answer 200 with something that is not a result set, and a body
+// too large has to be distinguishable from a malformed one: they mean different things and only one
 // of them is worth retrying.
 func TestUnusableStoreAnswers(t *testing.T) {
 	cases := []struct {
@@ -627,10 +623,18 @@ func TestUnusableStoreAnswers(t *testing.T) {
 		wantRetry bool
 		wantMsg   string
 	}{
-		{"a non-success status", `{"status":"error","errorType":"bad_data","error":"boom"}`,
-			http.StatusBadGateway, true, "non-success"},
-		{"a malformed body", `{"status":"success","data":{`,
+		{"not a result set", `{"error":{"type":"internal","message":"boom"}}`,
+			http.StatusBadGateway, true, "not a result set"},
+		{"a malformed body", `{"columns":["vals"],"rows":[`,
 			http.StatusBadGateway, true, "failed to parse"},
+		{"no vals column", `{"columns":["x"],"types":["VARCHAR"],"rows":[],"truncated":false}`,
+			http.StatusBadGateway, true, "no vals column"},
+		{"a row shorter than its columns", `{"columns":["wait_event_type","vals"],"rows":[["IO"]],"truncated":false}`,
+			http.StatusBadGateway, true, "does not match its columns"},
+		// A result cut at the store's own cap is part of the series: a confident,
+		// wrong number. Not retried, like our own cap.
+		{"a truncated result", `{"columns":["vals"],"rows":[],"truncated":true}`,
+			http.StatusRequestEntityTooLarge, false, "truncated"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -639,7 +643,7 @@ func TestUnusableStoreAnswers(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := NewClient(srv.URL, "", "", time.Second).
+			_, err := NewClient(srv.URL, "", time.Second).
 				QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
 			var upstream *UpstreamError
 			if !errors.As(err, &upstream) {
@@ -661,15 +665,15 @@ func TestUnusableStoreAnswers(t *testing.T) {
 // spends the store's budget for the same answer.
 func TestAnOversizedBodyIsNotRetried(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[`))
+		w.Write([]byte(`{"columns":["wait_event","vals"],"rows":[`))
 		for i := 0; i < 400; i++ {
-			w.Write([]byte(`{"metric":{"wait_event":"` + strings.Repeat("x", 1000) + `"},"values":[]},`))
+			w.Write([]byte(`["` + strings.Repeat("x", 1000) + `",[]],`))
 		}
-		w.Write([]byte(`]}}`))
+		w.Write([]byte(`[]]}`))
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "", "", time.Second)
+	client := NewClient(srv.URL, "", time.Second)
 	client.maxRespBytes = 4096
 
 	_, err := client.QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
@@ -690,12 +694,12 @@ func TestAnOversizedBodyIsNotRetried(t *testing.T) {
 // present count and adds a zero to the statistics.
 func TestUnparseableSamplesAreDroppedNotZeroed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-			{"metric":{"wait_event_type":"IO"},"values":[[1,"2"],[2,"not a number"],[3],[4,5],[5,"4"]]}]}}`))
+		w.Write([]byte(`{"columns":["wait_event_type","vals"],"rows":[
+			["IO",[2,"not a number",null,[5],{"v":1},4]]],"truncated":false}`))
 	}))
 	defer srv.Close()
 
-	series, err := NewClient(srv.URL, "", "", time.Second).
+	series, err := NewClient(srv.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
 	if err != nil {
 		t.Fatal(err)
@@ -719,25 +723,6 @@ func TestLabelFingerprintCannotCollideThroughAValue(t *testing.T) {
 	}
 }
 
-// Only one of the pair being set is a plausible half-configured box, and it
-// must still authenticate rather than send nothing.
-func TestAUsernameWithNoPasswordStillAuthenticates(t *testing.T) {
-	var sawHeader bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _, sawHeader = r.BasicAuth()
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
-	}))
-	defer srv.Close()
-
-	if _, err := NewClient(srv.URL, "vmauth", "", time.Second).
-		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600)); err != nil {
-		t.Fatal(err)
-	}
-	if !sawHeader {
-		t.Fatal("no Authorization header was sent although a username is configured")
-	}
-}
-
 // A kind this build cannot run is refused before the args are parsed and before
 // the window is looked at: its args are its own shape, and its window is
 // irrelevant.
@@ -754,9 +739,8 @@ func TestAnUnknownKindIsRefusedBeforeTheWindowIsEvenLookedAt(t *testing.T) {
 		"no args at all":      `{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			// promql_labels, not promql_instant: the two promql_* QUERY kinds
-			// now dispatch, but discovery needs a `match[]` parameter and is
-			// out of scope, so it is still a kind this build cannot run.
+			// promql_labels was never a kind this build runs; the two
+			// promql_* query kinds are refused by name (ErrPromQLNotSupported).
 			_, err := Run(context.Background(), nil, "promql_labels", []byte(args),
 				time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
 			if !errors.Is(err, ErrUnknownKind) {
@@ -766,19 +750,18 @@ func TestAnUnknownKindIsRefusedBeforeTheWindowIsEvenLookedAt(t *testing.T) {
 	}
 }
 
-// A vector where a matrix was asked for decodes to zero values per series, which
-// the density gate reads as "no data": a silent wrong answer, not an error.
+// A `vals` that is not a list would decode to zero values per series, which the
+// density gate reads as "no data": a silent wrong answer, not an error.
 func TestAWrongResultTypeIsAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[
-			{"metric":{"wait_event_type":"IO"},"value":[1,"3"]}]}}`))
+		w.Write([]byte(rowsJSON([]string{"wait_event_type", "vals"}, []any{"IO", 3})))
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, "", "", time.Second).
+	_, err := NewClient(srv.URL, "", time.Second).
 		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600))
 	if err == nil {
-		t.Fatal("a vector answer to a range query was accepted as an empty matrix")
+		t.Fatal("a scalar vals was accepted as an empty series")
 	}
 }
 
@@ -792,7 +775,7 @@ func TestTempfileKeepsZeroRateSamples(t *testing.T) {
 
 // The production cap, not the one a test reached in and set.
 func TestTheClientIsBuiltWithTheProductionResponseCap(t *testing.T) {
-	c := NewClient("http://example.invalid", "", "", 7*time.Second)
+	c := NewClient("http://example.invalid", "", 7*time.Second)
 	if got := c.MaxResponseBytes(); got != maxResponseBytes {
 		t.Fatalf("NewClient wired a %d-byte cap, want maxResponseBytes (%d)", got, maxResponseBytes)
 	}
@@ -802,7 +785,7 @@ func TestTheClientIsBuiltWithTheProductionResponseCap(t *testing.T) {
 	if got := c.RequestTimeout(); got != 7*time.Second {
 		t.Fatalf("RequestTimeout = %v, want the value NewClient was given", got)
 	}
-	shrunk := NewClient("http://example.invalid", "", "", time.Second)
+	shrunk := NewClient("http://example.invalid", "", time.Second)
 	shrunk.maxRespBytes = 99
 	if got := shrunk.MaxResponseBytes(); got != 99 {
 		t.Fatalf("MaxResponseBytes = %d, want the field and not the constant", got)
@@ -835,59 +818,50 @@ func TestLabelFingerprintEncodesBothLengths(t *testing.T) {
 	}
 }
 
-// Either half of the pair alone still authenticates.
-func TestAPasswordWithNoUsernameStillAuthenticates(t *testing.T) {
-	var sawHeader bool
+// The text lookup quotes every id as a literal, bounds it at the window end, and
+// keeps only well-formed (id, text) rows.
+func TestQueryInfoTextsQuotesIDsAndKeepsWellFormedRows(t *testing.T) {
+	var sql string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _, sawHeader = r.BasicAuth()
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		sql = sqlText(r)
+		w.Write([]byte(rowsJSON([]string{"queryid", "query"},
+			[]any{"1", "select 1"}, []any{"2", ""}, []any{3, "x"}, []any{"4"})))
 	}))
 	defer srv.Close()
 
-	if _, err := NewClient(srv.URL, "", "s3cret", time.Second).
-		QueryPerType(context.Background(), SeriesFilter{"c", "n"}, tm(0), tm(600)); err != nil {
+	texts, err := NewClient(srv.URL, "", time.Second).
+		QueryInfoTexts(context.Background(), []string{"1", "18446744073709551557"}, tm(0), tm(600))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !sawHeader {
-		t.Fatal("no Authorization header was sent although a password is configured")
+	if !isQuery(sql, "query_texts") || !strings.Contains(sql, `IN ('1', '18446744073709551557')`) ||
+		!strings.Contains(sql, "to_timestamp(600)") {
+		t.Fatalf("lookup SQL:\n%s", sql)
 	}
-}
-
-// The instant lookup's guard, the mirror of the range one.
-func TestAMatrixAnswerToAnInstantQueryIsAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-			{"metric":{"queryid":"1"},"values":[[1,"1"]]}]}}`))
-	}))
-	defer srv.Close()
-
-	_, err := NewClient(srv.URL, "", "", time.Second).
-		QueryInfoTexts(context.Background(), []string{"1"}, tm(0), tm(600))
-	if err == nil {
-		t.Fatal("a matrix answer to an instant query was accepted")
+	if len(texts) != 1 || texts["1"] != "select 1" {
+		t.Fatalf("texts = %v, want only the one well-formed row", texts)
 	}
 }
 
 // The platform btrims args.node_name before comparing it against the payload's
 // results key, so an untrimmed label here makes the two disagree -- and the
-// PromQL matcher would carry the whitespace and match no series at all.
+// selector would carry the whitespace and match no series at all.
 func TestLabelsAreTrimmedTheWayThePlatformTrimsThem(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The needles match the fixture's own spacing, or this branch is
 		// unreachable and asserts nothing.
-		if q := r.URL.Query().Get("query"); strings.Contains(q, `"  n1  "`) ||
-			strings.Contains(q, `"  c1  "`) {
+		if q := sqlText(r); strings.Contains(q, `'  n1  '`) ||
+			strings.Contains(q, `'  c1  '`) {
 			t.Errorf("the selector carries untrimmed labels: %s", q)
 		}
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-			{"metric":{},"values":[[1,"1"]]}]}}`))
+		w.Write([]byte(rowsJSON([]string{"vals"}, []any{[]any{1}})))
 	}))
 	defer srv.Close()
 
 	args := `{"cluster_name":"  c1  ","node_name":"  n1  ","vcpus":1,
 		"period_start":"2026-09-01T00:00:00Z","period_end":"2026-09-01T00:10:00Z",
 		"window_start":"2026-09-01T00:00:00Z"}`
-	out, err := Run(context.Background(), NewClient(srv.URL, "", "", time.Second),
+	out, err := Run(context.Background(), NewClient(srv.URL, "", time.Second),
 		KindAAS, []byte(args), time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -987,9 +961,9 @@ func TestADecodeFailureNamesTheDecode(t *testing.T) {
 	}
 }
 
-// A control character survives the trim and then breaks the PromQL selector.
-// The store answers 400, which is non-retryable and reported as store_error --
-// a bad job arg blamed on the store. It belongs to invalid_args instead.
+// A control character survives the trim; no cluster or node is named with one.
+// Sent on, it would query for a selector that cannot match and report a
+// confident "no data". It belongs to invalid_args instead.
 func TestAControlCharacterInALabelIsABadArgNotAStoreFault(t *testing.T) {
 	// BOTH fields, because the check is a per-field loop: pointing its
 	// node_name arm at req.ClusterName left every package green when only

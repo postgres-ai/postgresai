@@ -18,37 +18,35 @@
     "step": 60
   },
   "responses": {
-    "sum(rate(pgwatch_db_stats_temp_bytes{cluster=\"c1\", node_name=\"n1\"}[5m])) / 1024 / 1024": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": [
-          {
-            "metric": {},
-            "values": [
-              [
-                1789516860,
-                "1"
-              ],
-              [
-                1789516920,
-                "2"
-              ],
-              [
-                1789516980,
-                "30"
-              ]
-            ]
-          }
+    "tempfile_write_rate": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [
+        [
+          [
+            1048576,
+            2097152,
+            31457280
+          ]
         ]
-      }
+      ],
+      "row_count": 1,
+      "truncated": false
     },
-    "max(timestamp(pgwatch_db_stats_temp_bytes{cluster=\"c1\", node_name=\"n1\"}))": {
-      "status": "success",
-      "data": {
-        "resultType": "matrix",
-        "result": []
-      }
+    "tempfile_observation": {
+      "columns": [
+        "vals"
+      ],
+      "types": [
+        "DOUBLE[]"
+      ],
+      "rows": [],
+      "row_count": 0,
+      "truncated": false
     }
   },
   "expected": {

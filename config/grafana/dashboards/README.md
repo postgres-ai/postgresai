@@ -22,6 +22,10 @@ that changes the convention everywhere, updating this README and the lints in
 outcome: it silently becomes a second convention, and the next contributor
 cannot tell which of the two to copy.
 
+The lints run against the SQL dashboards that `mon/grafana/compile.py` builds
+from these files (`DASHBOARD_DIR` in `tests/grafana_dashboards/conftest.py`), so
+after editing a dashboard here, recompile before running them.
+
 Two things are not covered by this rule, and both should be called out
 explicitly in the MR description: a genuine bug in an existing pattern (fix it,
 and say so), and a problem the repo has never had to solve (choose carefully,
@@ -195,12 +199,17 @@ it, and the join then fails outright with "duplicate series for the match group"
 
 The window is a judgement call — it must comfortably exceed the observed
 per-series staleness, and it bounds how long a superseded query text can linger.
-The mechanical parts are enforced on every MR by two tests sharing one
-definition in `tests/grafana_dashboards/query_info_join.py`:
-`tests/grafana_dashboards/test_query_info_carry_forward.py` (the operand, the
-lookback floor, and the `group_left` label transfer, across every dashboard) and
-`tests/compliance_vectors/test_mr219_monitoring_guards.py` (the `or … unless`
-branch shape on Dashboard 02). They run in different CI jobs.
+The PromQL operand is checked by `tests/compliance_vectors/test_mr219_monitoring_guards.py`
+(the `or … unless` branch shape on Dashboard 02), with the definitions in
+`tests/grafana_dashboards/query_info_join.py`.
+
+The compiled SQL dashboards (`mon/grafana/dashboards`) read statement texts from
+pgai-mon's `query_texts` instead. It keeps one row per stored text of a
+(queryid, database), so every read must reduce it to one row per queryid: join
+`(SELECT queryid, dbname, arg_max(query, last_seen) AS query FROM query_texts
+GROUP BY ALL)`, never `query_texts` itself, or a queryid whose text changed
+splits into two series. `tests/grafana_dashboards/test_query_texts_join.py`
+enforces this on every MR.
 
 ## Units
 

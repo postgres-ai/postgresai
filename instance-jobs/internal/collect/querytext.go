@@ -2,33 +2,26 @@ package collect
 
 import (
 	"context"
-	"fmt"
-	"regexp"
+	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// queryInfoMetric maps a queryid to its (truncated) query text. The monitoring
-// stack scrapes it from monitoring_flask_backend:/query_info_metrics into the
-// same store this package already queries.
-const queryInfoMetric = "pgwatch_query_info"
-
-// queryInfoTextLabel carries the longest available text, formatted by the
-// backend as "<queryid> | <text>" (or a bare "<queryid>" when it has none).
-const queryInfoTextLabel = "displayname_full"
-
-const queryInfoLabelSep = " | "
+// queryTextMaxChars is how much of a statement's text the payload carries:
+// whitespace collapsed, at most 500 characters -- the "full" display name the
+// pgwatch_query_info metric carried before, so a payload is no larger than it was.
+const queryTextMaxChars = 500
 
 // QueryInfoTexts resolves the query text for the given ids, returning
 // queryid -> text (ids with no text are omitted). An empty id set issues no
 // request.
 //
-// It is a WINDOWED lookup, not an instant query at now(): the exporter emits a
-// queryid only while it was active in the last ~10 minutes at each scrape, so
-// the series exists only at the timestamps that id was recently active. AAS
-// windows are historical, so this evaluates
-// last_over_time(pgwatch_query_info{queryid=~...}[<window>]) at time=end -- one
-// small vector, one sample per id active anywhere in [start, end].
+// It reads the store's query_texts view: one row per stored text of a
+// (queryid, database), with first_seen / last_seen (refreshed hourly while the
+// statement stays in pg_stat_statements). The text of an id is its newest one
+// first seen by the end of the window, from any database -- AAS entries carry
+// a datname, but the lookup matches on query_id alone, as before.
 //
 // Best-effort: any error is returned for the caller to log and drop.
 // Enrichment must never fail a collection.
@@ -37,40 +30,39 @@ func (c *Client) QueryInfoTexts(ctx context.Context, queryIDs []string, start, e
 	if len(queryIDs) == 0 {
 		return texts, nil
 	}
-
-	// Regex-quote each id, join with |, then escape for the PromQL string
-	// literal -- the same two-step escaping as waitEventTypeRegex.
-	quoted := make([]string, 0, len(queryIDs))
-	for _, id := range queryIDs {
-		quoted = append(quoted, regexp.QuoteMeta(id))
-	}
-	idRegex := escapeLabelValue(strings.Join(quoted, "|"))
-
-	windowSec := int(end.Sub(start) / time.Second)
-	if windowSec < StepSeconds {
-		windowSec = StepSeconds
-	}
-
-	q := fmt.Sprintf(`last_over_time(%s{queryid=~"%s"}[%ds])`, queryInfoMetric, idRegex, windowSec)
-	series, err := c.queryInstant(ctx, q, end)
+	res, err := c.postSQL(ctx, queryTextsSQL(queryIDs, end))
 	if err != nil {
 		return nil, err
 	}
-
-	for _, labels := range series {
-		qid := labels["queryid"]
-		if qid == "" {
+	for _, row := range res.Rows {
+		if len(row) != 2 {
 			continue
 		}
-		// A bare "<queryid>" with no separator means the backend had no text:
-		// omit it rather than emitting the id as its own text.
-		text, ok := strings.CutPrefix(labels[queryInfoTextLabel], qid+queryInfoLabelSep)
-		if !ok || text == "" {
+		var qid, text string
+		if json.Unmarshal(row[0], &qid) != nil || json.Unmarshal(row[1], &text) != nil {
 			continue
 		}
-		texts[qid] = text
+		if qid != "" && text != "" {
+			texts[qid] = text
+		}
 	}
 	return texts, nil
+}
+
+// queryTextsSQL renders the lookup. The ids are compared as text, so an id above
+// 2^53 is never rounded; each is a quoted literal.
+func queryTextsSQL(queryIDs []string, end time.Time) string {
+	ids := make([]string, 0, len(queryIDs))
+	for _, id := range queryIDs {
+		ids = append(ids, sqlString(id))
+	}
+	return "-- instance-jobs: query_texts\n" +
+		"SELECT CAST(queryid AS VARCHAR) AS queryid,\n" +
+		"       left(trim(regexp_replace(arg_max(query, last_seen), '\\s+', ' ', 'g')), " + strconv.Itoa(queryTextMaxChars) + ") AS query\n" +
+		"FROM query_texts\n" +
+		"WHERE CAST(queryid AS VARCHAR) IN (" + strings.Join(ids, ", ") + ")\n" +
+		"  AND query IS NOT NULL AND first_seen <= to_timestamp(" + strconv.FormatInt(end.Unix(), 10) + ")\n" +
+		"GROUP BY 1\nORDER BY 1"
 }
 
 // CollectQueryIDs returns the distinct query_ids across all three flavor maps
@@ -99,7 +91,7 @@ func CollectQueryIDs(r Result) []string {
 }
 
 // EnrichQueryTexts stamps resolved texts onto every entry across the three
-// flavor maps, matching on query_id alone (pgwatch_query_info has no datname).
+// flavor maps, matching on query_id alone (the lookup is per id, not per database).
 // Entries without a text keep Query == "" and are omitted from the JSON.
 func EnrichQueryTexts(r *Result, texts map[string]string) {
 	if len(texts) == 0 {

@@ -3,6 +3,8 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,34 +12,44 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 // A fixture is (recorded store responses + the request params that produced
-// them) -> what the box would SUBMIT. The responses are keyed by the EXACT
-// query text, so the fixture pins the PromQL, the label escaping, the request
-// window, the arithmetic and the wire shape in one artifact. A query the
-// fixture does not carry fails the test, and a recorded response the code never
-// asks for fails it too: the set of queries is pinned in both directions.
+// them) -> what the box would SUBMIT. The responses are keyed by the query's
+// name -- the `-- instance-jobs: <name>` line every SELECT the box sends starts
+// with -- so the fixture pins the set of queries, the request window, the
+// arithmetic and the wire shape in one artifact. A query the fixture does not
+// carry fails the test, and a recorded response the code never asks for fails
+// it too: the set of queries is pinned in both directions. expect_sql_contains
+// pins text every query must carry (the label escaping, for one).
 //
 // `expected` is the SUBMISSION, not the internal outcome: every submit names its
 // `outcome`, a payload goes bare under `result`, and a skip carries a
 // `skip_reason` and nothing else.
 type fixture struct {
-	Description  string                     `json:"description"`
-	Now          string                     `json:"now"`
-	Kind         string                     `json:"kind"`
-	Args         json.RawMessage            `json:"args"`
-	ExpectWindow *expectWindow              `json:"expect_window"`
-	Responses    map[string]json.RawMessage `json:"responses"`
-	Expected     json.RawMessage            `json:"expected"`
+	Description       string                     `json:"description"`
+	Now               string                     `json:"now"`
+	Kind              string                     `json:"kind"`
+	Args              json.RawMessage            `json:"args"`
+	ExpectWindow      *expectWindow              `json:"expect_window"`
+	ExpectSQLContains []string                   `json:"expect_sql_contains"`
+	Responses         map[string]json.RawMessage `json:"responses"`
+	Expected          json.RawMessage            `json:"expected"`
 }
 
 type expectWindow struct {
 	Start int64 `json:"start"`
 	End   int64 `json:"end"`
 	Step  int   `json:"step"`
+}
+
+// sqlQueryName is the name in a SELECT's leading `-- instance-jobs: <name>` line.
+func sqlQueryName(sql string) string {
+	first, _, _ := strings.Cut(sql, "\n")
+	return strings.TrimPrefix(first, "-- instance-jobs: ")
 }
 
 func TestFixtures(t *testing.T) {
@@ -60,9 +72,8 @@ func TestFixtures(t *testing.T) {
 				t.Fatalf("fixture is not valid json: %v", err)
 			}
 			// A fixture that queries the store must pin the window it asked
-			// for, or it silently loses the start/end/step and instant-time
-			// assertions while still looking complete. Every fixture satisfies
-			// this today, so it guards the next one rather than the six here.
+			// for, or it silently loses the start/end/step assertions while
+			// still looking complete.
 			if len(f.Responses) > 0 && f.ExpectWindow == nil {
 				t.Fatal("this fixture queries the store but pins no expect_window")
 			}
@@ -74,33 +85,47 @@ func TestFixtures(t *testing.T) {
 			asked := map[string]bool{}
 			var unexpected []string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				query := r.URL.Query().Get("query")
+				if r.Method != http.MethodPost || r.URL.Path != "/sql" {
+					t.Errorf("request %s %s, want POST /sql", r.Method, r.URL.Path)
+				}
+				b, _ := io.ReadAll(r.Body)
+				sql := string(b)
+				name := sqlQueryName(sql)
 				if f.ExpectWindow != nil {
-					switch r.URL.Path {
-					case "/api/v1/query_range":
-						checkParam(t, r, "start", strconv.FormatInt(f.ExpectWindow.Start, 10))
-						checkParam(t, r, "end", strconv.FormatInt(f.ExpectWindow.End, 10))
-						checkParam(t, r, "step", strconv.Itoa(f.ExpectWindow.Step))
-					case "/api/v1/query":
-						// last_over_time(...) is evaluated AT THE WINDOW END:
+					if name == "query_texts" {
+						// The text lookup is bounded AT THE WINDOW END:
 						// anywhere else and the enrichment silently resolves
 						// nothing, while everything else still looks right.
-						checkParam(t, r, "time", strconv.FormatInt(f.ExpectWindow.End, 10))
+						want := "to_timestamp(" + strconv.FormatInt(f.ExpectWindow.End, 10) + ")"
+						if !strings.Contains(sql, want) {
+							t.Errorf("%s: SQL does not bound the lookup at %s:\n%s", name, want, sql)
+						}
+					} else {
+						want := fmt.Sprintf(", %d, %d, %d", f.ExpectWindow.Start*1000,
+							f.ExpectWindow.End*1000, f.ExpectWindow.Step*1000)
+						if !strings.Contains(sql, want) {
+							t.Errorf("%s: SQL does not evaluate the window %q:\n%s", name, want, sql)
+						}
+						for _, want := range f.ExpectSQLContains {
+							if !strings.Contains(sql, want) {
+								t.Errorf("%s: SQL does not contain %q:\n%s", name, want, sql)
+							}
+						}
 					}
 				}
-				body, ok := f.Responses[query]
+				body, ok := f.Responses[name]
 				if !ok {
-					unexpected = append(unexpected, query)
+					unexpected = append(unexpected, sql)
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
-				asked[query] = true
+				asked[name] = true
 				w.Header().Set("Content-Type", "application/json")
 				w.Write(body)
 			}))
 			defer srv.Close()
 
-			client := NewClient(srv.URL, "", "", 10*time.Second)
+			client := NewClient(srv.URL, "", 10*time.Second)
 			outcome, err := Run(context.Background(), client, f.Kind, f.Args, now)
 			for _, q := range unexpected {
 				t.Errorf("query not in the fixture:\n  %s", q)
@@ -130,13 +155,6 @@ type wireView struct {
 func asSubmission(o Outcome) wireView {
 	s := o.AsSubmission()
 	return wireView{Outcome: s.Outcome, Result: s.Result, SkipReason: s.SkipReason}
-}
-
-func checkParam(t *testing.T, r *http.Request, name, want string) {
-	t.Helper()
-	if got := r.URL.Query().Get(name); got != want {
-		t.Errorf("request %s = %q, want %q", name, got, want)
-	}
 }
 
 // assertJSONEqual compares the marshalled outcome against the fixture's

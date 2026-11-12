@@ -21,8 +21,8 @@ const DefaultPath = "/app/.pgwatch-config"
 // wrapper uses when the environment says nothing.
 const DefaultAPIBaseURL = "https://postgres.ai/api/general"
 
-// DefaultStoreURL is the metric store on the compose network.
-const DefaultStoreURL = "http://sink-prometheus:9090"
+// DefaultStoreURL is the metric store, pgai-mon, on the compose network.
+const DefaultStoreURL = "http://pgai-mon:8765"
 
 // DefaultDBLabURL is the engine's address on a DBLab box. The engine listens on
 // 2345 and this process runs beside it, so loopback is the address -- the
@@ -54,8 +54,8 @@ type Config struct {
 	InstanceSecret string
 	APIBaseURL     string
 	StoreURL       string
-	StoreUsername  string
-	StorePassword  string
+	// StoreToken is pgai-mon's bearer token (PGAI_MON_TOKEN); empty sends none.
+	StoreToken string
 	// DBLabToken is the engine's OWN per-instance platform token, issued by
 	// v1.dblab_instance_register on first registration. There is NO instance id
 	// here and there is not meant to be: the token identifies the engine, so the
@@ -216,11 +216,23 @@ func Load() (Config, error) {
 		SupabaseMetricsListen: envOr("PGAI_SUPABASE_METRICS_LISTEN", ":9188"),
 		Path:                  envOr("INSTANCE_JOBS_CONFIG_PATH", DefaultPath),
 		APIBaseURL:            envOr("PGAI_API_BASE_URL", DefaultAPIBaseURL),
-		StoreURL:              envOr("PROMETHEUS_URL", DefaultStoreURL),
-		StoreUsername:         os.Getenv("VM_AUTH_USERNAME"),
-		StorePassword:         os.Getenv("VM_AUTH_PASSWORD"),
+		StoreURL:              envOr("PGAI_MON_URL", DefaultStoreURL),
 		DBLabURL:              envOr("PGAI_DBLAB_URL", DefaultDBLabURL),
 		JoeURL:                envOr("PGAI_JOE_URL", DefaultJoeURL),
+	}
+
+	// pgai-mon's token: the file named by PGAI_MON_TOKEN_FILE when set, else
+	// PGAI_MON_TOKEN -- the same two sources pgai-mon itself reads. A named
+	// file that cannot be read is an error: running without the token would
+	// only trade it for a 401 on every job. The token is never logged.
+	if path := strings.TrimSpace(os.Getenv("PGAI_MON_TOKEN_FILE")); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("PGAI_MON_TOKEN_FILE could not be read: %w", err)
+		}
+		cfg.StoreToken = strings.TrimSpace(string(raw))
+	} else {
+		cfg.StoreToken = strings.TrimSpace(os.Getenv("PGAI_MON_TOKEN"))
 	}
 
 	values, err := parseFile(cfg.Path)

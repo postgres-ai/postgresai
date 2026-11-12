@@ -1,0 +1,36 @@
+apiVersion: 1
+
+# pgai-mon (mon/): the datasource of the SQL dashboards in mon/grafana/dashboards. Their targets
+# POST one SELECT to http://pgai-mon:8765/sql?format=objects through the Infinity plugin, which
+# adds "Authorization: Bearer <token>" to every request.
+#
+# The token comes from the environment of the Grafana container, PGAI_MON_TOKEN; it must equal
+# the token pgai-mon is started with. To read it from a file instead (a Docker secret), replace
+# the bearerToken value with Grafana's file provider, e.g. $__file{/run/secrets/pgai_mon_token}.
+# An empty token makes every query of this datasource fail, and no other datasource changes.
+#
+# The host is fixed because the dashboards carry it in each target URL (mon/grafana/compile.py
+# --target-url): Infinity sends the token only to the hosts in allowedHosts. Serving pgai-mon
+# elsewhere means recompiling with --target-url and changing allowedHosts to match.
+#
+# Loaded beside datasources.yml (whose "Infinity" datasource stays for the PromQL dashboards'
+# CSV panels); the name and uid differ from every datasource there. As there, deleteDatasources
+# re-provisions it on each start, so the YAML wins over state edited in the UI.
+deleteDatasources:
+  - name: pgai-mon
+    orgId: 1
+
+datasources:
+  - name: pgai-mon
+    type: yesoreyeram-infinity-datasource
+    orgId: 1
+    access: proxy
+    uid: pgai-mon
+    isDefault: false
+    jsonData:
+      auth_method: bearerToken
+      allowedHosts:
+        - http://pgai-mon:8765
+    secureJsonData:
+      bearerToken: ${PGAI_MON_TOKEN}
+    editable: false

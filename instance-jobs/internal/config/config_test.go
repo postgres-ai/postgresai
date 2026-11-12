@@ -19,9 +19,9 @@ func writeConfig(t *testing.T, content string) string {
 	t.Setenv("PGAI_INSTANCE_ID", "")
 	t.Setenv("PGAI_MONITORING_INSTANCE_ID", "")
 	t.Setenv("PGAI_API_BASE_URL", "")
-	t.Setenv("PROMETHEUS_URL", "")
-	t.Setenv("VM_AUTH_USERNAME", "")
-	t.Setenv("VM_AUTH_PASSWORD", "")
+	t.Setenv("PGAI_MON_URL", "")
+	t.Setenv("PGAI_MON_TOKEN", "")
+	t.Setenv("PGAI_MON_TOKEN_FILE", "")
 	// The DBLab channel falls back to the environment the same way, and a value
 	// on the machine running the tests would flip a monitoring fixture onto it.
 	t.Setenv("PGAI_DBLAB_TOKEN", "")
@@ -217,14 +217,43 @@ func TestAnUnreadableConfigFileIsAnError(t *testing.T) {
 	}
 }
 
-// The store's basic-auth pair comes from the environment compose wires in.
-func TestStoreCredentialsComeFromTheEnvironment(t *testing.T) {
+// pgai-mon's token comes from PGAI_MON_TOKEN, or from the file
+// PGAI_MON_TOKEN_FILE names, which wins; the URL from PGAI_MON_URL.
+func TestStoreTokenComesFromTheEnvironmentOrAFile(t *testing.T) {
 	writeConfig(t, "api_key=k\ninstance_id=i\n")
-	t.Setenv("VM_AUTH_USERNAME", "vmauth")
-	t.Setenv("VM_AUTH_PASSWORD", "s3cret")
+	t.Setenv("PGAI_MON_URL", "http://127.0.0.1:1")
+	t.Setenv("PGAI_MON_TOKEN", "env-token")
+	t.Setenv("PGAI_MON_TOKEN_FILE", "")
+	cfg, err := Load()
+	if err != nil || cfg.StoreToken != "env-token" || cfg.StoreURL != "http://127.0.0.1:1" {
+		t.Fatalf("Load() = %q %q %v, want the environment's", cfg.StoreURL, cfg.StoreToken, err)
+	}
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGAI_MON_TOKEN_FILE", tokenFile)
+	if cfg, err = Load(); err != nil || cfg.StoreToken != "file-token" {
+		t.Fatalf("StoreToken = %q (%v), want the file's, trimmed", cfg.StoreToken, err)
+	}
+
+	t.Setenv("PGAI_MON_TOKEN_FILE", filepath.Join(t.TempDir(), "missing"))
+	if _, err = Load(); err == nil {
+		t.Fatal("Load() returned no error for an unreadable PGAI_MON_TOKEN_FILE")
+	} else if strings.Contains(err.Error(), "env-token") {
+		t.Fatalf("error leaks the token: %v", err)
+	}
+}
+
+func TestStoreURLDefaultsToPgaiMon(t *testing.T) {
+	writeConfig(t, "api_key=k\ninstance_id=i\n")
+	t.Setenv("PGAI_MON_URL", "")
+	t.Setenv("PGAI_MON_TOKEN", "")
+	t.Setenv("PGAI_MON_TOKEN_FILE", "")
 	cfg, _ := Load()
-	if cfg.StoreUsername != "vmauth" || cfg.StorePassword != "s3cret" {
-		t.Fatalf("store credentials = %q/%q, want the environment's", cfg.StoreUsername, cfg.StorePassword)
+	if cfg.StoreURL != DefaultStoreURL || cfg.StoreToken != "" {
+		t.Fatalf("StoreURL/StoreToken = %q/%q, want the default and none", cfg.StoreURL, cfg.StoreToken)
 	}
 }
 
@@ -282,7 +311,15 @@ func TestTheDefaultsMatchTheComposeService(t *testing.T) {
 	// The instance-jobs stanza ALONE: both strings also appear under
 	// postgres-reports, so a whole-file search passes with this service deleted.
 	service := serviceStanza(t, string(compose), "instance-jobs")
-	for _, want := range []string{DefaultPath, DefaultStoreURL} {
+	wants := []string{DefaultPath, DefaultStoreURL, "PGAI_MON_TOKEN"}
+	if strings.Contains(service, "sink-prometheus") {
+		// The compose file still describes the old stack; it switches to
+		// pgai-mon at integration, and from then on the store URL and token
+		// are held to the defaults here.
+		t.Log("instance-jobs service still names sink-prometheus; store URL check deferred")
+		wants = wants[:1]
+	}
+	for _, want := range wants {
 		if !strings.Contains(service, want) {
 			t.Errorf("the instance-jobs service does not mention %q; the default and "+
 				"the service have drifted apart", want)

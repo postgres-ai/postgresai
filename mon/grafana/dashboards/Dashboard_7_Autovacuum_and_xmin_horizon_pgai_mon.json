@@ -51,7 +51,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Top-N tables driving the database-level XID wraparound clock — `age(pg_class.relfrozenxid)`. Lines climbing here mean specific tables are not getting frozen; a single laggard can dominate the database `datfrozenxid`. Threshold reference lines at `autovacuum_freeze_max_age` (200M) and the failsafe range (1.6B+).",
       "fieldConfig": {
@@ -297,7 +297,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -306,7 +306,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n} AS BIGINT)), 'last_over_time', ('pgwatch_table_stats_tx_freeze_age'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}'], ['schema', '!~', 'pg_.*|information_schema|_timescaledb.*']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schema'], '') || '.' || coalesce(q.labels['table_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n:sqlstring} AS BIGINT)), 'last_over_time', ('pgwatch_table_stats_tx_freeze_age'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['datname', '=~', '${db_name:regex}'], ['schema', '!~', 'pg_.*|information_schema|_timescaledb.*']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schema'], '') || '.' || coalesce(q.labels['table_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -343,7 +343,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -352,7 +352,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_autovacuum_freeze_max_age'),\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (false) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'autovacuum_freeze_max_age (soft)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_autovacuum_freeze_max_age'),\n         [['cluster','=',(${cluster_name:sqlstring})],['node_name','=',(${node_name:sqlstring})]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (false) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'autovacuum_freeze_max_age (soft)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -389,7 +389,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -398,7 +398,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_vacuum_failsafe_age'),\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (true) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'vacuum_failsafe_age (failsafe)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_vacuum_failsafe_age'),\n         [['cluster','=',(${cluster_name:sqlstring})],['node_name','=',(${node_name:sqlstring})]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (true) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'vacuum_failsafe_age (failsafe)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -435,7 +435,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -484,7 +484,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Top-N tables driving the database-level MultiXID wraparound clock — `mxid_age(pg_class.relminmxid)`. New per-table metric `pgwatch_table_stats_mxid_freeze_age` (added alongside `tx_freeze_age` in `table_stats`). Threshold reference lines: `autovacuum_multixact_freeze_max_age` (soft, 400M default), `vacuum_multixact_failsafe_age` (failsafe, PG14+ only, hidden when 0), and a static ~2^31 − 10M hard limit (cluster refuses new MultiXIDs).",
       "fieldConfig": {
@@ -730,7 +730,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -739,7 +739,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n} AS BIGINT)), 'last_over_time', ('pgwatch_table_stats_mxid_freeze_age'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}'], ['schema', '!~', 'pg_.*|information_schema|_timescaledb.*']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schema'], '') || '.' || coalesce(q.labels['table_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n:sqlstring} AS BIGINT)), 'last_over_time', ('pgwatch_table_stats_mxid_freeze_age'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['datname', '=~', '${db_name:regex}'], ['schema', '!~', 'pg_.*|information_schema|_timescaledb.*']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schema'], '') || '.' || coalesce(q.labels['table_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -776,7 +776,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -785,7 +785,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_autovacuum_multixact_freeze_max_age'),\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (false) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'autovacuum_multixact_freeze_max_age (soft)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_autovacuum_multixact_freeze_max_age'),\n         [['cluster','=',(${cluster_name:sqlstring})],['node_name','=',(${node_name:sqlstring})]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (false) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'autovacuum_multixact_freeze_max_age (soft)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -822,7 +822,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -831,7 +831,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_vacuum_multixact_failsafe_age'),\n         [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (true) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'vacuum_multixact_failsafe_age (failsafe)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, value FROM (\n  SELECT t, max(value) AS value\n  FROM prom_last_over_time(('pgwatch_pg_settings_wraparound_vacuum_multixact_failsafe_age'),\n         [['cluster','=',(${cluster_name:sqlstring})],['node_name','=',(${node_name:sqlstring})]],\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), 300000)\n  GROUP BY t)\nWHERE NOT (true) OR value > 0\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'vacuum_multixact_failsafe_age (failsafe)' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -868,7 +868,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -930,7 +930,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Data and catalog xmin horizon ages with source component ages, measured in transaction age.",
       "fieldConfig": {
@@ -1099,7 +1099,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1108,7 +1108,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_data_horizon_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'data horizon' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_data_horizon_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'data horizon' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1145,7 +1145,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1154,7 +1154,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_catalog_horizon_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'catalog horizon' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_catalog_horizon_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'catalog horizon' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1191,7 +1191,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1200,7 +1200,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['component', '=', 'pg_stat_activity']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_activity: queryid=' || coalesce(q.labels['queryid'], '') || ' (' || coalesce(q.labels['blocker_user'], '') || '@' || coalesce(q.labels['blocker_database'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['component', '=', 'pg_stat_activity']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_activity: queryid=' || coalesce(q.labels['queryid'], '') || ' (' || coalesce(q.labels['blocker_user'], '') || '@' || coalesce(q.labels['blocker_database'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1237,7 +1237,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1246,7 +1246,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['component', '=', 'pg_replication_slots']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots xmin: ' || coalesce(q.labels['slot_name'], '') || ' (' || coalesce(q.labels['slot_status'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['component', '=', 'pg_replication_slots']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots xmin: ' || coalesce(q.labels['slot_name'], '') || ' (' || coalesce(q.labels['slot_status'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1283,7 +1283,7 @@
           "refId": "E",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1292,7 +1292,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['component', '=', 'pg_replication_slots_catalog']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots catalog_xmin: ' || coalesce(q.labels['slot_name'], '') || ' (' || coalesce(q.labels['slot_plugin'], '') || ', ' || coalesce(q.labels['slot_status'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['component', '=', 'pg_replication_slots_catalog']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots catalog_xmin: ' || coalesce(q.labels['slot_name'], '') || ' (' || coalesce(q.labels['slot_plugin'], '') || ', ' || coalesce(q.labels['slot_status'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1329,7 +1329,7 @@
           "refId": "F",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1338,7 +1338,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['component', '=', 'pg_stat_replication']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_replication: ' || coalesce(q.labels['standby_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['component', '=', 'pg_stat_replication']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_replication: ' || coalesce(q.labels['standby_name'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1375,7 +1375,7 @@
           "refId": "G",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1384,7 +1384,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['component', '=', 'pg_prepared_xacts']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_prepared_xacts: ' || coalesce(q.labels['prepared_gid'], '') || ' (owner=' || coalesce(q.labels['owner'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_blockers_age_tx'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['component', '=', 'pg_prepared_xacts']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_prepared_xacts: ' || coalesce(q.labels['prepared_gid'], '') || ' (owner=' || coalesce(q.labels['owner'], '') || ')' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1424,7 +1424,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -1521,7 +1521,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1530,7 +1530,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_long_running_transactions_age_in_seconds'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Longest transaction age in seconds' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_long_running_transactions_age_in_seconds'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'Longest transaction age in seconds' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1571,7 +1571,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "How many current blockers exist in each xmin horizon source, with slot xmin and catalog_xmin tracked separately.",
       "fieldConfig": {
@@ -1716,7 +1716,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1725,7 +1725,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_stat_activity_count'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_activity' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_stat_activity_count'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_activity' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1762,7 +1762,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1771,7 +1771,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_replication_slots_count'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots xmin' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_replication_slots_count'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots xmin' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1808,7 +1808,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1817,7 +1817,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_replication_slots_catalog_count'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots catalog_xmin' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_replication_slots_catalog_count'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_replication_slots catalog_xmin' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1854,7 +1854,7 @@
           "refId": "D",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1863,7 +1863,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_stat_replication_count'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_replication' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_stat_replication_count'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_stat_replication' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1900,7 +1900,7 @@
           "refId": "E",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -1909,7 +1909,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_prepared_xacts_count'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_prepared_xacts' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_xmin_horizon_pg_prepared_xacts_count'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'pg_prepared_xacts' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -1962,7 +1962,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Per-table autovacuum overdue factor: dead_tup divided by the per-relation trigger threshold (autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * reltuples, with pg_class.reloptions overrides applied). 1.0 = exactly at the trigger; >1.0 = overdue (autovacuum should run / has been picked but hasn't completed); <1.0 = not yet eligible. Sort desc to triage tables that autovacuum is failing to keep up with.",
       "fieldConfig": {
@@ -2110,7 +2110,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2119,7 +2119,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n} AS BIGINT)), 'last_over_time', ('pgwatch_pg_autovacuum_queue_autovacuum_overdue_factor'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schemaname'], '') || '.' || coalesce(q.labels['relname'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_topk((CAST(${top_n:sqlstring} AS BIGINT)), 'last_over_time', ('pgwatch_pg_autovacuum_queue_autovacuum_overdue_factor'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)), (300000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(q.labels['schemaname'], '') || '.' || coalesce(q.labels['relname'], '') AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2156,7 +2156,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2205,7 +2205,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Active autovacuum workers vs the configured pool size (autovacuum_max_workers). Pinning at the cap is a leading indicator of bloat / wraparound risk that progress-only panels miss — when active_workers stays at max_workers, the autovacuum scheduler is saturated and tables are queued.",
       "fieldConfig": {
@@ -2388,7 +2388,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2397,7 +2397,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_autovacuum_workers_active_workers'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'active_workers' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_autovacuum_workers_active_workers'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'active_workers' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2434,7 +2434,7 @@
           "refId": "B",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2443,7 +2443,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_autovacuum_workers_max_workers'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'max_workers (cap)' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last(('pgwatch_pg_autovacuum_workers_max_workers'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'max_workers (cap)' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2480,7 +2480,7 @@
           "refId": "C",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2489,7 +2489,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nWITH a AS (\n  SELECT labels, t, value FROM prom_last(('pgwatch_pg_autovacuum_workers_active_workers'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n), b AS (\n  SELECT labels, t, greatest(value, CAST((1::BIGINT) AS DOUBLE)) AS value\n  FROM prom_last(('pgwatch_pg_autovacuum_workers_max_workers'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}']]),\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT labels, t, value FROM (\n  SELECT a.labels, a.t, CAST((100::BIGINT) AS DOUBLE) * a.value / b.value AS value\n  FROM a JOIN b ON a.labels = b.labels AND a.t = b.t)\nWHERE NOT isnan(value)\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, '% of cap' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nWITH a AS (\n  SELECT labels, t, value FROM prom_last(('pgwatch_pg_autovacuum_workers_active_workers'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n), b AS (\n  SELECT labels, t, greatest(value, CAST((1::BIGINT) AS DOUBLE)) AS value\n  FROM prom_last(('pgwatch_pg_autovacuum_workers_max_workers'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}]]),\n         (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\n)\nSELECT labels, t, value FROM (\n  SELECT a.labels, a.t, CAST((100::BIGINT) AS DOUBLE) * a.value / b.value AS value\n  FROM a JOIN b ON a.labels = b.labels AND a.t = b.t)\nWHERE NOT isnan(value)\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, '% of cap' AS series, CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2529,7 +2529,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "description": "Autovacuum workers currently waiting on a lock, joined to the lock-holder PID and queryid. An anti-wraparound autovacuum stuck behind DDL is a silent XID-eater. Look up the holder's user/application_name in pg_stat_activity by blocker_pid when needed (intentionally not exposed as Prometheus labels for cardinality / info-disclosure reasons). The queryid drilldown link is empty on PG <14 (no pg_stat_activity.query_id column). Empty panel = good news (see \"no data\" message).",
       "fieldConfig": {
@@ -2676,7 +2676,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2685,7 +2685,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last_over_time(('pgwatch_pg_autovacuum_blocked_wait_seconds'), ([['cluster', '=', '${cluster_name}'], ['node_name', '=', '${node_name}'], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT)), (60000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS \"Time\", q.labels['blocker_pid'] AS \"blocker_pid\", q.labels['blocker_queryid'] AS \"blocker_queryid\", q.labels['cluster'] AS \"cluster\", q.labels['datname'] AS \"datname\", q.labels['dbname'] AS \"dbname\", q.labels['instance'] AS \"instance\", q.labels['job'] AS \"job\", q.labels['node_name'] AS \"node_name\", q.labels['worker_pid'] AS \"worker_pid\", CAST(q.value AS DOUBLE) AS \"Value\"\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END",
+            "data": "WITH q AS (\nSELECT labels, t, value\nFROM prom_last_over_time(('pgwatch_pg_autovacuum_blocked_wait_seconds'), ([['cluster', '=', ${cluster_name:sqlstring}], ['node_name', '=', ${node_name:sqlstring}], ['datname', '=~', '${db_name:regex}']]),\n       (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT)), (60000::BIGINT))\n)\nSELECT CAST(q.t AS BIGINT) AS \"Time\", q.labels['blocker_pid'] AS \"blocker_pid\", q.labels['blocker_queryid'] AS \"blocker_queryid\", q.labels['cluster'] AS \"cluster\", q.labels['datname'] AS \"datname\", q.labels['dbname'] AS \"dbname\", q.labels['instance'] AS \"instance\", q.labels['job'] AS \"job\", q.labels['node_name'] AS \"node_name\", q.labels['worker_pid'] AS \"worker_pid\", CAST(q.value AS DOUBLE) AS \"Value\"\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY CASE WHEN cardinality(q.labels) = 1 THEN map_values(q.labels)[1] ELSE '{' || array_to_string(list_transform(list_sort(map_keys(q.labels)), lambda k: k || '=\"' || q.labels[k] || '\"'), ', ') || '}' END",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2784,7 +2784,7 @@
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "aerffb0z8rjlsc"
+        "uid": "pgai-mon"
       },
       "fieldConfig": {
         "defaults": {
@@ -2916,7 +2916,7 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "aerffb0z8rjlsc"
+            "uid": "pgai-mon"
           },
           "type": "json",
           "source": "url",
@@ -2925,7 +2925,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT nullif(labels['schema_name'], '') AS schema_name, nullif(labels['table_name'], '') AS table_name,\n       nullif(labels['vacuum_mode'], '') AS vacuum_mode, t, max(CAST(labels['phase'] AS INTEGER)) AS value\nFROM prom_last('pgwatch_pg_vacuum_progress_index_vacuum_count',\n       [['cluster','=',('${cluster_name}')],['node_name','=',('${node_name}')],['datname','=',('${db_name}')],\n        ['phase','=~','[1-7]'],['schema_name','=~',('${schema_name:regex}')],['table_name','=~',('${table_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nGROUP BY ALL\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(CAST(q.\"schema_name\" AS VARCHAR), '') || '.' || coalesce(CAST(q.\"table_name\" AS VARCHAR), '') || ' - ' || coalesce(CAST(q.\"vacuum_mode\" AS VARCHAR), '') AS series, '{' || 'schema_name=\"' || coalesce(CAST(q.\"schema_name\" AS VARCHAR), '') || '\"' || ', ' || 'table_name=\"' || coalesce(CAST(q.\"table_name\" AS VARCHAR), '') || '\"' || ', ' || 'vacuum_mode=\"' || coalesce(CAST(q.\"vacuum_mode\" AS VARCHAR), '') || '\"' || '}' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT nullif(labels['schema_name'], '') AS schema_name, nullif(labels['table_name'], '') AS table_name,\n       nullif(labels['vacuum_mode'], '') AS vacuum_mode, t, max(CAST(labels['phase'] AS INTEGER)) AS value\nFROM prom_last('pgwatch_pg_vacuum_progress_index_vacuum_count',\n       [['cluster','=',(${cluster_name:sqlstring})],['node_name','=',(${node_name:sqlstring})],['datname','=',(${db_name:sqlstring})],\n        ['phase','=~','[1-7]'],['schema_name','=~',('${schema_name:regex}')],['table_name','=~',('${table_name:regex}')]],\n       (CAST((${__from} - ${__from} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST((${__to} - ${__to} % CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT)) AS BIGINT)), (CAST(CAST(CASE WHEN ${__to} - ${__from} >= 7776000000 THEN ceil(${__interval_ms} / 86400000.0) * 86400000 WHEN ${__to} - ${__from} >= 604800000 THEN ceil(${__interval_ms} / 3600000.0) * 3600000 ELSE ${__interval_ms} END AS BIGINT) AS BIGINT)))\nGROUP BY ALL\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, coalesce(CAST(q.\"schema_name\" AS VARCHAR), '') || '.' || coalesce(CAST(q.\"table_name\" AS VARCHAR), '') || ' - ' || coalesce(CAST(q.\"vacuum_mode\" AS VARCHAR), '') AS series, '{' || 'schema_name=\"' || coalesce(CAST(q.\"schema_name\" AS VARCHAR), '') || '\"' || ', ' || 'table_name=\"' || coalesce(CAST(q.\"table_name\" AS VARCHAR), '') || '\"' || ', ' || 'vacuum_mode=\"' || coalesce(CAST(q.\"vacuum_mode\" AS VARCHAR), '') || '\"' || '}' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -2984,7 +2984,7 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
         "definition": "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['cluster'] IS NOT NULL ORDER BY 1",
         "options": [],
@@ -3031,9 +3031,9 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
-        "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+        "definition": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} ORDER BY 1",
         "options": [],
         "query": {
           "queryType": "infinity",
@@ -3047,7 +3047,7 @@
             "url": "http://pgai-mon:8765/sql?format=objects",
             "url_options": {
               "method": "POST",
-              "data": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' ORDER BY 1",
+              "data": "SELECT DISTINCT labels['node_name'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['node_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} ORDER BY 1",
               "body_type": "raw",
               "body_content_type": "text/plain",
               "params": [],
@@ -3080,9 +3080,9 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
-        "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+        "definition": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
         "options": [],
         "query": {
           "queryType": "infinity",
@@ -3096,7 +3096,7 @@
             "url": "http://pgai-mon:8765/sql?format=objects",
             "url_options": {
               "method": "POST",
-              "data": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
+              "data": "SELECT DISTINCT labels['datname'] AS value FROM series WHERE metric = 'pgwatch_db_size_size_b' AND labels['datname'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') <> 'template1' ORDER BY 1",
               "body_type": "raw",
               "body_content_type": "text/plain",
               "params": [],
@@ -3127,9 +3127,9 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
-        "definition": "SELECT DISTINCT labels['schema'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['schema'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') = '${db_name}' AND NOT regexp_full_match(coalesce(labels['schema'], ''), 'pg_.*|information_schema|_timescaledb.*') ORDER BY 1",
+        "definition": "SELECT DISTINCT labels['schema'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['schema'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${db_name:sqlstring} AND NOT regexp_full_match(coalesce(labels['schema'], ''), 'pg_.*|information_schema|_timescaledb.*') ORDER BY 1",
         "options": [],
         "query": {
           "queryType": "infinity",
@@ -3143,7 +3143,7 @@
             "url": "http://pgai-mon:8765/sql?format=objects",
             "url_options": {
               "method": "POST",
-              "data": "SELECT DISTINCT labels['schema'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['schema'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') = '${db_name}' AND NOT regexp_full_match(coalesce(labels['schema'], ''), 'pg_.*|information_schema|_timescaledb.*') ORDER BY 1",
+              "data": "SELECT DISTINCT labels['schema'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['schema'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${db_name:sqlstring} AND NOT regexp_full_match(coalesce(labels['schema'], ''), 'pg_.*|information_schema|_timescaledb.*') ORDER BY 1",
               "body_type": "raw",
               "body_content_type": "text/plain",
               "params": [],
@@ -3178,9 +3178,9 @@
         "type": "query",
         "datasource": {
           "type": "yesoreyeram-infinity-datasource",
-          "uid": "aerffb0z8rjlsc"
+          "uid": "pgai-mon"
         },
-        "definition": "SELECT DISTINCT labels['table_name'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['table_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') = '${db_name}' AND regexp_full_match(coalesce(labels['schema'], ''), '${schema_name:regex}') ORDER BY 1",
+        "definition": "SELECT DISTINCT labels['table_name'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['table_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${db_name:sqlstring} AND regexp_full_match(coalesce(labels['schema'], ''), '${schema_name:regex}') ORDER BY 1",
         "options": [],
         "query": {
           "queryType": "infinity",
@@ -3194,7 +3194,7 @@
             "url": "http://pgai-mon:8765/sql?format=objects",
             "url_options": {
               "method": "POST",
-              "data": "SELECT DISTINCT labels['table_name'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['table_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = '${cluster_name}' AND coalesce(labels['node_name'], '') = '${node_name}' AND coalesce(labels['datname'], '') = '${db_name}' AND regexp_full_match(coalesce(labels['schema'], ''), '${schema_name:regex}') ORDER BY 1",
+              "data": "SELECT DISTINCT labels['table_name'] AS value FROM series WHERE metric = 'pgwatch_table_stats_tx_freeze_age' AND labels['table_name'] IS NOT NULL AND coalesce(labels['cluster'], '') = ${cluster_name:sqlstring} AND coalesce(labels['node_name'], '') = ${node_name:sqlstring} AND coalesce(labels['datname'], '') = ${db_name:sqlstring} AND regexp_full_match(coalesce(labels['schema'], ''), '${schema_name:regex}') ORDER BY 1",
               "body_type": "raw",
               "body_content_type": "text/plain",
               "params": [],
