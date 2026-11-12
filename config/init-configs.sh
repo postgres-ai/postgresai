@@ -29,9 +29,29 @@ if [ ! -d "$SOURCE_DIR" ]; then
   exit 1
 fi
 
+# pgai-mon's data volume belongs to the user pgai-mon runs as: the owner of
+# instances.yml (PGAI_MON_OWNER, uid:gid), which is not the image's uid when the
+# install user is someone else. Runs on every start, before the version guard,
+# so a changed owner is applied; only entries with another owner are changed,
+# so it is cheap on a large store.
+if [ -n "${PGAI_MON_DATA_DIR:-}" ] && [ -d "${PGAI_MON_DATA_DIR}" ] && [ -n "${PGAI_MON_OWNER:-}" ]; then
+  case "$PGAI_MON_OWNER" in
+    *[!0-9:]*|:*|*:|*:*:*)
+      echo "Error: PGAI_MON_OWNER must be uid:gid (numbers), got '$PGAI_MON_OWNER'"
+      exit 1
+      ;;
+  esac
+  uid="${PGAI_MON_OWNER%%:*}"
+  gid="${PGAI_MON_OWNER#*:}"
+  [ "$gid" != "$PGAI_MON_OWNER" ] || gid="$uid"
+  find "$PGAI_MON_DATA_DIR" \( ! -user "$uid" -o ! -group "$gid" \) -exec chown -h "$uid:$gid" {} +
+  chmod 0750 "$PGAI_MON_DATA_DIR"
+  echo "pgai-mon data: owner $uid:$gid"
+fi
+
 # Idempotency guard: short-circuit when the target was already populated by
 # init-configs at the same image version. This preserves user edits to
-# volume-backed config files (e.g. pgwatch metrics.yml) across routine
+# volume-backed config files (e.g. grafana.ini) across routine
 # `docker compose up` invocations. To force re-initialization (e.g. to pull
 # new image defaults without recreating the volume), remove the marker file:
 #   docker exec config-init rm /target/.pgai-configs-version
@@ -52,8 +72,8 @@ echo "Initializing configs (target version: $SOURCE_VERSION)..."
 # 0.15: Dashboard_7_Autovacuum_and_bloat.json -> Dashboard_7_Autovacuum_and_xmin_horizon.json,
 # both with the same top-level uid) would leave both files in the volume and
 # trigger a collision. Clean the dashboards directory before re-copy. We only
-# clean dashboards/ - other config files (pgwatch metrics.yml, etc.) may have
-# been edited by the operator and must be preserved.
+# clean dashboards/ - other config files (grafana.ini, etc.) may have been
+# edited by the operator and must be preserved.
 DASHBOARDS_DIR="${TARGET_DIR}/grafana/dashboards"
 if [ -d "$DASHBOARDS_DIR" ]; then
   echo "Cleaning stale dashboards from $DASHBOARDS_DIR..."

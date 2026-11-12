@@ -213,3 +213,62 @@ def test_stale_grafana_dashboards_removed_on_upgrade():
         assert os.path.isfile(
             os.path.join(target_dir, 'grafana', 'dashboards', 'Dashboard_7_Autovacuum_and_xmin_horizon.json')
         )
+
+
+def _run_with_owner(tmp, owner, check=True):
+    """Run init-configs.sh with PGAI_MON_DATA_DIR / PGAI_MON_OWNER set."""
+    source_dir = os.path.join(tmp, 'src')
+    target_dir = os.path.join(tmp, 'tgt')
+    data_dir = os.path.join(tmp, 'pgai_mon_data')
+    os.makedirs(source_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(os.path.join(data_dir, 'store'), exist_ok=True)
+    if not os.listdir(source_dir):
+        _make_source_tree(source_dir)
+    version_file = os.path.join(tmp, 'VERSION')
+    with open(version_file, 'w') as f:
+        f.write('1.2.3')
+    env = {
+        **os.environ,
+        'SOURCE_DIR': source_dir,
+        'TARGET_DIR': target_dir,
+        'VERSION_FILE': version_file,
+        'BUILD_TS_FILE': version_file,
+        'PGAI_MON_DATA_DIR': data_dir,
+        'PGAI_MON_OWNER': owner,
+    }
+    return data_dir, subprocess.run(['sh', SCRIPT_PATH], env=env, check=check, capture_output=True, text=True)
+
+
+def test_pgai_mon_data_dir_gets_owner_and_mode():
+    """The data volume is handed to the uid:gid pgai-mon runs as, mode 0750, on every run."""
+    owner = f'{os.getuid()}:{os.getgid()}'
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir, r = _run_with_owner(tmp, owner)
+        assert f'pgai-mon data: owner {owner}' in r.stdout
+        assert os.stat(data_dir).st_mode & 0o777 == 0o750
+        st = os.stat(os.path.join(data_dir, 'store'))
+        assert (st.st_uid, st.st_gid) == (os.getuid(), os.getgid())
+        # Same image version again: the configs short-circuit, the owner step still runs.
+        os.chmod(data_dir, 0o700)
+        _, r = _run_with_owner(tmp, owner)
+        assert 'already initialized' in r.stdout
+        assert os.stat(data_dir).st_mode & 0o777 == 0o750
+
+
+def test_pgai_mon_owner_uid_only_means_same_gid():
+    """PGAI_MON_OWNER=<uid> is accepted (gid = uid), as docker's `user:` accepts it."""
+    if os.getuid() != os.getgid():
+        pytest.skip('needs uid == gid to chown to uid:uid without privileges')
+    with tempfile.TemporaryDirectory() as tmp:
+        _, r = _run_with_owner(tmp, str(os.getuid()))
+        assert f'owner {os.getuid()}:{os.getuid()}' in r.stdout
+
+
+@pytest.mark.parametrize('owner', ['pgai', '1000:', ':1000', '1000:1000:1', '10 00', '$(id)'])
+def test_pgai_mon_owner_must_be_numeric(owner):
+    """A name or malformed value fails the init (no chown to an unintended user)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _, r = _run_with_owner(tmp, owner, check=False)
+        assert r.returncode != 0
+        assert 'PGAI_MON_OWNER must be uid:gid' in r.stdout
