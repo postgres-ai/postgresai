@@ -345,7 +345,9 @@ reporter:tests:
     # connect to the cluster started by `service postgresql start` above
     # instead of letting pytest-postgresql spin up its own (which hangs
     # in this image — see tests/reporter/conftest.py for the same fix).
-    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && PGAI_USE_SYSTEM_PG=1 PGAI_MON_BIN=\"$CI_PROJECT_DIR/bin/pgai-mon\" python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter tests/compliance_vectors/test_mr262_pgwatch_topn_integration.py"
+    # `su -` drops the environment: CI=true makes the tests that need pgai-mon
+    # fail, not skip, if the binary is missing.
+    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && CI=true PGAI_USE_SYSTEM_PG=1 PGAI_MON_BIN=\"$CI_PROJECT_DIR/bin/pgai-mon\" python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter tests/compliance_vectors/test_mr262_pgwatch_topn_integration.py"
     # Fix ownership for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/coverage" || true
   coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+)%/'

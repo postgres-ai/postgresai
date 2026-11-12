@@ -18,13 +18,19 @@
 #   - Grafana auto-update / "new version available" banner not disabled
 # The tests live under tests/grafana_dashboards/ and run on every MR, with
 # mon/grafana/test_compile.py (the SQL dashboards compile.py emitted).
+# test_sql_panels_run.py runs every panel's SQL on pgai-mon (the mon:build
+# binary) over a recorded store; with CI set it fails, not skips, without it.
 quality:grafana-dashboards-lint:
   stage: test
   image: python:3.11-bookworm
+  needs:
+    - job: mon:build
+      artifacts: true
   variables:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     PIP_NO_CACHE_DIR: "1"
+    PGAI_MON_BIN: ${CI_PROJECT_DIR}/bin/pgai-mon
   before_script:
     - pip install pytest pyyaml
   script:
@@ -246,6 +252,11 @@ quality:pg-version-matrix:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     PIP_NO_CACHE_DIR: "1"
+  # tests/reporter/test_mon_equivalence.py needs pgai-mon (fails without it in CI).
+  needs:
+    - job: mon:build
+      artifacts: true
+      optional: true
   parallel:
     matrix:
       - PG_VERSION: ["14", "15", "16"]
@@ -270,7 +281,7 @@ quality:pg-version-matrix:
       echo "Running tests against PostgreSQL $PG_VERSION"
       export PATH="/usr/lib/postgresql/$PG_VERSION/bin:$PATH"
       chown -R postgres:postgres "$CI_PROJECT_DIR"
-      su - postgres -c "cd \"$CI_PROJECT_DIR\" && python -m pytest --run-integration tests/reporter -v --tb=short"
+      su - postgres -c "cd \"$CI_PROJECT_DIR\" && CI=true PGAI_MON_BIN=\"$CI_PROJECT_DIR/bin/pgai-mon\" python -m pytest --run-integration tests/reporter -v --tb=short"
   rules:
     # Nightly scheduled pipeline
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

@@ -1,6 +1,6 @@
 """The reporter on pgai-mon gives the same answers and the same reports as on VictoriaMetrics.
 
-Needs a pgai-mon binary ($PGAI_MON_BIN, or mon/target/*/pgai-mon); skipped without one. Builds a
+Needs a pgai-mon binary ($PGAI_MON_BIN, or mon/target/*/pgai-mon); skipped without one (failed when CI is set). Builds a
 store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 70 synthetic
 series for what the demo box lacks: host metrics, lock waits, invalid indexes, pg_stat_kcache,
 stats_reset, the older btree bloat gauges), serves it on 127.0.0.1 and compares, for the same
@@ -38,7 +38,9 @@ CHECKS = ["A002", "A003", "A004", "A005", "A007", "A014", "D001", "D004", "F001"
 def mon(tmp_path_factory):
     binary = find_binary()
     if not binary:
-        pytest.skip("no pgai-mon binary: set PGAI_MON_BIN or build mon/")
+        # CI builds the binary (mon:build) for this test: a missing one is an error there.
+        (pytest.fail if os.environ.get("CI") else pytest.skip)(
+            "no pgai-mon binary: set PGAI_MON_BIN or build mon/")
     store = build_store(binary, tmp_path_factory.mktemp("mon") / "store")
     log = tmp_path_factory.mktemp("monlog") / "serve.log"
     with MonServer(binary, store, log=log) as srv:
