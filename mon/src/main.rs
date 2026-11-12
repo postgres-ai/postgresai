@@ -369,6 +369,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 ingest: Default::default(),
                 scrape: Default::default(),
                 rules: Default::default(),
+                rds: vec![],
             };
             run(cfg)
         }
@@ -909,6 +910,9 @@ fn serve_loop(
             }
             if cfg.rules.host.unwrap_or(scrape::Scraper::enabled(&cfg.scrape)) {
                 tokio::spawn(rules::run_host(cfg.rules.clone(), rules_backend, ing.clone(), tx.clone()));
+            }
+            for t in pgai_mon::hoststats::targets(&cfg.rds, &|k| std::env::var(k).ok()) {
+                tokio::spawn(pgai_mon::hoststats::run(t, ing.clone()));
             }
         }
         let app = query::app(state, extra, auth);

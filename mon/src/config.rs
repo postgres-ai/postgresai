@@ -44,6 +44,10 @@ pub struct Config {
     /// Recording rules materialised at ingest (rules.rs): host_* from scraped provider series.
     #[serde(default)]
     pub rules: crate::rules::RulesCfg,
+    /// RDS/Aurora instances whose host stats are polled from AWS (hoststats/). Empty: the
+    /// rds-host-stats environment (RDS_DB_INSTANCE_IDENTIFIER, ...) when it is set.
+    #[serde(default)]
+    pub rds: Vec<crate::hoststats::RdsTarget>,
 }
 
 fn d_metrics_yml() -> PathBuf {
