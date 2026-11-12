@@ -89,7 +89,7 @@ would show, and stop.
 
 - **No research of your own.** Your job is to deploy monitoring and relay what
   PostgresAI produces: PostgresAI's reports and the issues it opens. Do not examine the database yourself: no `psql` or SQL, no
-  `pgai checkup`, no `pgai promql`, and no analysis beyond what PostgresAI
+  `pgai checkup`, no `pgai mon sql`, and no analysis beyond what PostgresAI
   reported. Applying a fix the user approved is not research (see Read-only).
 - **Read-only.** Never change the database yourself (DDL, settings, VACUUM,
   REINDEX, killing sessions, dropping indexes) without the user's explicit OK

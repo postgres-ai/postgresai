@@ -584,14 +584,18 @@ against its own store, and posts the answer back.
 pgai mon sql "select metric, count(*) from series group by 1 order by 2 desc limit 10" \
   --instance <instance-uuid>
 
-# by project id, alias or name instead of the instance id
-pgai mon sql "select 1" --project my-db
+# by project id, alias or name instead of the instance id; one metric's last hour
+pgai mon sql "select ts, labels['dbname'] as dbname, value from metrics
+  where metric = 'pgwatch_db_size_size_b' and ts > now() - interval 1 hour
+  order by ts desc limit 20" --project my-db
 
 # on the box itself, --instance is read from .pgwatch-config
 pgai mon sql "select 1"
 ```
 
-`--json` prints the raw result payload. The wait is sized from the instance's
+The views (`series`, `samples`, `metrics`, `query_texts`, ...) are defined in
+`mon/schema/views.sql`; `GET /schema` on pgai-mon lists them. `--json` prints
+the raw result payload. The wait is sized from the instance's
 poll pacing; `--timeout` overrides it. A query error is printed as the instance
 reported it and the command exits 1.
 
