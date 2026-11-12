@@ -1,6 +1,8 @@
 """Keep shipped ASH visualizations and the published palette aligned."""
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from tests.grafana_dashboards.conftest import iter_panels, target_query
@@ -72,3 +74,13 @@ def test_ash_panels_are_present(dashboards):
              if any("pgwatch_wait_events_total" in target_query(t)
                     for t in panel.get("targets", []))}
     assert len(found) >= 5
+
+
+def test_sync_script_reports_no_drift():
+    # The documented fix for drift must itself agree with the shipped dashboards.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/sync-wait-event-colors.py"), "--check"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("Checked ")
