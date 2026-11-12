@@ -255,3 +255,53 @@ fn load_query_texts_and_objects_from_json_lines() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A store where no file has the source columns (every file predates them) opens, serves and
+/// compacts: the columns read as NULL.
+#[test]
+fn a_store_with_only_old_files_opens_and_reads() {
+    let d = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(d.path(), &StoreCfg::default()).unwrap();
+    for k in 0..2 {
+        core.append(Record::QueryTexts(vec![text(
+            1 + k,
+            "select old",
+            T0 + k * 1000,
+            SourceId::default(),
+        )]))
+        .unwrap();
+        core.append(Record::Objects(vec![object(
+            T0 + k * 1000,
+            Some("CREATE INDEX i1 ON t (a)"),
+            SourceId::default(),
+        )]))
+        .unwrap();
+        core.flush().unwrap();
+    }
+    strip_source_columns(&core, "query_texts");
+    strip_source_columns(&core, "objects");
+    let cur = pgai_mon::structure::load_current_objects(&core.shared).unwrap();
+    assert_eq!(cur.len(), 1);
+    let check = |stage: &str| {
+        let r = Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            rows(&r, "SELECT count(*), count(source) FROM query_texts"),
+            vec![serde_json::json!([2, 0])],
+            "{stage}"
+        );
+        assert_eq!(
+            rows(&r, "SELECT count(*) > 0, count(source) FROM objects"),
+            vec![serde_json::json!([true, 0])],
+            "{stage}"
+        );
+    };
+    check("old files only");
+    assert!(core.compactor().unwrap().run_once(now_ms(), true).unwrap() > 0);
+    check("after compaction");
+}

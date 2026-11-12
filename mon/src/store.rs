@@ -372,7 +372,11 @@ pub fn empty_select(kind: &str) -> &'static str {
 /// the new layout).
 pub fn parquet_src(kind: &str, list: &str) -> String {
     match kind {
-        "query_texts" | "objects" => format!("read_parquet({list}, union_by_name = true)"),
+        // the empty typed branch supplies the columns when no file in the list has them
+        "query_texts" | "objects" => format!(
+            "(SELECT * FROM read_parquet({list}, union_by_name = true) UNION ALL BY NAME \
+             SELECT NULL::VARCHAR AS source, NULL::VARCHAR AS cluster, NULL::VARCHAR AS node_name WHERE false)"
+        ),
         _ => format!("read_parquet({list})"),
     }
 }
