@@ -5,7 +5,8 @@ The original (old/config/grafana/dashboards/Self_Monitoring_Dashboard.json) char
 components: cAdvisor containers, node-exporter host stats, VictoriaMetrics, the sink Postgres and
 the Flask backend. None of them exists any more, and its PromQL has no case in cases.py, so this
 dashboard is not compiled from it: it is written here from the series pgai-mon writes about itself
-(collector.rs: pgai_mon_*; scrape.rs: up, scrape_*) and from the `series` view, in the same target
+(collector.rs: pgai_mon_* per database; selfmon.rs: pgai_mon_* of the process, from GET /health;
+scrape.rs: up, scrape_*) and from the `series` view, in the same target
 shape as compile.py's (time, value, series, label_set). Standard library Python only; it needs no
 pgai-mon.
 
@@ -24,7 +25,7 @@ SRC = "Self_Monitoring_Dashboard.json"
 OUT = "Self_Monitoring_Dashboard_pgai_mon.json"
 UID = "pgai-mon-self-monitoring"
 
-E = "CAST([] AS VARCHAR[][])"  # no matchers: pgai-mon's own series carry no cluster/node_name
+E = "CAST([] AS VARCHAR[][])"  # no matchers: pgai-mon's process series carry no cluster/node_name
 R = "getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms')"
 RI = "getvariable('rate_interval_ms')"
 
@@ -33,22 +34,21 @@ DROPPED = {
     200: "PostgresAI version banner: read the Flask backend's /version (pgai-mon's version is in GET /health only)",
     1: "Active monitoring services: cAdvisor, node-exporter, postgres-exporter, VictoriaMetrics, pgwatch",
     2: "Running containers: cAdvisor",
-    3: "Application memory usage: node-exporter (pgai-mon's RSS is in GET /health only)",
     4: "System CPU usage: node-exporter",
-    5: "Victoria Metrics storage size (the store's Parquet bytes are in GET /health only)",
+    5: "Victoria Metrics storage size stat: the store size is charted in panel 22",
     40: "System CPU usage breakdown: node-exporter", 41: "System memory usage breakdown: node-exporter",
     42: "System network I/O: node-exporter", 43: "System disk usage: node-exporter",
     50: "Disk I/O operations: node-exporter", 51: "Disk I/O throughput: node-exporter",
     52: "Disk I/O utilization: node-exporter", 53: "Disk I/O average latency: node-exporter",
     10: "Container CPU usage: cAdvisor", 11: "Container memory usage: cAdvisor",
     12: "Container network I/O: cAdvisor", 13: "Container disk I/O: cAdvisor",
-    20: "Victoria Metrics ingestion rate (samples_in is in GET /health only)",
-    22: "Victoria Metrics storage size (GET /health only)", 23: "Victoria Metrics rows count (GET /health only)",
+    23: "Victoria Metrics rows count: the store keeps no row count (its known series are charted)",
     30: "Sink Postgres connections: no sink", 31: "Sink Postgres transactions: no sink",
     32: "Sink Postgres database size: no sink", 33: "Sink Postgres block I/O: no sink",
 }
-# kept: 6 (time series in the store, from the series view), 21 (scrape duration by target)
-KEPT = (6, 21)
+# kept: 3 (memory: pgai-mon's RSS), 6 (time series in the store, from the series view),
+# 20 (ingestion rate), 21 (scrape duration by target), 22 (storage size: WAL and Parquet)
+KEPT = (3, 6, 20, 21, 22)
 
 
 def ts_defaults(unit, stack=False, **extra):
@@ -89,6 +89,16 @@ def legend(sort_by, calcs):
             "tooltip": {"hideZeros": False, "mode": "multi", "sort": "desc"}}
 
 
+def last(ref, metric, fmt):
+    """A target: the metric's series as they are."""
+    return (ref, f"SELECT labels, t, value FROM prom_last('{metric}', {E}, {R})", fmt, False)
+
+
+def over(fn, ref, metric, fmt):
+    """A target: rate or increase of a counter over the rate interval."""
+    return (ref, f"SELECT labels, t, value FROM prom_{fn}('{metric}', {E}, {R}, {RI})", fmt, False)
+
+
 # (id, type, title, description, gridPos (h, w, x, y), field defaults, options,
 #  [(refId, sql, legendFormat, instant)])
 PANELS = [
@@ -121,7 +131,7 @@ PANELS = [
     (1010, "timeseries", "Database collection status", "1: the database's last collection connected; "
      "0: it did not (pgai_mon_source_up).", (8, 12, 0, 6),
      ts_defaults("short", min=0, max=1), legend("Last", ["min", "last"]),
-     [("A", f"SELECT labels, t, value FROM prom_last('pgai_mon_source_up', {E}, {R})", "{{dbname}}", False)]),
+     [last("A", "pgai_mon_source_up", "{{dbname}}")]),
     (1011, "timeseries", "Time since last successful collection", "Seconds since a metric query last "
      "succeeded on the database (now - pgai_mon_source_last_success_epoch_s).", (8, 12, 12, 6),
      ts_defaults("s"), legend("Max", ["mean", "max", "last"]),
@@ -166,7 +176,7 @@ PANELS = [
     (1020, "timeseries", "Scrape target status", "1: the target's last scrape (or the collector source's "
      "last run) succeeded; 0: it failed (up).", (8, 8, 0, 31), ts_defaults("short", min=0, max=1),
      legend("Last", ["min", "last"]),
-     [("A", f"SELECT labels, t, value FROM prom_last('up', {E}, {R})", "{{job}} {{instance}}", False)]),
+     [last("A", "up", "{{job}} {{instance}}")]),
     (21, "timeseries", "Scrape duration by target", "Average scrape duration by job (scrape_duration_seconds).",
      (8, 8, 8, 31), ts_defaults("s"), legend("Max", ["mean", "max", "last"]),
      [("A", "SELECT map(['job'], [labels['job']]) AS labels, t, avg(value) AS value "
@@ -175,6 +185,70 @@ PANELS = [
      (8, 8, 16, 31), ts_defaults("short"), legend("Last", ["mean", "max", "last"]),
      [("A", "SELECT map(['job'], [labels['job']]) AS labels, t, sum(value) AS value "
             f"FROM prom_last('scrape_samples_scraped', {E}, {R}) GROUP BY ALL", "{{job}}", False)]),
+    ("row", 103, "pgai-mon process", 39),
+    (20, "timeseries", "Ingestion rate", "Samples and records the store takes in per second, from the collector, "
+     "scrapes, pushes and pgai-mon itself (rates of pgai_mon_ingest_samples_total, "
+     "pgai_mon_ingest_records_total).", (8, 8, 0, 40), ts_defaults("short"), legend("Mean", ["mean", "max"]),
+     [over("rate", "A", "pgai_mon_ingest_samples_total", "samples/s"),
+      over("rate", "B", "pgai_mon_ingest_records_total", "records/s")]),
+    (1031, "timeseries", "Flush duration", "Wall time of the last WAL to Parquet flush before each write "
+     "(pgai_mon_flush_duration_seconds).", (8, 8, 8, 40), ts_defaults("s"), legend("Max", ["mean", "max", "last"]),
+     [last("A", "pgai_mon_flush_duration_seconds", "flush")]),
+    (22, "timeseries", "WAL and store size", "Bytes in the write-ahead log not flushed yet and in the "
+     "store's Parquet files (pgai_mon_wal_bytes, pgai_mon_store_parquet_bytes).", (8, 8, 16, 40),
+     ts_defaults("bytes"), legend("Last", ["max", "last"]),
+     [last("A", "pgai_mon_wal_bytes", "WAL"),
+      last("B", "pgai_mon_store_parquet_bytes", "Parquet")]),
+    (3, "timeseries", "Memory", "Resident memory of the pgai-mon process and of its SQL reader process, when "
+     "the reader runs as one (pgai_mon_process_resident_memory_bytes, pgai_mon_reader_resident_memory_bytes).",
+     (8, 8, 0, 48), ts_defaults("bytes"), legend("Max", ["mean", "max", "last"]),
+     [last("A", "pgai_mon_process_resident_memory_bytes", "pgai-mon"),
+      last("B", "pgai_mon_reader_resident_memory_bytes", "reader")]),
+    (1033, "timeseries", "CPU", "CPU time of the pgai-mon process per second, user and system; 100% is one "
+     "core (rate of pgai_mon_process_cpu_seconds_total).", (8, 8, 8, 48), ts_defaults("percentunit"),
+     legend("Mean", ["mean", "max"]),
+     [over("rate", "A", "pgai_mon_process_cpu_seconds_total", "CPU")]),
+    (1034, "timeseries", "Reader restarts, memory kills and late flushes", "SQL reader process restarts, "
+     "the restarts its memory cap forced, and flushes that started late, per interval (increases of "
+     "pgai_mon_reader_restarts_total, pgai_mon_reader_memory_kills_total, pgai_mon_late_flushes_total).",
+     (8, 8, 16, 48), ts_defaults("short"), legend("Max", ["max", "last"]),
+     [over("increase", "A", "pgai_mon_reader_restarts_total", "reader restarts"),
+      over("increase", "B", "pgai_mon_reader_memory_kills_total", "reader memory kills"),
+      over("increase", "C", "pgai_mon_late_flushes_total", "late flushes")]),
+    (1035, "timeseries", "S3 upload lag", "Seconds since the store's catalog was last committed to the bucket "
+     "(pgai_mon_s3_last_commit_age_seconds; S3 stores only).", (8, 8, 0, 56), ts_defaults("s"),
+     legend("Max", ["mean", "max", "last"]),
+     [last("A", "pgai_mon_s3_last_commit_age_seconds", "commit age {{store}}")]),
+    (1036, "timeseries", "S3 upload backlog", "Bytes of local Parquet files not uploaded yet "
+     "(pgai_mon_s3_pending_bytes; S3 stores only).", (8, 8, 8, 56), ts_defaults("bytes"),
+     legend("Max", ["mean", "max", "last"]),
+     [last("A", "pgai_mon_s3_pending_bytes", "pending {{store}}")]),
+    (1037, "timeseries", "S3 upload errors", "Failed upload rounds per interval (increase of "
+     "pgai_mon_s3_upload_errors_total; S3 stores only). Data stays local and the round is retried.",
+     (8, 8, 16, 56), ts_defaults("short"), legend("Max", ["max", "last"]),
+     [over("increase", "A", "pgai_mon_s3_upload_errors_total", "failed rounds {{store}}")]),
+    (1038, "timeseries", "Cache hit rate", "Hits / (hits + misses) per second, by cache: query (HTTP result "
+     "cache), footer (Parquet footers), row (evaluated rows) (pgai_mon_cache_hits_total, "
+     "pgai_mon_cache_misses_total).", (8, 8, 0, 64), ts_defaults("percentunit", min=0, max=1),
+     legend("Mean", ["mean", "min", "last"]),
+     [("A", "WITH h AS (\n"
+            f"  SELECT labels, t, value FROM prom_rate('pgai_mon_cache_hits_total', {E}, {R}, {RI})\n"
+            "), m AS (\n"
+            f"  SELECT labels, t, value FROM prom_rate('pgai_mon_cache_misses_total', {E}, {R}, {RI})\n"
+            ")\n"
+            "SELECT h.labels, h.t, h.value / (h.value + m.value) AS value FROM h JOIN m\n"
+            "  ON h.labels['cache'] = m.labels['cache'] AND h.t = m.t WHERE h.value + m.value > 0",
+       "{{cache}}", False)]),
+    (1039, "timeseries", "Query admission", "SQL queries running and waiting for a slot "
+     "(pgai_mon_admission_running, pgai_mon_admission_waiting).", (8, 8, 8, 64), ts_defaults("short"),
+     legend("Max", ["mean", "max", "last"]),
+     [last("A", "pgai_mon_admission_running", "running"),
+      last("B", "pgai_mon_admission_waiting", "waiting")]),
+    (1040, "timeseries", "Store files and known series", "Parquet files in the store's catalog and series "
+     "the writer knows (pgai_mon_store_files, pgai_mon_series_known).", (8, 8, 16, 64), ts_defaults("short"),
+     legend("Last", ["max", "last"]),
+     [last("A", "pgai_mon_store_files", "files"),
+      last("B", "pgai_mon_series_known", "known series")]),
 ]
 
 

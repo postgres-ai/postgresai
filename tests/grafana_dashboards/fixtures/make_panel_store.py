@@ -11,7 +11,7 @@ a few series per metric: database target_database, schema app, table t119 and it
 t119_unused, a handful of statements. Then it adds synthetic series for what the recording has
 none of (host metrics, WAL archiving, replication and slots, lock waits, autovacuum blocked on a
 lock, index_pilot, the settings columns metrics.yml gained later, pgai-mon's own pgai_mon_*
-series), so that every panel has data to run on. Values are rounded to 6 significant digits to keep the file small.
+series, per database and of the process), so that every panel has data to run on. Values are rounded to 6 significant digits to keep the file small.
 """
 import argparse
 import gzip
@@ -191,6 +191,37 @@ def synthetic(base, t0, t1):
         add("pgai_mon_metric_duration_ms", {"metric": m}, wave(lo, hi))
     add("pgai_mon_series_cut_total", {"metric": "pg_stat_statements"}, [float(i // 40) for i in range(n)])
     add("pgai_mon_rows_cut_total", {"metric": "table_stats"}, [float(i // 60) for i in range(n)])
+    # pgai-mon's process series (selfmon.rs): no labels but cache / class
+    def own(name, values, **labels):
+        out.append({"metric": {"__name__": name, **labels}, "values": [r6(v) for v in values], "timestamps": ts})
+
+    for name, vals in (("pgai_mon_ingest_samples_total", counter(400)), ("pgai_mon_ingest_records_total", counter(4)),
+                       ("pgai_mon_flushes_total", counter(1 / 30)), ("pgai_mon_late_flushes_total", counter(0, 0)),
+                       ("pgai_mon_compactions_total", counter(1 / 600, 3)),
+                       ("pgai_mon_flush_duration_seconds", wave(0.05, 0.4)),
+                       ("pgai_mon_wal_bytes", wave(1 << 20, 8 << 20, 2)),
+                       ("pgai_mon_store_files", [40 + i // 20 for i in range(n)]),
+                       ("pgai_mon_store_parquet_bytes", [(300 << 20) + (64 << 10) * i for i in range(n)]),
+                       ("pgai_mon_series_known", [5200 + i // 10 for i in range(n)]),
+                       ("pgai_mon_process_resident_memory_bytes", wave(300 << 20, 420 << 20)),
+                       ("pgai_mon_process_cpu_seconds_total", counter(0.08, 50)),
+                       ("pgai_mon_reader_resident_memory_bytes", wave(200 << 20, 700 << 20)),
+                       ("pgai_mon_reader_restarts_total", [float(i >= n // 2) for i in range(n)]),
+                       ("pgai_mon_reader_memory_kills_total", [float(i >= n // 2) for i in range(n)]),
+                       ("pgai_mon_admission_running", [i % 3 for i in range(n)]),
+                       ("pgai_mon_admission_waiting", [float(i % 17 == 0) for i in range(n)]),
+                       ("pgai_mon_admission_memory_deferred_total", counter(0, 0)),
+                       ("pgai_mon_s3_last_commit_age_seconds", [(i % 4) * 30.0 for i in range(n)]),
+                       ("pgai_mon_s3_pending_files", [float(i % 4) for i in range(n)]),
+                       ("pgai_mon_s3_pending_bytes", [(i % 4) * (2 << 20) for i in range(n)]),
+                       ("pgai_mon_s3_commits_total", [float(i // 4) for i in range(n)]),
+                       ("pgai_mon_s3_upload_errors_total", [float(i // 100) for i in range(n)])):
+        own(name, vals)
+    for cls, rate in (("short", 2), ("heavy", 0.1)):
+        own("pgai_mon_admission_started_total", counter(rate, 10), **{"class": cls})
+    for cache, hit, miss in (("query", 1.5, 0.5), ("footer", 20, 0.2), ("row", 0.6, 0.4)):
+        own("pgai_mon_cache_hits_total", counter(hit, 10), cache=cache)
+        own("pgai_mon_cache_misses_total", counter(miss, 10), cache=cache)
     return out
 
 
