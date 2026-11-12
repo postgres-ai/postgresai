@@ -16,7 +16,7 @@ updates:
       interval: "weekly"
 
   - package-ecosystem: "pip"
-    directory: "/monitoring_flask_backend"
+    directory: "/old/monitoring_flask_backend"
     schedule:
       interval: "weekly"
 

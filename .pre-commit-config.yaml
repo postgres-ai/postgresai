@@ -17,7 +17,7 @@ repos:
         args: ['--allow-multiple-documents']
         # Skip Helm chart templates: they contain Go templating ({{- ... }})
         # at the top of the file which is not valid YAML until rendered.
-        exclude: '^postgres_ai_helm/templates/'
+        exclude: '^old/postgres_ai_helm/templates/'
       # Prevent committing to main directly
       - id: no-commit-to-branch
         args: ['--branch', 'main']

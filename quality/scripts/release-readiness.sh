@@ -118,21 +118,6 @@ else
 fi
 
 
-section "2b. Python Tests (Flask backend)"
-
-if command -v python3 &>/dev/null && [[ -f "$PROJECT_ROOT/monitoring_flask_backend/test_app.py" ]]; then
-    cd "$PROJECT_ROOT/monitoring_flask_backend"
-    if python3 -m pytest test_app.py --tb=short -q 2>/dev/null; then
-        pass "Python unit tests pass (monitoring_flask_backend)"
-    else
-        fail "Python unit tests failed (monitoring_flask_backend)"
-    fi
-    cd "$PROJECT_ROOT"
-else
-    warn "Flask backend test file not found — skipping monitoring_flask_backend tests"
-fi
-
-
 section "3. CLI Tests"
 
 if command -v bun &>/dev/null; then
@@ -253,7 +238,7 @@ section "8. Coverage Thresholds"
 MIN_COVERAGE=70
 
 if command -v python3 &>/dev/null && [[ -f "$PROJECT_ROOT/reporter/requirements-dev.txt" ]]; then
-    if python3 -m pytest tests/ monitoring_flask_backend/test_app.py --cov --cov-fail-under=${MIN_COVERAGE} -q --tb=no 2>/dev/null; then
+    if python3 -m pytest tests/ --cov --cov-fail-under=${MIN_COVERAGE} -q --tb=no 2>/dev/null; then
         pass "Coverage meets threshold (≥${MIN_COVERAGE}%)"
     else
         fail "Coverage below ${MIN_COVERAGE}% threshold"
