@@ -41,7 +41,7 @@ This workflow lets you:
 
 ### What runs where (quick mental model)
 
-- **Docker**: pgwatch collectors + sinks + Grafana (+ optional Flask dev container)
+- **Docker**: pgai-mon (collection, storage, SQL) + Grafana + the reporter
 - **Host**: `reporter/postgres_reports.py` (recommended for iteration & debugging)
 - **Not started by default**: `instance-jobs`, behind a compose profile of the
   same name (see `instance-jobs/README.md`). Its tests need no stack at all:
@@ -166,15 +166,7 @@ PGPASSWORD='...' npx postgresai prepare-db postgresql://admin@host:5432/dbname
 - Add your instance to `instances.yml` (or use the CLI: `postgresai mon targets add 'postgresql://user:pass@host:port/db' my-db`)
 - Make sure `is_enabled: true` for that instance.
 
-#### 2) Generate pgwatch sources from `instances.yml`
-
-This turns `instances.yml` into pgwatch `sources.yml` files inside the shared configs volume:
-
-```bash
-docker compose run --rm sources-generator
-```
-
-#### 3) Start the stack
+#### 2) Start the stack
 
 Start everything:
 
@@ -182,11 +174,7 @@ Start everything:
 docker compose up -d
 ```
 
-If you edited `instances.yml` after the stack was already running, restart pgwatch to pick up the new sources:
-
-```bash
-docker compose restart pgwatch-postgres pgwatch-prometheus
-```
+pgai-mon reloads `instances.yml` by itself when it changes; nothing needs a restart.
 
 Useful URLs/ports:
 
@@ -212,17 +200,8 @@ docker compose up -d --force-recreate config-init
 
 Then restart the affected services:
 
-- **Prometheus scrape config changed** (`old/config/prometheus/prometheus.yml`):
-
-```bash
-docker compose restart sink-prometheus
-```
-
-- **pgwatch metrics changed** (`config/pgwatch-*/metrics.yml`):
-
-```bash
-docker compose restart pgwatch-postgres pgwatch-prometheus
-```
+- **Collected metrics changed** (`mon/metrics.yml`): the file is baked into the
+  pgai-mon image; rebuild it (see "Option A" below) and recreate the service.
 
 - **Grafana dashboards/provisioning changed** (`config/grafana/**`):
   - dashboards are file-provisioned and often reload automatically, but if in doubt:
@@ -336,12 +315,7 @@ Then attach:
 
 - **Compose says `PGAI_TAG is required`**: set it in `.env` (see above).
 - **Host reporter can’t connect to sink-postgres**: make sure the stack is up and `sink-postgres` is bound to `127.0.0.1:55433` (it is in `docker-compose.override.yml`).
-- **Need to regenerate pgwatch sources after editing `instances.yml`**:
-
-```bash
-docker compose run --rm sources-generator
-docker compose restart pgwatch-postgres pgwatch-prometheus
-```
+- **Edited `instances.yml`**: pgai-mon reloads it by itself; `docker compose logs pgai-mon` shows the new source.
 
 ## Alternative local development (always rebuild images)
 
@@ -356,22 +330,35 @@ make up-local
 
 ### Option A: Run via the CLI (recommended)
 
-Use the CLI with `COMPOSE_FILE` to include the local compose override:
+The CLI always runs `docker compose -f docker-compose.yml` in the project
+directory, so `COMPOSE_FILE` and `docker-compose.local.yml` do not apply to it.
+Instead, build the images under the names `docker-compose.yml` resolves
+(`postgresai/<image>:$PGAI_TAG`; the CLI writes `PGAI_TAG` = the version in
+`cli/package.json`, `0.0.0-dev.0` in a checkout) and run the CLI from the
+repository root:
 
 ```bash
-COMPOSE_FILE="docker-compose.yml:docker-compose.local.yml" postgresai mon local-install --demo -y
+cd cli && bun install && bun run embed-all && cd ..   # generated files are not in git
+TAG=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' cli/package.json)
+TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+docker build -f config/Dockerfile --build-arg VERSION="$TAG" --build-arg BUILD_TS="$TS" -t "postgresai/postgres-ai-configs:$TAG" .
+docker build -f mon/Dockerfile -t "postgresai/pgai-mon:$TAG" .   # a cold build compiles DuckDB: many minutes
+docker build --build-arg VERSION="$TAG" --build-arg BUILD_TS="$TS" -t "postgresai/reporter:$TAG" reporter
+bun cli/bin/postgres-ai.ts mon local-install --demo -y
 ```
 
-To rebuild on every run:
-
-```bash
-COMPOSE_FILE="docker-compose.yml:docker-compose.local.yml" \
-  docker compose -f docker-compose.yml -f docker-compose.local.yml build --no-cache
-
-COMPOSE_FILE="docker-compose.yml:docker-compose.local.yml" postgresai mon restart
-```
+Run it inside a git checkout: in a tree without `.git` (a tarball, `git archive`)
+the CLI replaces `docker-compose.yml` with the one from GitLab. Configs built
+with a `0.0.0-dev*` version are re-provisioned on every start, so rebuilt
+dashboards reach Grafana without removing the configs volume. After a rebuild,
+`docker compose up -d --force-recreate` (from the repository root, which holds
+the `.env` the install wrote) puts the new images in place; `mon restart` does
+not, as it restarts the existing containers.
 
 ### Option B: Run Docker Compose directly
+
+Compose needs `PGAI_TAG` and `PGAI_MON_TOKEN` in `.env` (an Option A install
+writes both). Not exercised in the pgai-mon stack run; Option A is.
 
 Bring the stack up and **force rebuild**:
 

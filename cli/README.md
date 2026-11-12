@@ -549,6 +549,26 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 
 `local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD`, `VM_AUTH_*` and the VictoriaMetrics admin-endpoint keys (`VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY`, `VM_PPROF_AUTH_KEY`, added in 0.17) or generates new random ones when missing. The admin keys live on the `sink-prometheus` command line, so `mon update` and `mon update-config` also recreate that container to apply them; `mon restart` (`docker compose restart`) does not; `VM_AUTH_USERNAME` defaults to `vmauth` when absent. The replication password is used by the demo PostgreSQL standby replication user, and the VM auth credentials are required before Docker Compose can provision Grafana datasources. If you run `docker compose` directly or maintain `.env` yourself, set both VM auth values before upgrading. For rotation, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./old/scripts/rotate-vm-auth.sh` from the monitoring directory so `.env`, `sink-prometheus`, and `grafana` update together.
 
+##### Metrics store (`PGAI_MON_STORE`)
+
+pgai-mon keeps metric history in the Docker volume `pgai_mon_data` unless
+`PGAI_MON_STORE` is set in the monitoring directory's `.env`:
+
+```bash
+PGAI_MON_STORE=s3://<bucket>/<prefix>
+AWS_REGION=<region>
+```
+
+`local-install` prints where history goes (the store URL, no credentials).
+pgai-mon reads S3 credentials through the AWS SDK's default chain. On EC2
+with an instance role, containers reach the instance metadata service only with
+an IMDS hop limit of 2 (`aws ec2 modify-instance-metadata-options --instance-id <id>
+--http-put-response-hop-limit 2`); with the hardened limit of 1, set
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for
+temporary credentials) in `.env` instead, which compose passes to pgai-mon.
+Without either, pgai-mon cannot reach the bucket and the install fails with
+pgai-mon unhealthy.
+
 #### Monitoring target databases (`mon targets` subgroup)
 ```bash
 postgresai mon targets list                       # List databases to monitor
@@ -591,6 +611,10 @@ pgai mon sql "select ts, labels['dbname'] as dbname, value from metrics
 
 # on the box itself, --instance is read from .pgwatch-config
 pgai mon sql "select 1"
+
+# on the box itself, straight to pgai-mon (127.0.0.1:8765, token from .env):
+# no API key, no platform, no instance-jobs needed
+pgai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"
 ```
 
 The views (`series`, `samples`, `metrics`, `query_texts`, ...) are defined in
