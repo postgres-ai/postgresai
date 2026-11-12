@@ -367,6 +367,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 macros_sql,
                 read_only: no_compact,
                 ingest: Default::default(),
+                scrape: Default::default(),
             };
             run(cfg)
         }
@@ -895,10 +896,16 @@ fn serve_loop(
         }
         let state = query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text);
         // Ingest writes into the store: only with a store thread (not read-only).
-        let extra = match writable {
-            true => ingest::router(ingest::Ingest::new(shared.clone(), tx.clone(), cfg.ingest.clone())),
-            false => axum::Router::new(),
-        };
+        let mut extra = axum::Router::new();
+        if writable {
+            let ing = ingest::Ingest::new(shared.clone(), tx.clone(), cfg.ingest.clone());
+            extra = extra.merge(ingest::router(ing.clone()));
+            if scrape::Scraper::enabled(&cfg.scrape) {
+                let sc = scrape::Scraper::new(cfg.scrape.clone(), ing.clone())?;
+                tokio::spawn(sc.clone().run());
+                extra = extra.merge(scrape::router(sc));
+            }
+        }
         let app = query::app(state, extra, auth);
         let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;
         eprintln!("pgai-mon: serving on http://{}", cfg.http.listen);

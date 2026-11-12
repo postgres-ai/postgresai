@@ -38,6 +38,9 @@ pub struct Config {
     /// Externally produced samples: push endpoint limits (ingest.rs).
     #[serde(default)]
     pub ingest: crate::ingest::IngestCfg,
+    /// Prometheus scrape targets (scrape.rs): files such as host-metrics/*.yml, inline jobs.
+    #[serde(default)]
+    pub scrape: crate::scrape::ScrapeCfg,
 }
 
 fn d_metrics_yml() -> PathBuf {

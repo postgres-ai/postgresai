@@ -120,7 +120,11 @@ impl Auth {
 
     /// No authentication (tests and explicit local development).
     pub fn disabled() -> Self {
-        Self { token: None, basic: None, disabled: true }
+        Self {
+            token: None,
+            basic: None,
+            disabled: true,
+        }
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -144,7 +148,9 @@ impl Auth {
             let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(rest) else {
                 return false;
             };
-            let Some(i) = raw.iter().position(|&c| c == b':') else { return false };
+            let Some(i) = raw.iter().position(|&c| c == b':') else {
+                return false;
+            };
             // both compared, always (no short-circuit on the user name)
             let ok_u = ct_eq(u, &digest(&raw[..i]));
             let ok_p = ct_eq(p, &digest(&raw[i + 1..]));
@@ -165,11 +171,15 @@ pub async fn require(State(auth): State<Arc<Auth>>, req: Request, next: Next) ->
     )
         .into_response();
     if auth.basic.is_some() {
-        r.headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Basic realm=\"pgai-mon\""));
+        r.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"pgai-mon\""),
+        );
     } else {
-        r.headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"pgai-mon\""));
+        r.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer realm=\"pgai-mon\""),
+        );
     }
     r
 }
@@ -189,17 +199,25 @@ mod tests {
         move |k| m.get(k).cloned()
     }
     fn basic(u: &str, p: &str) -> String {
-        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}")))
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}"))
+        )
     }
 
     #[test]
     fn refuses_to_start_without_credentials_or_opt_out() {
         let e = Auth::resolve(&AuthCfg::default(), &env_of(&[])).err().unwrap();
         assert!(e.to_string().contains("no credentials"), "{e}");
-        assert!(Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_AUTH_DISABLED", "1")]))
-            .unwrap()
-            .is_disabled());
-        let cfg = AuthCfg { disabled: true, ..Default::default() };
+        assert!(
+            Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_AUTH_DISABLED", "1")]))
+                .unwrap()
+                .is_disabled()
+        );
+        let cfg = AuthCfg {
+            disabled: true,
+            ..Default::default()
+        };
         assert!(Auth::resolve(&cfg, &env_of(&[])).unwrap().is_disabled());
         // the environment can turn an opt-out in the file off again
         assert!(Auth::resolve(&cfg, &env_of(&[("PGAI_MON_AUTH_DISABLED", "0")])).is_err());
@@ -207,7 +225,11 @@ mod tests {
 
     #[test]
     fn bearer_token() {
-        let a = Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_AUTH_TOKEN", "0123456789abcdef-tok")])).unwrap();
+        let a = Auth::resolve(
+            &AuthCfg::default(),
+            &env_of(&[("PGAI_MON_AUTH_TOKEN", "0123456789abcdef-tok")]),
+        )
+        .unwrap();
         assert!(a.check(Some(b"Bearer 0123456789abcdef-tok")));
         assert!(a.check(Some(b"bearer   0123456789abcdef-tok ")));
         assert!(!a.check(Some(b"Bearer 0123456789abcdef-toK")));
@@ -253,7 +275,10 @@ mod tests {
         assert!(a.check(Some(b"Bearer env-0123456789abcdef")));
         assert!(!a.check(Some(b"Bearer tok-0123456789abcdef")));
         // a missing file is an error, not "no auth"
-        let cfg = AuthCfg { token_file: Some(d.path().join("nope")), ..Default::default() };
+        let cfg = AuthCfg {
+            token_file: Some(d.path().join("nope")),
+            ..Default::default()
+        };
         assert!(Auth::resolve(&cfg, &env_of(&[])).is_err());
     }
 }

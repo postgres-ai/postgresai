@@ -36,6 +36,28 @@ write markers per scrape target or rule group, as the collector does.
 curl -s -H "$H" --data-binary @samples.prom localhost:8765/api/v1/import/prometheus
 ```
 
+## Scrape
+
+`scrape.files` lists Prometheus scrape-config files (`*` allowed in the file name), e.g. the
+`host-metrics/*.yml` the CLI writes for Supabase (through the instance-jobs relay) and ClickHouse
+Cloud; `scrape.jobs` takes the same configs inline. Files are re-read every
+`scrape.reload_interval_s` (10 s, no SIGHUP), secret files at every scrape. Supported: static
+targets, `scheme`, `metrics_path`, `params`, `scrape_interval` / `scrape_timeout`, `sample_limit`,
+`honor_labels`, `honor_timestamps`, `basic_auth` (password / password_file), `bearer_token(_file)`,
+`authorization` (credentials / credentials_file), and `relabel_configs` /
+`metric_relabel_configs` with keep, drop, replace, labeldrop, labelkeep. A file with anything
+else is skipped whole and reported. Series get `job`, `instance` and the static labels
+(`__`-prefixed ones such as the CLI's `__pgai_rev` stay off the series), plus `up`,
+`scrape_duration_seconds`, `scrape_samples_scraped`, `scrape_samples_post_metric_relabeling`, as
+Prometheus writes them; series that disappear, every series of a failed scrape and of a removed
+target get staleness markers. `GET /scrape/targets` lists the targets with all their labels and
+their last scrape.
+
+```yaml
+scrape:
+  files: [/etc/pgai/host-metrics/*.yml]
+```
+
 ## Layout
 
 | Path | What |
@@ -120,6 +142,7 @@ other field has a default. Unknown fields are rejected. See
 - `collector`: series and session limits, statement timeout, snapshot intervals;
 - `logs[]`: jsonlog directories to tail;
 - `views_sql` (default: the embedded copy), `macros_sql`, `read_only`;
+- `scrape`: `files`, `jobs`, `reload_interval_s`, `max_body_bytes`, `default_sample_limit`;
 - `ingest`: push limits (`max_body_bytes`, `max_samples_per_request`, `max_series`, `max_age_s`,
   `max_future_s`, `max_labels`, `max_label_value_bytes`).
 

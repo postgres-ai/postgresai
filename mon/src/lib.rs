@@ -15,6 +15,7 @@ pub mod qcache;
 pub mod query;
 pub mod registry;
 pub mod rowjson;
+pub mod scrape;
 pub mod sqlproc;
 pub mod store;
 pub mod structure;

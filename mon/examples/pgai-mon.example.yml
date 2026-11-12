@@ -18,6 +18,9 @@ sources:
 # logs:
 #   - dir: /var/log/postgresql
 #     suffix: .json
+# Prometheus scrape files written by `postgresai mon targets add` (Supabase, ClickHouse Cloud):
+scrape:
+  files: [/etc/pgai/host-metrics/*.yml]
 store:
   flush_interval_s: 60
 http:

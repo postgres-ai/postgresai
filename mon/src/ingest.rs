@@ -167,7 +167,10 @@ impl Ingest {
                 return Err(format!("invalid label name {k:?}"));
             }
             if v.len() > self.cfg.max_label_value_bytes {
-                return Err(format!("label {k:?} value longer than {} bytes", self.cfg.max_label_value_bytes));
+                return Err(format!(
+                    "label {k:?} value longer than {} bytes",
+                    self.cfg.max_label_value_bytes
+                ));
             }
         }
         Ok(labels)
@@ -189,7 +192,9 @@ impl Ingest {
                 if !valid_metric(&s.metric) {
                     return Err(format!("invalid metric name {:?}", s.metric));
                 }
-                s.labels = self.normalize_labels(std::mem::take(&mut s.labels)).map_err(|e| format!("{}: {e}", s.metric))?;
+                s.labels = self
+                    .normalize_labels(std::mem::take(&mut s.labels))
+                    .map_err(|e| format!("{}: {e}", s.metric))?;
                 Ok(s)
             })
             .collect()
@@ -270,7 +275,9 @@ impl Ingest {
         }
         self.stats.new_series.fetch_add(defs.len() as u64, Ordering::Relaxed);
         self.stats.samples.fetch_add(rep.samples as u64, Ordering::Relaxed);
-        self.stats.stale_markers.fetch_add(rep.stale_markers as u64, Ordering::Relaxed);
+        self.stats
+            .stale_markers
+            .fetch_add(rep.stale_markers as u64, Ordering::Relaxed);
         // Series first, so the WAL never holds a sample whose series is unknown.
         if !defs.is_empty() {
             self.tx
@@ -294,14 +301,23 @@ impl Ingest {
     pub async fn end_group(&self, key: &str, ts: i64) -> anyhow::Result<usize> {
         let ids: Vec<u64> = {
             let mut st = self.state.lock().unwrap();
-            let Some(prev) = st.groups.remove(key) else { return Ok(0) };
+            let Some(prev) = st.groups.remove(key) else {
+                return Ok(0);
+            };
             prev.into_iter().filter(|id| st.series.contains_key(id)).collect()
         };
         if ids.is_empty() {
             return Ok(0);
         }
         let n = ids.len();
-        let out = ids.into_iter().map(|id| Sample { series_id: id, ts, value: stale_nan() }).collect();
+        let out = ids
+            .into_iter()
+            .map(|id| Sample {
+                series_id: id,
+                ts,
+                value: stale_nan(),
+            })
+            .collect();
         let (a, b) = tokio::sync::oneshot::channel();
         self.tx
             .send(Msg::RecAck(Record::Samples(out), a))
@@ -473,7 +489,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 fn bad(code: StatusCode, msg: String) -> Response {
-    (code, axum::Json(serde_json::json!({"error": {"kind": "invalid_input", "message": msg}}))).into_response()
+    (
+        code,
+        axum::Json(serde_json::json!({"error": {"kind": "invalid_input", "message": msg}})),
+    )
+        .into_response()
 }
 
 /// `extra_label=name=value` query arguments (VictoriaMetrics): added to every sample, replacing
@@ -481,9 +501,13 @@ fn bad(code: StatusCode, msg: String) -> Response {
 fn extra_labels(q: Option<&str>) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for kv in q.unwrap_or("").split('&') {
-        let Some(v) = kv.strip_prefix("extra_label=") else { continue };
+        let Some(v) = kv.strip_prefix("extra_label=") else {
+            continue;
+        };
         let v = percent_decode(v)?;
-        let (k, val) = v.split_once('=').ok_or_else(|| format!("extra_label {v:?} is not name=value"))?;
+        let (k, val) = v
+            .split_once('=')
+            .ok_or_else(|| format!("extra_label {v:?} is not name=value"))?;
         if !valid_label(k) {
             return Err(format!("invalid extra_label name {k:?}"));
         }
@@ -534,7 +558,10 @@ async fn import_prometheus(
     };
     if let Some(enc) = headers.get("content-encoding").and_then(|v| v.to_str().ok()) {
         if !enc.eq_ignore_ascii_case("identity") {
-            return reject(StatusCode::UNSUPPORTED_MEDIA_TYPE, format!("content-encoding {enc} is not supported"));
+            return reject(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("content-encoding {enc} is not supported"),
+            );
         }
     }
     let extra = match extra_labels(q.as_deref()) {
@@ -600,11 +627,15 @@ mod tests {
 
     #[test]
     fn parses_the_exposition_format() {
-        let l = parse_line(r#"host_cpu_utilization_percent{cluster="prod",node_name="n\"1\\x\n"} 12.5 1790000000000"#).unwrap();
+        let l = parse_line(r#"host_cpu_utilization_percent{cluster="prod",node_name="n\"1\\x\n"} 12.5 1790000000000"#)
+            .unwrap();
         assert_eq!(l.metric, "host_cpu_utilization_percent");
         assert_eq!(
             l.labels,
-            vec![("cluster".into(), "prod".into()), ("node_name".into(), "n\"1\\x\n".into())]
+            vec![
+                ("cluster".into(), "prod".into()),
+                ("node_name".into(), "n\"1\\x\n".into())
+            ]
         );
         assert_eq!(l.value, 12.5);
         assert_eq!(l.ts, Some(1_790_000_000_000));

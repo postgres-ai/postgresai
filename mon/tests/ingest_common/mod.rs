@@ -48,14 +48,24 @@ pub async fn serve(
     let shared = core.shared.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Msg>(1024);
     let st = store_thread(core, rx);
-    let http = HttpCfg { reader_process: false, ..Default::default() }.resolve();
+    let http = HttpCfg {
+        reader_process: false,
+        ..Default::default()
+    }
+    .resolve();
     let reader = Arc::new(Reader::new(shared.clone(), http.clone(), EMBEDDED_VIEWS_SQL.into(), vec![]).unwrap());
     let state = AppState::new(Backend::InProc(reader.clone()), http, shared.clone());
     let app = pgai_mon::query::app(state, extra(tx.clone(), shared.clone()), Arc::new(auth));
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
-    Server { base, shared, tx, reader, _store: st }
+    Server {
+        base,
+        shared,
+        tx,
+        reader,
+        _store: st,
+    }
 }
 
 impl Server {
