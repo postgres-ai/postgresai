@@ -10,7 +10,8 @@ and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`.
 Every target uses the Infinity datasource (`yesoreyeram-infinity-datasource`, uid
 `aerffb0z8rjlsc`, already provisioned in `config/grafana/provisioning/datasources/datasources.yml`).
 A target POSTs its SQL as a `text/plain` body to `http://pgai-mon:8765/sql?format=objects`,
-with Grafana variables (`${__from}`, `${__to}`, `${__interval_ms}`, `${cluster_name}`,
+with the datasource's credentials for pgai-mon (bearer token or basic auth: every pgai-mon route
+but `/healthz` requires them), and with Grafana variables (`${__from}`, `${__to}`, `${__interval_ms}`, `${cluster_name}`,
 `${node_name}`, `${db_name}`, ...) interpolated into the SQL. Three panels (Dashboards 2, 8
 and 10) still call the Flask backend at `http://flask-pgss-api:8000`.
 
@@ -28,6 +29,7 @@ panels. Standard library Python only.
 
 ```bash
 # from the repository root, with pgai-mon serving on 127.0.0.1:8765
+# (its bearer token in PGAI_MON_AUTH_TOKEN, or pgai-mon started with --no-auth)
 python3 mon/grafana/compile.py --probe-url http://127.0.0.1:8765
 #   --target-url URL   the URL baked into targets (default http://pgai-mon:8765/sql?format=objects)
 #   --out DIR          default mon/grafana/dashboards

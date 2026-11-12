@@ -1452,6 +1452,15 @@ async fn get_health(State(st): State<AppState>) -> Response {
     .into_response()
 }
 
+/// The whole HTTP surface: the SQL routes plus `extra` (ingest), all behind `auth`, and the
+/// liveness probe `/healthz`, which needs no credentials and tells nothing.
+pub fn app(state: AppState, extra: Router, auth: Arc<crate::auth::Auth>) -> Router {
+    router(state)
+        .merge(extra)
+        .layer(axum::middleware::from_fn_with_state(auth, crate::auth::require))
+        .route("/healthz", get(crate::auth::healthz))
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/sql", post(post_sql))

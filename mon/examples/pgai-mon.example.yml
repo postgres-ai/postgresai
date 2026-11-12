@@ -21,5 +21,9 @@ sources:
 store:
   flush_interval_s: 60
 http:
-  # No authentication: keep it on an internal network.
   listen: 0.0.0.0:8765
+  # Every route but /healthz needs these credentials (or PGAI_MON_AUTH_* in the environment).
+  auth:
+    token_file: /run/secrets/pgai-mon-token
+    # username: pgai
+    # password_file: /run/secrets/pgai-mon-password

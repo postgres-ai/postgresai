@@ -1,5 +1,6 @@
 //! pgai-mon library: everything the binary runs, exposed for integration tests.
 pub mod admission;
+pub mod auth;
 pub mod catalog;
 pub mod collector;
 pub mod config;

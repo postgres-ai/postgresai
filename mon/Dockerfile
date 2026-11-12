@@ -30,7 +30,8 @@ COPY mon/sql/macros.sql /usr/share/pgai-mon/macros.sql
 USER pgai:pgai
 WORKDIR /var/lib/pgai-mon
 VOLUME ["/var/lib/pgai-mon"]
-# HTTP SQL endpoint (/sql, /schema, /health). No authentication: internal network only.
+# HTTP endpoint (/sql, /schema, /health, ingest). Every route but /healthz needs credentials
+# (PGAI_MON_AUTH_* or http.auth; see README).
 EXPOSE 8765
 ENTRYPOINT ["/usr/local/bin/pgai-mon"]
 CMD ["run", "--config", "/etc/pgai-mon/pgai-mon.yml"]

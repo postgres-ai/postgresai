@@ -33,6 +33,11 @@ zstd = "=0.13.4"
 bytes = "=1.12.1"
 # S3 read path (objstore.rs); 0.13 matches parquet 58's optional object_store dependency.
 object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
+# Already in the tree through object_store (same versions and features): HTTP auth digests,
+# basic auth decoding, the scraper's and the AWS pollers' HTTP client.
+ring = { version = "=0.17.14", default-features = false, features = ["std"] }
+base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 
 [profile.release]
 opt-level = 3

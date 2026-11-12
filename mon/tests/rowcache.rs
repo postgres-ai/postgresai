@@ -79,7 +79,7 @@ impl Drop for Serve {
 fn serve(store: &std::path::Path, row_cache_mb: u64, l1: bool) -> Serve {
     let port = free_port();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_pgai-mon"));
-    cmd.args(["serve", "--store", store.to_str().unwrap(), "--no-compact", "--listen"])
+    cmd.args(["serve", "--store", store.to_str().unwrap(), "--no-compact", "--no-auth", "--listen"])
         .arg(format!("127.0.0.1:{port}"))
         .args(["--row-cache-mb", &row_cache_mb.to_string(), "--max-concurrent", "4"])
         .stdout(Stdio::null())
