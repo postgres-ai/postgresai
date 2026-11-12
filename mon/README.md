@@ -95,8 +95,13 @@ other field has a default. Unknown fields are rejected. See
 - `logs[]`: jsonlog directories to tail;
 - `views_sql` (default: the embedded copy), `macros_sql`, `read_only`.
 
-A store root may also be `s3://bucket/prefix` for read-only serving (credentials and region
-from the AWS environment).
+A store root may also be `s3://bucket/prefix` (credentials and region from the AWS
+environment). `serve` reads it. `run` writes it with `store.s3.local_dir` as its local working
+directory (WAL, files not uploaded yet, cache) and commits to the bucket every
+`store.s3.upload_interval_s` (default 300 s; a lost machine loses at most about that much). One
+writer per prefix: a second `run` is refused while the first one's lease is live
+(`store.s3.takeover: true` forces it, and the first is fenced at its next commit). See
+`src/bucket.rs`. `/health` shows the write path under `s3_write`.
 
 ## Tests
 

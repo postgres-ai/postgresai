@@ -474,6 +474,36 @@ fn crash_between_upload_and_commit() {
     b2.close();
 }
 
+/// A crash right after a restart's takeover PUT (before the local catalog is saved): the next
+/// start still continues from the local directory, so its flushed but not uploaded files are
+/// kept and committed.
+#[test]
+fn crash_after_the_takeover_put_keeps_local_files() {
+    let url = "mem://takeover-crash/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let t0 = start_ts(30);
+    let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
+    ingest(&mut c, t0, 20, 6);
+    c.flush().unwrap();
+    b.sync(&c.shared, None).unwrap();
+    ingest(&mut c, t0 + 20 * 15_000, 20, 6);
+    c.flush().unwrap(); // local only
+    drop(c);
+    b.close();
+    let b = Bucket::with_store(url, store.clone(), d.path(), bcfg()).unwrap();
+    *b.failpoint.lock().unwrap() = Some(Failpoint::AfterTakeover);
+    assert!(b.attach(pgai_mon::store::DEFAULT_LAYOUT).is_err());
+    b.close();
+    assert_eq!(bucket_catalog(&store).unwrap().writer.unwrap().epoch, 2);
+    let (b, c) = start(url, &store, d.path(), bcfg()).unwrap();
+    assert_eq!(b.epoch(), 3);
+    b.sync(&c.shared, None).unwrap();
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {t0}, {})", t0 + 3_600_000);
+    assert_eq!(rows(&bucket_reader(url), &q), vec!["[800]".to_string()]);
+    b.close();
+}
+
 /// Two writers on one prefix: the second is refused while the first's lease is live; a forced
 /// takeover fences the first, whose next commit fails with a clear error and changes nothing.
 #[test]
@@ -727,4 +757,138 @@ fn a_local_store_has_no_bucket() {
     assert!(pgai_mon::bucket::of(&c.shared.root).is_none());
     assert_eq!(pgai_mon::bucket::read_root(&c.shared.root), c.shared.root);
     assert!(StoreCore::open(Path::new("s3://b/p"), &scfg()).is_err());
+}
+
+/// Measurement (not a gate): one hour at the default intervals (60 s flushes, a commit every
+/// 5 flushes) with a load like the live benchmark store (~880 samples/s, log lines and
+/// auto_explain plan events every flush, query texts every 5 min), then the day's closing
+/// compaction. Prints PUTs per round and the file counts before and after compaction.
+/// `cargo test --test bucket measure_puts -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn measure_puts_per_hour_and_compaction() {
+    let url = "mem://measure/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
+    let comp = c.compactor().unwrap();
+    let day = 86_400_000i64;
+    let t0 = (now_ms() / day - 3) * day + 10 * 3_600_000;
+    let ids: Vec<u64> = (0..13_000u64)
+        .map(|i| series_id("m", &[("i".into(), i.to_string())]))
+        .collect();
+    c.append(Record::Series(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| SeriesDef {
+                series_id: *id,
+                metric: "m".into(),
+                labels: vec![("i".into(), i.to_string())],
+                first_seen: t0,
+            })
+            .collect(),
+    ))
+    .unwrap();
+    let puts = |b: &Bucket| b.remote().stats.puts.load(Ordering::Relaxed);
+    let mut per_round = vec![];
+    let t_start = std::time::Instant::now();
+    for round in 0..12i64 {
+        let p0 = puts(&b);
+        for f in 0..5i64 {
+            let tf = t0 + (round * 5 + f) * 60_000;
+            for s in 0..4i64 {
+                let ts = tf + s * 15_000;
+                c.append(Record::Samples(
+                    ids.iter()
+                        .map(|id| Sample {
+                            series_id: *id,
+                            ts,
+                            value: ((*id % 1000) as i64 + ts / 15_000) as f64,
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+            }
+            let rows: Vec<LogRow> = (0..50)
+                .map(|k| LogRow {
+                    ts: tf + k * 1000,
+                    level: Some("LOG".into()),
+                    sqlstate: None,
+                    pid: Some(100 + k),
+                    dbname: Some("db1".into()),
+                    username: Some("u".into()),
+                    application: None,
+                    message: format!("duration: {k}.5 ms  plan: ..."),
+                    query_fingerprint: None,
+                    plan_hash: Some(format!("{:x}", k % 7)),
+                    queryid: Some(k % 7),
+                    raw: "{\"x\":1}".repeat(20),
+                })
+                .collect();
+            let pe: Vec<PlanEvent> = (0..20)
+                .map(|k| PlanEvent {
+                    ts: tf + k * 2000,
+                    plan_hash: format!("{:x}", k % 7),
+                    queryid: Some(k % 7),
+                    dbname: Some("db1".into()),
+                    total_ms: k as f64,
+                    top_node: "Seq Scan".into(),
+                    shared_hit: k,
+                    shared_read: 0,
+                    shared_dirtied: 0,
+                    shared_written: 0,
+                    temp_read: 0,
+                    temp_written: 0,
+                })
+                .collect();
+            c.append(Record::Logs {
+                rows,
+                plan_events: pe,
+                plan_defs: vec![],
+                file: "pg.json".into(),
+                offset: ((round * 5 + f) * 1000) as u64,
+            })
+            .unwrap();
+            if f == 4 {
+                c.append(Record::QueryTexts(
+                    (0..30)
+                        .map(|q| QueryText {
+                            queryid: q,
+                            dbname: "db1".into(),
+                            query_hash: q as u64,
+                            query: Some(format!("select {q}")),
+                            first_seen: t0,
+                            last_seen: tf,
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+            }
+            c.flush().unwrap();
+        }
+        b.sync(&c.shared, Some(&comp)).unwrap();
+        per_round.push(puts(&b) - p0);
+    }
+    let hour_files = bucket_catalog(&store).unwrap().files.len();
+    let p_hour = puts(&b);
+    let bytes_hour = b.remote().stats.put_bytes.load(Ordering::Relaxed);
+    comp.run_once(now_ms(), true).unwrap();
+    let p0 = puts(&b);
+    b.sync(&c.shared, Some(&comp)).unwrap();
+    let p_compact = puts(&b) - p0;
+    let cat = bucket_catalog(&store).unwrap();
+    let mut by_kind = std::collections::BTreeMap::new();
+    for f in &cat.files {
+        *by_kind.entry(f.kind.clone()).or_insert(0) += 1;
+    }
+    println!(
+        "PUTs per round (5 flushes, incl. catalog): {per_round:?}\n\
+         PUTs for the hour: {p_hour} ({} MB); files in the bucket after the hour: {hour_files}\n\
+         closing compaction: {p_compact} PUTs; files after: {} {by_kind:?}; deletes: {}; wall {:?}",
+        bytes_hour >> 20,
+        cat.files.len(),
+        b.remote().stats.deletes.load(Ordering::Relaxed),
+        t_start.elapsed()
+    );
+    b.close();
 }

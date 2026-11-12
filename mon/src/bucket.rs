@@ -20,8 +20,8 @@
 //!   at start (after the takeover) and every `sweep_interval_s`.
 //! - Eviction: after a commit, committed files older than `keep_local_days` leave the local
 //!   directory; a job that needs one again fetches it (`ensure_local`).
-//! - Restart: when the local catalog's lease equals the bucket's, the local directory is the
-//!   continuation of the last commit and stays authoritative (it holds what was not uploaded
+//! - Restart: when the bucket's last commit came from this local directory (its writer id),
+//!   the local directory is the continuation of that commit and stays authoritative (it holds what was not uploaded
 //!   yet). Otherwise (an empty disk, or another writer committed since) the bucket's catalog is
 //!   adopted and the files a writer reads at start are fetched. Local WAL segments are replayed
 //!   either way: they are in no Parquet file.
@@ -153,6 +153,8 @@ struct St {
 pub enum Failpoint {
     /// After the uploads, before the catalog PUT.
     AfterUpload,
+    /// In `attach`, after the takeover PUT, before the local catalog is saved.
+    AfterTakeover,
 }
 
 pub struct Bucket {
@@ -490,8 +492,12 @@ impl Bucket {
                         );
                     }
                 }
+                // The bucket's last commit came from this directory (its id): every commit is a
+                // snapshot of the local catalog, which is saved on every change, so the local
+                // catalog is a superset (up to compaction) even when a crash came between the
+                // takeover PUT and the local save below.
                 let same = match (&local, &r.writer) {
-                    (Some(l), Some(w)) => l.writer.as_ref().is_some_and(|lw| lw.id == w.id && lw.epoch == w.epoch),
+                    (Some(l), Some(w)) => w.id == self.id && l.writer.as_ref().is_some_and(|lw| lw.id == w.id),
                     _ => false,
                 };
                 st.epoch = r.writer.as_ref().map_or(0, |w| w.epoch) + 1;
@@ -532,6 +538,9 @@ impl Bucket {
         st.remote_gen = rc.generation;
         st.last_commit_ms = now;
         st.commits += 1;
+        if *self.failpoint.lock().unwrap() == Some(Failpoint::AfterTakeover) {
+            anyhow::bail!("failpoint AfterTakeover");
+        }
         // the local catalog may list more than the bucket's: never the same generation
         cat.generation = cat.generation.max(rc.generation + 1);
         write_local_catalog(&self.local, &cat)?;
