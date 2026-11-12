@@ -191,9 +191,15 @@ def run_reports(gen, out_dir: Path) -> Dict[str, Any]:
             reports = gen.generate_all_reports("local", None, True)
             files = gen.generate_per_query_jsons(reports, "local", node_name=None, query_text_limit=66560,
                                                  hours=24, write_immediately=False, include_cluster_prefix=False)
+            # Paths generate_all_reports leaves out: the settings reports read directly (the CLI's
+            # --check-id, and the fallback when A003 fails) and K001's sub-hourly window.
+            extra = {"D004_direct": gen.generate_d004_pgstat_settings_report("local", "node-01"),
+                     "F001_direct": gen.generate_f001_autovacuum_settings_report("local", "node-01"),
+                     "G001_direct": gen.generate_g001_memory_settings_report("local", "node-01"),
+                     "K001_30min": gen.generate_k001_query_calls_report("local", "node-01", 30, use_hourly=False)}
         finally:
             os.chdir(cwd)
-    out = {k: json.loads(json.dumps(v)) for k, v in reports.items()}
+    out = {k: json.loads(json.dumps(v)) for k, v in {**reports, **extra}.items()}
     out["_wait_ready_targets"] = [list(t) for t in ready]
     for f in files or []:
         out[f["filename"]] = json.loads(json.dumps(f["data"]))

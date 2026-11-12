@@ -1,7 +1,7 @@
 """Test helpers: build the reporter's pgai-mon fixture store and serve it on 127.0.0.1.
 
 The fixture (tests/reporter/mon_fixture/) is a slice of real pgwatch data; see build_fixture.py.
-`pgai-mon load` turns samples.jsonl.gz into a store; the query_texts and objects Parquet files are
+`pgai-mon load` turns samples.jsonl.gz and synthetic.jsonl.gz into a store; the query_texts and objects Parquet files are
 then registered in the store's catalog.json (pgai-mon has no loader for them yet).
 
 The binary comes from $PGAI_MON_BIN, else mon/target/{release,debug}/pgai-mon, else
@@ -25,6 +25,8 @@ FIXTURE = Path(__file__).resolve().parent / "mon_fixture"
 # The fixture's evaluation time: its last sample (2026-11-09 15:07:28.444 UTC) rounded down to a
 # whole minute, so every check sees data and the instant time is whole seconds.
 FIXTURE_AT = 1794236820
+# the real slice, then the series it lacks (synthetic.py)
+SAMPLE_FILES = ("samples.jsonl.gz", "synthetic.jsonl.gz")
 
 
 def find_binary() -> Optional[str]:
@@ -42,9 +44,9 @@ def build_store(binary: str, store: Path) -> Path:
     """Load the fixture samples into `store` and register query_texts / objects."""
     if store.exists():
         shutil.rmtree(store)
-    with gzip.open(FIXTURE / "samples.jsonl.gz", "rb") as f:
-        proc = subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=f.read(),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    data = b"".join(gzip.open(FIXTURE / name, "rb").read() for name in SAMPLE_FILES)
+    proc = subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=data,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
     if proc.returncode != 0:
         raise RuntimeError(f"pgai-mon load failed: {proc.stderr.decode()[-2000:]}")
     _register(store, "query_texts", "query_texts.parquet", "last_seen_ms", FIXTURE / "query_texts.jsonl")

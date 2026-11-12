@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push the fixture samples into a scratch VictoriaMetrics (dev tool, not run in CI).
+"""Push the fixture samples (samples.jsonl.gz and synthetic.jsonl.gz) into a scratch VictoriaMetrics (dev tool, not run in CI).
 
 Prometheus remote write (hand-encoded protobuf + snappy; needs the `cramjam` package), so
 staleness markers (null in samples.jsonl.gz) reach VictoriaMetrics as the StaleNaN bit pattern
@@ -57,15 +57,16 @@ def main():
     ap.add_argument("--vm", required=True)
     a = ap.parse_args()
     buf, n, samples = [], 0, 0
-    with gzip.open(os.path.join(HERE, "samples.jsonl.gz"), "rt") as f:
-        for line in f:
-            d = json.loads(line)
-            buf.append(_series(d["metric"], d["timestamps"], d["values"]))
-            n += 1
-            samples += len(d["timestamps"])
-            if len(buf) >= 200:
-                _post(a.vm.rstrip("/") + "/api/v1/write", buf)
-                buf = []
+    for name in ("samples.jsonl.gz", "synthetic.jsonl.gz"):
+        with gzip.open(os.path.join(HERE, name), "rt") as f:
+            for line in f:
+                d = json.loads(line)
+                buf.append(_series(d["metric"], d["timestamps"], d["values"]))
+                n += 1
+                samples += len(d["timestamps"])
+                if len(buf) >= 200:
+                    _post(a.vm.rstrip("/") + "/api/v1/write", buf)
+                    buf = []
     if buf:
         _post(a.vm.rstrip("/") + "/api/v1/write", buf)
     urllib.request.urlopen(a.vm.rstrip("/") + "/internal/force_flush", timeout=60).read()

@@ -1,12 +1,15 @@
 """The reporter on pgai-mon gives the same answers and the same reports as on VictoriaMetrics.
 
 Needs a pgai-mon binary ($PGAI_MON_BIN, or mon/target/*/pgai-mon); skipped without one. Builds a
-store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series), serves it on
-127.0.0.1 and compares, for the same samples:
+store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 70 synthetic
+series for what the demo box lacks: host metrics, lock waits, invalid indexes, pg_stat_kcache,
+stats_reset, the older btree bloat gauges), serves it on 127.0.0.1 and compares, for the same
+samples:
 
 - every query in the cassette (what VictoriaMetrics v1.140.0 answered when the reporter ran at
   FIXTURE_AT) with the reporter's answer from pgai-mon (reporter/mon_client.py);
-- every report (all checks and the per-query files) generated from the cassette with the same
+- every report (all checks, the per-query files, and the paths generate_all_reports leaves out:
+  D004/F001/G001 read directly, K001 over 30 minutes) generated from the cassette with the same
   report generated from pgai-mon, and the latter against reporter/schemas.
 
 Tolerances: mon_equiv.TOLERANCES. Re-record the cassette with mon_fixture/record.py after a change
@@ -25,6 +28,7 @@ from reporter.report_schemas import validate_query_file, validate_report
 
 pytestmark = pytest.mark.enable_socket
 
+DIRECT = ["D004_direct", "F001_direct", "G001_direct", "K001_30min"]
 CHECKS = ["A002", "A003", "A004", "A005", "A007", "A014", "D001", "D004", "F001", "F002", "F004", "F005",
           "G001", "G003", "H001", "H002", "H004", "I001", "K001", "K003", "K004", "K005", "K006", "K007",
           "K008", "M001", "M002", "M003", "N001"]
@@ -77,7 +81,7 @@ def test_every_cassette_query_matches_victoriametrics(mon, cassette):
             diffs[e["query"]] = d[:3]
     assert not diffs, f"{len(diffs)} of {len(cassette)} queries differ: {list(diffs.items())[:5]}"
     # the fixture must keep exercising the queries (an empty store would match trivially)
-    assert len(cassette) >= 1400 and nonempty >= 600, (len(cassette), nonempty)
+    assert len(cassette) >= 1450 and nonempty >= 700, (len(cassette), nonempty)
 
 
 def test_range_errors_are_not_silent(mon):
@@ -93,7 +97,7 @@ def test_cassette_covers_every_report_query(reports):
     assert not misses, f"queries not in the cassette (re-record with mon_fixture/record.py): {misses[:5]}"
 
 
-@pytest.mark.parametrize("check", CHECKS + ["_wait_ready_targets"])
+@pytest.mark.parametrize("check", CHECKS + DIRECT + ["_wait_ready_targets"])
 def test_report_matches_victoriametrics(reports, check):
     old, new, _ = reports
     assert check in old and check in new
@@ -119,6 +123,17 @@ def test_reports_have_content(reports):
     assert data("F005")["target_database"]["bloated_indexes"]
     assert data("K003")["target_database"]["top_queries"]
     assert data("N001")
+    # the synthetic series reach their reports
+    assert data("G003")["lock_waits"]["pairs"] and data("G003")["deadlock_stats"]["stats_reset"]
+    invalid = data("H001")["target_database"]["invalid_indexes"]
+    assert {i["index_name"] for i in invalid} == {"t10_c_idx", "pgbench_accounts_abalance_idx_ccnew"}
+    assert all(i["listed_hours"] and i["reading_hours"] for i in invalid)
+    assert data("A014")["host_metrics"] and data("A014")["memory"]["available_min_pct"] == 8.0
+    assert data("G001")["activity"]["host_memory"]["available_min_at"]
+    assert data("D004")["pg_stat_kcache_status"]["extension_available"]
+    assert data("F005")["postgres"]["bloated_indexes"]
+    assert data("H002")["target_database"]["stats_reset"]["stats_reset_epoch"]
+    assert new["K001_30min"]["results"]["node-01"]["data"]
     assert new["_wait_ready_targets"] == [["local", "node-01"]]
 
 
