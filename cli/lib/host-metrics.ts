@@ -1,26 +1,18 @@
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dump, load } from "js-yaml";
+import { dump } from "js-yaml";
 
 type ScrapeConfig = { static_configs: { targets: string[]; labels: Record<string, string> }[] } & Record<string, unknown>;
 
 /**
- * One scrape job as YAML, stamped with a `__pgai_rev` label. The "__" prefix keeps
- * it out of stored series, but the targets API lists it, so a reload can be
- * matched to this exact file.
+ * One scrape job as YAML, stamped with a `__pgai_rev` label that changes only
+ * when the job does. The "__" prefix keeps it out of stored series.
  */
 export function scrapeFileText(config: ScrapeConfig): string {
   const revision = `r${createHash("sha256").update(dump([config], { lineWidth: -1 })).digest("hex").slice(0, 16)}`;
   Object.assign(config.static_configs[0].labels, { __pgai_rev: revision });
   return dump([config], { lineWidth: -1 });
-}
-
-export function scrapeRevision(projectDir: string, file: string): string {
-  const [config] = load(readFileSync(join(projectDir, "host-metrics", file), "utf8")) as any[];
-  const revision = config?.static_configs?.[0]?.labels?.__pgai_rev;
-  if (typeof revision !== "string" || !/^r[0-9a-f]{16}$/.test(revision)) throw new Error(`host-metrics/${file} has no __pgai_rev label.`);
-  return revision;
 }
 
 /**
@@ -40,12 +32,6 @@ export function writeScrapeFile(dir: string, file: string, text: string): void {
   writeFileSync(join(dir, file), text, { mode: 0o644 });
   chmodSync(join(dir, file), 0o644);
 }
-
-// Runs inside sink-prometheus: sh -c SCRIPT sh NEEDLE present|absent. VictoriaMetrics
-// applies a SIGHUP asynchronously and skips a scrape file it cannot parse while
-// still counting the reload as successful, so only the targets list shows the
-// outcome. Polls it until NEEDLE is present (or absent), for at most ~10s.
-export const HOST_METRICS_VERIFY_SCRIPT = `auth="Authorization: Basic $(printf '%s:%s' "$VM_AUTH_USERNAME" "$VM_AUTH_PASSWORD" | base64 | tr -d '\\n')"; end=$(($(date +%s) + 10)); while [ "$(date +%s)" -lt "$end" ]; do if t=$(wget -qO- -T 2 --header "$auth" http://127.0.0.1:9090/api/v1/targets); then case "$t" in '{"status":"success"'*) case "$t" in *"$1"*) [ "$2" = present ] && exit 0 ;; *) [ "$2" = absent ] && exit 0 ;; esac ;; esac; fi; sleep 0.5; done; exit 1`;
 
 export const SUPABASE_JOB = "supabase-host-metrics";
 

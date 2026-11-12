@@ -5,8 +5,9 @@ import Ajv2020 from "ajv/dist/2020";
 import * as checkup from "../lib/checkup";
 import { D001_MAX_STORED_THRESHOLDS, d001Config, d001StoredMs, d001Thresholds } from "../lib/checkup";
 import { createMockClient } from "./test-utils";
+import { REPORT_SCHEMAS_DIR } from "./build-inputs";
 
-const schema = JSON.parse(readFileSync(resolve(import.meta.dir, "../../reporter/schemas/D001.schema.json"), "utf8"));
+const schema = JSON.parse(readFileSync(resolve(REPORT_SCHEMAS_DIR, "D001.schema.json"), "utf8"));
 
 const SETTINGS = [
   { name: "log_min_duration_statement", setting: "-1", unit: "ms", category: "c", context: "superuser", vartype: "integer",

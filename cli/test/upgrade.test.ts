@@ -286,8 +286,8 @@ describe("upgrade error handling", () => {
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     expect(envContent).toMatch(/PGAI_TAG=/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=[a-f0-9]{64}/);
-    expect(envContent).toMatch(/VM_AUTH_USERNAME=vmauth/);
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}\s*$/m);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=[a-f0-9]{64}$/m);
+    expect(envContent).not.toMatch(/VM_AUTH_/);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles .env without PGAI_TAG line", () => {
@@ -313,18 +313,16 @@ describe("upgrade error handling", () => {
     // Should preserve existing settings
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=old-password/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=existing-repl/);
-    expect(envContent).toMatch(/VM_AUTH_USERNAME=existing-vm-user/);
-    expect(envContent).toMatch(/VM_AUTH_PASSWORD=existing-vm-pass/);
+    // The old stack's credentials go; pgai-mon gets its own token.
+    expect(envContent).not.toMatch(/VM_AUTH_/);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=[a-f0-9]{64}$/m);
   }, { timeout: TEST_TIMEOUT });
 
-  test("local-install strips only matching quotes from VM auth values", () => {
-    const testDir = resolve(tempDir, "quoted-vm-auth-test");
+  test("local-install strips only matching quotes from the pgai-mon token", () => {
+    const testDir = resolve(tempDir, "quoted-token-test");
     fs.mkdirSync(testDir, { recursive: true });
 
-    fs.writeFileSync(
-      resolve(testDir, ".env"),
-      "VM_AUTH_USERNAME=\"quoted-vm-user\"\nVM_AUTH_PASSWORD='quoted-vm-pass'\n"
-    );
+    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_MON_TOKEN='quoted-token'\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
@@ -335,8 +333,7 @@ describe("upgrade error handling", () => {
     );
 
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-    expect(envContent).toMatch(/VM_AUTH_USERNAME=quoted-vm-user/);
-    expect(envContent).toMatch(/VM_AUTH_PASSWORD=quoted-vm-pass/);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=quoted-token$/m);
   }, { timeout: TEST_TIMEOUT });
 
   test("local-install handles same version (no-op scenario)", () => {
@@ -423,20 +420,15 @@ describe("upgrade CLI commands", () => {
 
 describe("in-place upgrade env migration (mon update / update-config)", () => {
   /**
-   * Regression tests for the 0.14 -> 0.15 in-place upgrade gap (#203).
-   *
-   * Before this fix, a user who installed at 0.14 and ran the documented
-   * upgrade flow (`pgai mon update`) ended up with a .env file that lacked
-   * VM_AUTH_USERNAME / VM_AUTH_PASSWORD, so sink-prometheus exited with:
-   *
-   *   fatal cannot read "/postgres_ai_configs/prometheus/prometheus.yml":
-   *   cannot expand environment variables: missing "VM_AUTH_USERNAME" env var
-   *
-   * `mon update` and `mon update-config` now migrate .env additively before
-   * doing anything else.
+   * `mon update` and `mon update-config` migrate .env additively before doing
+   * anything else, so an install made before a variable existed does not fail
+   * `docker compose up` on it (compose rejects a missing `${KEY:?}`): today
+   * that is pgai-mon's PGAI_MON_TOKEN. The compose refresh is pointed at a
+   * missing fixture, so these runs stay offline and keep the compose as it is.
    */
 
   let tempDir: string;
+  const offline = { PGAI_TAG: undefined, NODE_ENV: "test", PGAI_COMPOSE_SOURCE: "/nonexistent/compose.yml" };
 
   beforeAll(() => {
     tempDir = fs.mkdtempSync(resolve(os.tmpdir(), "pgai-upgrade-env-migration-"));
@@ -448,250 +440,93 @@ describe("in-place upgrade env migration (mon update / update-config)", () => {
     }
   });
 
-  test("mon update-config appends missing VM_AUTH_USERNAME / VM_AUTH_PASSWORD to a 0.14-shaped .env", () => {
-    const testDir = resolve(tempDir, "update-config-0.14-env");
+  const project = (name: string, env: string) => {
+    const testDir = resolve(tempDir, name);
     fs.mkdirSync(testDir, { recursive: true });
-
-    // 0.14-shaped .env: PGAI_TAG present, VM_AUTH_* absent.
-    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\nGF_SECURITY_ADMIN_PASSWORD=user-set-grafana-pw\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
+    fs.writeFileSync(resolve(testDir, ".env"), env);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "services: {}\n");
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
+    return testDir;
+  };
 
-    // The compose run will fail (no Docker in CI), but env migration runs first.
-    runCliInDir(["mon", "update-config"], testDir, { PGAI_TAG: undefined });
-
+  test("mon update-config appends a missing PGAI_MON_TOKEN and keeps every existing value", () => {
+    const testDir = project("update-config-old-env", "PGAI_TAG=0.17.0\nGF_SECURITY_ADMIN_PASSWORD=user-set-grafana-pw\nVM_AUTH_PASSWORD=old\n");
+    runCliInDir(["mon", "update-config"], testDir, offline);
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
 
-    // Existing values must be preserved verbatim.
-    expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
+    expect(envContent).toMatch(/^PGAI_TAG=0\.17\.0$/m);
     expect(envContent).toMatch(/^GF_SECURITY_ADMIN_PASSWORD=user-set-grafana-pw$/m);
-
-    // New required keys must be appended (vmauth username + non-empty base64 password).
-    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}$/m);
-
+    // Additive: the old stack's keys stay where they are.
+    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=old$/m);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=[a-f0-9]{64}$/m);
     // REPLICATOR_PASSWORD was introduced earlier and is also part of the contract.
     expect(envContent).toMatch(/^REPLICATOR_PASSWORD=[a-f0-9]{64}$/m);
+    expect(fs.statSync(resolve(testDir, ".env")).mode & 0o777).toBe(0o600);
   }, { timeout: TEST_TIMEOUT });
 
-  test("mon update appends missing VM_AUTH_USERNAME / VM_AUTH_PASSWORD to a 0.14-shaped .env", () => {
-    const testDir = resolve(tempDir, "update-0.14-env");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    // mon update will fail (no Docker in CI, no git repo), but env migration runs first.
-    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
-
-    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
-    expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
-    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=[A-Za-z0-9+/]+={0,2}$/m);
-
-    // The migration step should print what it added so the user can see it.
-    expect(result.stdout).toMatch(/Added missing \.env keys/);
-    expect(result.stdout).toMatch(/VM_AUTH_USERNAME/);
-    expect(result.stdout).toMatch(/VM_AUTH_PASSWORD/);
+  test("mon update appends it too, and says what it added", () => {
+    const testDir = project("update-old-env", "PGAI_TAG=0.17.0\n");
+    const result = runCliInDir(["mon", "update"], testDir, offline);
+    expect(fs.readFileSync(resolve(testDir, ".env"), "utf8")).toMatch(/^PGAI_MON_TOKEN=[a-f0-9]{64}$/m);
+    expect(result.stdout).toMatch(/Added missing \.env keys: .*PGAI_MON_TOKEN/);
   }, { timeout: TEST_TIMEOUT });
 
-  test("mon update preserves existing VM_AUTH_* values (no rotation)", () => {
-    const testDir = resolve(tempDir, "update-preserve-vm-auth");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    // User already has VM auth configured (e.g. set up via rotate-vm-auth.sh).
-    fs.writeFileSync(
-      resolve(testDir, ".env"),
-      "PGAI_TAG=0.15.0\nVM_AUTH_USERNAME=custom-user\nVM_AUTH_PASSWORD=custom-pw-do-not-rotate\nREPLICATOR_PASSWORD=" +
-        "a".repeat(64) +
-        "\nVM_DELETE_AUTH_KEY=" + "b".repeat(64) +
-        "\nVM_SNAPSHOT_AUTH_KEY=" + "c".repeat(64) +
-        "\nVM_FORCE_MERGE_AUTH_KEY=" + "d".repeat(64) +
-        "\nVM_PPROF_AUTH_KEY=" + "e".repeat(64) +
-        "\n",
+  test("mon update keeps an existing token (no rotation)", () => {
+    const testDir = project(
+      "update-preserve-token",
+      "PGAI_TAG=0.18.0\nPGAI_MON_TOKEN=" + "b".repeat(64) + "\nREPLICATOR_PASSWORD=" + "a".repeat(64) + "\n",
     );
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
-
+    const result = runCliInDir(["mon", "update"], testDir, offline);
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
-    expect(envContent).toMatch(/^VM_AUTH_USERNAME=custom-user$/m);
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=custom-pw-do-not-rotate$/m);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=b{64}$/m);
     expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
-    expect(envContent).toMatch(/^VM_DELETE_AUTH_KEY=b{64}$/m);
-    expect(envContent).toMatch(/^VM_SNAPSHOT_AUTH_KEY=c{64}$/m);
-    expect(envContent).toMatch(/^VM_FORCE_MERGE_AUTH_KEY=d{64}$/m);
-    expect(envContent).toMatch(/^VM_PPROF_AUTH_KEY=e{64}$/m);
-
-    // When nothing is missing, the migration step should say so.
     expect(result.stdout).toMatch(/\.env is up to date/);
   }, { timeout: TEST_TIMEOUT });
 
   /**
-   * postgresai#359: sink-prometheus ran with no VictoriaMetrics admin keys, so
-   * a Grafana Viewer token could GET /api/v1/admin/tsdb/delete_series straight
-   * through the datasource proxy and wipe the store. An existing install must
-   * pick the keys up on `mon update`, not only on a fresh install.
+   * `cp .env.example .env` ships the token blank, and pgai-mon refuses to start
+   * without one. The migration must fill it IN PLACE, the way compose reads the
+   * file: KEY="" is empty, and the LAST assignment of a duplicated key wins.
    */
-  test("mon update appends the VictoriaMetrics admin keys to a pre-0.17 .env (#359)", () => {
-    const testDir = resolve(tempDir, "update-vm-admin-keys");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    // 0.15/0.16-shaped .env: VM basic auth present, admin keys absent.
-    fs.writeFileSync(
-      resolve(testDir, ".env"),
-      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=existing-pw\nREPLICATOR_PASSWORD=" +
-        "a".repeat(64) +
-        "\n",
-    );
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    const result = runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
-    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
-    expect(envContent).toMatch(/^VM_DELETE_AUTH_KEY=[a-f0-9]{64}$/m);
-    expect(envContent).toMatch(/^VM_SNAPSHOT_AUTH_KEY=[a-f0-9]{64}$/m);
-    expect(envContent).toMatch(/^VM_FORCE_MERGE_AUTH_KEY=[a-f0-9]{64}$/m);
-    expect(envContent).toMatch(/^VM_PPROF_AUTH_KEY=[a-f0-9]{64}$/m);
-
-    // Each key must be distinct - one shared value would let a leak of any one
-    // of them open every endpoint.
-    const keys = [
-      "VM_DELETE_AUTH_KEY",
-      "VM_SNAPSHOT_AUTH_KEY",
-      "VM_FORCE_MERGE_AUTH_KEY",
-      "VM_PPROF_AUTH_KEY",
-    ].map((k) => envContent.match(new RegExp(`^${k}=(.+)$`, "m"))![1]);
-    expect(new Set(keys).size).toBe(4);
-
-    // The keys must never be reused as the credential anything holds.
-    expect(keys).not.toContain("existing-pw");
-
-    // Untouched values stay put.
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=existing-pw$/m);
-    expect(result.stdout).toMatch(/VM_DELETE_AUTH_KEY/);
-  }, { timeout: TEST_TIMEOUT });
-
-  /**
-   * `cp .env.example .env` ships the admin keys blank, and a blank key is the
-   * vulnerability, not a configured value. The migration must fill it IN PLACE:
-   * appending a second line for the same key would leave the file ambiguous.
-   */
-  test("mon update fills quoted-empty and duplicated admin keys the way compose reads them (#359)", () => {
-    const testDir = resolve(tempDir, "update-quoted-blank-vm-admin-keys");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    // Compose interpolates KEY="" to the empty string, and reads the LAST
-    // assignment of a duplicated key. Both shapes must end up with a real value.
-    fs.writeFileSync(
-      resolve(testDir, ".env"),
-      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=pw\nREPLICATOR_PASSWORD=" +
-        "a".repeat(64) +
-        '\nVM_DELETE_AUTH_KEY=""\nVM_SNAPSHOT_AUTH_KEY=\'\'\n' +
-        "VM_FORCE_MERGE_AUTH_KEY=\nVM_FORCE_MERGE_AUTH_KEY=\n" +
-        "  export VM_PPROF_AUTH_KEY=\n",
-    );
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
-    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
-    // Read the file the way compose does: last assignment wins.
-    const effective = (key: string): string | undefined => {
-      let value: string | undefined;
-      for (const line of envContent.split("\n")) {
-        const m = line.match(new RegExp(`^[ \t]*(?:export[ \t]+)?${key}=(.*)$`));
-        if (m) value = m[1].trim();
-      }
-      return value;
-    };
-
-    for (const key of [
-      "VM_DELETE_AUTH_KEY",
-      "VM_SNAPSHOT_AUTH_KEY",
-      "VM_FORCE_MERGE_AUTH_KEY",
-      "VM_PPROF_AUTH_KEY",
+  test("mon update fills a blank, quoted-empty or duplicated token in place", () => {
+    for (const [name, blank] of [
+      ["plain", "PGAI_MON_TOKEN=\n"],
+      ["quoted", 'PGAI_MON_TOKEN=""\n'],
+      ["duplicated", "PGAI_MON_TOKEN=\nPGAI_MON_TOKEN=''\n"],
+      ["export", "  export PGAI_MON_TOKEN=\n"],
     ]) {
-      expect(effective(key)).toMatch(/^[a-f0-9]{64}$/);
-    }
-    // The pre-existing secrets must survive the rewrite.
-    expect(envContent).toMatch(/^VM_AUTH_PASSWORD=pw$/m);
-    expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
-    // No .env.tmp left behind by the write-then-rename.
-    expect(fs.existsSync(resolve(testDir, ".env.tmp"))).toBe(false);
-  }, { timeout: TEST_TIMEOUT });
-
-  test("mon update fills blank VictoriaMetrics admin keys in place (#359)", () => {
-    const testDir = resolve(tempDir, "update-blank-vm-admin-keys");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    fs.writeFileSync(
-      resolve(testDir, ".env"),
-      "PGAI_TAG=0.16.0\nVM_AUTH_USERNAME=vmauth\nVM_AUTH_PASSWORD=pw\nREPLICATOR_PASSWORD=" +
-        "a".repeat(64) +
-        "\nVM_DELETE_AUTH_KEY=\nVM_SNAPSHOT_AUTH_KEY=\nVM_FORCE_MERGE_AUTH_KEY=\nVM_PPROF_AUTH_KEY=\n",
-    );
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    runCliInDir(["mon", "update"], testDir, { PGAI_TAG: undefined });
-    const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
-    for (const key of [
-      "VM_DELETE_AUTH_KEY",
-      "VM_SNAPSHOT_AUTH_KEY",
-      "VM_FORCE_MERGE_AUTH_KEY",
-      "VM_PPROF_AUTH_KEY",
-    ]) {
-      expect(envContent).toMatch(new RegExp(`^${key}=[a-f0-9]{64}$`, "m"));
-      // Exactly one line per key - no appended duplicate.
-      expect(envContent.split("\n").filter((l) => l.startsWith(`${key}=`)).length).toBe(1);
+      const testDir = project(`update-blank-token-${name}`, "PGAI_TAG=0.18.0\nREPLICATOR_PASSWORD=" + "a".repeat(64) + "\n" + blank);
+      runCliInDir(["mon", "update"], testDir, offline);
+      const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
+      const values = envContent.split("\n").flatMap((l) => l.match(/^[ \t]*(?:export[ \t]+)?PGAI_MON_TOKEN=(.*)$/)?.[1] ?? []);
+      expect(values.length).toBe(blank.split("\n").length - 1);
+      for (const v of values) expect(v).toMatch(/^[a-f0-9]{64}$/);
+      expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
+      // No .env.tmp left behind by the write-then-rename.
+      expect(fs.existsSync(resolve(testDir, ".env.tmp"))).toBe(false);
     }
   }, { timeout: TEST_TIMEOUT });
 
   test("mon update-config handles a .env that doesn't end with a newline", () => {
-    const testDir = resolve(tempDir, "update-config-no-trailing-newline");
-    fs.mkdirSync(testDir, { recursive: true });
-
-    // No trailing newline - migration must add one before appending new keys
-    // or we'd produce e.g. `PGAI_TAG=0.14.0VM_AUTH_USERNAME=vmauth`.
-    fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
-    fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
-
-    runCliInDir(["mon", "update-config"], testDir, { PGAI_TAG: undefined });
-
+    // Migration must add one before appending new keys or we'd produce e.g.
+    // `PGAI_TAG=0.14.0REPLICATOR_PASSWORD=...`.
+    const testDir = project("update-config-no-trailing-newline", "PGAI_TAG=0.14.0");
+    runCliInDir(["mon", "update-config"], testDir, offline);
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
-
     expect(envContent).toMatch(/^PGAI_TAG=0\.14\.0$/m);
-    expect(envContent).toMatch(/^VM_AUTH_USERNAME=vmauth$/m);
-    // No key should be glued onto the previous line.
-    expect(envContent).not.toMatch(/PGAI_TAG=0\.14\.0VM_AUTH_USERNAME/);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=[a-f0-9]{64}$/m);
   }, { timeout: TEST_TIMEOUT });
 });
 
 describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
   /**
-   * Regression tests for the GA-blocking 0.14 -> 0.15 npx-upgrade gap (#186).
+   * Regression tests for the npx-upgrade gap (#186).
    *
    * The documented npx upgrade (`npm i -g postgresai@latest` then `pgai mon update`)
    * only ever refreshed docker-compose.yml for *git* checkouts (via `git pull`).
-   * npx/global-npm installs are non-git, so the OLD 0.14 docker-compose.yml was
-   * retained while PGAI_TAG advanced to 0.15. VM basic auth is new in 0.15, so the
-   * retained 0.14 compose never wires VM_AUTH_* into the sink-prometheus
-   * (VictoriaMetrics) service. The 0.15 configs image ships a prometheus.yml that
-   * templates %{VM_AUTH_USERNAME}, so VictoriaMetrics aborts on boot:
-   *
-   *   Exited (255): missing "VM_AUTH_USERNAME" env var
-   *
-   * -> all dashboards are dataless after upgrade. This hits every existing npx
-   * self-hosted user and blocks 0.15.0 GA.
+   * npx/global-npm installs are non-git, so the OLD docker-compose.yml was
+   * retained while PGAI_TAG advanced: new images ran against old wiring (the
+   * switch from VictoriaMetrics to pgai-mon is the extreme case of that).
    *
    * The fix: for NON-GIT installs, refresh the CLI-owned docker-compose.yml from the
    * target ref when it is stale, backing up the prior compose first, and never
@@ -703,40 +538,34 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
    * we also set it explicitly), so it is never reachable in a user environment.
    */
 
-  // A valid target 0.15 compose fixture: it carries the VM_AUTH_* wiring that the
-  // stale 0.14 compose lacks AND the keystone `sink-prometheus` service the
-  // validator requires. Self-contained so the test doesn't depend on the live
-  // repo compose changing under it.
-  const TARGET_0_15_COMPOSE = [
-    "version: '3.8'",
+  // The target compose: carries wiring (PGAI_MON_STORE) the stale one lacks
+  // AND the keystone `pgai-mon` service the validator requires. Self-contained
+  // so the test doesn't depend on the live repo compose changing under it.
+  const TARGET_COMPOSE = [
     "services:",
-    "  sink-prometheus:",
-    "    image: victoriametrics/victoria-metrics:v1.140.0",
-    "    container_name: sink-prometheus",
+    "  pgai-mon:",
+    "    image: postgresai/pgai-mon:${PGAI_TAG}",
+    "    container_name: pgai-mon",
     "    environment:",
-    "      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}",
-    "      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}",
+    "      - PGAI_MON_STORE=${PGAI_MON_STORE:-}",
     "  grafana:",
-    "    image: grafana/grafana:11.0.0",
+    "    image: grafana/grafana:12.0.0",
     "",
   ].join("\n");
 
-  // A 0.14-shaped compose: a real-ish stack with ZERO VM_AUTH wiring.
-  const STALE_0_14_COMPOSE = [
-    "version: '3.8'",
+  // A stale compose of an earlier version: the same stack without that wiring.
+  const STALE_COMPOSE = [
     "services:",
-    "  sink-prometheus:",
-    "    image: victoriametrics/victoria-metrics:v1.115.0",
-    "    container_name: sink-prometheus",
-    "    ports:",
-    '      - "9090:8428"',
+    "  pgai-mon:",
+    "    image: postgresai/pgai-mon:${PGAI_TAG}",
+    "    container_name: pgai-mon",
     "  grafana:",
-    "    image: grafana/grafana:11.0.0",
+    "    image: grafana/grafana:12.0.0",
     "",
   ].join("\n");
 
   let tempDir: string;
-  // Path to a written-out copy of TARGET_0_15_COMPOSE, used as the fetch fixture.
+  // Path to a written-out copy of TARGET_COMPOSE, used as the fetch fixture.
   let targetComposePath: string;
 
   const listBackups = (dir: string): string[] =>
@@ -745,7 +574,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
   beforeAll(() => {
     tempDir = fs.mkdtempSync(resolve(os.tmpdir(), "pgai-upgrade-compose-refresh-"));
     targetComposePath = resolve(tempDir, "fixture-target-compose.yml");
-    fs.writeFileSync(targetComposePath, TARGET_0_15_COMPOSE);
+    fs.writeFileSync(targetComposePath, TARGET_COMPOSE);
   });
 
   afterAll(() => {
@@ -754,23 +583,22 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     }
   });
 
-  test("non-git upgrade refreshes a stale docker-compose.yml to the target version (VM_AUTH wiring), preserves instances.yml, and writes a backup labeled with the OLD tag", () => {
+  test("non-git upgrade refreshes a stale docker-compose.yml to the target version, preserves instances.yml, and writes a backup labeled with the OLD tag", () => {
     const testDir = resolve(tempDir, "update-config-stale-compose");
     fs.mkdirSync(testDir, { recursive: true });
 
-    // Arrange: a 0.14-shaped, NON-GIT install. Old compose has no VM_AUTH wiring.
+    // Arrange: a 0.14-shaped, NON-GIT install. Old compose lacks the new wiring.
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(
       resolve(testDir, "instances.yml"),
       "# PostgreSQL instances to monitor\n- name: keep-me\n  conn_str: postgresql://m:p@h:5432/db\n",
     );
 
-    // Sanity: the stale compose really lacks VM_AUTH wiring before the upgrade.
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).not.toMatch(/VM_AUTH_USERNAME/);
+    // Sanity: the stale compose really lacks the wiring before the upgrade.
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).not.toMatch(/PGAI_MON_STORE/);
 
-    // Act: documented in-place upgrade step on a non-git install. The compose `run`
-    // will fail (no Docker in CI), but the compose refresh runs first. Point the
+    // Act: documented in-place upgrade step on a non-git install. Point the
     // refresh at the local fixture so the test is hermetic (no network).
     runCliInDir(["mon", "update-config"], testDir, {
       NODE_ENV: "test",
@@ -778,10 +606,10 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       PGAI_COMPOSE_SOURCE: targetComposePath,
     });
 
-    // Assert: deployed compose is REFRESHED to the target version (VM_AUTH wired).
+    // Assert: deployed compose is REFRESHED to the target version.
     const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
-    expect(after).toMatch(/VM_AUTH_USERNAME/);
-    expect(after).toMatch(/sink-prometheus/);
+    expect(after).toMatch(/PGAI_MON_STORE/);
+    expect(after).toMatch(/pgai-mon/);
 
     // Assert: instances.yml is PRESERVED (user-owned file untouched).
     expect(fs.readFileSync(resolve(testDir, "instances.yml"), "utf8")).toMatch(/keep-me/);
@@ -791,7 +619,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const backups = listBackups(testDir);
     expect(backups.length).toBe(1);
     expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
-    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_COMPOSE);
   }, { timeout: TEST_TIMEOUT });
 
   test("non-git upgrade via `mon update` also refreshes a stale docker-compose.yml", () => {
@@ -799,7 +627,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n- name: keep-me\n");
 
     runCliInDir(["mon", "update"], testDir, {
@@ -809,7 +637,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     });
 
     const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
-    expect(after).toMatch(/VM_AUTH_USERNAME/);
+    expect(after).toMatch(/PGAI_MON_STORE/);
     expect(fs.readFileSync(resolve(testDir, "instances.yml"), "utf8")).toMatch(/keep-me/);
     const backups = listBackups(testDir);
     expect(backups.length).toBe(1);
@@ -821,7 +649,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -831,7 +659,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       PGAI_SKIP_COMPOSE_REFRESH: "1",
     });
 
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
   }, { timeout: TEST_TIMEOUT });
 
@@ -841,7 +669,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(resolve(testDir, ".git"), { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -851,7 +679,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     });
 
     // Compose must be unchanged for git checkouts, and no backup written.
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
   }, { timeout: TEST_TIMEOUT });
 
@@ -860,7 +688,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), TARGET_0_15_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), TARGET_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -870,7 +698,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     });
 
     // Content already matches target -> no rewrite, no backup.
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(TARGET_0_15_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(TARGET_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
   }, { timeout: TEST_TIMEOUT });
 
@@ -879,7 +707,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     // Deployed compose == target but with extra trailing whitespace/newlines.
-    const deployed = TARGET_0_15_COMPOSE + "\n\n";
+    const deployed = TARGET_COMPOSE + "\n\n";
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), deployed);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
@@ -915,7 +743,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       fs.writeFileSync(htmlSource, htmlBody);
 
       fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
       fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
       const result = runCliInDir(["mon", "update-config"], testDir, {
@@ -925,24 +753,24 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       });
 
       // The working compose must be left intact — NOT clobbered with HTML.
-      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
       // No backup is written when nothing is refreshed.
       expect(listBackups(testDir)).toEqual([]);
       // The user is warned that no valid compose was retrieved.
       expect(result.stderr).toMatch(/Could not refresh docker-compose\.yml/);
     }, { timeout: TEST_TIMEOUT });
 
-    test("a YAML body WITHOUT a sink-prometheus service is rejected (compose untouched, no backup)", () => {
+    test("a YAML body WITHOUT a pgai-mon service (such as the old stack's) is rejected (compose untouched, no backup)", () => {
       const testDir = resolve(tempDir, "yaml-missing-keystone");
       fs.mkdirSync(testDir, { recursive: true });
 
-      // Valid YAML, has services, but lacks the keystone sink-prometheus service.
-      const wrongCompose = "version: '3.8'\nservices:\n  grafana:\n    image: grafana/grafana:11.0.0\n";
+      // Valid YAML, has services, but lacks the keystone pgai-mon service.
+      const wrongCompose = "services:\n  sink-prometheus:\n    image: victoriametrics/victoria-metrics:v1.140.0\n  grafana:\n    image: grafana/grafana:11.0.0\n";
       const wrongSource = resolve(testDir, "wrong-compose.yml");
       fs.writeFileSync(wrongSource, wrongCompose);
 
       fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
       fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
       runCliInDir(["mon", "update-config"], testDir, {
@@ -951,7 +779,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
         PGAI_COMPOSE_SOURCE: wrongSource,
       });
 
-      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
       expect(listBackups(testDir)).toEqual([]);
     }, { timeout: TEST_TIMEOUT });
 
@@ -963,7 +791,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       fs.writeFileSync(emptySource, "");
 
       fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+      fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
       fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
       runCliInDir(["mon", "update-config"], testDir, {
@@ -972,7 +800,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
         PGAI_COMPOSE_SOURCE: emptySource,
       });
 
-      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+      expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
       expect(listBackups(testDir)).toEqual([]);
     }, { timeout: TEST_TIMEOUT });
   });
@@ -983,7 +811,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
 
     // PGAI_TAG stays 0.14.0 across update-config runs (it doesn't advance there).
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     // First run: refreshes to target, backs up the pristine 0.14 compose.
@@ -995,11 +823,11 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const afterFirst = listBackups(testDir);
     expect(afterFirst.length).toBe(1);
     const pristineBackup = afterFirst[0]!;
-    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_COMPOSE);
 
     // Now the deployed compose IS the target. Simulate a second drift back to a
     // (different) stale compose, then run update-config again with the SAME tag.
-    const SECOND_STALE = STALE_0_14_COMPOSE.replace("v1.115.0", "v1.116.0");
+    const SECOND_STALE = STALE_COMPOSE.replace("grafana:12.0.0", "grafana:12.1.0");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), SECOND_STALE);
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -1010,7 +838,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
 
     // The FIRST/pristine backup must still be intact (not overwritten), and the
     // second distinct old content gets its own backup (unique by content hash).
-    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, pristineBackup), "utf8")).toBe(STALE_COMPOSE);
     const afterSecond = listBackups(testDir);
     expect(afterSecond.length).toBe(2);
     expect(afterSecond).toContain(pristineBackup);
@@ -1024,7 +852,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     // BEFORE the compose refresh; the backup must still reflect the OLD (0.14.0)
     // tag, not the new one.
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(
@@ -1046,7 +874,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const backups = listBackups(testDir);
     expect(backups.length).toBe(1);
     expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-0\.14\.0-[0-9a-f]{8}$/);
-    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_COMPOSE);
   }, { timeout: TEST_TIMEOUT });
 
   test("a fetch failure (no payload retrieved) leaves the deployed compose intact, writes NO backup, warns, and does not crash", () => {
@@ -1059,7 +887,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     const result = runCliInDir(["mon", "update-config"], testDir, {
@@ -1070,7 +898,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     });
 
     // The working compose must be untouched, and no backup written.
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
     // The user is warned, and the CLI does not crash on the env-migration step.
     expect(result.stderr).toMatch(/Could not refresh docker-compose\.yml/);
@@ -1111,14 +939,14 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const testDir = resolve(tempDir, "git-checkout-helper-noop");
     fs.mkdirSync(resolve(testDir, ".git"), { recursive: true });
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
 
     process.env.NODE_ENV = "test";
     process.env.PGAI_COMPOSE_SOURCE = targetComposePath;
     const refreshed = await refreshBundledComposeIfStale(testDir);
 
     expect(refreshed).toBe(false);
-    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8")).toBe(STALE_COMPOSE);
     expect(listBackups(testDir)).toEqual([]);
   }, { timeout: TEST_TIMEOUT });
 
@@ -1127,8 +955,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     // must share the SAME ref candidates as ensureDefaultMonitoringProject —
     // including the final `main` fallback. Without it, a non-git upgrade to a
     // version whose tag is not (yet) on GitLab fetches nothing and silently
-    // keeps a stale pre-0.15 compose (missing VM_AUTH wiring -> VictoriaMetrics
-    // crash + blank dashboards) — the exact failure the refresh exists to
+    // keeps a stale compose — the exact failure the refresh exists to
     // prevent. Exercised in-process with a stubbed fetch: every version-pinned
     // ref 404s, only /raw/main/ serves a valid compose.
     const { refreshBundledComposeIfStale } = await import("../bin/postgres-ai.ts");
@@ -1136,7 +963,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const testDir = resolve(tempDir, "main-fallback-unpublished-tag");
     fs.mkdirSync(testDir, { recursive: true });
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
 
     const savedNodeEnv = process.env.NODE_ENV;
     const savedSource = process.env.PGAI_COMPOSE_SOURCE;
@@ -1150,7 +977,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       const url = String(input);
       requested.push(url);
       if (url.includes("/-/raw/main/")) {
-        return new Response(TARGET_0_15_COMPOSE, { status: 200 });
+        return new Response(TARGET_COMPOSE, { status: 200 });
       }
       return new Response("404 Not Found", { status: 404 }); // unpublished tag
     }) as unknown as typeof fetch);
@@ -1162,7 +989,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
       expect(requested.some((u) => u.includes("/-/raw/main/"))).toBe(true);
       expect(refreshed).toBe(true);
       const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");
-      expect(after).toMatch(/VM_AUTH_USERNAME/);
+      expect(after).toMatch(/PGAI_MON_STORE/);
       // The pristine stale compose was backed up.
       expect(listBackups(testDir).length).toBe(1);
     } finally {
@@ -1183,7 +1010,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
 
     // .env exists (non-git install) but carries NO PGAI_TAG line.
     fs.writeFileSync(resolve(testDir, ".env"), "GRAFANA_PASSWORD=secret\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -1197,7 +1024,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     const backups = listBackups(testDir);
     expect(backups.length).toBe(1);
     expect(backups[0]).toMatch(/^docker-compose\.yml\.bak-\d{4}-\d{2}-\d{2}T[\dZ-]+-[0-9a-f]{8}$/);
-    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_0_14_COMPOSE);
+    expect(fs.readFileSync(resolve(testDir, backups[0]!), "utf8")).toBe(STALE_COMPOSE);
   }, { timeout: TEST_TIMEOUT });
 
   test("a malformed/hostile PGAI_TAG is rejected and the backup falls back to a timestamp suffix (no path traversal)", () => {
@@ -1208,7 +1035,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=../../../../tmp/evil\n");
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(["mon", "update-config"], testDir, {
@@ -1235,7 +1062,7 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(resolve(testDir, ".env"), 'PGAI_TAG="../../../../tmp/evil"\n');
-    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_0_14_COMPOSE);
+    fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n");
 
     runCliInDir(

@@ -1,5 +1,5 @@
 /**
- * Helpers for managing instances.yml (the pgwatch monitoring target list)
+ * Helpers for managing instances.yml (the monitoring target list pgai-mon reads)
  * and for opening pg connections that honor libpq sslmode semantics.
  *
  * These helpers exist as a single source of truth so that `mon targets

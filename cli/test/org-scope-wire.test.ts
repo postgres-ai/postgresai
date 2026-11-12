@@ -76,6 +76,7 @@ const ORG_AGNOSTIC_COMMANDS = [
   "mon update-config",
   "orgs create",
   "prepare-db",
+  "promql",
   "set-default-project",
   "set-storage-url",
   "unprepare-db",

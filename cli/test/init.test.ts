@@ -1523,7 +1523,7 @@ describe("imageTag priority behavior", () => {
     fs.mkdirSync(testDir, { recursive: true });
     // Create .env with stale tag but valid registry and passwords
     fs.writeFileSync(resolve(testDir, ".env"),
-      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\nVM_AUTH_USERNAME=existing-vm-user\nVM_AUTH_PASSWORD=existing-vm-pass\n");
+      "PGAI_TAG=stale-tag\nPGAI_REGISTRY=my.registry.com\nGF_SECURITY_ADMIN_PASSWORD=secret123\nREPLICATOR_PASSWORD=repl-secret\nPGAI_MON_TOKEN=existing-mon-token\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), "version: '3'\nservices: {}\n");
 
     const result = runCli(["mon", "local-install", "--db-url", "postgresql://u:p@h:5432/d", "--yes"], { PGAI_TAG: undefined }, { cwd: testDir });
@@ -1537,8 +1537,8 @@ describe("imageTag priority behavior", () => {
     expect(envContent).toMatch(/PGAI_REGISTRY=my\.registry\.com/);
     expect(envContent).toMatch(/GF_SECURITY_ADMIN_PASSWORD=secret123/);
     expect(envContent).toMatch(/REPLICATOR_PASSWORD=repl-secret/);
-    expect(envContent).toMatch(/VM_AUTH_USERNAME=existing-vm-user/);
-    expect(envContent).toMatch(/VM_AUTH_PASSWORD=existing-vm-pass/);
+    expect(envContent).toMatch(/^PGAI_MON_TOKEN=existing-mon-token$/m);
+    expect(envContent.match(/^PGAI_MON_TOKEN=/gm)).toHaveLength(1);
   }, 60000);
 });
 

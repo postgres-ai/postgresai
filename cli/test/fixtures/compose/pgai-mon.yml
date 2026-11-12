@@ -1,0 +1,67 @@
+# Test fixture: the monitoring compose file as the CLI expects it (services and
+# variables from the monitoring v2 contract). Not the shipped compose file.
+services:
+  config-init:
+    image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: postgres-ai-config-init
+    volumes:
+      - postgres_ai_configs:/target
+
+  pgai-mon:
+    image: ${PGAI_REGISTRY:-postgresai}/pgai-mon:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: pgai-mon
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      PGAI_MON_AUTH_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+      PGAI_MON_STORE: ${PGAI_MON_STORE:-}
+      RDS_DB_INSTANCE_IDENTIFIER: ${RDS_DB_INSTANCE_IDENTIFIER:-}
+      AWS_REGION: ${AWS_REGION:-}
+      PGAI_CLUSTER: ${PGAI_CLUSTER:-}
+      PGAI_NODE_NAME: ${PGAI_NODE_NAME:-}
+    volumes:
+      - ./instances.yml:/etc/pgai-mon/instances.yml:ro
+      - ./host-metrics:/etc/pgai-mon/host-metrics:ro
+      - pgai_mon_data:/var/lib/pgai-mon
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    container_name: grafana-with-datasources
+    environment:
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+  postgres-reports:
+    image: ${PGAI_REGISTRY:-postgresai}/reporter:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: postgres-reports
+    environment:
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+    volumes:
+      - ./.pgwatch-config:/app/.pgwatch-config
+    restart: unless-stopped
+
+  instance-jobs:
+    profiles: ["instance-jobs"]
+    image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: instance-jobs
+    user: ${INSTANCE_JOBS_USER:-65532:65532}
+    environment:
+      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+    volumes:
+      - ./.pgwatch-config:/etc/pgai/.pgwatch-config:ro
+
+  target-db:
+    profiles: ["demo"]
+    image: postgres:17
+    container_name: target-db
+    volumes:
+      - target_db_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_ai_configs:
+  pgai_mon_data:
+  grafana_data:
+  target_db_data:

@@ -140,7 +140,7 @@ export interface ProjectListItem {
   dblab_instance_id: number | string | null;
   /**
    * Every active MONITORING instance uuid of the project, newest first
-   * (`pgai promql`). Undefined when the platform predates the column, so the
+   * (`pgai mon sql`). Undefined when the platform predates the column, so the
    * caller can tell "no instance" from "cannot know".
    */
   monitoring_instance_ids?: string[];

@@ -1,0 +1,42 @@
+# Test fixture: a trimmed compose file of the old pgwatch + VictoriaMetrics
+# stack, as an install made before pgai-mon has it.
+services:
+  config-init:
+    image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: postgres-ai-config-init
+  sources-generator:
+    image: bash:5.2
+    container_name: sources-generator
+  sink-postgres:
+    image: postgres:15
+    container_name: sink-postgres
+    volumes:
+      - sink_postgres_data:/var/lib/postgresql/data
+  sink-prometheus:
+    image: victoriametrics/victoria-metrics:v1.140.0
+    container_name: sink-prometheus
+    environment:
+      - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
+      - VM_AUTH_PASSWORD=${VM_AUTH_PASSWORD:-}
+    volumes:
+      - victoria_metrics_data:/victoria-metrics-data
+  vmalert:
+    profiles: ["host-metrics"]
+    image: victoriametrics/vmalert:v1.140.0
+    container_name: vmalert
+  pgwatch-prometheus:
+    image: ${PGAI_REGISTRY:-postgresai}/pgwatch:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: pgwatch-prometheus
+  grafana:
+    image: grafana/grafana:12.0.0
+    container_name: grafana-with-datasources
+    environment:
+      VM_AUTH_USERNAME: ${VM_AUTH_USERNAME:?VM_AUTH_USERNAME is required for Grafana datasource provisioning}
+      VM_AUTH_PASSWORD: ${VM_AUTH_PASSWORD:?VM_AUTH_PASSWORD is required for Grafana datasource provisioning}
+  postgres-reports:
+    image: ${PGAI_REGISTRY:-postgresai}/reporter:${PGAI_TAG:?PGAI_TAG is required}
+    container_name: postgres-reports
+
+volumes:
+  sink_postgres_data:
+  victoria_metrics_data:

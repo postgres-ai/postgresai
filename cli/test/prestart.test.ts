@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { buildLocalInstallEnv, instancesUseDemoTarget } from "../bin/postgres-ai";
+import { DEMO_INSTANCES } from "./build-inputs";
 
 // Pre-baked monitoring images (postgres_ai-ansible#43): `--prestart` starts
 // the infrastructure at first boot, `--continue-prestarted` finishes the
@@ -15,7 +16,7 @@ const FAKE_DOCKER = `#!/bin/sh
 echo "$*" >> "$DOCKER_LOG"
 case "$*" in
   "info"|"compose version") exit 0 ;;
-  "ps --filter name=grafana-with-datasources --filter name=pgwatch --format {{.Names}}")
+  "ps --filter"*)
     [ -n "$RUNNING" ] && printf '%s\\n' $RUNNING; exit 0 ;;
   compose*" ps -a --format {{.Service}}") [ -n "$DEMO_CONTAINERS" ] && printf '%s\\n' $DEMO_CONTAINERS; exit 0 ;;
   compose*" ps --status running --services") [ -n "$READERS_RUNNING" ] && printf '%s\\n' $READERS_RUNNING; exit 0 ;;
@@ -67,18 +68,16 @@ describe("mon local-install --prestart", () => {
     const ups = composeCalls("up");
     expect(ups.length).toBe(1);
     const services = ups[0].split(" up -d ")[1].split(" ");
-    expect(services).toEqual([
-      "sink-postgres", "sink-prometheus", "grafana", "monitoring_flask_backend",
-      "self-cadvisor", "self-node-exporter", "self-postgres-exporter",
-    ]);
-    // Nothing that reads the target, and no demo database.
-    for (const s of ["pgwatch-postgres", "pgwatch-prometheus", "postgres-reports", "target-db", "sources-generator"]) {
+    // pgai-mon reloads instances.yml, so it starts with no target.
+    expect(services).toEqual(["pgai-mon", "grafana"]);
+    // Nothing that reads the target only at start, and no demo database.
+    for (const s of ["postgres-reports", "target-db"]) {
       expect(services).not.toContain(s);
     }
 
     expect(env()).toMatch(/^BIND_HOST=127\.0\.0\.1:$/m);
     expect(env()).toMatch(/^GRAFANA_BIND_HOST=127\.0\.0\.1:$/m);
-    expect(env()).toMatch(/^VM_AUTH_PASSWORD=.+$/m);
+    expect(env()).toMatch(/^PGAI_MON_TOKEN=[0-9a-f]{64}$/m);
     expect(env()).toMatch(/^REPLICATOR_PASSWORD=[0-9a-f]{64}$/m);
 
     // The bind-mount sources exist as files, so compose cannot make them directories.
@@ -101,7 +100,7 @@ describe("mon local-install --prestart", () => {
     rmSync(`${projectDir}/.prestarted`);
     run(["mon", "local-install", "--prestart"]);
     const pick = (s: string, k: string) => s.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1];
-    expect(pick(env(), "VM_AUTH_PASSWORD")).not.toBe(pick(first.env, "VM_AUTH_PASSWORD"));
+    expect(pick(env(), "PGAI_MON_TOKEN")).not.toBe(pick(first.env, "PGAI_MON_TOKEN"));
     expect(pick(readFileSync(`${projectDir}/.pgwatch-config`, "utf8"), "grafana_password"))
       .not.toBe(pick(first.cfg, "grafana_password"));
   });
@@ -113,12 +112,14 @@ describe("mon local-install --prestart", () => {
     expect(env()).toMatch(/^GRAFANA_BIND_HOST=127\.0\.0\.1:$/m);
   });
 
-  test("refuses on a configured running stack, and changes nothing there", () => {
+  test("refuses on a configured running stack (the reporter, or the old stack's pgwatch), and changes nothing there", () => {
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
-    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources pgwatch-postgres" });
-    expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain("A configured monitoring stack is already running");
-    expect(r.stderr).toContain("Nothing was changed.");
+    for (const running of ["grafana-with-datasources pgai-mon postgres-reports", "grafana-with-datasources pgwatch-postgres"]) {
+      const r = run(["mon", "local-install", "--prestart"], { RUNNING: running });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("A configured monitoring stack is already running");
+      expect(r.stderr).toContain("Nothing was changed.");
+    }
     expect(composeCalls("up")).toEqual([]);
     expect(env()).toBe("PGAI_TAG=0.9.0\nCOMPOSE_PROFILES=demo\n");
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
@@ -135,8 +136,8 @@ describe("mon local-install --prestart", () => {
     expect(composeCalls("up")).toEqual([]);
   });
 
-  test("a partly started prestart (Grafana up, no pgwatch, no marker) can be retried", () => {
-    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources" });
+  test("a partly started prestart (Grafana and pgai-mon up, no reporter, no marker) can be retried", () => {
+    const r = run(["mon", "local-install", "--prestart"], { RUNNING: "grafana-with-datasources pgai-mon" });
     expect(r.exitCode).toBe(0);
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(true);
   });
@@ -187,13 +188,14 @@ describe("mon local-install --continue-prestarted", () => {
     const ups = composeCalls("up");
     expect(ups.some((c) => c.endsWith(" up -d"))).toBe(true);
     expect(ups.some((c) => c.includes("--force-recreate"))).toBe(false);
-    expect(composeCalls("run").some((c) => c.includes("sources-generator"))).toBe(true);
+    // pgai-mon reads instances.yml and host-metrics/ itself: nothing is generated or signalled.
+    expect(calls().filter((c) => / (run|exec) /.test(c))).toEqual([]);
     // Configured: the marker is retired, so a later run refuses as on any running stack.
     expect(existsSync(`${projectDir}/.prestarted`)).toBe(false);
     expect(existsSync(`${projectDir}/.prestarted.done`)).toBe(true);
     writeFileSync(log, "");
     const again = run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"],
-      { RUNNING: "grafana-with-datasources pgwatch-postgres" });
+      { RUNNING: "grafana-with-datasources pgai-mon postgres-reports" });
     expect(again.stderr).toContain("already running");
     expect(composeCalls("up").filter((c) => !c.includes("instance-jobs"))).toEqual([]);
   });
@@ -202,26 +204,16 @@ describe("mon local-install --continue-prestarted", () => {
     prestart();
     writeFileSync(log, "");
     run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"], {
-      RUNNING: "grafana-with-datasources pgwatch-postgres",
-      READERS_RUNNING: "pgwatch-postgres postgres-reports",
+      RUNNING: "grafana-with-datasources pgai-mon",
+      READERS_RUNNING: "pgai-mon postgres-reports",
     });
     const ups = composeCalls("up");
     const recreate = ups.filter((c) => c.includes("--force-recreate"));
     expect(recreate.length).toBe(1);
-    expect(recreate[0]).toMatch(/up -d --force-recreate --no-deps pgwatch-postgres postgres-reports$/);
+    // Only the reporter: pgai-mon reloads instances.yml without a restart.
+    expect(recreate[0]).toMatch(/up -d --force-recreate --no-deps postgres-reports$/);
     // Recreated first, so the plain `up -d` after finds them current (no double recreate).
     expect(ups.indexOf(recreate[0])).toBeLessThan(ups.findIndex((c) => c.endsWith(" up -d")));
-  });
-
-  test("reloads host metrics when the target brought scrape files", () => {
-    prestart();
-    mkdirSync(`${projectDir}/host-metrics`, { recursive: true });
-    writeFileSync(`${projectDir}/host-metrics/clickhouse-x.yml`, "[]\n");
-    writeFileSync(log, "");
-    run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"], { RUNNING: "grafana-with-datasources" });
-    expect(calls().some((c) => c.startsWith("compose ") && c.endsWith("exec -T sink-prometheus kill -HUP 1"))).toBe(true);
-    // Never through the daemon: `docker kill` turns off the restart policy (#473).
-    expect(calls().some((c) => / kill -s /.test(c))).toBe(false);
   });
 
   test("without the marker it is today's install, and a running stack still refuses", () => {
@@ -234,7 +226,7 @@ describe("mon local-install --continue-prestarted", () => {
 
   test("without the marker on a stopped stack it installs as today (--force-recreate)", () => {
     run(["mon", "local-install", "--continue-prestarted", "--db-url", DB_URL, "-y"]);
-    expect(composeCalls("up").some((c) => c.endsWith(" up -d --force-recreate"))).toBe(true);
+    expect(composeCalls("up").some((c) => c.endsWith(" up -d --force-recreate --remove-orphans"))).toBe(true);
   });
 
   test("the marker alone does not open a running stack to a plain re-run", () => {
@@ -260,7 +252,7 @@ describe("the demo profile", () => {
 
   test("instancesUseDemoTarget recognises the demo target only", () => {
     const f = `${dir}/i.yml`;
-    writeFileSync(f, readFileSync(resolve(import.meta.dir, "../../instances.demo.yml"), "utf8"));
+    writeFileSync(f, readFileSync(DEMO_INSTANCES, "utf8"));
     expect(instancesUseDemoTarget(f)).toBe(true);
     writeFileSync(f, "- name: x\n  conn_str: postgresql://u:p@db.example.com:5432/target-db\n");
     expect(instancesUseDemoTarget(f)).toBe(false);
@@ -279,7 +271,7 @@ describe("the demo profile", () => {
   });
 
   test("mon start on a demo stack installed before the profile turns it on", () => {
-    writeFileSync(`${projectDir}/instances.yml`, readFileSync(resolve(import.meta.dir, "../../instances.demo.yml"), "utf8"));
+    writeFileSync(`${projectDir}/instances.yml`, readFileSync(DEMO_INSTANCES, "utf8"));
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\n");
     run(["mon", "start"]);
     expect(env()).toMatch(/^COMPOSE_PROFILES=demo$/m);

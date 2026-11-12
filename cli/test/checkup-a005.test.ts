@@ -11,10 +11,11 @@ import Ajv2020 from "ajv/dist/2020";
 import * as checkup from "../lib/checkup";
 import { generateCheckSummary } from "../lib/checkup-summary";
 import { createMockClient } from "./test-utils";
+import { REPORT_SCHEMAS_DIR } from "./build-inputs";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validate = ajv.compile(
-  JSON.parse(readFileSync(resolve(import.meta.dir, "../../reporter/schemas/A005.schema.json"), "utf8"))
+  JSON.parse(readFileSync(resolve(REPORT_SCHEMAS_DIR, "A005.schema.json"), "utf8"))
 );
 
 function expectValid(report: any): void {

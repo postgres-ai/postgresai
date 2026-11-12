@@ -81,17 +81,14 @@ describe("mon health: which services are reported on", () => {
     expect(entry!.readHealth).toBe(true);
   });
 
-  test("the six long-standing services are unchanged", () => {
+  test("the stack's services: Grafana, pgai-mon, the demo database", () => {
     const longStanding = services.filter(s => s.container !== "instance-jobs");
     expect(longStanding.map(s => s.container)).toEqual([
       "grafana-with-datasources",
-      "sink-prometheus",
-      "pgwatch-postgres",
-      "pgwatch-prometheus",
+      "pgai-mon",
       "target-db",
-      "sink-postgres",
     ]);
-    // Neither flag, so they keep the status-only check they have always had.
+    // Neither flag, so they keep the status-only check.
     // target-db is the exception: it is gated by the demo profile (below).
     for (const s of longStanding) {
       if (s.container !== "target-db") expect(s.optional).toBeUndefined();

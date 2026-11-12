@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DEMO_INSTANCES } from "./build-inputs";
 
 /** Offline CLI smoke fixture: never use the developer's config or services. */
 export function createCliSandbox() {
@@ -18,11 +19,11 @@ export function createCliSandbox() {
   // Libraries and dependencies are only read through these links.
   const cliPath = path.join(cliDir, "bin", "postgres-ai.ts");
   fs.copyFileSync(path.join(sourceCli, "bin", "postgres-ai.ts"), cliPath);
-  for (const name of ["lib", "node_modules", "package.json", "sql"]) {
+  for (const name of ["build-inputs.json", "lib", "node_modules", "package.json", "sql"]) {
     fs.symlinkSync(path.join(sourceCli, name), path.join(cliDir, name));
   }
   const demoPath = path.join(root, "instances.demo.yml");
-  fs.copyFileSync(path.join(sourceCli, "..", "instances.demo.yml"), demoPath);
+  fs.copyFileSync(DEMO_INSTANCES, demoPath);
   fs.writeFileSync(path.join(projectDir, "docker-compose.yml"), "services: {}\n");
   // Support detection only; any compose work fails before starting services.
   fs.writeFileSync(path.join(binDir, "docker"),

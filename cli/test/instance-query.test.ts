@@ -4,11 +4,10 @@ import {
   readQueryResult,
   awaitQueryResult,
   isTerminal,
-  renderPromQL,
-  formatMetric,
+  renderSql,
   resolveMonitoringInstanceId,
-  type PromQLPayload,
-} from "../lib/promql";
+  type SqlPayload,
+} from "../lib/instance-query";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -30,40 +29,22 @@ function stubFetch(handler: (url: string, init: RequestInit) => { status?: numbe
 }
 
 describe("enqueueQuery", () => {
-  test("an instant query sends only its own keys", async () => {
+  test("a sql query sends only its own keys", async () => {
     // PostgREST resolves an RPC by the exact set of argument names in the body,
-    // so a stray null start/end/step would fail to match the function.
+    // so a stray null argument would fail to match the function.
     const calls = stubFetch(() => ({ body: { job_id: "job-1" } }));
-    const out = await enqueueQuery("pai-token", {
-      instanceId: "i-1",
-      kind: "promql_instant",
-      query: "up",
-    });
+    const out = await enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" });
 
     expect(out.jobId).toBe("job-1");
-    expect(Object.keys(calls[0].body).sort()).toEqual(["p_instance_id", "p_kind", "p_query"]);
+    expect(calls[0].body).toEqual({ p_instance_id: "i-1", p_kind: "sql", p_query: "select 1" });
     expect(calls[0].url).toContain("/rpc/instance_query_enqueue");
-  });
-
-  test("a range query adds start, end and step", async () => {
-    const calls = stubFetch(() => ({ body: { job_id: "job-2" } }));
-    await enqueueQuery("pai-token", {
-      instanceId: "i-1",
-      kind: "promql_range",
-      query: "rate(x[5m])",
-      start: "2026-09-18T11:00:00Z",
-      end: "2026-09-18T12:00:00Z",
-      stepS: 300,
-    });
-    expect(calls[0].body.p_step_s).toBe(300);
-    expect(calls[0].body.p_start).toBe("2026-09-18T11:00:00Z");
   });
 
   test("the credential travels in the header, never the body", async () => {
     // A body parameter is a bind parameter, and Postgres writes those into the
     // server log for any statement over log_min_duration_statement.
     const calls = stubFetch(() => ({ body: { job_id: "job-3" } }));
-    await enqueueQuery("pai-secret-value", { instanceId: "i-1", kind: "promql_instant", query: "up" });
+    await enqueueQuery("pai-secret-value", { instanceId: "i-1", query: "select 1" });
 
     expect((calls[0].headers as any)["access-token"]).toBe("pai-secret-value");
     expect(JSON.stringify(calls[0].body)).not.toContain("pai-secret-value");
@@ -75,14 +56,14 @@ describe("enqueueQuery", () => {
       body: { message: "Conflict", details: "a query is already in flight for this instance" },
     }));
     await expect(
-      enqueueQuery("pai-token", { instanceId: "i-1", kind: "promql_instant", query: "up" }),
+      enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" }),
     ).rejects.toThrow(/already in flight/);
   });
 
   test("a reply with no job_id is an error, not a silent success", async () => {
     stubFetch(() => ({ body: {} }));
     await expect(
-      enqueueQuery("pai-token", { instanceId: "i-1", kind: "promql_instant", query: "up" }),
+      enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" }),
     ).rejects.toThrow(/no job_id/);
   });
 });
@@ -224,63 +205,42 @@ describe("awaitQueryResult", () => {
 });
 
 describe("rendering", () => {
-  test("formatMetric prints Prometheus's own shape with sorted labels", () => {
-    expect(formatMetric({ __name__: "up", job: "pg", instance: "a" })).toBe(
-      'up{instance="a", job="pg"}',
-    );
-    expect(formatMetric({})).toBe("{}");
-    expect(formatMetric({ __name__: "up" })).toBe("up");
+  const payload = (over: Partial<SqlPayload> = {}): SqlPayload => ({
+    columns: ["metric", "n"],
+    types: ["Utf8", "Int64"],
+    rows: [["pg_stat_statements_calls", 12], ["db_size", null]],
+    row_count: 2,
+    truncated: false,
+    ...over,
+  });
+
+  test("a table with aligned columns, NULL spelled out, and the row count", () => {
+    const out = renderSql(payload());
+    expect(out.split("\n").slice(0, 3)).toEqual([
+      "metric                    n",
+      "pg_stat_statements_calls  12",
+      "db_size                   NULL",
+    ]);
+    expect(out).toContain("2 rows");
   });
 
   test("a truncated result says so, loudly", () => {
     // A silently partial answer to a question a human asked is worse than an
     // error: they would act on it believing it complete.
-    const payload: PromQLPayload = {
-      resultType: "vector",
-      result: [{ metric: { __name__: "up" }, value: [1, "1"] }],
-      stats: { truncated: true },
-    };
-    const out = renderPromQL(payload);
+    const out = renderSql(payload({ truncated: true }));
     expect(out).toContain("TRUNCATED");
-    // And says what to DO about it: with no point cap, truncation is a normal
-    // outcome on a wide range query, not an exotic failure.
-    expect(out).toContain("--step");
-  });
-
-  test("an untruncated result does not cry wolf", () => {
-    const payload: PromQLPayload = {
-      resultType: "vector",
-      result: [{ metric: { __name__: "up" }, value: [1, "1"] }],
-      stats: { truncated: false },
-    };
-    expect(renderPromQL(payload)).not.toContain("TRUNCATED");
-  });
-
-  test("a matrix summarises per series and says where the rest is", () => {
-    const payload: PromQLPayload = {
-      resultType: "matrix",
-      result: [
-        {
-          metric: { __name__: "x", job: "a" },
-          values: [
-            [1, "1"],
-            [2, "2"],
-            [3, "3"],
-          ],
-        },
-      ],
-      stats: { truncated: false },
-    };
-    const out = renderPromQL(payload);
-    expect(out).toContain("POINTS");
-    expect(out).toContain("--json");
-    // First and last, not every point.
-    expect(out).toMatch(/3\s+1\s+3/);
+    expect(out).toContain("LIMIT");
+    expect(renderSql(payload())).not.toContain("TRUNCATED");
   });
 
   test("an empty result set is stated, not rendered as a blank table", () => {
-    const out = renderPromQL({ resultType: "vector", result: [], stats: { truncated: false } });
+    const out = renderSql(payload({ rows: [], row_count: 0 }));
     expect(out).toContain("Empty result set");
+    expect(out).toContain("0 rows");
+  });
+
+  test("objects and arrays print as JSON", () => {
+    expect(renderSql(payload({ columns: ["labels"], rows: [[{ a: "1" }]] }))).toContain('{"a":"1"}');
   });
 });
 
@@ -362,23 +322,9 @@ describe("the body resolves against the real RPC signature", () => {
 
   test("every body shape the CLI sends resolves", async () => {
     stubPostgrest(platformSignature);
-    await expect(
-      enqueueQuery("pai-token", { instanceId: "i-1", kind: "promql_instant", query: "up" }),
-    ).resolves.toMatchObject({ jobId: "job-1" });
-    await expect(
-      enqueueQuery("pai-token", { instanceId: "i-1", kind: "promql_instant", query: "up", at: "2026-09-18T12:00:00Z" }),
-    ).resolves.toMatchObject({ jobId: "job-1" });
-    await expect(
-      enqueueQuery("pai-token", {
-        instanceId: "i-1",
-        kind: "promql_range",
-        query: "up",
-        start: "2026-09-18T11:00:00Z",
-        end: "2026-09-18T12:00:00Z",
-        stepS: 60,
-      }),
-    ).resolves.toMatchObject({ jobId: "job-1" });
-
+    await expect(enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" })).resolves.toMatchObject({
+      jobId: "job-1",
+    });
     expect(
       resolvePostgrest(platformSignature, "instance_query_result", ["p_job_id"]),
     ).not.toBeNull();
@@ -421,11 +367,7 @@ describe("the body resolves against the real RPC signature", () => {
 describe("first_answer_estimate_s", () => {
   test("is read when the platform sends it", async () => {
     stubFetch(() => ({ body: { job_id: "job-1", first_answer_estimate_s: 600 } }));
-    const out = await enqueueQuery("pai-token", {
-      instanceId: "i-1",
-      kind: "promql_instant",
-      query: "up",
-    });
+    const out = await enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" });
     expect(out.firstAnswerEstimateS).toBe(600);
   });
 
@@ -447,11 +389,7 @@ describe("first_answer_estimate_s", () => {
       { job_id: "job-1", first_answer_estimate_s: "600" },
     ]) {
       stubFetch(() => ({ body }));
-      const out = await enqueueQuery("pai-token", {
-        instanceId: "i-1",
-        kind: "promql_instant",
-        query: "up",
-      });
+      const out = await enqueueQuery("pai-token", { instanceId: "i-1", query: "select 1" });
       expect(out.firstAnswerEstimateS).toBeNull();
     }
   });

@@ -229,7 +229,7 @@ export function positiveSeconds(v: unknown): number | null {
 }
 
 /**
- * Poll delays, in ms, for a platform async handle — the same ladder `pgai promql`
+ * Poll delays, in ms, for a platform async handle — the same ladder `pgai mon sql`
  * uses against the same job channel. Four looks half a second apart first: on a
  * held (long-poll) channel the box takes the job within about half a second, so
  * most answers are ready a second in, and a ladder starting at 1s then 3s would

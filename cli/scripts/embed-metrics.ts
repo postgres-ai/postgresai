@@ -2,7 +2,7 @@
 /**
  * Build script to embed metrics.yml into the CLI bundle.
  *
- * This script reads config/pgwatch-prometheus/metrics.yml and generates
+ * This script reads metrics.yml (its path is in build-inputs.json) and generates
  * cli/lib/metrics-embedded.ts with the metrics data embedded as TypeScript.
  *
  * The generated file is NOT committed to git - it's regenerated at build time.
@@ -13,10 +13,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import buildInputs from "../build-inputs.json";
 
 // Resolve paths relative to cli/ directory
 const CLI_DIR = path.resolve(__dirname, "..");
-const METRICS_YML_PATH = path.resolve(CLI_DIR, "../config/pgwatch-prometheus/metrics.yml");
+const METRICS_YML_PATH = path.resolve(CLI_DIR, "..", buildInputs.metricsYml);
 const OUTPUT_PATH = path.resolve(CLI_DIR, "lib/metrics-embedded.ts");
 
 interface MetricDefinition {
@@ -114,7 +115,7 @@ function main() {
 function generateTypeScript(metrics: Record<string, MetricDefinition>): string {
   const lines: string[] = [
     "// AUTO-GENERATED FILE - DO NOT EDIT",
-    "// Generated from config/pgwatch-prometheus/metrics.yml by scripts/embed-metrics.ts",
+    `// Generated from ${buildInputs.metricsYml} by scripts/embed-metrics.ts`,
     `// Generated at: ${new Date().toISOString()}`,
     "",
     "/**",
