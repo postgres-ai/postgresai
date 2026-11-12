@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod collector;
 pub mod config;
 pub mod eval;
+pub mod ingest;
 pub mod kmerge;
 pub mod logs;
 pub mod metricdefs;

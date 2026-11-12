@@ -366,6 +366,7 @@ fn main_cmd() -> anyhow::Result<()> {
                 views_sql,
                 macros_sql,
                 read_only: no_compact,
+                ingest: Default::default(),
             };
             run(cfg)
         }
@@ -852,6 +853,7 @@ fn serve_loop(
     views_text: String,
     auth: Arc<auth::Auth>,
 ) -> anyhow::Result<()> {
+    let writable = store_thread.is_some();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(cfg.http.max_concurrent + 4)
@@ -892,7 +894,12 @@ fn serve_loop(
             });
         }
         let state = query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text);
-        let app = query::app(state, axum::Router::new(), auth);
+        // Ingest writes into the store: only with a store thread (not read-only).
+        let extra = match writable {
+            true => ingest::router(ingest::Ingest::new(shared.clone(), tx.clone(), cfg.ingest.clone())),
+            false => axum::Router::new(),
+        };
+        let app = query::app(state, extra, auth);
         let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;
         eprintln!("pgai-mon: serving on http://{}", cfg.http.listen);
         let shutdown = async {

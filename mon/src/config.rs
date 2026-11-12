@@ -35,6 +35,9 @@ pub struct Config {
     /// Open the store read-only (no WAL, no compaction, no ingest, nothing written in the store).
     #[serde(default)]
     pub read_only: bool,
+    /// Externally produced samples: push endpoint limits (ingest.rs).
+    #[serde(default)]
+    pub ingest: crate::ingest::IngestCfg,
 }
 
 fn d_metrics_yml() -> PathBuf {

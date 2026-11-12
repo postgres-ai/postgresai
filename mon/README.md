@@ -20,6 +20,22 @@ are at least 16 characters. Without credentials the server refuses to start, unl
 authentication is turned off explicitly for local development (`PGAI_MON_AUTH_DISABLED=1`,
 `http.auth.disabled: true`, or `serve --no-auth`).
 
+## Ingest
+
+`POST /api/v1/import/prometheus` takes Prometheus text exposition with millisecond timestamps,
+as VictoriaMetrics' endpoint of the same path does, so a pusher (rds-host-stats) only changes its
+URL and credentials. `?extra_label=name=value` adds a label to every sample. The body is parsed
+and validated whole first: one bad line answers 400 and nothing is written. Samples older than
+`ingest.max_age_s` (1 day) or more than `ingest.max_future_s` (10 min) ahead, and new series past
+`ingest.max_series` (200 000 tracked; a series idle for an hour is forgotten when full) are
+dropped and counted (`GET /ingest/stats`). 204 once the samples are in the WAL. Pushed series get
+no staleness markers (as with VictoriaMetrics' import); in-process producers (scraper, host rules)
+write markers per scrape target or rule group, as the collector does.
+
+```bash
+curl -s -H "$H" --data-binary @samples.prom localhost:8765/api/v1/import/prometheus
+```
+
 ## Layout
 
 | Path | What |
@@ -103,7 +119,9 @@ other field has a default. Unknown fields are rejected. See
   `password_file`, `disabled`);
 - `collector`: series and session limits, statement timeout, snapshot intervals;
 - `logs[]`: jsonlog directories to tail;
-- `views_sql` (default: the embedded copy), `macros_sql`, `read_only`.
+- `views_sql` (default: the embedded copy), `macros_sql`, `read_only`;
+- `ingest`: push limits (`max_body_bytes`, `max_samples_per_request`, `max_series`, `max_age_s`,
+  `max_future_s`, `max_labels`, `max_label_value_bytes`).
 
 A store root may also be `s3://bucket/prefix` for read-only serving (credentials and region
 from the AWS environment).
