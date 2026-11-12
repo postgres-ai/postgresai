@@ -55,7 +55,7 @@ import {
   resolveMonitoringInstanceId,
   runLocalSql,
 } from "../lib/instance-query";
-import { registerAasCollection, parseVcpus, aasSuccessMessage } from "../lib/aas-onboard";
+import { registerAasCollection, parseVcpus, aasSuccessMessage, aasArmingSkipReason } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { composeDefinesService, composeProjectName, failedServices, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
@@ -5626,7 +5626,12 @@ mon
         // instance the platform did not acknowledge would hand out a Grafana
         // token for a registration that never happened. An unknown vcpus does
         // NOT skip arming (#683) — the RPC accepts 0 and keeps its own value.
-        if (!grafanaOn) {
+        // A pgai-mon stack skips it outright: the platform's AAS path needs a
+        // PromQL datasource in Grafana, which this stack has none of.
+        const aasSkip = aasArmingSkipReason(readComposeText(projectDir));
+        if (aasSkip) {
+          console.error(`⚠ ${aasSkip}\n`);
+        } else if (!grafanaOn) {
           console.error(
             "⚠ Skipping AAS auto-collection arming: it needs the local Grafana, and this stack runs without it (--no-grafana)\n"
           );

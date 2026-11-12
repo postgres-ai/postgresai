@@ -9,6 +9,7 @@ import {
   registerAasCollection,
   aasSuccessMessage,
   formatPlatformError,
+  aasArmingSkipReason,
 } from "../lib/aas-onboard";
 import { MAX_SURVIVING_RUN, leaks, longestRun, splitAt } from "./redaction-helpers";
 
@@ -21,6 +22,41 @@ function res(ok: boolean, status: number, jsonBody: unknown, textBody = ""): Res
     text: async () => textBody,
   } as unknown as Response;
 }
+
+describe("aasArmingSkipReason", () => {
+  const compose = (name: string) =>
+    fs.readFileSync(path.resolve(import.meta.dir, name), "utf8");
+
+  test("the shipped pgai-mon compose skips arming with one line naming the platform update", () => {
+    const reason = aasArmingSkipReason(compose("../../docker-compose.yml"));
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("platform update");
+    expect(reason).toContain("nothing was registered");
+    expect(reason).not.toContain("\n");
+  });
+
+  test("the pgai-mon fixture skips; the old stack's compose does not", () => {
+    expect(aasArmingSkipReason(compose("fixtures/compose/pgai-mon.yml"))).not.toBeNull();
+    expect(aasArmingSkipReason(compose("fixtures/compose/old-stack.yml"))).toBeNull();
+  });
+
+  test("no or unparseable compose text does not skip", () => {
+    expect(aasArmingSkipReason(null)).toBeNull();
+    expect(aasArmingSkipReason("services: [")).toBeNull();
+  });
+
+  test("local-install checks it before any Grafana call, so no retry loop runs", () => {
+    const src = fs.readFileSync(path.resolve(import.meta.dir, "../bin/postgres-ai.ts"), "utf8");
+    const skip = src.indexOf("aasArmingSkipReason(readComposeText(projectDir))");
+    const register = src.indexOf("await registerAasCollection(");
+    expect(skip).toBeGreaterThan(0);
+    expect(register).toBeGreaterThan(skip);
+    // The skip branch only prints: it neither sets an exit code nor calls out.
+    const branch = src.slice(skip, src.indexOf("} else if (!grafanaOn)", skip));
+    expect(branch).not.toContain("exitCode");
+    expect(branch).not.toContain("await ");
+  });
+});
 
 describe("parseVcpus", () => {
   test("non-positive / junk → 0 (the 'unknown' fallback)", () => {
