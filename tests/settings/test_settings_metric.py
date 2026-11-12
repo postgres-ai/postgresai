@@ -18,7 +18,7 @@ import yaml
 def get_metrics_yml_path() -> Path:
     """Get the path to the metrics.yml file."""
     repo_root = Path(__file__).parent.parent.parent
-    return repo_root / "config" / "pgwatch-prometheus" / "metrics.yml"
+    return repo_root / "mon" / "metrics.yml"
 
 
 @pytest.fixture(name="metrics_config")

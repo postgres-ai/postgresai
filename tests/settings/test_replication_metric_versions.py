@@ -11,8 +11,7 @@ import yaml
 
 METRICS_PATH = (
     Path(__file__).resolve().parents[2]
-    / "config"
-    / "pgwatch-prometheus"
+    / "mon"
     / "metrics.yml"
 )
 REPLICATION_METRICS = ("replication", "pg_stat_replication")
