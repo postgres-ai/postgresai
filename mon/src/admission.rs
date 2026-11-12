@@ -270,7 +270,7 @@ impl Admission {
             let heavy_ok = st.running_heavy < self.heavy_slots() && st.running_big == 0 && !big_first;
             let mem_ok = st.running_heavy == 0
                 || self.mem_gate == 0
-                || self.mem.as_ref().and_then(|m| m()).map_or(true, |r| r < self.mem_gate);
+                || self.mem.as_ref().and_then(|m| m()).is_none_or(|r| r < self.mem_gate);
             let pick = st
                 .waiters
                 .iter()

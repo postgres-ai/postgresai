@@ -224,7 +224,7 @@ fn max_ts(store: &StoreCore) -> anyhow::Result<Option<i64>> {
 pub fn crashtest_verify(store: &StoreCore) -> anyhow::Result<serde_json::Value> {
     let last_acked: Option<f64> = std::fs::read_to_string(acked_path(store))
         .ok()
-        .and_then(|s| s.lines().filter_map(|l| l.trim().parse::<f64>().ok()).last());
+        .and_then(|s| s.lines().filter_map(|l| l.trim().parse::<f64>().ok()).next_back());
     let cat = store.shared.catalog.lock().unwrap().clone();
     let files: Vec<_> = cat.files_of("samples").collect();
     anyhow::ensure!(!files.is_empty(), "no samples in store");
@@ -252,7 +252,7 @@ pub fn crashtest_verify(store: &StoreCore) -> anyhow::Result<serde_json::Value> 
     let mut v = v;
     let max_last = v["max_last_step"].as_f64().unwrap_or(-1.0);
     let min_last = v["min_last_step"].as_f64().unwrap_or(-1.0);
-    let lost = last_acked.map_or(false, |a| min_last < a);
+    let lost = last_acked.is_some_and(|a| min_last < a);
     v["last_acked_step"] = serde_json::json!(last_acked);
     v["acked_lost"] = serde_json::json!(lost);
     v["pass"] = serde_json::json!(
@@ -496,7 +496,13 @@ pub fn series_fix_and_register(store: &mut StoreCore) -> anyhow::Result<serde_js
         let rel = format!("series/date={}/L2-{id:08}.parquet", crate::model::day_str(f.day));
         let out = root.join(&rel);
         let tmp = out.with_extension("parquet.tmp");
-        crate::kmerge::merge_sorted_opts(&[abs.clone()], &tmp, 9, crate::store::SERIES_ROW_GROUP, true)?;
+        crate::kmerge::merge_sorted_opts(
+            std::slice::from_ref(&abs),
+            &tmp,
+            9,
+            crate::store::SERIES_ROW_GROUP,
+            true,
+        )?;
         std::fs::File::open(&tmp)?.sync_all()?;
         std::fs::rename(&tmp, &out)?;
         let mut cat = store.shared.catalog.lock().unwrap();

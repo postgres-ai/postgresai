@@ -165,10 +165,12 @@ fn merge_pass(
     let mut schema: Option<SchemaRef> = None;
     for p in inputs {
         let b = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(p)?)?.with_batch_size(IN_BATCH);
-        if schema.is_none() {
-            schema = Some(b.schema().clone());
-        } else if b.schema().fields() != schema.as_ref().unwrap().fields() {
-            anyhow::bail!("schema of {} differs", p.display());
+        match &schema {
+            None => schema = Some(b.schema().clone()),
+            Some(s) if b.schema().fields() != s.fields() => {
+                anyhow::bail!("schema of {} differs", p.display());
+            }
+            Some(_) => {}
         }
         ins.push(Input {
             reader: b.build()?,

@@ -105,38 +105,35 @@ const NAME_KEYS: &[&str] = &[
 ];
 
 fn shape(v: &Value, out: &mut String) {
-    match v {
-        Value::Object(m) => {
-            out.push('{');
-            for k in SHAPE_KEYS {
-                if let Some(x) = m.get(*k) {
-                    out.push_str(k);
-                    out.push('=');
-                    match x {
-                        Value::String(s) => out.push_str(&redact_literals(s)),
-                        Value::Array(a) => {
-                            for e in a {
-                                if let Value::String(s) = e {
-                                    out.push_str(&redact_literals(s));
-                                    out.push(',');
-                                }
+    if let Value::Object(m) = v {
+        out.push('{');
+        for k in SHAPE_KEYS {
+            if let Some(x) = m.get(*k) {
+                out.push_str(k);
+                out.push('=');
+                match x {
+                    Value::String(s) => out.push_str(&redact_literals(s)),
+                    Value::Array(a) => {
+                        for e in a {
+                            if let Value::String(s) = e {
+                                out.push_str(&redact_literals(s));
+                                out.push(',');
                             }
                         }
-                        other => out.push_str(&other.to_string()),
                     }
-                    out.push(';');
+                    other => out.push_str(&other.to_string()),
                 }
+                out.push(';');
             }
-            if let Some(Value::Array(children)) = m.get("Plans") {
-                out.push('[');
-                for c in children {
-                    shape(c, out);
-                }
-                out.push(']');
-            }
-            out.push('}');
         }
-        _ => {}
+        if let Some(Value::Array(children)) = m.get("Plans") {
+            out.push('[');
+            for c in children {
+                shape(c, out);
+            }
+            out.push(']');
+        }
+        out.push('}');
     }
 }
 

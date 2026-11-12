@@ -704,8 +704,8 @@ impl ExprAcc {
             if !self.cnt[o..o + np].contains(&nt) {
                 continue; // never complete: no row (a group's representative is one with values)
             }
-            for j in 0..np {
-                y[j] = if self.cnt[o + j] != nt {
+            for (j, yj) in y.iter_mut().enumerate().take(np) {
+                *yj = if self.cnt[o + j] != nt {
                     f64::NAN
                 } else if e.has_den {
                     self.num[o + j] / self.den[o + j]

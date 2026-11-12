@@ -213,7 +213,7 @@ mon:build:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
 
-# rustfmt + clippy against quality/mon-lint-baseline.txt (no new findings), then
+# rustfmt + clippy (-D warnings), then
 # every test. tests/collector_pg.rs runs against the postgres service
 # (PGAI_TEST_PG_URL; it reconfigures the server, so it gets its own).
 mon:test:
@@ -245,7 +245,6 @@ mon:test:
         - mon/**/*
         - mon/metrics.yml
         - quality/scripts/mon-lint.sh
-        - quality/mon-lint-baseline.txt
         - .gitlab-ci.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
 

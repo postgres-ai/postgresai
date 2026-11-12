@@ -285,6 +285,9 @@ impl IdSel {
     pub fn len(&self) -> usize {
         self.ids.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
     /// The ids of one metric, as a shared range (no copy).
     pub fn ids_of(&self, metric_idx: usize) -> super::scan::IdList {
         let p = self.prefixes[metric_idx];

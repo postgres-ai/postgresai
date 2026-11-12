@@ -429,13 +429,12 @@ pub fn shift_file(src: &Path, dst: &Path, delta_ms: i64, rollup: bool, zstd_leve
                 let (mut mn, mut mx, mut all) = (i64::MAX, i64::MIN, true);
                 for rg in md.row_groups() {
                     match rg.column(j).statistics() {
-                        Some(parquet::file::statistics::Statistics::Int64(s)) => match (s.min_opt(), s.max_opt()) {
-                            (Some(a), Some(b)) => {
+                        Some(parquet::file::statistics::Statistics::Int64(s)) => {
+                            if let (Some(a), Some(b)) = (s.min_opt(), s.max_opt()) {
                                 mn = mn.min(*a);
                                 mx = mx.max(*b);
                             }
-                            _ => {}
-                        },
+                        }
                         _ => all = false,
                     }
                 }

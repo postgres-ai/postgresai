@@ -252,27 +252,27 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
             return;
         };
         let key = format!("{name}{labels} {time}");
-        if !state.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = state.entry(key) {
             out.points.push(Point {
                 name,
                 provider: false,
                 value,
                 time,
             });
-            state.insert(key, time);
+            e.insert(time);
         }
     };
     // A fixed, non-sensitive identity series lets the dashboard name the provider without
     // displaying account, region, instance or host IDs.
     let pkey = format!("{PROVIDER}{} {end}", label_text(target, true));
-    if !state.contains_key(&pkey) {
+    if let std::collections::hash_map::Entry::Vacant(e) = state.entry(pkey) {
         out.points.push(Point {
             name: PROVIDER,
             provider: true,
             value: 1.0,
             time: end,
         });
-        state.insert(pkey, end);
+        e.insert(end);
     }
     let result = api
         .call(
@@ -400,8 +400,8 @@ fn os_samples(r: &Value, now: i64, state: &mut State, out: &mut Poll, emit: &mut
                     other => other.to_string(),
                 };
                 let key = format!("skipped {ts} {msg}");
-                if !state.contains_key(&key) {
-                    state.insert(key, ev["timestamp"].as_f64().map_or(now, |t| t as i64));
+                if let std::collections::hash_map::Entry::Vacant(e) = state.entry(key) {
+                    e.insert(ev["timestamp"].as_f64().map_or(now, |t| t as i64));
                     out.errors.push(err(
                         "Error",
                         format!("Enhanced Monitoring event at {ts} skipped: {why}"),
