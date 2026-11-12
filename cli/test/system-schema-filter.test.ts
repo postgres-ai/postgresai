@@ -5,7 +5,7 @@
  * as an unused index to drop. Catalog indexes cannot be dropped, so they must
  * never reach an index-health report. Three layers are covered here:
  *
- *   1. the SQL in config/pgwatch-{prometheus,postgres}/metrics.yml, for every
+ *   1. the SQL in mon/metrics.yml, for every
  *      PG version key of every affected metric;
  *   2. the copy embedded into the CLI at build time;
  *   3. the defensive filter in the H001/H002/H004 getters, which protects
@@ -13,29 +13,21 @@
  */
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
-import { resolve } from "path";
 
 import * as checkup from "../lib/checkup";
 import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loader";
 import { createMockClient } from "./test-utils";
 import { METRICS_YML } from "./build-inputs";
 
-const configDir = resolve(import.meta.dir, "../../old/config");
-
 type MetricsYml = {
   metrics: Record<string, { sqls: Record<string, string> }>;
 };
 
-const loadMetrics = (relPath: string) =>
-  Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;
-
 const promMetrics = Bun.YAML.parse(readFileSync(METRICS_YML, "utf8")) as MetricsYml;
-const pgMetrics = loadMetrics("pgwatch-postgres/metrics.yml");
 
 /**
  * The per-index metrics that must never surface a system-schema row, with the
- * number of row-emitting CTEs each one needs the exclusion on
- * (index_definitions needs two — `indexes` and `redundant_index_pairs`).
+ * number of row-emitting CTEs each one needs the exclusion on.
  *
  * The exact count detects a DELETED insertion point, which `.toMatch` would
  * not. It says nothing about placement: a predicate moved into a non-emitting
@@ -47,7 +39,6 @@ const INDEX_METRICS: Array<[string, MetricsYml, number]> = [
   ["redundant_indexes", promMetrics, 1],
   ["unused_indexes", promMetrics, 1],
   ["rarely_used_indexes", promMetrics, 1],
-  ["index_definitions", pgMetrics, 2],
 ];
 
 const countOccurrences = (sql: string, re: RegExp) =>
