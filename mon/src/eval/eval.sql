@@ -176,7 +176,7 @@ FROM prom_topk_rs(CAST(p_k AS BIGINT), p_fn, CAST(p_terms[1].m AS VARCHAR), CAST
 
 -- Raw samples of one metric in [p_start, p_end] (ms, inclusive), read by the Rust scan: the
 -- portable way to read raw data. It works on local and object stores alike; on an s3:// store
--- the `samples`/`metrics` views are empty (README, "SQL over an object store"). Same rows as
+-- the `samples`/`metrics` views raise an error (README, "SQL over an object store"). Same rows as
 -- `samples` joined to `series` for that metric and window: NaN values and staleness markers
 -- (stale = true) included. Unordered; add ORDER BY.
 CREATE OR REPLACE MACRO pgai_samples(p_metric, p_matchers, p_start, p_end) AS TABLE

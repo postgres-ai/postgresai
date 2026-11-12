@@ -92,17 +92,23 @@ CREATE OR REPLACE MACRO prom_ts(ms) AS make_timestamptz(CAST(ms AS BIGINT) * 100
 -- Columns: series_id, labels, ts_ms, v (raw), c (reset-corrected, accumulated from the first
 -- fetched sample exactly like removeCounterResets), rn (1-based), n_total, si (scrape interval
 -- estimate: 0.6-quantile of the last 20 intervals, truncated to ms; NULL if < 2 samples).
+-- prom_raw is the one place these macros read raw samples. On an object store the reader
+-- rebinds it to the Rust scan (query.rs), since the `samples` view is not available there.
+CREATE OR REPLACE MACRO prom_raw(p_metric, p_matchers, p_fetch_start, p_end) AS TABLE
+SELECT x.series_id, epoch_ms(x.ts) AS ts_ms, x.value AS v, x.stale
+FROM samples x
+WHERE x.series_id IN (SELECT series_id FROM series WHERE metric = p_metric AND prom_match(labels, p_matchers))
+  AND x.ts >= make_timestamptz(CAST(p_fetch_start AS BIGINT) * 1000)
+  AND x.ts <= make_timestamptz(CAST(p_end AS BIGINT) * 1000);
+
 CREATE OR REPLACE MACRO prom_select(p_metric, p_matchers, p_fetch_start, p_end, p_keep_stale := false) AS TABLE
 WITH sel AS (
   SELECT series_id, labels FROM series
   WHERE metric = p_metric AND prom_match(labels, p_matchers)
 ), raw AS (
-  SELECT x.series_id, epoch_ms(x.ts) AS ts_ms, x.value AS v
-  FROM samples x
-  WHERE x.series_id IN (SELECT series_id FROM sel)
-    AND x.ts >= make_timestamptz(CAST(p_fetch_start AS BIGINT) * 1000)
-    AND x.ts <= make_timestamptz(CAST(p_end AS BIGINT) * 1000)
-    AND (NOT isnan(x.value) OR (p_keep_stale AND x.stale))
+  SELECT series_id, ts_ms, v
+  FROM prom_raw(p_metric, p_matchers, p_fetch_start, p_end)
+  WHERE NOT isnan(v) OR (p_keep_stale AND stale)
 ), seq AS (
   SELECT series_id, ts_ms, v,
          lag(v) OVER w AS pv,

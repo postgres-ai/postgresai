@@ -5,7 +5,7 @@
 //!   no file/network table functions outside the store, no INSTALL/LOAD, no SET;
 //! - an object store (`s3://`) never reaches DuckDB (no httpfs): the small kinds its views read
 //!   are mirrored to local files by Rust (`Mirror`), allowed_directories lists only that
-//!   mirror and the scratch dir, and the raw samples view is empty (prom_* read S3 in Rust).
+//!   mirror and the scratch dir, and the raw samples view raises (prom_* and pgai_samples read S3 in Rust).
 //! - per-query timeout (interrupt), row and byte caps on the result, a concurrency cap;
 //! - typed JSON errors.
 use crate::catalog::FileEntry;
@@ -19,6 +19,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const EMBEDDED_VIEWS_SQL: &str = include_str!("../schema/views.sql");
+
+/// `_raw_samples` on an object store: raw samples are never mirrored, so the `samples` and
+/// `metrics` views fail with a pointer to what does work, where an empty answer would mislead.
+const REMOTE_SAMPLES_VIEW: &str = "SELECT NULL::UBIGINT AS series_id, NULL::TIMESTAMPTZ AS ts, NULL::DOUBLE AS value, \
+     NULL::BOOLEAN AS stale FROM range(1) t(i) WHERE CASE WHEN i >= 0 THEN error('the samples and metrics views are \
+     not available on an object store: use pgai_samples(metric, matchers, start_ms, end_ms) or the prom_* \
+     functions')::BOOLEAN END";
+
+/// On an object store the SQL macros of sql/macros.sql read raw samples through the Rust scan.
+const REMOTE_PROM_RAW: &str =
+    "\n;\nCREATE OR REPLACE MACRO prom_raw(p_metric, p_matchers, p_fetch_start, p_end) AS TABLE \
+     SELECT series_id, ts_ms, value AS v, stale FROM pgai_samples_rs(p_metric, CAST(to_json(p_matchers) AS VARCHAR), \
+     CAST(p_fetch_start AS BIGINT), CAST(p_end AS BIGINT));\n";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct QueryError {
@@ -587,7 +600,10 @@ impl Reader {
         )?;
         // eval.sql loads last: it binds the generic prom_<fn> names to Rust. macros.sql ships
         // the SQL implementations as prom_<fn>_sql (the oracle), so nothing is shadowed.
-        let views_sql = format!("{views_sql}\n;\n{}", crate::eval::EVAL_SQL);
+        let mut views_sql = format!("{views_sql}\n;\n{}", crate::eval::EVAL_SQL);
+        if mirror.is_some() {
+            views_sql.push_str(REMOTE_PROM_RAW);
+        }
         let mut volatile: std::collections::HashSet<String> = CLOCK_FNS.iter().map(|s| s.to_string()).collect();
         {
             let mut q = db.prepare(
@@ -766,6 +782,7 @@ impl Reader {
                             format!("SELECT * FROM {src}")
                         }
                     }
+                    _ if *kind == "samples" && self.mirror.is_some() => REMOTE_SAMPLES_VIEW.to_string(),
                     _ => empty_select(kind).to_string(),
                 }
             };

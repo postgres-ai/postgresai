@@ -1404,7 +1404,7 @@ fn sql_rows(r: &Reader, sql: &str) -> Vec<String> {
 /// `serve --store s3://...` end to end through the SQL path (Reader on an InMemory bucket, no
 /// httpfs): rollup-served prom_last (1 h tier) and a 1 d-tier increase give exactly the local
 /// store's rows; the `series` view reads the local mirror of the registry and tail; the raw
-/// samples view is empty. GETs stay bounded.
+/// samples view raises. GETs stay bounded.
 #[test]
 fn sql_over_an_object_store_matches_the_local_store() {
     use pgai_mon::eval::rollup::{KIND_1D, SERVED};
@@ -1480,7 +1480,10 @@ fn sql_over_an_object_store_matches_the_local_store() {
     let series = sql_rows(&rem, "SELECT count(*) FROM series WHERE metric = 'r_total'");
     assert_eq!(series, vec!["[24]".to_string()]);
     // raw samples are not mirrored: the view is empty (prom_* read them from the bucket)
-    assert_eq!(sql_rows(&rem, "SELECT count(*) FROM samples"), vec!["[0]".to_string()]);
+    let e = rem
+        .run("SELECT count(*) FROM samples")
+        .expect_err("raw view on an object store");
+    assert!(e.message.contains("pgai_samples"), "{e:?}");
     let gets = remote.stats.gets.load(Ordering::Relaxed) - g0;
     assert!(
         gets <= 6 * nfiles,

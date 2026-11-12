@@ -251,6 +251,10 @@ fn queries(t0: i64, t1: i64) -> Vec<String> {
         format!("SELECT series_id, ts, value FROM pgai_samples('m_a', [], {t0}, {t1}) ORDER BY 1, 2"),
         format!("SELECT series_id, ts, value FROM pgai_samples('m_b', [['i', '=~', '1.*']], {t0}, {t1}) ORDER BY 1, 2"),
         format!("SELECT series_id, t, value FROM prom_last('m_a', [], {t0}, {t1}, 60000) ORDER BY 1, 2"),
+        // the SQL macros the reporter compiles to read raw samples through prom_raw
+        format!("SELECT series_id, ts_ms, v, c FROM prom_select('m_a', [], {t0}, {t1}) ORDER BY 1, 2"),
+        format!("SELECT series_id, t, count(*), max(v) FROM prom_window('m_b', [], {t0}, {t1}, 60000, 120000) GROUP BY 1, 2 ORDER BY 1, 2"),
+        format!("SELECT series_id, t, n, first_v, last_v FROM prom_edges('m_a', [], {t0}, {t1}, 60000, 120000, true, false) ORDER BY 1, 2"),
     ]
 }
 
@@ -376,6 +380,14 @@ fn lose_the_vm_and_restart_from_the_bucket() {
         let a = rows(&other, &q);
         assert!(!a.is_empty(), "{q}");
         assert_eq!(a, rows(&local_ref, &q), "{q}");
+    }
+    // the raw views say what to use; an empty answer would read as "no data"
+    for q in ["SELECT count(*) FROM samples", "SELECT count(*) FROM metrics"] {
+        let e = other
+            .run(q)
+            .err()
+            .unwrap_or_else(|| panic!("{q} answered on an object store"));
+        assert!(e.message.contains("pgai_samples"), "{e:?}");
     }
     // the new writer goes on: its commit lands, the old writer's objects are untouched
     c2.flush().unwrap();
