@@ -6,7 +6,8 @@
 //! - `node_status`: primary | standby: run only on that role.
 //! - `statement_timeout_seconds` per metric.
 //! - Columns named `tag_*` become labels (prefix stripped); `epoch_ns` is the timestamp;
-//!   other numeric/bool columns become `pgwatch_<metric>_<column>` series; text is never a label.
+//!   int4/int8/float/bool columns become `pgwatch_<metric>_<column>` series; other text columns
+//!   become labels too (pgwatch's Prometheus sink); see collector::PgVal for every type.
 use serde::Deserialize;
 use std::collections::BTreeMap;
 

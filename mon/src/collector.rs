@@ -12,7 +12,22 @@ use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::types::{FromSql, Type};
 use tokio_postgres::Client;
 
-/// A Postgres value decoded the way pgwatch (pgx) would see it.
+/// A Postgres value decoded the way pgwatch v3.7 sees it: pgx v5 decodes each column to a Go
+/// value and the Prometheus sink keeps int/int32/int64/float32/float64 and bool as samples,
+/// strings as labels (whatever their length), and skips every other Go type. `tag_` columns
+/// of any type become labels, formatted with Go's `%v`.
+///
+/// Per Postgres type (pgx v5 default type map):
+/// - int4, int8, float4, float8, bool: samples; numeric (pgtype.Numeric): skipped unless
+///   collector.drop_numeric is off.
+/// - int2 (Go int16), oid, xid (uint32), xid8 (uint64): not samples; numbers as tags.
+/// - text, varchar, name, bpchar, unknown: labels.
+/// - pg_lsn: not in pgx's type map, so pgx reads it as text (`0/16B3748`): a label, as in
+///   pgwatch.
+/// - timestamptz, timestamp, date (Go time.Time): not samples; as tags Go's time format in
+///   UTC (`2024-01-02 03:04:05.123456 +0000 UTC`), as pgwatch in a UTC container prints it.
+/// - Everything else (reg* types, json, arrays, intervals, ...): not samples; as tags the raw
+///   value. No metric in metrics.yml returns one of these outside a cast.
 #[derive(Debug, Clone)]
 pub enum PgVal {
     Null,
@@ -21,9 +36,60 @@ pub enum PgVal {
     Bool(bool),
     Numeric(f64),
     Text(String),
-    /// Types pgwatch's sink never turns into a series (oid, xid, timestamps, ...);
-    /// the string is used only when the column is a `tag_`.
+    /// Types pgwatch's sink never turns into a series; the string is used only when the
+    /// column is a `tag_`.
     Other(String),
+}
+
+/// Go's `time.Time` `%v` format for a UTC time given in microseconds since 1970-01-01.
+pub fn go_time_utc(micros: i64) -> String {
+    let secs = micros.div_euclid(1_000_000);
+    let frac = micros.rem_euclid(1_000_000);
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400);
+    // civil_from_days (H. Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let mut out = format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        sod / 3600,
+        sod / 60 % 60,
+        sod % 60
+    );
+    if frac != 0 {
+        out.push_str(format!(".{frac:06}").trim_end_matches('0'));
+    }
+    out.push_str(" +0000 UTC");
+    out
+}
+
+/// Go's `%v` for a float64 (`strconv` 'g' with the shortest representation: exponent form
+/// below 1e-4 and from 1e6, e.g. `1.5e+06`).
+pub fn go_float(v: f64) -> String {
+    if v.is_nan() {
+        return "NaN".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "+Inf".into() } else { "-Inf".into() };
+    }
+    if v == 0.0 {
+        return if v.is_sign_negative() { "-0".into() } else { "0".into() };
+    }
+    let e = format!("{v:e}"); // shortest round-trip digits, e.g. 1.5e-7
+    let (mant, exp) = e.split_once('e').unwrap();
+    let exp: i32 = exp.parse().unwrap();
+    if exp < -4 || exp >= 6 {
+        format!("{mant}e{}{:02}", if exp < 0 { '-' } else { '+' }, exp.abs())
+    } else {
+        format!("{v}")
+    }
 }
 
 fn decode_numeric(raw: &[u8]) -> f64 {
@@ -61,7 +127,7 @@ fn decode_numeric(raw: &[u8]) -> f64 {
 impl<'a> FromSql<'a> for PgVal {
     fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         Ok(match *ty {
-            Type::INT2 => PgVal::Int(i16::from_sql(ty, raw)? as i64),
+            Type::INT2 => PgVal::Other(i16::from_sql(ty, raw)?.to_string()),
             Type::INT4 => PgVal::Int(i32::from_sql(ty, raw)? as i64),
             Type::INT8 => PgVal::Int(i64::from_sql(ty, raw)?),
             Type::FLOAT4 => PgVal::Float(f32::from_sql(ty, raw)? as f64),
@@ -76,11 +142,28 @@ impl<'a> FromSql<'a> for PgVal {
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
             ),
-            Type::XID8 | Type::PG_LSN => PgVal::Other(if raw.len() == 8 {
+            Type::XID8 => PgVal::Other(if raw.len() == 8 {
                 u64::from_be_bytes(raw.try_into().unwrap()).to_string()
             } else {
                 String::new()
             }),
+            Type::PG_LSN if raw.len() == 8 => {
+                let v = u64::from_be_bytes(raw.try_into().unwrap());
+                PgVal::Text(format!("{:X}/{:X}", v >> 32, v & 0xffff_ffff))
+            }
+            Type::TIMESTAMPTZ | Type::TIMESTAMP if raw.len() == 8 => {
+                let us = i64::from_be_bytes(raw.try_into().unwrap());
+                PgVal::Other(match us {
+                    i64::MAX => "infinity".into(),
+                    i64::MIN => "-infinity".into(),
+                    // Postgres counts from 2000-01-01
+                    us => go_time_utc(us + 946_684_800_000_000),
+                })
+            }
+            Type::DATE if raw.len() == 4 => {
+                let d = i32::from_be_bytes(raw.try_into().unwrap()) as i64;
+                PgVal::Other(go_time_utc((d + 10_957) * 86_400_000_000))
+            }
             _ => PgVal::Other(String::from_utf8_lossy(raw).into_owned()),
         })
     }
@@ -97,7 +180,7 @@ impl PgVal {
         match self {
             PgVal::Null => None,
             PgVal::Int(v) => Some(v.to_string()),
-            PgVal::Float(v) | PgVal::Numeric(v) => Some(v.to_string()),
+            PgVal::Float(v) | PgVal::Numeric(v) => Some(go_float(*v)),
             PgVal::Bool(b) => Some(b.to_string()),
             PgVal::Text(s) | PgVal::Other(s) => (!s.is_empty()).then(|| s.clone()),
         }
@@ -1595,5 +1678,23 @@ mod tests {
         assert_eq!(job_timeout(&JobKind::Metric(m), &cfg), (300, true));
         assert_eq!(job_timeout(&JobKind::Objects, &cfg), (60, true));
         assert_eq!(job_timeout(&JobKind::QueryTexts, &cfg), (15, false));
+    }
+
+    #[test]
+    fn go_formats_for_tag_values() {
+        assert_eq!(go_float(0.5), "0.5");
+        assert_eq!(go_float(3.0), "3");
+        assert_eq!(go_float(123456.0), "123456");
+        assert_eq!(go_float(1234567.0), "1.234567e+06");
+        assert_eq!(go_float(1e20), "1e+20");
+        assert_eq!(go_float(0.0001), "0.0001");
+        assert_eq!(go_float(0.00001), "1e-05");
+        assert_eq!(go_float(-2.5e-7), "-2.5e-07");
+        assert_eq!(go_float(f64::NAN), "NaN");
+        assert_eq!(go_float(f64::NEG_INFINITY), "-Inf");
+        assert_eq!(go_time_utc(0), "1970-01-01 00:00:00 +0000 UTC");
+        assert_eq!(go_time_utc(1_704_164_645_123_400), "2024-01-02 03:04:05.1234 +0000 UTC");
+        assert_eq!(go_time_utc(-1), "1969-12-31 23:59:59.999999 +0000 UTC");
+        assert_eq!(go_time_utc(951_782_400_000_000), "2000-02-29 00:00:00 +0000 UTC");
     }
 }

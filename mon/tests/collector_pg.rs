@@ -655,3 +655,42 @@ async fn sources_file_changes_are_picked_up() {
     wait_for("reload_a to stop", 5, || collector::source_status("reload_a").is_none()).await;
     mgr.abort();
 }
+
+#[tokio::test]
+async fn column_types_map_like_pgwatch() {
+    let url = need_pg!();
+    let c = collector::connect(&url, &CollectorCfg::default()).await.unwrap();
+    let r = c
+        .query_one(
+            "select 1::int2 as small, 2::int4 as i4, 3::int8 as i8, 1.5::float4 as f4, true as b, \
+             2.5::numeric as num, 16384::oid as o, '0/16B3748'::pg_lsn as lsn, 'x'::name as n, \
+             repeat('d', 400) as long_def, now() as ts, \
+             7::int2 as tag_small, 16384::oid as tag_o, '2024-01-02 03:04:05.1234+00'::timestamptz as tag_t, \
+             1234567.0::float8 as tag_f",
+            &[],
+        )
+        .await
+        .unwrap();
+    let cols: Vec<(&str, collector::PgVal)> = r
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, col)| (col.name(), r.get(i)))
+        .collect();
+    let mut ts = 0;
+    let (labels, fields) = collector::row_fields("m", &cols, &Default::default(), true, &mut ts);
+    let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["i4", "i8", "f4", "b"],
+        "int2, numeric, oid, timestamptz are not samples"
+    );
+    assert_eq!(labels["lsn"], "0/16B3748");
+    assert_eq!(labels["n"], "x");
+    assert_eq!(labels["long_def"].len(), 400, "long text stays a label");
+    assert_eq!(labels["small"], "7");
+    assert_eq!(labels["o"], "16384");
+    assert_eq!(labels["t"], "2024-01-02 03:04:05.1234 +0000 UTC");
+    assert_eq!(labels["f"], "1.234567e+06");
+    assert!(!labels.contains_key("ts") && !labels.contains_key("num"));
+}
