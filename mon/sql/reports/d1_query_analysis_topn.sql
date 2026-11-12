@@ -11,7 +11,7 @@
 -- without text). query_texts holds one row per stored text, so the join reads the newest text of
 -- each (queryid, dbname): a queryid whose text changed must not split into two series. Display columns are prefixed with '_' so the diff harness ignores them.
 -- The full query text is not on the points (it cost 30-40 MiB of the 192 MB reader at 24h/30s):
--- the legend/hover fetches it once per queryid with d1_query_texts.sql.
+-- the legend/hover fetches it once per queryid.
 -- top-k per step (as in PromQL range queries) via the generic prom_topk: the SQL macro
 -- prom_topk_sql or pgai-mon's Rust prom_topk_rs (one k-heap per step), same ties (value,
 -- queryid, label set).

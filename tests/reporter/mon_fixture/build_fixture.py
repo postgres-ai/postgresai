@@ -6,8 +6,6 @@ file:
   samples.jsonl.gz     VictoriaMetrics export JSON lines (`pgai-mon load` input; null = staleness marker)
   query_texts.jsonl    query_texts rows for the kept queryids
   objects.jsonl        objects rows for the kept tables and their indexes
-  query_texts.parquet, objects.parquet   the same rows in the store's own file schema (store.rs
-                       QueryText / ObjectEvent), which the test copies into the loaded store
 
 The slice: one cluster/node, every metric except pg_stat_statements for a fixed set of tables (so
 unused, redundant and invalid index rows, bloat and table stats stay consistent), pg_stat_statements
@@ -17,7 +15,6 @@ engines get the same samples, so thinning changes no comparison). Real NaN value
 markers) are dropped: VictoriaMetrics cannot store them, so the old stack never saw them.
 
 Usage: build_fixture.py --url http://127.0.0.1:PORT [--days 8]
-       build_fixture.py --url - --parquet-only
 """
 import argparse
 import gzip
@@ -64,10 +61,7 @@ def main():
     ap.add_argument("--days", type=int, default=8)
     ap.add_argument("--cluster", default="local")
     ap.add_argument("--node", default="node-01")
-    ap.add_argument("--parquet-only", action="store_true", help="only rewrite the Parquet files from the JSONL")
     a = ap.parse_args()
-    if a.parquet_only:
-        return write_parquet()
 
     end_ms = sql(a.url, "select epoch_ms(max(ts)) e from samples")[0]["e"]
     start_ms = end_ms - a.days * 86400000
@@ -147,26 +141,6 @@ def main():
         for r in objs:
             f.write(json.dumps(r, separators=(",", ":")) + "\n")
     print(f"query_texts: {len(texts)}, objects: {len(objs)}")
-    write_parquet()
-
-
-def write_parquet():
-    """The JSONL files as Parquet in the store's schema (needs the duckdb Python package)."""
-    import duckdb
-    con = duckdb.connect()
-    con.execute("SET TimeZone = 'UTC'")
-    qt, ob = (os.path.join(HERE, f) for f in ("query_texts", "objects"))
-    con.execute(f"""COPY (
-        SELECT CAST(queryid AS BIGINT) AS queryid, dbname, hash(query) AS query_hash, query,
-               make_timestamptz(first_seen_ms * 1000) AS first_seen, make_timestamptz(last_seen_ms * 1000) AS last_seen
-        FROM read_json('{qt}.jsonl', columns = {{queryid: 'VARCHAR', dbname: 'VARCHAR', query: 'VARCHAR',
-                                                  first_seen_ms: 'BIGINT', last_seen_ms: 'BIGINT'}})
-        ORDER BY dbname, queryid) TO '{qt}.parquet' (FORMAT parquet)""")
-    con.execute(f"""COPY (
-        SELECT make_timestamptz(ts_ms * 1000) AS ts, dbname, kind, schema, name, definition
-        FROM read_json('{ob}.jsonl', columns = {{kind: 'VARCHAR', schema: 'VARCHAR', name: 'VARCHAR',
-                                                  definition: 'VARCHAR', ts_ms: 'BIGINT', dbname: 'VARCHAR'}})
-        ORDER BY ts) TO '{ob}.parquet' (FORMAT parquet)""")
 
 
 if __name__ == "__main__":

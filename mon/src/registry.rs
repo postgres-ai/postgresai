@@ -273,7 +273,7 @@ pub fn tail_new(ctx: &EvalCtx) -> Result<Arc<Vec<(u64, u32)>>, String> {
             if rows > 4_000_000 {
                 return Err(format!(
                     "{rows} series rows are not in the series registry yet (store not compacted?); \
-                     run `pgai-mon compact` or `pgai-mon migrate-series` on it"
+                     run `pgai-mon compact` on it"
                 ));
             }
             let m = new_ids(&ctx.root, &tail, &reg).map_err(|e| e.to_string())?;

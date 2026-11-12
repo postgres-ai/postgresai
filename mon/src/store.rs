@@ -172,7 +172,7 @@ pub fn remove_own_scratch() {
 }
 
 /// Remove `<tmp>/pgai-mon-<pid>` dirs whose process is gone; returns how many. Only all-digit
-/// suffixes (not pgai-mon-tile-fmt-*), only dirs, never this process's own.
+/// suffixes (not pgai-mon-topk), only dirs, never this process's own.
 pub fn sweep_dead_scratch(tmp: &Path) -> usize {
     let Ok(rd) = std::fs::read_dir(tmp) else {
         return 0;

@@ -55,9 +55,6 @@ pub struct Catalog {
     /// The closed-watermark lag in force (StoreCfg::closed_lag_ms), written by the writer.
     #[serde(default)]
     pub closed_lag_ms: i64,
-    /// Set by `pgai-mon tile` on the stores it writes (tile.rs: `v1-base`, `v1-tier1d`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format_version: Option<String>,
     /// On an object store: the writer that owns the store (bucket.rs fencing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<WriterLease>,

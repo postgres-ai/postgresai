@@ -49,7 +49,7 @@ pub const D: i64 = DAY_MS;
 /// (prev_ts, prev_v), which makes irate servable; 3 adds the bucket's last (up to) 20 sample
 /// intervals (`iv`), so the scrape-interval estimate comes from rollups, not a raw scan; 4 adds
 /// sum/min/max and the staleness-marker positions (bare selector, *_over_time) and stale-only
-/// buckets (n = 0). Rollups older than VER_EDGE are not served (`migrate-series` rebuilds them).
+/// buckets (n = 0). Rollups older than VER_EDGE are not served.
 pub const VER: u8 = 4;
 /// Oldest 1 h format served to the edge functions and irate (the columns they read).
 const VER_EDGE: u8 = 3;
