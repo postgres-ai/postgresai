@@ -1405,6 +1405,12 @@ async fn get_schema(State(st): State<AppState>) -> Response {
 }
 
 async fn get_health(State(st): State<AppState>) -> Response {
+    Json(health(&st).await).into_response()
+}
+
+/// The body of GET /health: the process's counters and current values (selfmon.rs also
+/// writes them as `pgai_mon_*` series).
+pub async fn health(st: &AppState) -> serde_json::Value {
     let mut reader_stats = st
         .backend
         .call("stats", String::new())
@@ -1439,7 +1445,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
             c.generation,
         )
     };
-    Json(serde_json::json!({
+    serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "samples_in": s.samples_in.load(Ordering::Relaxed),
         "records_in": s.records_in.load(Ordering::Relaxed),
@@ -1452,6 +1458,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
         "catalog_generation": gen,
         "series_known": st.shared.known_series.lock().unwrap().len(),
         "rss_bytes": crate::sqlproc::rss_bytes(std::process::id()),
+        "cpu_seconds": crate::selfmon::cpu_seconds(),
         "admission": st.adm.stats(),
         "collector": crate::collector::health_json(),
         "late_flushes": s.late_flushes.load(Ordering::Relaxed),
@@ -1471,8 +1478,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
             }
             Backend::InProc(_) => serde_json::json!({"process": false}),
         },
-    }))
-    .into_response()
+    })
 }
 
 /// The whole HTTP surface: the SQL routes plus `extra` (ingest), all behind `auth`, and the

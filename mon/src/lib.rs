@@ -20,6 +20,7 @@ pub mod registry;
 pub mod rowjson;
 pub mod rules;
 pub mod scrape;
+pub mod selfmon;
 pub mod sqlproc;
 pub mod store;
 pub mod structure;

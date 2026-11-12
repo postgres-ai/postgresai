@@ -145,6 +145,8 @@ struct St {
     pending_bytes: u64,
     fenced: Option<String>,
     last_error: Option<String>,
+    /// Upload rounds (sync) that failed.
+    upload_errors: u64,
 }
 
 /// Fault injection for tests: stop a sync at a point, as a crash would.
@@ -705,6 +707,7 @@ impl Bucket {
         let res = self.sync_inner(shared, compactor);
         let mut st = self.st.lock().unwrap();
         st.last_error = res.as_ref().err().map(|e| format!("{e:#}"));
+        st.upload_errors += res.is_err() as u64;
         res
     }
 
@@ -896,6 +899,7 @@ impl Bucket {
             "cas_failures": l(&s.cas_failures),
             "fenced": st.fenced,
             "last_error": st.last_error,
+            "upload_errors": st.upload_errors,
         })
     }
 }
