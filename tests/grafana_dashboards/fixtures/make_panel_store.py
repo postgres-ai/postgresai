@@ -3,14 +3,15 @@
 file that `pgai-mon load` imports) from a pgai-mon serving a recorded store. Standard library only.
 
   make_panel_store.py --url http://127.0.0.1:8765 --end-ms 1794206700000 [--out ...]
+  make_panel_store.py --extend --end-ms 1794206700000   # add new synthetic series to the existing file
 
 It keeps 130 minutes before --end-ms (the dashboards' default 1 h range, plus the 1 h subquery
 window of Dashboard 6's threshold panel and rate look-back), at the recorded 30 s resolution, of
 a few series per metric: database target_database, schema app, table t119 and its index
 t119_unused, a handful of statements. Then it adds synthetic series for what the recording has
 none of (host metrics, WAL archiving, replication and slots, lock waits, autovacuum blocked on a
-lock, index_pilot, the settings columns metrics.yml gained later), so that every panel has data
-to run on. Values are rounded to 6 significant digits to keep the file small.
+lock, index_pilot, the settings columns metrics.yml gained later, pgai-mon's own pgai_mon_*
+series), so that every panel has data to run on. Values are rounded to 6 significant digits to keep the file small.
 """
 import argparse
 import gzip
@@ -129,7 +130,11 @@ def synthetic(base, t0, t1):
                     ("host_volume_used_bytes", wave(59 << 30, 60 << 30)), ("host_disk_read_iops", wave(10, 200)),
                     ("host_disk_write_iops", wave(50, 300)), ("host_volume_read_iops", wave(10, 200)),
                     ("host_volume_write_iops", wave(50, 300)), ("host_network_receive_bytes_per_second", wave(1e5, 1e6)),
-                    ("host_network_transmit_bytes_per_second", wave(1e5, 1e6)), ("host_db_load", wave(0.5, 3))):
+                    ("host_network_transmit_bytes_per_second", wave(1e5, 1e6)), ("host_db_load", wave(0.5, 3)),
+                    ("host_disk_read_bytes_per_second", wave(1e6, 2e7)), ("host_disk_write_bytes_per_second", wave(2e6, 3e7)),
+                    ("host_disk_read_latency_seconds", wave(0.0005, 0.004)),
+                    ("host_disk_write_latency_seconds", wave(0.001, 0.008)), ("host_disk_provisioned_iops", [3000] * n),
+                    ("host_disk_provisioned_throughput_bytes_per_second", [125 << 20] * n)):
         add(m, {}, vals)
     add("host_provider_info", {"provider": "self-managed"}, [1] * n)
     # WAL archiving (archive_lag) and replication slots
@@ -169,6 +174,23 @@ def synthetic(base, t0, t1):
                     ("max_slot_wal_keep_size", -1), ("checkpoint_timeout", 300)):
         add("pgwatch_settings_setting_normalized", {"setting_name": name}, [v] * n)
     add("pgwatch_settings_max_connections", {}, [100] * n)
+    # pgai-mon's own series (collector.rs): per database {dbname}, per metric {base labels, metric}
+    db = {"dbname": base.get("dbname", "target_database")}
+    out.append({"metric": {"__name__": "pgai_mon_source_up", **db}, "values": [0 if n // 2 <= i < n // 2 + 4 else 1
+                                                                                for i in range(n)], "timestamps": ts})
+    out.append({"metric": {"__name__": "pgai_mon_source_last_success_epoch_s", **db},
+                "values": [r6(t / 1000 - (90 if n // 2 <= i < n // 2 + 4 else 15)) for i, t in enumerate(ts)],
+                "timestamps": ts})
+    out.append({"metric": {"__name__": "pgai_mon_connect_failures_total", **db},
+                "values": [float(min(max(i - n // 2 + 1, 0), 4)) for i in range(n)], "timestamps": ts})
+    for name, rate in (("pgai_mon_errors_total", 0.01), ("pgai_mon_timeouts_total", 0.002),
+                       ("pgai_mon_skipped_slots_total", 0.001)):
+        out.append({"metric": {"__name__": name, **db, "metric": "lock_waits"},
+                    "values": [r6(v) for v in counter(rate, 1)], "timestamps": ts})
+    for m, lo, hi in (("db_stats", 5, 20), ("pg_stat_statements", 40, 300), ("table_stats", 20, 90)):
+        add("pgai_mon_metric_duration_ms", {"metric": m}, wave(lo, hi))
+    add("pgai_mon_series_cut_total", {"metric": "pg_stat_statements"}, [float(i // 40) for i in range(n)])
+    add("pgai_mon_rows_cut_total", {"metric": "table_stats"}, [float(i // 60) for i in range(n)])
     return out
 
 
@@ -209,11 +231,24 @@ def ash_for(ash):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--url", required=True)
+    ap.add_argument("--url")
     ap.add_argument("--end-ms", type=int, required=True)
     ap.add_argument("--out", default=os.path.join(HERE, "panel_store.jsonl.gz"))
+    ap.add_argument("--extend", action="store_true",
+                    help="no --url: read --out and add the synthetic series it lacks (keeps the recording)")
     a = ap.parse_args()
+    if not a.extend and not a.url:
+        ap.error("--url is required without --extend")
     t0, t1 = a.end_ms - SPAN_MS, a.end_ms
+    if a.extend:
+        with gzip.open(a.out, "rt") as f:
+            rec = [json.loads(x) for x in f]
+        base = next(s["metric"] for s in rec if s["metric"]["__name__"] == "pgwatch_db_stats_numbackends")
+        base = {k: v for k, v in base.items() if k != "__name__"}
+        have = {s["metric"]["__name__"] for s in rec}
+        syn = [s for s in synthetic(base, t0, t1) if s["metric"]["__name__"] not in have]
+        write(a.out, rec, syn)
+        return
     rec = recorded(a.url, t0, t1)
     base = next(s["metric"] for s in rec if s["metric"]["__name__"] == "pgwatch_db_stats_numbackends")
     base = {k: v for k, v in base.items() if k != "__name__"}
@@ -221,11 +256,15 @@ def main():
     have = {s["metric"]["__name__"] for s in rec}
     syn = [s for s in synthetic(base, t0, t1) if s["metric"]["__name__"] not in have]
     syn += supplements(base, t0, t1) + ash_for(ash)
-    with gzip.open(a.out, "wt", compresslevel=9) as f:
+    write(a.out, rec, syn)
+
+
+def write(out, rec, syn):
+    with gzip.open(out, "wt", compresslevel=9) as f:
         for s in rec + syn:
             f.write(json.dumps(s, separators=(",", ":")) + "\n")
-    print(f"{a.out}: {len(rec)} recorded + {len(syn)} synthetic series, "
-          f"{sum(len(s['timestamps']) for s in rec + syn)} samples, {os.path.getsize(a.out)} bytes")
+    print(f"{out}: {len(rec)} kept + {len(syn)} synthetic series, "
+          f"{sum(len(s['timestamps']) for s in rec + syn)} samples, {os.path.getsize(out)} bytes")
 
 
 if __name__ == "__main__":

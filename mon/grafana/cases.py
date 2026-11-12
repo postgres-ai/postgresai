@@ -361,6 +361,51 @@ d2("host/55A_mem_used", "host_mem_used.sql",
    f"host_os_memory_buffers_bytes{_hs}) or on(cluster, node_name) (host_os_memory_total_bytes{_hs} - host_memory_available_bytes{_hs})")
 d2("host/56A_disk_used", "host_disk_used.sql", f"host_disk_size_bytes{_hs} - host_disk_free_bytes{_hs}")
 
+# Dashboard_99 (Host stats): the same host_* shapes as Dashboard_1's Host row, with its own panel ids
+# (101 CPU, 102 memory, 103 storage, 104 network, 105-110 disk read/write IOPS, throughput,
+# latency, 62 DB load), plus the per-direction disk series and the provisioned limits
+
+
+def d99(id_, file, promql, **params):
+    d2(id_, file, promql, **params)
+    CASES[-1]["id"] = "D99/" + id_
+
+
+for ref, metric in (("102F", "host_os_memory_total_bytes"), ("102G", "host_os_swap_used_bytes"),
+                    ("102H", "host_os_process_max_rss_bytes"), ("103B", "host_disk_free_bytes"),
+                    ("103C", "host_disk_size_bytes"), ("103D", "host_local_storage_free_bytes"),
+                    ("103E", "host_volume_used_bytes"), ("104A", "host_network_receive_bytes_per_second"),
+                    ("104B", "host_network_transmit_bytes_per_second"), ("105A", "host_disk_read_iops"),
+                    ("105B", "host_volume_read_iops"), ("105C", "host_disk_provisioned_iops"),
+                    ("106A", "host_disk_read_bytes_per_second"),
+                    ("106B", "host_disk_provisioned_throughput_bytes_per_second"),
+                    ("107A", "host_disk_read_latency_seconds"), ("108A", "host_disk_write_iops"),
+                    ("108B", "host_volume_write_iops"), ("108C", "host_disk_provisioned_iops"),
+                    ("109A", "host_disk_write_bytes_per_second"),
+                    ("109B", "host_disk_provisioned_throughput_bytes_per_second"),
+                    ("110A", "host_disk_write_latency_seconds"), ("62A", "host_db_load")):
+    d99(f"{ref}_raw", "raw_selector.sql", f"{metric}{_hs}", metric=metric, matchers=_CNv)
+for ref, metric in zip(("101A", "101B", "101C", "101D"), _cpu4):
+    d99(f"{ref}_and", "host_and_unless.sql", f"{metric}{_hs} and on(cluster, node_name) ({_and_chain(_cpu4)})",
+        metric=metric, others=_cpu4, op="and")
+for ref, metric in (("102B", "host_os_memory_buffers_bytes"), ("102C", "host_os_memory_cached_bytes"),
+                    ("102D", "host_os_memory_free_bytes")):
+    d99(f"{ref}_and", "host_and_unless.sql", f"{metric}{_hs} and on(cluster, node_name) ({_and_chain(_mem4)})",
+        metric=metric, others=_mem4, op="and")
+d99("102E_unless", "host_and_unless.sql",
+    f"host_memory_available_bytes{_hs} unless on(cluster, node_name) ({_and_chain(_mem4)})",
+    metric="host_memory_available_bytes", others=_mem4, op="unless")
+d99("101E_cpu_other", "host_cpu.sql", f"clamp_min({_total} - " + " - ".join(f"{m}{_hs}" for m in _cpu4) + ", 0)",
+    variant="other")
+d99("101F_cpu_total", "host_cpu.sql", f"{_total} unless on(cluster, node_name) ({_and_chain(_cpu4)})",
+    variant="total_unless_split")
+d99("101G_cpu_idle", "host_cpu.sql", f"clamp_min(100 - {_total}, 0)", variant="idle")
+d99("102A_mem_used", "host_mem_used.sql",
+    f"(host_os_memory_total_bytes{_hs} - host_os_memory_free_bytes{_hs} - host_os_memory_cached_bytes{_hs} - "
+    f"host_os_memory_buffers_bytes{_hs}) or on(cluster, node_name) (host_os_memory_total_bytes{_hs} - "
+    f"host_memory_available_bytes{_hs})")
+d99("103A_disk_used", "host_disk_used.sql", f"host_disk_size_bytes{_hs} - host_disk_free_bytes{_hs}")
+
 # --- step alignment when the VM response cache is on (no nocache=1): AdjustStartEnd rounds start
 #     down / end up to the step for >= 50 points; prom_range_start/end reproduce it.
 _AL = "prom_range_start(getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms')), " \

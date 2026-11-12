@@ -132,7 +132,7 @@ class Emitted(unittest.TestCase):
                     self.assertEqual(po[i]["datasource"], C.INFINITY)
             counts[spec["census"]] = n
         self.assertEqual(counts, {"D2": 79, "D1": 23, "D4": 5, "D3": 16, "D7": 28, "D13": 8, "D12": 7, "D14": 17,
-                                  "D5": 13, "D9": 32, "D11": 9, "D6": 24, "D8": 26, "D10": 7})
+                                  "D5": 13, "D9": 32, "D11": 9, "D6": 24, "D8": 26, "D10": 7, "D99": 35})
 
     def test_table_panels(self):
         """The panels that called the Flask backend or the Postgres sink run pgai-mon SQL instead, with
