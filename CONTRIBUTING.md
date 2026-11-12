@@ -37,7 +37,6 @@ This workflow lets you:
 - run the monitoring stack via Docker Compose
 - iterate on **custom code** without rebuilding images or committing changes
 - run the **reporter on your host** (recommended) and debug it
-- optionally debug the Flask backend running in Docker
 
 ### What runs where (quick mental model)
 
@@ -89,9 +88,9 @@ cp docker-compose.override.example.yml docker-compose.override.yml
 
 This enables:
 
-- using local `./config/**` (Prometheus/Grafana/pgwatch configs) instead of published config images
-- Flask bind-mount + optional debugpy
-- exposing `sink-postgres` on localhost for host-run reporter
+- using the local Grafana provisioning (`config/grafana/provisioning/`), dashboards
+  (`mon/grafana/dashboards/`) and demo-DB scripts instead of the published config image
+- (optional, commented) running pgai-mon from a locally built image or your own config
 - (optional) an alternate mode to run the reporter *inside Docker* (commented in the example override). **Host-run reporter is the primary workflow.**
 
 #### Create `.pgwatch-config` (optional but recommended)
@@ -128,20 +127,20 @@ That means you can iterate without polluting `git status`.
 
 #### Local configs are used (recommended for dev)
 
-This repo includes a `docker-compose.override.yml` that overrides `config-init` to **copy configs from your local working tree** (`./config`) into the shared `postgres_ai_configs` Docker volume.
+The override overrides `config-init` to **copy configs from your local working tree** (`./config` and `mon/grafana/dashboards`) into the shared `postgres_ai_configs` Docker volume.
 
 That means edits to:
 
-- `old/config/prometheus/prometheus.yml`
-- `old/config/grafana/dashboards/*.json`
-- `config/pgwatch-*/metrics.yml`
+- `config/grafana/provisioning/**`
+- `mon/grafana/dashboards/*.json`
+- `config/target-db/**`
 - `config/scripts/*.sh`
 
 can be picked up locally (see “Applying config changes” below).
 
 #### 1) Choose what Postgres you want to monitor
 
-The pgwatch collectors read targets from `instances.yml`. **By default, the included demo target is disabled**, so you must enable at least one instance.
+pgai-mon reads targets from `instances.yml`. **By default, the included demo target is disabled**, so you must enable at least one instance.
 
 ##### Option A (fastest): monitor the included demo DB (`target-db`)
 
@@ -179,20 +178,19 @@ pgai-mon reloads `instances.yml` by itself when it changes; nothing needs a rest
 Useful URLs/ports:
 
 - **Grafana**: `http://localhost:3000`
-- **VictoriaMetrics (Prometheus API)**: `http://localhost:59090`
-- **sink-postgres** (exposed to host by override): `postgresql://pgwatch@127.0.0.1:55433/measurements`
+- **pgai-mon** (read-only SQL at `POST /sql`, bearer token `PGAI_MON_TOKEN` from `.env`): `http://127.0.0.1:8765`
 
 Quick sanity checks:
 
 ```bash
 docker compose ps
-curl -fsS http://localhost:59090/metrics >/dev/null && echo "victoriametrics ok"
+curl -fsS http://127.0.0.1:8765/livez >/dev/null && echo "pgai-mon ok"
 curl -fsS http://localhost:3000/api/health || true
 ```
 
-### Applying config changes (Prometheus/Grafana/pgwatch)
+### Applying config changes (Grafana, demo DB, scripts)
 
-When you change files under `config/`, re-run `config-init` to copy them into the shared volume:
+When you change files under `config/` or `mon/grafana/dashboards/`, re-run `config-init` to copy them into the shared volume:
 
 ```bash
 docker compose up -d --force-recreate config-init
@@ -203,7 +201,7 @@ Then restart the affected services:
 - **Collected metrics changed** (`mon/metrics.yml`): the file is baked into the
   pgai-mon image; rebuild it (see "Option A" below) and recreate the service.
 
-- **Grafana dashboards/provisioning changed** (`config/grafana/**`):
+- **Grafana dashboards/provisioning changed** (`mon/grafana/dashboards/**`, `config/grafana/provisioning/**`):
   - dashboards are file-provisioned and often reload automatically, but if in doubt:
 
 ```bash
@@ -257,10 +255,11 @@ ts="$(date -u +%Y%m%d_%H%M%S)"
 out_dir="${orig_dir}/dev_reports/dev_report_${ts}"
 mkdir -p "${out_dir}"
 cd "${out_dir}"
+export PGAI_MON_TOKEN="$(sed -n 's/^PGAI_MON_TOKEN=//p' "${orig_dir}/.env" | tail -n 1)"
 PYTHONPATH="${orig_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
 python -m reporter.postgres_reports \
-  --prometheus-url http://127.0.0.1:59090 \
-  --postgres-sink-url postgresql://pgwatch@127.0.0.1:55433/measurements \
+  --mon-url http://127.0.0.1:8765 \
+  --sources-path "${orig_dir}/instances.yml" \
   --no-upload \
   --output -
 echo "Wrote reports to: ${out_dir}"
@@ -274,30 +273,6 @@ This repo includes `.vscode/launch.json` with a config:
 - **Run Reporter (local)**
 
 Use **Run and Debug** → select **Run Reporter (local)**.
-
-### Debug Flask backend in Docker (optional)
-
-The override file bind-mounts `./monitoring_flask_backend` into the container for fast iteration.
-
-#### Run without debugger
-
-```bash
-docker compose up -d --force-recreate monitoring_flask_backend
-```
-
-#### Enable debugpy (attach debugger)
-
-```bash
-DEBUGPY_FLASK=1 docker compose up -d --force-recreate monitoring_flask_backend
-```
-
-Then attach from Cursor/VS Code:
-
-- **Attach (Flask in Docker: debugpy 5678)**
-
-The Flask service (gunicorn) is exposed on:
-
-- `http://localhost:55000`
 
 ### (Optional) Debug reporter in Docker
 
@@ -314,7 +289,7 @@ Then attach:
 ### Troubleshooting
 
 - **Compose says `PGAI_TAG is required`**: set it in `.env` (see above).
-- **Host reporter can’t connect to sink-postgres**: make sure the stack is up and `sink-postgres` is bound to `127.0.0.1:55433` (it is in `docker-compose.override.yml`).
+- **Host reporter can’t connect to pgai-mon**: make sure the stack is up (`docker-compose.yml` publishes pgai-mon on `127.0.0.1:8765`) and `PGAI_MON_TOKEN` matches the one in `.env`.
 - **Edited `instances.yml`**: pgai-mon reloads it by itself; `docker compose logs pgai-mon` shows the new source.
 
 ## Alternative local development (always rebuild images)
@@ -386,7 +361,7 @@ postgresai mon reset
 ```bash
 postgresai mon logs
 postgresai mon logs grafana
-postgresai mon logs monitoring_flask_backend
+postgresai mon logs pgai-mon
 ```
 
 ### Stop / start
@@ -403,7 +378,7 @@ Preview environments let you test monitoring changes in isolated, publicly acces
 ### Overview
 
 - Each preview runs at `https://preview-{branch-slug}.pgai.watch`
-- Includes: PostgreSQL target database, pgwatch collector, VictoriaMetrics, Grafana, and variable workload generator
+- Includes: PostgreSQL target database, pgai-mon, Grafana, the reporter, and variable workload generator
 - Auto-expires after 3 days of inactivity
 - Maximum 2 concurrent previews
 
@@ -466,7 +441,7 @@ Branch names are sanitized for DNS compatibility:
 
 **Grafana shows "No Data":**
 - Wait 1-2 minutes for metrics to be collected
-- Check if pgwatch container is running
+- Check if the pgai-mon container is running
 
 **Can't access the preview URL:**
 - DNS propagation may take a few minutes

@@ -169,8 +169,8 @@ works (it can list Postgres services and read `/prometheus`, and cannot change a
 The CLI does not need an Admin key.
 
 The key secret is stored in plaintext in `host-metrics/clickhouse-<name>.secret` in the monitoring
-project directory (file 0600, directory 0700), because VictoriaMetrics reads it from a file for basic
-auth. It is never printed or logged. `mon targets remove <name>` deletes it. To rotate the key, re-run
+project directory (file 0600, directory 0700), because pgai-mon's scraper reads it from a file
+(`password_file`) for basic auth. It is never printed or logged. `mon targets remove <name>` deletes it. To rotate the key, re-run
 `mon targets add` with the new key.
 
 ### Verify and password reset
@@ -276,8 +276,8 @@ object a line, each with `event`. Besides the steps, any other text is
 argument or a bad option; an unknown option is named without its value), a warning (`warn`: a line
 with `Warning:`, also after a `[F001] ` prefix), the `--debug` request log (`debug`), and with
 `--self-hosted` each line of `mon local-install`
-(`"source":"mon local-install"`; `info` from its stdout, `error` from its stderr; the Grafana and
-VictoriaMetrics logins it prints at its end are masked: `pgai mon show-grafana-credentials` shows them).
+(`"source":"mon local-install"`; `info` from its stdout, `error` from its stderr; the logins it
+prints at its end are masked: `pgai mon show-grafana-credentials` shows them).
 
 `pgai init` is the same for a person at a terminal: it signs in, asks for the database URL (and,
 for ClickHouse, the API key; neither is shown as typed), then runs `pgai mon deploy`. Without a
@@ -547,7 +547,7 @@ postgresai mon health [--wait <sec>]  # Check monitoring services health
 
 When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forwards the id to the platform, which **adopts** the already-provisioned monitoring instance instead of self-registering a duplicate under an auto-created `postgres-ai-monitoring` project. The CLI then persists the adopted instance's real project to `.pgwatch-config`, so checkup reports upload alongside the rest of that instance's health data. Adoption is awaited (with one automatic retry); if it fails, the CLI warns and reports fall back to the default project until you re-run `local-install`. Without the flag, the legacy self-registration path is byte-for-byte unchanged.
 
-`local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD`, `VM_AUTH_*` and the VictoriaMetrics admin-endpoint keys (`VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY`, `VM_PPROF_AUTH_KEY`, added in 0.17) or generates new random ones when missing. The admin keys live on the `sink-prometheus` command line, so `mon update` and `mon update-config` also recreate that container to apply them; `mon restart` (`docker compose restart`) does not; `VM_AUTH_USERNAME` defaults to `vmauth` when absent. The replication password is used by the demo PostgreSQL standby replication user, and the VM auth credentials are required before Docker Compose can provision Grafana datasources. If you run `docker compose` directly or maintain `.env` yourself, set both VM auth values before upgrading. For rotation, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./old/scripts/rotate-vm-auth.sh` from the monitoring directory so `.env`, `sink-prometheus`, and `grafana` update together.
+`local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD` and `PGAI_MON_TOKEN` (the bearer token pgai-mon requires; Grafana, the reporter and instance-jobs send it) or generates new random ones when missing, and drops the old stack's `VM_AUTH_*` and `VM_*_AUTH_KEY` keys, which nothing reads any more (`mon update` leaves them in place). The replication password is used by the demo PostgreSQL standby replication user. If you run `docker compose` directly or maintain `.env` yourself, run `postgresai mon update-config` once to add `PGAI_MON_TOKEN`.
 
 ##### Metrics store (`PGAI_MON_STORE`)
 

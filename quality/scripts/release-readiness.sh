@@ -7,7 +7,6 @@
 # Verifies that the codebase is ready for release by checking:
 #   1. Git status (clean working tree, release-eligible branch)
 #   2. Python tests — reporter
-#   2b. Python tests — Flask backend
 #   3. CLI tests
 #   4. CLI build
 #   5. TypeScript type check
