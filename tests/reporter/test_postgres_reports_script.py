@@ -355,7 +355,7 @@ def run_loop(tmp_path: Path, stop_after_sleeps: int, python_exit: int, env_extra
     env = os.environ.copy()
     for key in ("REPORTER_INITIAL_DELAY_SECONDS", "REPORTER_READINESS_TIMEOUT_SECONDS",
                 "REPORTER_READINESS_POLL_SECONDS", "REPORTER_RETRY_SECONDS",
-                "REPORTER_INTERVAL_SECONDS", "REPORTER_SOURCES_PATH", "PROMETHEUS_URL"):
+                "REPORTER_INTERVAL_SECONDS", "REPORTER_SOURCES_PATH", "PGAI_MON_URL"):
         env.pop(key, None)
     env.update(
         {
@@ -384,10 +384,12 @@ def test_first_run_waits_for_data_once_then_runs_daily(tmp_path):
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
     assert sleeps == ["180", "86400", "86400"]
     assert calls[0] == (
-        "-m reporter.wait_ready http://sink-prometheus:9090 "
-        "/postgres_ai_configs/pgwatch-prometheus/sources.yml 1800 15"
+        "-m reporter.wait_ready http://pgai-mon:8765 /app/instances.yml 1800 15"
     )
     assert [c.split()[1] for c in calls[1:]] == ["reporter.postgres_reports"] * 2
+    # The reports read pgai-mon (docker-compose.yml's postgres-reports service).
+    assert all("--mon-url http://pgai-mon:8765 " in c for c in calls[1:])
+    assert not any("--prometheus-url" in c for c in calls)
     assert "readiness_timeout_seconds=1800" in proc.stdout
 
 
@@ -398,6 +400,17 @@ def test_readiness_wait_can_be_turned_off(tmp_path):
 
     assert proc.returncode == STUB_EXIT_CODE, proc.stderr
     assert [c.split()[1] for c in calls] == ["reporter.postgres_reports"]
+
+
+@pytest.mark.unit
+def test_mon_url_and_sources_path_follow_the_environment(tmp_path):
+    proc, calls, _ = run_loop(tmp_path, stop_after_sleeps=2, python_exit=0,
+                              env_extra={"PGAI_MON_URL": "http://mon.test:9999",
+                                         "REPORTER_SOURCES_PATH": "/x/instances.yml"})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert calls[0] == "-m reporter.wait_ready http://mon.test:9999 /x/instances.yml 1800 15"
+    assert "--mon-url http://mon.test:9999 " in calls[1]
 
 
 @pytest.mark.unit
