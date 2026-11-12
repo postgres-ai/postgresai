@@ -1,9 +1,32 @@
 # SQL dashboards for pgai-mon
 
-`dashboards/` holds the 14 ported dashboards (every dashboard in
-`old/config/grafana/dashboards/` except `Dashboard_99_Host_stats` and `Self_Monitoring_Dashboard`).
+`dashboards/` holds the 16 ported dashboards, one per dashboard in `old/config/grafana/dashboards/`.
 They are generated; do not edit them by hand. Each keeps the original's panels, layout, units
-and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`.
+and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`. The exception is
+the self-monitoring dashboard (below).
+
+## Self-monitoring
+
+The original charted components the pgai-mon stack does not run (cAdvisor, node-exporter,
+postgres-exporter, VictoriaMetrics, the sink Postgres, the Flask backend), so
+`self_monitoring.py` writes `Self_Monitoring_Dashboard_pgai_mon.json` (uid
+`pgai-mon-self-monitoring`) from what pgai-mon records about itself: `pgai_mon_source_up`,
+`pgai_mon_source_last_success_epoch_s`, `pgai_mon_connect_failures_total` {dbname};
+`pgai_mon_errors_total`, `pgai_mon_timeouts_total`, `pgai_mon_skipped_slots_total` {dbname, metric};
+`pgai_mon_metric_duration_ms`, `pgai_mon_series_cut_total`, `pgai_mon_rows_cut_total` {base labels,
+metric}; `up`, `scrape_duration_seconds`, `scrape_samples_scraped` per scrape target; and the
+`series` view (series and metric counts). Kept from the original: "Time series in store" (was
+Victoria Metrics time series) and "Scrape duration by target". Dropped (`DROPPED` there): the
+version banner, the container, host (node-exporter), VictoriaMetrics and sink Postgres panels.
+
+Not charted because pgai-mon does not write them as series (GET /health reports most of them as
+current values only): ingest rate (`samples_in`, `records_in`), flush count and duration
+(`flushes`, `flush_ms_last`, `late_flushes`), WAL bytes, store size (`files`, `parquet_bytes`),
+`series_known`, process RSS (`rss_bytes`), reader restarts and memory kills, S3 upload lag and
+backlog (`s3_write.last_commit_age_s`, `pending_files`, `pending_bytes`), query cache hit rates,
+admission queueing and compactions; not even in /health: process CPU, S3 upload errors, and the
+host of the monitoring VM itself. `pgai_mon_source_*` carry only `dbname`, so two sources with the same
+database label are not told apart.
 
 ## Datasource
 
@@ -41,6 +64,9 @@ python3 mon/grafana/compile.py --probe-url http://127.0.0.1:8765
 # reference inlining of cases.py (exit 1 on any failure)
 python3 mon/grafana/compile.py --probe-url http://127.0.0.1:8765 --check \
     [--instance cluster,node,db,second_db]
+
+# compile.py also writes the self-monitoring dashboard; alone (no pgai-mon needed):
+python3 mon/grafana/self_monitoring.py
 
 # offline checks of the emitted JSON (no pgai-mon, no Grafana)
 python3 mon/grafana/test_compile.py

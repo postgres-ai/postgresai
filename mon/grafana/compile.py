@@ -142,6 +142,8 @@ DASHBOARDS = [
          out="Dashboard_8_Table_Stats_pgai_mon.json", extra_labels=[]),
     dict(src="Dashboard_10_Index health.json", census="D10", uid="pgai-mon-index-health",
          out="Dashboard_10_Index_health_pgai_mon.json", extra_labels=[]),
+    dict(src="Dashboard_99_Host_stats.json", census="D99", uid="pgai-mon-host-stats",
+         out="Dashboard_99_Host_stats_pgai_mon.json", extra_labels=[]),
     # a spec may set partial=True: the targets with no case then stay PromQL on the original
     # Prometheus datasource, and the panel becomes "-- Mixed --" (none does now)
 ]
@@ -181,10 +183,10 @@ def table_target(spec_panel, target):
 
 
 # censuses whose case ids are "<census>/<panel id><refId>_..." (D2 also has "D2/host/<...>")
-PANEL_KEYED = ("D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14")
+PANEL_KEYED = ("D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14", "D99")
 
 # label_values(metric{matchers}, label) template variables -> SQL over the `series` view
-LABEL_VALUES = re.compile(r"^\s*label_values\(\s*(\w+)\s*(?:\{(.*)\})?\s*,\s*(\w+)\s*\)\s*$")
+LABEL_VALUES = re.compile(r"^\s*label_values\(\s*(\w*)\s*(?:\{(.*)\})?\s*,\s*(\w+)\s*\)\s*$")
 MATCHER = re.compile(r'(\w+)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"')
 
 
@@ -450,10 +452,11 @@ def label_values_sql(query):
     if not m:
         raise SystemExit(f"unsupported variable query {query!r}")
     metric, matchers, label = m.group(1), m.group(2) or "", m.group(3)
-    where = [f"metric = '{metric}'", f"labels['{label}'] IS NOT NULL"]
+    where = ([f"metric = '{metric}'"] if metric else []) + [f"labels['{label}'] IS NOT NULL"]
     for k, op, v in MATCHER.findall(matchers):
         lit = "'" + gvar(v, op in ("=~", "!~")).replace("'", "''") + "'"
-        lv = f"coalesce(labels['{k}'], '')"
+        # {__name__=~"host_.+"}: the metric name is the series view's `metric` column
+        lv = "metric" if k == "__name__" else f"coalesce(labels['{k}'], '')"
         where.append({"=": f"{lv} = {lit}", "!=": f"{lv} <> {lit}",
                       "=~": f"regexp_full_match({lv}, {lit})", "!~": f"NOT regexp_full_match({lv}, {lit})"}[op])
     # Prometheus scopes label_values to the time range; the series view has no time bounds, so
@@ -703,6 +706,9 @@ def main():
             f.write("\n")
         print(f"{path}: {n} targets, {len(d['templating']['list'])} variables")
         report.append((spec, d, queries))
+    # the self-monitoring dashboard has no PromQL original to compile (self_monitoring.py)
+    import self_monitoring
+    print(f"{self_monitoring.write(args.out)}: written from self_monitoring.py")
     if not args.check:
         return
     # default end: the newest `up` sample (other metrics may run later than the dashboards' data)

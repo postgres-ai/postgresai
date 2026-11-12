@@ -7,13 +7,17 @@ The SQL dashboards have one: Grafana's Infinity datasource POSTing a single SELE
 
 A target that reads a metric must also select the dashboard's cluster and node, or with several
 monitored instances it blends them. The targets listed in UNSCOPED are faithful ports of source
-PromQL that lacks those matchers; the list may only shrink.
+PromQL that lacks those matchers; the list may only shrink. The self-monitoring dashboard reads
+pgai-mon's own series and the scrape targets', which have no cluster or node: it has no instance
+to select.
 """
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
+
+import pytest
 
 from tests.grafana_dashboards.conftest import (
     INFINITY_TYPE,
@@ -35,6 +39,7 @@ UNSCOPED = {
     (9, 32, "A"), (9, 33, "A"),
     (11, 1, "A"), (11, 1, "B"), (11, 1, "C"),
 }
+SELF_MONITORING = "Self_Monitoring_Dashboard_pgai_mon.json"
 SCOPE = ("${cluster_name:sqlstring}", "${node_name:sqlstring}")
 METRIC_READ = re.compile(r"\b(?:prom_\w+|pgai_samples)\(\(?'(\w+)'|\bmetric = '(\w+)'")
 
@@ -103,6 +108,8 @@ def _unscoped(dashboard_path: Path) -> set[tuple[int, int, str]]:
 
 
 def test_metric_reads_select_the_instance(dashboard_path: Path) -> None:
+    if dashboard_path.name == SELF_MONITORING:
+        pytest.skip("pgai-mon's own series: no cluster/node to select")
     number = int(re.match(r"Dashboard_(\d+)_", dashboard_path.name).group(1))
     known = {k for k in UNSCOPED if is_dashboard(dashboard_path, k[0])}
     found = _unscoped(dashboard_path)
