@@ -6,6 +6,7 @@
 !mon/src
 !mon/schema
 !mon/sql/macros.sql
+!mon/sql/host_rules.sql
 !mon/docker/pgai-mon.yml
 !mon/examples/pgai-mon.example.yml
 !mon/metrics.yml

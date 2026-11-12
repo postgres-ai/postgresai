@@ -40,6 +40,7 @@ WORKDIR /src/mon
 COPY mon/Cargo.toml mon/Cargo.lock mon/rustfmt.toml ./
 COPY mon/src ./src
 COPY mon/schema ./schema
+COPY mon/sql/host_rules.sql ./sql/host_rules.sql
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=pgai-mon-target-${TARGETARCH},target=/src/mon/target \
     target="$(cat /rust-target)" \
