@@ -1043,6 +1043,11 @@ fn serve_loop(
             for t in pgai_mon::hoststats::targets(&cfg.rds, &|k| std::env::var(k).ok()) {
                 tokio::spawn(pgai_mon::hoststats::run(t, ing.clone()));
             }
+            tokio::spawn(pgai_mon::selfmon::run(
+                state.clone(),
+                ing.clone(),
+                cfg.collector.self_metrics_interval_s,
+            ));
         }
         let app = query::app(state, extra, auth);
         let listener = tokio::net::TcpListener::bind(&cfg.http.listen).await?;

@@ -629,6 +629,8 @@ fn failed_and_partial_uploads_commit_nothing() {
     let h = b.health();
     assert!(h["last_error"].as_str().unwrap().contains("injected"), "{h}");
     assert!(h["pending_files"].as_u64().unwrap() >= 1, "{h}");
+    let errors = h["upload_errors"].as_u64().unwrap();
+    assert!(errors >= 1, "{h}");
 
     store.fail_data_puts.store(false, Ordering::SeqCst);
     b.sync(&c.shared, None).unwrap();
@@ -641,6 +643,7 @@ fn failed_and_partial_uploads_commit_nothing() {
         "{h}"
     );
     assert_eq!(h["last_error"], serde_json::Value::Null);
+    assert_eq!(h["upload_errors"].as_u64(), Some(errors), "a success counts no error");
     // the big file went up in parts and reads back exactly
     let q = format!(
         "SELECT count(*), sum(value) FROM pgai_samples('m_big', [], {t0}, {})",
