@@ -125,7 +125,7 @@ The `prepare-db` step creates a read-only `postgres_ai_mon` user with minimal pe
 | **Express checkup** | Instant health checks — no setup needed |
 | **Grafana dashboards** | 13+ expert views: Node Overview, Query Analysis, Wait Events, Indexes, Tables, Replication, and more |
 | **Scheduled reports** | 45+ metrics collected continuously via pgwatch |
-| **Metrics collection** | pgwatch v3 + VictoriaMetrics |
+| **Metrics collection** | `pgai-mon`: one Rust binary that collects (pgwatch v3 metric semantics), stores history as Parquet and serves read-only SQL |
 | **AI-ready output** | Structured JSON for Claude, GPT, and other agents |
 | **Claude Code plugin** | Slash commands for health checks in your IDE |
 | **MCP server** | Work with Issues from [console.postgres.ai](https://console.postgres.ai) in AI coding tools |
@@ -270,34 +270,12 @@ postgresai mon health
 
 ## 🔄 Upgrading
 
-> ⚠️ **Breaking change in 0.15.0 — bundled PostgreSQL 15 → 17 requires a data migration.**
+> ⚠️ **Upgrading from the pgwatch + VictoriaMetrics stack starts metric history fresh.**
 >
-> 0.15.0 upgrades the stack's bundled PostgreSQL from 15 to 17 (`sink-postgres`, and on the
-> demo `target-db` / `target-standby`). PostgreSQL's on-disk format is not compatible across major
-> versions, so the new images **refuse to start** on a PostgreSQL 15 data directory — an in-place
-> upgrade will not come up until you migrate the data. Nothing is deleted automatically, and your
-> externally-monitored databases are unaffected, but you must act on the bundled databases before
-> bringing the stack up.
->
-> **`sink-postgres`** stores your historical monitoring measurements, so choose one:
-> - **Preserve history** — while still on the old images, dump it, then restore after the upgrade:
->   ```bash
->   # before `mon stop`/upgrade, with sink-postgres (PG15) running:
->   docker compose exec sink-postgres pg_dumpall -U postgres > sink-pg15.sql
->   # after the stack is on PG17 (sink-postgres recreated empty):
->   docker compose exec -T sink-postgres psql -U postgres < sink-pg15.sql
->   ```
-> - **Start fresh** — remove its volume so PostgreSQL 17 initializes a clean data directory.
->   This **discards all previously collected monitoring measurements** (new metrics accumulate
->   from scratch); find the volume with `docker volume ls | grep sink_postgres_data`, then
->   `docker volume rm <name>` while the stack is stopped.
->
-> The demo `target-db` / `target-standby` hold only throwaway sample data — just reset their
-> volumes the same way (or re-run `postgresai mon local-install --demo` to recreate them).
->
-> Keep the old PostgreSQL 15 volume as a backup until you have verified PostgreSQL 17. The full
-> upgrade steps are below; see also the
-> [monitoring upgrade docs](https://postgres.ai/docs/monitoring/getting-started).
+> `postgresai mon update` switches an install of the old stack to `pgai-mon`: it removes the old
+> stack's containers and starts the new one. Nothing is migrated from the old metric store. The
+> old stack's volumes are kept untouched; `mon update` prints their names and the
+> `docker volume rm` command to remove them once you no longer need them.
 
 To upgrade postgres_ai monitoring to a newer version:
 
@@ -332,13 +310,13 @@ postgresai mon start
 
 This will:
 - Add any newly required `.env` keys for the newer stack (existing values, your secrets, and `instances.yml` targets are preserved)
-- Refresh `docker-compose.yml` to match the new stack version on non-git installs (e.g. npx / `npm install -g`), backing up the old file as `docker-compose.yml.bak-<oldtag>-<hash>` (the original is never overwritten on repeated runs) — this is what wires newly-required service config such as `VM_AUTH_*` on `sink-prometheus`. The fetched compose is validated before it replaces your working one, so a network proxy/login page can never clobber it. Git checkouts already get this via `git pull`, so it is skipped for them.
+- Refresh `docker-compose.yml` to match the new stack version on non-git installs (e.g. npx / `npm install -g`), backing up the old file as `docker-compose.yml.bak-<oldtag>-<hash>` (the original is never overwritten on repeated runs) — this is what switches an old-stack install to `pgai-mon`. The fetched compose is validated before it replaces your working one, so a network proxy/login page can never clobber it. Git checkouts already get this via `git pull`, so it is skipped for them.
 - Pull the Docker images for the `PGAI_TAG` you set
 - Start the services on the new images
 
-> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords. It also holds the VictoriaMetrics admin-endpoint keys `VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY` and `VM_PPROF_AUTH_KEY` (added in 0.17, see #359), which follow the same preserve-or-generate lifecycle and guard the endpoints that can destroy the metrics store.
+> **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `PGAI_MON_TOKEN` (the bearer token `pgai-mon` requires; Grafana, the reporter and instance-jobs send it), and optionally `PGAI_MON_STORE` (where metric history goes, e.g. `s3://<bucket>/<prefix>`; unset means the local `pgai_mon_data` volume), `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `PGAI_MON_TOKEN` values or generates new ones when they are missing.
 
-> **In-place upgrade note:** Newer stack versions can require both additional `.env` keys and a matching `docker-compose.yml` (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` and the `sink-prometheus` auth wiring were added in 0.15 for VictoriaMetrics basic auth). `postgresai mon local-install -y`, `postgresai mon update`, and `postgresai mon update-config` all perform a purely-additive `.env` migration on every run (existing values preserved verbatim; newly-required keys appended with safe random defaults) **and** refresh `docker-compose.yml` to the new stack version on non-git installs (npx / `npm install -g`), backing up the old compose as `docker-compose.yml.bak-<oldtag>-<hash>` (the pristine original is preserved across repeated runs; the fetched compose is validated as a real stack file before it replaces yours). This closes the prior gap where npx upgrades kept a stale 0.14 compose and `sink-prometheus` crashed with `missing "VM_AUTH_USERNAME" env var`. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in (and refresh the compose) for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./old/scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart. 0.17 added the VictoriaMetrics admin-endpoint keys the same way (`VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY`, `VM_PPROF_AUTH_KEY`); because those flags live on the `sink-prometheus` command line, `mon update` and `mon update-config` bring that one service in line with the compose file after adding them — a plain `mon restart` is `docker compose restart` and would report success while leaving the old, keyless container running. `rotate-vm-auth.sh` does not touch the admin keys: to rotate one, edit `.env` and run `docker compose up -d --no-deps sink-prometheus` on a running stack (`--no-deps` avoids re-running `config-init`, which would re-seed `prometheus.yml` from the image).
+> **In-place upgrade note:** Newer stack versions can require both additional `.env` keys and a matching `docker-compose.yml`. `postgresai mon local-install -y`, `postgresai mon update`, and `postgresai mon update-config` all perform a purely-additive `.env` migration on every run (existing values preserved verbatim; newly-required keys such as `PGAI_MON_TOKEN` appended with safe random defaults) **and** refresh `docker-compose.yml` to the new stack version on non-git installs (npx / `npm install -g`), backing up the old compose as `docker-compose.yml.bak-<oldtag>-<hash>`. The old stack's `VM_AUTH_*` and `VM_*_AUTH_KEY` keys are no longer read: `mon local-install` drops them when it rewrites `.env`, and `mon update` leaves them in place. If you run `docker compose` directly and maintain `.env` yourself, run `postgresai mon update-config` once to have the CLI add `PGAI_MON_TOKEN` (and refresh the compose) for you.
 
 **Alternative: Manual upgrade**
 
@@ -348,7 +326,7 @@ If you prefer more control:
 # Update the PGAI_TAG in .env to match your target stack version
 # Edit .env and set PGAI_TAG=0.15.0
 
-# Migrate .env to add any newly-required keys (e.g. VM_AUTH_* for 0.15+)
+# Migrate .env to add any newly-required keys (e.g. PGAI_MON_TOKEN)
 postgresai mon update-config
 
 # Pull new images
@@ -371,53 +349,9 @@ Check Grafana dashboards at http://localhost:3000 to confirm metrics are being c
 
 ## ☸️ Kubernetes deployment
 
-Deploy postgres_ai monitoring to Kubernetes using helm:
-
-```bash
-# Install from the helm chart directory
-helm install postgres-ai-monitoring ./old/postgres_ai_helm
-
-# Or install from a release (replace <VERSION> with the desired release, e.g. 0.14.0)
-curl -LO https://gitlab.com/postgres-ai/postgresai/-/releases/helm-v<VERSION>/downloads/postgres-ai-monitoring-chart.tgz
-helm install postgres-ai-monitoring postgres-ai-monitoring-chart.tgz
-
-# Customize installation
-helm install postgres-ai-monitoring ./old/postgres_ai_helm -f custom-values.yaml
-```
-
-### Helm chart features
-
-- Complete monitoring stack for Kubernetes
-- pgwatch, VictoriaMetrics, and Grafana
-- Automated report generation via CronJobs
-- Node exporter and cAdvisor for system metrics
-- Configurable resource limits and persistence
-
-### Helm chart documentation
-
-- [README](./old/postgres_ai_helm/README.md): Quick start and overview
-- [INSTALLATION_GUIDE](./old/postgres_ai_helm/INSTALLATION_GUIDE.md): Detailed installation instructions
-- [RELEASE](./old/postgres_ai_helm/RELEASE.md): Release process for maintainers
-
-### Creating helm releases
-
-For maintainers creating new helm chart releases:
-
-```bash
-cd old/postgres_ai_helm
-
-# Test the chart locally
-./test-release.sh
-
-# Create a new release (e.g. 0.14.0)
-./release.sh <VERSION>
-```
-
-This automatically:
-- Updates Chart.yaml with the new version
-- Creates a git tag
-- Triggers GitLab CI/CD to package and publish the chart
-- Creates a GitLab release with the packaged chart
+There is no Helm chart for the current (`pgai-mon`) stack yet. The Helm chart of the previous
+pgwatch + VictoriaMetrics stack is kept in [`old/postgres_ai_helm`](./old/postgres_ai_helm) for
+reference only: it is unmaintained and its images are no longer built.
 
 ## 📋 Checkup reports
 
@@ -447,7 +381,7 @@ recorded as unknown, with the reason, never as none. A database that is not read
 listed with the reason.
 
 A monitoring box writes A005 too: its reporter reads each monitored node once a day with
-the connection pgwatch uses (the node's `conn_str`), each query in its own read-only
+the connection pgai-mon collects with (the node's `conn_str`), each query in its own read-only
 transaction. A node it cannot reach is listed with the reason and no database.
 
 ### D. Monitoring / Troubleshooting
@@ -544,7 +478,7 @@ python3 -m pip install -r reporter/requirements-dev.txt
 
 #### Unit tests only (fast, no external services required)
 
-Run only unit tests with mocked Prometheus interactions:
+Run only unit tests (external services are mocked):
 ```bash
 pytest tests/reporter
 ```
