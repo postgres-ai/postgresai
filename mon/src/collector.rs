@@ -85,7 +85,7 @@ pub fn go_float(v: f64) -> String {
     let e = format!("{v:e}"); // shortest round-trip digits, e.g. 1.5e-7
     let (mant, exp) = e.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
-    if exp < -4 || exp >= 6 {
+    if !(-4..6).contains(&exp) {
         format!("{mant}e{}{:02}", if exp < 0 { '-' } else { '+' }, exp.abs())
     } else {
         format!("{v}")
@@ -871,9 +871,9 @@ impl NodeState {
     }
     fn set(&self, i: NodeInfo) {
         self.tx.send_if_modified(|cur| {
-            let changed = cur.as_ref().map_or(true, |c| {
-                c.in_recovery != i.in_recovery || c.major != i.major || c.sys_id != i.sys_id
-            });
+            let changed = cur
+                .as_ref()
+                .is_none_or(|c| c.in_recovery != i.in_recovery || c.major != i.major || c.sys_id != i.sys_id);
             *cur = Some(i);
             changed
         });
@@ -992,7 +992,7 @@ fn job_timeout(kind: &JobKind, cfg: &CollectorCfg) -> (u64, bool) {
 }
 
 /// The metric list for a role: a standby runs the standby list when it has one.
-fn metrics_for_role<'a>(db: &'a DbCtx, in_recovery: bool) -> &'a [Scheduled] {
+fn metrics_for_role(db: &DbCtx, in_recovery: bool) -> &[Scheduled] {
     if in_recovery && !db.standby.is_empty() {
         &db.standby
     } else {
@@ -1386,9 +1386,7 @@ pub async fn run_source(
                 *main.datname.write().unwrap() = Some(datname);
                 node.set(info);
                 if src.discovers()
-                    && last_discovery.map_or(true, |t| {
-                        t.elapsed() >= Duration::from_secs(cc.discovery_interval_s.max(1))
-                    })
+                    && last_discovery.is_none_or(|t| t.elapsed() >= Duration::from_secs(cc.discovery_interval_s.max(1)))
                 {
                     match discover(&pool, &src, &cc).await {
                         Ok(dbs) => {

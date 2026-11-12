@@ -138,7 +138,7 @@ impl ConnParams {
             let u = p.get("user").unwrap().to_string();
             p.set("dbname", u);
         }
-        if p.get("password").map_or(true, |s| s.is_empty()) {
+        if p.get("password").is_none_or(|s| s.is_empty()) {
             let file = p
                 .get("passfile")
                 .map(PathBuf::from)

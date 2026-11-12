@@ -325,8 +325,8 @@ impl VTab for TailIds {
         {
             let mut ids = output.flat_vector(0);
             let s = unsafe { ids.as_mut_slice_with_len::<u64>(k) };
-            for j in 0..k {
-                s[j] = b.ids[*pos + j].0;
+            for (j, sj) in s.iter_mut().enumerate() {
+                *sj = b.ids[*pos + j].0;
             }
         }
         let fv = output.flat_vector(1);

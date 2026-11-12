@@ -1301,7 +1301,7 @@ impl Compactor {
         // The DuckDB sort split by series_id range remains only as a fallback (kmerge off).
         let kmerge = (job.kind == "samples" || job.kind == "series") && self.cfg.compact_kmerge;
         let parts = if !kmerge && job.kind == "samples" && total_rows > self.cfg.compact_part_rows {
-            ((total_rows + self.cfg.compact_part_rows - 1) / self.cfg.compact_part_rows).min(10)
+            total_rows.div_ceil(self.cfg.compact_part_rows).min(10)
         } else {
             1
         };

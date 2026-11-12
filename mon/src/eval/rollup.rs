@@ -1225,7 +1225,7 @@ fn valid_days(files: &[FileEntry], ver: u8) -> HashMap<i64, &FileEntry> {
     files
         .iter()
         .filter(|f| f.kind == KIND && f.ver >= ver)
-        .filter(|f| samples_per_day.get(&f.day).map_or(false, |(n, l2)| *n == 1 && *l2))
+        .filter(|f| samples_per_day.get(&f.day).is_some_and(|(n, l2)| *n == 1 && *l2))
         .map(|f| (f.day, f))
         .collect()
 }
@@ -1476,7 +1476,7 @@ pub fn si_map(
         todo = group_ids
             .iter()
             .copied()
-            .filter(|id| st.get(id).map_or(true, |e| e.0.len() < 20))
+            .filter(|id| st.get(id).is_none_or(|e| e.0.len() < 20))
             .collect();
         drop(group_ids);
         hi = lo - 1;

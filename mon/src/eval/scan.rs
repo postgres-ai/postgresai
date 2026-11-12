@@ -156,7 +156,7 @@ impl Scan {
                 f.kind == "samples"
                     && f.max_ts >= t0
                     && f.min_ts <= t1
-                    && !skip.map_or(false, |(p, q)| f.min_ts > p && f.max_ts <= q)
+                    && !skip.is_some_and(|(p, q)| f.min_ts > p && f.max_ts <= q)
             })
             .collect();
         let _no_insert = super::footer::NoInsert::new(files.len() > super::footer::SCAN_CACHE_FILES);
@@ -374,14 +374,14 @@ pub fn decode(
         let s = sids[i];
         // end of this series' run: gallop, then binary search (rows are sorted by sid, ts)
         let end = run_end(sids, i);
-        if ids.map_or(true, |ids| ids.binary_search(&s).is_ok()) {
+        if ids.is_none_or(|ids| ids.binary_search(&s).is_ok()) {
             // ts is sorted within a run: only the rows in [t0, t1] are visited
             let run = &tsv[i..end];
             let lo = i + run.partition_point(|&x| x / ts_div < t0);
             let hi = i + run.partition_point(|&x| x / ts_div <= t1);
             for k in lo..hi {
                 let t = tsv[k] / ts_div;
-                if skip.map_or(false, |(p, q)| t > p && t <= q) {
+                if skip.is_some_and(|(p, q)| t > p && t <= q) {
                     continue;
                 }
                 let (v, st) = match (&ival, &fval, &value) {

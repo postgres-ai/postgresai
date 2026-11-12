@@ -645,7 +645,7 @@ async fn fetch(client: &reqwest::Client, t: &Target, max_body: usize) -> anyhow:
         body.extend_from_slice(&chunk);
         anyhow::ensure!(body.len() <= max_body, "body is over the {max_body}-byte limit");
     }
-    Ok(String::from_utf8(body).map_err(|_| anyhow::anyhow!("body is not UTF-8"))?)
+    String::from_utf8(body).map_err(|_| anyhow::anyhow!("body is not UTF-8"))
 }
 
 /// Scrape a target once and write the result (samples or, on failure, `up` 0 and staleness
@@ -783,17 +783,14 @@ impl Scraper {
                 }
             }
             for (k, t) in want {
-                if !run.contains_key(&k) {
-                    start.push(k.clone());
+                if let std::collections::hash_map::Entry::Vacant(e) = run.entry(k) {
+                    start.push(e.key().clone());
                     let task = tokio::spawn(target_loop(self.clone(), t.clone()));
-                    run.insert(
-                        k,
-                        Running {
-                            fingerprint: t.fingerprint(),
-                            target: t,
-                            task,
-                        },
-                    );
+                    e.insert(Running {
+                        fingerprint: t.fingerprint(),
+                        target: t,
+                        task,
+                    });
                 }
             }
         }

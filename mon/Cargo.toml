@@ -65,3 +65,8 @@ opt-level = 2
 [dev-dependencies]
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
 tempfile = "=3.23.0"
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+large_enum_variant = "allow"

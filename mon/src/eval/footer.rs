@@ -315,7 +315,7 @@ impl RgReader {
     fn projected_bytes(&self, i: usize) -> (i64, i64) {
         let rg = self.md.metadata().row_group(i);
         (0..rg.num_columns())
-            .filter(|&c| self.mask.as_ref().map_or(true, |m| m.leaf_included(c)))
+            .filter(|&c| self.mask.as_ref().is_none_or(|m| m.leaf_included(c)))
             .fold((0, 0), |(b, n), c| {
                 (b + rg.column(c).uncompressed_size().max(8 * rg.num_rows()), n + 1)
             })

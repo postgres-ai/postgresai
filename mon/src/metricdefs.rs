@@ -68,7 +68,7 @@ impl MetricDef {
                 serde_yaml::Value::String(s) => s.parse().unwrap_or(0.0),
                 _ => continue,
             };
-            if kv <= major as f64 && best.map_or(true, |(b, _)| kv > b) {
+            if kv <= major as f64 && best.is_none_or(|(b, _)| kv > b) {
                 best = Some((kv, v));
             }
         }

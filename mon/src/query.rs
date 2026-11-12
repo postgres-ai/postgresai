@@ -771,7 +771,6 @@ impl Reader {
             };
             sql.push_str(&format!("CREATE OR REPLACE VIEW _raw_{kind} AS {body};\n"));
         }
-        drop(paths);
         let admin = self.admin.lock().unwrap();
         admin.execute_batch(&sql)?;
         if *vg == u64::MAX {
@@ -876,7 +875,7 @@ impl Reader {
             return Err(QueryError::new("parse_error", "empty query"));
         }
         let t_chk = Instant::now();
-        let cacheable = self.check_read_only(&conn, &body)?;
+        let cacheable = self.check_read_only(conn, &body)?;
         let t_chk = t_chk.elapsed();
 
         // Timeout: a watchdog thread interrupts the connection at the deadline.
@@ -895,7 +894,7 @@ impl Reader {
         let s3_0 = crate::objstore::totals();
         let me = STARTED.fetch_add(1, Ordering::AcqRel) + 1;
         let alone = ACTIVE.fetch_add(1, Ordering::AcqRel) == 0;
-        let res = self.run_inner(&conn, &body, fmt);
+        let res = self.run_inner(conn, &body, fmt);
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
         let s3 = match (s3_0, crate::objstore::totals()) {
             (Some(a), Some(b)) => {
@@ -1273,7 +1272,7 @@ async fn post_sql(
     let is_json = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map_or(false, |v| v.contains("json"));
+        .is_some_and(|v| v.contains("json"));
     // response format: `?format=rows|columnar|objects` (or "format" in a JSON body); rows by default
     let mut format = query
         .as_deref()

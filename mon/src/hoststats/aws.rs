@@ -859,71 +859,62 @@ pub fn db_instances_from_xml(x: &Xml) -> Value {
 }
 
 impl AwsApi for Client {
-    fn call(
-        &self,
-        client: &'static str,
-        command: &'static str,
-        input: Value,
-    ) -> impl Future<Output = Result<Value, AwsError>> + Send {
-        async move {
-            match (client, command) {
-                ("rds", "DescribeDBInstancesCommand") => {
-                    let id = input["DBInstanceIdentifier"].as_str().unwrap_or_default().to_string();
-                    let body = form(&[
-                        ("Action", "DescribeDBInstances".into()),
-                        ("Version", "2014-10-31".into()),
-                        ("DBInstanceIdentifier", id),
-                    ]);
-                    let creds = self.creds().await?;
-                    let x = self.query_with("rds", &body, &creds).await?;
-                    Ok(db_instances_from_xml(&x))
-                }
-                ("cloudwatch", "GetMetricDataCommand") => {
-                    let mut wire = input.clone();
-                    wire["StartTime"] = epoch_s(&input["StartTime"]);
-                    wire["EndTime"] = epoch_s(&input["EndTime"]);
-                    let mut out = self
-                        .json_call("monitoring", "GraniteServiceVersion20100801.GetMetricData", "1.0", wire)
-                        .await?;
-                    if let Some(rs) = out["MetricDataResults"].as_array_mut() {
-                        for r in rs {
-                            if let Some(ts) = r["Timestamps"].as_array_mut() {
-                                for t in ts.iter_mut() {
-                                    *t = iso_of_epoch_s(t);
-                                }
-                            }
-                        }
-                    }
-                    Ok(out)
-                }
-                ("pi", "GetResourceMetricsCommand") => {
-                    let mut wire = input.clone();
-                    wire["StartTime"] = epoch_s(&input["StartTime"]);
-                    wire["EndTime"] = epoch_s(&input["EndTime"]);
-                    let mut out = self
-                        .json_call("pi", "PerformanceInsightsv20180227.GetResourceMetrics", "1.1", wire)
-                        .await?;
-                    for k in ["AlignedStartTime", "AlignedEndTime"] {
-                        if !out[k].is_null() {
-                            out[k] = iso_of_epoch_s(&out[k]);
-                        }
-                    }
-                    if let Some(ms) = out["MetricList"].as_array_mut() {
-                        for m in ms {
-                            if let Some(dp) = m["DataPoints"].as_array_mut() {
-                                for p in dp {
-                                    p["Timestamp"] = iso_of_epoch_s(&p["Timestamp"]);
-                                }
-                            }
-                        }
-                    }
-                    Ok(out)
-                }
-                ("logs", "GetLogEventsCommand") => {
-                    self.json_call("logs", "Logs_20140328.GetLogEvents", "1.1", input).await
-                }
-                (c, m) => Err(err("NotImplemented", format!("{c} {m}"))),
+    async fn call(&self, client: &'static str, command: &'static str, input: Value) -> Result<Value, AwsError> {
+        match (client, command) {
+            ("rds", "DescribeDBInstancesCommand") => {
+                let id = input["DBInstanceIdentifier"].as_str().unwrap_or_default().to_string();
+                let body = form(&[
+                    ("Action", "DescribeDBInstances".into()),
+                    ("Version", "2014-10-31".into()),
+                    ("DBInstanceIdentifier", id),
+                ]);
+                let creds = self.creds().await?;
+                let x = self.query_with("rds", &body, &creds).await?;
+                Ok(db_instances_from_xml(&x))
             }
+            ("cloudwatch", "GetMetricDataCommand") => {
+                let mut wire = input.clone();
+                wire["StartTime"] = epoch_s(&input["StartTime"]);
+                wire["EndTime"] = epoch_s(&input["EndTime"]);
+                let mut out = self
+                    .json_call("monitoring", "GraniteServiceVersion20100801.GetMetricData", "1.0", wire)
+                    .await?;
+                if let Some(rs) = out["MetricDataResults"].as_array_mut() {
+                    for r in rs {
+                        if let Some(ts) = r["Timestamps"].as_array_mut() {
+                            for t in ts.iter_mut() {
+                                *t = iso_of_epoch_s(t);
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            ("pi", "GetResourceMetricsCommand") => {
+                let mut wire = input.clone();
+                wire["StartTime"] = epoch_s(&input["StartTime"]);
+                wire["EndTime"] = epoch_s(&input["EndTime"]);
+                let mut out = self
+                    .json_call("pi", "PerformanceInsightsv20180227.GetResourceMetrics", "1.1", wire)
+                    .await?;
+                for k in ["AlignedStartTime", "AlignedEndTime"] {
+                    if !out[k].is_null() {
+                        out[k] = iso_of_epoch_s(&out[k]);
+                    }
+                }
+                if let Some(ms) = out["MetricList"].as_array_mut() {
+                    for m in ms {
+                        if let Some(dp) = m["DataPoints"].as_array_mut() {
+                            for p in dp {
+                                p["Timestamp"] = iso_of_epoch_s(&p["Timestamp"]);
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            ("logs", "GetLogEventsCommand") => self.json_call("logs", "Logs_20140328.GetLogEvents", "1.1", input).await,
+            (c, m) => Err(err("NotImplemented", format!("{c} {m}"))),
         }
     }
 }

@@ -1124,6 +1124,10 @@ impl RFile {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Bytes already in hand (a footer's suffix GET).
     pub fn insert_ready(&self, start: u64, b: Bytes) {
         let mut p = Part::new(
@@ -1939,7 +1943,9 @@ mod tests {
         let r = mem("mem://t2/p", cfg, &[("f", &d)]);
         let f = RFile::new(r.clone(), OPath::from("p/f"), d.len() as u64);
         // 32 chunks of 200 KB with gaps: 6.4 MB planned against a 1 MB window
-        let chunks: Vec<(u64, u64)> = (0..32u64).map(|i| (i * 256 << 10, (i * 256 << 10) + 200_000)).collect();
+        let chunks: Vec<(u64, u64)> = (0..32u64)
+            .map(|i| ((i * 256) << 10, ((i * 256) << 10) + 200_000))
+            .collect();
         f.plan(chunks.clone());
         // read back to front: each read needs a part the window has not reached yet
         for &(s, e) in chunks.iter().rev() {
@@ -1992,7 +1998,9 @@ mod tests {
         // the reader near its RSS cap: room for one 200 KB part
         r.set_window_limit(250_000);
         let f = RFile::new(r.clone(), OPath::from("p/f"), d.len() as u64);
-        let chunks: Vec<(u64, u64)> = (0..16u64).map(|i| (i * 256 << 10, (i * 256 << 10) + 200_000)).collect();
+        let chunks: Vec<(u64, u64)> = (0..16u64)
+            .map(|i| ((i * 256) << 10, ((i * 256) << 10) + 200_000))
+            .collect();
         f.plan(chunks.clone());
         quiet(&r);
         // without the bound the 4 MB window would have prefetched every part
