@@ -37,8 +37,10 @@ fn dir(name: &str) -> String {
 }
 
 fn load(name: &'static str) -> Case {
-    let rec: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(format!("{}/recorded.json", dir(name))).unwrap()).unwrap();
-    let case: Value = serde_json::from_str(&std::fs::read_to_string(format!("{}/case.json", dir(name))).unwrap()).unwrap();
+    let rec: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(format!("{}/recorded.json", dir(name))).unwrap()).unwrap();
+    let case: Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{}/case.json", dir(name))).unwrap()).unwrap();
     Case {
         recorded: rec
             .into_iter()
@@ -56,7 +58,11 @@ fn load(name: &'static str) -> Case {
 }
 
 fn target(c: &Case) -> Target {
-    Target { instance_id: c.instance_id.clone(), cluster: "ci".into(), node_name: "node-01".into() }
+    Target {
+        instance_id: c.instance_id.clone(),
+        cluster: "ci".into(),
+        node_name: "node-01".into(),
+    }
 }
 
 /// Replays recorded AWS responses and fails on any request that differs from the recorded one.
@@ -68,7 +74,10 @@ struct Replay {
 
 impl Replay {
     fn new(r: &[Recorded]) -> Self {
-        Self { pending: Mutex::new(r.to_vec()), fail: HashMap::new() }
+        Self {
+            pending: Mutex::new(r.to_vec()),
+            fail: HashMap::new(),
+        }
     }
     fn failing(r: &[Recorded], client: &'static str, e: AwsError) -> Self {
         let mut x = Self::new(r);
@@ -81,7 +90,12 @@ impl Replay {
 }
 
 impl AwsApi for Replay {
-    fn call(&self, client: &'static str, command: &'static str, input: Value) -> impl Future<Output = Result<Value, AwsError>> + Send {
+    fn call(
+        &self,
+        client: &'static str,
+        command: &'static str,
+        input: Value,
+    ) -> impl Future<Output = Result<Value, AwsError>> + Send {
         let r = if let Some(e) = self.fail.get(client) {
             Err(e.clone())
         } else {
@@ -116,7 +130,9 @@ fn cpu_line(value: &str, time: i64) -> String {
 }
 
 fn metric_results(r: &mut [Recorded]) -> &mut Vec<Value> {
-    find(r, "GetMetricDataCommand")["MetricDataResults"].as_array_mut().unwrap()
+    find(r, "GetMetricDataCommand")["MetricDataResults"]
+        .as_array_mut()
+        .unwrap()
 }
 
 fn series<'a>(r: &'a mut [Recorded], id: &str) -> &'a mut Value {
@@ -144,7 +160,10 @@ async fn the_newest_cloudwatch_buckets_wait_until_closed_for_a_period() {
         let c = load(name);
         let mut early = c.recorded.clone();
         let s = series(&mut early, "host_cpu_utilization_percent");
-        s["Timestamps"].as_array_mut().unwrap().insert(0, json!(iso_ms(c.now - 60_000)));
+        s["Timestamps"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!(iso_ms(c.now - 60_000)));
         s["Values"].as_array_mut().unwrap().insert(0, json!(99));
         let (text, _) = run(&Replay::new(&early), &c, c.now, &mut State::new()).await;
         assert_eq!(text, c.expected, "{name}");
@@ -181,7 +200,9 @@ async fn performance_insights_points_at_or_after_the_boundary_wait() {
             continue;
         }
         let mut future = c.recorded.clone();
-        let dp = find(&mut future, "GetResourceMetricsCommand")["MetricList"][0]["DataPoints"].as_array_mut().unwrap();
+        let dp = find(&mut future, "GetResourceMetricsCommand")["MetricList"][0]["DataPoints"]
+            .as_array_mut()
+            .unwrap();
         assert_eq!(dp.last().unwrap()["Timestamp"], json!(iso_ms(c.now)), "{name}");
         let before = dp[dp.len() - 2]["Value"].as_f64().unwrap();
         dp.last_mut().unwrap()["Value"] = json!(66);
@@ -206,7 +227,12 @@ async fn without_performance_insights_no_pi_call_and_no_db_load() {
         let api = Replay::new(&off);
         let (text, errors) = run(&api, &c, c.now, &mut State::new()).await;
         assert!(errors.is_empty());
-        let want: String = c.expected.lines().filter(|l| !l.starts_with("host_db_load")).map(|l| format!("{l}\n")).collect();
+        let want: String = c
+            .expected
+            .lines()
+            .filter(|l| !l.starts_with("host_db_load"))
+            .map(|l| format!("{l}\n"))
+            .collect();
         assert_eq!(text, want, "{name}");
         assert_eq!(api.pending(), vec!["GetResourceMetricsCommand"], "{name}");
     }
@@ -217,15 +243,33 @@ async fn a_pi_or_em_failure_keeps_the_cloudwatch_samples_and_reports_the_error()
     for name in CASES {
         let c = load(name);
         for (client, command, e, prefix) in [
-            ("pi", "GetResourceMetricsCommand", err("ResourceNotFoundException", "stream not found"), "host_db_load"),
-            ("logs", "GetLogEventsCommand", err("ThrottlingException", "rate exceeded"), "host_os_"),
+            (
+                "pi",
+                "GetResourceMetricsCommand",
+                err("ResourceNotFoundException", "stream not found"),
+                "host_db_load",
+            ),
+            (
+                "logs",
+                "GetLogEventsCommand",
+                err("ThrottlingException", "rate exceeded"),
+                "host_os_",
+            ),
         ] {
             let api = Replay::failing(&c.recorded, client, e.clone());
             let (text, errors) = run(&api, &c, c.now, &mut State::new()).await;
             assert!(text.contains(c.expected.lines().next().unwrap()), "{name}");
             assert!(!text.contains(prefix), "{name} {client}");
-            let want: Vec<String> = if has(&c.recorded, command) { vec![e.name.clone()] } else { vec![] };
-            assert_eq!(errors.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), want, "{name} {client}");
+            let want: Vec<String> = if has(&c.recorded, command) {
+                vec![e.name.clone()]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                errors.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+                want,
+                "{name} {client}"
+            );
         }
     }
 }
@@ -256,13 +300,29 @@ async fn a_malformed_em_event_is_skipped_reported_once_and_not_interpolated() {
         ]);
         let mut state = State::new();
         let (text, errors) = run(&Replay::new(&bad), &c, c.now, &mut state).await;
-        assert!(!text.contains("evil") && !text.contains("NaN") && !text.contains(" 9.125 "), "{name}");
-        assert!(text.contains(&format!("host_os_load1{{cluster=\"ci\",node_name=\"node-01\"}} 2.5 {time}\n")), "{name}");
+        assert!(
+            !text.contains("evil") && !text.contains("NaN") && !text.contains(" 9.125 "),
+            "{name}"
+        );
+        assert!(
+            text.contains(&format!(
+                "host_os_load1{{cluster=\"ci\",node_name=\"node-01\"}} 2.5 {time}\n"
+            )),
+            "{name}"
+        );
         let msgs: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
         assert_eq!(msgs.len(), 2, "{msgs:?}");
         // the parser's own wording follows the prefix (Bun's in the TypeScript service)
-        assert!(msgs[0].starts_with(&format!("Enhanced Monitoring event at {time} skipped: JSON Parse error: ")), "{msgs:?}");
-        assert_eq!(msgs[1], format!("Enhanced Monitoring event at {time} skipped: no timestamp"));
+        assert!(
+            msgs[0].starts_with(&format!(
+                "Enhanced Monitoring event at {time} skipped: JSON Parse error: "
+            )),
+            "{msgs:?}"
+        );
+        assert_eq!(
+            msgs[1],
+            format!("Enhanced Monitoring event at {time} skipped: no timestamp")
+        );
         let (again, errors) = run(&Replay::new(&bad), &c, c.now, &mut state).await;
         assert_eq!(again, "");
         assert!(errors.is_empty());
@@ -286,7 +346,10 @@ async fn the_largest_process_rss_skips_the_id_0_aggregates_and_malformed_rows() 
         }).to_string() }));
         let (text, errors) = run(&Replay::new(&odd), &c, c.now, &mut State::new()).await;
         assert!(errors.is_empty());
-        let line = format!("host_os_process_max_rss_bytes{{cluster=\"ci\",node_name=\"node-01\"}} {} {time}\n", 20 * 1024);
+        let line = format!(
+            "host_os_process_max_rss_bytes{{cluster=\"ci\",node_name=\"node-01\"}} {} {time}\n",
+            20 * 1024
+        );
         assert_eq!(text, format!("{}{line}", c.expected), "{name}");
     }
 }
@@ -302,7 +365,14 @@ async fn a_sample_that_shows_up_late_behind_a_newer_one_is_still_written() {
         let mut state = State::new();
         run(&Replay::new(&late), &c, c.now, &mut state).await;
         let (text, _) = run(&Replay::new(&c.recorded), &c, c.now, &mut state).await;
-        assert_eq!(text, cpu_line(&rds::js_num(value.as_f64().unwrap()), parse_iso(time.as_str().unwrap()).unwrap()), "{name}");
+        assert_eq!(
+            text,
+            cpu_line(
+                &rds::js_num(value.as_f64().unwrap()),
+                parse_iso(time.as_str().unwrap()).unwrap()
+            ),
+            "{name}"
+        );
     }
 }
 
@@ -312,7 +382,11 @@ async fn a_repeated_poll_writes_nothing_already_written() {
         let c = load(name);
         let mut state = State::new();
         run(&Replay::new(&c.recorded), &c, c.now, &mut state).await;
-        assert_eq!(run(&Replay::new(&c.recorded), &c, c.now, &mut state).await.0, "", "{name}");
+        assert_eq!(
+            run(&Replay::new(&c.recorded), &c, c.now, &mut state).await.0,
+            "",
+            "{name}"
+        );
     }
 }
 
@@ -381,9 +455,15 @@ async fn disk_rates_latency_and_provisioned_limits_retain_their_units() {
         assert!(text.contains(&format!("{id}{l} {} {time}\n", rds::js_num(v))), "{id}");
     }
     let n = c.now;
-    assert!(text.contains(&format!("host_disk_size_bytes{l} {} {n}\n", 100u64 * 1024 * 1024 * 1024)));
+    assert!(text.contains(&format!(
+        "host_disk_size_bytes{l} {} {n}\n",
+        100u64 * 1024 * 1024 * 1024
+    )));
     assert!(text.contains(&format!("host_disk_provisioned_iops{l} 3000 {n}\n")));
-    assert!(text.contains(&format!("host_disk_provisioned_throughput_bytes_per_second{l} {} {n}\n", 125 * 1024 * 1024)));
+    assert!(text.contains(&format!(
+        "host_disk_provisioned_throughput_bytes_per_second{l} {} {n}\n",
+        125 * 1024 * 1024
+    )));
     let db = &mut find(&mut rec, "DescribeDBInstancesCommand")["DBInstances"][0];
     db.as_object_mut().unwrap().remove("Iops");
     db.as_object_mut().unwrap().remove("StorageThroughput");
@@ -397,21 +477,31 @@ async fn an_instance_that_is_gone_fails_the_poll() {
     let c = load("rds-postgres");
     let mut rec = c.recorded.clone();
     find(&mut rec, "DescribeDBInstancesCommand")["DBInstances"] = json!([]);
-    let e = poll(&Replay::new(&rec), &target(&c), c.now, &mut State::new()).await.unwrap_err();
+    let e = poll(&Replay::new(&rec), &target(&c), c.now, &mut State::new())
+        .await
+        .unwrap_err();
     assert_eq!(e.message, "RDS instance not found");
 }
 
 #[test]
 fn configuration_problems_are_reported_as_rds_host_stats_reports_them() {
-    let env = |m: &'static [(&'static str, &'static str)]| move |k: &str| m.iter().find(|(a, _)| *a == k).map(|(_, v)| v.to_string());
-    let base: &[(&str, &str)] =
-        &[("RDS_DB_INSTANCE_IDENTIFIER", "db"), ("AWS_REGION", "us-east-1"), ("PGAI_CLUSTER", "c"), ("PGAI_NODE_NAME", "n")];
+    let env = |m: &'static [(&'static str, &'static str)]| {
+        move |k: &str| m.iter().find(|(a, _)| *a == k).map(|(_, v)| v.to_string())
+    };
+    let base: &[(&str, &str)] = &[
+        ("RDS_DB_INSTANCE_IDENTIFIER", "db"),
+        ("AWS_REGION", "us-east-1"),
+        ("PGAI_CLUSTER", "c"),
+        ("PGAI_NODE_NAME", "n"),
+    ];
     let ok = RdsTarget::from_env(&env(base)).unwrap().unwrap();
     assert_eq!(ok.problem(), None);
     assert_eq!(ok.interval_s(), 60);
     assert!(RdsTarget::from_env(&env(&[])).is_none(), "no instance: off");
     // compose defaults the variables to empty
-    let empty = RdsTarget::from_env(&env(&[("RDS_DB_INSTANCE_IDENTIFIER", "db"), ("PGAI_CLUSTER", "")])).unwrap().unwrap();
+    let empty = RdsTarget::from_env(&env(&[("RDS_DB_INSTANCE_IDENTIFIER", "db"), ("PGAI_CLUSTER", "")]))
+        .unwrap()
+        .unwrap();
     assert!(empty.problem().unwrap().contains("PGAI_CLUSTER"));
     let mut role_only = ok.clone();
     role_only.role_arn = Some("arn:aws:iam::123456789012:role/x".into());
@@ -424,12 +514,24 @@ fn configuration_problems_are_reported_as_rds_host_stats_reports_them() {
         t.poll_interval_s = Some(bad);
         assert!(t.problem().unwrap().contains("from 1 to 300"), "{bad}");
     }
-    let frac: &[(&str, &str)] = &[("RDS_DB_INSTANCE_IDENTIFIER", "db"), ("RDS_POLL_INTERVAL_SECONDS", "1.5")];
+    let frac: &[(&str, &str)] = &[
+        ("RDS_DB_INSTANCE_IDENTIFIER", "db"),
+        ("RDS_POLL_INTERVAL_SECONDS", "1.5"),
+    ];
     assert!(RdsTarget::from_env(&env(frac)).unwrap().is_err());
     // configured targets win over the environment
-    let cfg = vec![RdsTarget { instance_id: "x".into(), ..Default::default() }];
+    let cfg = vec![RdsTarget {
+        instance_id: "x".into(),
+        ..Default::default()
+    }];
     assert_eq!(pgai_mon::hoststats::targets(&cfg, &env(base)).len(), 1);
-    assert_eq!(pgai_mon::hoststats::targets(&cfg, &env(base))[0].as_ref().unwrap().instance_id, "x");
+    assert_eq!(
+        pgai_mon::hoststats::targets(&cfg, &env(base))[0]
+            .as_ref()
+            .unwrap()
+            .instance_id,
+        "x"
+    );
 }
 
 /// A store with its store thread, and an Ingest into it.
@@ -437,7 +539,10 @@ async fn ingest_server(d: &std::path::Path) -> (ingest_common::Server, Arc<Inges
     let slot = Arc::new(Mutex::new(None));
     let s2 = slot.clone();
     let s = ingest_common::serve(d, Auth::disabled(), move |tx, shared| {
-        let cfg = IngestCfg { max_age_s: i64::MAX / 4000, ..Default::default() };
+        let cfg = IngestCfg {
+            max_age_s: i64::MAX / 4000,
+            ..Default::default()
+        };
         *s2.lock().unwrap() = Some(Ingest::new(shared, tx, cfg));
         axum::Router::new()
     })
@@ -458,20 +563,36 @@ async fn a_tick_writes_the_samples_and_resends_them_after_a_failed_write() {
         let (s, _) = ingest_server(d.path()).await;
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         drop(rx);
-        Ingest::new(s.shared.clone(), tx, IngestCfg { max_age_s: i64::MAX / 4000, ..Default::default() })
+        Ingest::new(
+            s.shared.clone(),
+            tx,
+            IngestCfg {
+                max_age_s: i64::MAX / 4000,
+                ..Default::default()
+            },
+        )
     };
     let mut state = State::new();
     let logged = Mutex::new(vec![]);
     let log = |m: String| logged.lock().unwrap().push(m);
-    let e = tick(&Replay::new(&c.recorded), &dead, &t, c.now, &mut state, &log).await.unwrap_err();
+    let e = tick(&Replay::new(&c.recorded), &dead, &t, c.now, &mut state, &log)
+        .await
+        .unwrap_err();
     assert!(e.starts_with("write:"), "{e}");
     assert!(state.is_empty(), "nothing committed");
     let d2 = tempfile::tempdir().unwrap();
     let (s, ing) = ingest_server(d2.path()).await;
-    let n = tick(&Replay::new(&c.recorded), &ing, &t, c.now, &mut state, &log).await.unwrap();
+    let n = tick(&Replay::new(&c.recorded), &ing, &t, c.now, &mut state, &log)
+        .await
+        .unwrap();
     assert_eq!(n, c.expected.lines().count());
     assert_eq!(state.len(), n);
-    assert_eq!(tick(&Replay::new(&c.recorded), &ing, &t, c.now, &mut state, &log).await.unwrap(), 0);
+    assert_eq!(
+        tick(&Replay::new(&c.recorded), &ing, &t, c.now, &mut state, &log)
+            .await
+            .unwrap(),
+        0
+    );
     assert!(logged.lock().unwrap().is_empty());
     s.flush().await;
     // every expected line is a stored sample, value exact
@@ -484,8 +605,19 @@ async fn a_tick_writes_the_samples_and_resends_them_after_a_failed_write() {
         .map(|r| {
             let v: f64 = r[5].as_str().unwrap().parse().unwrap();
             let p = r[3].as_str().unwrap();
-            let p = if p.is_empty() { String::new() } else { format!(",provider=\"{p}\"") };
-            format!("{}{{cluster={},node_name={}{p}}} {} {}", r[0].as_str().unwrap(), r[1], r[2], rds::js_num(v), r[4])
+            let p = if p.is_empty() {
+                String::new()
+            } else {
+                format!(",provider=\"{p}\"")
+            };
+            format!(
+                "{}{{cluster={},node_name={}{p}}} {} {}",
+                r[0].as_str().unwrap(),
+                r[1],
+                r[2],
+                rds::js_num(v),
+                r[4]
+            )
         })
         .collect();
     let mut want: Vec<String> = c.expected.lines().map(String::from).collect();
@@ -579,15 +711,34 @@ async fn fake_aws(sts_fails: bool) -> (String, Arc<Mutex<Vec<Req>>>) {
 }
 
 fn client(base: &str, role: bool, env: &'static [(&'static str, &'static str)]) -> aws::Client {
-    let ep = aws::Endpoints { region: "us-east-1".into(), endpoint_url: Some(base.into()), imds: base.into(), imds_disabled: false };
-    let role = role.then(|| aws::Role { arn: ROLE_ARN.into(), external_id: EXTERNAL_ID.into() });
-    aws::Client::new(ep, role, Box::new(move |k: &str| env.iter().find(|(a, _)| *a == k).map(|(_, v)| v.to_string())))
+    let ep = aws::Endpoints {
+        region: "us-east-1".into(),
+        endpoint_url: Some(base.into()),
+        imds: base.into(),
+        imds_disabled: false,
+    };
+    let role = role.then(|| aws::Role {
+        arn: ROLE_ARN.into(),
+        external_id: EXTERNAL_ID.into(),
+    });
+    aws::Client::new(
+        ep,
+        role,
+        Box::new(move |k: &str| env.iter().find(|(a, _)| *a == k).map(|(_, v)| v.to_string())),
+    )
 }
 
-const AMBIENT: &[(&str, &str)] = &[("AWS_ACCESS_KEY_ID", "ambient"), ("AWS_SECRET_ACCESS_KEY", "ambient-secret")];
+const AMBIENT: &[(&str, &str)] = &[
+    ("AWS_ACCESS_KEY_ID", "ambient"),
+    ("AWS_SECRET_ACCESS_KEY", "ambient-secret"),
+];
 const NOW: &str = "2026-10-01T12:00:00Z";
 fn db_target() -> Target {
-    Target { instance_id: "db".into(), cluster: "c".into(), node_name: "n".into() }
+    Target {
+        instance_id: "db".into(),
+        cluster: "c".into(),
+        node_name: "n".into(),
+    }
 }
 
 #[tokio::test]
@@ -603,12 +754,24 @@ async fn a_customer_role_is_assumed_with_its_external_id_and_its_credentials_sig
     );
     let reqs = log.lock().unwrap().clone();
     // one AssumeRole: the assumed credentials are cached until shortly before they expire
-    assert_eq!(reqs.iter().map(|r| r.action.as_str()).collect::<Vec<_>>(), ["AssumeRole", "DescribeDBInstances", "GetMetricData"]);
+    assert_eq!(
+        reqs.iter().map(|r| r.action.as_str()).collect::<Vec<_>>(),
+        ["AssumeRole", "DescribeDBInstances", "GetMetricData"]
+    );
     let sts = &reqs[0];
-    assert!(sts.body.contains(&format!("RoleArn={}", aws::uri_encode(ROLE_ARN, false))), "{}", sts.body);
+    assert!(
+        sts.body
+            .contains(&format!("RoleArn={}", aws::uri_encode(ROLE_ARN, false))),
+        "{}",
+        sts.body
+    );
     assert!(sts.body.contains(&format!("ExternalId={EXTERNAL_ID}")));
-    assert!(sts.body.contains("RoleSessionName=postgresai-rds-host-stats") && sts.body.contains("DurationSeconds=3600"));
-    assert!(sts.authorization.contains("Credential=ambient/") && sts.authorization.contains("/us-east-1/sts/aws4_request"));
+    assert!(
+        sts.body.contains("RoleSessionName=postgresai-rds-host-stats") && sts.body.contains("DurationSeconds=3600")
+    );
+    assert!(
+        sts.authorization.contains("Credential=ambient/") && sts.authorization.contains("/us-east-1/sts/aws4_request")
+    );
     for r in &reqs[1..] {
         assert!(r.authorization.contains("Credential=assumed/"), "{r:?}");
         assert_eq!(r.token.as_deref(), Some("assumed-token"));
@@ -625,21 +788,34 @@ async fn a_customer_role_is_assumed_with_its_external_id_and_its_credentials_sig
 async fn an_sts_failure_writes_nothing_and_never_queries_rds_or_cloudwatch() {
     let (base, log) = fake_aws(true).await;
     let c = client(&base, true, AMBIENT);
-    let e = poll(&c, &db_target(), parse_iso(NOW).unwrap(), &mut State::new()).await.unwrap_err();
+    let e = poll(&c, &db_target(), parse_iso(NOW).unwrap(), &mut State::new())
+        .await
+        .unwrap_err();
     assert_eq!(e.to_string(), "AccessDenied: offline STS denied");
-    assert_eq!(log.lock().unwrap().iter().map(|r| r.action.clone()).collect::<Vec<_>>(), ["AssumeRole"]);
+    assert_eq!(
+        log.lock().unwrap().iter().map(|r| r.action.clone()).collect::<Vec<_>>(),
+        ["AssumeRole"]
+    );
 }
 
 #[tokio::test]
 async fn without_keys_in_the_environment_the_instance_profile_comes_from_imdsv2() {
     let (base, log) = fake_aws(false).await;
     let c = client(&base, false, &[]);
-    let p = poll(&c, &db_target(), parse_iso(NOW).unwrap(), &mut State::new()).await.unwrap();
+    let p = poll(&c, &db_target(), parse_iso(NOW).unwrap(), &mut State::new())
+        .await
+        .unwrap();
     assert_eq!(p.points.len(), 2);
     let reqs = log.lock().unwrap().clone();
     assert_eq!(
-        reqs.iter().map(|r| format!("{} {}", r.method, r.path)).collect::<Vec<_>>()[..3],
-        ["PUT /latest/api/token", "GET /latest/meta-data/iam/security-credentials/", "GET /latest/meta-data/iam/security-credentials/collector-profile"]
+        reqs.iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect::<Vec<_>>()[..3],
+        [
+            "PUT /latest/api/token",
+            "GET /latest/meta-data/iam/security-credentials/",
+            "GET /latest/meta-data/iam/security-credentials/collector-profile"
+        ]
     );
     for r in &reqs[3..] {
         assert!(r.authorization.contains("Credential=instance/"), "{r:?}");
@@ -655,7 +831,11 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (base, log) = rt.block_on(fake_aws(false));
     let d = tempfile::tempdir().unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_pgai-mon"));
     let cfg = d.path().join("pgai-mon.yml");
     std::fs::write(
@@ -669,9 +849,17 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
     cmd.args(["run", "--config", cfg.to_str().unwrap()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    for k in ["AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
-        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "RDS_ROLE_ARN", "RDS_EXTERNAL_ID"]
-    {
+    for k in [
+        "AWS_PROFILE",
+        "AWS_SESSION_TOKEN",
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "RDS_ROLE_ARN",
+        "RDS_EXTERNAL_ID",
+    ] {
         cmd.env_remove(k);
     }
     for (k, v) in [
@@ -730,5 +918,8 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
     );
     let reqs = log.lock().unwrap().clone();
     assert_eq!(reqs[0].action, "DescribeDBInstances");
-    assert!(reqs[0].authorization.contains("Credential=ambient/") && reqs[0].authorization.contains("/us-east-1/rds/aws4_request"));
+    assert!(
+        reqs[0].authorization.contains("Credential=ambient/")
+            && reqs[0].authorization.contains("/us-east-1/rds/aws4_request")
+    );
 }

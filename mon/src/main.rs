@@ -498,7 +498,12 @@ fn main_cmd() -> anyhow::Result<()> {
                 shared.clone(),
                 Default::default(),
                 query::EMBEDDED_VIEWS_SQL.to_string(),
-                query::build_dict(mf.as_ref(), &mf.as_ref().map(|m| m.dict_intervals(&["full"], &[])).unwrap_or_default()),
+                query::build_dict(
+                    mf.as_ref(),
+                    &mf.as_ref()
+                        .map(|m| m.dict_intervals(&["full"], &[]))
+                        .unwrap_or_default(),
+                ),
             )?;
             match r.run(&sql) {
                 Ok(res) => println!("{}", serde_json::to_string(&res)?),
@@ -715,7 +720,12 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             .local_dir
             .clone()
             .unwrap_or_else(|| PathBuf::from(bucket::DEFAULT_LOCAL_DIR));
-        let b = bucket::Bucket::open(&cfg.store_dir.to_string_lossy(), &local, cfg.store.s3.clone(), &cfg.http.s3)?;
+        let b = bucket::Bucket::open(
+            &cfg.store_dir.to_string_lossy(),
+            &local,
+            cfg.store.s3.clone(),
+            &cfg.http.s3,
+        )?;
         b.attach(&cfg.store.samples_layout)?;
         eprintln!(
             "pgai-mon: writing {} (epoch {}, local dir {}, upload every {} s)",
@@ -762,7 +772,11 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     // intervals from the global preset and every source's own lists (pg_index_pilot, ...)
     let dict_iv = match &mf {
         Some(m) => {
-            let sources = if cfg.has_sources() { config::collect_sources(&cfg).unwrap_or_default() } else { vec![] };
+            let sources = if cfg.has_sources() {
+                config::collect_sources(&cfg).unwrap_or_default()
+            } else {
+                vec![]
+            };
             m.dict_intervals(&[cfg.preset.as_str()], &sources)
         }
         None => Default::default(),
@@ -810,7 +824,11 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     };
     // Store thread: sole owner of the WAL and the flush path.
     let compactor = core.compactor()?;
-    let upload_compactor = if bucket.is_some() { Some(core.upload_compactor()?) } else { None };
+    let upload_compactor = if bucket.is_some() {
+        Some(core.upload_compactor()?)
+    } else {
+        None
+    };
     let store_thread = std::thread::Builder::new().name("store".into()).spawn(move || {
         let mut core = core;
         // Flush whatever the WAL replay produced right away.
@@ -931,7 +949,17 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     }
 
     let final_tx = tx.clone();
-    let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text, auth);
+    let res = serve_loop(
+        cfg,
+        mf,
+        objects,
+        shared.clone(),
+        backend,
+        tx,
+        Some(store_thread),
+        views_text,
+        auth,
+    );
     // Stop order: serve_loop has stopped HTTP, flushed, and dropped its runtime (the collector
     // manager and its tasks with it). Flush once more what they sent meanwhile, then commit,
     // so a clean stop leaves nothing flushed and not uploaded (log tailers resume from the
@@ -942,7 +970,10 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             let _ = r.blocking_recv();
         }
         if let Err(e) = b.sync(&shared, None) {
-            eprintln!("bucket: final upload failed (data stays in {}): {e:#}", b.local.display());
+            eprintln!(
+                "bucket: final upload failed (data stays in {}): {e:#}",
+                b.local.display()
+            );
         }
     }
     res
@@ -1002,7 +1033,12 @@ fn serve_loop(
                 extra = extra.merge(scrape::router(sc));
             }
             if cfg.rules.host.unwrap_or(scrape::Scraper::enabled(&cfg.scrape)) {
-                tokio::spawn(rules::run_host(cfg.rules.clone(), rules_backend, ing.clone(), tx.clone()));
+                tokio::spawn(rules::run_host(
+                    cfg.rules.clone(),
+                    rules_backend,
+                    ing.clone(),
+                    tx.clone(),
+                ));
             }
             for t in pgai_mon::hoststats::targets(&cfg.rds, &|k| std::env::var(k).ok()) {
                 tokio::spawn(pgai_mon::hoststats::run(t, ing.clone()));

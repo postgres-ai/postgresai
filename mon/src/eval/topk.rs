@@ -498,7 +498,14 @@ fn time_chunks(
     }
     // exact per-series scrape intervals over the whole grid's fetched range
     let t_si = std::time::Instant::now();
-    let si = super::rollup::si_map(&b.ctx, ids, b.grid.fetch_start(b.f), b.grid.end, CHUNK_DAYS, b.f.keep_stale())?;
+    let si = super::rollup::si_map(
+        &b.ctx,
+        ids,
+        b.grid.fetch_start(b.f),
+        b.grid.end,
+        CHUNK_DAYS,
+        b.f.keep_stale(),
+    )?;
     let maxprev = si
         .values()
         .map(|s| super::kernels::max_prev(*s))
@@ -509,7 +516,11 @@ fn time_chunks(
         .min((max_days * crate::model::DAY_MS / b.grid.step) as usize)
         .max(2);
     if std::env::var_os("PGAI_EVAL_TRACE").is_some() {
-        eprintln!("topk: chunks of {per} steps, si for {} series in {:?}", si.len(), t_si.elapsed());
+        eprintln!(
+            "topk: chunks of {per} steps, si for {} series in {:?}",
+            si.len(),
+            t_si.elapsed()
+        );
     }
     let mut out = vec![];
     let mut c0 = 0;
@@ -608,7 +619,12 @@ fn ratio_rows(
             each(id, c0, y);
         })?;
         if trace && src.is_some() {
-            eprintln!("topk: chunk {c0}+{} den {} rows in {:?}", g.points(), den.len(), td.elapsed());
+            eprintln!(
+                "topk: chunk {c0}+{} den {} rows in {:?}",
+                g.points(),
+                den.len(),
+                td.elapsed()
+            );
         }
     }
     Ok(())
@@ -676,7 +692,12 @@ impl ExprAcc {
     fn emit(&self, e: &Expr, off: usize, each: &mut dyn FnMut(u64, usize, &[f64])) {
         let (np, nt) = (self.np, e.n.len() as u8);
         let mut y = vec![f64::NAN; np];
-        let mut order: Vec<(u64, usize)> = self.slot.iter().map(|(_, &s)| (self.rep[s], s)).filter(|x| x.0 != 0).collect();
+        let mut order: Vec<(u64, usize)> = self
+            .slot
+            .iter()
+            .map(|(_, &s)| (self.rep[s], s))
+            .filter(|x| x.0 != 0)
+            .collect();
         order.sort_unstable();
         for (id, s) in order {
             let o = s * np;

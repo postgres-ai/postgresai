@@ -468,7 +468,9 @@ pub fn shift_file(src: &Path, dst: &Path, delta_ms: i64, rollup: bool, zstd_leve
         for batch in scan.with_batch_size(65_536).build()? {
             let batch = batch?;
             for (i, a) in batch.columns().iter().enumerate() {
-                let Some(l) = roots.get(i).copied().flatten().filter(|l| unknown[*l]) else { continue };
+                let Some(l) = roots.get(i).copied().flatten().filter(|l| unknown[*l]) else {
+                    continue;
+                };
                 if let Some(x) = a.as_any().downcast_ref::<Int64Array>() {
                     if let (Some(a), Some(b)) = (arrow::compute::min(x), arrow::compute::max(x)) {
                         rng[l] = (rng[l].0.min(a), rng[l].1.max(b));

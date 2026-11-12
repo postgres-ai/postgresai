@@ -47,7 +47,11 @@ fn sample(core: &mut StoreCore, from: i64, to: i64, salt: u64) {
                     60 => f64::NAN,
                     _ => v,
                 };
-                samples.push(Sample { series_id: id, ts: t, value });
+                samples.push(Sample {
+                    series_id: id,
+                    ts: t,
+                    value,
+                });
                 t += 60_000 + (rnd() % 200) as i64 - 100;
                 k += 1;
             }
@@ -61,7 +65,11 @@ fn sample(core: &mut StoreCore, from: i64, to: i64, salt: u64) {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 struct Serve {
@@ -79,11 +87,18 @@ impl Drop for Serve {
 fn serve(store: &std::path::Path, row_cache_mb: u64, l1: bool) -> Serve {
     let port = free_port();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_pgai-mon"));
-    cmd.args(["serve", "--store", store.to_str().unwrap(), "--no-compact", "--no-auth", "--listen"])
-        .arg(format!("127.0.0.1:{port}"))
-        .args(["--row-cache-mb", &row_cache_mb.to_string(), "--max-concurrent", "4"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.args([
+        "serve",
+        "--store",
+        store.to_str().unwrap(),
+        "--no-compact",
+        "--no-auth",
+        "--listen",
+    ])
+    .arg(format!("127.0.0.1:{port}"))
+    .args(["--row-cache-mb", &row_cache_mb.to_string(), "--max-concurrent", "4"])
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
     if !l1 {
         cmd.env("PGAI_QCACHE", "0");
     }
@@ -177,14 +192,27 @@ fn build(store: &std::path::Path) -> (StoreCore, Vec<String>, i64) {
         shapes.extend([
             q(format!("prom_topk(5, 'irate', 'r_total', [], {s}, {e}, {step}, {w})")),
             q(format!("prom_topk(5, 'irate', 'q_total', [], {s}, {e}, {step}, {w})")),
-            q(format!("prom_topk(5, 'irate', 'r_total', [], {s}, {e}, {step}, {w}, p_den_metric := 'q_total')")),
-            q(format!("prom_topk(3, 'irate', 'r_total', [], {s}, {e}, {step}, {w}, p_bottom := true)")),
-            q(format!("prom_topk(5, 'irate', 'r_total', [['i', '=~', '1.*']], {s}, {e}, {step}, {w})")),
+            q(format!(
+                "prom_topk(5, 'irate', 'r_total', [], {s}, {e}, {step}, {w}, p_den_metric := 'q_total')"
+            )),
+            q(format!(
+                "prom_topk(3, 'irate', 'r_total', [], {s}, {e}, {step}, {w}, p_bottom := true)"
+            )),
+            q(format!(
+                "prom_topk(5, 'irate', 'r_total', [['i', '=~', '1.*']], {s}, {e}, {step}, {w})"
+            )),
             q(format!("prom_topk(4, 'rate', 'r_total', [], {s}, {e}, {step}, {step})")),
             q(format!("prom_topk(3, 'last', 'r_total', [], {s}, {e}, {step}, 0)")),
-            q(format!("prom_topk(3, 'last_over_time', 'q_total', [], {s}, {e}, {step}, {})", 6 * H)),
-            q(format!("prom_topk_expr(3, 'irate', {terms}, [], {s}, {e}, {step}, {w})")),
-            q(format!("prom_topk_expr(3, 'irate', {ratio}, [], {s}, {e}, {step}, {w})")),
+            q(format!(
+                "prom_topk(3, 'last_over_time', 'q_total', [], {s}, {e}, {step}, {})",
+                6 * H
+            )),
+            q(format!(
+                "prom_topk_expr(3, 'irate', {terms}, [], {s}, {e}, {step}, {w})"
+            )),
+            q(format!(
+                "prom_topk_expr(3, 'irate', {ratio}, [], {s}, {e}, {step}, {w})"
+            )),
         ]);
         shapes.push(format!(
             "SELECT labels['i'] AS g, t, value FROM prom_topk(3, 'irate', 'r_total', [], {s}, {e}, {step}, {w}, p_by := ['i']) ORDER BY 2, 3, 1"
@@ -228,7 +256,11 @@ fn row_cache_serve_results_are_identical_to_uncached() {
             assert!(rc["hits"].as_u64().unwrap_or(0) > 0, "no row-cache hits: {rc}");
             assert!(rc["bytes"].as_u64().unwrap_or(0) > 0, "{rc}");
         }
-        assert_eq!(row_cache(plain.port)["hits"].as_u64().unwrap_or(0), 0, "cache off but hits");
+        assert_eq!(
+            row_cache(plain.port)["hits"].as_u64().unwrap_or(0),
+            0,
+            "cache off but hits"
+        );
     }
 }
 
@@ -278,11 +310,17 @@ fn row_cache_is_not_reused_across_catalog_generations() {
     };
     let h0 = rowcache::HITS.load(std::sync::atomic::Ordering::Relaxed);
     let before = pass("first");
-    assert!(rowcache::HITS.load(std::sync::atomic::Ordering::Relaxed) > h0, "no hits");
+    assert!(
+        rowcache::HITS.load(std::sync::atomic::Ordering::Relaxed) > h0,
+        "no hits"
+    );
     let gen0 = core.shared.generation.load(std::sync::atomic::Ordering::Acquire);
     sample(&mut core, now - 6 * H + 17_000, now - 30 * 60_000, 9);
     assert!(core.shared.generation.load(std::sync::atomic::Ordering::Acquire) > gen0);
     let after = pass("after new data");
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
-    assert!(changed > 0, "the new samples changed no result: the test proves nothing");
+    assert!(
+        changed > 0,
+        "the new samples changed no result: the test proves nothing"
+    );
 }

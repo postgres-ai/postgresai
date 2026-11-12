@@ -28,7 +28,14 @@ fn check(r: &Reader, cases: &[(i64, i64, i64)]) -> (usize, u64) {
     let h = 3_600_000i64;
     let mut calls = vec![];
     for &(s, e, step) in cases {
-        for f in ["increase", "rate", "delta", "increase_pure", "last_over_time", "first_over_time"] {
+        for f in [
+            "increase",
+            "rate",
+            "delta",
+            "increase_pure",
+            "last_over_time",
+            "first_over_time",
+        ] {
             for w in [step, 6 * h] {
                 calls.push(format!("prom_{f}('d_total', [], {s}, {e}, {step}, {w})"));
             }
@@ -109,8 +116,16 @@ fn rollup_1h_month_tier_matches_the_day_files() {
             } else {
                 v
             };
-            samples.push(Sample { series_id: id, ts: t, value });
-            t += if aligned { 300_000 } else { 300_000 + (rnd() % 120_000) as i64 - 60_000 };
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
+            t += if aligned {
+                300_000
+            } else {
+                300_000 + (rnd() % 120_000) as i64 - 60_000
+            };
             k += 1;
         }
     }
@@ -122,8 +137,16 @@ fn rollup_1h_month_tier_matches_the_day_files() {
         let mut t = day0 + (rnd() % 3_600_000) as i64;
         let mut k = 0;
         while t < day0 + ndays * day {
-            let value = if (k + s) % 4 == 1 { stale_nan() } else { (rnd() % 1000) as f64 };
-            samples.push(Sample { series_id: id, ts: t, value });
+            let value = if (k + s) % 4 == 1 {
+                stale_nan()
+            } else {
+                (rnd() % 1000) as f64
+            };
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
             t += 4_000_000 + (rnd() % 5_000_000) as i64;
             k += 1;
         }
@@ -152,7 +175,11 @@ fn rollup_1h_month_tier_matches_the_day_files() {
     let mut after_phase1 = vec![];
     for (lo, hi) in [(i64::MIN, d_mid), (d_mid, i64::MAX)] {
         core.append(Record::Series(series(lo, hi))).unwrap();
-        let part: Vec<Sample> = samples.iter().filter(|x| day_of(x.ts) >= lo && day_of(x.ts) < hi).cloned().collect();
+        let part: Vec<Sample> = samples
+            .iter()
+            .filter(|x| day_of(x.ts) >= lo && day_of(x.ts) < hi)
+            .cloned()
+            .collect();
         for chunk in part.chunks(50_000) {
             core.append(Record::Samples(chunk.to_vec())).unwrap();
             core.flush().unwrap();
@@ -168,23 +195,22 @@ fn rollup_1h_month_tier_matches_the_day_files() {
     assert_eq!(m1h.len(), 2, "{m1h:?}");
     let span = |v: &[pgai_mon::catalog::FileEntry]| v.iter().map(|f| (f.day, f.min_ts, f.max_ts)).collect::<Vec<_>>();
     assert_eq!(span(&m1h), span(&m1d));
-    assert!(m1h.iter().all(|f| f.ver == rollup::VER && f.path.starts_with("rollup_1h_month/month=")));
+    assert!(m1h
+        .iter()
+        .all(|f| f.ver == rollup::VER && f.path.starts_with("rollup_1h_month/month=")));
     assert_eq!(after_phase1.len(), 2);
     assert!(m1h[1].max_ts > after_phase1[1].max_ts, "October extended");
     let nday = core.shared.catalog.lock().unwrap().files_of(KIND).count();
     // the month files hold exactly the day files' buckets in their range
-    let day_rows: u64 = core
-        .shared
-        .catalog
-        .lock()
-        .unwrap()
-        .files_of(KIND)
-        .map(|f| f.rows)
-        .sum();
-    eprintln!("1 h: {nday} day files, {day_rows} rows; month files {:?}", m1h.iter().map(|f| f.rows).collect::<Vec<_>>());
+    let day_rows: u64 = core.shared.catalog.lock().unwrap().files_of(KIND).map(|f| f.rows).sum();
+    eprintln!(
+        "1 h: {nday} day files, {day_rows} rows; month files {:?}",
+        m1h.iter().map(|f| f.rows).collect::<Vec<_>>()
+    );
 
     // a 30 d panel at a 1 h step reads the two month files (plus day files outside them)
-    let ctx = pgai_mon::eval::EvalCtx::from_catalog(d.path().to_path_buf(), &core.shared.catalog.lock().unwrap().clone());
+    let ctx =
+        pgai_mon::eval::EvalCtx::from_catalog(d.path().to_path_buf(), &core.shared.catalog.lock().unwrap().clone());
     let g = Grid {
         start: day0 + 5 * day,
         end: day0 + 35 * day,
@@ -193,10 +219,23 @@ fn rollup_1h_month_tier_matches_the_day_files() {
         phi: 0.0,
     };
     let plan = rollup::plan(&ctx, Func::Increase, &g).expect("rollup-served");
-    let files: Vec<&str> = plan.segs.iter().flat_map(|s| s.2.iter().map(|f| f.kind.as_str())).collect();
+    let files: Vec<&str> = plan
+        .segs
+        .iter()
+        .flat_map(|s| s.2.iter().map(|f| f.kind.as_str()))
+        .collect();
     let nm = files.iter().filter(|k| **k == KIND_1HM).count();
-    assert_eq!(nm, 2, "{:?}", plan.segs.iter().map(|s| (s.0, s.1, s.2.len())).collect::<Vec<_>>());
-    assert!(files.len() <= 4, "30 d at 1 h opens {} rollup files: {files:?}", files.len());
+    assert_eq!(
+        nm,
+        2,
+        "{:?}",
+        plan.segs.iter().map(|s| (s.0, s.1, s.2.len())).collect::<Vec<_>>()
+    );
+    assert!(
+        files.len() <= 4,
+        "30 d at 1 h opens {} rollup files: {files:?}",
+        files.len()
+    );
 
     let views = format!("{EMBEDDED_VIEWS_SQL}\n;\n{MACROS}");
     let r = Reader::new(
@@ -210,9 +249,9 @@ fn rollup_1h_month_tier_matches_the_day_files() {
     )
     .unwrap();
     let cases = [
-        (day0 + 2 * day, day0 + 38 * day, h),           // across the month end, both files
+        (day0 + 2 * day, day0 + 38 * day, h),             // across the month end, both files
         (day0 + 3 * day + 5 * h, day0 + 10 * day, 6 * h), // inside September's file
-        (day0 + 12 * day, day0 + 39 * day + 7 * h, h),   // past the month files' end: day files, raw
+        (day0 + 12 * day, day0 + 39 * day + 7 * h, h),    // past the month files' end: day files, raw
         (day0 + 15 * day + 13 * h, day0 + 15 * day + 13 * h, h), // one point
     ];
     let (n, served) = check(&r, &cases);
@@ -224,7 +263,12 @@ fn rollup_1h_month_tier_matches_the_day_files() {
     // the day file), results still equal; the same compaction rebuilds it
     let late = day0 + 15 * day + 12 * h + 30_000;
     let id1 = series_id("d_total", &[("i".to_string(), "1".to_string())]);
-    core.append(Record::Samples(vec![Sample { series_id: id1, ts: late, value: 1e6 }])).unwrap();
+    core.append(Record::Samples(vec![Sample {
+        series_id: id1,
+        ts: late,
+        value: 1e6,
+    }]))
+    .unwrap();
     core.flush().unwrap();
     {
         // before compaction: the day has a level-0 file, so it is not valid: neither tier serves it

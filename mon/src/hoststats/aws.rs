@@ -25,14 +25,22 @@ impl std::fmt::Display for AwsError {
 }
 impl std::error::Error for AwsError {}
 pub fn err(name: &str, message: impl Into<String>) -> AwsError {
-    AwsError { name: name.into(), message: message.into() }
+    AwsError {
+        name: name.into(),
+        message: message.into(),
+    }
 }
 
 /// One AWS call by the SDK's client and command names (as in the recorded fixtures):
 /// ("rds", "DescribeDBInstancesCommand"), ("cloudwatch", "GetMetricDataCommand"),
 /// ("pi", "GetResourceMetricsCommand"), ("logs", "GetLogEventsCommand").
 pub trait AwsApi: Send + Sync {
-    fn call(&self, client: &'static str, command: &'static str, input: Value) -> impl Future<Output = Result<Value, AwsError>> + Send;
+    fn call(
+        &self,
+        client: &'static str,
+        command: &'static str,
+        input: Value,
+    ) -> impl Future<Output = Result<Value, AwsError>> + Send;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -153,7 +161,9 @@ fn sha256_hex(b: &[u8]) -> String {
     hex(digest::digest(&digest::SHA256, b).as_ref())
 }
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
-    hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), msg).as_ref().to_vec()
+    hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), msg)
+        .as_ref()
+        .to_vec()
 }
 
 /// RFC 3986 percent-encoding as SigV4 wants it (unreserved characters kept).
@@ -171,7 +181,11 @@ pub fn uri_encode(s: &str, keep_slash: bool) -> String {
 
 /// Form body `k=v&...` (Query protocol), encoded as SigV4's canonical query encodes.
 pub fn form(params: &[(&str, String)]) -> String {
-    params.iter().map(|(k, v)| format!("{}={}", uri_encode(k, false), uri_encode(v, false))).collect::<Vec<_>>().join("&")
+    params
+        .iter()
+        .map(|(k, v)| format!("{}={}", uri_encode(k, false), uri_encode(v, false)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// Sign a request: returns the headers to add (x-amz-date, x-amz-security-token, authorization).
@@ -190,8 +204,10 @@ pub fn sign(
 ) -> Vec<(String, String)> {
     let date_time = amz_date(now_ms);
     let date = &date_time[..8];
-    let mut h: Vec<(String, String)> =
-        headers.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string())).collect();
+    let mut h: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
     h.push(("x-amz-date".into(), date_time.clone()));
     if let Some(t) = &creds.token {
         h.push(("x-amz-security-token".into(), t.clone()));
@@ -215,7 +231,10 @@ pub fn sign(
         sha256_hex(body)
     );
     let scope = format!("{date}/{region}/{service}/aws4_request");
-    let to_sign = format!("AWS4-HMAC-SHA256\n{date_time}\n{scope}\n{}", sha256_hex(canonical.as_bytes()));
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{date_time}\n{scope}\n{}",
+        sha256_hex(canonical.as_bytes())
+    );
     let k = hmac_sha256(format!("AWS4{}", creds.secret_key).as_bytes(), date.as_bytes());
     let k = hmac_sha256(&k, region.as_bytes());
     let k = hmac_sha256(&k, service.as_bytes());
@@ -227,7 +246,10 @@ pub fn sign(
     }
     out.push((
         "authorization".into(),
-        format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={sig}", creds.access_key),
+        format!(
+            "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={sig}",
+            creds.access_key
+        ),
     ));
     out
 }
@@ -316,11 +338,18 @@ pub fn parse_xml(s: &str) -> Result<Xml, String> {
                 let inner = &s[i + 1..e];
                 let self_closing = inner.ends_with('/');
                 let inner = inner.trim_end_matches('/');
-                let name = inner.split(|c: char| c.is_whitespace()).next().unwrap_or("").to_string();
+                let name = inner
+                    .split(|c: char| c.is_whitespace())
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 if name.is_empty() {
                     return Err("empty tag name".into());
                 }
-                let el = Xml { name, ..Default::default() };
+                let el = Xml {
+                    name,
+                    ..Default::default()
+                };
                 if self_closing {
                     stack.last_mut().unwrap().children.push(el);
                 } else {
@@ -377,7 +406,11 @@ impl Endpoints {
         if let Some(u) = &self.endpoint_url {
             return u.trim_end_matches('/').to_string();
         }
-        let suffix = if self.region.starts_with("cn-") { "amazonaws.com.cn" } else { "amazonaws.com" };
+        let suffix = if self.region.starts_with("cn-") {
+            "amazonaws.com.cn"
+        } else {
+            "amazonaws.com"
+        };
         format!("https://{service}.{}.{suffix}", self.region)
     }
 }
@@ -406,7 +439,9 @@ pub fn http_client() -> reqwest::Client {
 const REFRESH_MS: i64 = 300_000;
 
 fn fresh(c: &Option<Creds>, now: i64) -> Option<Creds> {
-    c.as_ref().filter(|c| c.expires_ms.is_none_or(|e| e - REFRESH_MS > now)).cloned()
+    c.as_ref()
+        .filter(|c| c.expires_ms.is_none_or(|e| e - REFRESH_MS > now))
+        .cloned()
 }
 
 fn net(e: reqwest::Error) -> AwsError {
@@ -416,11 +451,7 @@ fn net(e: reqwest::Error) -> AwsError {
 }
 
 impl Client {
-    pub fn new(
-        ep: Endpoints,
-        role: Option<Role>,
-        env: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
-    ) -> Self {
+    pub fn new(ep: Endpoints, role: Option<Role>, env: Box<dyn Fn(&str) -> Option<String> + Send + Sync>) -> Self {
         Self {
             http: http_client(),
             ep,
@@ -434,7 +465,9 @@ impl Client {
     /// The credentials calls are signed with: the role's, when one is configured.
     pub async fn creds(&self) -> Result<Creds, AwsError> {
         let now = crate::model::now_ms();
-        let Some(role) = &self.role else { return self.base_creds(now).await };
+        let Some(role) = &self.role else {
+            return self.base_creds(now).await;
+        };
         let mut a = self.assumed.lock().await;
         if let Some(c) = fresh(&a, now) {
             return Ok(c);
@@ -449,7 +482,9 @@ impl Client {
             ("DurationSeconds", "3600".into()),
         ]);
         let x = self.query_with("sts", &body, &base).await?;
-        let c = x.path(&["AssumeRoleResult", "Credentials"]).ok_or_else(|| err("InvalidResponse", "AssumeRole: no Credentials"))?;
+        let c = x
+            .path(&["AssumeRoleResult", "Credentials"])
+            .ok_or_else(|| err("InvalidResponse", "AssumeRole: no Credentials"))?;
         let creds = Creds {
             access_key: c.text_of("AccessKeyId").unwrap_or_default().to_string(),
             secret_key: c.text_of("SecretAccessKey").unwrap_or_default().to_string(),
@@ -478,16 +513,25 @@ impl Client {
         let env = |k: &str| (self.env)(k).filter(|v| !v.is_empty());
         // 1. environment
         if let (Some(a), Some(s)) = (env("AWS_ACCESS_KEY_ID"), env("AWS_SECRET_ACCESS_KEY")) {
-            return Ok(Creds { access_key: a, secret_key: s, token: env("AWS_SESSION_TOKEN"), expires_ms: None });
+            return Ok(Creds {
+                access_key: a,
+                secret_key: s,
+                token: env("AWS_SESSION_TOKEN"),
+                expires_ms: None,
+            });
         }
         // 2. web identity (EKS IRSA and the like)
         if let (Some(f), Some(arn)) = (env("AWS_WEB_IDENTITY_TOKEN_FILE"), env("AWS_ROLE_ARN")) {
-            let tok = std::fs::read_to_string(&f).map_err(|e| err("CredentialsError", format!("web identity token: {e}")))?;
+            let tok =
+                std::fs::read_to_string(&f).map_err(|e| err("CredentialsError", format!("web identity token: {e}")))?;
             let body = form(&[
                 ("Action", "AssumeRoleWithWebIdentity".into()),
                 ("Version", "2011-06-15".into()),
                 ("RoleArn", arn),
-                ("RoleSessionName", env("AWS_ROLE_SESSION_NAME").unwrap_or_else(|| "pgai-mon".into())),
+                (
+                    "RoleSessionName",
+                    env("AWS_ROLE_SESSION_NAME").unwrap_or_else(|| "pgai-mon".into()),
+                ),
                 ("WebIdentityToken", tok.trim().to_string()),
             ]);
             let x = self.post_unsigned("sts", &body).await?;
@@ -526,7 +570,10 @@ impl Client {
             }
             let r = req.send().await.map_err(net)?;
             if !r.status().is_success() {
-                return Err(err("CredentialsError", format!("container credentials: HTTP {}", r.status())));
+                return Err(err(
+                    "CredentialsError",
+                    format!("container credentials: HTTP {}", r.status()),
+                ));
             }
             return json_creds(&json_body(r).await?);
         }
@@ -561,7 +608,10 @@ impl Client {
         };
         let r = get(String::new()).await.map_err(net)?;
         if !r.status().is_success() {
-            return Err(err("CredentialsError", format!("IMDSv2: no instance profile (HTTP {})", r.status())));
+            return Err(err(
+                "CredentialsError",
+                format!("IMDSv2: no instance profile (HTTP {})", r.status()),
+            ));
         }
         let role = r.text().await.map_err(net)?;
         let role = role.lines().next().unwrap_or("").trim().to_string();
@@ -570,7 +620,10 @@ impl Client {
         }
         let r = get(role).await.map_err(net)?;
         if !r.status().is_success() {
-            return Err(err("CredentialsError", format!("IMDSv2 credentials: HTTP {}", r.status())));
+            return Err(err(
+                "CredentialsError",
+                format!("IMDSv2 credentials: HTTP {}", r.status()),
+            ));
         }
         json_creds(&json_body(r).await?)
     }
@@ -608,7 +661,17 @@ impl Client {
         };
         let mut sh = headers.clone();
         sh.push(("host".into(), host));
-        let extra = sign("POST", "/", "", &sh, body.as_bytes(), creds, &self.ep.region, service, crate::model::now_ms());
+        let extra = sign(
+            "POST",
+            "/",
+            "",
+            &sh,
+            body.as_bytes(),
+            creds,
+            &self.ep.region,
+            service,
+            crate::model::now_ms(),
+        );
         let mut req = self.http.post(url).body(body);
         for (k, v) in headers.into_iter().chain(extra) {
             req = req.header(k, v);
@@ -619,7 +682,10 @@ impl Client {
     }
 
     async fn query_with(&self, service: &str, body: &str, creds: &Creds) -> Result<Xml, AwsError> {
-        let h = vec![("content-type".to_string(), "application/x-www-form-urlencoded; charset=utf-8".to_string())];
+        let h = vec![(
+            "content-type".to_string(),
+            "application/x-www-form-urlencoded; charset=utf-8".to_string(),
+        )];
         let (st, text) = retry(|| self.send_signed(service, h.clone(), body.to_string(), creds)).await?;
         let x = parse_xml(&text).map_err(|e| err("InvalidResponse", format!("{service}: {e}")))?;
         if !st.is_success() {
@@ -641,7 +707,11 @@ impl Client {
         if !st.is_success() {
             let ty = v["__type"].as_str().or(v["code"].as_str()).unwrap_or("UnknownError");
             let name = ty.rsplit('#').next().unwrap_or(ty).split(':').next().unwrap_or(ty);
-            let msg = v["message"].as_str().or(v["Message"].as_str()).unwrap_or("").to_string();
+            let msg = v["message"]
+                .as_str()
+                .or(v["Message"].as_str())
+                .unwrap_or("")
+                .to_string();
             return Err(err(name, if msg.is_empty() { format!("HTTP {st}") } else { msg }));
         }
         Ok(v)
@@ -660,7 +730,9 @@ where
         let r = f().await;
         let retryable = match &r {
             Ok((st, body)) => {
-                st.is_server_error() || *st == 429 || (st.as_u16() == 400 && (body.contains("Throttl") || body.contains("RequestLimitExceeded")))
+                st.is_server_error()
+                    || *st == 429
+                    || (st.as_u16() == 400 && (body.contains("Throttl") || body.contains("RequestLimitExceeded")))
             }
             Err(e) => e.name == "NetworkError",
         };
@@ -674,7 +746,10 @@ where
 fn query_error(x: &Xml, st: reqwest::StatusCode) -> AwsError {
     let e = x.child("Error").or_else(|| x.path(&["Errors", "Error"]));
     match e {
-        Some(e) => err(e.text_of("Code").unwrap_or("UnknownError"), e.text_of("Message").unwrap_or("").to_string()),
+        Some(e) => err(
+            e.text_of("Code").unwrap_or("UnknownError"),
+            e.text_of("Message").unwrap_or("").to_string(),
+        ),
         None => err("UnknownError", format!("HTTP {st}")),
     }
 }
@@ -723,7 +798,12 @@ pub fn profile_creds(text: &str, profile: &str) -> Option<Creds> {
             }
         }
     }
-    Some(Creds { access_key: a?, secret_key: s?, token: t, expires_ms: None })
+    Some(Creds {
+        access_key: a?,
+        secret_key: s?,
+        token: t,
+        expires_ms: None,
+    })
 }
 
 // ------------------------------------------------------------------------------------------
@@ -752,7 +832,14 @@ pub fn db_instances_from_xml(x: &Xml) -> Value {
         .into_iter()
         .map(|d| {
             let mut m = serde_json::Map::new();
-            for k in ["DBInstanceIdentifier", "Engine", "DBClusterIdentifier", "DbiResourceId", "DBInstanceClass", "StorageType"] {
+            for k in [
+                "DBInstanceIdentifier",
+                "Engine",
+                "DBClusterIdentifier",
+                "DbiResourceId",
+                "DBInstanceClass",
+                "StorageType",
+            ] {
                 if let Some(t) = d.text_of(k) {
                     m.insert(k.into(), json!(t));
                 }
@@ -772,7 +859,12 @@ pub fn db_instances_from_xml(x: &Xml) -> Value {
 }
 
 impl AwsApi for Client {
-    fn call(&self, client: &'static str, command: &'static str, input: Value) -> impl Future<Output = Result<Value, AwsError>> + Send {
+    fn call(
+        &self,
+        client: &'static str,
+        command: &'static str,
+        input: Value,
+    ) -> impl Future<Output = Result<Value, AwsError>> + Send {
         async move {
             match (client, command) {
                 ("rds", "DescribeDBInstancesCommand") => {
@@ -790,7 +882,9 @@ impl AwsApi for Client {
                     let mut wire = input.clone();
                     wire["StartTime"] = epoch_s(&input["StartTime"]);
                     wire["EndTime"] = epoch_s(&input["EndTime"]);
-                    let mut out = self.json_call("monitoring", "GraniteServiceVersion20100801.GetMetricData", "1.0", wire).await?;
+                    let mut out = self
+                        .json_call("monitoring", "GraniteServiceVersion20100801.GetMetricData", "1.0", wire)
+                        .await?;
                     if let Some(rs) = out["MetricDataResults"].as_array_mut() {
                         for r in rs {
                             if let Some(ts) = r["Timestamps"].as_array_mut() {
@@ -806,7 +900,9 @@ impl AwsApi for Client {
                     let mut wire = input.clone();
                     wire["StartTime"] = epoch_s(&input["StartTime"]);
                     wire["EndTime"] = epoch_s(&input["EndTime"]);
-                    let mut out = self.json_call("pi", "PerformanceInsightsv20180227.GetResourceMetrics", "1.1", wire).await?;
+                    let mut out = self
+                        .json_call("pi", "PerformanceInsightsv20180227.GetResourceMetrics", "1.1", wire)
+                        .await?;
                     for k in ["AlignedStartTime", "AlignedEndTime"] {
                         if !out[k].is_null() {
                             out[k] = iso_of_epoch_s(&out[k]);
@@ -823,7 +919,9 @@ impl AwsApi for Client {
                     }
                     Ok(out)
                 }
-                ("logs", "GetLogEventsCommand") => self.json_call("logs", "Logs_20140328.GetLogEvents", "1.1", input).await,
+                ("logs", "GetLogEventsCommand") => {
+                    self.json_call("logs", "Logs_20140328.GetLogEvents", "1.1", input).await
+                }
                 (c, m) => Err(err("NotImplemented", format!("{c} {m}"))),
             }
         }
@@ -849,7 +947,10 @@ mod tests {
             "/",
             "Action=ListUsers&Version=2010-05-08",
             &[
-                ("Content-Type".into(), "application/x-www-form-urlencoded; charset=utf-8".into()),
+                (
+                    "Content-Type".into(),
+                    "application/x-www-form-urlencoded; charset=utf-8".into(),
+                ),
                 ("Host".into(), "iam.amazonaws.com".into()),
             ],
             b"",
@@ -866,7 +967,17 @@ mod tests {
              Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
         );
         // aws-sig-v4-test-suite: get-vanilla
-        let h = sign("GET", "/", "", &[("host".into(), "example.amazonaws.com".into())], b"", &creds, "us-east-1", "service", t);
+        let h = sign(
+            "GET",
+            "/",
+            "",
+            &[("host".into(), "example.amazonaws.com".into())],
+            b"",
+            &creds,
+            "us-east-1",
+            "service",
+            t,
+        );
         assert!(h.iter().any(|(k, v)| k == "authorization"
             && v.ends_with("Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31")));
         assert_eq!(h[0], ("x-amz-date".to_string(), "20150830T123600Z".to_string()));
@@ -881,7 +992,13 @@ mod tests {
         assert_eq!(parse_iso("2026-10-01T23:07:36+01:00"), Some(1_790_892_456_000));
         assert_eq!(parse_iso("2026-10-01T22:07:36.5Z"), Some(1_790_892_456_500));
         assert_eq!(parse_iso("2026-10-01"), Some(1_790_812_800_000));
-        for bad in ["yesterday", "", "2026-13-01T00:00:00Z", "2026-10-01T22:07:36Q", "2026-10-01T22:07:36.Z"] {
+        for bad in [
+            "yesterday",
+            "",
+            "2026-13-01T00:00:00Z",
+            "2026-10-01T22:07:36Q",
+            "2026-10-01T22:07:36.Z",
+        ] {
             assert_eq!(parse_iso(bad), None, "{bad}");
         }
         assert_eq!(amz_date(t), "20261001T220100Z");
@@ -894,7 +1011,10 @@ mod tests {
              <Message>a &amp; b &lt;c&gt; &#65;&#x42;</Message></Error><RequestId>r</RequestId></ErrorResponse>",
         )
         .unwrap();
-        assert_eq!(query_error(&x, reqwest::StatusCode::FORBIDDEN), err("AccessDenied", "a & b <c> AB"));
+        assert_eq!(
+            query_error(&x, reqwest::StatusCode::FORBIDDEN),
+            err("AccessDenied", "a & b <c> AB")
+        );
         assert!(parse_xml("<a><b></a>").is_err());
         assert!(parse_xml("<a>").is_err());
         let x = parse_xml("<R><DescribeDBInstancesResult><DBInstances><DBInstance><Engine>aurora-postgresql</Engine>\

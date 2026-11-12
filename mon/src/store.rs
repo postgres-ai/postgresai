@@ -886,10 +886,15 @@ fn remove_orphans(root: &Path, cat: &Catalog) -> anyhow::Result<()> {
     for (p, _) in &cat.pending_delete {
         known.insert(root.join(p));
     }
-    for kind in KINDS
-        .iter()
-        .chain([crate::eval::rollup::KIND, crate::eval::rollup::KIND_1D, crate::eval::rollup::KIND_1HM, crate::registry::KIND].iter())
-    {
+    for kind in KINDS.iter().chain(
+        [
+            crate::eval::rollup::KIND,
+            crate::eval::rollup::KIND_1D,
+            crate::eval::rollup::KIND_1HM,
+            crate::registry::KIND,
+        ]
+        .iter(),
+    ) {
         let kd = root.join(kind);
         if !kd.exists() {
             continue;
@@ -1222,7 +1227,11 @@ impl Compactor {
                 }
             }
             // 1 d rollup month files from the closed days' 1 h rollups
-            done += crate::eval::rollup::update_1d(&self.shared, self.cfg.zstd_level, self.cfg.delete_grace_s as i64 * 1000)?;
+            done += crate::eval::rollup::update_1d(
+                &self.shared,
+                self.cfg.zstd_level,
+                self.cfg.delete_grace_s as i64 * 1000,
+            )?;
         }
         self.purge(now)?;
         Ok(done)
@@ -1232,22 +1241,23 @@ impl Compactor {
     /// this hour and not in `uploaded` into one level-0 file, so a round PUTs one file per kind and day instead of
     /// one per flush. Returns the number of merges.
     pub fn merge_unuploaded(&self, uploaded: &HashSet<String>) -> anyhow::Result<usize> {
-        let groups: BTreeMap<(String, i64), Vec<FileEntry>> = {
-            let cat = self.shared.catalog.lock().unwrap();
-            let mut g: BTreeMap<(String, i64), Vec<FileEntry>> = BTreeMap::new();
-            // only what the compactor leaves alone: open days' files of the current hour (it
-            // merges finished hours and closed days; at a boundary its merge check discards
-            // whichever of two merges of the same inputs commits second)
-            let now = now_ms();
-            let (today, hour_start) = (day_of(now), now - now.rem_euclid(3_600_000));
-            let open = |day: i64| day >= today || now < (day + 1) * DAY_MS + self.cfg.compact_grace_s as i64 * 1000;
-            for f in cat.files.iter().filter(|f| {
-                f.level == 0 && !uploaded.contains(&f.path) && f.created_ms >= hour_start && open(f.day)
-            }) {
-                g.entry((f.kind.clone(), f.day)).or_default().push(f.clone());
-            }
-            g
-        };
+        let groups: BTreeMap<(String, i64), Vec<FileEntry>> =
+            {
+                let cat = self.shared.catalog.lock().unwrap();
+                let mut g: BTreeMap<(String, i64), Vec<FileEntry>> = BTreeMap::new();
+                // only what the compactor leaves alone: open days' files of the current hour (it
+                // merges finished hours and closed days; at a boundary its merge check discards
+                // whichever of two merges of the same inputs commits second)
+                let now = now_ms();
+                let (today, hour_start) = (day_of(now), now - now.rem_euclid(3_600_000));
+                let open = |day: i64| day >= today || now < (day + 1) * DAY_MS + self.cfg.compact_grace_s as i64 * 1000;
+                for f in cat.files.iter().filter(|f| {
+                    f.level == 0 && !uploaded.contains(&f.path) && f.created_ms >= hour_start && open(f.day)
+                }) {
+                    g.entry((f.kind.clone(), f.day)).or_default().push(f.clone());
+                }
+                g
+            };
         let mut n = 0;
         for ((kind, day), inputs) in groups {
             if inputs.len() < 2 {

@@ -524,7 +524,9 @@ mod tests {
     use super::*;
 
     fn cfg(yaml: &str, env: Option<&str>) -> Config {
-        serde_yaml::from_str::<Config>(yaml).unwrap().with_store_env(env.map(str::to_string))
+        serde_yaml::from_str::<Config>(yaml)
+            .unwrap()
+            .with_store_env(env.map(str::to_string))
     }
 
     #[test]
@@ -537,11 +539,17 @@ mod tests {
         let c = cfg(y, Some("s3://bkt/mon"));
         assert_eq!(c.store_dir, PathBuf::from("s3://bkt/mon"));
         assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/var/lib/pgai-mon")));
-        let c = cfg("store_dir: /x\nstore:\n  s3:\n    local_dir: /wd\n", Some("s3://bkt/mon"));
+        let c = cfg(
+            "store_dir: /x\nstore:\n  s3:\n    local_dir: /wd\n",
+            Some("s3://bkt/mon"),
+        );
         assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/wd")));
         let c = cfg("store_dir: s3://a/b\n", None);
         assert_eq!(c.store.s3.local_dir, Some(PathBuf::from("/var/lib/pgai-mon")));
-        assert_eq!(cfg("store_dir: s3://a/b\n", Some("/local")).store_dir, PathBuf::from("/local"));
+        assert_eq!(
+            cfg("store_dir: s3://a/b\n", Some("/local")).store_dir,
+            PathBuf::from("/local")
+        );
     }
 
     /// The file `pgai mon local-install --demo` writes (instances.demo.yml), as is.

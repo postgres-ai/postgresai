@@ -154,7 +154,10 @@ fn label_keyed_irate_matches_sql_oracle() {
     let t0 = 1_794_000_000_000i64;
     let rows = |sql: &str| -> Vec<serde_json::Value> {
         let res = r.run(sql).unwrap_or_else(|e| panic!("{sql}: {e:?}"));
-        res.rows.iter().map(|x| serde_json::from_str(x.get()).unwrap()).collect()
+        res.rows
+            .iter()
+            .map(|x| serde_json::from_str(x.get()).unwrap())
+            .collect()
     };
     let args = |m: &str| format!("'{m}', [], {}, {}, 60000, 65000", t0 + 600_000, t0 + 10_000_000);
     for m in ["m_total", "m2_total"] {
@@ -179,8 +182,15 @@ fn label_keyed_irate_matches_sql_oracle() {
         args("m2_total")
     ));
     let (a, b) = (one("m_total"), one("m2_total"));
-    assert_eq!(both[0][0].as_i64().unwrap(), a[0][0].as_i64().unwrap() + b[0][0].as_i64().unwrap());
-    assert_eq!(both[0][2].as_i64().unwrap(), 40, "40 label sets shared by the two metrics");
+    assert_eq!(
+        both[0][0].as_i64().unwrap(),
+        a[0][0].as_i64().unwrap() + b[0][0].as_i64().unwrap()
+    );
+    assert_eq!(
+        both[0][2].as_i64().unwrap(),
+        40,
+        "40 label sets shared by the two metrics"
+    );
 }
 
 #[test]
@@ -379,12 +389,18 @@ fn parity(r: &Reader, call: &str, oracle: &str, tier: Option<usize>) -> (usize, 
     let q = |c: &str| format!("SELECT series_id, t, value FROM {c} ORDER BY 1, 2");
     let rows = |c: &str| -> Vec<(u64, i64, f64)> {
         let res = r.run(&q(c)).unwrap_or_else(|e| panic!("{c}: {e:?}"));
-        res.rows.iter().map(|x| serde_json::from_str(x.get()).unwrap()).collect()
+        res.rows
+            .iter()
+            .map(|x| serde_json::from_str(x.get()).unwrap())
+            .collect()
     };
     let before = tier.map(|t| SERVED[t].load(Ordering::Relaxed));
     let a = rows(call);
     if let (Some(t), Some(b)) = (tier, before) {
-        assert!(SERVED[t].load(Ordering::Relaxed) > b, "{call}: not served from tier {t}");
+        assert!(
+            SERVED[t].load(Ordering::Relaxed) > b,
+            "{call}: not served from tier {t}"
+        );
     }
     let o = rows(oracle);
     std::env::set_var("PGAI_NO_ROLLUP", "1");
@@ -491,7 +507,11 @@ fn rollup_store(dir: &std::path::Path) -> StoreCore {
                 3 if s == 1 => stale_nan(),
                 _ => (rnd() % 1000) as f64,
             };
-            samples.push(Sample { series_id: id, ts: t, value });
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
             t += 4_500_000 + (rnd() % 5_400_000) as i64;
             k += 1;
         }
@@ -613,7 +633,12 @@ fn rollup_served_functions_match_sql_oracle() {
         (day0 + 6 * h, day0 + 71 * h, 2 * h),
         (day0 + 72 * h, day0 + 72 * h, 300_000), // instant on a boundary
     ] {
-        for (f, m) in [("last", "r_total"), ("timestamp", "r_total"), ("last", "s_total"), ("timestamp", "s_total")] {
+        for (f, m) in [
+            ("last", "r_total"),
+            ("timestamp", "r_total"),
+            ("last", "s_total"),
+            ("timestamp", "s_total"),
+        ] {
             let args = format!("'{m}', [], {start}, {end}, {step}");
             // an instant reads only step + 5 m of history: raw
             let tier = (start < end).then_some(0);
@@ -624,14 +649,24 @@ fn rollup_served_functions_match_sql_oracle() {
         for window in [h + 5_000, 60_000, 5 * h] {
             let args = format!("'r_total', [], {start}, {end}, {step}, {window}");
             let tier = (start < end || window > 2 * h).then_some(0);
-            let (a, b) = parity(&r, &format!("prom_idelta({args})"), &format!("prom_idelta_sql({args})"), tier);
+            let (a, b) = parity(
+                &r,
+                &format!("prom_idelta({args})"),
+                &format!("prom_idelta_sql({args})"),
+                tier,
+            );
             n += a;
             exact += b;
         }
     }
     // unaligned grid: raw path
     let args = format!("'r_total', [], {}, {}, {h}", day0 + 5 * h + 1, day0 + 70 * h + 1);
-    parity(&r, &format!("prom_last({args})"), &format!("prom_last_sql({args})"), None);
+    parity(
+        &r,
+        &format!("prom_last({args})"),
+        &format!("prom_last_sql({args})"),
+        None,
+    );
     assert!(n > 3_000, "{n}");
     eprintln!("parity 1 h, last/timestamp/idelta: {n} rows, {exact} bit-identical to raw");
     assert_eq!(n, exact, "last/timestamp/idelta: not bit-identical to raw");
@@ -657,7 +692,10 @@ fn rollup_served_functions_match_sql_oracle() {
     }
     assert!(n > 3_000, "{n}");
     eprintln!("parity 1 h, *_over_time: {n} rows, {exact} bit-identical to raw");
-    assert_eq!(n, exact, "*_over_time on integer-valued series: not bit-identical to raw");
+    assert_eq!(
+        n, exact,
+        "*_over_time on integer-valued series: not bit-identical to raw"
+    );
 
     // a ratio top-k on a sub-hour grid evaluated in time chunks, with scrape intervals of the
     // whole range from rollups (closed days) and raw edges: per-step values as the oracle's
@@ -761,7 +799,11 @@ fn rollup_1d_tier_matches_raw() {
             } else {
                 v
             };
-            samples.push(Sample { series_id: id, ts: t, value });
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
             if s == 5 && k == 2000 {
                 t += 3 * day; // went away (marker), back three days later
             }
@@ -781,8 +823,16 @@ fn rollup_1d_tier_matches_raw() {
         let mut t = day0 + (rnd() % 86_400_000) as i64;
         let mut k = 0;
         while t < day0 + ndays * day {
-            let value = if (k + s) % 4 == 1 { stale_nan() } else { (rnd() % 1000) as f64 };
-            samples.push(Sample { series_id: id, ts: t, value });
+            let value = if (k + s) % 4 == 1 {
+                stale_nan()
+            } else {
+                (rnd() % 1000) as f64
+            };
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
             t += 72_000_000 + (rnd() % 36_000_000) as i64;
             k += 1;
         }
@@ -813,7 +863,11 @@ fn rollup_1d_tier_matches_raw() {
     // phase 1: days [0, 20); phase 2: the rest
     for (lo, hi) in [(i64::MIN, d_mid), (d_mid, i64::MAX)] {
         core.append(Record::Series(series(lo, hi))).unwrap();
-        let part: Vec<Sample> = samples.iter().filter(|x| day_of(x.ts) >= lo && day_of(x.ts) < hi).cloned().collect();
+        let part: Vec<Sample> = samples
+            .iter()
+            .filter(|x| day_of(x.ts) >= lo && day_of(x.ts) < hi)
+            .cloned()
+            .collect();
         for chunk in part.chunks(50_000) {
             core.append(Record::Samples(chunk.to_vec())).unwrap();
             core.flush().unwrap();
@@ -852,7 +906,15 @@ fn rollup_1d_tier_matches_raw() {
                 n += a;
                 exact += b;
             };
-            for f in ["increase", "rate", "delta", "increase_pure", "last_over_time", "first_over_time", "tlast_over_time"] {
+            for f in [
+                "increase",
+                "rate",
+                "delta",
+                "increase_pure",
+                "last_over_time",
+                "first_over_time",
+                "tlast_over_time",
+            ] {
                 for w in [step, 7 * day] {
                     let args = format!("'d_total', [], {start}, {end}, {step}, {w}");
                     one(format!("prom_{f}({args})"), format!("prom_{f}_sql({args})"));
@@ -879,16 +941,19 @@ fn rollup_1d_tier_matches_raw() {
             for f in ["sum", "min", "max", "avg", "count"] {
                 for w in [0, 7 * day] {
                     let args = format!("'d_total', [], {start}, {end}, {step}, {w}");
-                    one(format!("prom_{f}_over_time({args})"), format!("prom_{f}_over_time_sql({args})"));
+                    one(
+                        format!("prom_{f}_over_time({args})"),
+                        format!("prom_{f}_over_time_sql({args})"),
+                    );
                 }
             }
         }
         (n, exact)
     };
     let cases = [
-        (s0, e0, day),                // 1 d tier, then 1 h, then raw
+        (s0, e0, day),                     // 1 d tier, then 1 h, then raw
         (s0 + day, e0 - 3 * day, 2 * day), // inside the 1 d tier
-        (s0 + 6 * h, e0 + 6 * h, day), // hour-aligned only: the 1 h tier
+        (s0 + 6 * h, e0 + 6 * h, day),     // hour-aligned only: the 1 h tier
     ];
     let (n, exact) = check(&r, &cases);
     assert!(n > 2_000, "{n}");
@@ -899,7 +964,12 @@ fn rollup_1d_tier_matches_raw() {
     // served), and the same compaction run rebuilds it
     let late = day0 + 15 * day + 12 * h + 30_000;
     let id1 = series_id("d_total", &[("i".to_string(), "1".to_string())]);
-    core.append(Record::Samples(vec![Sample { series_id: id1, ts: late, value: 1e6 }])).unwrap();
+    core.append(Record::Samples(vec![Sample {
+        series_id: id1,
+        ts: late,
+        value: 1e6,
+    }]))
+    .unwrap();
     core.flush().unwrap();
     core.compactor().unwrap().run_once(now_ms(), true).unwrap();
     let after = n1d(&core);
@@ -949,7 +1019,11 @@ fn rollup_float_sums_are_close_to_raw() {
             let g = (rnd() * 28.0 - 7.0).exp(); // 1e-3 .. 1e9
             let gm = (rnd() - 0.5) * 2e6 + rnd();
             for (id, v) in ids.iter().zip([g, gm, gm.abs()]) {
-                samples.push(Sample { series_id: *id, ts: t, value: v });
+                samples.push(Sample {
+                    series_id: *id,
+                    ts: t,
+                    value: v,
+                });
             }
             t += 600_000 + (rnd() * 300_000.0) as i64 - 150_000;
         }
@@ -1393,7 +1467,10 @@ fn sql_over_an_object_store_matches_the_local_store() {
         assert_eq!(a, b, "{q}");
     }
     // per-query object-store stats ride in the response
-    let (g, by) = (remote.stats.gets.load(Ordering::Relaxed), remote.stats.bytes.load(Ordering::Relaxed));
+    let (g, by) = (
+        remote.stats.gets.load(Ordering::Relaxed),
+        remote.stats.bytes.load(Ordering::Relaxed),
+    );
     let r = rem.run(&cases[2].0).unwrap();
     let s3 = r.s3.clone().expect("s3 stats on an object store");
     assert!(s3.gets <= remote.stats.gets.load(Ordering::Relaxed) - g || !s3.exclusive);
@@ -1405,7 +1482,11 @@ fn sql_over_an_object_store_matches_the_local_store() {
     // raw samples are not mirrored: the view is empty (prom_* read them from the bucket)
     assert_eq!(sql_rows(&rem, "SELECT count(*) FROM samples"), vec!["[0]".to_string()]);
     let gets = remote.stats.gets.load(Ordering::Relaxed) - g0;
-    assert!(gets <= 6 * nfiles, "{gets} GETs for {nfiles} files over {} queries", cases.len());
+    assert!(
+        gets <= 6 * nfiles,
+        "{gets} GETs for {nfiles} files over {} queries",
+        cases.len()
+    );
     assert_eq!(remote.stats.errors.load(Ordering::Relaxed), 0);
     let h = rem.stats();
     eprintln!("{gets} GETs, {nfiles} files; mirror {}", h["s3_mirror"]);
@@ -1442,7 +1523,16 @@ fn sql_over_an_object_store_stays_locked_down() {
     let mirror = std::path::PathBuf::from(st["s3_mirror"]["dir"].as_str().unwrap());
     assert_eq!(mirror.parent(), Some(cache_dir.join("mirror").as_path()), "{st}");
     // positive control: the probes below fail for permission, not for a missing file
-    let tail = core.shared.catalog.lock().unwrap().files_of("series").next().unwrap().path.clone();
+    let tail = core
+        .shared
+        .catalog
+        .lock()
+        .unwrap()
+        .files_of("series")
+        .next()
+        .unwrap()
+        .path
+        .clone();
     let mf = mirror.join(&tail);
     assert!(mf.is_file());
     let ok = format!("SELECT count(*) FROM read_parquet('{}')", mf.display());
@@ -1455,12 +1545,21 @@ fn sql_over_an_object_store_stays_locked_down() {
         "SELECT * FROM glob('/*')".into(),
         "SELECT * FROM read_text('/tmp/../etc/passwd')".into(),
         // the chunk cache (Rust only) and the mirror's parent
-        format!("SELECT * FROM read_text('{}/0123456789abcdef-0-10')", cache_dir.display()),
+        format!(
+            "SELECT * FROM read_text('{}/0123456789abcdef-0-10')",
+            cache_dir.display()
+        ),
         format!("SELECT * FROM glob('{}/*')", cache_dir.display()),
-        format!("SELECT * FROM read_text('{}/../../0123456789abcdef-0-10')", mirror.display()),
+        format!(
+            "SELECT * FROM read_text('{}/../../0123456789abcdef-0-10')",
+            mirror.display()
+        ),
         format!("SELECT * FROM glob('{}/../*')", mirror.display()),
         // the local store's own files (the remote reader must not reach them)
-        format!("SELECT * FROM read_parquet('{}')", d.path().canonicalize().unwrap().join(&tail).display()),
+        format!(
+            "SELECT * FROM read_parquet('{}')",
+            d.path().canonicalize().unwrap().join(&tail).display()
+        ),
     ];
     for q in &probes {
         let e = r.run(q).err().unwrap_or_else(|| panic!("{q}: allowed"));
@@ -1501,16 +1600,26 @@ fn a_tampered_remote_catalog_is_refused() {
     let d = tempfile::tempdir().unwrap();
     let core = build_store(d.path());
     drop(core);
-    for (i, bad) in ["../x.parquet", "/etc/passwd", "a:b/x.parquet", "series//x.parquet", "series\\x.parquet", "", "./x"]
-        .iter()
-        .enumerate()
+    for (i, bad) in [
+        "../x.parquet",
+        "/etc/passwd",
+        "a:b/x.parquet",
+        "series//x.parquet",
+        "series\\x.parquet",
+        "",
+        "./x",
+    ]
+    .iter()
+    .enumerate()
     {
         let url = format!("mem://bad{i}/st");
         let bad = bad.to_string();
         to_bucket_with(d.path(), &url, move |c| c.files[0].path = bad);
         let e = Shared::open_read_only(Path::new(&url)).err().expect("refused");
         assert!(format!("{e:#}").contains("not a plain relative path"), "{e:#}");
-        let e = pgai_mon::catalog::Catalog::load_or_new(Path::new(&url), "").err().expect("refused");
+        let e = pgai_mon::catalog::Catalog::load_or_new(Path::new(&url), "")
+            .err()
+            .expect("refused");
         assert!(format!("{e:#}").contains("not a plain relative path"), "{e:#}");
     }
     // L1: a catalog.json over 64 MB is refused before it is read
@@ -1519,12 +1628,20 @@ fn a_tampered_remote_catalog_is_refused() {
         let store = std::sync::Arc::new(object_store::memory::InMemory::new());
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let big = vec![b' '; (pgai_mon::catalog::MAX_REMOTE_BYTES + 1) as usize];
-        rt.block_on(store.put(&object_store::path::Path::from("st/catalog.json"), PutPayload::from(big)))
-            .unwrap();
+        rt.block_on(store.put(
+            &object_store::path::Path::from("st/catalog.json"),
+            PutPayload::from(big),
+        ))
+        .unwrap();
         let r = pgai_mon::objstore::register("mem://big/st", store, Default::default()).unwrap();
-        let e = Shared::open_read_only(Path::new("mem://big/st")).err().expect("refused");
+        let e = Shared::open_read_only(Path::new("mem://big/st"))
+            .err()
+            .expect("refused");
         assert!(format!("{e:#}").contains("limit"), "{e:#}");
-        assert!(r.stats.bytes.load(std::sync::atomic::Ordering::Relaxed) < 1 << 20, "body not read");
+        assert!(
+            r.stats.bytes.load(std::sync::atomic::Ordering::Relaxed) < 1 << 20,
+            "body not read"
+        );
     }
     // M1: a catalog whose `bytes` lies (too small, too big, 0) about a series file: that copy
     // is refused, the view stays empty, the mirror holds no such file, and the error shows
@@ -1532,7 +1649,13 @@ fn a_tampered_remote_catalog_is_refused() {
         let url = format!("mem://lie{i}/st");
         let remote = to_bucket_with(d.path(), &url, move |c| {
             for f in c.files.iter_mut().filter(|f| f.kind == "series") {
-                f.bytes = if lie == 0 { 0 } else if lie == 1 { f.bytes - 1 } else { lie };
+                f.bytes = if lie == 0 {
+                    0
+                } else if lie == 1 {
+                    f.bytes - 1
+                } else {
+                    lie
+                };
             }
         });
         let shared = Shared::open_read_only(Path::new(&url)).unwrap();
@@ -1551,13 +1674,26 @@ fn a_tampered_remote_catalog_is_refused() {
         let m = &st["s3_mirror"];
         if lie == 1 {
             // a size mismatch is caught on the first response, before the body is written
-            assert!(m["error"].as_str().is_some_and(|e| e.contains("the catalog says")), "{st}");
+            assert!(
+                m["error"].as_str().is_some_and(|e| e.contains("the catalog says")),
+                "{st}"
+            );
             assert!(remote.stats.errors.load(std::sync::atomic::Ordering::Relaxed) > 0);
         } else if lie == 0 {
-            assert!(m["error"].as_str().is_some_and(|e| e.contains("catalog size 0")), "{st}");
+            assert!(
+                m["error"].as_str().is_some_and(|e| e.contains("catalog size 0")),
+                "{st}"
+            );
         } else {
             // over the budget: not fetched at all
-            assert!(m["empty_kinds"].as_array().unwrap().iter().any(|k| k == "_raw_series_tail"), "{st}");
+            assert!(
+                m["empty_kinds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|k| k == "_raw_series_tail"),
+                "{st}"
+            );
         }
         assert_eq!(m["fetched_bytes"].as_u64(), Some(0), "{st}");
         let mdir = std::path::PathBuf::from(m["dir"].as_str().unwrap());
@@ -1595,7 +1731,10 @@ fn cold_30d_dashboard_get_counts() {
     let mut ids = vec![];
     for m in ["a_total", "b_total", "c_total"] {
         for s in 0..100u64 {
-            let labels = vec![("i".to_string(), s.to_string()), ("db".to_string(), (s % 7).to_string())];
+            let labels = vec![
+                ("i".to_string(), s.to_string()),
+                ("db".to_string(), (s % 7).to_string()),
+            ];
             ids.push((series_id(m, &labels), m, labels));
         }
     }
@@ -1617,7 +1756,11 @@ fn cold_30d_dashboard_get_counts() {
         for k in 0..1440i64 {
             for (i, (id, _, _)) in ids.iter().enumerate() {
                 v[i] += ((i as i64 * 7 + k) % 13) as f64;
-                samples.push(Sample { series_id: *id, ts: t0 + k * 60_000 + i as i64, value: v[i] });
+                samples.push(Sample {
+                    series_id: *id,
+                    ts: t0 + k * 60_000 + i as i64,
+                    value: v[i],
+                });
             }
         }
         for c in samples.chunks(100_000) {
@@ -1650,21 +1793,40 @@ fn cold_30d_dashboard_get_counts() {
     let mut qs = vec![];
     for m in ["a_total", "b_total", "c_total"] {
         qs.push(format!("SELECT count(*) FROM prom_rate('{m}', [], {s}, {e}, {h}, {h})"));
-        qs.push(format!("SELECT count(*) FROM prom_increase('{m}', [['db', '=', '3']], {s}, {e}, {h}, {})", 6 * h));
+        qs.push(format!(
+            "SELECT count(*) FROM prom_increase('{m}', [['db', '=', '3']], {s}, {e}, {h}, {})",
+            6 * h
+        ));
     }
     qs.push(format!("SELECT count(*) FROM prom_last('a_total', [], {s}, {e}, {h})"));
-    qs.push(format!("SELECT count(*) FROM prom_irate('b_total', [], {s}, {e}, {h}, {h})"));
-    qs.push(format!("SELECT count(*) FROM prom_max_over_time('c_total', [], {s}, {e}, {h}, {h})"));
-    qs.push(format!("SELECT count(*) FROM prom_increase('a_total', [], {s}, {e}, {day}, {day})"));
-    qs.push(format!("SELECT count(*) FROM prom_topk(10, 'rate', 'b_total', [], {s}, {e}, {h}, {h})"));
-    qs.push(format!("SELECT count(*) FROM prom_agg('sum', 'rate', 'c_total', [], {s}, {e}, {h}, {h}, p_by := ['db'])"));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_irate('b_total', [], {s}, {e}, {h}, {h})"
+    ));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_max_over_time('c_total', [], {s}, {e}, {h}, {h})"
+    ));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_increase('a_total', [], {s}, {e}, {day}, {day})"
+    ));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_topk(10, 'rate', 'b_total', [], {s}, {e}, {h}, {h})"
+    ));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_agg('sum', 'rate', 'c_total', [], {s}, {e}, {h}, {h}, p_by := ['db'])"
+    ));
     // not hour-aligned: the raw path over 30 days (what an unpinned Grafana interval costs)
-    qs.push(format!("SELECT count(*) FROM prom_rate('a_total', [['i', '=', '5']], {s}, {e}, 1800000, 1800000)"));
+    qs.push(format!(
+        "SELECT count(*) FROM prom_rate('a_total', [['i', '=', '5']], {s}, {e}, 1800000, 1800000)"
+    ));
     let st = |x: &std::sync::atomic::AtomicU64| x.load(Ordering::Relaxed);
     for pass in ["cold", "warm"] {
         let (g0, b0) = (st(&remote.stats.gets), st(&remote.stats.bytes));
         for q in &qs {
-            let (g, b, t) = (st(&remote.stats.gets), st(&remote.stats.bytes), std::time::Instant::now());
+            let (g, b, t) = (
+                st(&remote.stats.gets),
+                st(&remote.stats.bytes),
+                std::time::Instant::now(),
+            );
             let rows = sql_rows(&r, q);
             eprintln!(
                 "{pass} {:>4} GETs {:>8.2} MB {:>6.0} ms {} {}",
@@ -1720,8 +1882,16 @@ fn pgai_samples_matches_the_samples_view() {
     )
     .unwrap();
     let mut total = 0;
-    for (t0, t1) in [(day0 + 5 * h, day0 + 41 * h), (day0, day0 + 3 * 86_400_000), (day0 + 40 * h + 30_000, day0 + 40 * h + 30_000)] {
-        for (m, sqlm) in [("[]", "true"), ("[['i', '=~', '1.*']]", "regexp_full_match(r.labels['i'], '1.*')"), ("[['i', '=', '3']]", "r.labels['i'] = '3'")] {
+    for (t0, t1) in [
+        (day0 + 5 * h, day0 + 41 * h),
+        (day0, day0 + 3 * 86_400_000),
+        (day0 + 40 * h + 30_000, day0 + 40 * h + 30_000),
+    ] {
+        for (m, sqlm) in [
+            ("[]", "true"),
+            ("[['i', '=~', '1.*']]", "regexp_full_match(r.labels['i'], '1.*')"),
+            ("[['i', '=', '3']]", "r.labels['i'] = '3'"),
+        ] {
             let a = sql_rows(
                 &r,
                 &format!(

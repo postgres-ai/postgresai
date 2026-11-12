@@ -41,7 +41,11 @@ const COMMON: [Metric; 10] = [
     ("host_disk_read_iops", "ReadIOPS", 1.0),
     ("host_disk_write_iops", "WriteIOPS", 1.0),
     ("host_network_receive_bytes_per_second", "NetworkReceiveThroughput", 1.0),
-    ("host_network_transmit_bytes_per_second", "NetworkTransmitThroughput", 1.0),
+    (
+        "host_network_transmit_bytes_per_second",
+        "NetworkTransmitThroughput",
+        1.0,
+    ),
     ("host_disk_read_bytes_per_second", "ReadThroughput", 1.0),
     ("host_disk_write_bytes_per_second", "WriteThroughput", 1.0),
     ("host_disk_read_latency_seconds", "ReadLatency", 1.0),
@@ -114,7 +118,10 @@ fn to_number(v: Option<&Value>) -> f64 {
                 f64::INFINITY
             } else if t == "-Infinity" {
                 f64::NEG_INFINITY
-            } else if t.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'+' | b'-')) {
+            } else if t
+                .bytes()
+                .all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'+' | b'-'))
+            {
                 t.parse().unwrap_or(f64::NAN)
             } else {
                 f64::NAN
@@ -143,7 +150,11 @@ fn get<'a>(v: &'a Value, path: &[&str]) -> Result<Option<&'a Value>, ()> {
 fn label_text(t: &Target, provider: bool) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
     let p = if provider { ",provider=\"Amazon RDS\"" } else { "" };
-    format!("{{cluster=\"{}\",node_name=\"{}\"{p}}}", esc(&t.cluster), esc(&t.node_name))
+    format!(
+        "{{cluster=\"{}\",node_name=\"{}\"{p}}}",
+        esc(&t.cluster),
+        esc(&t.node_name)
+    )
 }
 
 /// The samples as rds-host-stats's import body (Prometheus text, value and time as JavaScript
@@ -152,13 +163,24 @@ pub fn render(t: &Target, points: &[Point]) -> String {
     let (l, lp) = (label_text(t, false), label_text(t, true));
     points
         .iter()
-        .map(|p| format!("{}{} {} {}\n", p.name, if p.provider { &lp } else { &l }, js_num(p.value), p.time))
+        .map(|p| {
+            format!(
+                "{}{} {} {}\n",
+                p.name,
+                if p.provider { &lp } else { &l },
+                js_num(p.value),
+                p.time
+            )
+        })
         .collect()
 }
 
 /// Labels of the series a point writes.
 pub fn labels(t: &Target, p: &Point) -> Vec<(String, String)> {
-    let mut l = vec![("cluster".to_string(), t.cluster.clone()), ("node_name".to_string(), t.node_name.clone())];
+    let mut l = vec![
+        ("cluster".to_string(), t.cluster.clone()),
+        ("node_name".to_string(), t.node_name.clone()),
+    ];
     if p.provider {
         l.push(("provider".into(), "Amazon RDS".into()));
     }
@@ -174,9 +196,16 @@ fn num(v: &Value) -> Option<f64> {
 /// and keep it only once the samples are written.
 pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut State) -> Result<Poll, AwsError> {
     let description = api
-        .call("rds", "DescribeDBInstancesCommand", json!({ "DBInstanceIdentifier": target.instance_id }))
+        .call(
+            "rds",
+            "DescribeDBInstancesCommand",
+            json!({ "DBInstanceIdentifier": target.instance_id }),
+        )
         .await?;
-    let db = description["DBInstances"].get(0).cloned().ok_or_else(|| err("Error", "RDS instance not found"))?;
+    let db = description["DBInstances"]
+        .get(0)
+        .cloned()
+        .ok_or_else(|| err("Error", "RDS instance not found"))?;
     let aurora = db["Engine"].as_str() == Some("aurora-postgresql");
     // CloudWatch and PI buckets are queried over the 15 minutes up to the last minute boundary,
     // so no bucket is cut by the wall clock. A bucket is written only once a further period has
@@ -188,8 +217,11 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
     let start = end - 15 * 60_000;
     let closed = |time: i64, period: i64| time + 2 * period * 1000 <= end;
     let closed_pi = |time: i64| time + 60_000 <= end;
-    let mut metrics: Vec<(Metric, i64)> =
-        COMMON.iter().chain(if aurora { AURORA.iter() } else { RDS.iter() }).map(|m| (*m, 60)).collect();
+    let mut metrics: Vec<(Metric, i64)> = COMMON
+        .iter()
+        .chain(if aurora { AURORA.iter() } else { RDS.iter() })
+        .map(|m| (*m, 60))
+        .collect();
     let query = |m: &Metric, dim: &str, value: &Value, period: i64| {
         let mut d = json!({ "Name": dim });
         // an undefined value is left out of the request, as the SDK leaves it out
@@ -201,7 +233,10 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
             "MetricStat": { "Metric": { "Namespace": "AWS/RDS", "MetricName": m.1, "Dimensions": [d] }, "Period": period, "Stat": "Average" },
         })
     };
-    let mut queries: Vec<Value> = metrics.iter().map(|(m, p)| query(m, "DBInstanceIdentifier", &json!(target.instance_id), *p)).collect();
+    let mut queries: Vec<Value> = metrics
+        .iter()
+        .map(|(m, p)| query(m, "DBInstanceIdentifier", &json!(target.instance_id), *p))
+        .collect();
     if aurora {
         for m in &VOLUME {
             queries.push(query(m, "DBClusterIdentifier", &db["DBClusterIdentifier"], 300));
@@ -213,10 +248,17 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
     state.retain(|_, t| *t >= start - 15 * 60_000);
     // Only finite numbers are written: a value from a log event is untrusted.
     let mut emit = |out: &mut Poll, state: &mut State, name: &'static str, value: Option<f64>, time: i64| {
-        let Some(value) = value.filter(|v| v.is_finite()) else { return };
+        let Some(value) = value.filter(|v| v.is_finite()) else {
+            return;
+        };
         let key = format!("{name}{labels} {time}");
         if !state.contains_key(&key) {
-            out.points.push(Point { name, provider: false, value, time });
+            out.points.push(Point {
+                name,
+                provider: false,
+                value,
+                time,
+            });
             state.insert(key, time);
         }
     };
@@ -224,7 +266,12 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
     // displaying account, region, instance or host IDs.
     let pkey = format!("{PROVIDER}{} {end}", label_text(target, true));
     if !state.contains_key(&pkey) {
-        out.points.push(Point { name: PROVIDER, provider: true, value: 1.0, time: end });
+        out.points.push(Point {
+            name: PROVIDER,
+            provider: true,
+            value: 1.0,
+            time: end,
+        });
         state.insert(pkey, end);
     }
     let result = api
@@ -273,7 +320,13 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
             emit(&mut out, state, "host_disk_provisioned_iops", Some(i), end);
         }
         if let Some(t) = pos("StorageThroughput") {
-            emit(&mut out, state, "host_disk_provisioned_throughput_bytes_per_second", Some(t * 1024f64.powi(2)), end);
+            emit(
+                &mut out,
+                state,
+                "host_disk_provisioned_throughput_bytes_per_second",
+                Some(t * 1024f64.powi(2)),
+                end,
+            );
         }
     }
     if db["PerformanceInsightsEnabled"].as_bool() == Some(true) {
@@ -349,7 +402,10 @@ fn os_samples(r: &Value, now: i64, state: &mut State, out: &mut Poll, emit: &mut
                 let key = format!("skipped {ts} {msg}");
                 if !state.contains_key(&key) {
                     state.insert(key, ev["timestamp"].as_f64().map_or(now, |t| t as i64));
-                    out.errors.push(err("Error", format!("Enhanced Monitoring event at {ts} skipped: {why}")));
+                    out.errors.push(err(
+                        "Error",
+                        format!("Enhanced Monitoring event at {ts} skipped: {why}"),
+                    ));
                 }
             }
         }
@@ -366,7 +422,9 @@ fn os_samples(r: &Value, now: i64, state: &mut State, out: &mut Poll, emit: &mut
         }
     }
     for (os, at) in &events {
-        let (Ok(t), Ok(f)) = (get(os, &["swap", "total"]), get(os, &["swap", "free"])) else { continue };
+        let (Ok(t), Ok(f)) = (get(os, &["swap", "total"]), get(os, &["swap", "free"])) else {
+            continue;
+        };
         emit(out, state, SWAP, Some((to_number(t) - to_number(f)) * 1024.0), *at);
     }
     for (os, at) in &events {

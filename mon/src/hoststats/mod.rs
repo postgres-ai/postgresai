@@ -56,7 +56,9 @@ impl RdsTarget {
     pub fn problem(&self) -> Option<String> {
         let set = |o: &Option<String>| o.as_deref().is_some_and(|v| !v.is_empty());
         if set(&self.role_arn) != set(&self.external_id) {
-            return Some("role_arn and external_id (RDS_ROLE_ARN, RDS_EXTERNAL_ID) must both be set or both be unset".into());
+            return Some(
+                "role_arn and external_id (RDS_ROLE_ARN, RDS_EXTERNAL_ID) must both be set or both be unset".into(),
+            );
         }
         for (k, v) in [
             ("instance_id (RDS_DB_INSTANCE_IDENTIFIER)", &self.instance_id),
@@ -81,12 +83,19 @@ impl RdsTarget {
     }
 
     pub fn target(&self) -> rds::Target {
-        rds::Target { instance_id: self.instance_id.clone(), cluster: self.cluster.clone(), node_name: self.node_name.clone() }
+        rds::Target {
+            instance_id: self.instance_id.clone(),
+            cluster: self.cluster.clone(),
+            node_name: self.node_name.clone(),
+        }
     }
 
     pub fn role(&self) -> Option<aws::Role> {
         match (&self.role_arn, &self.external_id) {
-            (Some(a), Some(e)) if !a.is_empty() && !e.is_empty() => Some(aws::Role { arn: a.clone(), external_id: e.clone() }),
+            (Some(a), Some(e)) if !a.is_empty() && !e.is_empty() => Some(aws::Role {
+                arn: a.clone(),
+                external_id: e.clone(),
+            }),
             _ => None,
         }
     }
@@ -104,7 +113,12 @@ pub fn targets(cfg: &[RdsTarget], env: &dyn Fn(&str) -> Option<String>) -> Vec<R
 pub fn samples(t: &rds::Target, points: &[rds::Point]) -> Vec<ExtSample> {
     points
         .iter()
-        .map(|p| ExtSample { metric: p.name.to_string(), labels: rds::labels(t, p), ts: p.time, value: p.value })
+        .map(|p| ExtSample {
+            metric: p.name.to_string(),
+            labels: rds::labels(t, p),
+            ts: p.time,
+            value: p.value,
+        })
         .collect()
 }
 
@@ -146,7 +160,9 @@ pub async fn run(cfg: Result<RdsTarget, String>, ing: Arc<Ingest>) {
     let cfg = match cfg.and_then(|c| c.problem().map_or(Ok(c), Err)) {
         Ok(c) => c,
         Err(e) => {
-            log(format!("{e}; RDS host stats for this target stay off until the configuration is fixed"));
+            log(format!(
+                "{e}; RDS host stats for this target stay off until the configuration is fixed"
+            ));
             return;
         }
     };

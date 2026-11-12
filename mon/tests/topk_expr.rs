@@ -187,7 +187,10 @@ fn topk_expr_and_last_match_sql_oracle() {
             } else {
                 for (x, y) in ra.iter().zip(&rb) {
                     assert_eq!((x.0, x.1, &x.3), (y.0, y.1, &y.3), "{tag}");
-                    assert!((x.2 - y.2).abs() <= 1e-9 * y.2.abs().max(1e-12), "{tag}: {x:?} vs {y:?}");
+                    assert!(
+                        (x.2 - y.2).abs() <= 1e-9 * y.2.abs().max(1e-12),
+                        "{tag}: {x:?} vs {y:?}"
+                    );
                 }
             }
             checked += ra.len();

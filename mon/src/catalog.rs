@@ -93,7 +93,10 @@ pub fn plain_rel(rel: &str) -> bool {
 pub fn parse_remote(bytes: &[u8]) -> anyhow::Result<Catalog> {
     let c: Catalog = serde_json::from_slice(bytes)?;
     if let Some(f) = c.files.iter().find(|f| !plain_rel(&f.path)) {
-        anyhow::bail!("catalog.json refused: file path {:?} is not a plain relative path", f.path);
+        anyhow::bail!(
+            "catalog.json refused: file path {:?} is not a plain relative path",
+            f.path
+        );
     }
     Ok(c)
 }

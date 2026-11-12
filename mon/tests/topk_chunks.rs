@@ -92,7 +92,11 @@ fn rollup_store(dir: &std::path::Path) -> StoreCore {
                 3 if s == 1 => stale_nan(),
                 _ => (rnd() % 1000) as f64,
             };
-            samples.push(Sample { series_id: id, ts: t, value });
+            samples.push(Sample {
+                series_id: id,
+                ts: t,
+                value,
+            });
             t += 4_500_000 + (rnd() % 5_400_000) as i64;
             k += 1;
         }
@@ -192,7 +196,10 @@ fn chunked_topk_over_rollups_matches_unchunked_and_oracle() {
             for bottom in ["false", "true"] {
                 let args = format!("3, 'last', '{m}', [], {start}, {end}, {step}, 0, p_bottom := {bottom}");
                 cases.push((format!("prom_topk({args})"), format!("prom_topk_sql({args})")));
-                let args = format!("3, 'last_over_time', '{m}', [], {start}, {end}, {step}, {}, p_bottom := {bottom}", 6 * h);
+                let args = format!(
+                    "3, 'last_over_time', '{m}', [], {start}, {end}, {step}, {}, p_bottom := {bottom}",
+                    6 * h
+                );
                 cases.push((format!("prom_topk({args})"), format!("prom_topk_sql({args})")));
             }
         }
@@ -209,7 +216,10 @@ fn chunked_topk_over_rollups_matches_unchunked_and_oracle() {
     let run = |src: &str| r.run(&q(src)).unwrap_or_else(|e| panic!("{src}: {e:?}"));
     let served = || {
         use pgai_mon::eval::rollup::SERVED;
-        SERVED.iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).sum::<u64>()
+        SERVED
+            .iter()
+            .map(|x| x.load(std::sync::atomic::Ordering::Relaxed))
+            .sum::<u64>()
     };
     let mut checked = 0usize;
     for (rust, sql) in &cases {
@@ -228,7 +238,12 @@ fn chunked_topk_over_rollups_matches_unchunked_and_oracle() {
         let oracle = run(sql);
         if std::env::var_os("TOPK_CHUNKS_DEBUG").is_some() {
             let first = |x: &QueryResult| x.rows.iter().take(4).map(|r| r.get().to_string()).collect::<Vec<_>>();
-            eprintln!("{rust}\n whole {:?}\n chunk {:?}\n oracle {:?}", first(&whole), first(&chunked), first(&oracle));
+            eprintln!(
+                "{rust}\n whole {:?}\n chunk {:?}\n oracle {:?}",
+                first(&whole),
+                first(&chunked),
+                first(&oracle)
+            );
         }
         same(&format!("chunked vs oracle: {rust}"), &chunked, &oracle);
         same(&format!("chunked vs whole: {rust}"), &chunked, &whole);

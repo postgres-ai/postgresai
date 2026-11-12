@@ -113,12 +113,14 @@ pub fn spawn_window_governor(cap: u64, soft_pct: u64) {
         return;
     }
     let pid = std::process::id();
-    let _ = std::thread::Builder::new().name("s3-window".into()).spawn(move || loop {
-        if let Some(rss) = rss_bytes(pid) {
-            crate::objstore::set_window_limit(window_limit(rss, crate::objstore::window_bytes(), cap, soft_pct));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    });
+    let _ = std::thread::Builder::new()
+        .name("s3-window".into())
+        .spawn(move || loop {
+            if let Some(rss) = rss_bytes(pid) {
+                crate::objstore::set_window_limit(window_limit(rss, crate::objstore::window_bytes(), cap, soft_pct));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        });
 }
 
 /// An idle reader above this share of the RSS cap is recycled (the cache bytes excluded).
@@ -257,8 +259,12 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
                     None => String::new(),
                 };
                 let _ = match res {
-                    Ok(v) => write!(w, "{{\"id\":{},\"gen\":{gen},\"c\":{},\"rc\":{rc}{s3},\"ok\":", req.id, cacheable as u8)
-                        .and_then(|_| v.write_to(&mut w)),
+                    Ok(v) => write!(
+                        w,
+                        "{{\"id\":{},\"gen\":{gen},\"c\":{},\"rc\":{rc}{s3},\"ok\":",
+                        req.id, cacheable as u8
+                    )
+                    .and_then(|_| v.write_to(&mut w)),
                     Err(e) => write!(w, "{{\"id\":{}{s3},\"err\":", req.id)
                         .and_then(|_| serde_json::to_writer(&mut w, &e).map_err(std::io::Error::from)),
                 };
@@ -743,7 +749,10 @@ mod s3_tests {
         assert_eq!(pct, 85);
         let soft = cap * pct / 100;
         // far under: the headroom plus what the window holds
-        assert_eq!(window_limit(100 << 20, 10 << 20, cap, pct), (10 << 20) + soft - (100 << 20));
+        assert_eq!(
+            window_limit(100 << 20, 10 << 20, cap, pct),
+            (10 << 20) + soft - (100 << 20)
+        );
         // at or past the soft cap: no prefetch beyond what is held (the scheduler still admits
         // one range into an empty window, and every range a reader waits on)
         assert_eq!(window_limit(soft, 3 << 20, cap, pct), 3 << 20);
@@ -756,7 +765,8 @@ mod s3_tests {
         assert_eq!((id, t), (7, Some([10, 2000, 1, 4])));
         let r = v.unwrap();
         assert_eq!((r.body.as_str(), r.gen, r.cacheable), (r#"{"a":1}"#, 3, true));
-        let (_, t, v) = parse_reply_s3(r#"{"id":8,"s3":[12,2100,1,4],"err":{"type":"timeout","message":"m"}}"#.into()).unwrap();
+        let (_, t, v) =
+            parse_reply_s3(r#"{"id":8,"s3":[12,2100,1,4],"err":{"type":"timeout","message":"m"}}"#.into()).unwrap();
         assert_eq!(t, Some([12, 2100, 1, 4]));
         assert_eq!(v.unwrap_err().kind, "timeout");
         // a local store: no counters

@@ -255,17 +255,75 @@ fn ceil_to(ts: i64, w: i64) -> i64 {
 /// Rollup columns a reader decodes (empty: all). Every set keeps the key (series_id, k) and
 /// what the scrape-interval estimate and merging split buckets read (n, first/last ts, iv,
 /// a_first/a_last, ivs); a column left out decodes as a default its consumer never reads.
-const COLS_SI: &[&str] = &["series_id", "k", "n", "first_ts", "last_ts", "iv", "a_first", "a_last", "ivs"];
-const COLS_LAST: &[&str] =
-    &["series_id", "k", "n", "first_ts", "last_ts", "iv", "a_first", "a_last", "ivs", "last_v", "last_stale"];
+const COLS_SI: &[&str] = &[
+    "series_id",
+    "k",
+    "n",
+    "first_ts",
+    "last_ts",
+    "iv",
+    "a_first",
+    "a_last",
+    "ivs",
+];
+const COLS_LAST: &[&str] = &[
+    "series_id",
+    "k",
+    "n",
+    "first_ts",
+    "last_ts",
+    "iv",
+    "a_first",
+    "a_last",
+    "ivs",
+    "last_v",
+    "last_stale",
+];
 /// irate reads only each bucket's last two samples (next_edges, `narrow`), and its scrape
 /// interval walks real samples only (si_walk: `iv`, never the marker list `ivs`)
-const COLS_IRATE: &[&str] =
-    &["series_id", "k", "n", "first_ts", "last_ts", "iv", "a_first", "a_last", "last_v", "prev_ts", "prev_v"];
-const COLS_WINDOW: &[&str] = &["series_id", "k", "n", "first_ts", "last_ts", "a_first", "a_last", "v_sum", "v_min", "v_max"];
+const COLS_IRATE: &[&str] = &[
+    "series_id",
+    "k",
+    "n",
+    "first_ts",
+    "last_ts",
+    "iv",
+    "a_first",
+    "a_last",
+    "last_v",
+    "prev_ts",
+    "prev_v",
+];
+const COLS_WINDOW: &[&str] = &[
+    "series_id",
+    "k",
+    "n",
+    "first_ts",
+    "last_ts",
+    "a_first",
+    "a_last",
+    "v_sum",
+    "v_min",
+    "v_max",
+];
 const COLS_EDGES: &[&str] = &[
-    "series_id", "k", "n", "first_ts", "first_v", "second_ts", "second_v", "last_ts", "last_v", "prev_ts", "prev_v",
-    "iv", "adj_12", "adj_inner", "a_first", "a_last", "ivs",
+    "series_id",
+    "k",
+    "n",
+    "first_ts",
+    "first_v",
+    "second_ts",
+    "second_v",
+    "last_ts",
+    "last_v",
+    "prev_ts",
+    "prev_v",
+    "iv",
+    "adj_12",
+    "adj_inner",
+    "a_first",
+    "a_last",
+    "ivs",
 ];
 
 /// The columns RollupStream needs for `f` (next_last / next_window / next_edges).
@@ -327,13 +385,30 @@ impl Writer {
             .set_column_statistics_enabled(ColumnPath::from("series_id"), EnabledStatistics::Chunk)
             .set_column_statistics_enabled(ColumnPath::from("k"), EnabledStatistics::Chunk)
             .set_max_row_group_row_count(Some(rg_rows));
-        for c in ["k", "n", "first_ts", "second_ts", "last_ts", "prev_ts", "a_first", "a_last"] {
+        for c in [
+            "k",
+            "n",
+            "first_ts",
+            "second_ts",
+            "last_ts",
+            "prev_ts",
+            "a_first",
+            "a_last",
+        ] {
             props = props
                 .set_column_dictionary_enabled(ColumnPath::from(c), false)
                 .set_column_encoding(ColumnPath::from(c), Encoding::DELTA_BINARY_PACKED);
         }
         for c in [
-            "first_v", "second_v", "last_v", "prev_v", "adj_12", "adj_inner", "v_sum", "v_min", "v_max",
+            "first_v",
+            "second_v",
+            "last_v",
+            "prev_v",
+            "adj_12",
+            "adj_inner",
+            "v_sum",
+            "v_min",
+            "v_max",
         ] {
             props = props
                 .set_column_dictionary_enabled(ColumnPath::from(c), false)
@@ -450,7 +525,14 @@ pub fn build(samples: &Path, out: &Path, zstd_level: i32) -> anyhow::Result<u64>
                     if let Some((cs, cb)) = cur.take() {
                         w.push(cs, cb)?;
                     }
-                    cur = Some((s, if stale { Bucket::start_stale(t) } else { Bucket::start(t, v) }));
+                    cur = Some((
+                        s,
+                        if stale {
+                            Bucket::start_stale(t)
+                        } else {
+                            Bucket::start(t, v)
+                        },
+                    ));
                 }
             }
         }
@@ -510,7 +592,10 @@ struct RollupScan {
 /// A row group's (min, max) of an 8-byte integer column from its chunk statistics.
 fn stat_range(rg: &parquet::file::metadata::RowGroupMetaData, col: Option<usize>) -> Option<(i64, i64)> {
     let st = rg.column(col?).statistics()?;
-    let u = |b: Option<&[u8]>| b.filter(|x| x.len() == 8).map(|x| i64::from_le_bytes(x.try_into().unwrap()));
+    let u = |b: Option<&[u8]>| {
+        b.filter(|x| x.len() == 8)
+            .map(|x| i64::from_le_bytes(x.try_into().unwrap()))
+    };
     Some((u(st.min_bytes_opt())?, u(st.max_bytes_opt())?))
 }
 
@@ -614,8 +699,14 @@ impl RollupScan {
             let sid = col("series_id");
             let sid = sid.as_any().downcast_ref::<UInt64Array>().unwrap();
             let i64c = |n: &str| col(n).as_any().downcast_ref::<Int64Array>().unwrap().clone();
-            let i64o = |n: &str| b.column_by_name(n).and_then(|c| c.as_any().downcast_ref::<Int64Array>().cloned());
-            let f64o = |n: &str| b.column_by_name(n).and_then(|c| c.as_any().downcast_ref::<Float64Array>().cloned());
+            let i64o = |n: &str| {
+                b.column_by_name(n)
+                    .and_then(|c| c.as_any().downcast_ref::<Int64Array>().cloned())
+            };
+            let f64o = |n: &str| {
+                b.column_by_name(n)
+                    .and_then(|c| c.as_any().downcast_ref::<Float64Array>().cloned())
+            };
             let listo = |n: &str| {
                 b.column_by_name(n)
                     .and_then(|c| c.as_any().downcast_ref::<arrow::array::ListArray>().cloned())
@@ -646,7 +737,13 @@ impl RollupScan {
             let (ivc, ivsc) = (listo("iv"), listo("ivs"));
             // a list's values by offsets (ListArray::value would build an array per row)
             let flat = |l: &arrow::array::ListArray| {
-                let v = l.values().as_any().downcast_ref::<arrow::array::Int32Array>().unwrap().values().clone();
+                let v = l
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int32Array>()
+                    .unwrap()
+                    .values()
+                    .clone();
                 (l.value_offsets().to_vec(), v)
             };
             let (ivf, ivsf) = (ivc.as_ref().map(flat), ivsc.as_ref().map(flat));
@@ -824,9 +921,15 @@ impl RollupScan {
             if a == b {
                 continue;
             }
-            if c.iv_rg.as_ref().is_none_or(|(at, from, rows)| *at != g || a < *from || b > *from + rows.len()) {
+            if c.iv_rg
+                .as_ref()
+                .is_none_or(|(at, from, rows)| *at != g || a < *from || b > *from + rows.len())
+            {
                 // (tests: PGAI_ROLLUP_IV_WINDOW, small windows over small row groups)
-                let w = std::env::var("PGAI_ROLLUP_IV_WINDOW").ok().and_then(|v| v.parse().ok()).unwrap_or(IV_WINDOW);
+                let w = std::env::var("PGAI_ROLLUP_IV_WINDOW")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(IV_WINDOW);
                 let end = b.max(a + w).min(ids.len());
                 let sel = parquet::arrow::arrow_reader::RowSelection::from(vec![
                     parquet::arrow::arrow_reader::RowSelector::skip(a),
@@ -834,7 +937,13 @@ impl RollupScan {
                 ]);
                 let mut rows = Vec::with_capacity(end - a);
                 for bt in read_rg(&c.path, g, &["k", "iv"], Some(sel), end - a)? {
-                    let ks = bt.column_by_name("k").unwrap().as_any().downcast_ref::<Int64Array>().unwrap().clone();
+                    let ks = bt
+                        .column_by_name("k")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .clone();
                     let l = bt
                         .column_by_name("iv")
                         .unwrap()
@@ -843,7 +952,13 @@ impl RollupScan {
                         .unwrap()
                         .clone();
                     let o = l.value_offsets();
-                    let v = l.values().as_any().downcast_ref::<arrow::array::Int32Array>().unwrap().values().clone();
+                    let v = l
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow::array::Int32Array>()
+                        .unwrap()
+                        .values()
+                        .clone();
                     for r in 0..bt.num_rows() {
                         let (x, e) = (o[r] as usize, o[r + 1] as usize);
                         let m = (e - x).min(20);
@@ -857,7 +972,10 @@ impl RollupScan {
             }
             let (_, from, rows) = c.iv_rg.as_ref().unwrap();
             // both in k order: walk them together
-            let mut it = rows[a - from..b - from].iter().filter(|x| x.0 > p && x.0 <= q).peekable();
+            let mut it = rows[a - from..b - from]
+                .iter()
+                .filter(|x| x.0 > p && x.0 <= q)
+                .peekable();
             for (bk, _) in out.iter_mut().zip(&self.src).filter(|(_, s)| **s == ci) {
                 while it.peek().is_some_and(|x| x.0 < bk.k) {
                     it.next();
@@ -875,7 +993,11 @@ impl RollupScan {
             }
         }
         // every lazy bucket of this cursor is now read (a row the file does not have: none)
-        for (bk, _) in out.iter_mut().zip(&self.src).filter(|(bk, s)| **s == ci && bk.iv_n == IV_LAZY) {
+        for (bk, _) in out
+            .iter_mut()
+            .zip(&self.src)
+            .filter(|(bk, s)| **s == ci && bk.iv_n == IV_LAZY)
+        {
             bk.iv_n = 0;
             if bk.ivs_n == IV_LAZY {
                 bk.ivs_n = 0;
@@ -898,7 +1020,9 @@ fn read_rg(
     let schema = b.schema().clone();
     let roots: Vec<usize> = cols.iter().filter_map(|x| schema.index_of(x).ok()).collect();
     let mask = parquet::arrow::ProjectionMask::roots(b.parquet_schema(), roots);
-    let mut b = super::footer::builder_rgs(b, &src, &[g])?.with_projection(mask).with_batch_size(batch.max(1));
+    let mut b = super::footer::builder_rgs(b, &src, &[g])?
+        .with_projection(mask)
+        .with_batch_size(batch.max(1));
     if let Some(s) = sel {
         b = b.with_row_selection(s);
     }
@@ -918,11 +1042,7 @@ enum Class {
 
 fn class(f: Func) -> Option<Class> {
     Some(match f {
-        Func::Increase
-        | Func::Rate
-        | Func::IncreasePure
-        | Func::Delta
-        | Func::FirstOverTime => Class::Edge,
+        Func::Increase | Func::Rate | Func::IncreasePure | Func::Delta | Func::FirstOverTime => Class::Edge,
         // the last real sample in (t - w, t]: the last one <= t (a bucket's last, in the
         // synthetic sequence) and whether it is inside, for any w, like `last`
         Func::Irate | Func::Idelta | Func::Last | Func::Timestamp | Func::LastOverTime | Func::TlastOverTime => {
@@ -1084,7 +1204,10 @@ fn months_1h(ctx: &EvalCtx, p: i64, q: i64, days: Vec<FileEntry>) -> Vec<(i64, i
             None => (
                 a,
                 b,
-                days.iter().filter(|f| f.max_ts >= a - B && f.min_ts <= b + B).cloned().collect(),
+                days.iter()
+                    .filter(|f| f.max_ts >= a - B && f.min_ts <= b + B)
+                    .cloned()
+                    .collect(),
             ),
         })
         .collect()
@@ -1632,7 +1755,11 @@ impl RollupStream {
         if use_ru {
             for b in &self.buckets {
                 ts.push(b.a_last);
-                v.push(if b.last_stale { crate::model::stale_nan() } else { b.last_v });
+                v.push(if b.last_stale {
+                    crate::model::stale_nan()
+                } else {
+                    b.last_v
+                });
             }
         }
         if use_raw {
@@ -1739,9 +1866,19 @@ pub fn eval(
 
 /// Build a coarser tier: the buckets of `inputs` (rollup files, each cut to its (p, q] of bucket
 /// ends, all series) merged into `w`-buckets, sorted by (series_id, k). Returns rows.
-pub fn build_tier(root: &Path, inputs: &[(&FileEntry, i64, i64)], w: i64, out: &Path, zstd_level: i32) -> anyhow::Result<u64> {
+pub fn build_tier(
+    root: &Path,
+    inputs: &[(&FileEntry, i64, i64)],
+    w: i64,
+    out: &Path,
+    zstd_level: i32,
+) -> anyhow::Result<u64> {
     let mut scan = RollupScan::open(root, inputs, None, &[], None)?;
-    let rg = if w == B { ROLLUP_1HM_ROW_GROUP } else { ROLLUP_1D_ROW_GROUP };
+    let rg = if w == B {
+        ROLLUP_1HM_ROW_GROUP
+    } else {
+        ROLLUP_1D_ROW_GROUP
+    };
     let mut wr = Writer::new(out, zstd_level, rg)?;
     let mut bs = Vec::new();
     while let Some(sid) = scan.next_series(&mut bs)? {
@@ -1843,11 +1980,17 @@ pub fn jobs_tier(files: &[FileEntry], kind: &str) -> Vec<Job1d> {
 /// Bring the 1 d month files up to date with the 1 h rollups (after closed-day compaction).
 /// Returns the number of month files written.
 pub fn update_1d(shared: &crate::store::Shared, zstd_level: i32, delete_grace_ms: i64) -> anyhow::Result<usize> {
-    Ok(update_tier(shared, KIND_1D, zstd_level, delete_grace_ms)? + update_tier(shared, KIND_1HM, zstd_level, delete_grace_ms)?)
+    Ok(update_tier(shared, KIND_1D, zstd_level, delete_grace_ms)?
+        + update_tier(shared, KIND_1HM, zstd_level, delete_grace_ms)?)
 }
 
 /// Bring the month files of `kind` (KIND_1D: 1 d buckets; KIND_1HM: 1 h buckets) up to date.
-pub fn update_tier(shared: &crate::store::Shared, kind: &str, zstd_level: i32, delete_grace_ms: i64) -> anyhow::Result<usize> {
+pub fn update_tier(
+    shared: &crate::store::Shared,
+    kind: &str,
+    zstd_level: i32,
+    delete_grace_ms: i64,
+) -> anyhow::Result<usize> {
     let (w, letter) = if kind == KIND_1HM { (B, "H") } else { (D, "D") };
     let jobs = jobs_tier(&shared.catalog.lock().unwrap().files, kind);
     let mut done = 0;
@@ -1866,10 +2009,11 @@ pub fn update_tier(shared: &crate::store::Shared, kind: &str, zstd_level: i32, d
         std::fs::rename(&tmp, &abs)?;
         let mut cat = shared.catalog.lock().unwrap();
         // inputs replaced meanwhile (a day recompacted): drop this build, the next run redoes it
-        let same = job
-            .inputs
-            .iter()
-            .all(|(f, _, _)| cat.files.iter().any(|x| x.path == f.path && x.created_ms == f.created_ms));
+        let same = job.inputs.iter().all(|(f, _, _)| {
+            cat.files
+                .iter()
+                .any(|x| x.path == f.path && x.created_ms == f.created_ms)
+        });
         if !same {
             drop(cat);
             let _ = std::fs::remove_file(&abs);

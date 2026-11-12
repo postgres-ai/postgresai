@@ -316,7 +316,9 @@ impl RgReader {
         let rg = self.md.metadata().row_group(i);
         (0..rg.num_columns())
             .filter(|&c| self.mask.as_ref().map_or(true, |m| m.leaf_included(c)))
-            .fold((0, 0), |(b, n), c| (b + rg.column(c).uncompressed_size().max(8 * rg.num_rows()), n + 1))
+            .fold((0, 0), |(b, n), c| {
+                (b + rg.column(c).uncompressed_size().max(8 * rg.num_rows()), n + 1)
+            })
     }
 
     /// Whether the row group being read streams from an open reader (a big one).

@@ -520,7 +520,11 @@ pub fn download(p: &Path, dst: &Path, expect: u64) -> anyhow::Result<u64> {
     use std::io::Write;
     if let Some(mut f) = open_overlay(p) {
         let n = f.metadata()?.len();
-        anyhow::ensure!(n == expect, "{}: local file is {n} bytes, the catalog says {expect}", p.display());
+        anyhow::ensure!(
+            n == expect,
+            "{}: local file is {n} bytes, the catalog says {expect}",
+            p.display()
+        );
         let tmp = dst.with_extension(format!("part{}", std::process::id()));
         let res = (|| -> anyhow::Result<u64> {
             let mut out = std::fs::File::create(&tmp)?;
@@ -649,7 +653,9 @@ impl Remote {
         if self.prefix.is_empty() {
             return Some(k.to_string());
         }
-        k.strip_prefix(self.prefix.as_str())?.strip_prefix('/').map(str::to_string)
+        k.strip_prefix(self.prefix.as_str())?
+            .strip_prefix('/')
+            .map(str::to_string)
     }
 
     /// The overlay's file for `key`, when there is an overlay and the file exists.
@@ -956,7 +962,10 @@ pub fn totals() -> Option<[u64; 4]> {
     let mut t = [0u64; 4];
     for r in g.iter() {
         let s = &r.stats;
-        for (i, a) in [&s.gets, &s.bytes, &s.demand_gets, &s.footer_gets].into_iter().enumerate() {
+        for (i, a) in [&s.gets, &s.bytes, &s.demand_gets, &s.footer_gets]
+            .into_iter()
+            .enumerate()
+        {
             t[i] += a.load(Ordering::Relaxed);
         }
     }
@@ -966,9 +975,10 @@ pub fn totals() -> Option<[u64; 4]> {
 /// The disk cache of a store served without --s3-cache-dir: under the system temp dir, one
 /// directory per store URL, the same across restarts (the scratch dir is per process).
 pub fn default_cache_dir(url: &str) -> PathBuf {
-    std::env::temp_dir()
-        .join("pgai-mon-s3cache")
-        .join(format!("{:016x}", xxhash_rust::xxh3::xxh3_64(url.trim_end_matches('/').as_bytes())))
+    std::env::temp_dir().join("pgai-mon-s3cache").join(format!(
+        "{:016x}",
+        xxhash_rust::xxh3::xxh3_64(url.trim_end_matches('/').as_bytes())
+    ))
 }
 
 /// Create `default_cache_dir(url)` and its parent owner-only (0700; the system temp dir is
@@ -989,7 +999,11 @@ pub fn make_default_cache_dir(url: &str) -> anyhow::Result<PathBuf> {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
             let m = std::fs::symlink_metadata(p)?;
             anyhow::ensure!(m.is_dir(), "{}: not a directory", p.display());
-            anyhow::ensure!(m.uid() == unsafe { libc::geteuid() }, "{}: owned by another user", p.display());
+            anyhow::ensure!(
+                m.uid() == unsafe { libc::geteuid() },
+                "{}: owned by another user",
+                p.display()
+            );
             std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))?;
         }
     }
@@ -1575,7 +1589,10 @@ impl Remote {
         }
         let meta = u32::from_le_bytes(b[n - 8..n - 4].try_into().unwrap()) as u64;
         let need = meta + 8;
-        anyhow::ensure!(need <= size, "{key}: footer length {meta} beyond the object ({size} bytes)");
+        anyhow::ensure!(
+            need <= size,
+            "{key}: footer length {meta} beyond the object ({size} bytes)"
+        );
         let fstart = size - need;
         if fstart >= start {
             // a copy: a slice would pin the whole suffix (up to FOOTER_SUFFIX) in the footer
@@ -1583,7 +1600,10 @@ impl Remote {
             return Ok((size, fstart, Bytes::copy_from_slice(&b[(fstart - start) as usize..])));
         }
         let (_, s2, head) = self.get_range(key, GetRange::Bounded(fstart..start)).await?;
-        anyhow::ensure!(s2 == fstart && head.len() as u64 == start - fstart, "{key}: short footer read");
+        anyhow::ensure!(
+            s2 == fstart && head.len() as u64 == start - fstart,
+            "{key}: short footer read"
+        );
         let mut v = Vec::with_capacity(need as usize);
         v.extend_from_slice(&head);
         v.extend_from_slice(&b);
@@ -1992,7 +2012,10 @@ mod tests {
         quiet(&r);
         r.set_window_limit(u64::MAX);
         quiet(&r);
-        assert!(r.stats.gets.load(Ordering::Relaxed) >= 16 + 16, "queued GETs were not started");
+        assert!(
+            r.stats.gets.load(Ordering::Relaxed) >= 16 + 16,
+            "queued GETs were not started"
+        );
         drop(f);
         quiet(&r);
         assert_eq!(r.sched.lock().unwrap_or_else(|e| e.into_inner()).held, 0);
@@ -2021,7 +2044,13 @@ mod tests {
         assert_eq!(&f.get_bytes(900_000, 1000).unwrap()[..], &d[900_000..901_000]);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let g = rt
-            .block_on(r.store.get_opts(&OPath::from("p/f"), GetOptions { range: Some(GetRange::Bounded(0..200_000)), ..Default::default() }))
+            .block_on(r.store.get_opts(
+                &OPath::from("p/f"),
+                GetOptions {
+                    range: Some(GetRange::Bounded(0..200_000)),
+                    ..Default::default()
+                },
+            ))
             .unwrap();
         // a body that does not match the length asked for is an error, not a short buffer
         assert!(rt.block_on(body(g, 300_000)).is_err());
@@ -2138,7 +2167,10 @@ mod tests {
             let u = format!("s3://test-{}/st", std::process::id());
             let d = make_default_cache_dir(&u).unwrap();
             assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
-            assert_eq!(std::fs::metadata(d.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(
+                std::fs::metadata(d.parent().unwrap()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
             make_default_cache_dir(&u).unwrap(); // again: fine
             std::fs::remove_dir(&d).unwrap();
         }
@@ -2180,7 +2212,10 @@ mod tests {
         for i in 0..10u64 {
             for &(s, e) in &chunks {
                 let (a, b) = (s + (e - s) * i / 10, s + (e - s) * (i + 1) / 10);
-                assert_eq!(&f.get_bytes(a, (b - a) as usize).unwrap()[..], &d[a as usize..b as usize]);
+                assert_eq!(
+                    &f.get_bytes(a, (b - a) as usize).unwrap()[..],
+                    &d[a as usize..b as usize]
+                );
             }
         }
         assert_eq!(l(&r.stats.gets) - g0, 2);
@@ -2194,10 +2229,15 @@ mod tests {
         // the second chunk reaches the GET's last byte while the first still has pages left
         let d = data(400_000);
         let r = mem("mem://t9/pre", S3Cfg::default(), &[("f.bin", &d)]);
-        let Src::Remote(f) = open_src(Path::new("mem://t9/pre/f.bin")).unwrap() else { panic!() };
+        let Src::Remote(f) = open_src(Path::new("mem://t9/pre/f.bin")).unwrap() else {
+            panic!()
+        };
         f.clear();
         quiet(&r);
-        let (g0, d0) = (r.stats.gets.load(Ordering::Relaxed), r.stats.demand_gets.load(Ordering::Relaxed));
+        let (g0, d0) = (
+            r.stats.gets.load(Ordering::Relaxed),
+            r.stats.demand_gets.load(Ordering::Relaxed),
+        );
         f.plan(vec![(0, 100_000), (100_000, 200_000)]);
         let pages = |c: u64| (0..4u64).map(move |i| (c + i * 25_000, 25_000usize));
         for ((a, n), (b, m)) in pages(0).zip(pages(100_000)) {
@@ -2206,14 +2246,26 @@ mod tests {
             let mut rr = RRead { f: f.clone(), pos: a };
             rr.read_exact(&mut h).unwrap();
             assert_eq!(h[0], d[a as usize]);
-            assert_eq!(&f.get_bytes(a + 1, n - 1).unwrap()[..], &d[a as usize + 1..a as usize + n]);
+            assert_eq!(
+                &f.get_bytes(a + 1, n - 1).unwrap()[..],
+                &d[a as usize + 1..a as usize + n]
+            );
             assert_eq!(&f.get_bytes(b, m).unwrap()[..], &d[b as usize..b as usize + m]);
         }
         quiet(&r);
         assert_eq!(r.stats.gets.load(Ordering::Relaxed) - g0, 1, "one coalesced GET");
-        assert_eq!(r.stats.demand_gets.load(Ordering::Relaxed) - d0, 0, "no unplanned reads");
+        assert_eq!(
+            r.stats.demand_gets.load(Ordering::Relaxed) - d0,
+            0,
+            "no unplanned reads"
+        );
         // read to the end of both chunks: released, its window freed
-        assert!(f.parts.lock().unwrap().iter().all(|p| matches!(p.inner.lock().unwrap().state, PState::Done)));
+        assert!(f
+            .parts
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|p| matches!(p.inner.lock().unwrap().state, PState::Done)));
     }
 
     /// A Parquet-shaped object: `body` bytes, a `meta`-byte footer, its length and the magic.
@@ -2236,7 +2288,9 @@ mod tests {
         let objs: Vec<(String, Vec<u8>)> = (0..6).map(|i| (format!("f{i}.parquet"), obj.clone())).collect();
         let refs: Vec<(&str, &[u8])> = objs.iter().map(|(k, v)| (k.as_str(), v.as_slice())).collect();
         let r = mem("mem://t10/pre", cfg.clone(), &refs);
-        let paths: Vec<PathBuf> = (0..6).map(|i| PathBuf::from(format!("mem://t10/pre/f{i}.parquet"))).collect();
+        let paths: Vec<PathBuf> = (0..6)
+            .map(|i| PathBuf::from(format!("mem://t10/pre/f{i}.parquet")))
+            .collect();
         let check = |src: &Src| {
             let Src::Remote(f) = src else { panic!() };
             let n = obj.len();
@@ -2269,9 +2323,14 @@ mod tests {
         // a footer under the suffix: one GET
         let small = parquet_like(1_000_000, 200_000);
         let r3 = mem("mem://t12/pre", S3Cfg::default(), &[("g.parquet", &small)]);
-        let Src::Remote(f) = open_src(Path::new("mem://t12/pre/g.parquet")).unwrap() else { panic!() };
+        let Src::Remote(f) = open_src(Path::new("mem://t12/pre/g.parquet")).unwrap() else {
+            panic!()
+        };
         let n = small.len();
-        assert_eq!(&f.get_bytes((n - 200_008) as u64, 200_008).unwrap()[..], &small[n - 200_008..]);
+        assert_eq!(
+            &f.get_bytes((n - 200_008) as u64, 200_008).unwrap()[..],
+            &small[n - 200_008..]
+        );
         assert_eq!(l(&r3.stats.gets), 1);
     }
 }
@@ -2360,7 +2419,11 @@ mod local_cas {
             };
             self.inner.put_opts(location, payload, o).await
         }
-        async fn put_multipart_opts(&self, location: &OPath, opts: PutMultipartOptions) -> Result<Box<dyn MultipartUpload>> {
+        async fn put_multipart_opts(
+            &self,
+            location: &OPath,
+            opts: PutMultipartOptions,
+        ) -> Result<Box<dyn MultipartUpload>> {
             self.inner.put_multipart_opts(location, opts).await
         }
         async fn get_opts(&self, location: &OPath, options: GetOptions) -> Result<GetResult> {

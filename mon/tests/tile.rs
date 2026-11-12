@@ -226,30 +226,36 @@ fn a_tiled_store_repeats_full_days_back_from_the_recorded_end() {
 
     // the 1 d tier, when this build has one, covers the tiled days too (built after they are in)
     for (kind, built) in [
-        ("rollup_1d", r.format.ends_with("tier1d") || r.format.ends_with("tier1hm")),
+        (
+            "rollup_1d",
+            r.format.ends_with("tier1d") || r.format.ends_with("tier1hm"),
+        ),
         ("rollup_1h_month", r.format.ends_with("tier1hm")),
     ] {
-    let d1: Vec<_> = cat.files.iter().filter(|f| f.kind == kind).collect();
-    if built {
-        // month files: together they span (first tiled day, last closed day]
-        let first = r.map.last().unwrap().0 * DAY_MS;
-        let mut spans: Vec<(i64, i64)> = d1.iter().map(|f| (f.min_ts, f.max_ts)).collect();
-        spans.sort();
-        let mut reach = first;
-        for (p, q) in &spans {
-            assert!(*p <= reach, "gap in the 1 d tier before {p}: {spans:?}");
-            reach = reach.max(*q);
+        let d1: Vec<_> = cat.files.iter().filter(|f| f.kind == kind).collect();
+        if built {
+            // month files: together they span (first tiled day, last closed day]
+            let first = r.map.last().unwrap().0 * DAY_MS;
+            let mut spans: Vec<(i64, i64)> = d1.iter().map(|f| (f.min_ts, f.max_ts)).collect();
+            spans.sort();
+            let mut reach = first;
+            for (p, q) in &spans {
+                assert!(*p <= reach, "gap in the 1 d tier before {p}: {spans:?}");
+                reach = reach.max(*q);
+            }
+            assert!(reach >= d3 * DAY_MS, "{kind} ends at {reach}: {spans:?}");
+        } else {
+            assert!(d1.is_empty(), "{kind}");
         }
-        assert!(reach >= d3 * DAY_MS, "{kind} ends at {reach}: {spans:?}");
-    } else {
-        assert!(d1.is_empty(), "{kind}");
-    }
     }
 
     // the format marker
     let fmt = r.format.clone();
     let v = pgai_mon::eval::rollup::VER;
-    assert!(fmt == format!("v{v}-base") || fmt == format!("v{v}-tier1d") || fmt == format!("v{v}-tier1hm"), "{fmt}");
+    assert!(
+        fmt == format!("v{v}-base") || fmt == format!("v{v}-tier1d") || fmt == format!("v{v}-tier1hm"),
+        "{fmt}"
+    );
     assert_eq!(fmt, format!("v{v}-tier1hm"), "this build writes both month tiers");
     let vers: std::collections::BTreeSet<u8> = cat
         .files

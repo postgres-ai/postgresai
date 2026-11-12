@@ -275,7 +275,10 @@ struct Mirror {
 /// The mirror path of catalog path `rel`, which must be relative and plain (a tampered
 /// catalog.json must not write outside the mirror).
 fn mirror_path(dir: &std::path::Path, rel: &str) -> anyhow::Result<std::path::PathBuf> {
-    anyhow::ensure!(crate::catalog::plain_rel(rel), "catalog path {rel:?}: not a plain relative path");
+    anyhow::ensure!(
+        crate::catalog::plain_rel(rel),
+        "catalog path {rel:?}: not a plain relative path"
+    );
     Ok(dir.join(rel))
 }
 
@@ -289,7 +292,12 @@ fn mirror_gc(dir: &std::path::Path, keep: &std::collections::HashSet<std::path::
         if m.is_dir() {
             mirror_gc(&p, keep, min_age);
             let _ = std::fs::remove_dir(&p); // only when empty
-        } else if !keep.contains(&p) && m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > min_age) {
+        } else if !keep.contains(&p)
+            && m.modified()
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|a| a > min_age)
+        {
             let _ = std::fs::remove_file(&p);
         }
     }
@@ -528,7 +536,10 @@ impl Reader {
                 Some(d) => d.join("mirror"),
                 None => shared.scratch.join("mirror"),
             }
-            .join(format!("{:016x}", xxhash_rust::xxh3::xxh3_64(root.to_string_lossy().as_bytes())));
+            .join(format!(
+                "{:016x}",
+                xxhash_rust::xxh3::xxh3_64(root.to_string_lossy().as_bytes())
+            ));
             std::fs::create_dir_all(&dir)?;
             Some(Mirror {
                 dir: dir.canonicalize()?,
@@ -647,7 +658,11 @@ impl Reader {
         let mut ms = MirrorRun::default();
         let mut paths = |kind: &str, fs: &[&FileEntry]| -> Option<Vec<String>> {
             let Some(m) = &self.mirror else {
-                return Some(fs.iter().map(|f| root.join(&f.path).to_string_lossy().into_owned()).collect());
+                return Some(
+                    fs.iter()
+                        .map(|f| root.join(&f.path).to_string_lossy().into_owned())
+                        .collect(),
+                );
             };
             // one budget per refresh across every mirrored kind, in real bytes: a copy is used only
             // when its size equals the catalog's, and download() refuses any other object size
@@ -662,7 +677,8 @@ impl Reader {
             let mut out = Vec::with_capacity(fs.len());
             for f in fs {
                 let res = mirror_path(&m.dir, &f.path).and_then(|dst| {
-                    let fresh = std::fs::symlink_metadata(&dst).is_ok_and(|x| x.is_file() && f.bytes > 0 && x.len() == f.bytes);
+                    let fresh =
+                        std::fs::symlink_metadata(&dst).is_ok_and(|x| x.is_file() && f.bytes > 0 && x.len() == f.bytes);
                     if !fresh {
                         std::fs::create_dir_all(dst.parent().unwrap())?;
                         ms.fetched += crate::objstore::download(&root.join(&f.path), &dst, f.bytes)?;
@@ -710,7 +726,11 @@ impl Reader {
                             .iter()
                             .zip(&fs)
                             .map(|(l, f)| {
-                                format!(" WHEN {} THEN {}", sql_str(l), sql_str(&root.join(&f.path).to_string_lossy()))
+                                format!(
+                                    " WHEN {} THEN {}",
+                                    sql_str(l),
+                                    sql_str(&root.join(&f.path).to_string_lossy())
+                                )
                             })
                             .collect();
                         b = format!("SELECT * EXCLUDE (filename), CASE filename{arms} END AS filename FROM ({b})");

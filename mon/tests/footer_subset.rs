@@ -66,7 +66,12 @@ fn reference(p: &std::path::Path, rgs: &[usize]) -> Vec<(u64, i64)> {
 fn subset_reads_the_selected_row_groups() {
     let dir = tempfile::tempdir().unwrap();
     let p = write_file(dir.path(), 12);
-    for rgs in [vec![0], vec![3, 7, 11], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], (0..12).collect::<Vec<_>>()] {
+    for rgs in [
+        vec![0],
+        vec![3, 7, 11],
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        (0..12).collect::<Vec<_>>(),
+    ] {
         let want = reference(&p, &rgs);
         assert_eq!(want.len(), rgs.len() * 100);
 
@@ -113,7 +118,15 @@ fn rg_reader_applies_the_projection() {
     while let Some(b) = r.next_batch().unwrap() {
         assert_eq!(b.num_columns(), 1);
         assert_eq!(b.schema().field(0).name(), "v");
-        got.extend(b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().iter().copied());
+        got.extend(
+            b.column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values()
+                .iter()
+                .copied(),
+        );
     }
     assert_eq!(got, (100..200).chain(300..400).collect::<Vec<i64>>());
 }
@@ -140,7 +153,11 @@ fn rg_reader_streams_big_row_groups() {
                 got.extend(values([b]));
             }
             assert_eq!(got, want, "rows {rows} proj {proj}");
-            assert_eq!(streamed, if stream { rgs.len() * rows.div_ceil(4096) } else { 0 }, "rows {rows}");
+            assert_eq!(
+                streamed,
+                if stream { rgs.len() * rows.div_ceil(4096) } else { 0 },
+                "rows {rows}"
+            );
             assert!(!r.streaming());
         }
     }
