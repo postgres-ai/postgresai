@@ -303,11 +303,11 @@ fn lose_the_vm_and_restart_from_the_bucket() {
     c1.flush().unwrap();
     let comp = c1.compactor().unwrap();
     b1.sync(&c1.shared, Some(&comp)).unwrap();
-    // the pre-upload merge left one samples and one series file for the day
+    // the pre-upload merge left one samples file for the day (two if an hour began between
+    // the flushes: it merges the current hour's files only)
     let bc = bucket_catalog(&store).unwrap();
-    assert_eq!(
-        bc.files.iter().filter(|f| f.kind == "samples").count(),
-        1,
+    assert!(
+        bc.files.iter().filter(|f| f.kind == "samples").count() <= 2,
         "{:?}",
         bc.files
     );
@@ -772,8 +772,8 @@ fn measure_puts_per_hour_and_compaction() {
     let d = tempfile::tempdir().unwrap();
     let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
     let comp = c.compactor().unwrap();
-    let day = 86_400_000i64;
-    let t0 = (now_ms() / day - 3) * day + 10 * 3_600_000;
+    // today, an open day: the merge before upload takes the open days' current-hour files
+    let t0 = start_ts(70);
     let ids: Vec<u64> = (0..13_000u64)
         .map(|i| series_id("m", &[("i".into(), i.to_string())]))
         .collect();
@@ -891,4 +891,79 @@ fn measure_puts_per_hour_and_compaction() {
         t_start.elapsed()
     );
     b.close();
+}
+
+/// The uploader has its own thread: while a slow compaction job runs (each merge held for
+/// 6 s), every flushed file still reaches the bucket within an upload interval plus one round,
+/// and eviction waits for the job instead of removing its inputs.
+#[test]
+fn uploads_stay_on_time_during_a_slow_compaction() {
+    let url = "mem://slowjob/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let cfg = BucketCfg {
+        upload_interval_s: 1,
+        keep_local_days: 0,
+        ..bcfg()
+    };
+    let (b, mut c) = start(url, &store, d.path(), cfg).unwrap();
+    let day = 86_400_000i64;
+    let d0 = (now_ms() / day - 5) * day;
+    for k in 0..3 {
+        ingest(&mut c, d0 + 3_600_000 + k * 600_000, 20, 7);
+        c.flush().unwrap();
+    }
+    *pgai_mon::store::TEST_MERGE_DELAY.lock().unwrap() = Some((c.shared.root.clone(), 6_000));
+    let up = pgai_mon::bucket::spawn_uploader(
+        b.clone(),
+        c.shared.clone(),
+        c.upload_compactor().unwrap(),
+        Box::new(|| {}),
+        Box::new(|e| panic!("fenced: {e}")),
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap();
+    let comp = c.compactor().unwrap();
+    let job = std::thread::spawn(move || comp.run_once(now_ms(), true).unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let t_start = start_ts(20);
+    let mut worst = std::time::Duration::ZERO;
+    for k in 0..3 {
+        ingest(&mut c, t_start + k * 300_000, 4, 7);
+        c.flush().unwrap();
+        let newest = c
+            .shared
+            .catalog
+            .lock()
+            .unwrap()
+            .files
+            .iter()
+            .max_by_key(|f| f.created_ms)
+            .unwrap()
+            .path
+            .clone();
+        let t = std::time::Instant::now();
+        while !bucket_catalog(&store).unwrap().files.iter().any(|f| f.path == newest) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(5), "{newest} not uploaded");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        worst = worst.max(t.elapsed());
+    }
+    assert!(!job.is_finished(), "the compaction job was still running");
+    // interval 1 s + one round (a few small files) + the poll
+    assert!(worst < std::time::Duration::from_millis(2_500), "upload took {worst:?}");
+    job.join().unwrap();
+    *pgai_mon::store::TEST_MERGE_DELAY.lock().unwrap() = None;
+    // the job's outputs go up too, and the evicted closed day reads back intact
+    std::thread::sleep(std::time::Duration::from_millis(2_500));
+    let cat = bucket_catalog(&store).unwrap();
+    assert!(
+        cat.files.iter().any(|f| f.day == d0 / day && f.level == 2),
+        "{:?}",
+        cat.files
+    );
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + day);
+    assert_eq!(rows(&bucket_reader(url), &q), vec!["[1200]".to_string()]);
+    b.close();
+    drop(up);
 }

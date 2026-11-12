@@ -43,16 +43,17 @@ use std::sync::{Arc, Mutex, RwLock};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BucketCfg {
-    /// Local working directory of a store whose `store_dir` is an s3:// URL (WAL, Parquet not
-    /// uploaded yet, cache). Required for `run` on an object store.
+    /// Local working directory of a store whose `store_dir` is an object-store URL (WAL,
+    /// Parquet not uploaded yet, cache). Default: `DEFAULT_LOCAL_DIR`.
     pub local_dir: Option<PathBuf>,
-    /// Seconds between commits to the bucket: at most this much acknowledged data (plus one
-    /// upload and the compaction job running then) is lost with the machine.
+    /// Seconds between commits to the bucket. A lost machine loses at most the data acked in
+    /// the last interval plus one upload round (the uploader has its own thread and flushes the
+    /// WAL before each round).
     pub upload_interval_s: u64,
-    /// A writer that committed less than this many seconds ago still owns the store; 0 =
-    /// 3 x upload_interval_s.
-    pub lease_s: u64,
-    /// Start even when another writer's lease is live (it is fenced at its next commit).
+    /// A writer that has not committed for this many upload intervals has lost the store: a
+    /// new writer takes it over at start. A fresher lease of another writer refuses the start.
+    pub lease_intervals: u64,
+    /// Start even when another writer's lease is fresh (it is fenced at its next commit).
     pub takeover: bool,
     /// Committed files of the last this-many days stay in the local directory.
     pub keep_local_days: i64,
@@ -70,7 +71,7 @@ impl Default for BucketCfg {
         Self {
             local_dir: None,
             upload_interval_s: 300,
-            lease_s: 0,
+            lease_intervals: 3,
             takeover: false,
             keep_local_days: 2,
             sweep_interval_s: 86_400,
@@ -82,14 +83,12 @@ impl Default for BucketCfg {
 
 impl BucketCfg {
     pub fn lease_ms(&self) -> i64 {
-        let s = if self.lease_s == 0 {
-            3 * self.upload_interval_s.max(1)
-        } else {
-            self.lease_s
-        };
-        s as i64 * 1000
+        (self.lease_intervals.max(1) * self.upload_interval_s.max(1)) as i64 * 1000
     }
 }
+
+/// Local working directory of an object-store store when `store.s3.local_dir` is not set.
+pub const DEFAULT_LOCAL_DIR: &str = "/var/lib/pgai-mon";
 
 /// Kinds whose files cover a month (`day` is the month's first day).
 const MONTH_KINDS: &[&str] = &[
@@ -168,6 +167,9 @@ pub struct Bucket {
     pub host: String,
     st: Mutex<St>,
     sync_lock: Mutex<()>,
+    /// Held (read) by a background job while it reads local files; eviction runs only when it
+    /// can take it (write), so it never removes a file a job has just fetched.
+    pub jobs: RwLock<()>,
     pub failpoint: Mutex<Option<Failpoint>>,
 }
 
@@ -305,6 +307,7 @@ impl Bucket {
             host: hostname(),
             st: Default::default(),
             sync_lock: Mutex::new(()),
+            jobs: RwLock::new(()),
             failpoint: Mutex::new(None),
         });
         let mut g = BUCKETS.write().unwrap();
@@ -482,13 +485,25 @@ impl Bucket {
                     if w.id != self.id && age < self.cfg.lease_ms() && !self.cfg.takeover {
                         anyhow::bail!(
                             "{}: the store is written by another pgai-mon (writer {} on {:?}, last commit {} s ago); \
-                             refusing to start a second writer on the same prefix. Stop the other writer, wait \
-                             {} s for its lease to expire, or set store.s3.takeover: true",
+                             refusing to start a second writer on the same prefix. Stop the other writer, or wait \
+                             {} s: a lease without a commit for store.s3.lease_intervals x upload_interval_s is \
+                             taken over at start (store.s3.takeover: true forces it now)",
                             self.url,
                             w.id,
                             w.host,
                             age / 1000,
                             (self.cfg.lease_ms() - age) / 1000 + 1
+                        );
+                    }
+                    if w.id != self.id {
+                        eprintln!(
+                            "bucket: {}: taking the store over from writer {} on {:?} (epoch {}, last commit {} s ago{})",
+                            self.url,
+                            w.id,
+                            w.host,
+                            w.epoch,
+                            age / 1000,
+                            if age < self.cfg.lease_ms() { ", forced" } else { ", lease expired" }
                         );
                     }
                 }
@@ -791,6 +806,10 @@ impl Bucket {
     /// Remove committed files whose days are past `keep_local_days` from the local directory
     /// (never `objects`: the collector reads them all at start).
     fn evict(&self, snap: &Catalog) {
+        // a compaction job is reading local files: evict next round
+        let Ok(_w) = self.jobs.try_write() else {
+            return;
+        };
         let today = day_of(now_ms());
         let committed: HashSet<String> = self.st.lock().unwrap().committed.keys().cloned().collect();
         let mut n = 0;
@@ -887,6 +906,46 @@ pub fn next_sync_in_ms(b: &Bucket) -> i64 {
     (st.last_commit_ms + b.cfg.upload_interval_s as i64 * 1000 - now_ms()).max(0)
 }
 
+/// The uploader thread: every `upload_interval_s`, `flush` (the WAL to local Parquet; `run`
+/// asks the store thread and waits) and then `sync` with `premerge` (a compactor of its own:
+/// compaction jobs on the compactor thread never delay an upload). A failed round is retried
+/// after `retry`; a fenced writer calls `on_fenced` and the thread ends.
+pub fn spawn_uploader(
+    b: Arc<Bucket>,
+    shared: crate::store::Shared,
+    premerge: crate::store::Compactor,
+    flush: Box<dyn Fn() + Send>,
+    on_fenced: Box<dyn Fn(&str) + Send>,
+    retry: std::time::Duration,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("uploader".into()).spawn(move || {
+        let mut retry_at = std::time::Instant::now();
+        loop {
+            let wait = (next_sync_in_ms(&b) as u64).max(
+                retry_at
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis() as u64,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(wait.clamp(20, 5_000)));
+            if next_sync_in_ms(&b) > 0 || std::time::Instant::now() < retry_at {
+                continue;
+            }
+            flush();
+            if let Err(e) = b.sync(&shared, Some(&premerge)) {
+                if b.is_fenced() {
+                    on_fenced(&format!("{e:#}"));
+                    return;
+                }
+                eprintln!(
+                    "bucket: upload failed, retried in {} s (data stays local): {e:#}",
+                    retry.as_secs()
+                );
+                retry_at = std::time::Instant::now() + retry;
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -916,5 +975,11 @@ mod tests {
     fn lease_default_is_three_intervals() {
         let c = BucketCfg::default();
         assert_eq!(c.lease_ms(), 900_000);
+        let c = BucketCfg {
+            upload_interval_s: 60,
+            lease_intervals: 5,
+            ..c
+        };
+        assert_eq!(c.lease_ms(), 300_000);
     }
 }

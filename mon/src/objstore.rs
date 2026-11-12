@@ -362,6 +362,11 @@ pub fn open(url: &str, cfg: &S3Cfg) -> anyhow::Result<Arc<Remote>> {
                 .with_bucket_name(bucket)
                 .build()?,
         ),
+        // a directory as the bucket (tests, single-host dev): file:///abs/dir
+        "file" => {
+            anyhow::ensure!(rest.starts_with('/'), "{url}: use file:///absolute/dir");
+            Arc::new(LocalCas::default())
+        }
         _ => anyhow::bail!("unsupported store URL {url}: use s3://bucket/prefix"),
     };
     register(url, store, cfg.clone())
@@ -2268,5 +2273,119 @@ mod tests {
         let n = small.len();
         assert_eq!(&f.get_bytes((n - 200_008) as u64, 200_008).unwrap()[..], &small[n - 200_008..]);
         assert_eq!(l(&r3.stats.gets), 1);
+    }
+}
+
+/// `LocalFileSystem` rooted at `/` with the conditional PUT it lacks (`PutMode::Update`): the
+/// compare and the write run under an flock on `<object dir>/.cas-lock`, so writers on one host
+/// (processes included) are serialized as S3's If-Match serializes them. For `file://` stores
+/// (tests, single-host dev); not for a shared network filesystem.
+#[derive(Debug, Default)]
+pub struct LocalCas {
+    inner: object_store::local::LocalFileSystem,
+}
+
+impl std::fmt::Display for LocalCas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LocalCas({})", self.inner)
+    }
+}
+
+mod local_cas {
+    use super::LocalCas;
+    use bytes::Bytes;
+    use futures_util::stream::BoxStream;
+    use object_store::path::Path as OPath;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
+        PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result,
+    };
+    use std::ops::Range;
+
+    struct Flock(std::fs::File);
+
+    impl Flock {
+        fn take(key: &OPath) -> Result<Self> {
+            let p = std::path::Path::new("/").join(key.as_ref());
+            let dir = p.parent().unwrap_or(std::path::Path::new("/"));
+            let io = |e: std::io::Error| object_store::Error::Generic {
+                store: "LocalCas",
+                source: Box::new(e),
+            };
+            std::fs::create_dir_all(dir).map_err(io)?;
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.join(".cas-lock"))
+                .map_err(io)?;
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(io(std::io::Error::last_os_error()));
+            }
+            Ok(Flock(f))
+        }
+    }
+
+    impl Drop for Flock {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for LocalCas {
+        async fn put_opts(&self, location: &OPath, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
+            let PutMode::Update(v) = &opts.mode else {
+                return self.inner.put_opts(location, payload, opts).await;
+            };
+            let _g = Flock::take(location)?;
+            let cur = match self.inner.head(location).await {
+                Ok(m) => m.e_tag,
+                Err(object_store::Error::NotFound { .. }) => None,
+                Err(e) => return Err(e),
+            };
+            if cur.is_none() || cur != v.e_tag {
+                return Err(object_store::Error::Precondition {
+                    path: location.to_string(),
+                    source: format!("e_tag {cur:?}, expected {:?}", v.e_tag).into(),
+                });
+            }
+            let o = PutOptions {
+                mode: PutMode::Overwrite,
+                ..opts
+            };
+            self.inner.put_opts(location, payload, o).await
+        }
+        async fn put_multipart_opts(&self, location: &OPath, opts: PutMultipartOptions) -> Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(&self, location: &OPath, options: GetOptions) -> Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+        async fn get_ranges(&self, location: &OPath, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+        fn delete_stream(&self, locations: BoxStream<'static, Result<OPath>>) -> BoxStream<'static, Result<OPath>> {
+            self.inner.delete_stream(locations)
+        }
+        fn list(&self, prefix: Option<&OPath>) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+        fn list_with_offset(&self, prefix: Option<&OPath>, offset: &OPath) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list_with_offset(prefix, offset)
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&OPath>) -> Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(&self, from: &OPath, to: &OPath, options: CopyOptions) -> Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+        async fn rename_opts(&self, from: &OPath, to: &OPath, options: RenameOptions) -> Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
     }
 }

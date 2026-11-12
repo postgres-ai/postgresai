@@ -660,12 +660,12 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     // store_dir s3://bucket/prefix: the writer works in store.s3.local_dir and commits to the
     // bucket (bucket.rs); its reader reads the bucket with that directory as the overlay
     let bucket = if objstore::is_remote(&cfg.store_dir) && !cfg.read_only {
-        let local = cfg.store.s3.local_dir.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "store_dir {} is an object store: set store.s3.local_dir (the writer's local working directory)",
-                cfg.store_dir.display()
-            )
-        })?;
+        let local = cfg
+            .store
+            .s3
+            .local_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(bucket::DEFAULT_LOCAL_DIR));
         let b = bucket::Bucket::open(&cfg.store_dir.to_string_lossy(), &local, cfg.store.s3.clone(), &cfg.http.s3)?;
         b.attach(&cfg.store.samples_layout)?;
         eprintln!(
@@ -753,6 +753,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     };
     // Store thread: sole owner of the WAL and the flush path.
     let compactor = core.compactor()?;
+    let upload_compactor = if bucket.is_some() { Some(core.upload_compactor()?) } else { None };
     let store_thread = std::thread::Builder::new().name("store".into()).spawn(move || {
         let mut core = core;
         // Flush whatever the WAL replay produced right away.
@@ -794,43 +795,15 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         let _ = core.flush();
     })?;
     let compact_enabled = std::env::var_os("PGAI_NO_COMPACT").is_none();
-    let bg_bucket = bucket.clone();
     std::thread::Builder::new().name("compactor".into()).spawn(move || {
-        if !compact_enabled && bg_bucket.is_none() {
+        if !compact_enabled {
             return;
         }
         // Defer while SQL queries run (their memory and compaction's would add up), but
         // never more than 10 minutes.
         let mut deferred_since: Option<std::time::Instant> = None;
-        let mut next_compact = std::time::Instant::now() + Duration::from_secs(60);
-        let mut retry_at = std::time::Instant::now();
         loop {
-            let tick = Duration::from_secs(if deferred_since.is_some() { 5 } else { 60 });
-            let wait = match &bg_bucket {
-                // wake for the next upload too (at least 5 s apart)
-                Some(b) => tick
-                    .min(Duration::from_millis(bucket::next_sync_in_ms(b) as u64))
-                    .max(Duration::from_secs(5)),
-                None => tick,
-            };
-            std::thread::sleep(wait);
-            // Upload round: never deferred by queries (it bounds what a lost machine loses).
-            if let Some(b) = &bg_bucket {
-                if bucket::next_sync_in_ms(b) == 0 && std::time::Instant::now() >= retry_at {
-                    if let Err(e) = b.sync(&compactor.shared, Some(&compactor)) {
-                        if b.is_fenced() {
-                            eprintln!("bucket: {e:#}");
-                            std::process::exit(4);
-                        }
-                        eprintln!("bucket: upload failed, retried in 30 s (data stays local): {e:#}");
-                        retry_at = std::time::Instant::now() + Duration::from_secs(30);
-                    }
-                }
-            }
-            if !compact_enabled || (deferred_since.is_none() && std::time::Instant::now() < next_compact) {
-                continue;
-            }
-            next_compact = std::time::Instant::now() + Duration::from_secs(60);
+            std::thread::sleep(Duration::from_secs(if deferred_since.is_some() { 5 } else { 60 }));
             let busy = compactor
                 .shared
                 .active_queries
@@ -846,6 +819,27 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             }
         }
     })?;
+    // Uploads on their own thread: never deferred by queries nor delayed by a compaction job.
+    if let (Some(b), Some(premerge)) = (&bucket, upload_compactor) {
+        let ftx = tx.clone();
+        bucket::spawn_uploader(
+            b.clone(),
+            shared.clone(),
+            premerge,
+            Box::new(move || {
+                // the WAL's records to local Parquet first, so the round commits all acked data
+                let (a, r) = tokio::sync::oneshot::channel();
+                if ftx.blocking_send(Msg::Flush(Some(a))).is_ok() {
+                    let _ = r.blocking_recv();
+                }
+            }),
+            Box::new(|e| {
+                eprintln!("bucket: {e}");
+                std::process::exit(4);
+            }),
+            Duration::from_secs(30),
+        )?;
+    }
 
     // Log tailers.
     for ls in &cfg.logs {

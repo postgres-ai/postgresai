@@ -96,12 +96,16 @@ other field has a default. Unknown fields are rejected. See
 - `views_sql` (default: the embedded copy), `macros_sql`, `read_only`.
 
 A store root may also be `s3://bucket/prefix` (credentials and region from the AWS
-environment). `serve` reads it. `run` writes it with `store.s3.local_dir` as its local working
-directory (WAL, files not uploaded yet, cache) and commits to the bucket every
-`store.s3.upload_interval_s` (default 300 s; a lost machine loses at most about that much). One
-writer per prefix: a second `run` is refused while the first one's lease is live
-(`store.s3.takeover: true` forces it, and the first is fenced at its next commit). See
-`src/bucket.rs`. `/health` shows the write path under `s3_write`.
+environment). The environment variable `PGAI_MON_STORE`, when set, replaces `store_dir` (compose
+and Terraform select the store with it). `serve` reads an object store. `run` writes it with
+`store.s3.local_dir` (default `/var/lib/pgai-mon`) as its local working directory (WAL, files not
+uploaded yet, cache) and commits to the bucket every `store.s3.upload_interval_s` (default 300 s)
+on its own thread: a lost machine loses at most that interval plus one upload round. One writer
+per prefix: a writer that has not committed for `store.s3.lease_intervals` (default 3) upload
+intervals is taken over at start; a fresher one refuses the start (`store.s3.takeover: true`
+forces it). A writer whose commit finds another owner exits with code 4. `file:///dir` works as a
+single-host bucket (tests, dev). See `src/bucket.rs`; `/health` shows the write path under
+`s3_write`.
 
 ## Tests
 
