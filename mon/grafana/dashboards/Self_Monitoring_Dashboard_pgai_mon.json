@@ -147,7 +147,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, sum(value) AS value FROM prom_last('pgai_mon_source_up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'up' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, sum(value) AS value FROM prom_last('pgai_mon_source_up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(300000 AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'up' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -266,7 +266,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, sum(1 - value) AS value FROM prom_last('pgai_mon_source_up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'down' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, sum(1 - value) AS value FROM prom_last('pgai_mon_source_up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(300000 AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'down' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -385,7 +385,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, value FROM prom_agg('sum', 'increase', 'pgai_mon_errors_total', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT)), (CAST(round((${__to} - ${__from}) / 1000.0) * 1000 AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'errors' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, value FROM prom_agg('sum', 'increase', 'pgai_mon_errors_total', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(300000 AS BIGINT)), (CAST(round((${__to} - ${__from}) / 1000.0) * 1000 AS BIGINT)))\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'errors' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],
@@ -499,7 +499,7 @@
           "url": "http://pgai-mon:8765/sql?format=objects",
           "url_options": {
             "method": "POST",
-            "data": "WITH q AS (\nSELECT t, sum(value) AS value FROM prom_last('up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(${__interval_ms} AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'up' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
+            "data": "WITH q AS (\nSELECT t, sum(value) AS value FROM prom_last('up', CAST([] AS VARCHAR[][]), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)), (CAST(300000 AS BIGINT))) GROUP BY t\n)\nSELECT CAST(q.t AS BIGINT) AS time, CAST(q.value AS DOUBLE) AS value, 'up' AS series, '' AS label_set\nFROM q\nWHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time",
             "body_type": "raw",
             "body_content_type": "text/plain",
             "params": [],

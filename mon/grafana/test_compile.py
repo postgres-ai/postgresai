@@ -134,6 +134,40 @@ class Emitted(unittest.TestCase):
         self.assertEqual(counts, {"D2": 79, "D1": 23, "D4": 5, "D3": 16, "D7": 28, "D13": 8, "D12": 7, "D14": 17,
                                   "D5": 13, "D9": 32, "D11": 9, "D6": 24, "D8": 26, "D10": 7, "D99": 35})
 
+    def test_instant_targets_use_a_5_minute_step(self):
+        # Grafana sends a Prometheus instant query without a step, so VictoriaMetrics uses 5 min:
+        # an instant target passes 300000 wherever its case reads step_ms; a range target never
+        step = f"CAST({C.INSTANT_STEP_MS} AS BIGINT)"
+        by_id = {c["id"]: c for c in C.load_cases()}
+        seen = {True: 0, False: 0}
+        for spec, src, out in self.pairs():
+            po = panels(out)
+            for i, a in panels(src).items():
+                if (spec["census"], i) in C.TABLE_PANELS:
+                    continue
+                for x, y in zip(a.get("targets") or [], po[i].get("targets") or []):
+                    if not x.get("expr") or "expr" in y:
+                        continue
+                    instant = bool(x.get("instant") and not x.get("range"))
+                    body = y["url_options"]["data"]
+                    case = C.match_case(spec["census"], a, x, by_id, spec.get("partial", False))
+                    uses_step = "getvariable('step_ms')" in C.case_sql(case)
+                    where = f"{spec['census']} panel {i}{x['refId']}"
+                    self.assertEqual(step in body, instant and uses_step, where)
+                    seen[instant] += uses_step
+        # the targets whose case reads step_ms, by kind
+        self.assertEqual(seen, {True: 7, False: 322})
+        # self-monitoring: its instant (stat) targets, and only those
+        import self_monitoring as S
+        out = load(os.path.join(C.HERE, "dashboards", S.OUT))
+        ts = {(p["id"], t["refId"]): t["url_options"]["data"] for p in panels(out).values() for t in p.get("targets", [])}
+        inst = {(p[0], ref): i and ("step_ms" in sql)
+                for p in S.PANELS if p[0] != "row" for ref, sql, _, i in p[-1]}
+        self.assertEqual(set(ts), set(inst))
+        for k, i in inst.items():
+            self.assertEqual(step in ts[k], i, k)
+        self.assertEqual(sum(inst.values()), 4)
+
     def test_table_panels(self):
         """The panels that called the Flask backend or the Postgres sink run pgai-mon SQL instead, with
         the original column selectors (the overrides and transformations name them)."""
@@ -260,9 +294,12 @@ class Pieces(unittest.TestCase):
         for span, iv, want in cases:
             self.assertEqual(C.pin_step(span, iv), want, (span, iv))
         self.assertIn("ELSE ${__interval_ms} END", C.STEP)
-        # range targets use the pinned step; instants keep $__interval
+        # range targets use the pinned step; instants VictoriaMetrics' default of 5 min, their
+        # point still aligned to $__interval
         self.assertIn(C.STEP, C.GRAFANA_PARAMS_RANGE["step_ms"])
-        self.assertNotIn("CASE", C.GRAFANA_PARAMS["step_ms"])
+        self.assertEqual(C.GRAFANA_PARAMS["step_ms"], "CAST(300000 AS BIGINT)")
+        self.assertEqual(C.GRAFANA_PARAMS["interval_ms"], "CAST(${__interval_ms} AS BIGINT)")
+        self.assertEqual(C.GRAFANA_PARAMS["end_ms"], "CAST((${__to} - ${__to} % ${__interval_ms}) AS BIGINT)")
 
     def test_rate_interval_is_grafanas(self):
         e = C.GRAFANA_PARAMS["rate_interval_ms"]
