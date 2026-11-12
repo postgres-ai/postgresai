@@ -657,14 +657,45 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             "read-only: no sources or logs"
         );
     }
+    // store_dir s3://bucket/prefix: the writer works in store.s3.local_dir and commits to the
+    // bucket (bucket.rs); its reader reads the bucket with that directory as the overlay
+    let bucket = if objstore::is_remote(&cfg.store_dir) && !cfg.read_only {
+        let local = cfg.store.s3.local_dir.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "store_dir {} is an object store: set store.s3.local_dir (the writer's local working directory)",
+                cfg.store_dir.display()
+            )
+        })?;
+        let b = bucket::Bucket::open(&cfg.store_dir.to_string_lossy(), &local, cfg.store.s3.clone(), &cfg.http.s3)?;
+        b.attach(&cfg.store.samples_layout)?;
+        eprintln!(
+            "pgai-mon: writing {} (epoch {}, local dir {}, upload every {} s)",
+            b.url,
+            b.epoch(),
+            b.local.display(),
+            b.cfg.upload_interval_s
+        );
+        Some(b)
+    } else {
+        None
+    };
     let core = if cfg.read_only {
         None
     } else {
-        Some(store::StoreCore::open(&cfg.store_dir, &cfg.store)?)
+        let root = bucket.as_ref().map_or(cfg.store_dir.clone(), |b| b.local.clone());
+        Some(store::StoreCore::open(&root, &cfg.store)?)
     };
     let shared = match &core {
         Some(c) => c.shared.clone(),
         None => store::Shared::open_read_only(&cfg.store_dir)?,
+    };
+    // what the reader reads: the bucket URL (same catalog and stats, local files win)
+    let reader_shared = match &bucket {
+        Some(b) => store::Shared {
+            root: PathBuf::from(&b.url),
+            ..shared.clone()
+        },
+        None => shared.clone(),
     };
     let log_offsets = core.as_ref().map(|c| c.log_offsets()).unwrap_or_default();
     let mf = metricdefs::load(&cfg.metrics_yml).ok();
@@ -683,11 +714,12 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
     let backend = if cfg.http.reader_process {
         let spec = sqlproc::Spec {
-            store: if objstore::is_remote(&shared.root) {
-                shared.root.clone()
+            store: if objstore::is_remote(&reader_shared.root) {
+                reader_shared.root.clone()
             } else {
-                shared.root.canonicalize()?
+                reader_shared.root.canonicalize()?
             },
+            overlay: bucket.as_ref().map(|b| b.local.clone()),
             scratch: shared.scratch.clone(),
             http: cfg.http.clone(),
             views_sql,
@@ -698,7 +730,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         query::Backend::Proc(sqlproc::ReaderProc::new(&spec, spec_path)?)
     } else {
         query::Backend::InProc(Arc::new(query::Reader::new(
-            shared.clone(),
+            reader_shared.clone(),
             cfg.http.clone(),
             views_sql,
             dict,
@@ -762,15 +794,43 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         let _ = core.flush();
     })?;
     let compact_enabled = std::env::var_os("PGAI_NO_COMPACT").is_none();
+    let bg_bucket = bucket.clone();
     std::thread::Builder::new().name("compactor".into()).spawn(move || {
-        if !compact_enabled {
+        if !compact_enabled && bg_bucket.is_none() {
             return;
         }
         // Defer while SQL queries run (their memory and compaction's would add up), but
         // never more than 10 minutes.
         let mut deferred_since: Option<std::time::Instant> = None;
+        let mut next_compact = std::time::Instant::now() + Duration::from_secs(60);
+        let mut retry_at = std::time::Instant::now();
         loop {
-            std::thread::sleep(Duration::from_secs(if deferred_since.is_some() { 5 } else { 60 }));
+            let tick = Duration::from_secs(if deferred_since.is_some() { 5 } else { 60 });
+            let wait = match &bg_bucket {
+                // wake for the next upload too (at least 5 s apart)
+                Some(b) => tick
+                    .min(Duration::from_millis(bucket::next_sync_in_ms(b) as u64))
+                    .max(Duration::from_secs(5)),
+                None => tick,
+            };
+            std::thread::sleep(wait);
+            // Upload round: never deferred by queries (it bounds what a lost machine loses).
+            if let Some(b) = &bg_bucket {
+                if bucket::next_sync_in_ms(b) == 0 && std::time::Instant::now() >= retry_at {
+                    if let Err(e) = b.sync(&compactor.shared, Some(&compactor)) {
+                        if b.is_fenced() {
+                            eprintln!("bucket: {e:#}");
+                            std::process::exit(4);
+                        }
+                        eprintln!("bucket: upload failed, retried in 30 s (data stays local): {e:#}");
+                        retry_at = std::time::Instant::now() + Duration::from_secs(30);
+                    }
+                }
+            }
+            if !compact_enabled || (deferred_since.is_none() && std::time::Instant::now() < next_compact) {
+                continue;
+            }
+            next_compact = std::time::Instant::now() + Duration::from_secs(60);
             let busy = compactor
                 .shared
                 .active_queries
@@ -819,7 +879,14 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         })?;
     }
 
-    serve_loop(cfg, mf, objects, shared, backend, tx, Some(store_thread), views_text)
+    let res = serve_loop(cfg, mf, objects, shared.clone(), backend, tx, Some(store_thread), views_text);
+    // the final flush is done: commit it, so a clean stop loses nothing
+    if let Some(b) = &bucket {
+        if let Err(e) = b.sync(&shared, None) {
+            eprintln!("bucket: final upload failed (data stays in {}): {e:#}", b.local.display());
+        }
+    }
+    res
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -110,6 +110,8 @@ pub struct StoreCfg {
     pub max_buffer_bytes: usize,
     /// Max bytes per DuckDB write batch inside a flush (one Parquet file per batch and day).
     pub write_chunk_bytes: usize,
+    /// Write path of a store whose `store_dir` is `s3://bucket/prefix` (bucket.rs).
+    pub s3: crate::bucket::BucketCfg,
 }
 impl Default for StoreCfg {
     fn default() -> Self {
@@ -129,6 +131,7 @@ impl Default for StoreCfg {
             compact_kmerge: true,
             max_buffer_bytes: 32 << 20,
             write_chunk_bytes: 8 << 20,
+            s3: Default::default(),
         }
     }
 }

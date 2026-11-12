@@ -1433,6 +1433,7 @@ async fn get_health(State(st): State<AppState>) -> Response {
         "rss_bytes": crate::sqlproc::rss_bytes(std::process::id()),
         "admission": st.adm.stats(),
         "late_flushes": s.late_flushes.load(Ordering::Relaxed),
+        "s3_write": crate::bucket::health_json(),
         "cache": {"l1": st.cache.stats_json(), "reader": reader_stats},
         "reader": match &st.backend {
             Backend::Proc(p) => {

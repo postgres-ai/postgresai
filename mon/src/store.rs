@@ -383,6 +383,11 @@ pub fn merge_select(kind: &str, src: &str) -> String {
 
 impl StoreCore {
     pub fn open(root: &Path, cfg: &StoreCfg) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !crate::objstore::is_remote(root),
+            "{}: a store on an object store is written only by `run` (with store.s3.local_dir)",
+            root.display()
+        );
         std::fs::create_dir_all(root)?;
         let mut cat = Catalog::load_or_new(root, &cfg.samples_layout)?;
         if cat.samples_layout.is_empty() {
@@ -1165,6 +1170,16 @@ impl Compactor {
         done += self.register(now, all_closed)?;
         done += self.series_months(now, all_closed)?;
         if self.cfg.compact_kmerge {
+            // on an object store, the month jobs' inputs may have left the local directory
+            if crate::bucket::of(&self.shared.root).is_some() {
+                let files = self.shared.catalog.lock().unwrap().files.clone();
+                for kind in [crate::eval::rollup::KIND_1D, crate::eval::rollup::KIND_1HM] {
+                    for job in crate::eval::rollup::jobs_tier(&files, kind) {
+                        let refs: Vec<&FileEntry> = job.inputs.iter().map(|x| &x.0).chain(job.old.iter()).collect();
+                        crate::bucket::ensure_local(&self.shared.root, &refs)?;
+                    }
+                }
+            }
             // 1 d rollup month files from the closed days' 1 h rollups
             done += crate::eval::rollup::update_1d(&self.shared, self.cfg.zstd_level, self.cfg.delete_grace_s as i64 * 1000)?;
         }
@@ -1172,9 +1187,38 @@ impl Compactor {
         Ok(done)
     }
 
+    /// Before an upload (bucket.rs): merge the level-0 files of each (kind, day) that are not in
+    /// `uploaded` into one level-0 file, so a round PUTs one file per kind and day instead of
+    /// one per flush. Returns the number of merges.
+    pub fn merge_unuploaded(&self, uploaded: &HashSet<String>) -> anyhow::Result<usize> {
+        let groups: BTreeMap<(String, i64), Vec<FileEntry>> = {
+            let cat = self.shared.catalog.lock().unwrap();
+            let mut g: BTreeMap<(String, i64), Vec<FileEntry>> = BTreeMap::new();
+            for f in cat.files.iter().filter(|f| f.level == 0 && !uploaded.contains(&f.path)) {
+                g.entry((f.kind.clone(), f.day)).or_default().push(f.clone());
+            }
+            g
+        };
+        let mut n = 0;
+        for ((kind, day), inputs) in groups {
+            if inputs.len() < 2 {
+                continue;
+            }
+            self.merge(Job {
+                kind,
+                day,
+                level: 0,
+                inputs,
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     fn merge(&self, job: Job) -> anyhow::Result<()> {
         let layout = { self.shared.catalog.lock().unwrap().samples_layout.clone() };
         let refs: Vec<&FileEntry> = job.inputs.iter().collect();
+        crate::bucket::ensure_local(&self.shared.root, &refs)?;
         let src = format!("read_parquet({})", file_list_sql(&self.shared.root, &refs));
         let file_layout = if job.kind == "samples" { layout.as_str() } else { "v2" };
         let total_rows: u64 = job.inputs.iter().map(|f| f.rows).sum();
@@ -1432,7 +1476,9 @@ impl Compactor {
                     .collect()
             };
             let regs: Vec<&FileEntry> = reg.iter().collect();
-            let fresh = crate::registry::new_ids(&self.shared.root, &[&f], &regs)?;
+            crate::bucket::ensure_local(&self.shared.root, &[&f])?;
+            // registry files are read where they are (the bucket's, unless still local)
+            let fresh = crate::registry::new_ids(&crate::bucket::read_root(&self.shared.root), &[&f], &regs)?;
             let entry = if fresh.is_empty() {
                 None
             } else {
@@ -1525,6 +1571,7 @@ impl Compactor {
         };
         let mut n = 0;
         for (m, days, olds) in jobs {
+            crate::bucket::ensure_local(&self.shared.root, &days.iter().collect::<Vec<_>>())?;
             let id = self.shared.catalog.lock().unwrap().alloc_id();
             let rel = format!("{SERIES_MONTH}/date={}/M-{id:08}.parquet", day_str(m));
             let abs = self.shared.root.join(&rel);

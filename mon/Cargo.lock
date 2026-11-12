@@ -1692,11 +1692,13 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "arrow",
+ "async-trait",
  "axum",
  "bytes",
  "clap",
  "crc32fast",
  "duckdb",
+ "futures-util",
  "libc",
  "object_store",
  "parquet",

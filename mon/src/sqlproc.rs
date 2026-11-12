@@ -35,6 +35,9 @@ pub struct Spec {
     pub http: HttpCfg,
     pub views_sql: String,
     pub dict: Vec<DictEntry>,
+    /// The writer's local directory for an object-store `store` (objstore::set_overlay).
+    #[serde(default)]
+    pub overlay: Option<PathBuf>,
 }
 
 /// Resident set size of a process, bytes.
@@ -179,6 +182,9 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
     let spec: Spec = serde_json::from_slice(&std::fs::read(spec_path)?)?;
     if crate::objstore::is_remote(&spec.store) {
         crate::objstore::open(&spec.store.to_string_lossy(), &spec.http.s3)?;
+        if spec.overlay.is_some() {
+            crate::objstore::set_overlay(&spec.store.to_string_lossy(), spec.overlay.clone())?;
+        }
         spawn_window_governor(spec.http.reader_rss_cap_mb << 20, spec.http.s3.window_soft_pct);
     }
     let cat = Catalog::load_or_new(&spec.store, crate::store::DEFAULT_LAYOUT)?;

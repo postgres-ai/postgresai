@@ -115,6 +115,15 @@ pub struct Stats {
     pub footer_disk_hits: AtomicU64,
     pub footer_fetches: AtomicU64,
     pub footer_gets: AtomicU64,
+    /// Write path (bucket.rs): PUTs (single, multipart parts and the catalog), their bytes,
+    /// DELETEs, LIST pages, catalog PUTs refused by their precondition (another writer).
+    pub puts: AtomicU64,
+    pub put_bytes: AtomicU64,
+    pub deletes: AtomicU64,
+    pub lists: AtomicU64,
+    pub cas_failures: AtomicU64,
+    /// Reads served from the local overlay (`set_overlay`) instead of the object store.
+    pub overlay_hits: AtomicU64,
 }
 
 enum PState {
@@ -201,6 +210,9 @@ pub struct Remote {
     footers: Mutex<FooterMem>,
     /// Memory bound on the window, bytes (`u64::MAX`: none; `set_window_limit`).
     window_limit: AtomicU64,
+    /// Local directory with the store's layout (a writer's working dir): a key whose file is
+    /// there is read from it, not fetched (`set_overlay`).
+    overlay: RwLock<Option<PathBuf>>,
     pub stats: Stats,
 }
 
@@ -383,6 +395,7 @@ pub fn register(url: &str, store: Arc<dyn ObjectStore>, cfg: S3Cfg) -> anyhow::R
         cache,
         footers: Default::default(),
         window_limit: AtomicU64::new(u64::MAX),
+        overlay: RwLock::new(None),
         stats: Default::default(),
     });
     let mut g = REMOTES.write().unwrap();
@@ -415,10 +428,44 @@ fn remote_of(p: &Path) -> anyhow::Result<(Arc<Remote>, OPath)> {
     lookup(p).ok_or_else(|| anyhow::anyhow!("no object store registered for {}", p.display()))
 }
 
+/// Serve the store at `url` from local directory `dir` where it has the file: `dir` holds the
+/// store's layout (relative paths as in the catalog), and every file in it is complete (written
+/// to a temporary name, then renamed). The writer's own reader sees the files not uploaded yet,
+/// and the local catalog.json, this way. `None` turns it off.
+pub fn set_overlay(url: &str, dir: Option<PathBuf>) -> anyhow::Result<()> {
+    let url = url.trim_end_matches('/');
+    let g = REMOTES.read().unwrap();
+    let r = g
+        .iter()
+        .find(|r| r.url == url)
+        .ok_or_else(|| anyhow::anyhow!("no object store registered for {url}"))?;
+    *r.overlay.write().unwrap() = dir;
+    Ok(())
+}
+
+/// The local overlay file behind a remote path, when the overlay has it.
+pub fn overlay_of(p: &Path) -> Option<PathBuf> {
+    let (r, key) = lookup(p)?;
+    r.overlay_file(&key)
+}
+
+/// Open the overlay copy of a remote path, if there is one (counted as an overlay hit).
+fn open_overlay(p: &Path) -> Option<std::fs::File> {
+    let (r, key) = lookup(p)?;
+    let f = std::fs::File::open(r.overlay_file(&key)?).ok()?;
+    r.stats.overlay_hits.fetch_add(1, Ordering::Relaxed);
+    Some(f)
+}
+
 /// Whole file: `std::fs::read` for local paths, one GET for remote ones.
 pub fn read(p: &Path) -> anyhow::Result<Vec<u8>> {
     if !is_remote(p) {
         return Ok(std::fs::read(p)?);
+    }
+    if let Some(mut f) = open_overlay(p) {
+        let mut v = Vec::new();
+        f.read_to_end(&mut v)?;
+        return Ok(v);
     }
     let (r, key) = remote_of(p)?;
     let b = r.run(move |r| async move {
@@ -436,6 +483,13 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
         let n = std::fs::metadata(p)?.len();
         anyhow::ensure!(n <= max, "{}: {n} bytes, over the {max}-byte limit", p.display());
         return Ok(std::fs::read(p)?);
+    }
+    if let Some(f) = open_overlay(p) {
+        let n = f.metadata()?.len();
+        anyhow::ensure!(n <= max, "{}: {n} bytes, over the {max}-byte limit", p.display());
+        let mut v = Vec::with_capacity(n as usize);
+        f.take(max).read_to_end(&mut v)?;
+        return Ok(v);
     }
     let (r, key) = remote_of(p)?;
     let shown = p.display().to_string();
@@ -459,6 +513,27 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
 pub fn download(p: &Path, dst: &Path, expect: u64) -> anyhow::Result<u64> {
     anyhow::ensure!(expect > 0, "{}: catalog size 0", p.display());
     use std::io::Write;
+    if let Some(mut f) = open_overlay(p) {
+        let n = f.metadata()?.len();
+        anyhow::ensure!(n == expect, "{}: local file is {n} bytes, the catalog says {expect}", p.display());
+        let tmp = dst.with_extension(format!("part{}", std::process::id()));
+        let res = (|| -> anyhow::Result<u64> {
+            let mut out = std::fs::File::create(&tmp)?;
+            let n = std::io::copy(&mut f, &mut out)?;
+            out.sync_all()?;
+            Ok(n)
+        })();
+        return match res {
+            Ok(n) => {
+                std::fs::rename(&tmp, dst)?;
+                Ok(n)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        };
+    }
     let (r, key) = remote_of(p)?;
     let tmp = dst.with_extension(format!("part{}", std::process::id()));
     let res = (|| -> anyhow::Result<u64> {
@@ -522,6 +597,9 @@ pub fn exists(p: &Path) -> bool {
     if !is_remote(p) {
         return p.exists();
     }
+    if overlay_of(p).is_some() {
+        return true;
+    }
     let Ok((r, key)) = remote_of(p) else {
         return false;
     };
@@ -531,7 +609,7 @@ pub fn exists(p: &Path) -> bool {
 impl Remote {
     /// Run `f` on this store's runtime and wait for it from a plain thread (never `block_on`:
     /// callers may sit on another runtime's blocking pool).
-    fn run<T, F, Fut>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
+    pub fn run<T, F, Fut>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(Arc<Self>) -> Fut,
@@ -543,6 +621,41 @@ impl Remote {
             let _ = tx.send(fut.await);
         });
         rx.recv().map_err(|_| anyhow::anyhow!("object store task dropped"))?
+    }
+
+    /// The object store itself (the write path, bucket.rs).
+    pub fn object_store(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
+    }
+
+    /// Object key of a path relative to the store root.
+    pub fn key_of(&self, rel: &str) -> OPath {
+        let key = if self.prefix.is_empty() {
+            rel.to_string()
+        } else {
+            format!("{}/{rel}", self.prefix)
+        };
+        OPath::from_iter(key.split('/').filter(|x| !x.is_empty()))
+    }
+
+    /// Path relative to the store root of an object key under its prefix (None: outside it).
+    pub fn rel_of(&self, key: &OPath) -> Option<String> {
+        let k = key.as_ref();
+        if self.prefix.is_empty() {
+            return Some(k.to_string());
+        }
+        k.strip_prefix(self.prefix.as_str())?.strip_prefix('/').map(str::to_string)
+    }
+
+    /// The overlay's file for `key`, when there is an overlay and the file exists.
+    fn overlay_file(&self, key: &OPath) -> Option<PathBuf> {
+        let dir = self.overlay.read().unwrap().clone()?;
+        let rel = self.rel_of(key)?;
+        if !crate::catalog::plain_rel(&rel) {
+            return None;
+        }
+        let p = dir.join(rel);
+        p.is_file().then_some(p)
     }
 
     /// A whole-object GET outside the query path (catalog, mirror): not a demand GET.
@@ -804,6 +917,12 @@ impl Remote {
             "queued": queued,
             "wait_ms": l(&s.wait_ns) / 1_000_000,
             "get_ms_total": l(&s.get_ns) / 1_000_000,
+            "puts": l(&s.puts),
+            "put_bytes": l(&s.put_bytes),
+            "deletes": l(&s.deletes),
+            "lists": l(&s.lists),
+            "cas_failures": l(&s.cas_failures),
+            "overlay_hits": l(&s.overlay_hits),
             "footers": {
                 "mem_hits": l(&s.footer_mem_hits), "disk_hits": l(&s.footer_disk_hits),
                 "fetches": l(&s.footer_fetches), "gets": l(&s.footer_gets),
@@ -1322,11 +1441,17 @@ pub fn open_src(p: &Path) -> anyhow::Result<Src> {
     if !is_remote(p) {
         return Ok(Src::Local(Arc::new(std::fs::File::open(p)?)));
     }
+    if let Some(f) = open_overlay(p) {
+        return Ok(Src::Local(Arc::new(f)));
+    }
     open_many(&[p.to_path_buf()]).pop().unwrap()
 }
 
 /// Open a remote file whose length is known (a footer-cache hit): no request.
 pub fn open_known(p: &Path, len: u64) -> anyhow::Result<Src> {
+    if let Some(f) = open_overlay(p) {
+        return Ok(Src::Local(Arc::new(f)));
+    }
     let (r, key) = remote_of(p)?;
     Ok(Src::Remote(RFile::new(r, key, len)))
 }
@@ -1340,6 +1465,10 @@ pub fn open_many(paths: &[PathBuf]) -> Vec<anyhow::Result<Src>> {
     let mut by_store: HashMap<String, Vec<(usize, Arc<Remote>, OPath)>> = HashMap::new();
     for (i, p) in paths.iter().enumerate() {
         if !is_remote(p) {
+            continue;
+        }
+        if let Some(f) = open_overlay(p) {
+            out[i] = Some(Ok(Src::Local(Arc::new(f))));
             continue;
         }
         match remote_of(p) {
