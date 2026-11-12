@@ -1,5 +1,5 @@
 //! The golden cases of the old vmalert host rules (tests/fixtures/host_rules/host_rules.test.yml,
-//! a copy of tests/host_rules/host_rules.test.yml that vmalert-tool ran) against pgai-mon: the
+//! a copy of old/tests/host_rules/host_rules.test.yml that vmalert-tool ran) against pgai-mon: the
 //! input series are ingested, sql/host_rules.sql is evaluated every minute as `run` does, and
 //! each expression is checked on the host_* series written back.
 mod ingest_common;

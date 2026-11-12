@@ -41,7 +41,7 @@ def main():
     palette = json.loads((ROOT / "docs/wait-event-colors.json").read_text())
     drift = []
     count = 0
-    for path in sorted((ROOT / "config/grafana/dashboards").glob("*.json")):
+    for path in sorted((ROOT / "old/config/grafana/dashboards").glob("*.json")):
         original_text = path.read_text()
         dashboard = json.loads(original_text)
         replacements = []

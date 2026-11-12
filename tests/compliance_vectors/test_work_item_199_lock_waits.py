@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-METRICS_FILE = PROJECT_ROOT / "config" / "pgwatch-prometheus" / "metrics.yml"
+METRICS_FILE = PROJECT_ROOT / "mon" / "metrics.yml"
 
 
 def test_lock_waits_session_pids_are_labels_not_metric_values() -> None:

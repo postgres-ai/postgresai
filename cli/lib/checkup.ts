@@ -8,7 +8,7 @@
  *
  * 1. SINGLE SOURCE OF TRUTH FOR SQL QUERIES
  *    Complex metrics (index health, settings, db_stats) are loaded from
- *    config/pgwatch-prometheus/metrics.yml via getMetricSql() from metrics-loader.ts.
+ *    mon/metrics.yml via getMetricSql() from metrics-loader.ts.
  *
  *    Simple queries (version, database list, connection states, uptime) use
  *    inline SQL as they're trivial and CLI-specific.
@@ -42,7 +42,7 @@
  *
  * ADDING NEW REPORTS
  * ------------------
- * 1. Add/verify the metric exists in config/pgwatch-prometheus/metrics.yml
+ * 1. Add/verify the metric exists in mon/metrics.yml
  * 2. Add the metric name mapping to METRIC_NAMES in metrics-loader.ts
  * 3. Verify JSON schema exists in reporter/schemas/{CHECK_ID}.schema.json
  * 4. Implement the generator function using getMetricSql()
@@ -1106,7 +1106,7 @@ export async function getUnusedIndexes(client: Client, pgMajorVersion: number = 
 
 /**
  * Get stats reset info (H002)
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (stats_reset)
+ * SQL loaded from mon/metrics.yml (stats_reset)
  */
 export async function getStatsReset(client: Client, pgMajorVersion: number = 16): Promise<StatsReset> {
   const sql = getMetricSql(METRIC_NAMES.statsReset, pgMajorVersion);
@@ -1262,7 +1262,7 @@ export async function getRedundantIndexes(client: Client, pgMajorVersion: number
 
 /**
  * Get per-table dead-tuple stats and per-table autovacuum overrides (F003).
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples metric).
+ * SQL loaded from mon/metrics.yml (pg_dead_tuples metric).
  *
  * Returns tables that carry dead tuples or have autovacuum disabled per-table,
  * with threshold flags precomputed (see F003_* constants).
@@ -1382,7 +1382,7 @@ export function parseKeepupAggregates(rows: Record<string, unknown>[]): Autovacu
  * pg_class.reloptions incl. toast.* variants) and computes the real per-table
  * vacuum/analyze/(PG13+)insert trigger points and over_trigger_ratio. Returns
  * the bounded top-K offenders plus the full-scan aggregate coverage counters.
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples_keepup).
+ * SQL loaded from mon/metrics.yml (pg_dead_tuples_keepup).
  */
 export async function getAutovacuumKeepup(
   client: Client,
@@ -3766,7 +3766,7 @@ export function evaluateAutovacuumRules(ctx: AutovacuumRuleContext): {
  * adds effective-value resolution, the data-driven rule engine, the effective
  * throughput budget, and the largest-tables scale-factor cross-reference.
  * SQL for the largest-tables/reloptions cross-reference is loaded from
- * config/pgwatch-prometheus/metrics.yml (pg_autovacuum_relopts metric).
+ * mon/metrics.yml (pg_autovacuum_relopts metric).
  */
 async function generateF001(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("F001", "Autovacuum: current settings", nodeName);
@@ -3890,7 +3890,7 @@ async function generateF002(client: Client, nodeName: string): Promise<Report> {
  *
  * Unlike F004/F005 (statistical bloat estimators), this check sees dead
  * tuples that have never been vacuumed.
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_dead_tuples metric).
+ * SQL loaded from mon/metrics.yml (pg_dead_tuples metric).
  */
 async function generateF003(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("F003", "Autovacuum: dead tuples", nodeName);
@@ -4212,7 +4212,7 @@ export async function generateF009(client: Client, nodeName: string): Promise<Re
  *
  * Estimates table bloat based on statistical analysis of table pages vs expected pages.
  * Uses pg_stats for column statistics to estimate row sizes.
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_table_bloat metric).
+ * SQL loaded from mon/metrics.yml (pg_table_bloat metric).
  */
 type BloatCheckReason = "missing_schema" | "missing_view" | "missing_grant" | "query_error";
 
@@ -4400,7 +4400,7 @@ async function generateF004(client: Client, nodeName: string): Promise<Report> {
  * Generate F005 report - Autovacuum: index bloat (estimated)
  *
  * Estimates B-tree index bloat based on statistical analysis of index pages vs expected pages.
- * SQL loaded from config/pgwatch-prometheus/metrics.yml (pg_btree_bloat metric).
+ * SQL loaded from mon/metrics.yml (pg_btree_bloat metric).
  */
 async function generateF005(client: Client, nodeName: string): Promise<Report> {
   const report = createBaseReport("F005", "Autovacuum: index bloat (estimated)", nodeName);

@@ -7,7 +7,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-METRICS_FILE = PROJECT_ROOT / "config" / "pgwatch-prometheus" / "metrics.yml"
+METRICS_FILE = PROJECT_ROOT / "mon" / "metrics.yml"
 
 
 def test_backup_start_time_is_lazily_guarded_on_supported_versions() -> None:

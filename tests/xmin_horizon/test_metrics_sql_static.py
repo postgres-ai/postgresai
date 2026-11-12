@@ -12,9 +12,9 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-METRICS_PATH = ROOT / "config" / "pgwatch-prometheus" / "metrics.yml"
+METRICS_PATH = ROOT / "mon" / "metrics.yml"
 DASHBOARD_7_PATH = (
-    ROOT / "config" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_xmin_horizon.json"
+    ROOT / "old" / "config" / "grafana" / "dashboards" / "Dashboard_7_Autovacuum_and_xmin_horizon.json"
 )
 
 

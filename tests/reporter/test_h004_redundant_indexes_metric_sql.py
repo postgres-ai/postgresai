@@ -7,8 +7,8 @@ of `'12 3'`), and two indexes on different columns of any table with 10 or more
 columns were reported as redundant.
 
 The same SQL lives in two files:
-  - config/pgwatch-prometheus/metrics.yml, metric `redundant_indexes`;
-  - config/pgwatch-postgres/metrics.yml, metric `index_definitions`
+  - mon/metrics.yml, metric `redundant_indexes`;
+  - old/config/pgwatch-postgres/metrics.yml, metric `index_definitions`
     (its `redundant_index_pairs` CTE).
 
 Each fixture index is built on enough rows to pass the SQL's `relpages > 5`
@@ -26,8 +26,8 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMETHEUS_METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
-POSTGRES_METRICS_YML = PROJECT_ROOT / "config/pgwatch-postgres/metrics.yml"
+PROMETHEUS_METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
+POSTGRES_METRICS_YML = PROJECT_ROOT / "old/config/pgwatch-postgres/metrics.yml"
 
 ROWS = 20000
 

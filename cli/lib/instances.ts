@@ -78,7 +78,7 @@ export function buildInstance(name: string, connStr: string): Instance {
       env: "production",
       cluster: "default",
       node_name: name,
-      // Sed-substituted placeholder by config/scripts/generate-pgwatch-sources.sh.
+      // Sed-substituted placeholder by old/config/scripts/generate-pgwatch-sources.sh.
       // js-yaml emits this unquoted on dump (~ is only special at the start of a
       // scalar in the right context); sed s/~sink_type~/.../g still hits it as
       // raw text regardless.

@@ -7,7 +7,7 @@
 //!   every other series (Dashboard 1's Host row, Dashboard 99, reports, sizing rules), and RDS
 //!   writes the same names directly; a view would need its own code path in every consumer;
 //! - the values are the ones vmalert wrote (one evaluation per minute over a 3 m window), so the
-//!   golden cases of tests/host_rules carry over unchanged, and a 30-day panel reads one
+//!   golden cases of old/tests/host_rules carry over unchanged, and a 30-day panel reads one
 //!   precomputed series per node (and its 1 h / 1 d rollups) instead of re-deriving rates of
 //!   every per-CPU and per-device counter at each refresh. A ratio of rollups is not the rollup of
 //!   a ratio, so query-time views over long ranges would also give different numbers.

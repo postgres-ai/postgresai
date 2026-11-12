@@ -1,7 +1,7 @@
 # SQL dashboards for pgai-mon
 
 `dashboards/` holds the 14 ported dashboards (every dashboard in
-`config/grafana/dashboards/` except `Dashboard_99_Host_stats` and `Self_Monitoring_Dashboard`).
+`old/config/grafana/dashboards/` except `Dashboard_99_Host_stats` and `Self_Monitoring_Dashboard`).
 They are generated; do not edit them by hand. Each keeps the original's panels, layout, units
 and legends, with a new uid (`pgai-mon-*`) and the title suffix ` (pgai-mon)`.
 
@@ -20,7 +20,7 @@ Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat
 
 ## Inputs
 
-- `config/grafana/dashboards/Dashboard_<n>_*.json`: the PromQL originals (read only);
+- `old/config/grafana/dashboards/Dashboard_<n>_*.json`: the PromQL originals (read only);
 - `cases.py`: maps each PromQL target to its ported SQL file and parameters;
 - `../sql/reports/`: the ported SQL (`panels/`: the tables that were not PromQL).
 

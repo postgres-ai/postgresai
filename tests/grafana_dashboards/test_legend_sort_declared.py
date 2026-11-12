@@ -17,7 +17,7 @@ against the reducer registry in the shipped grafana/grafana bundle
 
 Which key a panel should use (Mean for rates, Max for per-call/latency, Last
 for levels) is a judgement call documented in
-config/grafana/dashboards/README.md § "Legend sorting"; this test only enforces
+mon/grafana/dashboards/README.md § "Legend sorting"; this test only enforces
 that *some* valid sort is declared.
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ REDUCER_COLUMNS = {
     "stdDev": "StdDev",
 }
 
-CONVENTION = "config/grafana/dashboards/README.md — see 'Legend sorting'"
+CONVENTION = "mon/grafana/dashboards/README.md — see 'Legend sorting'"
 
 
 def test_table_legends_declare_a_usable_sort(dashboard_path: Path):

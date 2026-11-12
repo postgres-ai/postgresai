@@ -1,6 +1,6 @@
 {
   "_comment": "Inputs the CLI build and tests read from outside cli/, relative to the repository root. Change a path here only.",
-  "metricsYml": "config/pgwatch-prometheus/metrics.yml",
+  "metricsYml": "mon/metrics.yml",
   "reportSchemas": "reporter/schemas",
   "demoInstances": "instances.demo.yml"
 }

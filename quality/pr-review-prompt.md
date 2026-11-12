@@ -103,7 +103,7 @@ wrong decisions, or silent monitoring failures that erode customer trust.
 
 ### 11. Visual Change Verification (HIGH)
 - If the diff touches user-visible surfaces — Grafana dashboards
-  (`config/grafana/dashboards/*.json`, `postgres_ai_helm/.../dashboards/*.json`),
+  (`old/config/grafana/dashboards/*.json`, `old/postgres_ai_helm/.../dashboards/*.json`),
   the Console UI (`console/` or similar frontend dirs), Joe UI, or marketing /
   landing pages — the MR description must contain a **Visual changes** section
   with one before/after screenshot pair per visual fix.

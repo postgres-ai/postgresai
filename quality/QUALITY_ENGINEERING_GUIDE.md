@@ -303,8 +303,8 @@ sufficient — reviewers should not have to spin up the demo to confirm a visual
 claim.
 
 **Scope (which surfaces trigger this rule):** Grafana dashboards
-(`config/grafana/dashboards/*.json`,
-`postgres_ai_helm/.../dashboards/*.json`), the Console UI (`console/` or
+(`old/config/grafana/dashboards/*.json`,
+`old/postgres_ai_helm/.../dashboards/*.json`), the Console UI (`console/` or
 similar frontend directories), Joe UI, and marketing or landing pages. See
 rule 11 in [`quality/pr-review-prompt.md`](./pr-review-prompt.md) for the
 authoritative list of path globs the AI reviewer uses.

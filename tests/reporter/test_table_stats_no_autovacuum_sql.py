@@ -17,7 +17,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
+METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
 SPELLINGS = ("false", "off", "0", "no", "f")
 
 

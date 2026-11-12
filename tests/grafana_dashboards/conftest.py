@@ -3,13 +3,13 @@
 Each test that takes `dashboard_path` (or the `dashboards` fixture) runs over every dashboard
 JSON file in DASHBOARD_DIR: the SQL dashboards that query pgai-mon through the Infinity
 datasource. They are compiled (mon/grafana/compile.py) from the PromQL dashboards in
-config/grafana/dashboards, which keep titles, units, legends, overrides and variables, so a
+old/config/grafana/dashboards, which keep titles, units, legends, overrides and variables, so a
 convention broken in a source dashboard fails here once it is recompiled.
 
 A few files still read a source dashboard by its own path, because what they check is not in the
 SQL dashboards: the host row and Dashboard 99 against the host-metric providers
-(test_host_row.py, test_host_stats_dashboard.py), and the PromQL helpers in query_info_join.py,
-which tests/compliance_vectors applies to the PromQL Dashboard 2.
+(old/tests/grafana_dashboards/test_host_row.py, test_host_stats_dashboard.py), and the PromQL
+helpers in query_info_join.py, which old/tests/compliance_vectors applies to the PromQL Dashboard 2.
 """
 from __future__ import annotations
 

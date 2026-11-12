@@ -8,7 +8,7 @@
 # ---- Stage 1: build ----
 # Pinned to BUILDPLATFORM with Go's own cross-compilation (BuildKit injects
 # TARGETOS/TARGETARCH from --platform). CGO is off, so both arches build in
-# seconds without QEMU -- the same pattern as pgwatch/Dockerfile.
+# seconds without QEMU -- the same pattern as old/pgwatch/Dockerfile.
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH

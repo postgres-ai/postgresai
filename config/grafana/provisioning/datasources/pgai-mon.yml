@@ -13,8 +13,9 @@ apiVersion: 1
 # --target-url): Infinity sends the token only to the hosts in allowedHosts. Serving pgai-mon
 # elsewhere means recompiling with --target-url and changing allowedHosts to match.
 #
-# Loaded beside datasources.yml (whose "Infinity" datasource stays for the PromQL dashboards'
-# CSV panels); the name and uid differ from every datasource there. As there, deleteDatasources
+# The old stack's datasources.yml (PGWatch-PostgreSQL, PGWatch-Prometheus, Infinity) is in
+# old/config/grafana/provisioning/datasources/; the name and uid differ from every datasource
+# there, so the two can be loaded side by side. As there, deleteDatasources
 # re-provisions it on each start, so the YAML wins over state edited in the UI.
 deleteDatasources:
   - name: pgai-mon

@@ -24,7 +24,7 @@ const schemasDir = REPORT_SCHEMAS_DIR;
 // #345: rarely_used_indexes and index_definitions are not in the CLI's embedded
 // metrics (embed-metrics.ts ships only what express reports need), so their SQL
 // is read straight from the config YAML the pgwatch fleet uses.
-const configDir = resolve(import.meta.dir, "../../config");
+const configDir = resolve(import.meta.dir, "../../old/config");
 type MetricsYml = { metrics: Record<string, { sqls: Record<string, string> }> };
 const loadMetricsYml = (relPath: string) =>
   Bun.YAML.parse(readFileSync(resolve(configDir, relPath), "utf8")) as MetricsYml;

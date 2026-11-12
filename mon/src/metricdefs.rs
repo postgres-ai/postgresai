@@ -317,7 +317,7 @@ presets:
 
     #[test]
     fn the_shipped_metrics_yml_parses() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/pgwatch-prometheus/metrics.yml");
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("metrics.yml");
         let m = load(&p).unwrap();
         let full = m.scheduled("full").unwrap();
         assert!(full.len() >= 50, "{}", full.len());

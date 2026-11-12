@@ -47,7 +47,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
+METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
 
 
 def _load_sql(metric_name: str, version: int | None = None) -> str:

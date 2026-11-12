@@ -338,7 +338,7 @@ This will:
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `VM_AUTH_USERNAME`, `VM_AUTH_PASSWORD`, and optionally `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `VM_AUTH_*` values or generates new ones when they are missing; Docker Compose requires these values and does not use known default passwords. It also holds the VictoriaMetrics admin-endpoint keys `VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY` and `VM_PPROF_AUTH_KEY` (added in 0.17, see #359), which follow the same preserve-or-generate lifecycle and guard the endpoints that can destroy the metrics store.
 
-> **In-place upgrade note:** Newer stack versions can require both additional `.env` keys and a matching `docker-compose.yml` (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` and the `sink-prometheus` auth wiring were added in 0.15 for VictoriaMetrics basic auth). `postgresai mon local-install -y`, `postgresai mon update`, and `postgresai mon update-config` all perform a purely-additive `.env` migration on every run (existing values preserved verbatim; newly-required keys appended with safe random defaults) **and** refresh `docker-compose.yml` to the new stack version on non-git installs (npx / `npm install -g`), backing up the old compose as `docker-compose.yml.bak-<oldtag>-<hash>` (the pristine original is preserved across repeated runs; the fetched compose is validated as a real stack file before it replaces yours). This closes the prior gap where npx upgrades kept a stale 0.14 compose and `sink-prometheus` crashed with `missing "VM_AUTH_USERNAME" env var`. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in (and refresh the compose) for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart. 0.17 added the VictoriaMetrics admin-endpoint keys the same way (`VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY`, `VM_PPROF_AUTH_KEY`); because those flags live on the `sink-prometheus` command line, `mon update` and `mon update-config` bring that one service in line with the compose file after adding them — a plain `mon restart` is `docker compose restart` and would report success while leaving the old, keyless container running. `rotate-vm-auth.sh` does not touch the admin keys: to rotate one, edit `.env` and run `docker compose up -d --no-deps sink-prometheus` on a running stack (`--no-deps` avoids re-running `config-init`, which would re-seed `prometheus.yml` from the image).
+> **In-place upgrade note:** Newer stack versions can require both additional `.env` keys and a matching `docker-compose.yml` (e.g., `VM_AUTH_USERNAME` / `VM_AUTH_PASSWORD` and the `sink-prometheus` auth wiring were added in 0.15 for VictoriaMetrics basic auth). `postgresai mon local-install -y`, `postgresai mon update`, and `postgresai mon update-config` all perform a purely-additive `.env` migration on every run (existing values preserved verbatim; newly-required keys appended with safe random defaults) **and** refresh `docker-compose.yml` to the new stack version on non-git installs (npx / `npm install -g`), backing up the old compose as `docker-compose.yml.bak-<oldtag>-<hash>` (the pristine original is preserved across repeated runs; the fetched compose is validated as a real stack file before it replaces yours). This closes the prior gap where npx upgrades kept a stale 0.14 compose and `sink-prometheus` crashed with `missing "VM_AUTH_USERNAME" env var`. If you run `docker compose` directly and maintain `.env` yourself, add `VM_AUTH_USERNAME=vmauth` and a non-empty `VM_AUTH_PASSWORD` before upgrading, or run `postgresai mon update-config` once to have the CLI fill them in (and refresh the compose) for you. To rotate the VictoriaMetrics auth password, run `VM_AUTH_PASSWORD="$(openssl rand -base64 18)" ./old/scripts/rotate-vm-auth.sh` from the monitoring directory; the script updates `.env` and recreates `sink-prometheus` plus `grafana` together so datasource provisioning cannot reinsert stale credentials on restart. 0.17 added the VictoriaMetrics admin-endpoint keys the same way (`VM_DELETE_AUTH_KEY`, `VM_SNAPSHOT_AUTH_KEY`, `VM_FORCE_MERGE_AUTH_KEY`, `VM_PPROF_AUTH_KEY`); because those flags live on the `sink-prometheus` command line, `mon update` and `mon update-config` bring that one service in line with the compose file after adding them — a plain `mon restart` is `docker compose restart` and would report success while leaving the old, keyless container running. `rotate-vm-auth.sh` does not touch the admin keys: to rotate one, edit `.env` and run `docker compose up -d --no-deps sink-prometheus` on a running stack (`--no-deps` avoids re-running `config-init`, which would re-seed `prometheus.yml` from the image).
 
 **Alternative: Manual upgrade**
 
@@ -375,14 +375,14 @@ Deploy postgres_ai monitoring to Kubernetes using helm:
 
 ```bash
 # Install from the helm chart directory
-helm install postgres-ai-monitoring ./postgres_ai_helm
+helm install postgres-ai-monitoring ./old/postgres_ai_helm
 
 # Or install from a release (replace <VERSION> with the desired release, e.g. 0.14.0)
 curl -LO https://gitlab.com/postgres-ai/postgresai/-/releases/helm-v<VERSION>/downloads/postgres-ai-monitoring-chart.tgz
 helm install postgres-ai-monitoring postgres-ai-monitoring-chart.tgz
 
 # Customize installation
-helm install postgres-ai-monitoring ./postgres_ai_helm -f custom-values.yaml
+helm install postgres-ai-monitoring ./old/postgres_ai_helm -f custom-values.yaml
 ```
 
 ### Helm chart features
@@ -395,16 +395,16 @@ helm install postgres-ai-monitoring ./postgres_ai_helm -f custom-values.yaml
 
 ### Helm chart documentation
 
-- [README](./postgres_ai_helm/README.md): Quick start and overview
-- [INSTALLATION_GUIDE](./postgres_ai_helm/INSTALLATION_GUIDE.md): Detailed installation instructions
-- [RELEASE](./postgres_ai_helm/RELEASE.md): Release process for maintainers
+- [README](./old/postgres_ai_helm/README.md): Quick start and overview
+- [INSTALLATION_GUIDE](./old/postgres_ai_helm/INSTALLATION_GUIDE.md): Detailed installation instructions
+- [RELEASE](./old/postgres_ai_helm/RELEASE.md): Release process for maintainers
 
 ### Creating helm releases
 
 For maintainers creating new helm chart releases:
 
 ```bash
-cd postgres_ai_helm
+cd old/postgres_ai_helm
 
 # Test the chart locally
 ./test-release.sh

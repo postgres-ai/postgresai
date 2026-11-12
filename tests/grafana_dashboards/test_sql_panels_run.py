@@ -110,7 +110,7 @@ def pgai_mon(tmp_path_factory):
     log = open(store.parent / "serve.log", "wb")
     proc = subprocess.Popen(
         [binary, "serve", "--store", str(store), "--listen", f"127.0.0.1:{port}", "--no-compact",
-         "--metrics-yml", str(REPO_ROOT / "config" / "pgwatch-prometheus" / "metrics.yml"),
+         "--metrics-yml", str(REPO_ROOT / "mon" / "metrics.yml"),
          "--macros-sql", str(REPO_ROOT / "mon" / "sql" / "macros.sql")],
         stdout=log, stderr=subprocess.STDOUT)
     url = f"http://127.0.0.1:{port}"

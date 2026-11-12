@@ -5,7 +5,7 @@ but 99) on pgai-mon via the Infinity datasource. Standard library only.
   compile.py --probe-url http://127.0.0.1:8765 [--out mon/grafana/dashboards]
   compile.py --check-url http://127.0.0.1:8765 [--out ...]     # run every emitted query
 
-Reads config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sql/reports/* and
+Reads old/config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sql/reports/* and
 mon/grafana/cases.py, and writes copies with new uids and titles ending in " (pgai-mon)". The
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
 Infinity target that POSTs `/sql?format=objects` with the ported SQL as a text/plain body:
@@ -37,7 +37,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 MON = os.path.dirname(HERE)
 REPO = os.path.dirname(MON)
-DASH_DIR = os.path.join(REPO, "config", "grafana", "dashboards")
+DASH_DIR = os.path.join(REPO, "old", "config", "grafana", "dashboards")
 
 # the pgai-mon datasource (config/grafana/provisioning/datasources/pgai-mon.yml)
 INFINITY = {"type": "yesoreyeram-infinity-datasource", "uid": "pgai-mon"}

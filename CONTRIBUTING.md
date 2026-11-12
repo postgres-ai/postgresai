@@ -132,8 +132,8 @@ This repo includes a `docker-compose.override.yml` that overrides `config-init` 
 
 That means edits to:
 
-- `config/prometheus/prometheus.yml`
-- `config/grafana/dashboards/*.json`
+- `old/config/prometheus/prometheus.yml`
+- `old/config/grafana/dashboards/*.json`
 - `config/pgwatch-*/metrics.yml`
 - `config/scripts/*.sh`
 
@@ -212,7 +212,7 @@ docker compose up -d --force-recreate config-init
 
 Then restart the affected services:
 
-- **Prometheus scrape config changed** (`config/prometheus/prometheus.yml`):
+- **Prometheus scrape config changed** (`old/config/prometheus/prometheus.yml`):
 
 ```bash
 docker compose restart sink-prometheus
@@ -233,7 +233,7 @@ docker compose restart grafana
 
 #### Dashboard conventions (read before editing a dashboard)
 
-`config/grafana/dashboards/README.md` is the source of truth for tags, panel
+`mon/grafana/dashboards/README.md` is the source of truth for tags, panel
 titles, terminology, units, and **legend sorting** (rate panels sort by `Mean`,
 per-call/latency by `Max`, levels by `Last`/`Last *` — always descending).
 Consistency with the existing dashboards comes first: see README.md §
@@ -246,8 +246,8 @@ Consistency with the existing dashboards comes first: see README.md §
 python -m pytest tests/grafana_dashboards -q
 ```
 
-Note `postgres_ai_helm/config/grafana/dashboards/*.json` are symlinks to
-`config/grafana/dashboards/` — edit the canonical file, never write through the
+Note `old/postgres_ai_helm/config/grafana/dashboards/*.json` are symlinks to
+`old/config/grafana/dashboards/` — edit the canonical file, never write through the
 link.
 
 ### Run reporter on your host (recommended)

@@ -1,5 +1,5 @@
 -- Host metrics vocabulary (docs/host-metrics.md): the 37 recording rules of the old
--- config/prometheus/host_rules.yml (groups host-supabase and host-clickhouse) as one query.
+-- old/config/prometheus/host_rules.yml (groups host-supabase and host-clickhouse) as one query.
 -- pgai-mon evaluates it every 60 s at t = getvariable('t_ms') (an instant, aligned to the minute)
 -- and writes the rows back as host_* series {cluster, node_name[, provider]} (src/rules.rs),
 -- so dashboards, reports and sizing rules read host_* like any other series.

@@ -1,5 +1,5 @@
 //! RDS host stats against the recordings of rds-host-stats (tests/fixtures/rds-host-stats, a copy
-//! of rds-host-stats/test/fixtures): every case of its poll.test.ts, replayed here with the same
+//! of old/rds-host-stats/test/fixtures): every case of its poll.test.ts, replayed here with the same
 //! inputs and the same expected import text, plus the write path and the AWS wire layer against a
 //! local fake AWS endpoint (AssumeRole with External ID, STS failure, IMDSv2). No AWS calls.
 mod ingest_common;

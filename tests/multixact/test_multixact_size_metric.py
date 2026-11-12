@@ -10,8 +10,7 @@ import yaml
 def fixture_metric() -> dict:
     metrics_path = (
         Path(__file__).parents[2]
-        / "config"
-        / "pgwatch-prometheus"
+        / "mon"
         / "metrics.yml"
     )
     config = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))

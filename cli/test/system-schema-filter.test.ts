@@ -20,7 +20,7 @@ import { getMetricSql, isSystemSchema, METRIC_NAMES } from "../lib/metrics-loade
 import { createMockClient } from "./test-utils";
 import { METRICS_YML } from "./build-inputs";
 
-const configDir = resolve(import.meta.dir, "../../config");
+const configDir = resolve(import.meta.dir, "../../old/config");
 
 type MetricsYml = {
   metrics: Record<string, { sqls: Record<string, string> }>;

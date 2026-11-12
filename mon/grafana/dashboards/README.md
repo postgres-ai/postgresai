@@ -5,7 +5,7 @@ This document outlines the naming principles used in PostgresAI Grafana dashboar
 ## Consistency first
 
 Before inventing anything in a dashboard, look for the same problem already
-solved in `config/grafana/dashboards/*.json`. If an equivalent exists — a
+solved in `old/config/grafana/dashboards/*.json`. If an equivalent exists — a
 template variable shape, an "All vs one" selector, a reference line, a legend
 calc set, a unit, a stat reducer, an empty-state message, a row layout, a
 description voice — **reuse it verbatim** and say in the MR description which
@@ -67,7 +67,7 @@ instance; the thematic tags give topical navigation.
 | `monitoring-stack` | pgwatch/VictoriaMetrics/Grafana plumbing |
 
 The mapping for shipped dashboards lives in the dashboards themselves; the
-file `config/grafana/dashboards/<name>.json` is the source of truth.
+file `old/config/grafana/dashboards/<name>.json` is the source of truth.
 
 When adding a new dashboard:
 

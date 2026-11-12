@@ -7,7 +7,7 @@ so an index backing a key read false unless its table was also referenced, an in
 on the referenced table read true, and mixed-case or other-schema tables never
 matched.
 
-Metrics (config/pgwatch-prometheus/metrics.yml): `unused_indexes`,
+Metrics (mon/metrics.yml): `unused_indexes`,
 `rarely_used_indexes`, `redundant_indexes`, `pg_invalid_indexes`. Marked
 `integration` + `requires_postgres`; the CI reporter:tests job runs it under
 `--run-integration`.
@@ -23,7 +23,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMETHEUS_METRICS_YML = PROJECT_ROOT / "config/pgwatch-prometheus/metrics.yml"
+PROMETHEUS_METRICS_YML = PROJECT_ROOT / "mon/metrics.yml"
 
 ROWS = 20000
 

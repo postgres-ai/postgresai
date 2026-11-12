@@ -1,4 +1,4 @@
-//! One poll of an RDS or Aurora PostgreSQL instance: the poll() of rds-host-stats/lib/poll.ts,
+//! One poll of an RDS or Aurora PostgreSQL instance: the poll() of old/rds-host-stats/lib/poll.ts,
 //! with the same calls, series names, units, labels, timing rules, dedupe and failure
 //! behaviour. The comments of poll.ts that explain the rules are kept here.
 use super::aws::{err, parse_iso, AwsApi, AwsError};

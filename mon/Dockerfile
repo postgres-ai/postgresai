@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# pgai-mon image. Build from the repository root (metrics.yml lives outside mon/):
+# pgai-mon image. Build from the repository root:
 #   docker build -f mon/Dockerfile -t pgai-mon .
 #   docker buildx build --platform linux/amd64,linux/arm64 -f mon/Dockerfile .
 # mon/Dockerfile.dockerignore keeps the build context to the files below.
@@ -64,7 +64,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid pgai --home-dir /var/lib/pgai-mon --shell /usr/sbin/nologin pgai \
     && install -d -o pgai -g pgai -m 0750 /var/lib/pgai-mon
 COPY --from=build /out/pgai-mon /usr/local/bin/pgai-mon
-COPY config/pgwatch-prometheus/metrics.yml /etc/pgai-mon/metrics.yml
+COPY mon/metrics.yml /etc/pgai-mon/metrics.yml
 COPY mon/docker/pgai-mon.yml /etc/pgai-mon/pgai-mon.yml
 COPY mon/examples/pgai-mon.example.yml /usr/share/pgai-mon/pgai-mon.example.yml
 COPY mon/sql/macros.sql /usr/share/pgai-mon/macros.sql

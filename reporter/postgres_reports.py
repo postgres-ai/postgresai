@@ -86,7 +86,7 @@ K003_WINDOW_METRICS = {
     "wal_bytes": "pgwatch_pg_stat_statements_wal_bytes",
     "temp_bytes_written": "pgwatch_pg_stat_statements_temp_bytes_written",
 }
-# The collector's pg_stat_statements export (config/pgwatch-prometheus/metrics.yml, metric
+# The collector's pg_stat_statements export (mon/metrics.yml, metric
 # pg_stat_statements, preset interval): a K003 reader needs it to say what "all" means.
 # tests/reporter/test_k003_window_facts.py checks it against the config.
 K003_EXPORT_RULE = {"top_n_per_database": 100, "ranked_by": "total_exec_time", "min_calls": 3,
@@ -5085,7 +5085,7 @@ class PostgresReportGenerator:
         Dict[str, Any]]:
         """
         Get pg_stat_statements metrics data between two time points.
-        Adapted from the logic in monitoring_flask_backend/app.py get_pgss_metrics_csv().
+        Adapted from the logic in old/monitoring_flask_backend/app.py get_pgss_metrics_csv().
 
         Args:
             cluster: Cluster name
@@ -5195,7 +5195,7 @@ class PostgresReportGenerator:
                            metric_mapping: Dict[str, str]) -> List[Dict[str, Any]]:
         """
         Process pg_stat_statements data and calculate differences between start and end times.
-        Adapted from the logic in monitoring_flask_backend/app.py process_pgss_data().
+        Adapted from the logic in old/monitoring_flask_backend/app.py process_pgss_data().
         """
         # Convert Prometheus data to dictionaries
         start_metrics = self._prometheus_to_dict(start_data, start_time)
@@ -5277,7 +5277,7 @@ class PostgresReportGenerator:
     def _prometheus_to_dict(self, prom_data: List[Dict], timestamp: datetime) -> Dict:
         """
         Convert Prometheus API response to dictionary keyed by query identifiers.
-        Adapted from the logic in monitoring_flask_backend/app.py prometheus_to_dict().
+        Adapted from the logic in old/monitoring_flask_backend/app.py prometheus_to_dict().
         """
         if not prom_data:
             return {}

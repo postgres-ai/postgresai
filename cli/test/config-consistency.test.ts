@@ -70,9 +70,10 @@ const datasourceKey = (name: unknown, orgId: unknown) =>
   `${name}:${normalizeGrafanaOrgId(orgId)}`;
 
 const configDir = resolve(import.meta.dir, "../../config");
-const metricsPath = resolve(configDir, "pgwatch-prometheus/metrics.yml");
+const oldConfigDir = resolve(import.meta.dir, "../../old/config");
+const metricsPath = resolve(import.meta.dir, "../../mon/metrics.yml");
 const datasourcePath = resolve(
-  configDir,
+  oldConfigDir,
   "grafana/provisioning/datasources/datasources.yml"
 );
 const pgaiMonDatasourcePath = resolve(
@@ -81,9 +82,9 @@ const pgaiMonDatasourcePath = resolve(
 );
 const composePath = resolve(import.meta.dir, "../../docker-compose.yml");
 const envExamplePath = resolve(import.meta.dir, "../../.env.example");
-const dashboardDir = resolve(configDir, "grafana/dashboards");
+const dashboardDir = resolve(oldConfigDir, "grafana/dashboards");
 const dashboardGeneratedMetricRefs = new Set([
-  // Exported by monitoring_flask_backend/app.py and joined into query dashboards.
+  // Exported by old/monitoring_flask_backend/app.py and joined into query dashboards.
   "query_info",
 ]);
 const pgwatchMetricRefPattern = /\bpgwatch_([a-zA-Z_:][a-zA-Z0-9_:]*)\b/g;

@@ -170,7 +170,7 @@ def test_pg18_not_enforced_constraints_are_not_listed() -> None:
     and VALIDATE CONSTRAINT fails on it. The PG 18 SQL skips it; conenforced does not exist before 18."""
     import pathlib
     import yaml
-    metrics = yaml.safe_load((pathlib.Path(__file__).resolve().parents[2] / "config" / "pgwatch-prometheus"
+    metrics = yaml.safe_load((pathlib.Path(__file__).resolve().parents[2] / "mon"
                               / "metrics.yml").read_text())["metrics"]
     sqls = metrics["pg_not_valid_constraints"]["sqls"]
     assert "con.conenforced" in sqls[18] and "conenforced" not in sqls[11]

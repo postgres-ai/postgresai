@@ -3,7 +3,7 @@
 PostgresAI monitoring collector, Parquet store and SQL endpoint in one Rust binary with
 embedded DuckDB.
 
-- Collects every metric in `config/pgwatch-prometheus/metrics.yml` with pgwatch v3 semantics
+- Collects every metric in `mon/metrics.yml` with pgwatch v3 semantics
   (same metric names and labels as the pgwatch + VictoriaMetrics stack).
 - Tails PostgreSQL jsonlog / auto_explain output, and snapshots query texts and object
   definitions.
@@ -62,7 +62,7 @@ scrape:
 
 `sql/host_rules.sql` holds the 37 recording rules that mapped Supabase (node_exporter through the
 instance-jobs relay) and ClickHouse Cloud (`PostgresServer_*`) series to the `host_*` vocabulary
-of `docs/host-metrics.md` (formerly vmalert's `config/prometheus/host_rules.yml`). pgai-mon
+of `docs/host-metrics.md` (formerly vmalert's `old/config/prometheus/host_rules.yml`). pgai-mon
 evaluates it every `rules.interval_s` (60 s) at the minute, `rules.delay_s` (5 s) later, after a
 store flush, and writes the rows back as `host_*{cluster, node_name}` series (`provider` on
 `host_provider_info`); a `host_*` series a later evaluation no longer produces gets a staleness
@@ -105,7 +105,7 @@ docker run -v pgai-mon-data:/var/lib/pgai-mon -v $PWD/my.yml:/etc/pgai-mon/pgai-
 
 ## Run
 
-Run from the repository root (the default `metrics_yml` is `config/pgwatch-prometheus/metrics.yml`,
+Run from the repository root (the default `metrics_yml` is `mon/metrics.yml`,
 relative to the working directory).
 
 ```bash
@@ -116,7 +116,7 @@ $B run --config my.yml
 
 # SQL over an existing store, no collection
 $B serve --store DIR --listen 127.0.0.1:8765 \
-    --metrics-yml config/pgwatch-prometheus/metrics.yml --macros-sql mon/sql/macros.sql
+    --metrics-yml mon/metrics.yml --macros-sql mon/sql/macros.sql
 export PGAI_MON_TOKEN=$(openssl rand -hex 24)   # or --no-auth for local development
 H="Authorization: Bearer $PGAI_MON_TOKEN"
 curl -s -H "$H" localhost:8765/sql -d "select metric, count(*) from series group by 1 order by 2 desc limit 5"

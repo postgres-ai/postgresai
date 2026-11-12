@@ -1,6 +1,6 @@
 # Example pgai-mon config: the demo target of instances.demo.yml.
 # Paths are the ones the image (mon/Dockerfile) ships; for a local run from the repo root use
-#   metrics_yml: config/pgwatch-prometheus/metrics.yml
+#   metrics_yml: mon/metrics.yml
 #   macros_sql: mon/sql/macros.sql
 #   store_dir: mon/.data/dev
 store_dir: /var/lib/pgai-mon

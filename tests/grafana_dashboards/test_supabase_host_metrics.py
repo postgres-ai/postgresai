@@ -1,6 +1,6 @@
 """The Supabase relay stays on the compose network. Its scrape job is written by
 `mon targets add` (cli/test/host-metrics-providers.test.ts); the Host row is in
-test_host_row.py."""
+old/tests/grafana_dashboards/test_host_row.py."""
 from pathlib import Path
 
 import yaml

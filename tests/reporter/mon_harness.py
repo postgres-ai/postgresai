@@ -94,7 +94,7 @@ class MonServer:
         out = open(self.log, "wb") if self.log else subprocess.DEVNULL
         self.proc = subprocess.Popen(
             [self.binary, "serve", "--store", str(self.store), "--listen", f"127.0.0.1:{self.port}", "--no-compact",
-             "--metrics-yml", str(REPO / "config" / "pgwatch-prometheus" / "metrics.yml"),
+             "--metrics-yml", str(REPO / "mon" / "metrics.yml"),
              "--macros-sql", str(REPO / "mon" / "sql" / "macros.sql"), "--timeout-ms", "120000"],
             stdout=out, stderr=subprocess.STDOUT, cwd=str(REPO))
         deadline = time.time() + 60

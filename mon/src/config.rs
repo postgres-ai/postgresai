@@ -58,7 +58,7 @@ pub struct Config {
 }
 
 fn d_metrics_yml() -> PathBuf {
-    PathBuf::from("config/pgwatch-prometheus/metrics.yml")
+    PathBuf::from("mon/metrics.yml")
 }
 fn d_preset() -> String {
     "full".into()

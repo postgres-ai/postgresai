@@ -39,7 +39,7 @@ Manual SQL script to create lock contention for testing. Can be run in multiple 
    ```
 
 3. Ensure `lock_waits` metric is enabled in pgwatch configuration:
-   - Check `config/pgwatch-prometheus/metrics.yml` includes `lock_waits`
+   - Check `mon/metrics.yml` includes `lock_waits`
    - Verify pgwatch is collecting metrics from the target database
 
 ## Running the automated test
@@ -148,7 +148,7 @@ Validating metric structure...
 
 - **Check pgwatch is running**: `docker ps | grep pgwatch-prometheus`
 - **Check pgwatch logs**: `docker logs pgwatch-prometheus`
-- **Verify metric is enabled**: Check `config/pgwatch-prometheus/metrics.yml`
+- **Verify metric is enabled**: Check `mon/metrics.yml`
 - **Check Prometheus is accessible**: `curl http://localhost:59090/api/v1/status/config`
 - **Increase wait time**: Use `--collection-wait 120` to wait longer
 - **Check database name**: Ensure `--test-dbname` matches the monitored database
@@ -220,7 +220,7 @@ SELECT * FROM lock_test_table WHERE id = 1 FOR UPDATE;
 
 ## Related files
 
-- `config/pgwatch-prometheus/metrics.yml` - Metric definition
-- `config/grafana/dashboards/Dashboard_13_Lock_waits.json` - Grafana dashboard
+- `mon/metrics.yml` - Metric definition
+- `old/config/grafana/dashboards/Dashboard_13_Lock_waits.json` - Grafana dashboard
 - `workload_examples/lock_wait_test.sql` - Basic lock test SQL
 

@@ -1,7 +1,7 @@
 """H002: the facts a drop decision rests on, as the box's metric store has them.
 
 - supports_fk and idx_is_btree are value series of the unused_indexes metric
-  (config/pgwatch-prometheus/metrics.yml), not labels; an index the series does
+  (mon/metrics.yml), not labels; an index the series does
   not cover is unknown (None), never "no foreign key".
 - the definition comes from the metric's index_definition label when the sink
   has none (the undo statement needs it).
