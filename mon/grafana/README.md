@@ -53,7 +53,11 @@ Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat
 
 `compile.py` needs a running pgai-mon with some data (any store): it runs each target's SQL
 once with `LIMIT 0` to learn its output columns, and reads a metric's label keys for table
-panels. Standard library Python only.
+panels. Standard library Python only. A table panel's columns are the label keys its metric
+has in the probe store (plus the fields its transformations name), so the emitted JSON depends
+on the probe: collect with the tags a deployment has (`instances.yml` adds
+`sink_type: prometheus`, which Dashboards 5 and 6 show as a column), and a metric without
+series in the probe (e.g. Dashboard 7's blocked autovacuum workers) gets only the named fields.
 
 ```bash
 # from the repository root, with pgai-mon serving on 127.0.0.1:8765
