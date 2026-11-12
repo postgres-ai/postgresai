@@ -4,22 +4,27 @@ set -Eeuo pipefail
 # Run the reporter on the host against the Docker Compose stack.
 #
 # Defaults:
-# - Prometheus/VictoriaMetrics: http://127.0.0.1:59090
-# - Postgres sink: postgresql://pgwatch@127.0.0.1:55433/measurements
+# - pgai-mon: http://127.0.0.1:8765, bearer token PGAI_MON_TOKEN from ./.env
+# - Sources (node connections, for A005): ./instances.yml
 # - Output directory: ./dev_reports/dev_report_<UTC timestamp>/
 #   (one JSON file per check, e.g. A002.json, K003.json, ...)
 #
 # Overrides (env vars):
-# - PROMETHEUS_URL
-# - POSTGRES_SINK_URL
+# - PGAI_MON_URL
+# - PGAI_MON_TOKEN
+# - REPORTER_SOURCES_PATH
 # - OUTPUT_DIR
 # - EXTRA_ARGS (appended as-is)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PROMETHEUS_URL="${PROMETHEUS_URL:-http://127.0.0.1:59090}"
-POSTGRES_SINK_URL="${POSTGRES_SINK_URL:-postgresql://pgwatch@127.0.0.1:55433/measurements}"
+PGAI_MON_URL="${PGAI_MON_URL:-http://127.0.0.1:8765}"
+if [[ -z "${PGAI_MON_TOKEN:-}" ]] && [[ -f "${REPO_ROOT}/.env" ]]; then
+  PGAI_MON_TOKEN="$(sed -n 's/^PGAI_MON_TOKEN=//p' "${REPO_ROOT}/.env" | tail -n 1)"
+fi
+export PGAI_MON_TOKEN="${PGAI_MON_TOKEN:-}"
+REPORTER_SOURCES_PATH="${REPORTER_SOURCES_PATH:-${REPO_ROOT}/instances.yml}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/dev_reports/dev_report_$(date -u +%Y%m%d_%H%M%S)}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -42,8 +47,8 @@ cd "${OUTPUT_DIR}"
 # regardless of the current working directory.
 PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
 python -m reporter.postgres_reports \
-  --prometheus-url "${PROMETHEUS_URL}" \
-  --postgres-sink-url "${POSTGRES_SINK_URL}" \
+  --mon-url "${PGAI_MON_URL}" \
+  --sources-path "${REPORTER_SOURCES_PATH}" \
   --no-upload \
   --output "-" \
   ${EXTRA_ARGS}
