@@ -139,7 +139,7 @@ def test_every_panel_has_data(pgai_mon, tmp_path):
     rc = CP.main(["--url", pgai_mon, "--now-ms", str(FIXTURE_END_MS), "--var", f"query_id={QUERY_ID}",
                   "--json", str(out), "--quiet"])
     results = json.loads(out.read_text())
-    assert len(results) == 15
+    assert len(results) == 16
     bad = [(r["file"], p["panel"], p["title"], p["class"],
             [t.get("error") for t in p["targets"] if t.get("error")])
            for r in results for p in r["panels"] if p["class"] not in ("data", "none")]

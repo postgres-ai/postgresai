@@ -208,6 +208,50 @@ class Emitted(unittest.TestCase):
                             self.assertIn(var, names, f"{spec['census']} panel {p['id']}{t['refId']}")
 
 
+class SelfMonitoring(unittest.TestCase):
+    """self_monitoring.py: written, not compiled; its file matches build() and the original's
+    panels are each kept or listed as dropped."""
+
+    def setUp(self):
+        import self_monitoring as S
+        self.S = S
+        self.out = load(os.path.join(C.HERE, "dashboards", S.OUT))
+        self.src = load(os.path.join(C.DASH_DIR, S.SRC))
+
+    def test_file_is_current(self):
+        self.assertEqual(self.out, json.loads(json.dumps(self.S.build())))
+
+    def test_identity(self):
+        self.assertEqual((self.out["uid"], self.out["title"]), (self.S.UID, self.src["title"] + " (pgai-mon)"))
+        self.assertEqual(self.out["tags"], self.src["tags"])
+        self.assertEqual(self.out["tags"][0], "postgres-ai")
+        self.assertNotIn(self.out["uid"], {spec["uid"] for spec in C.DASHBOARDS})
+
+    def test_every_original_panel_kept_or_dropped(self):
+        orig = set(panels(self.src))
+        kept = set(self.S.KEPT)
+        rows = {i for i, p in panels(self.src).items() if p["type"] == "row"}
+        self.assertEqual(orig - rows, kept | set(self.S.DROPPED))
+        self.assertFalse(kept & set(self.S.DROPPED))
+        self.assertTrue(kept <= set(panels(self.out)))
+
+    def test_targets(self):
+        ps = [p for p in panels(self.out).values() if p["type"] != "row"]
+        ids = [p["id"] for p in C.walk(self.out["panels"])]
+        self.assertEqual(len(ids), len(set(ids)))
+        for p in ps:
+            self.assertEqual(p["datasource"], C.INFINITY)
+            for t in p["targets"]:
+                body = t["url_options"]["data"]
+                self.assertEqual([c["selector"] for c in t["columns"]][:3], ["time", "value", "series"])
+                self.assertNotIn("getvariable(", body)
+                self.assertTrue(set(re.findall(r"\$\{[^}]+\}", body)) <= {"${__from}", "${__to}", "${__interval_ms}"},
+                                body)
+                self.assertIn({"matcher": {"id": "byFrameRefID", "options": t["refId"]},
+                               "properties": [{"id": "displayName", "value": "${__field.labels.series}"}]},
+                              p["fieldConfig"]["overrides"])
+
+
 class Pieces(unittest.TestCase):
     def test_step_is_pinned_to_the_rollup_tier(self):
         h, d = 3_600_000, 86_400_000
@@ -242,6 +286,10 @@ class Pieces(unittest.TestCase):
                       C.label_values_sql('label_values(m{wait_event_type=~"$wait_event_type"}, wait_event)'))
         self.assertIn("coalesce(labels['datname'], '') = '${db_name}'",
                       C.label_values_sql('label_values(m{datname="$db_name"}, schema)'))
+        # no metric, a __name__ matcher (Dashboard_99): the series view's metric column
+        self.assertEqual(C.label_values_sql('label_values({__name__=~"host_.+"},cluster)'),
+                         "SELECT DISTINCT labels['cluster'] AS value FROM series WHERE labels['cluster'] IS NOT NULL "
+                         "AND regexp_full_match(metric, 'host_.+') ORDER BY 1")
 
     def test_sqlstring_vars(self):
         self.assertEqual(C.sqlstring_vars("a = '${query_id}' AND n = CAST(${top_n} AS BIGINT)"),

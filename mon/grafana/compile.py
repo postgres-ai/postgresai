@@ -706,6 +706,9 @@ def main():
             f.write("\n")
         print(f"{path}: {n} targets, {len(d['templating']['list'])} variables")
         report.append((spec, d, queries))
+    # the self-monitoring dashboard has no PromQL original to compile (self_monitoring.py)
+    import self_monitoring
+    print(f"{self_monitoring.write(args.out)}: written from self_monitoring.py")
     if not args.check:
         return
     # default end: the newest `up` sample (other metrics may run later than the dashboards' data)
