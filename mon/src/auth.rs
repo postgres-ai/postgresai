@@ -227,17 +227,17 @@ mod tests {
     fn bearer_token() {
         let a = Auth::resolve(
             &AuthCfg::default(),
-            &env_of(&[("PGAI_MON_TOKEN", "0123456789abcdef-tok")]),
+            &env_of(&[("PGAI_MON_TOKEN", "dummy-token-0123456789")]),
         )
         .unwrap();
-        assert!(a.check(Some(b"Bearer 0123456789abcdef-tok")));
-        assert!(a.check(Some(b"bearer   0123456789abcdef-tok ")));
+        assert!(a.check(Some(b"Bearer dummy-token-0123456789")));
+        assert!(a.check(Some(b"bearer   dummy-token-0123456789 ")));
         assert!(!a.check(Some(b"Bearer 0123456789abcdef-toK")));
         assert!(!a.check(Some(b"Bearer 0123456789abcdef-to")));
         assert!(!a.check(Some(b"Bearer ")));
         assert!(!a.check(None));
         // no basic configured: basic is refused even with the token as password
-        assert!(!a.check(Some(basic("x", "0123456789abcdef-tok").as_bytes())));
+        assert!(!a.check(Some(basic("x", "dummy-token-0123456789").as_bytes())));
     }
 
     #[test]
@@ -271,8 +271,8 @@ mod tests {
         assert!(!a.check(Some(b"Basic !!!notbase64")));
         assert!(!a.check(Some(b"Digest x")));
         // environment wins over the file
-        let a = Auth::resolve(&cfg, &env_of(&[("PGAI_MON_TOKEN", "env-0123456789abcdef")])).unwrap();
-        assert!(a.check(Some(b"Bearer env-0123456789abcdef")));
+        let a = Auth::resolve(&cfg, &env_of(&[("PGAI_MON_TOKEN", "dummy-token-from-env-01")])).unwrap();
+        assert!(a.check(Some(b"Bearer dummy-token-from-env-01")));
         assert!(!a.check(Some(b"Bearer tok-0123456789abcdef")));
         // a missing file is an error, not "no auth"
         let cfg = AuthCfg {
