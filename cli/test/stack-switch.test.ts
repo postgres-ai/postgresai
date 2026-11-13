@@ -65,6 +65,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       `case " $* " in *" down "*) cp "$file" ${JSON.stringify(resolve(bin, "down-compose.yml"))} ;; esac`,
       'case " $* " in',
       '  " info ") exit 0 ;;',
+      '  " inspect -f {{.State.Running}} "*) echo "${GRAFANA_RUNNING:-false}"; exit 0 ;;',
+      `  *" reset-admin-password "*) cat > ${JSON.stringify(resolve(bin, "reset-stdin"))}; exit \${RESET_EXIT:-0} ;;`,
       '  *" compose version "*) exit 0 ;;',
       '  *" volume ls "*) for v in $VOLUMES; do echo "$v"; done; exit 0 ;;',
       '  *" ps -q sink-prometheus "*) [ -n "$OLD_RUNNING" ] && echo old123; exit 0 ;;',
@@ -394,6 +396,28 @@ describe("mon restart, reset, generate-grafana-password", () => {
     expect(saved).not.toBe("pw");
     expect(Buffer.from(saved, "base64").length).toBe(12);
     expect(r.stdout).toContain(`Password: ${saved}`);
+    // Grafana is down: nothing to tell, and the output says so.
+    expect(p.calls().some((c) => c.includes("reset-admin-password"))).toBe(false);
+    expect(r.stdout).toContain("Grafana is not running");
+  });
+
+  test("mon generate-grafana-password sets the password in a running Grafana, on stdin", () => {
+    const p = makeProject("gen-password-running", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "generate-grafana-password"], { GRAFANA_RUNNING: "true" });
+    expect(r.status).toBe(0);
+    const saved = fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m)![1];
+    expect(fs.readFileSync(`${p.dir}-bin/reset-stdin`, "utf8").trim()).toBe(saved);
+    expect(p.calls().some((c) => c.includes(saved))).toBe(false);
+    expect(r.stdout).toContain("now uses this password");
+  });
+
+  test("mon generate-grafana-password keeps the saved password when Grafana refuses the new one", () => {
+    const p = makeProject("gen-password-refused", NEW_COMPOSE, NEW_ENV);
+    const before = fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8");
+    const r = p.run(["mon", "generate-grafana-password"], { GRAFANA_RUNNING: "true", RESET_EXIT: "1" });
+    expect(r.status).toBe(1);
+    expect(fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8")).toBe(before);
+    expect(r.stderr).toContain("saved password is unchanged");
   });
 
 });

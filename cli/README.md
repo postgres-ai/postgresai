@@ -864,7 +864,7 @@ postgresai issues view <issueId> > issue.json
 
 #### Grafana management
 ```bash
-postgresai mon generate-grafana-password      # Generate new Grafana password
+postgresai mon generate-grafana-password      # New Grafana password; a running Grafana gets it at once
 postgresai mon show-grafana-credentials       # Show Grafana credentials
 ```
 

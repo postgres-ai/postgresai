@@ -160,7 +160,7 @@ def postgresql(request):
 
         with conn.cursor() as cur:
             # Use sql.SQL for safe identifier handling (prevents SQL injection)
-            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(test_db_ident))
+            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(test_db_ident))
             cur.execute(sql.SQL("CREATE DATABASE {}").format(test_db_ident))
         conn.close()
 
@@ -172,6 +172,12 @@ def postgresql(request):
             port=port,
         )
         conn.autocommit = True
+        # A test that fails before it closes its own connection leaves that
+        # connection in a transaction, holding locks. Fail the fixtures'
+        # cleanup then; without this it waits for the lock until the job
+        # times out.
+        with conn.cursor() as cur:
+            cur.execute("SET lock_timeout = '10s'")
 
         yield conn
 
@@ -185,7 +191,8 @@ def postgresql(request):
         )
         cleanup_conn.autocommit = True
         with cleanup_conn.cursor() as cur:
-            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(test_db_ident))
+            # FORCE ends connections a failed test left open.
+            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(test_db_ident))
         cleanup_conn.close()
 
     except psycopg2.OperationalError as e:

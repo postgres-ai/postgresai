@@ -7338,6 +7338,26 @@ mon
       // As ensureGrafanaPassword generates it: no external tool needed.
       const newPassword = crypto.randomBytes(12).toString("base64");
 
+      // Grafana reads GF_SECURITY_ADMIN_PASSWORD only when it creates its
+      // database, so a running Grafana is told directly. The password goes on
+      // stdin, not argv. A failure here leaves the saved password as it was.
+      const container = "grafana-with-datasources";
+      const state = spawnSync("docker", ["inspect", "-f", "{{.State.Running}}", container], { stdio: "pipe" });
+      const running = state.status === 0 && String(state.stdout || "").trim() === "true";
+      if (running) {
+        const applied = childProcess.spawnSync(
+          "docker",
+          ["exec", "-i", container, "grafana", "cli", "admin", "reset-admin-password", "--password-from-stdin"],
+          { input: `${newPassword}\n`, encoding: "utf8" },
+        );
+        if (applied.status !== 0) {
+          const detail = String(applied.stderr || applied.stdout || "").trim().split(/\r?\n/).slice(-3).join("\n");
+          console.error(`Failed to set the password in Grafana; the saved password is unchanged.${detail ? `\n${detail}` : ""}`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       // Read existing config
       let configContent = "";
       if (fs.existsSync(cfgPath)) {
@@ -7371,8 +7391,12 @@ mon
       console.log("  URL:      http://localhost:3000");
       console.log("  Username: monitor");
       console.log(`  Password: ${newPassword}`);
-      console.log("\nReset Grafana to apply new password:");
-      console.log("  postgres-ai mon reset grafana");
+      if (running) {
+        console.log("\nGrafana is running and now uses this password.");
+      } else {
+        console.log("\nGrafana is not running. A new install starts with this password;");
+        console.log("an existing one keeps its old password until you start it and run this command again.");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Failed to generate password: ${message}`);

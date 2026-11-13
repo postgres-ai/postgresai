@@ -275,9 +275,8 @@ def test_get_queryid_queries_with_text_limit(sink_query_data) -> None:
 
     assert "db1" in queries
     assert "12345" in queries["db1"]
-    # Should be truncated to 100 characters
-    assert len(queries["db1"]["12345"]) == 100
-    assert queries["db1"]["12345"] == long_query[:100]
+    # Cut at 100 characters, with a mark that it was cut.
+    assert queries["db1"]["12345"] == long_query[:100] + "..."
 
     generator.close_postgres_sink()
 
