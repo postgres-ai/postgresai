@@ -10,3 +10,4 @@
 !mon/docker/pgai-mon.yml
 !mon/examples/pgai-mon.example.yml
 !mon/metrics.yml
+!reporter/certs/rds-global-bundle.pem

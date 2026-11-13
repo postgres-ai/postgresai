@@ -69,6 +69,10 @@ COPY mon/metrics.yml /etc/pgai-mon/metrics.yml
 COPY mon/docker/pgai-mon.yml /etc/pgai-mon/pgai-mon.yml
 COPY mon/examples/pgai-mon.example.yml /usr/share/pgai-mon/pgai-mon.example.yml
 COPY mon/sql/macros.sql /usr/share/pgai-mon/macros.sql
+# The AWS RDS CA bundle at the path the RDS collector's connection string names
+# (sslrootcert=/etc/ssl/certs/rds-global-bundle.pem). A host bind mount still overrides it.
+# The reporter image ships the same file.
+COPY reporter/certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
 # Fails the build if the binary cannot load here (glibc, libstdc++).
 RUN /usr/local/bin/pgai-mon --version
 

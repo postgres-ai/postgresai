@@ -108,6 +108,13 @@ RUN addgroup -S pgwatch && adduser -S -G pgwatch -u 1001 pgwatch
 COPY --from=builder --chown=pgwatch:pgwatch /pgwatch/pgwatch /pgwatch/
 COPY --from=builder --chown=pgwatch:pgwatch /pgwatch/internal/metrics/metrics.yaml /pgwatch/metrics/metrics.yaml
 
+# The AWS RDS CA bundle at the path the RDS collector's conn_str names
+# (sslrootcert=/etc/ssl/certs/rds-global-bundle.pem), so a container recreated
+# without the docker-compose.rds-ca.yml bind mount still connects (#267).
+# A host bind mount still overrides it. Same file as reporter/certs/ (a test
+# checks they match); source: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+COPY certs/rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
+
 USER pgwatch
 
 EXPOSE 8080
