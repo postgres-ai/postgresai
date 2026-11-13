@@ -309,7 +309,7 @@ Top level:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `max_sessions_per_node` | 4 | Sessions to one Postgres node across all its databases. |
+| `max_sessions_per_node` | 4 | Sessions to one Postgres node across all its databases. With more monitored databases than this on a node, sessions are closed and reopened to take turns; raise it there. |
 | `default_statement_timeout_s` | 15 | Statement timeout of a metric that sets none. |
 | `lock_timeout_ms` | 100 | `lock_timeout` of every session. |
 | `search_path` | none | Default: `pg_catalog`, the schemas of installed extensions, `public`. |

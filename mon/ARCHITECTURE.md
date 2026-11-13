@@ -267,6 +267,10 @@ per node.
   patroni) are skipped with a message.
 - `pgconn.rs` does not support service files, `sslcrl`, `sslpassword` or GSS; the keys are
   ignored with a warning.
+- A node with more databases than `collector.max_sessions_per_node` (4) gets reconnects: an
+  idle session is reused only for its own database, so the oldest is closed to make room.
+  Raise the setting for nodes with many monitored databases.
+- A database that goes away gets no staleness markers: its series end at the last sample.
 - Log tailing reads files from a local directory. It does not fetch logs from managed
   services.
 - New data is visible to queries after the next flush, up to `store.flush_interval_s` (60 s)
