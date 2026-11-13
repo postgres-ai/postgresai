@@ -707,7 +707,8 @@ def main():
         d, n, queries = compile_dashboard(spec, by_id, args.probe_url)
         path = os.path.join(args.out, spec["out"])
         with open(path, "w") as f:
-            json.dump(d, f, indent=2, ensure_ascii=False)
+            # One line per file: generated, not for reading or line diffs (README.md).
+            json.dump(d, f, separators=(",", ":"), ensure_ascii=False)
             f.write("\n")
         print(f"{path}: {n} targets, {len(d['templating']['list'])} variables")
         report.append((spec, d, queries))

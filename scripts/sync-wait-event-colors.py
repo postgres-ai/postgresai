@@ -78,7 +78,10 @@ def main():
                 config["defaults"]["color"] = default
                 replacements.append((previous, config))
                 changed = True
-        if changed and not args.check:
+        if changed and not args.check and "\n" not in original_text.strip():
+            # A generated dashboard is one line (mon/grafana/compile.py): write it the same way.
+            path.write_text(json.dumps(dashboard, separators=(",", ":"), ensure_ascii=False) + "\n")
+        elif changed and not args.check:
             # Keep unrelated hand-formatted dashboard sections untouched.
             edits = []
             decoder = json.JSONDecoder()

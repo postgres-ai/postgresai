@@ -1,7 +1,8 @@
 # SQL dashboards for pgai-mon
 
 `dashboards/` holds the 16 ported dashboards, one per dashboard in `old/config/grafana/dashboards/`.
-They are generated; do not edit them by hand. Each keeps the original's panels, layout, units
+They are generated; do not edit them by hand. Each file is one line of JSON, so a recompile
+does not add thousands of lines to a diff; `python3 -m json.tool <file>` prints one for reading. Each keeps the original's panels, layout, units
 and legends, and the original's uid and title, so links and bookmarks keep working. The exception is
 the self-monitoring dashboard (below).
 
