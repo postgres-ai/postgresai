@@ -1646,6 +1646,38 @@ fn a_tampered_remote_catalog_is_refused() {
             "body not read"
         );
     }
+    // files that exist and are over the mirror budget: the view fails, it does not answer 0 rows
+    {
+        let d2 = tempfile::tempdir().unwrap();
+        let mut core = build_store(d2.path());
+        core.append(Record::QueryTexts(vec![QueryText {
+            queryid: 1,
+            dbname: "db1".into(),
+            query_hash: 1,
+            query: Some("select 1".into()),
+            first_seen: 0,
+            last_seen: 0,
+            src: Default::default(),
+        }]))
+        .unwrap();
+        core.flush().unwrap();
+        drop(core);
+        let url = "mem://overbudget/st";
+        to_bucket_with(d2.path(), url, |c| {
+            for f in c.files.iter_mut().filter(|f| f.kind == "query_texts") {
+                f.bytes = u64::MAX / 2;
+            }
+        });
+        let shared = Shared::open_read_only(Path::new(url)).unwrap();
+        let views = format!("{EMBEDDED_VIEWS_SQL}\n;\n{MACROS}");
+        let r = Reader::new(shared, HttpCfg::default(), views, vec![]).unwrap();
+        let e = r
+            .run("SELECT count(*) FROM query_texts")
+            .expect_err("not an empty answer");
+        assert!(e.message.contains("mirror budget"), "{}", e.message);
+        // other views still answer
+        assert!(!sql_rows(&r, "SELECT count(*) FROM series").is_empty());
+    }
     // M1: a catalog whose `bytes` lies (too small, too big, 0) about a series file: that copy
     // is refused, the view stays empty, the mirror holds no such file, and the error shows
     for (i, lie) in [1u64, u64::MAX / 2, 0].into_iter().enumerate() {

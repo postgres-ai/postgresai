@@ -1319,8 +1319,11 @@ async fn discover(pool: &Arc<NodePool>, src: &Source, cc: &CollectorCfg) -> anyh
     let rows = l
         .client
         .query(
+            // only databases this role may connect to: one it may not would be retried (and
+            // refused in the server's log) at every discovery
             "select datname::text from pg_catalog.pg_database where datallowconn and not datistemplate \
-             and datname <> pg_catalog.current_database() order by datname",
+             and datname <> pg_catalog.current_database() \
+             and pg_catalog.has_database_privilege(datname, 'CONNECT') order by datname",
             &[],
         )
         .await?;

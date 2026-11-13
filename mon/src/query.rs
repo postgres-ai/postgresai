@@ -825,13 +825,27 @@ impl Reader {
                         }
                     }
                     _ if *kind == "samples" && self.mirror.is_some() => REMOTE_SAMPLES_VIEW.to_string(),
+                    // files exist but are not mirrored (over the budget, or a failed download):
+                    // an empty view would answer 0 rows as if there were no data
+                    None if self.mirror.is_some() && !fs.is_empty() => format!(
+                        "SELECT e.* FROM range(1) t(i) LEFT JOIN ({}) e ON false WHERE CASE WHEN i >= 0 THEN \
+                         error('{kind} is not available right now: its files on the object store are over the \
+                         mirror budget (http.s3.mirror_mb) or could not be downloaded; see s3_mirror in \
+                         GET /health')::BOOLEAN END",
+                        empty_select(kind)
+                    ),
                     _ => empty_select(kind).to_string(),
                 }
             };
             sql.push_str(&format!("CREATE OR REPLACE VIEW _raw_{kind} AS {body};\n"));
         }
         let admin = self.admin.lock().unwrap();
-        admin.execute_batch(&sql)?;
+        // one transaction: a query preparing on another connection sees all the old views or all
+        // the new ones, never `_raw_series_reg` from one catalog with `_raw_series_tail` from another
+        if let Err(e) = admin.execute_batch(&format!("BEGIN;\n{sql}COMMIT;")) {
+            let _ = admin.execute_batch("ROLLBACK");
+            return Err(e.into());
+        }
         if *vg == u64::MAX {
             admin.execute_batch(&self.views_sql)?;
         }
@@ -1118,6 +1132,18 @@ impl Reader {
                     return Err(QueryError::new(kind, m));
                 }
             }
+        }
+        // The objects format feeds charts, which show nothing of a `truncated` flag: a series
+        // that stops early looks like a collector outage. There a cut result is an error.
+        if truncated && fmt == Fmt::Objects {
+            return Err(QueryError::new(
+                "result_too_large",
+                format!(
+                    "the result passes {} rows or {} bytes: narrow the time range, filter, or aggregate \
+                     (the rows format returns the first part with \"truncated\": true)",
+                    self.cfg.max_rows, self.cfg.max_bytes
+                ),
+            ));
         }
         // DuckDB type names from the executed statement's logical types.
         let types = (0..columns.len())

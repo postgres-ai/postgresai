@@ -100,6 +100,15 @@ fn answers_and_caps_rows() {
     let res = r.run("SELECT * FROM samples").unwrap();
     assert_eq!(res.row_count, 100);
     assert!(res.truncated);
+    // the format charts read has no place for the flag: a cut result is an error there
+    let e = r
+        .run_fmt("SELECT * FROM samples", pgai_mon::query::Fmt::Objects)
+        .err()
+        .unwrap();
+    assert_eq!(e.kind, "result_too_large");
+    assert!(r
+        .run_fmt("SELECT * FROM samples LIMIT 100", pgai_mon::query::Fmt::Objects)
+        .is_ok());
 }
 
 #[test]

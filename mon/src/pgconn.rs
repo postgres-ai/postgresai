@@ -529,6 +529,10 @@ impl MakeRustls {
                         let f = home.map(|h| h.join(".postgresql/root.crt"));
                         match f {
                             Some(f) if f.exists() => f.to_string_lossy().into_owned(),
+                            // pgwatch (pgx) verified against the system store here, so targets
+                            // with a public-CA certificate worked with a bare verify-full. Not
+                            // for verify-ca: any public CA's certificate for any name would pass.
+                            _ if verify == Verify::Full => "system".to_string(),
                             _ => anyhow::bail!(
                                 "sslmode={mode}: no root certificate (set sslrootcert, or put one in ~/.postgresql/root.crt)"
                             ),
@@ -848,9 +852,10 @@ mod tests {
         assert_eq!(b("host=h sslmode=disable").unwrap().1.verify, Verify::None);
         assert_eq!(b("host=h").unwrap().1.verify, Verify::None);
         assert_eq!(b("host=h sslmode=require").unwrap().1.verify, Verify::None);
-        // verify-* need a root certificate
-        let e = b("host=h sslmode=verify-full").err().unwrap().to_string();
+        // verify-ca needs a root certificate; a bare verify-full checks against the system store
+        let e = b("host=h sslmode=verify-ca").err().unwrap().to_string();
         assert!(e.contains("root certificate"), "{e}");
+        assert_eq!(b("host=h sslmode=verify-full").unwrap().1.verify, Verify::Full);
         assert!(b("host=h sslmode=verify-ca sslrootcert=/nonexistent").is_err());
         assert!(b("host=h sslcert=/a").is_err(), "sslcert without sslkey");
         let r = ConnParams::parse("host=h sslrootcert=system sslmode=require")

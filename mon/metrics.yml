@@ -418,10 +418,10 @@ metrics:
         with base as ( /* pgwatch_generated */
           select
             name,
-            -- Use reset_val for settings the collector overrides in its session: pgwatch sets
-            -- lock_timeout=100ms and statement_timeout per-metric; the CLI pins search_path.
+            -- Use reset_val for settings the collector overrides in its session: lock_timeout,
+            -- a per-metric statement_timeout, a pinned search_path, and read-only transactions.
             case
-              when name in ('lock_timeout', 'statement_timeout', 'search_path') then reset_val
+              when name in ('lock_timeout', 'statement_timeout', 'search_path', 'default_transaction_read_only') then reset_val
               else setting
             end as effective_setting,
             unit,
@@ -430,7 +430,7 @@ metrics:
             -- For these settings, compare reset_val with boot_val
             -- since source becomes 'session' during collection.
             case
-              when name in ('lock_timeout', 'statement_timeout', 'search_path') then (reset_val = boot_val)
+              when name in ('lock_timeout', 'statement_timeout', 'search_path', 'default_transaction_read_only') then (reset_val = boot_val)
               else (source = 'default')
             end as is_default_bool
           from pg_settings
