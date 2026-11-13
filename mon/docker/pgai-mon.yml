@@ -16,6 +16,10 @@ preset: full
 # The targets `postgresai mon targets add/remove` maintain (compose mounts the
 # project's instances.yml here); re-read on change.
 sources_file: /etc/pgai-mon/instances.yml
+# Host metrics: the scrape files `postgresai mon targets add` writes for Supabase and
+# ClickHouse Cloud (compose mounts the project's host-metrics/ here); re-read on change.
+scrape:
+  files: [/etc/pgai/host-metrics/*.yml]
 http:
   # Inside the compose network only; compose publishes it on 127.0.0.1.
   listen: 0.0.0.0:8765

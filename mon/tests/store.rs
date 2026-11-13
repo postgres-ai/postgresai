@@ -80,6 +80,51 @@ fn crash_after_parquet_before_catalog_no_gap_no_dup() {
     assert_eq!(distinct, rows);
 }
 
+fn parquet_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| match e.path() {
+            p if p.is_dir() => parquet_files(&p),
+            p => usize::from(p.extension().is_some_and(|x| x == "parquet")),
+        })
+        .sum()
+}
+
+/// A flush whose catalog save fails, in a process that keeps running: the catalog in memory
+/// and the directory go back to what they were, and the retry records each sample once.
+#[test]
+fn a_failed_catalog_save_leaves_nothing_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = series(50);
+    let ids: Vec<u64> = s.iter().map(|d| d.series_id).collect();
+    let mut core = StoreCore::open(dir.path(), &cfg()).unwrap();
+    core.append(Record::Series(s)).unwrap();
+    for k in 0..10 {
+        core.append(batch(&ids, T0 + k * 30_000, k as f64)).unwrap();
+    }
+    core.flush().unwrap();
+    let (files, on_disk) = (
+        core.shared.catalog.lock().unwrap().files.len(),
+        parquet_files(dir.path()),
+    );
+    for k in 10..20 {
+        core.append(batch(&ids, T0 + k * 30_000, k as f64)).unwrap();
+    }
+    // the save writes catalog.json.tmp: a directory of that name makes it fail
+    let block = dir.path().join("catalog.json.tmp");
+    std::fs::create_dir(&block).unwrap();
+    for _ in 0..2 {
+        assert!(core.flush().is_err());
+        assert_eq!(core.shared.catalog.lock().unwrap().files.len(), files);
+        assert_eq!(parquet_files(dir.path()), on_disk);
+    }
+    std::fs::remove_dir(&block).unwrap();
+    core.flush().unwrap();
+    let (rows, distinct, _) = stats(&core);
+    assert_eq!((rows, distinct), (50 * 20, 50 * 20));
+}
+
 #[test]
 fn crash_after_catalog_before_wal_delete_no_dup() {
     let dir = tempfile::tempdir().unwrap();

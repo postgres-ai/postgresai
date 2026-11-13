@@ -48,8 +48,7 @@ pub struct Catalog {
     #[serde(default)]
     pub series_per_day: bool,
     /// Bumped when sample content changes other than by appending after the closed watermark
-    /// (a late sample, a loader commit, a migration): caches below the SQL layer key on it
-    /// (CACHE_DESIGN.md on branch spike-monitoring-v2-duckdb section 6).
+    /// (a late sample, a loader commit, a migration): caches below the SQL layer key on it.
     #[serde(default)]
     pub data_epoch: u64,
     /// The closed-watermark lag in force (StoreCfg::closed_lag_ms), written by the writer.
@@ -58,6 +57,12 @@ pub struct Catalog {
     /// On an object store: the writer that owns the store (bucket.rs fencing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<WriterLease>,
+    /// The catalog as last written to disk. A failed `save` puts it back, so the catalog in
+    /// memory never names files, deletions or a flush position that the file does not have:
+    /// otherwise the next successful save would persist a half-applied change (a flush retried
+    /// after a failed save would be recorded twice).
+    #[serde(skip)]
+    pub(crate) saved: Option<Box<Catalog>>,
 }
 
 /// The owner of an object-store store: one writer per prefix. A writer takes it over by a
@@ -118,19 +123,41 @@ impl Catalog {
         }
         let p = path(root);
         if p.exists() {
-            let c: Catalog = serde_json::from_slice(&std::fs::read(&p)?)?;
+            let mut c: Catalog = serde_json::from_slice(&std::fs::read(&p)?)?;
+            c.saved = Some(Box::new(c.clone()));
             Ok(c)
         } else {
-            Ok(Catalog {
+            let mut c = Catalog {
                 samples_layout: layout.to_string(),
                 flushed_through_seg: -1,
                 series_per_day: true,
                 ..Default::default()
-            })
+            };
+            c.saved = Some(Box::new(c.clone()));
+            Ok(c)
         }
     }
 
+    /// Write the catalog (temp file, fsync, rename). On failure the catalog in memory goes back
+    /// to what the last successful save wrote.
     pub fn save(&mut self, root: &Path) -> anyhow::Result<()> {
+        let before = self.saved.take();
+        match self.write(root) {
+            Ok(()) => {
+                self.saved = Some(Box::new(self.clone()));
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(b) = before {
+                    *self = (*b).clone();
+                    self.saved = Some(b);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn write(&mut self, root: &Path) -> anyhow::Result<()> {
         use std::io::Write;
         self.generation += 1;
         let tmp = root.join("catalog.json.tmp");

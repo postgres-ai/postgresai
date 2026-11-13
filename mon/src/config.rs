@@ -527,8 +527,8 @@ impl Config {
     /// Read the YAML file, then apply `PGAI_MON_STORE` (`with_store_env`) and the retention
     /// variables (`with_retention_env`).
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let s = std::fs::read_to_string(path)?;
-        let mut c: Self = serde_yaml::from_str(&s)?;
+        let s = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("config {}: {e}", path.display()))?;
+        let mut c: Self = serde_yaml::from_str(&s).map_err(|e| anyhow::anyhow!("config {}: {e}", path.display()))?;
         c.config_path = Some(path.to_path_buf());
         c.with_store_env(std::env::var(STORE_ENV).ok())
             .with_retention_env(|name| std::env::var(name).ok())

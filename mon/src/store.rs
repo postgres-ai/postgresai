@@ -211,6 +211,9 @@ fn pid_alive(pid: u32) -> bool {
     alive || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
+/// Pause between attempts to flush a full buffer after a failed flush.
+const FLUSH_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct StoreCore {
     pub shared: Shared,
     cfg: StoreCfg,
@@ -218,6 +221,11 @@ pub struct StoreCore {
     wal: Wal,
     buf: Buffers,
     pub failpoint: Option<Failpoint>,
+    /// Parquet files the flush in progress has written and the catalog does not name yet: a
+    /// failed flush deletes them (nothing else would until the next start).
+    flush_files: std::cell::RefCell<Vec<PathBuf>>,
+    /// After a failed flush: no retry by `flush_if_full` before this time.
+    flush_retry_at: Option<std::time::Instant>,
 }
 
 pub fn open_writer_db(root: &Path, cfg: &StoreCfg) -> anyhow::Result<Connection> {
@@ -470,6 +478,8 @@ impl StoreCore {
             wal,
             buf: Buffers::default(),
             failpoint: None,
+            flush_files: Default::default(),
+            flush_retry_at: None,
         };
         // Replay segment by segment; commit whenever the buffer passes the size cap, so a
         // large backlog (a burst, an outage) never has to fit in memory at once.
@@ -550,7 +560,11 @@ impl StoreCore {
 
     /// Flush when the buffer passed the size cap (bounded memory under bursts).
     pub fn flush_if_full(&mut self) -> anyhow::Result<()> {
-        if self.buf.bytes >= self.cfg.max_buffer_bytes {
+        // A full buffer asks for a flush on every record: after a failure, wait before the
+        // next attempt (each one rewrites the whole buffer).
+        if self.buf.bytes >= self.cfg.max_buffer_bytes
+            && self.flush_retry_at.is_none_or(|t| std::time::Instant::now() >= t)
+        {
             self.flush()?;
         }
         Ok(())
@@ -563,8 +577,17 @@ impl StoreCore {
         }
         let seg = self.wal.rotate()?;
         match self.commit(seg) {
-            Ok(n) => Ok(n),
+            Ok(n) => {
+                self.flush_retry_at = None;
+                Ok(n)
+            }
             Err(e) => {
+                // Files written before the failure are in no catalog: delete them now. (Empty
+                // when the catalog save succeeded and a later step failed.)
+                for p in self.flush_files.borrow_mut().drain(..) {
+                    let _ = std::fs::remove_file(p);
+                }
+                self.flush_retry_at = Some(std::time::Instant::now() + FLUSH_RETRY);
                 // Don't retry the same batch shape forever: halve the write chunk.
                 self.cfg.write_chunk_bytes = (self.cfg.write_chunk_bytes / 2).max(256 << 10);
                 Err(e)
@@ -627,6 +650,7 @@ impl StoreCore {
                 *e = (*e).max(*o);
             }
             cat.save(&self.shared.root)?;
+            self.flush_files.borrow_mut().clear();
             self.shared.generation.store(cat.generation, Ordering::Release);
         }
         self.buf = Buffers::default();
@@ -649,6 +673,7 @@ impl StoreCore {
     fn out_path(&self, kind: &str, day: i64, level: u8, id: u64) -> (String, PathBuf) {
         let rel = format!("{kind}/date={}/L{level}-{id:08}.parquet", day_str(day));
         let abs = self.shared.root.join(&rel);
+        self.flush_files.borrow_mut().push(abs.clone());
         (rel, abs)
     }
 
@@ -1205,41 +1230,53 @@ impl Compactor {
         // on an object store: no eviction while the jobs read local files
         let bucket = crate::bucket::of(&self.shared.root);
         let _jobs = bucket.as_ref().map(|b| b.jobs.read().unwrap());
-        let jobs = self.plan(now, all_closed);
+        // Retention and the purge come first and do not depend on the jobs below: they are what
+        // frees space, and a job that keeps failing (a full disk, one unreadable input) must
+        // not stop them. For the same reason one failing job does not stop the others; the
+        // pass reports the first error after doing all it can.
+        let mut first_err: Option<anyhow::Error> = None;
+        let mut note = |r: anyhow::Result<usize>, done: &mut usize| match r {
+            Ok(n) => *done += n,
+            Err(e) if first_err.is_none() => first_err = Some(e),
+            // the caller reports the first; the rest are logged here
+            Err(e) => eprintln!("store: {e:#}"),
+        };
         let mut done = 0;
-        for job in jobs {
+        note(self.expire(now).map(|_| 0), &mut done);
+        note(self.purge(now).map(|_| 0), &mut done);
+        for job in self.plan(now, all_closed) {
             let what = format!(
                 "compaction of {} {} ({} files)",
                 job.kind,
                 day_str(job.day),
                 job.inputs.len()
             );
-            self.merge(job).map_err(|e| e.context(what))?;
-            done += 1;
+            note(self.merge(job).map(|_| 1).map_err(|e| e.context(what)), &mut done);
         }
-        done += self.register(now, all_closed)?;
-        done += self.series_months(now, all_closed)?;
+        note(self.register(now, all_closed), &mut done);
+        note(self.series_months(now, all_closed), &mut done);
         if self.cfg.compact_kmerge {
-            // on an object store, the month jobs' inputs may have left the local directory
-            if crate::bucket::of(&self.shared.root).is_some() {
-                let files = self.shared.catalog.lock().unwrap().files.clone();
-                for kind in [crate::eval::rollup::KIND_1D, crate::eval::rollup::KIND_1HM] {
-                    for job in crate::eval::rollup::jobs_tier(&files, kind) {
-                        let refs: Vec<&FileEntry> = job.inputs.iter().map(|x| &x.0).chain(job.old.iter()).collect();
-                        crate::bucket::ensure_local(&self.shared.root, &refs)?;
-                    }
+            note(self.rollup_months(), &mut done);
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(done),
+        }
+    }
+
+    /// The 1 d rollup month files, from the closed days' 1 h rollups.
+    fn rollup_months(&self) -> anyhow::Result<usize> {
+        // on an object store, the month jobs' inputs may have left the local directory
+        if crate::bucket::of(&self.shared.root).is_some() {
+            let files = self.shared.catalog.lock().unwrap().files.clone();
+            for kind in [crate::eval::rollup::KIND_1D, crate::eval::rollup::KIND_1HM] {
+                for job in crate::eval::rollup::jobs_tier(&files, kind) {
+                    let refs: Vec<&FileEntry> = job.inputs.iter().map(|x| &x.0).chain(job.old.iter()).collect();
+                    crate::bucket::ensure_local(&self.shared.root, &refs)?;
                 }
             }
-            // 1 d rollup month files from the closed days' 1 h rollups
-            done += crate::eval::rollup::update_1d(
-                &self.shared,
-                self.cfg.zstd_level,
-                self.cfg.delete_grace_s as i64 * 1000,
-            )?;
         }
-        self.expire(now)?;
-        self.purge(now)?;
-        Ok(done)
+        crate::eval::rollup::update_1d(&self.shared, self.cfg.zstd_level, self.cfg.delete_grace_s as i64 * 1000)
     }
 
     /// Retention: every file whose last day is older than its kind's retention leaves the

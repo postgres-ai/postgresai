@@ -124,7 +124,7 @@ def test_pgai_mon_service_contract():
     vols = svc["volumes"]
     assert "pgai_mon_data:/var/lib/pgai-mon" in vols
     assert "./instances.yml:/etc/pgai-mon/instances.yml:ro" in vols
-    assert "./host-metrics:/etc/pgai-mon/host-metrics:ro" in vols
+    assert "./host-metrics:/etc/pgai/host-metrics:ro" in vols
     assert svc["depends_on"]["config-init"]["condition"] == "service_completed_successfully"
 
 

@@ -1949,12 +1949,23 @@ pub fn jobs_tier(files: &[FileEntry], kind: &str) -> Vec<Job1d> {
         let hours = |d0: i64, lo: i64| -> Vec<(FileEntry, i64, i64)> {
             (d0..=e + 1).map(|d| (valid[&d].clone(), lo, q)).collect()
         };
+        // The file starts where the run starts, or earlier with every day before the run gone
+        // from the catalog: retention moves the first day forward daily, and that alone must
+        // not rebuild the month from scratch. (A day that is still there but no longer valid,
+        // one with late data, does make the file stale.)
+        let gone = |d: i64| {
+            !files
+                .iter()
+                .any(|f| f.day == d && (f.kind == KIND || f.kind == "samples"))
+        };
+        let starts_ok =
+            |o: &FileEntry| o.min_ts == p || (o.min_ts < p && o.min_ts % D == 0 && (o.min_ts / D..s).all(gone));
         let inputs = match &old {
-            Some(o) if o.ver >= VER && o.min_ts == p && o.max_ts == q && o.created_ms >= newest => continue,
+            Some(o) if o.ver >= VER && starts_ok(o) && o.max_ts == q && o.created_ms >= newest => continue,
             // still valid and only short: extend it with the new days' 1 h buckets
             Some(o)
                 if o.ver >= VER
-                    && o.min_ts == p
+                    && starts_ok(o)
                     && o.max_ts > p
                     && o.max_ts < q
                     && o.max_ts % D == 0

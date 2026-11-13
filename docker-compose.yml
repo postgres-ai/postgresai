@@ -168,7 +168,9 @@ services:
       - pgai_mon_data:/var/lib/pgai-mon
       - ./instances.yml:/etc/pgai-mon/instances.yml:ro
       # Supabase / ClickHouse scrape files written by `mon targets add`.
-      - ./host-metrics:/etc/pgai-mon/host-metrics:ro
+      # The path the scrape files name their password files under (the CLI writes
+      # password_file: /etc/pgai/host-metrics/...), as in the old stack.
+      - ./host-metrics:/etc/pgai/host-metrics:ro
     healthcheck:
       # /livez needs no credentials and returns no data. The image has bash but
       # no HTTP client.

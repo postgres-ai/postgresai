@@ -41,6 +41,20 @@ fn the_image_build_copies_every_included_file() {
     }
 }
 
+/// The image config scrapes the host-metrics files where compose mounts them, which is also
+/// where the CLI's scrape files look for their password files.
+#[test]
+fn the_image_config_scrapes_the_mounted_host_metrics() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let yml = std::fs::read_to_string(root.join("docker/pgai-mon.yml")).unwrap();
+    let cfg: pgai_mon::config::Config = serde_yaml::from_str(&yml).unwrap();
+    assert_eq!(cfg.scrape.files, ["/etc/pgai/host-metrics/*.yml"]);
+    let compose = std::fs::read_to_string(root.join("../docker-compose.yml")).unwrap();
+    assert!(compose.contains("- ./host-metrics:/etc/pgai/host-metrics:ro"));
+    let cli = std::fs::read_to_string(root.join("../cli/lib/clickhouse.ts")).unwrap();
+    assert!(cli.contains("passwordFile: `/etc/pgai/host-metrics/"));
+}
+
 /// The config baked into the image keeps the old stack's retention: 14 days of metrics, 30 days
 /// of query texts.
 #[test]

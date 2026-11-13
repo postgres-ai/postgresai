@@ -149,3 +149,47 @@ fn files_past_their_retention_leave_the_catalog_and_the_disk() {
     assert_eq!(one(&r, "SELECT count(DISTINCT queryid) FROM query_texts"), 2);
     assert_eq!(one(&r, "SELECT count(*) FROM series"), 3);
 }
+
+/// A day that cannot be compacted (one of its files is unreadable) fails the pass and stops
+/// neither retention nor the purge: they are what frees space.
+#[test]
+fn a_failing_compaction_job_does_not_stop_retention() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = StoreCfg {
+        delete_grace_s: 0,
+        retention_days: 14,
+        ..Default::default()
+    };
+    let mut core = StoreCore::open(d.path(), &cfg).unwrap();
+    let labels = vec![("a".to_string(), "b".to_string())];
+    let id = series_id("m", &labels);
+    core.append(Record::Series(vec![SeriesDef {
+        series_id: id,
+        metric: "m".into(),
+        labels,
+        first_seen: 0,
+    }]))
+    .unwrap();
+    // one flush 45 days back, two on yesterday (two files of one day: a compaction job)
+    for (back, hour) in [(45, 1), (1, 1), (1, 2)] {
+        let ts = (NOV7 - back) * DAY + hour * 3_600_000;
+        core.append(Record::Samples(vec![Sample {
+            series_id: id,
+            ts,
+            value: 1.0,
+        }]))
+        .unwrap();
+        core.flush().unwrap();
+    }
+    let path_of = |back: i64| {
+        let cat = core.shared.catalog.lock().unwrap();
+        let f = cat.files_of("samples").find(|f| f.day == NOV7 - back).unwrap();
+        d.path().join(&f.path)
+    };
+    let old = path_of(45);
+    std::fs::write(path_of(1), b"not parquet").unwrap();
+    let now = NOV7 * DAY + 12 * 3_600_000;
+    assert!(core.compactor().unwrap().run_once(now, true).is_err());
+    assert_eq!(days(&core, "samples"), BTreeSet::from([-1]));
+    assert!(!old.exists());
+}
