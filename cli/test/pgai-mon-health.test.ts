@@ -7,7 +7,7 @@ import { createCliSandbox } from "./cli-sandbox";
 const TOKEN = "f00dfeedf00dfeedf00dfeedf00dfeed";
 
 /** A stand-in for pgai-mon on 127.0.0.1: /livez open, /health behind the bearer token. */
-function fakePgaiMon(opts: { livez?: number } = {}) {
+function fakePgaiMon(opts: { livez?: number; collector?: unknown } = {}) {
   const seen: { path: string; auth: string | null }[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -18,7 +18,7 @@ function fakePgaiMon(opts: { livez?: number } = {}) {
       if (url.pathname === "/livez") return new Response("ok", { status: opts.livez ?? 200 });
       if (url.pathname === "/health") {
         if (req.headers.get("authorization") !== `Bearer ${TOKEN}`) return new Response("unauthorized", { status: 401 });
-        return Response.json({ files: 12, series_known: 340, samples_in: 5600 });
+        return Response.json({ files: 12, series_known: 340, samples_in: 5600, ...(opts.collector ? { collector: opts.collector } : {}) });
       }
       return new Response("not found", { status: 404 });
     },
@@ -39,6 +39,59 @@ describe("probePgaiMon", () => {
       ]);
     } finally {
       mon.stop();
+    }
+  });
+
+  // The shape of /health's `collector` part (mon/src/collector.rs, health_json).
+  const db = (up: boolean, last_error: string | null = null) => ({
+    datname: "app", up, last_success_ms: up ? 1 : null, connect_failures: up ? 0 : 3, last_error, last_error_ms: null, jobs: {},
+  });
+  const collector = (bySource: Record<string, Record<string, unknown>>) => ({
+    sources: Object.keys(bySource).length,
+    by_source: Object.fromEntries(Object.entries(bySource).map(([name, databases]) => [name, { state: "running", databases }])),
+  });
+
+  test("every target up: one line with the count, still ok", async () => {
+    const mon = fakePgaiMon({ collector: collector({ prod: { app: db(true), postgres: db(true) }, staging: { app: db(true) } }) });
+    try {
+      const r = await probePgaiMon(mon.url, TOKEN);
+      expect(r.ok).toBe(true);
+      expect(r.lines.slice(2)).toEqual(["✓ targets: 3/3 up"]);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("a target that is down: not ok, one line for it with its last error, password and token left out", async () => {
+    const mon = fakePgaiMon({
+      collector: collector({
+        prod: { app: db(true), other: db(false, "connect: password authentication failed\nfor postgresql://mon:s3cret@db:5432/other") },
+        fresh: { app: db(false) },
+      }),
+    });
+    try {
+      const r = await probePgaiMon(mon.url, TOKEN);
+      expect(r.ok).toBe(false);
+      expect(r.lines.slice(2)).toEqual([
+        "✗ targets: 1/3 up",
+        "✗ target prod/other: down (connect: password authentication failed for postgresql://mon:***@db:5432/other)",
+        "✗ target fresh/app: down (no successful connection yet)",
+      ]);
+      expect(r.lines.join("\n")).not.toContain("s3cret");
+      expect(r.lines.join("\n")).not.toContain(TOKEN);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("no target known yet, or a /health without the collector part: no target line", async () => {
+    const empty = fakePgaiMon({ collector: collector({}) });
+    try {
+      const r = await probePgaiMon(empty.url, TOKEN);
+      expect(r.ok).toBe(true);
+      expect(r.lines.length).toBe(2);
+    } finally {
+      empty.stop();
     }
   });
 

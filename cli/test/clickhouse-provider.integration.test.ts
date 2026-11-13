@@ -152,8 +152,9 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
       await mon.connect();
       const version = await mon.query("show server_version_num");
       const major = Math.floor(Number(version.rows[0].server_version_num) / 10000);
-      for (const sink of ["prometheus", "postgres"]) {
-        const config = load(await Bun.file(`${import.meta.dir}/../../config/pgwatch-${sink}/metrics.yml`).text()) as {
+      // pgai-mon's collector SQL: one file, embedded in the binary.
+      for (const sink of ["pgai-mon"]) {
+        const config = load(await Bun.file(`${import.meta.dir}/../../mon/metrics.yml`).text()) as {
           metrics: Record<string, { node_status?: string; sqls: Record<string, string> }>;
           presets: { full: { metrics: Record<string, number> } };
         };

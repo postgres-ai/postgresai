@@ -8,9 +8,11 @@ import { composeDefinesService, composeProjectName, failedServices, grafanaBindN
  * The switch of an existing install from the old pgwatch + VictoriaMetrics
  * stack to pgai-mon, and the install/update path on the new compose file.
  *
- * Docker is a shim on PATH that records its argv (and COMPOSE_PROFILES), keeps
- * a copy of the compose file a `down` was given, and answers `ps` / `volume ls`
- * from environment variables. The compose files are the fixtures under
+ * Docker is a shim on PATH that records its argv (with COMPOSE_PROFILES and
+ * GF_SECURITY_ADMIN_PASSWORD), keeps a copy of the compose file a `down` was
+ * given, and answers `ps` / `volume ls` from environment variables. As compose
+ * does, it fails every call on a file that requires the Grafana password
+ * (`:?`) when neither the environment nor .env has it. The compose files are the fixtures under
  * fixtures/compose/, fetched through the test-only PGAI_COMPOSE_SOURCE seam.
  */
 
@@ -37,7 +39,7 @@ afterAll(() => {
   if (tempDir && fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-function makeProject(name: string, compose: string, env = OLD_ENV) {
+function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig = "grafana_password=pw\n") {
   const dir = resolve(tempDir, name);
   const bin = resolve(tempDir, `${name}-bin`);
   fs.mkdirSync(dir, { recursive: true });
@@ -45,15 +47,21 @@ function makeProject(name: string, compose: string, env = OLD_ENV) {
   fs.copyFileSync(compose, resolve(dir, "docker-compose.yml"));
   fs.writeFileSync(resolve(dir, ".env"), env, { mode: 0o600 });
   fs.writeFileSync(resolve(dir, "instances.yml"), "- name: keep-me\n  conn_str: postgresql://m:p@h:5432/db\n");
-  fs.writeFileSync(resolve(dir, ".pgwatch-config"), "grafana_password=pw\n", { mode: 0o600 });
+  fs.writeFileSync(resolve(dir, ".pgwatch-config"), pgwatchConfig, { mode: 0o600 });
+  // `mon generate-grafana-password` must not need it.
+  fs.writeFileSync(resolve(bin, "openssl"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
   const log = resolve(bin, "docker-calls.log");
   fs.writeFileSync(
     resolve(bin, "docker"),
     [
       "#!/bin/sh",
-      `printf '%s |PROFILES=%s\\n' "$*" "\${COMPOSE_PROFILES-}" >> ${JSON.stringify(log)}`,
+      `printf '%s |PROFILES=%s |GF=%s\\n' "$*" "\${COMPOSE_PROFILES-}" "\${GF_SECURITY_ADMIN_PASSWORD-}" >> ${JSON.stringify(log)}`,
       'prev=""; file=""',
       'for a in "$@"; do [ "$prev" = "-f" ] && file="$a"; prev="$a"; done',
+      'if [ -n "$file" ] && grep -q "GF_SECURITY_ADMIN_PASSWORD:?" "$file" && [ -z "${GF_SECURITY_ADMIN_PASSWORD-}" ] \\',
+      '   && ! grep -q "^GF_SECURITY_ADMIN_PASSWORD=." .env 2>/dev/null; then',
+      '  echo "required variable GF_SECURITY_ADMIN_PASSWORD is missing a value" >&2; exit 15',
+      "fi",
       `case " $* " in *" down "*) cp "$file" ${JSON.stringify(resolve(bin, "down-compose.yml"))} ;; esac`,
       'case " $* " in',
       '  " info ") exit 0 ;;',
@@ -61,7 +69,11 @@ function makeProject(name: string, compose: string, env = OLD_ENV) {
       '  *" volume ls "*) for v in $VOLUMES; do echo "$v"; done; exit 0 ;;',
       '  *" ps -q sink-prometheus "*) [ -n "$OLD_RUNNING" ] && echo old123; exit 0 ;;',
       '  *" ps -q pgai-mon "*) [ -n "$NEW_RUNNING" ] && echo new123; exit 0 ;;',
-      '  *" pull "*) exit ${PULL_EXIT:-0} ;;',
+      '  *" pull "*) [ -z "$PULL_NEEDS_TAG" ] || grep -q "^PGAI_TAG=$PULL_NEEDS_TAG\\$" .env || exit 1; exit ${PULL_EXIT:-0} ;;',
+      '  *" down "*) exit ${DOWN_EXIT:-0} ;;',
+      '  *" up "*) exit ${UP_EXIT:-0} ;;',
+      '  *" config --services "*) for s in $CONFIG_SERVICES; do echo "$s"; done; exit 0 ;;',
+      '  *" ps -a --format json "*) printf "%s\\n" "$PS_JSON"; exit 0 ;;',
       '  " ps --filter"*) for c in $RUNNING; do echo "$c"; done; exit 0 ;;',
       "esac",
       "exit 0",
@@ -75,7 +87,7 @@ function makeProject(name: string, compose: string, env = OLD_ENV) {
       const f = resolve(bin, "down-compose.yml");
       return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
     },
-    run(args: string[], env: Record<string, string> = {}) {
+    run(args: string[], env: Record<string, string> = {}, stdin = "") {
       const childEnv: Record<string, string | undefined> = { ...process.env };
       for (const key of Object.keys(childEnv)) if (key.startsWith("PGAI_") || key.startsWith("COMPOSE_")) delete childEnv[key];
       const result = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "..", "bin", "postgres-ai.ts"), ...args], {
@@ -89,6 +101,7 @@ function makeProject(name: string, compose: string, env = OLD_ENV) {
           PGAI_COMPOSE_SOURCE: NEW_COMPOSE,
           ...env,
         },
+        stdin: Buffer.from(stdin),
         timeout: 30000,
       });
       return {
@@ -100,6 +113,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV) {
   };
 }
 
+const CLI_VERSION: string = JSON.parse(fs.readFileSync(resolve(import.meta.dir, "..", "package.json"), "utf8")).version;
+const NEW_ENV = `PGAI_TAG=0.18.0\nPGAI_MON_TOKEN=${"a".repeat(64)}\nPGAI_MON_READ_TOKEN=${"b".repeat(64)}\n`;
 const readEnv = (dir: string) => fs.readFileSync(resolve(dir, ".env"), "utf8");
 const composeCalls = (calls: string[]) => calls.filter((c) => c.startsWith("compose "));
 
@@ -197,7 +212,42 @@ describe("mon update on an old-stack install", () => {
     expect(r.status).toBe(1);
     expect(fs.readFileSync(resolve(p.dir, "docker-compose.yml"), "utf8")).toBe(fs.readFileSync(OLD_COMPOSE, "utf8"));
     expect(composeCalls(p.calls()).some((c) => / (down|up) /.test(c))).toBe(false);
-    expect(r.stderr).toContain("re-run 'postgresai mon update' to switch");
+    expect(r.stderr).toContain("Re-run 'postgresai mon update' to switch");
+    // The pull ran at the CLI's version, which the message names; the old tag is back in .env.
+    expect(r.stderr).toContain(`PGAI_TAG=${CLI_VERSION}`);
+    expect(readEnv(p.dir)).toMatch(/^PGAI_TAG=0\.17\.0$/m);
+  });
+
+  test("the switch moves PGAI_TAG to the CLI's version before the pull: the old tag names no pgai-mon image", () => {
+    const p = makeProject("old-tag", OLD_COMPOSE);
+    // The shim's pull fails unless .env already has the new tag when it runs.
+    const r = p.run(["mon", "update"], { OLD_RUNNING: "1", PULL_NEEDS_TAG: CLI_VERSION });
+    expect(r.status).toBe(0);
+    expect(readEnv(p.dir)).toMatch(new RegExp(`^PGAI_TAG=${CLI_VERSION.replace(/\./g, "\\.")}$`, "m"));
+    expect(readEnv(p.dir)).not.toContain("PGAI_TAG=0.17.0");
+    expect(r.stdout).toContain(`PGAI_TAG in .env: 0.17.0 -> ${CLI_VERSION}`);
+  });
+
+  test("the old stack's containers cannot be removed: the message names the backup file to run `down` on", () => {
+    const p = makeProject("old-down-fails", OLD_COMPOSE);
+    const r = p.run(["mon", "update"], { OLD_RUNNING: "1", DOWN_EXIT: "1" });
+    expect(r.status).toBe(1);
+    const backup = fs.readdirSync(p.dir).find((f) => f.startsWith("docker-compose.yml.bak-0.17.0-"))!;
+    expect(r.stderr).toContain(`docker compose -f ${resolve(p.dir, backup)} down --remove-orphans`);
+    expect(r.stderr).toContain("COMPOSE_PROFILES=demo,host-metrics,instance-jobs,rds VM_AUTH_USERNAME=unused VM_AUTH_PASSWORD=unused");
+    expect(r.stderr).not.toContain("<the old compose file>");
+    expect(composeCalls(p.calls()).some((c) => / up /.test(c))).toBe(false);
+  });
+
+  test("the new stack does not start after the old one is gone: the rollback steps are printed", () => {
+    const p = makeProject("old-up-fails", OLD_COMPOSE);
+    const r = p.run(["mon", "update"], { OLD_RUNNING: "1", UP_EXIT: "1" });
+    expect(r.status).toBe(1);
+    const backup = fs.readdirSync(p.dir).find((f) => f.startsWith("docker-compose.yml.bak-0.17.0-"))!;
+    expect(r.stderr).toContain(`cp ${resolve(p.dir, backup)} ${resolve(p.dir, "docker-compose.yml")}`);
+    expect(r.stderr).toContain(`set PGAI_TAG=0.17.0 in ${resolve(p.dir, ".env")}`);
+    expect(r.stderr).toContain(`cd ${p.dir} && docker compose up -d`);
+    expect(r.stderr).toContain("volumes are untouched");
   });
 
   test("mon update-config switches the same way", () => {
@@ -222,6 +272,128 @@ describe("mon update on a pgai-mon install", () => {
     expect(calls.some((c) => / (down|up) /.test(c))).toBe(false);
     expect(readEnv(p.dir)).toContain("PGAI_MON_TOKEN=" + "a".repeat(64));
     expect(r.stdout).not.toContain("Switched this install");
+    // An update that switches nothing leaves the tag alone.
+    expect(readEnv(p.dir)).toContain("PGAI_TAG=0.18.0");
+  });
+
+  test("--grafana on a stopped stack does not start Grafana alone; on a running one it applies", () => {
+    const stopped = makeProject("grafana-stopped", NEW_COMPOSE, NEW_ENV);
+    const r1 = stopped.run(["mon", "update", "--grafana"]);
+    expect(r1.status).toBe(0);
+    expect(composeCalls(stopped.calls()).some((c) => / up /.test(c))).toBe(false);
+    expect(r1.stdout).toContain("the stack is not running, so Grafana was left as it is");
+    const running = makeProject("grafana-running", NEW_COMPOSE, NEW_ENV);
+    expect(running.run(["mon", "update", "--grafana"], { NEW_RUNNING: "1" }).status).toBe(0);
+    expect(composeCalls(running.calls()).some((c) => / up -d --no-deps grafana /.test(c))).toBe(true);
+  });
+});
+
+describe("the Grafana password reaches every compose call", () => {
+  test("calls that only ask (`ps`) get the password from .pgwatch-config, so their answers are real", () => {
+    // instance-jobs is started only when `ps -q pgai-mon` says the stack runs.
+    const p = makeProject("gf-direct", NEW_COMPOSE, `${NEW_ENV}COMPOSE_PROFILES=instance-jobs\n`);
+    const r = p.run(["mon", "update"], { NEW_RUNNING: "1" });
+    expect(r.status).toBe(0);
+    const calls = composeCalls(p.calls());
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls.filter((c) => !/^compose version/.test(c))) expect(c).toEndWith("|GF=pw");
+    expect(calls.some((c) => / ps -q pgai-mon /.test(c))).toBe(true);
+    expect(calls.some((c) => / up -d --no-deps instance-jobs /.test(c))).toBe(true);
+    // Not on argv, and not written into .env.
+    expect(p.calls().some((c) => c.split(" |")[0].includes("pw"))).toBe(false);
+    expect(readEnv(p.dir)).not.toContain("GF_SECURITY_ADMIN_PASSWORD");
+  });
+
+  test("mon start sees a crashed pgai-mon instead of calling the stack already running", () => {
+    const p = makeProject("gf-start-crashed", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "start"], {
+      RUNNING: "grafana-with-datasources",
+      CONFIG_SERVICES: "pgai-mon grafana",
+      PS_JSON: JSON.stringify([{ Service: "pgai-mon", State: "restarting" }, { Service: "grafana", State: "running" }]),
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("Not all services are running and healthy (pgai-mon: restarting)");
+    expect(r.stdout).not.toContain("already running");
+    expect(composeCalls(p.calls()).some((c) => / up -d /.test(c))).toBe(true);
+  });
+
+  for (const command of ["update", "update-config", "start"]) {
+    test(`mon ${command} on an install without a saved password generates one before the first compose call`, () => {
+      const p = makeProject(`gf-missing-${command}`, NEW_COMPOSE, "PGAI_TAG=0.18.0\n", "");
+      const r = p.run(["mon", command]);
+      expect(r.stderr).not.toContain("GF_SECURITY_ADMIN_PASSWORD");
+      expect(r.status).toBe(0);
+      const saved = fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m);
+      expect(saved).not.toBeNull();
+      expect(Buffer.from(saved![1], "base64").length).toBe(12);
+      expect(fs.statSync(resolve(p.dir, ".pgwatch-config")).mode & 0o777).toBe(0o600);
+      const calls = composeCalls(p.calls()).filter((c) => !/^compose version/.test(c));
+      for (const c of calls) expect(c).toEndWith(`|GF=${saved![1]}`);
+      // The tokens the compose file requires are there too.
+      expect(readEnv(p.dir)).toMatch(/^PGAI_MON_TOKEN=[0-9a-f]{64}$/m);
+      expect(readEnv(p.dir)).toMatch(/^PGAI_MON_READ_TOKEN=[0-9a-f]{64}$/m);
+    });
+  }
+
+  test("a password already saved, or set in .env, is kept", () => {
+    const saved = makeProject("gf-kept", NEW_COMPOSE, NEW_ENV);
+    expect(saved.run(["mon", "start"]).status).toBe(0);
+    expect(fs.readFileSync(resolve(saved.dir, ".pgwatch-config"), "utf8")).toBe("grafana_password=pw\n");
+    const inEnv = makeProject("gf-in-env", NEW_COMPOSE, `${NEW_ENV}GF_SECURITY_ADMIN_PASSWORD=from-env-file\n`, "");
+    expect(inEnv.run(["mon", "start"]).status).toBe(0);
+    expect(fs.readFileSync(resolve(inEnv.dir, ".pgwatch-config"), "utf8")).toBe("");
+  });
+
+  test("mon stop works without a saved password (`down` uses no value) and saves none", () => {
+    const p = makeProject("gf-stop", NEW_COMPOSE, NEW_ENV, "");
+    const r = p.run(["mon", "stop"]);
+    expect(r.status).toBe(0);
+    const downs = composeCalls(p.calls()).filter((c) => / down /.test(c));
+    expect(downs.length).toBe(1);
+    expect(downs[0]).toEndWith("|GF=unused");
+    expect(fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8")).toBe("");
+  });
+
+  test("`up` never gets the placeholder: without a password it fails as compose reports it", () => {
+    const p = makeProject("gf-reset-up", NEW_COMPOSE, NEW_ENV, "");
+    const r = p.run(["mon", "restart", "grafana"]);
+    expect(r.status).not.toBe(0);
+    expect(p.calls().some((c) => c.includes("GF=unused") && / up /.test(c))).toBe(false);
+  });
+});
+
+describe("mon restart, reset, generate-grafana-password", () => {
+  test("mon restart <service> re-creates that service alone; without a service it restarts the stack", () => {
+    const p = makeProject("restart", NEW_COMPOSE, NEW_ENV);
+    expect(p.run(["mon", "restart", "grafana"]).status).toBe(0);
+    expect(p.run(["mon", "restart"]).status).toBe(0);
+    const calls = composeCalls(p.calls()).filter((c) => !/^compose version/.test(c));
+    expect(calls[0]).toContain(" up -d --force-recreate --no-deps grafana |");
+    expect(calls[1]).toContain(" restart |");
+    // What the bind notice tells the operator to run is this command.
+    expect(grafanaBindNotice(undefined)).toContain("'postgresai mon restart grafana'");
+  });
+
+  test("mon reset <service> says what it does: the container is replaced, named volumes are kept", () => {
+    const p = makeProject("reset", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "reset", "pgai-mon"], {}, "y\n");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("remove its container and start a new one");
+    expect(r.stdout).toContain("Data in named volumes (pgai_mon_data, grafana_data, ...) is kept");
+    expect(r.stdout).not.toMatch(/remove its volume|data for this service will be lost/i);
+    // Nothing here removes a named volume.
+    expect(p.calls().some((c) => /volume rm| down /.test(c))).toBe(false);
+    expect(composeCalls(p.calls()).some((c) => / rm -f -v pgai-mon /.test(c))).toBe(true);
+  });
+
+  test("mon generate-grafana-password needs no openssl", () => {
+    const p = makeProject("gen-password", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "generate-grafana-password"]);
+    expect(r.status).toBe(0);
+    const saved = fs.readFileSync(resolve(p.dir, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m)![1];
+    expect(saved).not.toBe("pw");
+    expect(Buffer.from(saved, "base64").length).toBe(12);
+    expect(r.stdout).toContain(`Password: ${saved}`);
   });
 
 });
@@ -273,6 +445,8 @@ describe("mon local-install", () => {
     expect(r.stdout).not.toContain("Grafana now listens");
     expect(r.stdout).toContain("Metrics history goes to s3://bucket/prefix");
     expect(readEnv(p.dir)).toContain("PGAI_MON_STORE=s3://bucket/prefix");
+    // A first query to run, among the next steps.
+    expect(r.stdout).toContain('postgresai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"');
   });
 });
 

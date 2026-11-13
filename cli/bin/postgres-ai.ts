@@ -603,7 +603,7 @@ function buildLocalInstallEnv(
 async function execFilePromise(
   file: string,
   args: string[],
-  options: { cwd?: string } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     childProcess.execFile(file, args, options, (error, stdout, stderr) => {
@@ -3743,6 +3743,74 @@ async function applyMonitoringTargetsConfig(projectDir: string, restartReporter 
   }
 }
 
+/** The Grafana admin password saved in .pgwatch-config, or "" when there is none. */
+function savedGrafanaPassword(projectDir: string): string {
+  const cfgPath = path.resolve(projectDir, ".pgwatch-config");
+  try {
+    if (!fs.statSync(cfgPath).isFile()) return "";
+    const match = fs.readFileSync(cfgPath, "utf8").match(/^grafana_password=([^\r\n]+)/m);
+    return match ? match[1].trim() : "";
+  } catch (err) {
+    if (process.env.DEBUG && (err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      console.warn(`Warning: Could not read Grafana password from config: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return "";
+  }
+}
+
+/** Compose subcommands that create containers, and so use the values they interpolate. */
+const COMPOSE_CREATING_COMMANDS = ["up", "run", "create"];
+
+/**
+ * The environment of every `docker compose` call on the stack's compose file.
+ *
+ * The file requires GF_SECURITY_ADMIN_PASSWORD (`${...:?}`) and compose
+ * interpolates it for every subcommand, `ps` and `down` included, so a call
+ * without it fails before doing anything. The password lives in
+ * .pgwatch-config, not in .env: it is put in the environment here, from
+ * `grafanaPassword` when given, else from that file.
+ *
+ * With no password anywhere, subcommands that create nothing (`ps`, `logs`,
+ * `stop`, `down`, ...) get a placeholder: they use no value, and a stack must
+ * stay inspectable and stoppable. `up` gets none and fails with compose's own
+ * message rather than start Grafana with a known password.
+ *
+ * `extraEnv` is applied last: compose reads its own variables
+ * (COMPOSE_PROFILES, ...) from the environment in preference to `.env`, which
+ * is how a caller addresses a service whose profile is not listed in the file.
+ */
+function composeEnv(
+  projectDir: string,
+  args: string[],
+  grafanaPassword?: string,
+  extraEnv?: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const password = grafanaPassword || savedGrafanaPassword(projectDir);
+  if (password) {
+    env.GF_SECURITY_ADMIN_PASSWORD = password;
+  } else if (
+    !env.GF_SECURITY_ADMIN_PASSWORD &&
+    !readEnvValue(projectDir, "GF_SECURITY_ADMIN_PASSWORD") &&
+    !COMPOSE_CREATING_COMMANDS.includes(args[0] ?? "")
+  ) {
+    env.GF_SECURITY_ADMIN_PASSWORD = "unused";
+  }
+  if (extraEnv) Object.assign(env, extraEnv);
+  return env;
+}
+
+/**
+ * Generate and save the Grafana password when compose has none to interpolate
+ * (an install made before the compose file required one, or a directory this
+ * CLI has just bootstrapped). Quiet when one is already set.
+ */
+async function ensureComposeGrafanaPassword(projectDir: string): Promise<void> {
+  if (savedGrafanaPassword(projectDir)) return;
+  if (process.env.GF_SECURITY_ADMIN_PASSWORD || readEnvValue(projectDir, "GF_SECURITY_ADMIN_PASSWORD")) return;
+  await ensureGrafanaPassword(path.resolve(projectDir, ".pgwatch-config"));
+}
+
 /**
  * Run docker compose command
  */
@@ -3776,36 +3844,7 @@ async function runCompose(
     return 1;
   }
 
-  // Set Grafana password from parameter or .pgwatch-config
-  const env = { ...process.env };
-  if (grafanaPassword) {
-    env.GF_SECURITY_ADMIN_PASSWORD = grafanaPassword;
-  } else {
-    const cfgPath = path.resolve(projectDir, ".pgwatch-config");
-    if (fs.existsSync(cfgPath)) {
-      try {
-        const stats = fs.statSync(cfgPath);
-        if (!stats.isDirectory()) {
-          const content = fs.readFileSync(cfgPath, "utf8");
-          const match = content.match(/^grafana_password=([^\r\n]+)/m);
-          if (match) {
-            env.GF_SECURITY_ADMIN_PASSWORD = match[1].trim();
-          }
-        }
-      } catch (err) {
-        // If we can't read the config, log warning and continue without setting the password
-        if (process.env.DEBUG) {
-          console.warn(`Warning: Could not read Grafana password from config: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  }
-
-  // Compose reads its own variables (COMPOSE_PROFILES, ...) from the
-  // environment in preference to `.env`, which is how a caller addresses a
-  // service whose profile is no longer listed in the file. Applied last so it
-  // wins over anything loaded above.
-  if (extraEnv) Object.assign(env, extraEnv);
+  const env = composeEnv(projectDir, args, grafanaPassword, extraEnv);
 
   return new Promise<number>((resolve) => {
     const child = spawn(cmd[0], [...cmd.slice(1), "-f", composeFile, ...args], {
@@ -3826,6 +3865,10 @@ function readComposeText(projectDir: string): string | null {
     return null;
   }
 }
+
+/** A first query over the collected metrics, as shown after an install. */
+const FIRST_QUERY_HINT =
+  'postgresai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"';
 
 /** The old stack's volumes that exist in this project (all of them when docker cannot tell). */
 async function existingOldStackVolumes(projectDir: string): Promise<string[]> {
@@ -3855,6 +3898,7 @@ async function switchFromOldStack(
   projectDir: string,
   oldCompose: string,
   oldRunning: boolean | null,
+  oldTag: string | null,
 ): Promise<boolean> {
   if (!(await removeOldStackContainers(projectDir, oldCompose))) return false;
 
@@ -3863,6 +3907,11 @@ async function switchFromOldStack(
     console.log("\nStarting pgai-mon and the rest of the stack...");
     if ((await runCompose(["up", "-d", "--remove-orphans"])) !== 0) {
       console.error("✗ The new stack did not start. See the error above, then run 'postgresai mon start'.");
+      // The old containers are gone by now, so say how to get them back.
+      console.error("  To go back to the old stack instead (its volumes are untouched):");
+      console.error(`    cp ${oldComposeBackup(projectDir, oldCompose)} ${path.resolve(projectDir, "docker-compose.yml")}`);
+      console.error(`    set PGAI_TAG=${oldTag ?? "<the old version>"} in ${path.resolve(projectDir, ".env")}`);
+      console.error(`    cd ${projectDir} && docker compose up -d`);
       ok = false;
     }
   } else {
@@ -3885,6 +3934,28 @@ async function switchFromOldStack(
 function switchedGrafanaBindNotice(projectDir: string): string | null {
   if (!grafanaEnabled(process.env[GRAFANA_SCALE_KEY] ?? readEnvValue(projectDir, GRAFANA_SCALE_KEY))) return null;
   return grafanaBindNotice(process.env.GRAFANA_BIND_HOST ?? readEnvValue(projectDir, "GRAFANA_BIND_HOST"));
+}
+
+/**
+ * The file that holds the old stack's compose text: the backup the refresh
+ * made (docker-compose.yml.bak-<tag>-<hash>), or one written now when there is
+ * none (a git checkout, where `git pull` replaced the file).
+ */
+function oldComposeBackup(projectDir: string, oldCompose: string): string {
+  const hash = crypto.createHash("sha256").update(oldCompose).digest("hex").slice(0, 8);
+  try {
+    const found = fs.readdirSync(projectDir).find((f) => f.startsWith("docker-compose.yml.bak-") && f.endsWith(`-${hash}`));
+    if (found) return path.resolve(projectDir, found);
+  } catch {
+    // unreadable directory: fall through and write one
+  }
+  const backup = path.resolve(projectDir, `docker-compose.yml.bak-old-stack-${hash}`);
+  try {
+    fs.writeFileSync(backup, oldCompose, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // the path is still what the operator needs to look for
+  }
+  return backup;
 }
 
 /**
@@ -3911,12 +3982,11 @@ async function removeOldStackContainers(projectDir: string, oldCompose: string):
       // The old file declares Grafana's VM_AUTH_* as required, and `down`
       // interpolates it too; `mon local-install` has dropped them from .env
       // by now. `down` uses no value, so any will do.
-      env: {
-        ...process.env,
+      env: composeEnv(projectDir, ["down"], undefined, {
         COMPOSE_PROFILES: OLD_STACK_PROFILES.join(","),
         VM_AUTH_USERNAME: "unused",
         VM_AUTH_PASSWORD: "unused",
-      },
+      }),
       stdio: "inherit",
     });
     downCode = down.status ?? 1;
@@ -3925,7 +3995,12 @@ async function removeOldStackContainers(projectDir: string, oldCompose: string):
   }
   if (downCode !== 0) {
     console.error("✗ Could not remove the old stack's containers. Remove them, then start the stack:");
-    console.error("  docker compose -f <the old compose file> down --remove-orphans");
+    console.error(`  cd ${projectDir}`);
+    console.error(
+      `  COMPOSE_PROFILES=${OLD_STACK_PROFILES.join(",")} VM_AUTH_USERNAME=unused VM_AUTH_PASSWORD=unused ` +
+        `docker compose -f ${oldComposeBackup(projectDir, oldCompose)} down --remove-orphans`,
+    );
+    console.error("  postgresai mon start");
     return false;
   }
   return true;
@@ -3940,19 +4015,26 @@ async function removeOldStackContainers(projectDir: string, oldCompose: string):
 async function refreshStackCompose(
   projectDir: string,
   refresh: () => Promise<unknown>,
-): Promise<{ ok: boolean; switchFrom: string | null; oldRunning: boolean | null }> {
+): Promise<{ ok: boolean; switchFrom: string | null; oldRunning: boolean | null; oldTag: string | null }> {
   const before = readComposeText(projectDir);
   const wasOld = composeDefinesService(before, OLD_STACK_KEYSTONE);
   // Asked now: once the file is replaced, compose no longer knows the service.
   const oldRunning = wasOld ? await composeServiceRunning(projectDir, OLD_STACK_KEYSTONE) : null;
+  const oldTag = wasOld ? (readEnvValue(projectDir, "PGAI_TAG") ?? null) : null;
   await refresh();
-  if (!wasOld) return { ok: true, switchFrom: null, oldRunning };
+  if (!wasOld) return { ok: true, switchFrom: null, oldRunning, oldTag };
   if (!composeDefinesService(readComposeText(projectDir), PGAI_MON_SERVICE)) {
     console.error("✗ docker-compose.yml is still the old pgwatch + VictoriaMetrics stack's; this CLI runs pgai-mon.");
     console.error("  The old stack was left as it is. Re-run this command once the new compose file can be fetched.");
-    return { ok: false, switchFrom: null, oldRunning };
+    return { ok: false, switchFrom: null, oldRunning, oldTag };
   }
-  return { ok: true, switchFrom: before, oldRunning };
+  // The old stack's tag names no pgai-mon image (pgai-mon did not exist then):
+  // the new compose file runs this CLI's version, as `mon local-install` sets it.
+  if (oldTag !== pkg.version) {
+    setEnvValues(projectDir, { PGAI_TAG: pkg.version });
+    console.log(`PGAI_TAG in .env: ${oldTag ?? "(unset)"} -> ${pkg.version} (the pgai-mon stack's images)`);
+  }
+  return { ok: true, switchFrom: before, oldRunning, oldTag };
 }
 
 /**
@@ -4110,7 +4192,7 @@ async function composeServiceRunning(
       composeCmd[0],
       [...composeCmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "-q", service],
       // Match runCompose: older compose versions resolved .env from the CWD.
-      { cwd: projectDir },
+      { cwd: projectDir, env: composeEnv(projectDir, ["ps"]) },
     );
     return stdout.trim().length > 0;
   } catch {
@@ -4148,7 +4230,7 @@ async function removeDemoContainers(projectDir: string): Promise<void> {
   const ps = spawnSync(
     cmd[0],
     [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "-a", "--format", "{{.Service}}"],
-    { cwd: projectDir, env: { ...process.env, COMPOSE_PROFILES: DEMO_PROFILE }, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+    { cwd: projectDir, env: composeEnv(projectDir, ["ps"], undefined, { COMPOSE_PROFILES: DEMO_PROFILE }), stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
   );
   const present = String(ps.stdout ?? "").split(/\s+/).filter((s) => s === "target-db" || s === "target-standby");
   if (ps.status !== 0 || present.length === 0) return;
@@ -4253,7 +4335,7 @@ function runningComposeServices(projectDir: string): string[] {
   const ps = spawnSync(
     cmd[0],
     [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), "ps", "--status", "running", "--services"],
-    { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+    { cwd: projectDir, env: composeEnv(projectDir, ["ps"]), stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
   );
   return ps.status === 0 ? String(ps.stdout ?? "").split(/\s+/).filter(Boolean) : [];
 }
@@ -4265,7 +4347,7 @@ function composeCapture(projectDir: string, args: string[]): { status: number | 
   const r = spawnSync(
     cmd[0],
     [...cmd.slice(1), "-f", path.resolve(projectDir, "docker-compose.yml"), ...args],
-    { cwd: projectDir, stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
+    { cwd: projectDir, env: composeEnv(projectDir, args), stdio: "pipe", encoding: "utf8", timeout: 15000 } as Parameters<typeof spawnSync>[2],
   );
   return { status: r.status, stdout: String(r.stdout ?? "") };
 }
@@ -5749,13 +5831,15 @@ mon
       console.log("Next steps:");
       console.log("  • Add more PostgreSQL instances: postgres-ai mon targets add");
       console.log("  • View configured instances: postgres-ai mon targets list");
-      console.log("  • Check service health: postgres-ai mon health\n");
+      console.log("  • Check service health: postgres-ai mon health");
+      console.log(`  • Query the collected metrics: ${FIRST_QUERY_HINT}\n`);
     } else {
       console.log("Demo mode next steps:");
       if (grafanaOn) console.log("  • Explore Grafana dashboards at http://localhost:3000");
       // target-db publishes no port: it is reachable inside the compose network only.
       console.log("  • Connect to the demo database: docker exec -it target-db psql -U postgres target_database");
-      console.log("  • Generate some load on the demo database to see metrics\n");
+      console.log("  • Generate some load on the demo database to see metrics");
+      console.log(`  • Query the collected metrics: ${FIRST_QUERY_HINT}\n`);
     }
 
     if (grafanaOn) {
@@ -5772,6 +5856,15 @@ mon
   .description("start monitoring services")
   .action(async () => {
     const { projectDir, instancesFile } = await resolveOrInitPaths();
+    // What the compose file requires before any compose call can run: a
+    // directory this command has just bootstrapped, or an install from before
+    // these were required, has neither.
+    // An old-stack install is left as it is: 'mon update' switches it.
+    if (!composeDefinesService(readComposeText(projectDir), OLD_STACK_KEYSTONE)) {
+      const added = ensureRequiredEnvVars(projectDir);
+      if (added.length > 0) console.log(`Added missing .env keys: ${added.join(", ")}`);
+      await ensureComposeGrafanaPassword(projectDir);
+    }
     // Already running only when every service is running and healthy; anything
     // missing, stopped, restarting or unhealthy gets the (idempotent) `up -d`.
     const { running, containers } = checkRunningContainers();
@@ -5899,8 +5992,10 @@ mon
   .command("restart [service]")
   .description("restart all monitoring services or specific service")
   .action(async (service?: string) => {
-    const args = ["restart"];
-    if (service) args.push(service);
+    // One service is re-created, so that changed settings in .env (a port
+    // binding, an image tag) take effect: `compose restart` re-runs the
+    // container as it was created. `--no-deps` leaves the other services alone.
+    const args = service ? ["up", "-d", "--force-recreate", "--no-deps", service] : ["restart"];
     const code = await runCompose(args);
     if (code !== 0) process.exitCode = code;
   });
@@ -6108,6 +6203,7 @@ mon
       console.log(`Added missing .env keys for this stack version: ${added.join(", ")}`);
       console.log("(existing values were preserved; missing keys filled with safe defaults)\n");
     }
+    await ensureComposeGrafanaPassword(projectDir);
 
     // Non-git installs: refresh the CLI-owned compose so it matches the target
     // stack version. No-op for git checkouts and when the compose already
@@ -6118,7 +6214,7 @@ mon
       process.exitCode = 1;
       return;
     }
-    if (stack.switchFrom !== null && !(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning))) {
+    if (stack.switchFrom !== null && !(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning, stack.oldTag))) {
       process.exitCode = 1;
     }
   });
@@ -6141,6 +6237,9 @@ mon
         process.exitCode = 1;
         return;
       }
+
+      // Before the first compose call: the compose file requires it.
+      await ensureComposeGrafanaPassword(projectDir);
 
       // The demo database moved behind a compose profile: keep it on a stack
       // that monitors it, and remove the old containers from one that does not.
@@ -6204,7 +6303,7 @@ mon
       if (code === 0 && stack.switchFrom !== null) {
         // The switch starts the whole stack when the old one ran, which
         // covers the instance-jobs profile through .env.
-        if (!(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning))) {
+        if (!(await switchFromOldStack(projectDir, stack.switchFrom, stack.oldRunning, stack.oldTag))) {
           process.exitCode = 1;
           return;
         }
@@ -6225,10 +6324,16 @@ mon
         }
         // A changed GRAFANA_SCALE takes effect now: `up` scales the service
         // to it, removing the container at 0.
-        if (opts.grafana !== undefined && (await runCompose(["up", "-d", "--no-deps", "grafana"])) !== 0) {
-          console.error(`\n✗ Could not ${opts.grafana ? "start" : "remove"} Grafana`);
-          process.exitCode = 1;
-          return;
+        // Only on a running stack: a scoped `up` on a stopped one would start
+        // Grafana alone. `mon start` applies the setting there.
+        if (opts.grafana !== undefined) {
+          if ((await composeServiceRunning(projectDir, PGAI_MON_SERVICE)) !== true) {
+            console.log("\n(the stack is not running, so Grafana was left as it is: 'postgresai mon start' applies the setting)");
+          } else if ((await runCompose(["up", "-d", "--no-deps", "grafana"])) !== 0) {
+            console.error(`\n✗ Could not ${opts.grafana ? "start" : "remove"} Grafana`);
+            process.exitCode = 1;
+            return;
+          }
         }
         console.log("\n✓ Update completed successfully");
         console.log("\nTo apply updates, restart monitoring services:");
@@ -6238,9 +6343,15 @@ mon
         // The old stack still runs, from a compose file that is gone. Put the
         // file back (CLI-owned on a non-git install) so the next run detects
         // the old stack again and retries the switch.
+        if (stack.switchFrom !== null) {
+          console.error(`  The pull used PGAI_TAG=${pkg.version} (this CLI's version): if no image has that tag, upgrade the CLI to a released version.`);
+        }
         if (stack.switchFrom !== null && !fs.existsSync(path.resolve(projectDir, ".git"))) {
           fs.writeFileSync(path.resolve(projectDir, "docker-compose.yml"), stack.switchFrom, { encoding: "utf8", mode: 0o600 });
-          console.error("  The old stack was left running and its docker-compose.yml put back; re-run 'postgresai mon update' to switch.");
+          // The old file with the new tag would name images the old stack never had.
+          if (stack.oldTag !== null) setEnvValues(projectDir, { PGAI_TAG: stack.oldTag });
+          console.error(`  The old stack was left running; its docker-compose.yml and PGAI_TAG${stack.oldTag !== null ? `=${stack.oldTag}` : ""} were put back.`);
+          console.error("  Re-run 'postgresai mon update' to switch once the images can be pulled.");
         }
         process.exitCode = 1;
       }
@@ -6257,8 +6368,8 @@ mon
     try {
       if (service) {
         // Reset specific service
-        console.log(`\nThis will stop '${service}', remove its volume, and restart it.`);
-        console.log("All data for this service will be lost!\n");
+        console.log(`\nThis will stop '${service}', remove its container and start a new one.`);
+        console.log("Data in named volumes (pgai_mon_data, grafana_data, ...) is kept; 'postgresai mon reset' without a service removes it.\n");
 
         const answer = await question("Continue? (y/N): ");
         if (answer.toLowerCase() !== "y") {
@@ -6269,7 +6380,7 @@ mon
         console.log(`\nStopping ${service}...`);
         await runCompose(["stop", service]);
 
-        console.log(`Removing volume for ${service}...`);
+        console.log(`Removing the ${service} container...`);
         await runCompose(["rm", "-f", "-v", service]);
 
         console.log(`Restarting ${service}...`);
@@ -7222,17 +7333,8 @@ mon
     const cfgPath = path.resolve(projectDir, ".pgwatch-config");
 
     try {
-      // Generate secure password using openssl
-      const { stdout: password } = await execFilePromise(
-        "openssl", ["rand", "-base64", "12"]
-      );
-      const newPassword = password.trim().replace(/\n/g, "");
-
-      if (!newPassword) {
-        console.error("Failed to generate password");
-        process.exitCode = 1;
-        return;
-      }
+      // As ensureGrafanaPassword generates it: no external tool needed.
+      const newPassword = crypto.randomBytes(12).toString("base64");
 
       // Read existing config
       let configContent = "";
@@ -7272,7 +7374,6 @@ mon
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Failed to generate password: ${message}`);
-      console.error("\nNote: This command requires 'openssl' to be installed");
       process.exitCode = 1;
     }
   });

@@ -9,7 +9,12 @@ import yaml from "js-yaml";
 const ci = yaml.load(readFileSync(resolve(import.meta.dir, "..", "..", ".gitlab-ci.yml"), "utf8")) as Record<string, any>;
 
 test("npm publish waits for the Docker images of the same tag", () => {
-  expect(ci["cli:npm:publish"].needs).toEqual([{ job: "docker:publish:images", artifacts: false }]);
-  // Same tags, so the job it waits for always exists in the pipeline.
+  // ...and after the stack made of those images has passed the smoke test.
+  expect(ci["cli:npm:publish"].needs).toEqual([
+    { job: "docker:publish:images", artifacts: false },
+    { job: "release:compose:smoke", artifacts: false },
+  ]);
+  // Same tags, so the jobs it waits for always exist in the pipeline.
   expect(ci["cli:npm:publish"].rules).toEqual(ci["docker:publish:images"].rules);
+  expect(ci["cli:npm:publish"].rules).toEqual(ci["release:compose:smoke"].rules);
 });

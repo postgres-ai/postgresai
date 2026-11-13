@@ -337,18 +337,21 @@ export async function runLocalSql(
     throw new Error(`pgai-mon at ${baseUrl}: ${why}. Is the stack running? ('postgresai mon health')`);
   }
   const text = await res.text();
-  if (res.status === 401 || res.status === 403) {
-    throw new Error(`pgai-mon rejected the token (HTTP ${res.status}): PGAI_MON_TOKEN in .env differs from pgai-mon's`);
+  // Only 401 is about the token: pgai-mon answers 403 for a query it refuses
+  // (not read-only, a forbidden function), and says which in the body.
+  if (res.status === 401) {
+    throw new Error("pgai-mon rejected the token (HTTP 401): PGAI_MON_TOKEN in .env differs from pgai-mon's");
   }
   if (!res.ok) {
     let message = "";
     try {
-      const body = JSON.parse(text) as { error?: { type?: string; message?: string } };
-      message = [body.error?.type, body.error?.message].filter(Boolean).join(": ");
+      const body = JSON.parse(text) as { error?: { kind?: string; message?: string } };
+      message = [body.error?.kind, body.error?.message].filter((v) => typeof v === "string" && v).join(": ");
     } catch {
       // not JSON: report the status only
     }
-    throw new Error(`Query failed (HTTP ${res.status})${message ? `: ${message}` : ""}`);
+    const what = res.status === 403 ? "Query refused" : "Query failed";
+    throw new Error(`${what} (HTTP ${res.status})${message ? `: ${message}` : ""}`);
   }
   let payload: SqlPayload;
   try {

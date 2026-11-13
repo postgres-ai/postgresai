@@ -10,6 +10,37 @@ export interface PgaiMonProbe {
 const describeError = (err: unknown) =>
   err instanceof Error && err.name === "TimeoutError" ? "no answer" : "unreachable";
 
+/** One line of a collector error: no line breaks, and no password of a connection URL. */
+const oneLine = (text: string) =>
+  text.replace(/\s+/g, " ").replace(/(\/\/[^/\s:@]*):[^@\s]*@/g, "$1:***@").trim().slice(0, 300);
+
+/**
+ * The monitored databases as /health's `collector` part reports them
+ * (`by_source.<source>.databases.<dbname>` with `up` and `last_error`): one
+ * line per database that is down, else one "N/N up" line. Nothing when the
+ * part is absent (an older pgai-mon) or no database is known yet.
+ */
+function targetLines(collector: unknown): { down: number; lines: string[] } {
+  const bySource = (collector as { by_source?: unknown } | null | undefined)?.by_source;
+  if (!bySource || typeof bySource !== "object") return { down: 0, lines: [] };
+  let total = 0;
+  const lines: string[] = [];
+  for (const [source, status] of Object.entries(bySource as Record<string, unknown>)) {
+    const databases = (status as { databases?: unknown } | null)?.databases;
+    if (!databases || typeof databases !== "object") continue;
+    for (const [dbname, db] of Object.entries(databases as Record<string, unknown>)) {
+      total++;
+      const d = db as { up?: unknown; last_error?: unknown } | null;
+      if (d?.up === true) continue;
+      const why = typeof d?.last_error === "string" && d.last_error ? oneLine(d.last_error) : "no successful connection yet";
+      lines.push(`✗ target ${source}/${dbname}: down (${why})`);
+    }
+  }
+  if (total === 0) return { down: 0, lines: [] };
+  const down = lines.length;
+  return { down, lines: down > 0 ? [`✗ targets: ${total - down}/${total} up`, ...lines] : [`✓ targets: ${total}/${total} up`] };
+}
+
 /**
  * Asks pgai-mon itself whether it is alive (GET /livez, no credentials) and
  * whether it serves (GET /health with the bearer token). The container being
@@ -57,6 +88,9 @@ export async function probePgaiMon(
       const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       const num = (key: string) => (typeof body?.[key] === "number" ? (body[key] as number) : "?");
       lines.push(`✓ pgai-mon /health: ${num("files")} Parquet files, ${num("series_known")} series, ${num("samples_in")} samples in`);
+      const targets = targetLines(body?.collector);
+      if (targets.down > 0) ok = false;
+      lines.push(...targets.lines);
     }
   } catch (err) {
     ok = false;

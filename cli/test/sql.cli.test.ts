@@ -258,7 +258,7 @@ describe("pgai mon sql --local", () => {
   test("the store's error message is shown; a rejected token says so; neither prints the token", async () => {
     const mon = startFakeMon((body) =>
       body === "bad"
-        ? Response.json({ error: { type: "parse_error", message: "syntax error at or near bad" } }, { status: 400 })
+        ? Response.json({ error: { kind: "parse_error", message: "syntax error at or near bad" } }, { status: 400 })
         : new Response("", { status: 401 }),
     );
     try {
@@ -269,6 +269,22 @@ describe("pgai mon sql --local", () => {
       expect(denied.status).toBe(1);
       expect(denied.stderr).toContain("pgai-mon rejected the token (HTTP 401)");
       expect(bad.stderr + denied.stderr + bad.stdout + denied.stdout).not.toContain(TOKEN);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("a refused query (HTTP 403) shows pgai-mon's reason, not a token problem", async () => {
+    const mon = startFakeMon(() =>
+      Response.json({ error: { kind: "not_read_only", message: "only one read-only statement is allowed" } }, { status: 403 }),
+    );
+    try {
+      const r = await runLocal(["mon", "sql", "--local", "show tables"], project(), { PGAI_MON_URL: mon.url });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("Query refused (HTTP 403): not_read_only: only one read-only statement is allowed");
+      expect(r.stderr).not.toContain("rejected the token");
+      expect(r.stderr).not.toContain("PGAI_MON_TOKEN");
+      expect(r.stderr + r.stdout).not.toContain(TOKEN);
     } finally {
       mon.stop();
     }

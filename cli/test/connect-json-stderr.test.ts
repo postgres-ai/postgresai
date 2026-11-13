@@ -277,13 +277,10 @@ describe.skipIf(!ADMIN)("real Postgres", () => {
     const r = await run(["mon", "deploy", ADMIN!, "--self-hosted", "--json"], { PATH: `${resolve(sandbox, "bin")}:${process.env.PATH}`, PGAI_PROJECT_DIR: project }, project);
     expect(JSON.parse(r.stdout).status).toBe("ready");
     const logins = expectJsonLines(r.lines).filter((e) => e.source === "mon local-install" && /Login:|Auth:/.test(e.message!));
-    expect(logins.map((e) => e.message!.trim())).toEqual([
-      "Login: ***** (pgai mon show-grafana-credentials)",
-      "VictoriaMetrics Auth: ***** (pgai mon show-grafana-credentials)",
-    ]);
+    expect(logins.map((e) => e.message!.trim())).toEqual(["Login: ***** (pgai mon show-grafana-credentials)"]);
     const grafana = readFileSync(resolve(project, ".pgwatch-config"), "utf8").match(/^grafana_password=(.+)$/m)![1]!;
-    const vm = readFileSync(resolve(project, ".env"), "utf8").match(/^VM_AUTH_PASSWORD=(.+)$/m)![1]!;
+    const token = readFileSync(resolve(project, ".env"), "utf8").match(/^PGAI_MON_TOKEN=(.+)$/m)![1]!;
     expect(r.stderr).not.toContain(grafana);
-    expect(r.stderr).not.toContain(vm);
+    expect(r.stderr).not.toContain(token);
   });
 });
