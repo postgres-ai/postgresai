@@ -14,7 +14,31 @@ export interface CheckupReport {
   created_at: string;
   created_formatted: string;
   epoch: number;
-  status: string;
+  status: string | null;
+  /** Why a report failed (when the reporter said so). */
+  status_reason?: string | null;
+  /**
+   * Since platform-all #1208 (absent on older APIs): `checkup` is a checkup
+   * report; `health` is a Database health collection (AAS, TEMPFILE) for one
+   * period, whose created_at is a pin inside that period -- in the future for
+   * an in-progress week or month.
+   */
+  kind?: "checkup" | "health" | null;
+  health_period?: "day" | "week" | "month" | null;
+  /** Start of the health row's period, UTC. */
+  health_period_start?: string | null;
+  /** The time to show: created_at for a checkup report; for a health row, when its data was last written. */
+  display_at?: string | null;
+}
+
+export type ReportKind = "checkup" | "health";
+
+/** `--kind` against an API that does not have report kinds yet (platform-all #1208). */
+export class ReportKindUnsupportedError extends Error {
+  constructor() {
+    super("--kind needs a newer PostgresAI API. Run without --kind to list all reports.");
+    this.name = "ReportKindUnsupportedError";
+  }
 }
 
 export interface CheckupReportFile {
@@ -87,6 +111,8 @@ export interface FetchReportsParams {
   status?: string;
   limit?: number;
   beforeDate?: string;
+  /** Only reports of this kind (`kind=eq.<kind>`); needs an API with report kinds. */
+  kind?: ReportKind;
   /** @internal Used by fetchAllReports for keyset pagination */
   beforeId?: number;
   debug?: boolean;
@@ -119,7 +145,7 @@ export interface FetchReportFileDataParams {
 // ============================================================================
 
 export async function fetchReports(params: FetchReportsParams): Promise<CheckupReport[]> {
-  const { apiKey, apiBaseUrl, orgScope, projectId, status, limit = 20, beforeDate, beforeId, debug } = params;
+  const { apiKey, apiBaseUrl, orgScope, projectId, status, limit = 20, beforeDate, kind, beforeId, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -133,6 +159,9 @@ export async function fetchReports(params: FetchReportsParams): Promise<CheckupR
   }
   if (status) {
     url.searchParams.set("status", `eq.${status}`);
+  }
+  if (kind) {
+    url.searchParams.set("kind", `eq.${kind}`);
   }
   if (beforeDate) {
     url.searchParams.set("created_at", `lt.${beforeDate}`);
@@ -167,8 +196,106 @@ export async function fetchReports(params: FetchReportsParams): Promise<CheckupR
       throw new Error(`Failed to parse reports response: ${data}`);
     }
   } else {
+    if (kind && isMissingKindColumn(response.status, data)) {
+      throw new ReportKindUnsupportedError();
+    }
     throw new Error(formatHttpError("Failed to fetch reports", response.status, data));
   }
+}
+
+/** PostgREST's reply when the view has no `kind` column: HTTP 400, code 42703 naming it. */
+function isMissingKindColumn(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  try {
+    const err = JSON.parse(body);
+    return err?.code === "42703" && typeof err?.message === "string" && /\bkind\b/.test(err.message);
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// Terminal view of `reports list` (#504)
+// ============================================================================
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** ISO-8601 week of a UTC date, e.g. "2026-W46". */
+function isoWeek(date: Date): string {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // the week's Thursday
+  const jan1 = Date.UTC(d.getUTCFullYear(), 0, 1);
+  const week = Math.floor((d.getTime() - jan1) / 86_400_000 / 7) + 1;
+  return `${d.getUTCFullYear()}-W${pad2(week)}`;
+}
+
+function periodEnd(start: Date, period: "day" | "week" | "month"): Date {
+  const end = new Date(start);
+  if (period === "day") end.setUTCDate(end.getUTCDate() + 1);
+  else if (period === "week") end.setUTCDate(end.getUTCDate() + 7);
+  else end.setUTCMonth(end.getUTCMonth() + 1);
+  return end;
+}
+
+function periodText(start: Date, period: "day" | "week" | "month"): string {
+  const ym = `${start.getUTCFullYear()}-${pad2(start.getUTCMonth() + 1)}`;
+  if (period === "month") return ym;
+  if (period === "day") return `${ym}-${pad2(start.getUTCDate())}`;
+  const last = new Date(start);
+  last.setUTCDate(last.getUTCDate() + 6);
+  const to = last.getUTCMonth() === start.getUTCMonth()
+    ? String(last.getUTCDate())
+    : `${MONTHS[last.getUTCMonth()]} ${last.getUTCDate()}`;
+  return `${isoWeek(start)} (${MONTHS[start.getUTCMonth()]} ${start.getUTCDate()}–${to})`;
+}
+
+/**
+ * The report's type as the Console names it: "Checkup", or "Database health"
+ * with its period, e.g. "Database health · week 2026-W46 (Nov 9–15) (in
+ * progress)" -- in progress while the period has not ended (UTC). Null when
+ * the API does not say (no `kind`).
+ */
+export function reportTypeLabel(report: CheckupReport, now: Date = new Date()): string | null {
+  if (report.kind === "checkup") return "Checkup";
+  if (report.kind !== "health") return null;
+  const period = report.health_period;
+  const start = report.health_period_start ? new Date(report.health_period_start) : null;
+  if (period !== "day" && period !== "week" && period !== "month") return "Database health";
+  if (!start || Number.isNaN(start.getTime())) return "Database health";
+  const inProgress = now.getTime() < periodEnd(start, period).getTime();
+  return `Database health · ${period} ${periodText(start, period)}${inProgress ? " (in progress)" : ""}`;
+}
+
+/** A server string as one plain terminal line: control characters (ANSI/OSC escapes) dropped, newlines flattened. */
+function plain(value: unknown): string {
+  return String(value).replace(/[\r\n\t]+/g, " ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
+function utcText(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 19)} UTC`;
+}
+
+/**
+ * `reports list` in a terminal: one block per report -- id, project, type,
+ * created (display_at, else created_at, in UTC), status (when set) and
+ * status_reason (when present). `--json` and piped output stay raw rows.
+ */
+export function formatReportsForTerminal(reports: CheckupReport[], now: Date = new Date()): string {
+  if (reports.length === 0) return "No reports.";
+  return reports
+    .map((r) => {
+      const lines = [`- id: ${r.id}`, `  project: ${plain(r.project_name ?? r.project_id)}`];
+      const type = reportTypeLabel(r, now);
+      if (type) lines.push(`  type: ${type}`);
+      lines.push(`  created: ${plain(utcText(r.display_at || r.created_at))}`);
+      if (r.status) lines.push(`  status: ${plain(r.status)}`);
+      if (r.status_reason) lines.push(`  status_reason: ${plain(r.status_reason)}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
 }
 
 const MAX_ALL_REPORTS = 10000;

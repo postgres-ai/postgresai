@@ -13,7 +13,7 @@ import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
 import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
-import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate } from "../lib/reports";
+import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate, formatReportsForTerminal, type ReportKind } from "../lib/reports";
 import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
   executeJoeCommand,
@@ -8383,18 +8383,19 @@ withOrgOptions(issues.command("update-action-item <actionItemId>"))
   });
 
 // Reports management
-const reports = program.command("reports").description("checkup reports management");
+const reports = program.command("reports").description("checkup reports and Database health collections");
 
 withOrgOptions(reports.command("list"))
-  .description("list checkup reports")
+  .description("list checkup reports and Database health collections, most recently added first")
   .option("--project-id <id>", "filter by project id", (v: string) => parseInt(v, 10))
-  .addOption(new Option("--status <status>", "filter by status (e.g., completed)").hideHelp())
+  .addOption(new Option("--kind <kind>", "only checkup reports or only Database health collections").choices(["checkup", "health"]))
+  .addOption(new Option("--status <status>", "filter by status (e.g., completed; Database health collections have none)").hideHelp())
   .option("--limit <n>", "max number of reports to return (default: 20, max: 100)", (v: string) => { const n = parseInt(v, 10); return Number.isNaN(n) ? 20 : Math.max(1, Math.min(n, 100)); })
-  .option("--before <date>", "show reports created before this date (YYYY-MM-DD, DD.MM.YYYY, etc.)")
+  .option("--before <date>", "show reports from before this date; a Database health collection counts by its period, not by the time shown (YYYY-MM-DD, DD.MM.YYYY, etc.)")
   .option("--all", "fetch all reports (paginated automatically)")
   .addOption(new Option("--debug", "enable debug output").hideHelp())
   .option("--json", "output raw JSON")
-  .action(async (opts: { projectId?: number; status?: string; limit?: number; before?: string; all?: boolean; debug?: boolean; json?: boolean }) => {
+  .action(async (opts: { projectId?: number; kind?: ReportKind; status?: string; limit?: number; before?: string; all?: boolean; debug?: boolean; json?: boolean }) => {
     const spinner = createTtySpinner(process.stdout.isTTY ?? false, "Fetching reports...");
     try {
       const rootOpts = program.opts<CliOptions>();
@@ -8421,6 +8422,7 @@ withOrgOptions(reports.command("list"))
           apiBaseUrl,
           projectId: opts.projectId,
           status: opts.status,
+          kind: opts.kind,
           limit: opts.limit,
           debug: !!opts.debug,
         });
@@ -8430,13 +8432,20 @@ withOrgOptions(reports.command("list"))
           apiBaseUrl,
           projectId: opts.projectId,
           status: opts.status,
+          kind: opts.kind,
           limit: opts.limit,
           beforeDate: opts.before ? parseFlexibleDate(opts.before) : undefined,
           debug: !!opts.debug,
         });
       }
       spinner.stop();
-      printResult(result, opts.json);
+      // #504: a person at a terminal reads one block per report with the time
+      // that is true for health rows too; --json and piped output stay raw rows.
+      if (!opts.json && process.stdout.isTTY) {
+        console.log(formatReportsForTerminal(result));
+      } else {
+        printResult(result, opts.json);
+      }
     } catch (err) {
       spinner.stop();
       const message = err instanceof Error ? err.message : String(err);
