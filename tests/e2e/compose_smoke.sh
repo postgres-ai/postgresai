@@ -31,6 +31,7 @@ PGAI_REGISTRY=${registry}
 PGAI_TAG=${PGAI_TAG}
 PGAI_MON_TOKEN=${token}
 REPLICATOR_PASSWORD=$(rand_hex 32)
+GF_SECURITY_ADMIN_PASSWORD=$(rand_hex 16)
 INSTANCE_JOBS_USER=${owner}
 EOF
 cp "${root}/instances.demo.yml" "${smoke_dir}/instances.yml"

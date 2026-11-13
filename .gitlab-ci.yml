@@ -1201,7 +1201,7 @@ integration:xmin-horizon:
     - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
     - REPLICATOR_PASSWORD="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
     - PGAI_MON_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" "PGAI_MON_TOKEN=$PGAI_MON_TOKEN" > .env
+    - printf "%s\n" "PGAI_REGISTRY=$CI_REGISTRY_IMAGE" "PGAI_TAG=$PGAI_TAG" "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" "PGAI_MON_TOKEN=$PGAI_MON_TOKEN" "GF_SECURITY_ADMIN_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" > .env
     # pgai-mon runs as an unprivileged uid: the demo instances.yml (demo
     # credentials only) and the empty host-metrics/ must be readable by it.
     - cp instances.demo.yml instances.yml && chmod 0644 instances.yml

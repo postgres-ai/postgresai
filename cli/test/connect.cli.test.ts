@@ -65,6 +65,7 @@ const clean = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\
 /** Runs in a terminal, typing each answer (keys as sent, so end a line with \\r) when its prompt appears; returns the screen text. */
 async function runTty(args: string[], env: Record<string, string>, answers: [prompt: string | RegExp, answer: string][]) {
   let out = "";
+  let answered = 0; // screen length when the last prompt was answered: one prompt takes one answer
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
     env: cliEnv({ PGAI_NO_FEEDBACK_TIP: "1", ...env }),
     terminal: {
@@ -73,7 +74,9 @@ async function runTty(args: string[], env: Record<string, string>, answers: [pro
         out += new TextDecoder().decode(bytes);
         // Typed a moment after the prompt, once readline owns the terminal (input sent earlier can be flushed).
         const prompt = answers[0]?.[0];
-        if (prompt !== undefined && (typeof prompt === "string" ? clean(out).endsWith(prompt) : prompt.test(clean(out)))) {
+        const screen = clean(out);
+        if (prompt !== undefined && screen.length > answered && (typeof prompt === "string" ? screen.endsWith(prompt) : prompt.test(screen))) {
+          answered = screen.length;
           const answer = answers.shift()![1];
           setTimeout(() => term.write(answer), 100);
         }

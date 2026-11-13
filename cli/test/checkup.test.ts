@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "path";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
 import type { Client } from "pg";
 
 // Import from source directly since we're using Bun
@@ -30,11 +32,14 @@ const formatPostgresTimestamp = (epochSeconds: number) =>
 const POSTMASTER_STARTUP_TIME = formatPostgresTimestamp(POSTMASTER_STARTUP_EPOCH);
 const POSTMASTER_UPTIME_SECONDS = TEST_NOW_EPOCH - POSTMASTER_STARTUP_EPOCH;
 
+// An empty config directory: the CLI under test must not see the developer's own login.
+const NO_LOGIN = mkdtempSync(resolve(tmpdir(), "pgai-checkup-test-"));
+
 function runCli(args: string[], env: Record<string, string> = {}) {
   const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
   const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
   const result = Bun.spawnSync([bunBin, cliPath, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, XDG_CONFIG_HOME: NO_LOGIN, ...env },
   });
   return {
     status: result.exitCode,
@@ -49,7 +54,7 @@ async function runCliAsync(args: string[], env: Record<string, string> = {}) {
   const cliPath = resolve(import.meta.dir, "..", "bin", "postgres-ai.ts");
   const bunBin = typeof process.execPath === "string" && process.execPath.length > 0 ? process.execPath : "bun";
   const proc = Bun.spawn([bunBin, cliPath, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, XDG_CONFIG_HOME: NO_LOGIN, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -3381,7 +3386,7 @@ describe("checkup-api", () => {
         try {
           await api.createCheckupReport({
             apiKey: "dummy",
-            apiBaseUrl: "http://127.0.0.2:1/api", // non-loopback-match hostname, connect refused port
+            apiBaseUrl: "http://0.0.0.0:1/api", // not a loopback name for the guard; the connect is refused at once (127.0.0.2 hangs on macOS)
             project: "p",
           });
         } catch (e) {

@@ -191,7 +191,8 @@ services:
     mem_limit: ${GRAFANA_MEM:-536870912}
     environment:
       GF_SECURITY_ADMIN_USER: monitor
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-demo}
+      # No default: the CLI generates one at install (.pgwatch-config) and passes it.
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD is required (the Grafana admin password; set it in .env)}
       # Infinity: the datasource that runs pgai-mon SQL.
       GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
       GF_PATHS_PROVISIONING: /postgres_ai_configs/grafana/provisioning

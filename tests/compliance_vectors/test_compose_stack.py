@@ -29,6 +29,7 @@ REQUIRED_ENV = {
     "PGAI_TAG": "test",
     "PGAI_MON_TOKEN": "test-token-0123456789",
     "REPLICATOR_PASSWORD": "test-replicator-password",
+    "GF_SECURITY_ADMIN_PASSWORD": "test-grafana-password",
 }
 
 # Per-service limits: variable and default (bytes / CPUs). .env.example documents each.
@@ -186,8 +187,8 @@ def test_env_example_documents_the_stack():
 
 
 @needs_compose
-def test_token_and_tag_are_required():
-    for var in ("PGAI_MON_TOKEN", "PGAI_TAG"):
+def test_token_tag_and_grafana_password_are_required():
+    for var in ("PGAI_MON_TOKEN", "PGAI_TAG", "GF_SECURITY_ADMIN_PASSWORD"):
         r = render(drop=(var,))
         assert r.returncode != 0 and var in r.stderr, f"compose must refuse to start without {var}"
 

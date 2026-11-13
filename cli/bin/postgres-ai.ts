@@ -4183,8 +4183,7 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
 
     if (!grafanaPassword) {
       console.log("Generating secure Grafana password...");
-      const { stdout: password } = await execFilePromise("openssl", ["rand", "-base64", "12"]);
-      grafanaPassword = password.trim().replace(/\n/g, "");
+      grafanaPassword = crypto.randomBytes(12).toString("base64");
 
       let configContent = "";
       if (fs.existsSync(cfgPath)) {
@@ -4211,9 +4210,8 @@ async function ensureGrafanaPassword(cfgPath: string): Promise<string> {
 
     console.log("✓ Grafana password configured\n");
   } catch (error) {
-    console.error("⚠ Could not generate Grafana password automatically");
-    console.log("Using default password: demo\n");
-    grafanaPassword = "demo";
+    // No well-known fallback: Grafana does not start without a password.
+    throw new Error(`Could not save the Grafana password to ${cfgPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   return grafanaPassword;
 }
