@@ -63,7 +63,7 @@ def test_reprovisioned_and_read_only_like_the_others():
     doc = _load(PGAI_MON_FILE)
     ds = _datasource()
     assert {"name": ds["name"], "orgId": ds["orgId"]} in doc["deleteDatasources"]
-    assert ds["editable"] is False and ds["isDefault"] is False
+    assert ds["editable"] is False and ds["isDefault"] is True
 
 
 def test_no_collision_with_the_other_provisioning_files():

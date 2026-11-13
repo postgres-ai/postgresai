@@ -31,6 +31,8 @@ variables {
   use_elastic_ip      = false
   grafana_password    = "test-password" # gitleaks:allow (mock value for plan-only tests)
   postgres_ai_version = "0.18.0-rc.1"
+  # a named bucket: the name of a created one is unknown at plan time, and user_data carries it
+  store_s3_bucket = "test-store-bucket"
 }
 
 run "tag_and_generated_secrets" {

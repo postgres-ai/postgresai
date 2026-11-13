@@ -173,12 +173,6 @@ def postgresql(request):
         )
         conn.autocommit = True
 
-        # Store test_db name for cleanup
-        conn._test_db_name = test_db
-        conn._pg_user = user
-        conn._pg_host = host
-        conn._pg_port = port
-
         yield conn
 
         # Cleanup

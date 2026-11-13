@@ -77,7 +77,7 @@ const datasources = JSON.parse(process.env.DATASOURCES_JSON || "[]");
 // datasource; the old stack's PGWatch-* and Infinity ones must be gone (an
 // upgraded volume deletes them through deleteDatasources).
 const expected = new Map([
-  ["pgai-mon", { uid: "pgai-mon", orgId: 1, isDefault: false, type: "yesoreyeram-infinity-datasource" }],
+  ["pgai-mon", { uid: "pgai-mon", orgId: 1, isDefault: true, type: "yesoreyeram-infinity-datasource" }],
 ]);
 const staleUids = new Set(["stale-pgai-mon"]);
 const byName = new Map(datasources.map((datasource) => [datasource.name, datasource]));

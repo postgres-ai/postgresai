@@ -36,7 +36,8 @@ datasources:
     orgId: 1
     access: proxy
     uid: pgai-mon
-    isDefault: false
+    # The only datasource: Grafana makes it the default whatever this says.
+    isDefault: true
     jsonData:
       auth_method: bearerToken
       allowedHosts:
