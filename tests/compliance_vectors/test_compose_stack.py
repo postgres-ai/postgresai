@@ -179,7 +179,8 @@ def test_env_example_documents_the_stack():
     for cpus_var, cpus, mem_var, mem in SERVICE_LIMITS.values():
         assert documented.get(cpus_var) == cpus, cpus_var
         assert documented.get(mem_var) == mem, mem_var
-    for gone in ("VM_AUTH", "VM_RETENTION", "SINK_", "PGWATCH_", "FLASK_", "CADVISOR_", "QUERYID_RETENTION"):
+    # VM_RETENTION_PERIOD and QUERYID_RETENTION_HOURS stay: pgai-mon still reads them
+    for gone in ("VM_AUTH", "SINK_", "PGWATCH_", "FLASK_", "CADVISOR_"):
         assert gone not in text, f".env.example still mentions {gone}"
 
 
@@ -267,3 +268,12 @@ def test_secrets_are_not_on_any_command_line():
     for name, svc in services.items():
         cmd = " ".join(map(str, (svc.get("command") or []) + (svc.get("entrypoint") or [])))
         assert REQUIRED_ENV["PGAI_MON_TOKEN"] not in cmd, name
+
+
+def test_the_grafana_plugin_is_pinned():
+    """Grafana downloads the plugin at start: without a version every restart may run new code
+    that holds the read token."""
+    text = COMPOSE_PATH.read_text()
+    plugins = re.search(r"^\s*GF_INSTALL_PLUGINS:\s*(.+)$", text, re.M).group(1)
+    for plugin in plugins.split(","):
+        assert re.fullmatch(r"[a-z0-9-]+ \d+\.\d+\.\d+", plugin.strip()), plugin

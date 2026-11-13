@@ -22,13 +22,9 @@ stages:
   - security
   - build
   - test
-  - validate
   - publish
   - release
   - preview
-
-variables:
-  HELM_VERSION: "3.13.0"
 
 # Build images from current code for e2e tests
 # Images are pushed to GitLab Container Registry and pulled by test jobs
@@ -165,7 +161,7 @@ build:test:images:
       echo "  $CI_REGISTRY_IMAGE/instance-jobs:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ─── pgai-mon (mon/: Rust crate, image) ───────────────────────────────────────
 # Cargo registry and target dir live in the build directory so GitLab can cache
@@ -211,7 +207,7 @@ mon:build:
     expire_in: 2 days
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # rustfmt + clippy (-D warnings), then
 # every test. tests/collector_pg.rs runs against the postgres service
@@ -243,7 +239,6 @@ mon:test:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - mon/**/*
-        - mon/metrics.yml
         - quality/scripts/mon-lint.sh
         - .gitlab-ci.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -286,7 +281,7 @@ build:test:pgai-mon-image:
       echo "Pushed $CI_REGISTRY_IMAGE/pgai-mon:$PGAI_TAG"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # docker-compose.yml end to end: up, pgai-mon healthy, SQL refused without the
 # token and answered with it, data collected from the demo target, down.
@@ -335,7 +330,12 @@ reporter:tests:
     - apt-get update
     - apt-get install -y --no-install-recommends postgresql postgresql-client && rm -rf /var/lib/apt/lists/*
     - pip install -r reporter/requirements-dev.txt
-    # Start PostgreSQL for integration tests
+    # Start PostgreSQL for integration tests. They connect over TCP to localhost
+    # with no password (tests/reporter/conftest.py): trust loopback in this
+    # throwaway cluster. Without it, and with CI=true below, they fail; before
+    # CI=true was passed they were silently skipped.
+    - sed -i -E 's#^(host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1/32|::1/128)[[:space:]]+).*#\1trust#' /etc/postgresql/*/main/pg_hba.conf
+    - grep -Ec '^host.*trust$' /etc/postgresql/*/main/pg_hba.conf
     - service postgresql start
     - su - postgres -c "psql -c 'SELECT version();'" || echo "PostgreSQL started"
   script:
@@ -345,8 +345,9 @@ reporter:tests:
     # instead of letting pytest-postgresql spin up its own (which hangs
     # in this image — see tests/reporter/conftest.py for the same fix).
     # `su -` drops the environment: CI=true makes the tests that need pgai-mon
-    # fail, not skip, if the binary is missing.
-    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && CI=true PGAI_USE_SYSTEM_PG=1 PGAI_MON_BIN=\"$CI_PROJECT_DIR/bin/pgai-mon\" python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter tests/compliance_vectors/test_mr262_pgwatch_topn_integration.py"
+    # fail, not skip, if the binary is missing. HYPOTHESIS_PROFILE=ci: the
+    # property tests' profile with no per-example deadline (coverage slows them).
+    - su - postgres -c "cd \"$CI_PROJECT_DIR\" && CI=true HYPOTHESIS_PROFILE=ci PGAI_USE_SYSTEM_PG=1 PGAI_MON_BIN=\"$CI_PROJECT_DIR/bin/pgai-mon\" python -m pytest --run-integration --cov=reporter --cov-report=term --cov-report=xml:coverage/reporter-coverage.xml tests/reporter tests/compliance_vectors/test_mr262_pgwatch_topn_integration.py tests/compliance_vectors/test_compliance.py tests/compliance_vectors/test_property.py tests/compliance_vectors/test_golden_snapshots.py"
     # Fix ownership for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/coverage" || true
   coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+)%/'
@@ -359,8 +360,10 @@ reporter:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
-# The compose and collector-SQL contract tests. Without Docker in this image the
-# tests that render `docker compose config` skip; the raw-YAML ones run.
+# The compose and collector-SQL (mon/metrics.yml) contract tests. The compose
+# tests render `docker compose config`, which needs the docker CLI and its
+# compose plugin but no daemon: both are installed here, and the job fails if
+# a compose test is skipped all the same.
 compose:contract:tests:
   stage: test
   image: python:3.11-bookworm
@@ -368,10 +371,29 @@ compose:contract:tests:
     GIT_STRATEGY: fetch
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     PIP_NO_CACHE_DIR: "1"
+    DOCKER_CLI_VERSION: "27.3.1"
+    DOCKER_COMPOSE_VERSION: "2.29.7"
   before_script:
     - pip install pytest pyyaml
+    - curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+    - mkdir -p /usr/local/lib/docker/cli-plugins
+    - curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"
+    - chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+    - docker --version && docker compose version
   script:
-    - python -m pytest tests/compliance_vectors/test_compose_stack.py tests/compliance_vectors/test_work_item_290_db_stats.py tests/compliance_vectors/test_mr219_monitoring_guards.py tests/compliance_vectors/test_init_configs.py -v
+    - |
+      set -euo pipefail
+      python -m pytest -v -rs \
+        tests/compliance_vectors/test_compose_stack.py \
+        tests/compliance_vectors/test_work_item_290_db_stats.py \
+        tests/compliance_vectors/test_mr219_monitoring_guards.py \
+        tests/compliance_vectors/test_init_configs.py \
+        tests/compliance_vectors/test_work_item_199_lock_waits.py \
+        tests/settings tests/multixact | tee pytest.log
+      if grep -E '^SKIPPED .*test_compose_stack\.py' pytest.log; then
+        echo "FAIL: compose contract tests were skipped (docker compose not usable)"
+        exit 1
+      fi
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -433,13 +455,16 @@ cli:node:smoke:
     - grep -q 'test_key' ~/.config/postgresai/config.json
     - node ./cli/dist/bin/postgres-ai.js auth remove-key
     - if grep -q 'apiKey' ~/.config/postgresai/config.json; then echo 'key not removed' && exit 1; fi
-    - node ./cli/dist/bin/postgres-ai.js mon targets list | head -n 1 || true
-    - node ./cli/dist/bin/postgres-ai.js mon targets add 'postgresql://user:pass@host:5432/db' ci-test || true
-    - node ./cli/dist/bin/postgres-ai.js mon targets remove ci-test || true
+    # No Docker here: adding and removing a target only edit instances.yml.
+    - node ./cli/dist/bin/postgres-ai.js mon targets add 'postgresql://user:pass@host:5432/db' ci-test
+    - node ./cli/dist/bin/postgres-ai.js mon targets list | grep -q 'ci-test'
+    - node ./cli/dist/bin/postgres-ai.js mon targets remove ci-test
+    - if node ./cli/dist/bin/postgres-ai.js mon targets list | grep -q 'ci-test'; then echo 'target not removed' && exit 1; fi
     # Exercise OAuth against the auth suite's loopback API and callback fixtures.
     - cd cli && bun test test/auth.test.ts
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 cli:node:tests:
   stage: test
@@ -470,6 +495,7 @@ cli:node:tests:
     # Use 'bun run test' (not 'bun test') to invoke the npm script which generates metrics-embedded.ts first
     # Coverage is enabled via bunfig.toml and outputs text + lcov reports
     - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" PGAI_TEST_REQUIRE_PG16=1 && bun run test"
+    - su - pgtest -c "cd \"$CI_PROJECT_DIR/cli\" && export PATH=\"\$HOME/.bun/bin:\$PATH\" && bun run typecheck"
     # Fix ownership of coverage directory for artifact collection
     - chown -R root:root "$CI_PROJECT_DIR/cli/coverage" || true
   # Regex matches Bun coverage table: "All files | % Funcs | % Lines |" - captures % Lines
@@ -612,9 +638,12 @@ cli:npm:publish:
   stage: publish
   interruptible: false  # Never cancel publish jobs
   # The CLI pulls the images of its own version (mon local-install): publish it
-  # only once they are pushed. That job waits for the earlier stages itself.
+  # only once they are pushed and the stack made of them has passed the smoke
+  # test. Those jobs wait for the earlier stages themselves.
   needs:
     - job: docker:publish:images
+      artifacts: false
+    - job: release:compose:smoke
       artifacts: false
   image: node:20-bookworm
   variables:
@@ -810,6 +839,8 @@ images:promote:
 .docker-build-script: &docker-build-script |
   echo "Logging into container registry..."
   echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+  # The pgai-mon build cache is in this project's registry.
+  echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
 
   echo "Enabling binfmt (QEMU) for arm64 builds..."
   docker run --privileged --rm tonistiigi/binfmt --install arm64
@@ -842,10 +873,13 @@ images:promote:
 
   # pgai-mon: the build stage cross-compiles on the runner's platform (no QEMU
   # compile); the arm64 runtime stage runs `pgai-mon --version` under QEMU.
+  # The cache is the one build:test:pgai-mon-image writes on main (linux/amd64
+  # only: a tag on main's head reuses the amd64 compile, arm64 is compiled).
   docker buildx build \
     --platform "$PLATFORMS" \
     --build-arg "VERSION=$VERSION" \
     --build-arg "BUILD_TS=$BUILD_TS" \
+    --cache-from "type=registry,ref=$CI_REGISTRY_IMAGE/pgai-mon/buildcache:main" \
     -f mon/Dockerfile \
     -t "postgresai/pgai-mon:$VERSION" \
     --push \
@@ -898,6 +932,34 @@ docker:publish:images:
       when: never
     - if: '$CI_COMMIT_TAG'
 
+# The images just published (Docker Hub, this tag), brought up as a user gets
+# them: tests/e2e/compose_smoke.sh, as compose:smoke runs it on branch images.
+# Tag pipelines run no other test; the npm publish waits for this one.
+release:compose:smoke:
+  stage: publish
+  image: docker:27.3
+  services:
+    - name: docker:27.3-dind
+      command: ["--tls=false"]
+  needs:
+    - job: docker:publish:images
+      artifacts: false
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_API_VERSION: "1.45"
+    GIT_STRATEGY: fetch
+    PGAI_TAG: ${CI_COMMIT_TAG}
+    PGAI_REGISTRY: postgresai
+  before_script:
+    - apk add --no-cache bash coreutils
+  script:
+    - bash tests/e2e/compose_smoke.sh
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^helm-v/'
+      when: never
+    - if: '$CI_COMMIT_TAG'
+
 cli:node:e2e:dind:
   stage: test
   image: node:20-alpine
@@ -913,6 +975,7 @@ cli:node:e2e:dind:
     DOCKER_API_VERSION: "1.45"
     GIT_STRATEGY: fetch
     PGAI_TAG: ${CI_COMMIT_REF_SLUG}
+    PGAI_MON_URL: http://docker:18765
   before_script:
     - corepack enable || true
     - apk add --no-cache bash curl unzip docker-cli docker-compose openssl postgresql-client
@@ -942,12 +1005,16 @@ cli:node:e2e:dind:
         "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" \
         "PGAI_MON_TOKEN=$PGAI_MON_TOKEN" \
         "GRAFANA_BIND_HOST=0.0.0.0:" > .env
+    # pgai-mon is published on the dind host's 127.0.0.1 only: forward a port
+    # of that host to it, for `mon health` (PGAI_MON_URL above).
+    - docker run -d --name pgai-mon-forward --network host alpine:3.19 sh -c 'apk add --no-cache socat >/dev/null && exec socat TCP-LISTEN:18765,fork,reuseaddr TCP:127.0.0.1:8765'
   script:
     - ./tests/e2e.cli.sh
   after_script:
     - docker ps -a || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 cli:node:full:dind:
   stage: test
@@ -964,6 +1031,7 @@ cli:node:full:dind:
     DOCKER_API_VERSION: "1.45"
     GIT_STRATEGY: fetch
     PGAI_TAG: ${CI_COMMIT_REF_SLUG}
+    PGAI_MON_URL: http://docker:18765
   before_script:
     - corepack enable || true
     - apk add --no-cache bash curl unzip git docker-cli docker-compose openssl postgresql-client
@@ -993,6 +1061,9 @@ cli:node:full:dind:
         "REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD" \
         "PGAI_MON_TOKEN=$PGAI_MON_TOKEN" \
         "GRAFANA_BIND_HOST=0.0.0.0:" > .env
+    # pgai-mon is published on the dind host's 127.0.0.1 only: forward a port
+    # of that host to it, for `mon health` (PGAI_MON_URL above).
+    - docker run -d --name pgai-mon-forward --network host alpine:3.19 sh -c 'apk add --no-cache socat >/dev/null && exec socat TCP-LISTEN:18765,fork,reuseaddr TCP:127.0.0.1:8765'
   script:
     - echo "=== Testing local-install (demo mode) ==="
     - node ./cli/dist/bin/postgres-ai.js mon local-install --demo
@@ -1000,11 +1071,13 @@ cli:node:full:dind:
     - node ./cli/dist/bin/postgres-ai.js mon status
     - echo ""
     - echo "=== Testing shell command ==="
-    - echo "SELECT 1;" | node ./cli/dist/bin/postgres-ai.js mon shell target-db || true
+    # The shell reads its commands from stdin.
+    - echo "pg_isready -U postgres" | node ./cli/dist/bin/postgres-ai.js mon shell target-db
     - echo ""
     - echo "=== Testing complete workflow ==="
     - node ./cli/dist/bin/postgres-ai.js mon targets add "postgresql://monitor:monitor_pass@target-db:5432/target_database" demo-test
     - node ./cli/dist/bin/postgres-ai.js mon targets list
+    # Fails here: target-db resolves on the compose network only, not in this job's container.
     - node ./cli/dist/bin/postgres-ai.js mon targets test demo-test || true
     - node ./cli/dist/bin/postgres-ai.js mon health --wait 120
     - node ./cli/dist/bin/postgres-ai.js mon show-grafana-credentials
@@ -1169,7 +1242,7 @@ cli:node:full:dind:
     - echo ""
     - echo "=== Cleanup ==="
     - node ./cli/dist/bin/postgres-ai.js mon stop
-    - node ./cli/dist/bin/postgres-ai.js mon clean || true
+    - node ./cli/dist/bin/postgres-ai.js mon clean
   after_script:
     - docker ps -a || true
     - docker logs pgai-mon 2>&1 | tail -200 || true
@@ -1178,7 +1251,7 @@ cli:node:full:dind:
     - docker logs empty-mon 2>&1 | tail -50 || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   allow_failure: false
 
 integration:xmin-horizon:
@@ -1290,6 +1363,15 @@ integration:xmin-horizon:
     - docker compose down -v || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - tests/xmin_horizon/**/*
+        - mon/**/*
+        - reporter/mon_client.py
+        - reporter/promsql.py
+        - config/target-db/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - tests/xmin_horizon/**/*
         - mon/**/*

@@ -199,8 +199,9 @@ services:
       GF_SECURITY_ADMIN_USER: monitor
       # No default: the CLI generates one at install (.pgwatch-config) and passes it.
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD is required (the Grafana admin password; set it in .env)}
-      # Infinity: the datasource that runs pgai-mon SQL.
-      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
+      # Infinity: the datasource that runs pgai-mon SQL. Pinned ("id version"): Grafana
+      # downloads it at start, and an unpinned plugin would change under a running install.
+      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource 4.1.6
       GF_PATHS_PROVISIONING: /postgres_ai_configs/grafana/provisioning
       GF_PATHS_CONFIG: /postgres_ai_configs/grafana/provisioning/grafana.ini
       GF_FEATURE_TOGGLES_ENABLE: grafanaconThemes

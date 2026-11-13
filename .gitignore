@@ -69,16 +69,20 @@ cli/**/*.d.ts.map
 # Generated at build time from metrics.yml
 cli/lib/metrics-embedded.ts
 
-# Generated config files (these are created by the sources-generator)
-config/pgwatch-postgres/sources.yml
-config/pgwatch-prometheus/sources.yml
-
 # Volume data (if accidentally committed)
 data/
 volumes/
 .pgwatch-config
 
-.env.hypothesis/
+# Test outputs: the Hypothesis example database, the compose smoke test's
+# project directory (tests/e2e/compose_smoke.sh)
+.hypothesis/
+.compose-smoke/
+
+# CI job outputs under the build directory (mon:build): CARGO_HOME and the
+# pgai-mon binary handed to the Python test jobs
+.cargo-home/
+/bin/
 
 # Runtime instances config (created from instances.demo.yml or by CLI)
 instances.yml

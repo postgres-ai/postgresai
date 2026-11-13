@@ -23,11 +23,18 @@ from reporter.postgres_reports import PostgresReportGenerator
 
 @pytest.fixture(name="generator")
 def fixture_generator() -> PostgresReportGenerator:
-    """Create a generator with mock URLs."""
-    return PostgresReportGenerator(
+    """Create a generator whose queries answer nothing unless a test stubs them.
+
+    The reports ask for more than each test stubs (the Postgres version, the
+    per-query series): those get the "no data" answers, not a network call.
+    """
+    gen = PostgresReportGenerator(
         prometheus_url="http://prom.test:9090",
         postgres_sink_url=None,
     )
+    gen.query_instant = lambda query: {}
+    gen.query_range = lambda query, start_time, end_time, step="30s": []
+    return gen
 
 
 @pytest.fixture(name="prom_result")
@@ -110,11 +117,12 @@ class TestG001MemorySettingsReport:
         prom_result: Callable,
     ) -> None:
         """Normal operation with valid memory settings."""
+        # As pg_settings has them: a bare number in the setting's unit.
         metrics = [
-            {"metric": {"setting_name": "shared_buffers", "setting_value": "128MB", "category": "Memory", "unit": "8kB", "context": "postmaster", "vartype": "integer"}},
-            {"metric": {"setting_name": "work_mem", "setting_value": "4MB", "category": "Memory", "unit": "kB", "context": "user", "vartype": "integer"}},
-            {"metric": {"setting_name": "maintenance_work_mem", "setting_value": "64MB", "category": "Memory", "unit": "kB", "context": "user", "vartype": "integer"}},
-            {"metric": {"setting_name": "effective_cache_size", "setting_value": "4GB", "category": "Memory", "unit": "8kB", "context": "user", "vartype": "integer"}},
+            {"metric": {"setting_name": "shared_buffers", "setting_value": "16384", "category": "Memory", "unit": "8kB", "context": "postmaster", "vartype": "integer"}},
+            {"metric": {"setting_name": "work_mem", "setting_value": "4096", "category": "Memory", "unit": "kB", "context": "user", "vartype": "integer"}},
+            {"metric": {"setting_name": "maintenance_work_mem", "setting_value": "65536", "category": "Memory", "unit": "kB", "context": "user", "vartype": "integer"}},
+            {"metric": {"setting_name": "effective_cache_size", "setting_value": "524288", "category": "Memory", "unit": "8kB", "context": "user", "vartype": "integer"}},
             {"metric": {"setting_name": "max_connections", "setting_value": "100", "category": "Connections", "unit": "", "context": "postmaster", "vartype": "integer"}},
         ]
         monkeypatch.setattr(generator, "query_instant", lambda q: prom_result(metrics))
@@ -146,7 +154,7 @@ class TestG001MemorySettingsReport:
     ) -> None:
         """Only some memory settings available."""
         metrics = [
-            {"metric": {"setting_name": "shared_buffers", "setting_value": "256MB", "category": "Memory", "unit": "8kB", "context": "postmaster", "vartype": "integer"}},
+            {"metric": {"setting_name": "shared_buffers", "setting_value": "32768", "category": "Memory", "unit": "8kB", "context": "postmaster", "vartype": "integer"}},
         ]
         monkeypatch.setattr(generator, "query_instant", lambda q: prom_result(metrics))
 
@@ -416,12 +424,12 @@ class TestK003TopQueriesReport:
         databases = ["db1", "db2"]
         timeline = [1704067200]
         exec_data = {
-            "db1": {"q1": [10000.0], "q2": [5000.0]},
-            "db2": {"q3": [20000.0]},
+            "db1": {"1001": [10000.0], "1002": [5000.0]},
+            "db2": {"1003": [20000.0]},
         }
         plan_data = {
-            "db1": {"q1": [1000.0], "q2": [500.0]},
-            "db2": {"q3": [2000.0]},
+            "db1": {"1001": [1000.0], "1002": [500.0]},
+            "db2": {"1003": [2000.0]},
         }
         other_exec = {"db1": [100.0], "db2": [200.0]}
         other_plan = {"db1": [10.0], "db2": [20.0]}

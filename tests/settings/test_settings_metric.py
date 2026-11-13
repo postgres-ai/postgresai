@@ -8,7 +8,7 @@ lock_timeout override during metric collection.
 See: https://gitlab.com/postgres-ai/postgres_ai/-/issues/61
 """
 
-import os
+import re
 from pathlib import Path
 
 import pytest
@@ -27,6 +27,25 @@ def fixture_metrics_config() -> dict:
     metrics_path = get_metrics_yml_path()
     with open(metrics_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+# The settings the collector's session overrides; the SQL must list at least these.
+OVERRIDDEN_SETTINGS = {"lock_timeout", "statement_timeout", "search_path"}
+
+
+def normalized(sql: str) -> str:
+    """Collapse whitespace: the tests do not depend on how the SQL is wrapped."""
+    return re.sub(r"\s+", " ", sql)
+
+
+def overridden_setting_lists(sql: str) -> list[tuple[set[str], str]]:
+    """Every `when name in (...) then <expr>` branch: (names, what it yields)."""
+    return [
+        (set(re.findall(r"'([^']+)'", names)), expr.strip())
+        for names, expr in re.findall(
+            r"when name in \(([^)]*)\) then (.*?) else", normalized(sql)
+        )
+    ]
 
 
 @pytest.mark.unit
@@ -58,9 +77,10 @@ def test_settings_metric_uses_reset_val_for_overridden_settings(metrics_config: 
     assert "lock_timeout" in sql, "SQL should reference lock_timeout"
     assert "statement_timeout" in sql, "SQL should reference statement_timeout"
 
-    # More specific check: ensure the CASE statement handles both settings
-    assert "name in ('lock_timeout', 'statement_timeout', 'search_path')" in sql, \
-        "SQL should use IN clause to handle both lock_timeout and statement_timeout"
+    # The value branch lists every overridden setting and yields reset_val.
+    value_lists = [names for names, expr in overridden_setting_lists(sql) if expr == "reset_val"]
+    assert len(value_lists) == 1, "one CASE should replace setting with reset_val"
+    assert OVERRIDDEN_SETTINGS <= value_lists[0]
 
 
 @pytest.mark.unit
@@ -100,18 +120,17 @@ def test_settings_metric_numeric_value_uses_correct_source_for_overridden_settin
     """
     Test that numeric_value also uses reset_val for overridden settings.
 
-    The numeric_value field should be derived from the same source as tag_setting_value
-    to ensure consistency.
+    tag_setting_value and numeric_value must both come from the one expression
+    that picks reset_val (effective_setting), never from the raw setting column.
     """
-    sql = metrics_config["metrics"]["settings"]["sqls"][11]
+    sql = normalized(metrics_config["metrics"]["settings"]["sqls"][11])
 
-    # Count occurrences of the CASE expression for overridden settings
-    # It should appear twice: once for tag_setting_value and once for numeric_value
-    case_expr = "case when name in ('lock_timeout', 'statement_timeout', 'search_path') then reset_val else setting end"
-    occurrences = sql.count(case_expr)
-
-    assert occurrences >= 2, \
-        f"CASE expression for overridden settings should appear at least twice (for tag_setting_value and numeric_value), found {occurrences}"
+    assert "then reset_val else setting end as effective_setting" in sql
+    assert "effective_setting as tag_setting_value" in sql
+    assert re.search(r"then effective_setting::bigint else null end as numeric_value", sql), \
+        "numeric_value should be cast from effective_setting"
+    assert not re.search(r"(?<![a-z_])setting::", sql), \
+        "nothing should be cast from the raw setting column"
 
 
 @pytest.mark.unit
@@ -130,64 +149,12 @@ def test_settings_metric_is_default_uses_boot_val_for_overridden_settings(metric
     # Verify is_default uses boot_val comparison for overridden settings
     assert "boot_val" in sql, "SQL should reference boot_val column for is_default comparison"
 
-    # Check for the specific pattern that handles overridden settings specially
-    assert "name in ('lock_timeout', 'statement_timeout', 'search_path')" in sql and "boot_val" in sql, \
-        "SQL should use special handling for overridden settings in is_default calculation"
-
-
-@pytest.mark.integration
-@pytest.mark.requires_postgres
-def test_settings_metric_lock_timeout_returns_actual_value() -> None:
-    """
-    Integration test: verify lock_timeout returns the actual configured value.
-
-    This test requires a running PostgreSQL database and tests that even when
-    lock_timeout is set to a different value in the session, our query returns
-    the actual configured (reset) value.
-    """
-    try:
-        import psycopg
-    except ImportError:
-        pytest.skip("psycopg not available")
-
-    target_db_url = os.getenv(
-        "TARGET_DB_URL",
-        "postgresql://postgres:postgres@localhost:55432/target_database"
-    )
-
-    try:
-        conn = psycopg.connect(target_db_url)
-    except Exception as e:
-        pytest.skip(f"Could not connect to PostgreSQL: {e}")
-
-    try:
-        with conn.cursor() as cur:
-            # First, get the actual configured lock_timeout
-            cur.execute("select reset_val from pg_settings where name = 'lock_timeout'")
-            actual_value = cur.fetchone()[0]
-
-            # Now, simulate what pgwatch does - set a session-level lock_timeout
-            cur.execute("set lock_timeout = '100ms'")
-
-            # Query using our fixed SQL logic
-            cur.execute("""
-                select
-                    name,
-                    setting as raw_setting,
-                    reset_val,
-                    case when name = 'lock_timeout' then reset_val else setting end as our_value
-                from pg_settings
-                where name = 'lock_timeout'
-            """)
-            row = cur.fetchone()
-            name, raw_setting, reset_val, our_value = row
-
-            # Verify: raw_setting should be 100 (the session override)
-            # but our_value should be the actual configured value
-            assert raw_setting == "100", f"Session setting should be 100ms, got {raw_setting}"
-            assert our_value == actual_value, \
-                f"Our query should return reset_val ({actual_value}), not session value ({raw_setting})"
-            assert our_value == reset_val, "our_value should equal reset_val"
-
-    finally:
-        conn.close()
+    # The is_default branch covers every setting the value branch covers: a
+    # setting in one list only would report a wrong is_default (or a wrong value).
+    lists = overridden_setting_lists(sql)
+    assert len(lists) == 2, f"expected the value and the is_default branches, found {len(lists)}"
+    (value_names, value_expr), (default_names, default_expr) = lists
+    assert value_expr == "reset_val"
+    assert default_expr == "(reset_val = boot_val)"
+    assert OVERRIDDEN_SETTINGS <= value_names
+    assert value_names <= default_names

@@ -29,6 +29,8 @@ variables {
   allowed_cidr_blocks = []
   use_elastic_ip      = false
   grafana_password    = "test-password" # gitleaks:allow (mock value for plan-only tests)
+  # a named bucket: the name of a created one is unknown at plan time, and user_data carries it
+  store_s3_bucket = "test-store-bucket"
 }
 
 run "demo_db_turns_on_the_demo_profile" {

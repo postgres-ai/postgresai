@@ -1,0 +1,4 @@
+# Generated files: GitLab collapses their diffs in merge requests.
+# The dashboards are emitted by mon/grafana/compile.py and self_monitoring.py.
+mon/grafana/dashboards/*.json gitlab-generated
+mon/Cargo.lock gitlab-generated

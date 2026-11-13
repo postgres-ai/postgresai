@@ -233,14 +233,16 @@ if [[ ! -f instances.yml ]]; then
 fi
 
 echo "=== Testing service commands ==="
-$MON_CMD check || true
-$MON_CMD config || true
+$MON_CMD check
+$MON_CMD config
 $MON_CMD update-config
 $MON_CMD start
 sleep 10
 $MON_CMD status
-$MON_CMD logs --tail 5 grafana || true
-$MON_CMD health --wait 60 || true
+$MON_CMD logs --tail 5 grafana
+# Probes pgai-mon at PGAI_MON_URL (default http://127.0.0.1:8765): set it where
+# the docker host is not this host (docker-in-docker).
+$MON_CMD health --wait 120
 
 echo ""
 echo "=== Testing Grafana datasource provisioning after fresh start ==="
@@ -252,6 +254,8 @@ $MON_CMD targets list
 $MON_CMD targets add "postgresql://monitor:monitor_pass@target-db:5432/target_database" ci-test
 $MON_CMD targets list | grep -q ci-test
 sleep 5
+# Tolerated: target-db resolves on the compose network only, so the test
+# connects only where this script runs on that network.
 $MON_CMD targets test ci-test || true
 $MON_CMD targets remove ci-test
 
@@ -263,9 +267,9 @@ $CLI_CMD auth remove-key
 
 echo ""
 echo "=== Testing Grafana commands ==="
-$MON_CMD show-grafana-credentials || true
-$MON_CMD generate-grafana-password || true
-$MON_CMD show-grafana-credentials || true
+$MON_CMD show-grafana-credentials
+$MON_CMD generate-grafana-password
+$MON_CMD show-grafana-credentials
 
 echo ""
 echo "=== Testing service management ==="
@@ -277,7 +281,7 @@ wait_for_grafana_restart "${grafana_started_before_restart}"
 wait_for_grafana_datasources
 $MON_CMD status
 $MON_CMD stop
-$MON_CMD clean || true
+$MON_CMD clean
 
 echo ""
 echo "✓ All E2E tests passed"
