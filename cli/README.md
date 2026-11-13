@@ -533,7 +533,7 @@ postgresai mon local-install -y                               # Auto-accept all 
 # Service management
 postgresai mon start                  # Start monitoring services
 postgresai mon stop                   # Stop monitoring services
-postgresai mon restart [service]      # Restart all or specific monitoring service
+postgresai mon restart [service]      # Restart all services, or re-create one (applies new settings)
 postgresai mon status                 # Show monitoring services status
 postgresai mon health [--wait <sec>]  # Check monitoring services health
 ```
@@ -603,7 +603,7 @@ postgresai mon targets test <name>                # Test target connectivity
 postgresai mon config                         # Show monitoring configuration
 postgresai mon update-config                  # Apply configuration changes
 postgresai mon update                         # Update monitoring stack
-postgresai mon reset [service]                # Reset service data
+postgresai mon reset [service]                # Remove all data, or re-create one service (its named volumes are kept)
 postgresai mon clean                          # Cleanup artifacts
 postgresai mon check                          # System readiness check
 postgresai mon shell <service>                # Open shell to monitoring service

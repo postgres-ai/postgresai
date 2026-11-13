@@ -614,8 +614,13 @@ telemetry:tests:
 instance-jobs:tests:
   stage: test
   image: golang:1.24
+  # Every SQL the jobs send runs against a real pgai-mon (collect/pgaimon_test.go).
+  needs:
+    - job: mon:build
+      artifacts: true
   variables:
     GIT_STRATEGY: fetch
+    PGAI_MON_BIN: "$CI_PROJECT_DIR/bin/pgai-mon"
   script:
     - cd "$CI_PROJECT_DIR/instance-jobs"
     # gofmt first: a formatting difference would otherwise show up as an

@@ -6336,8 +6336,10 @@ mon
           }
         }
         console.log("\n✓ Update completed successfully");
-        console.log("\nTo apply updates, restart monitoring services:");
-        console.log("  postgres-ai mon restart");
+        // `mon start` is `compose up -d`: it re-creates the services whose image changed.
+        // `mon restart` would restart the old containers on the old images.
+        console.log("\nTo run the updated images:");
+        console.log("  postgres-ai mon start");
       } else {
         console.error("\n✗ Docker image update failed");
         // The old stack still runs, from a compose file that is gone. Put the
