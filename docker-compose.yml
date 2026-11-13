@@ -133,9 +133,13 @@ services:
     ports:
       - "127.0.0.1:8765:8765"
     environment:
-      # Never logged and never in argv; Grafana, the reporter and instance-jobs
-      # send the same value.
+      # Never logged and never in argv. The full token (the CLI uses it) may
+      # also write: push ingest.
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required (postgresai mon local-install generates it)}
+      # The read-only token: queries, no writes. Grafana, the reporter and
+      # instance-jobs send it, so a Grafana user cannot push samples through
+      # the datasource. Unset: they send the full token.
+      PGAI_MON_READ_TOKEN: ${PGAI_MON_READ_TOKEN:-}
       # Empty: the local store in pgai_mon_data. s3://bucket/prefix: the bucket.
       PGAI_MON_STORE: ${PGAI_MON_STORE:-}
       # Days of metrics and of query texts kept (empty: 14 and 30; 0: forever).
@@ -212,7 +216,7 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_DISABLE_LOGIN_FORM:-false}
       GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-}
       # Read by provisioning/datasources/pgai-mon.yml (the pgai-mon datasource's bearer token).
-      PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required for Grafana datasource provisioning}
+      PGAI_MON_TOKEN: ${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required for Grafana datasource provisioning}}
     ports:
       # Unset: 127.0.0.1 only. GRAFANA_BIND_HOST= (empty, as terraform's
       # grafana_bind_host = "") or 0.0.0.0: opens it beyond this host.
@@ -247,7 +251,7 @@ services:
       - postgres_ai_configs:/postgres_ai_configs:ro
     environment:
       - PGAI_MON_URL=http://pgai-mon:8765
-      - PGAI_MON_TOKEN=${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+      - PGAI_MON_TOKEN=${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}}
       # The target list: the same file pgai-mon collects.
       - REPORTER_SOURCES_PATH=/app/instances.yml
       # Upload checkup reports to the SAME platform that provisioned the
@@ -315,7 +319,7 @@ services:
       # Internal compose listener only; never publish this port.
       - PGAI_SUPABASE_METRICS_LISTEN=:9188
       - PGAI_MON_URL=http://pgai-mon:8765
-      - PGAI_MON_TOKEN=${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
+      - PGAI_MON_TOKEN=${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}}
       # Post results to the SAME platform that provisioned this instance, the
       # way the reporter does. Empty falls back to the production default, and
       # a HAND-WRITTEN api_base_url in .pgwatch-config wins over both (nothing

@@ -41,8 +41,8 @@ run "tag_and_generated_secrets" {
     error_message = "user_data must set PGAI_TAG to the release tag"
   }
   assert {
-    condition     = strcontains(aws_instance.main.user_data, "for secret_name in PGAI_MON_TOKEN REPLICATOR_PASSWORD; do")
-    error_message = "the instance must generate PGAI_MON_TOKEN and REPLICATOR_PASSWORD"
+    condition     = strcontains(aws_instance.main.user_data, "for secret_name in PGAI_MON_TOKEN PGAI_MON_READ_TOKEN REPLICATOR_PASSWORD; do")
+    error_message = "the instance must generate PGAI_MON_TOKEN, PGAI_MON_READ_TOKEN and REPLICATOR_PASSWORD"
   }
   assert {
     condition     = !strcontains(aws_instance.main.user_data, "VM_AUTH")

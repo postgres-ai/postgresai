@@ -101,8 +101,8 @@ GRAFANA_BIND_HOST=${grafana_bind_host}
 ENV_EOF
 
 # docker-compose.yml requires PGAI_TAG (the image tag: the release tag cloned
-# above) and PGAI_MON_TOKEN (pgai-mon's bearer token: Grafana, the reporter and
-# instance-jobs send it); the demo DB's replication needs REPLICATOR_PASSWORD.
+# above) and PGAI_MON_TOKEN (pgai-mon's bearer token); Grafana, the reporter and
+# instance-jobs send PGAI_MON_READ_TOKEN, which cannot write; the demo DB's replication needs REPLICATOR_PASSWORD.
 # Both secrets are generated here. PGAI_MON_STORE is the S3 store
 # (s3://bucket/prefix, credentials from the instance role) or empty for the
 # local Docker volume.
@@ -114,7 +114,7 @@ ENV_EOF
 # Assign first and check. The `|| true` is what keeps `set -e` from exiting on
 # the spot (an assignment from a failed substitution does trip it), so the loop
 # can report which secret it could not mint rather than write a blank one.
-for secret_name in PGAI_MON_TOKEN REPLICATOR_PASSWORD; do
+for secret_name in PGAI_MON_TOKEN PGAI_MON_READ_TOKEN REPLICATOR_PASSWORD; do
   secret_value=$(openssl rand -hex 32 || true)
   if [ -z "$secret_value" ]; then
     echo "FATAL: cannot generate $secret_name" >&2

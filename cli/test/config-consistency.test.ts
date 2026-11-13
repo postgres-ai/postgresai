@@ -296,14 +296,19 @@ describe("Config consistency", () => {
     expect(pgaiMonDatasource?.jsonData?.allowedHosts).toEqual(["http://pgai-mon:8765"]);
     expect(pgaiMonDatasource?.secureJsonData?.bearerToken).toBe("${PGAI_MON_TOKEN}");
 
-    // Grafana and every service that talks to pgai-mon get the same token,
-    // and compose refuses to start without it.
-    for (const service of ["grafana", "pgai-mon", "postgres-reports", "instance-jobs"]) {
+    // pgai-mon gets the full token and compose refuses to start without it.
+    // The readers (Grafana, the reporter, instance-jobs) get the read-only
+    // token, which cannot write, and the full one only when no read-only token
+    // is set.
+    const tokenOf = (service: string) => {
       const env = composeConfig.services?.[service]?.environment;
-      const value = Array.isArray(env)
+      return Array.isArray(env)
         ? env.find((entry) => entry.startsWith("PGAI_MON_TOKEN="))?.slice("PGAI_MON_TOKEN=".length)
         : env?.PGAI_MON_TOKEN;
-      expect(value, service).toMatch(/^\$\{PGAI_MON_TOKEN:\?.+\}$/);
+    };
+    expect(tokenOf("pgai-mon")).toMatch(/^\$\{PGAI_MON_TOKEN:\?.+\}$/);
+    for (const service of ["grafana", "postgres-reports", "instance-jobs"]) {
+      expect(tokenOf(service), service).toMatch(/^\$\{PGAI_MON_READ_TOKEN:-\$\{PGAI_MON_TOKEN:\?.+\}\}$/);
     }
   });
 

@@ -1,8 +1,11 @@
 //! HTTP authentication. Every route needs credentials except the liveness probe (`/livez`):
 //! a bearer token, HTTP basic auth, or either when both are configured. Credentials come from
-//! files or the environment, never from the YAML itself. Running without authentication must be
-//! asked for explicitly (`http.auth.disabled: true` or `PGAI_MON_AUTH_DISABLED=1`), for local
-//! development only; with no credentials and no opt-out the server refuses to start.
+//! files or the environment, never from the YAML itself.
+//! A second, read-only token (`PGAI_MON_READ_TOKEN`) may read (any GET, and `POST /sql`) but not
+//! write (push ingest): it is the one to hand to Grafana and other readers.
+//! Running without authentication must be asked for explicitly (`http.auth.disabled: true` or
+//! `PGAI_MON_AUTH_DISABLED=1`), for local development only; with no credentials and no opt-out
+//! the server refuses to start.
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -13,13 +16,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// `http.auth` in the YAML. Environment variables override each field:
-/// PGAI_MON_TOKEN, PGAI_MON_TOKEN_FILE, PGAI_MON_AUTH_USERNAME,
+/// PGAI_MON_TOKEN, PGAI_MON_TOKEN_FILE, PGAI_MON_READ_TOKEN, PGAI_MON_READ_TOKEN_FILE, PGAI_MON_AUTH_USERNAME,
 /// PGAI_MON_AUTH_PASSWORD, PGAI_MON_AUTH_PASSWORD_FILE, PGAI_MON_AUTH_DISABLED.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthCfg {
     /// File holding the bearer token (surrounding whitespace is ignored).
     pub token_file: Option<PathBuf>,
+    /// File holding the read-only bearer token.
+    pub read_token_file: Option<PathBuf>,
     /// Basic auth user name.
     pub username: Option<String>,
     /// File holding the basic auth password (surrounding whitespace is ignored).
@@ -31,8 +36,17 @@ pub struct AuthCfg {
 /// Resolved credentials. Secrets are kept only as SHA-256 digests, compared in constant time.
 pub struct Auth {
     token: Option<[u8; 32]>,
+    read_token: Option<[u8; 32]>,
     basic: Option<([u8; 32], [u8; 32])>,
     disabled: bool,
+}
+
+/// What a request's credentials allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Any GET, and `POST /sql` (itself read-only).
+    Read,
+    Full,
 }
 
 const MIN_SECRET_LEN: usize = 16;
@@ -76,6 +90,14 @@ impl Auth {
                 None => None,
             },
         };
+        let read_token = match (env("PGAI_MON_READ_TOKEN"), env("PGAI_MON_READ_TOKEN_FILE")) {
+            (Some(t), _) => Some(t.trim().to_string()),
+            (None, Some(f)) => Some(read_secret(std::path::Path::new(&f), "read-only token")?),
+            (None, None) => match &cfg.read_token_file {
+                Some(f) => Some(read_secret(f, "read-only token")?),
+                None => None,
+            },
+        };
         let username = env("PGAI_MON_AUTH_USERNAME").or_else(|| cfg.username.clone());
         let password = match (env("PGAI_MON_AUTH_PASSWORD"), env("PGAI_MON_AUTH_PASSWORD_FILE")) {
             (Some(p), _) => Some(p),
@@ -91,6 +113,16 @@ impl Auth {
                 "http.auth: the bearer token must be at least {MIN_SECRET_LEN} characters"
             );
         }
+        if let Some(t) = &read_token {
+            anyhow::ensure!(
+                t.len() >= MIN_SECRET_LEN,
+                "http.auth: the read-only token must be at least {MIN_SECRET_LEN} characters"
+            );
+            anyhow::ensure!(
+                token.as_ref() != Some(t),
+                "http.auth: the read-only token must differ from the bearer token"
+            );
+        }
         let basic = match (username, password) {
             (Some(u), Some(p)) => {
                 anyhow::ensure!(!u.contains(':'), "http.auth: the user name must not contain ':'");
@@ -104,14 +136,20 @@ impl Auth {
             _ => anyhow::bail!("http.auth: basic auth needs both a user name and a password"),
         };
         let token = token.map(|t| digest(t.as_bytes()));
-        if !disabled && token.is_none() && basic.is_none() {
+        let read_token = read_token.map(|t| digest(t.as_bytes()));
+        if !disabled && token.is_none() && basic.is_none() && read_token.is_none() {
             anyhow::bail!(
                 "http.auth: no credentials. Set PGAI_MON_TOKEN(_FILE) or PGAI_MON_AUTH_USERNAME + \
                  PGAI_MON_AUTH_PASSWORD(_FILE) (or http.auth in the config); for local development only, \
                  PGAI_MON_AUTH_DISABLED=1 / http.auth.disabled: true serves without authentication"
             );
         }
-        Ok(Self { token, basic, disabled })
+        Ok(Self {
+            token,
+            read_token,
+            basic,
+            disabled,
+        })
     }
 
     pub fn from_env(cfg: &AuthCfg) -> anyhow::Result<Self> {
@@ -122,6 +160,7 @@ impl Auth {
     pub fn disabled() -> Self {
         Self {
             token: None,
+            read_token: None,
             basic: None,
             disabled: true,
         }
@@ -133,37 +172,62 @@ impl Auth {
 
     /// Does this Authorization header value carry valid credentials?
     pub fn check(&self, authz: Option<&[u8]>) -> bool {
+        self.access(authz).is_some()
+    }
+
+    /// What this Authorization header value allows; None without valid credentials.
+    pub fn access(&self, authz: Option<&[u8]>) -> Option<Access> {
         if self.disabled {
-            return true;
+            return Some(Access::Full);
         }
-        let Some(h) = authz else { return false };
-        let Ok(h) = std::str::from_utf8(h) else { return false };
+        let h = std::str::from_utf8(authz?).ok()?;
         let (scheme, rest) = h.trim().split_once(' ').unwrap_or((h, ""));
         let rest = rest.trim();
         if scheme.eq_ignore_ascii_case("bearer") {
-            return self.token.as_ref().is_some_and(|t| ct_eq(t, &digest(rest.as_bytes())));
+            // both compared, always
+            let d = digest(rest.as_bytes());
+            let full = self.token.as_ref().is_some_and(|t| ct_eq(t, &d));
+            let read = self.read_token.as_ref().is_some_and(|t| ct_eq(t, &d));
+            return if full {
+                Some(Access::Full)
+            } else if read {
+                Some(Access::Read)
+            } else {
+                None
+            };
         }
         if scheme.eq_ignore_ascii_case("basic") {
-            let Some((u, p)) = &self.basic else { return false };
-            let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(rest) else {
-                return false;
-            };
-            let Some(i) = raw.iter().position(|&c| c == b':') else {
-                return false;
-            };
+            let (u, p) = self.basic.as_ref()?;
+            let raw = base64::engine::general_purpose::STANDARD.decode(rest).ok()?;
+            let i = raw.iter().position(|&c| c == b':')?;
             // both compared, always (no short-circuit on the user name)
             let ok_u = ct_eq(u, &digest(&raw[..i]));
             let ok_p = ct_eq(p, &digest(&raw[i + 1..]));
-            return ok_u & ok_p;
+            return (ok_u & ok_p).then_some(Access::Full);
         }
-        false
+        None
     }
 }
 
-/// axum middleware: 401 without valid credentials.
+/// May read-only credentials make this request? Any GET, and the SQL endpoint.
+fn read_only_request(method: &axum::http::Method, path: &str) -> bool {
+    matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
+        || (*method == axum::http::Method::POST && path == "/sql")
+}
+
+/// axum middleware: 401 without valid credentials, 403 for a write with the read-only token.
 pub async fn require(State(auth): State<Arc<Auth>>, req: Request, next: Next) -> Response {
-    if auth.check(req.headers().get(header::AUTHORIZATION).map(|v| v.as_bytes())) {
-        return next.run(req).await;
+    match auth.access(req.headers().get(header::AUTHORIZATION).map(|v| v.as_bytes())) {
+        Some(Access::Full) => return next.run(req).await,
+        Some(Access::Read) if read_only_request(req.method(), req.uri().path()) => return next.run(req).await,
+        Some(Access::Read) => {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error": {"kind": "forbidden", "message": "this token is read-only"}})),
+            )
+                .into_response()
+        }
+        None => {}
     }
     let mut r = (
         StatusCode::UNAUTHORIZED,
@@ -241,6 +305,29 @@ mod tests {
     }
 
     #[test]
+    fn the_read_only_token_reads_and_does_not_write() {
+        use axum::http::Method;
+        let env = env_of(&[
+            ("PGAI_MON_TOKEN", "dummy-token-0123456789"),
+            ("PGAI_MON_READ_TOKEN", "dummy-token-read-only-01"),
+        ]);
+        let a = Auth::resolve(&AuthCfg::default(), &env).unwrap();
+        assert_eq!(a.access(Some(b"Bearer dummy-token-0123456789")), Some(Access::Full));
+        assert_eq!(a.access(Some(b"Bearer dummy-token-read-only-01")), Some(Access::Read));
+        assert_eq!(a.access(Some(b"Bearer dummy-token-read-only-02")), None);
+        assert!(read_only_request(&Method::POST, "/sql"));
+        assert!(read_only_request(&Method::GET, "/schema"));
+        assert!(!read_only_request(&Method::POST, "/api/v1/import/prometheus"));
+        // the same value for both would silently make the read-only token a full one
+        let same = env_of(&[
+            ("PGAI_MON_TOKEN", "dummy-token-0123456789"),
+            ("PGAI_MON_READ_TOKEN", "dummy-token-0123456789"),
+        ]);
+        assert!(Auth::resolve(&AuthCfg::default(), &same).is_err());
+        assert!(Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_READ_TOKEN", "short")])).is_err());
+    }
+
+    #[test]
     fn short_secrets_are_refused() {
         assert!(Auth::resolve(&AuthCfg::default(), &env_of(&[("PGAI_MON_TOKEN", "short")])).is_err());
         assert!(Auth::resolve(
@@ -261,7 +348,7 @@ mod tests {
             token_file: Some(tf),
             username: Some("pgai".into()),
             password_file: Some(pf),
-            disabled: false,
+            ..Default::default()
         };
         let a = Auth::resolve(&cfg, &env_of(&[])).unwrap();
         assert!(a.check(Some(b"Bearer tok-0123456789abcdef")));

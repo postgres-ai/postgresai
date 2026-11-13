@@ -474,11 +474,12 @@ describe("in-place upgrade env migration (mon update / update-config)", () => {
   test("mon update keeps an existing token (no rotation)", () => {
     const testDir = project(
       "update-preserve-token",
-      "PGAI_TAG=0.18.0\nPGAI_MON_TOKEN=" + "b".repeat(64) + "\nREPLICATOR_PASSWORD=" + "a".repeat(64) + "\n",
+      "PGAI_TAG=0.18.0\nPGAI_MON_TOKEN=" + "b".repeat(64) + "\nPGAI_MON_READ_TOKEN=" + "c".repeat(64) + "\nREPLICATOR_PASSWORD=" + "a".repeat(64) + "\n",
     );
     const result = runCliInDir(["mon", "update"], testDir, offline);
     const envContent = fs.readFileSync(resolve(testDir, ".env"), "utf8");
     expect(envContent).toMatch(/^PGAI_MON_TOKEN=b{64}$/m);
+    expect(envContent).toMatch(/^PGAI_MON_READ_TOKEN=c{64}$/m);
     expect(envContent).toMatch(/^REPLICATOR_PASSWORD=a{64}$/m);
     expect(result.stdout).toMatch(/\.env is up to date/);
   }, { timeout: TEST_TIMEOUT });

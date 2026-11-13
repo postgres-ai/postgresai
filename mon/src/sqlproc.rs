@@ -29,6 +29,18 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Secrets of the server process that the SQL worker is started without: it runs callers' SQL,
+/// reads files and (for a bucket) fetches objects, and never authenticates anyone or connects
+/// to Postgres.
+const WORKER_ENV_REMOVED: [&str; 6] = [
+    "PGAI_MON_TOKEN",
+    "PGAI_MON_READ_TOKEN",
+    "PGAI_MON_AUTH_PASSWORD",
+    "PGPASSWORD",
+    "REPLICATOR_PASSWORD",
+    "GF_SECURITY_ADMIN_PASSWORD",
+];
+
 #[derive(Serialize, Deserialize)]
 pub struct Spec {
     pub store: PathBuf,
@@ -513,6 +525,10 @@ impl ReaderProc {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // The only process that runs callers' SQL does not need the server's secrets.
+        for k in WORKER_ENV_REMOVED {
+            cmd.env_remove(k);
+        }
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;

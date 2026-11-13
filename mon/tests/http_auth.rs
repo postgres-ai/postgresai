@@ -116,6 +116,41 @@ async fn token_only_advertises_bearer_and_disabled_serves_everything() {
     assert_eq!(h["version"], env!("CARGO_PKG_VERSION"));
 }
 
+/// The read-only token (the one Grafana holds) queries and cannot write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_read_only_token_cannot_write() {
+    const READ: &str = "test-read-token-0123456789";
+    let env = [("PGAI_MON_TOKEN", TOKEN), ("PGAI_MON_READ_TOKEN", READ)];
+    let a = Auth::resolve(&AuthCfg::default(), &move |k| {
+        env.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+    })
+    .unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let s = ingest_common::serve(d.path(), a, |_, _| {
+        axum::Router::new().route("/api/v1/import/prometheus", axum::routing::post(|| async { "written" }))
+    })
+    .await;
+    let c = reqwest::Client::new();
+    let post = |path: &'static str, token: &'static str| {
+        c.post(format!("{}{path}", s.base))
+            .bearer_auth(token)
+            .body("select 42 as x")
+            .send()
+    };
+    assert_eq!(post("/sql", READ).await.unwrap().status(), 200);
+    let r = post("/api/v1/import/prometheus", READ).await.unwrap();
+    assert_eq!(r.status(), 403);
+    assert!(r.text().await.unwrap().contains("read-only"));
+    assert_eq!(post("/api/v1/import/prometheus", TOKEN).await.unwrap().status(), 200);
+    let r = c
+        .get(format!("{}/schema", s.base))
+        .bearer_auth(READ)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
 #[test]
 fn binary_refuses_to_serve_without_credentials() {
     let d = tempfile::tempdir().unwrap();

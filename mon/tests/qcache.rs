@@ -297,11 +297,6 @@ fn reader_marks_volatile_and_external_sql_not_cacheable() {
         vec![],
     )
     .unwrap();
-    let glob = format!("SELECT count(*) AS n FROM glob('{}/*')", d.path().display());
-    let rp = format!(
-        "SELECT count(*) AS n FROM read_text('{}/catalog.json')",
-        d.path().display()
-    );
     for (sql, want) in [
         ("SELECT 1 AS x", true),
         ("SELECT sum(i) AS s FROM range(10) t(i)", true),
@@ -318,8 +313,6 @@ fn reader_marks_volatile_and_external_sql_not_cacheable() {
         ("SELECT current_localtime() AS t", false),
         ("SELECT CURRENT_TIMESTAMP AS t", false),
         ("SELECT * FROM duckdb_memory()", false),
-        (glob.as_str(), false),
-        (rp.as_str(), false),
         // review N2: built-in macros over clock functions, one-argument age, samples
         ("SELECT ago(INTERVAL 1 HOUR) AS t", false),
         (

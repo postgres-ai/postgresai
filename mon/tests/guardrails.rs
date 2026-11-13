@@ -55,6 +55,22 @@ fn refuses_writes_and_side_effects() {
     ] {
         assert_eq!(err(&r, sql), "not_read_only", "{sql}");
     }
+    // DuckDB takes these for read-only SELECTs; they change state, run a string the check never
+    // sees, or read files that are not data.
+    let store = d.path().display();
+    for sql in [
+        format!("SELECT * FROM enable_logging(storage := 'file', storage_path := '{store}/log')"),
+        "SELECT * FROM truncate_duckdb_logs()".to_string(),
+        "SELECT * FROM checkpoint()".to_string(),
+        "SELECT * FROM query('SELECT * FROM enable_logging()')".to_string(),
+        "SELECT 1 WHERE EXISTS (SELECT * FROM disable_logging())".to_string(),
+        format!("SELECT * FROM read_text('{store}/catalog.json')"),
+        format!("SELECT * FROM glob('{store}/**')"),
+    ] {
+        assert_eq!(err(&r, &sql), "forbidden", "{sql}");
+    }
+    assert!(!d.path().join("log").exists());
+    r.run("SELECT count(*) FROM duckdb_views()").unwrap();
     for sql in [
         "SELECT * FROM read_csv('/etc/passwd')",
         "SELECT * FROM read_text('/etc/hosts')",

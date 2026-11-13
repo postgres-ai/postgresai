@@ -328,6 +328,48 @@ fn table_fn_cacheable(name: &str) -> bool {
         || matches!(name, "range" | "generate_series" | "unnest" | "unnest_rs")
 }
 
+/// Table functions a caller's SQL may name. DuckDB accepts `SELECT * FROM f()` as a read-only
+/// SELECT for functions that change state or read arbitrary files (enable_logging writes log
+/// files where it is told to, query() runs a string this check never sees, read_text and glob
+/// expose every file under the store), so anything not listed is refused.
+fn table_fn_allowed(name: &str) -> bool {
+    table_fn_cacheable(name)
+        || name.starts_with("parquet_")
+        || matches!(
+            name,
+            "read_parquet"
+                | "json_each"
+                | "json_tree"
+                | "duckdb_columns"
+                | "duckdb_functions"
+                | "duckdb_memory"
+                | "duckdb_settings"
+                | "duckdb_tables"
+                | "duckdb_types"
+                | "duckdb_views"
+        )
+}
+
+/// The first table function in a json_serialize_sql tree that `table_fn_allowed` refuses.
+fn refused_table_fn(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) => {
+            if m.get("type").and_then(|c| c.as_str()) == Some("TABLE_FUNCTION") {
+                let f = m["function"]["function_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if !table_fn_allowed(&f) {
+                    return Some(f);
+                }
+            }
+            m.values().find_map(refused_table_fn)
+        }
+        serde_json::Value::Array(a) => a.iter().find_map(refused_table_fn),
+        _ => None,
+    }
+}
+
 /// Clock functions DuckDB 1.4 labels CONSISTENT although their value moves with time.
 const CLOCK_FNS: &[&str] = &[
     "current_localtimestamp",
@@ -842,6 +884,12 @@ impl Reader {
             return Err(QueryError::new(
                 "not_read_only",
                 format!("exactly one statement expected, got {n}"),
+            ));
+        }
+        if let Some(f) = refused_table_fn(&v["statements"]) {
+            return Err(QueryError::new(
+                "forbidden",
+                format!("table function {f} is not available here (see GET /schema for the tables and functions)"),
             ));
         }
         Ok(ast_cacheable(&v["statements"], &self.volatile))

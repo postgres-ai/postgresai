@@ -4,8 +4,10 @@ apiVersion: 1
 # POST one SELECT to http://pgai-mon:8765/sql?format=objects through the Infinity plugin, which
 # adds "Authorization: Bearer <token>" to every request.
 #
-# The token comes from the environment of the Grafana container, PGAI_MON_TOKEN; it must equal
-# the token pgai-mon is started with. To read it from a file instead (a Docker secret), replace
+# The token comes from the environment of the Grafana container, PGAI_MON_TOKEN, which compose
+# fills with pgai-mon's read-only token (PGAI_MON_READ_TOKEN: queries, no writes), or with the
+# full token when no read-only one is set. Any Grafana user can send their own query through
+# this datasource, so it should not hold a token that can write. To read it from a file instead (a Docker secret), replace
 # the bearerToken value with Grafana's file provider, e.g. $__file{/run/secrets/pgai_mon_token}.
 # An empty token makes every query of this datasource fail, and no other datasource changes.
 #

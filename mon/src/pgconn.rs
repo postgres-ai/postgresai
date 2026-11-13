@@ -329,7 +329,12 @@ fn parse_url(s: &str) -> anyhow::Result<ConnParams> {
         for kv in q.split('&').filter(|x| !x.is_empty()) {
             let (k, v) = kv
                 .split_once('=')
-                .ok_or_else(|| anyhow::anyhow!("connection URL parameter without '=': {k}", k = kv))?;
+                // the text is not echoed: with an unescaped '?' in a password it is part of the secret
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "connection URL: a parameter after '?' has no '=' (a '?' in the password must be written %3F)"
+                    )
+                })?;
             p.set(&pct_decode(k)?, pct_decode(v)?);
         }
     }

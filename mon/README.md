@@ -16,7 +16,9 @@ Every HTTP route requires credentials except the liveness probe `GET /livez`: a 
 token, HTTP basic auth, or either. They come from the environment or files
 (`PGAI_MON_TOKEN` / `PGAI_MON_TOKEN_FILE`, `PGAI_MON_AUTH_USERNAME` +
 `PGAI_MON_AUTH_PASSWORD` / `PGAI_MON_AUTH_PASSWORD_FILE`, or `http.auth` in the config); secrets
-are at least 16 characters. Without credentials the server refuses to start, unless
+are at least 16 characters. A second, read-only token (`PGAI_MON_READ_TOKEN` /
+`PGAI_MON_READ_TOKEN_FILE`) may make any GET and `POST /sql`, and gets 403 on writes (push
+ingest): it is the one to give Grafana and other readers. Without credentials the server refuses to start, unless
 authentication is turned off explicitly for local development (`PGAI_MON_AUTH_DISABLED=1`,
 `http.auth.disabled: true`, or `serve --no-auth`).
 

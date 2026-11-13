@@ -147,9 +147,9 @@ def test_consumers_point_at_pgai_mon():
     for name in ("postgres-reports", "instance-jobs"):
         e = env_of(services[name])
         assert e["PGAI_MON_URL"] == PGAI_MON_URL, name
-        assert e["PGAI_MON_TOKEN"].startswith("${PGAI_MON_TOKEN:?"), name
+        assert e["PGAI_MON_TOKEN"].startswith("${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?"), name
         assert services[name]["depends_on"]["pgai-mon"]["condition"] == "service_healthy", name
-    assert env_of(services["grafana"])["PGAI_MON_TOKEN"].startswith("${PGAI_MON_TOKEN:?")
+    assert env_of(services["grafana"])["PGAI_MON_TOKEN"].startswith("${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?")
     assert env_of(services["postgres-reports"])["REPORTER_SOURCES_PATH"] == "/app/instances.yml"
     assert "./instances.yml:/app/instances.yml:ro" in services["postgres-reports"]["volumes"]
 

@@ -1568,7 +1568,9 @@ fn sql_over_an_object_store_stays_locked_down() {
         let e = r.run(q).err().unwrap_or_else(|| panic!("{q}: allowed"));
         assert!(
             e.kind == "forbidden"
-                && (e.message.contains("Permission Error") || e.message.contains("disabled by configuration")),
+                && (e.message.contains("Permission Error")
+                    || e.message.contains("disabled by configuration")
+                    || e.message.contains("is not available here")),
             "{q}: {} {}",
             e.kind,
             e.message

@@ -157,10 +157,17 @@ type EnvKeyDefault = {
  * from `.env`. Hex, so it survives any quoting a consumer applies.
  */
 const PGAI_MON_TOKEN_KEY = "PGAI_MON_TOKEN";
+/**
+ * pgai-mon's read-only token: queries, no writes. Compose hands it to Grafana,
+ * the reporter and instance-jobs in place of the full token, so a Grafana user
+ * cannot push samples through the datasource.
+ */
+const PGAI_MON_READ_TOKEN_KEY = "PGAI_MON_READ_TOKEN";
 
 const REQUIRED_ENV_KEYS: EnvKeyDefault[] = [
   { key: "REPLICATOR_PASSWORD", defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.13" },
   { key: PGAI_MON_TOKEN_KEY, defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.18" },
+  { key: PGAI_MON_READ_TOKEN_KEY, defaultValue: () => crypto.randomBytes(32).toString("hex"), introducedIn: "0.18" },
 ];
 
 /**
@@ -217,7 +224,7 @@ function ensureRequiredEnvVars(projectDir: string): string[] {
     // assignment of a duplicated key, so filling only the first would leave the
     // effective value empty while we reported the key as fixed. The replacement
     // is a function so a `$&` in a future default cannot be re-substituted.
-    if (spec.key === PGAI_MON_TOKEN_KEY) {
+    if (spec.key === PGAI_MON_TOKEN_KEY || spec.key === PGAI_MON_READ_TOKEN_KEY) {
       const blank = new RegExp(
         `^([ \t]*(?:export[ \t]+)?${spec.key}=)[ \t]*(?:""|'')?[ \t]*\r?$`,
         "gm",
@@ -317,6 +324,7 @@ const LOCAL_INSTALL_MANAGED_ENV_KEYS = [
   "GF_SECURITY_ADMIN_PASSWORD",
   "REPLICATOR_PASSWORD",
   PGAI_MON_TOKEN_KEY,
+  PGAI_MON_READ_TOKEN_KEY,
   // Owned here so the managed block writes it once, rather than preserving a
   // stale copy alongside the new one. postgresai#366.
   "PGAI_INSTANCE_ID",
@@ -525,6 +533,8 @@ function buildLocalInstallEnv(
   // recreated for nothing.
   const monToken = readRaw(PGAI_MON_TOKEN_KEY);
   envLines.push(`${PGAI_MON_TOKEN_KEY}=${monToken ? stripMatchingQuotes(monToken) : crypto.randomBytes(32).toString("hex")}`);
+  const monReadToken = readRaw(PGAI_MON_READ_TOKEN_KEY);
+  envLines.push(`${PGAI_MON_READ_TOKEN_KEY}=${monReadToken ? stripMatchingQuotes(monReadToken) : crypto.randomBytes(32).toString("hex")}`);
   // The monitoring instance id. It reaches this process as --instance-id or
   // PGAI_INSTANCE_ID and was written nowhere on the box, so a service started
   // by compose could not see it: the systemd unit the AWS install writes is a

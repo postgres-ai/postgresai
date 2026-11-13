@@ -212,7 +212,7 @@ sudo docker-compose up -d
 
 ### pgai-mon authentication
 
-pgai-mon's SQL endpoint needs a bearer token on every route but `/livez`. `user_data.sh` generates `PGAI_MON_TOKEN` into `.env` on the instance; Grafana, the reporter and instance-jobs read it from there. pgai-mon is published on the instance's `127.0.0.1:8765` only.
+pgai-mon's SQL endpoint needs a bearer token on every route but `/livez`. `user_data.sh` generates `PGAI_MON_TOKEN` and the read-only `PGAI_MON_READ_TOKEN` into `.env` on the instance; Grafana, the reporter and instance-jobs get the read-only one, which cannot write. pgai-mon is published on the instance's `127.0.0.1:8765` only.
 
 ### pgai-mon store in S3
 
