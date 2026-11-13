@@ -171,8 +171,7 @@ pub fn select_series(
 /// The series of each of `metrics` matching `matchers` that are active in [t0, t1]: read from
 /// the series files of the days in that window only (each day's series files list the series with
 /// samples that day), never the whole registry. Row groups are pruned by series_id: a metric's ids
-/// share the high 16 bits, and series files are sorted by id. Stores written before per-day series
-/// (`series_per_day` false) read every series file. Matchers are tested before any label is kept.
+/// share the high 16 bits, and series files are sorted by id. Matchers are tested before any label
 pub fn select_series_uncached(
     ctx: &super::EvalCtx,
     metrics: &[&str],
@@ -309,9 +308,6 @@ impl IdSel {
 pub fn window_files(ctx: &super::EvalCtx, t0: i64, t1: i64) -> Vec<&crate::catalog::FileEntry> {
     use crate::store::{month_of, SERIES_MONTH};
     let (d0, d1) = (crate::model::day_of(t0), crate::model::day_of(t1));
-    if !ctx.series_per_day {
-        return ctx.files.iter().filter(|f| f.kind == "series").collect();
-    }
     let months: std::collections::HashMap<i64, &crate::catalog::FileEntry> = ctx
         .files
         .iter()

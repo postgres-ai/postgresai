@@ -5,7 +5,7 @@
 //! testing. So the reader runs in its own process:
 //! - Linux: `RLIMIT_DATA` (private writable mappings, incl. anonymous mmaps since 4.7) makes
 //!   allocations past the limit fail inside the child;
-//! - everywhere: a watchdog samples the child's RSS every 20 ms and kills it above the cap.
+//! - everywhere: a watchdog samples the child's RSS every 10 ms and kills it above the cap.
 //!
 //! The parent (collector, WAL, store) never runs user SQL. When the child dies, every request it
 //! held gets a typed error (`out_of_memory` if the watchdog or the limit killed it,

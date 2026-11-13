@@ -43,10 +43,6 @@ pub struct Catalog {
     pub pending_delete: Vec<(String, i64)>,
     /// Log tail positions covered by flushed data.
     pub log_offsets: BTreeMap<String, u64>,
-    /// Series files are per day: a series has a row in every day it has samples, so a query
-    /// reads only the series files of its window (false in stores written before this).
-    #[serde(default)]
-    pub series_per_day: bool,
     /// Bumped when sample content changes other than by appending after the closed watermark
     /// (a late sample, a loader commit, a migration): caches below the SQL layer key on it.
     #[serde(default)]
@@ -130,7 +126,6 @@ impl Catalog {
             let mut c = Catalog {
                 samples_layout: layout.to_string(),
                 flushed_through_seg: -1,
-                series_per_day: true,
                 ..Default::default()
             };
             c.saved = Some(Box::new(c.clone()));

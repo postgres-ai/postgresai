@@ -48,11 +48,7 @@ pub async fn serve(
     let shared = core.shared.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Msg>(1024);
     let st = store_thread(core, rx);
-    let http = HttpCfg {
-        reader_process: false,
-        ..Default::default()
-    }
-    .resolve();
+    let http = HttpCfg { ..Default::default() }.resolve();
     let reader = Arc::new(Reader::new(shared.clone(), http.clone(), EMBEDDED_VIEWS_SQL.into(), vec![]).unwrap());
     let state = AppState::new(Backend::InProc(reader.clone()), http, shared.clone());
     let app = pgai_mon::query::app(state, extra(tx.clone(), shared.clone()), Arc::new(auth));

@@ -271,15 +271,8 @@ pub struct StoreCfg {
     pub compact_grace_s: u64,
     /// Seconds a replaced file stays on disk so in-flight readers can finish.
     pub delete_grace_s: u64,
-    /// Physical samples layout variant (see README): "v2_split" (default) etc.
-    pub samples_layout: String,
     pub zstd_level: i32,
     pub row_group_size: u64,
-    /// Compaction sorts at most this many sample rows at once: a bigger day is written as
-    /// several files split by series_id range (bounded memory; still <= 10 files/day).
-    pub compact_part_rows: u64,
-    /// Merge sample days with the streaming k-way merge (bounded memory) instead of a DuckDB sort.
-    pub compact_kmerge: bool,
     /// Flush as soon as this many WAL bytes are buffered (bursts, catch-up, WAL replay).
     pub max_buffer_bytes: usize,
     /// Max bytes per DuckDB write batch inside a flush (one Parquet file per batch and day).
@@ -303,11 +296,8 @@ impl Default for StoreCfg {
             writer_threads: 1,
             compact_grace_s: 300,
             delete_grace_s: 300,
-            samples_layout: crate::store::DEFAULT_LAYOUT.into(),
             zstd_level: 9,
             row_group_size: 122_880,
-            compact_part_rows: 3_500_000,
-            compact_kmerge: true,
             max_buffer_bytes: 32 << 20,
             write_chunk_bytes: 8 << 20,
             retention_days: 0,
@@ -337,8 +327,6 @@ pub struct HttpCfg {
     /// queue_wait_ms; a full queue or a longer wait answers `busy`.
     pub queue_max: usize,
     pub queue_wait_ms: u64,
-    /// Run SQL in a child process (true) so no query can take the collector down.
-    pub reader_process: bool,
     /// Child RSS above this is killed by the watchdog (typed out_of_memory, child restarted).
     pub reader_rss_cap_mb: u64,
     /// Linux RLIMIT_DATA of the child (0 = none): allocations past it fail in the child.
@@ -403,7 +391,6 @@ impl Default for HttpCfg {
             max_temp_directory_size: "2GB".into(),
             queue_max: 64,
             queue_wait_ms: 30_000,
-            reader_process: true,
             reader_rss_cap_mb: 192,
             reader_data_limit_mb: 1024,
             reader_drain_pct: 70,

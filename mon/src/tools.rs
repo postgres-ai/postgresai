@@ -213,10 +213,7 @@ fn max_ts(store: &StoreCore) -> anyhow::Result<Option<i64>> {
         return Ok(None);
     }
     let src = format!("read_parquet({})", file_list_sql(&store.shared.root, &files));
-    let q = format!(
-        "SELECT epoch_ms(max(ts)) FROM ({})",
-        samples_raw_select(&cat.samples_layout, &src)
-    );
+    let q = format!("SELECT epoch_ms(max(ts)) FROM ({})", samples_raw_select(&src));
     Ok(store.conn().query_row(&q, [], |r| r.get::<_, Option<i64>>(0))?)
 }
 
@@ -235,7 +232,7 @@ pub fn crashtest_verify(store: &StoreCore) -> anyhow::Result<serde_json::Value> 
            bool_and(value = (epoch_ms(ts) - 1800000000000) / 1000) AS val_ok FROM s GROUP BY 1) \
          SELECT count(*) AS series, sum(n) AS samples, sum(n - d) AS duplicates, sum(span - d) AS gaps, \
            min(mx) AS min_last_step, max(mx) AS max_last_step, bool_and(val_ok) AS values_ok FROM per",
-        samples_raw_select(&cat.samples_layout, &src)
+        samples_raw_select(&src)
     );
     let v = store.conn().query_row(&q, [], |r| {
         Ok(serde_json::json!({

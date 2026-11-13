@@ -49,10 +49,8 @@ pub const D: i64 = DAY_MS;
 /// (prev_ts, prev_v), which makes irate servable; 3 adds the bucket's last (up to) 20 sample
 /// intervals (`iv`), so the scrape-interval estimate comes from rollups, not a raw scan; 4 adds
 /// sum/min/max and the staleness-marker positions (bare selector, *_over_time) and stale-only
-/// buckets (n = 0). Rollups older than VER_EDGE are not served.
+/// buckets (n = 0). A file of another version is not served; compaction rebuilds it.
 pub const VER: u8 = 4;
-/// Oldest 1 h format served to the edge functions and irate (the columns they read).
-const VER_EDGE: u8 = 3;
 /// Rows per row group: a query keeps one open row group per day file (30+ for a month), and
 /// arrow-rs holds a row group's column chunks while it reads them. 16k rows keep a day file's
 /// footer to ~52 row groups (~80 KiB on disk, ~460 KiB parsed; 4096 rows: 430 KiB / 1.8 MB),
@@ -1055,15 +1053,6 @@ fn class(f: Func) -> Option<Class> {
     })
 }
 
-/// The 1 h format a function needs.
-fn min_ver(f: Func) -> u8 {
-    if f == Func::Last || class(f) == Some(Class::WinAgg) {
-        VER
-    } else {
-        VER_EDGE
-    }
-}
-
 /// Rollup segments in time order, contiguous: the coarsest first. (p, q] is their union, the
 /// part of the fetched range read from rollups; the rest is raw.
 #[derive(Clone, Debug)]
@@ -1086,13 +1075,6 @@ pub fn plan(ctx: &EvalCtx, f: Func, g: &Grid) -> Option<Plan> {
         if p.segs.iter().any(|s| s.2.iter().any(|f| f.kind == KIND_1HM)) {
             SERVED_1HM.fetch_add(1, Ordering::Relaxed);
         }
-    }
-    if std::env::var_os("PGAI_EVAL_DEBUG").is_some() {
-        eprintln!(
-            "eval: {f:?} {g:?} rollup={:?}",
-            r.as_ref()
-                .map(|p| (p.tier, p.segs.iter().map(|s| (s.0, s.1, s.2.len())).collect::<Vec<_>>()))
-        );
     }
     r
 }
@@ -1129,7 +1111,7 @@ fn plan_inner(ctx: &EvalCtx, f: Func, g: &Grid) -> Option<Plan> {
         Class::WinAgg if single => g.start - ww,
         _ => g.fetch_start(f),
     };
-    let ver = min_ver(f);
+    let ver = VER;
     // the 1 d tier: aligned grids of >= 2 points only (one point reads <= 2 raw hours at its
     // edges with the 1 h tier, against <= 2 raw days with this one)
     if !single && aligned(D) {
@@ -1252,7 +1234,7 @@ fn first_run(from: i64, to: i64, w: i64, ok: impl Fn(i64) -> bool) -> Option<(i6
 /// The first run (p, q] of fully valid 1 h buckets inside [from, to] (cut to bucket boundaries):
 /// a bucket is valid when its days have one closed samples file and a current-format rollup.
 pub fn coverage(ctx: &EvalCtx, from: i64, to: i64) -> Option<(i64, i64, Vec<FileEntry>)> {
-    coverage_v(ctx, from, to, VER_EDGE)
+    coverage_v(ctx, from, to, VER)
 }
 
 fn coverage_v(ctx: &EvalCtx, from: i64, to: i64, ver: u8) -> Option<(i64, i64, Vec<FileEntry>)> {

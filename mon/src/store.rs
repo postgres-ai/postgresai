@@ -16,15 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Format tag of sample files, recorded in the catalog: Parquet v2, `ts` TIMESTAMPTZ, the
+/// value split into `ival` (integral values) and `fval` (the rest).
 pub const DEFAULT_LAYOUT: &str = "v2_split_tz";
-pub const LAYOUTS: &[&str] = &[
-    "v1_double",
-    "v2_double",
-    "v1_split",
-    "v2_split",
-    "v2_split_tz",
-    "v2_double_tz",
-];
 pub const KINDS: &[&str] = &[
     "samples",
     "series",
@@ -260,7 +254,6 @@ pub fn file_list_sql(root: &Path, files: &[&FileEntry]) -> String {
 }
 
 fn parquet_opts(cfg: &StoreCfg, layout: &str) -> String {
-    let v = if layout.starts_with("v1") { "V1" } else { "V2" };
     // Non-sample kinds ("v2") have wide rows (log lines, plans): cap row groups by bytes, or
     // the writer buffers 122,880 log lines (~250 MB) per row group.
     let rg = if layout == "v2" {
@@ -269,51 +262,27 @@ fn parquet_opts(cfg: &StoreCfg, layout: &str) -> String {
         format!("ROW_GROUP_SIZE {}", cfg.row_group_size)
     };
     format!(
-        "FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL {}, PARQUET_VERSION {v}, {rg}",
+        "FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL {}, PARQUET_VERSION V2, {rg}",
         cfg.zstd_level
     )
 }
 
 /// SELECT list that converts the buffer table `buf_samples(series_id, ts BIGINT ms, value)`
 /// into the physical layout.
-fn samples_projection(layout: &str) -> &'static str {
-    // Staleness markers (buffer column `stale`) are stored as ival = 1 AND fval = NaN, a
-    // combination real values never produce (integral -> ival only, other -> fval only), so a
-    // real NaN stays distinguishable from a marker (VictoriaMetrics' StaleNaN vs NaN).
-    let tz = layout.ends_with("_tz");
-    let split = layout.contains("split");
-    match (split, tz) {
-        (false, false) => "series_id, epoch_ms(ts)::TIMESTAMP_MS AS ts, value",
-        (false, true) => "series_id, make_timestamptz(ts * 1000) AS ts, value",
-        (true, false) => {
-            "series_id, epoch_ms(ts)::TIMESTAMP_MS AS ts, \
-             CASE WHEN stale THEN 1 WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN value::BIGINT END AS ival, \
-             CASE WHEN stale THEN 'nan'::DOUBLE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN NULL ELSE value END AS fval"
-        }
-        (true, true) => {
-            "series_id, make_timestamptz(ts * 1000) AS ts, \
-             CASE WHEN stale THEN 1 WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN value::BIGINT END AS ival, \
-             CASE WHEN stale THEN 'nan'::DOUBLE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN NULL ELSE value END AS fval"
-        }
-    }
-}
+///
+/// Staleness markers (buffer column `stale`) are stored as ival = 1 AND fval = NaN, a
+/// combination real values never produce (integral -> ival only, other -> fval only), so a
+/// real NaN stays distinguishable from a marker (VictoriaMetrics' StaleNaN vs NaN).
+const SAMPLES_PROJECTION: &str = "series_id, make_timestamptz(ts * 1000) AS ts, \
+     CASE WHEN stale THEN 1 WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN value::BIGINT END AS ival, \
+     CASE WHEN stale THEN 'nan'::DOUBLE WHEN value = trunc(value) AND abs(value) < 9.0e15 THEN NULL ELSE value END AS fval";
 
-/// Logical relation (series_id UBIGINT, ts TIMESTAMPTZ, value DOUBLE) over physical files.
-pub fn samples_raw_select(layout: &str, src: &str) -> String {
-    let (value, stale) = if layout.contains("split") {
-        (
-            "coalesce(fval, ival::DOUBLE)",
-            "(ival IS NOT NULL AND fval IS NOT NULL)",
-        )
-    } else {
-        ("value", "isnan(value)")
-    };
-    let ts = if layout.ends_with("_tz") {
-        "ts"
-    } else {
-        "ts::TIMESTAMPTZ"
-    };
-    format!("SELECT series_id, {ts} AS ts, {value} AS value, {stale} AS stale FROM {src}")
+/// Logical relation (series_id UBIGINT, ts TIMESTAMPTZ, value DOUBLE, stale) over physical files.
+pub fn samples_raw_select(src: &str) -> String {
+    format!(
+        "SELECT series_id, ts, coalesce(fval, ival::DOUBLE) AS value, \
+         (ival IS NOT NULL AND fval IS NOT NULL) AS stale FROM {src}"
+    )
 }
 
 /// Typed empty relation per kind (used when the kind has no files yet), matching the
@@ -413,21 +382,15 @@ impl StoreCore {
             root.display()
         );
         std::fs::create_dir_all(root)?;
-        let mut cat = Catalog::load_or_new(root, &cfg.samples_layout)?;
+        let mut cat = Catalog::load_or_new(root, DEFAULT_LAYOUT)?;
         if cat.samples_layout.is_empty() {
-            cat.samples_layout = cfg.samples_layout.clone();
+            cat.samples_layout = DEFAULT_LAYOUT.into();
         }
         anyhow::ensure!(
-            LAYOUTS.contains(&cat.samples_layout.as_str()),
-            "unknown layout {}",
+            cat.samples_layout == DEFAULT_LAYOUT,
+            "unsupported samples layout {} (this build reads {DEFAULT_LAYOUT})",
             cat.samples_layout
         );
-        if cat.samples_layout != cfg.samples_layout {
-            eprintln!(
-                "warn: store layout is {} (config says {}); keeping the store's",
-                cat.samples_layout, cfg.samples_layout
-            );
-        }
         remove_orphans(root, &cat)?;
         let db = open_writer_db(root, cfg)?;
 
@@ -722,7 +685,7 @@ impl StoreCore {
             let (rel, abs) = self.out_path("samples", day, 0, id);
             let sel = format!(
                 "SELECT {} FROM buf_samples WHERE ts >= {} AND ts < {} ORDER BY series_id, ts",
-                samples_projection(layout),
+                SAMPLES_PROJECTION,
                 day * DAY_MS,
                 (day + 1) * DAY_MS
             );
@@ -1190,7 +1153,6 @@ impl Compactor {
                 all_closed || (day < today && now >= (day + 1) * DAY_MS + self.cfg.compact_grace_s as i64 * 1000);
             if day_closed {
                 let needs_rollup = kind == "samples"
-                    && self.cfg.compact_kmerge
                     && !cat
                         .files
                         .iter()
@@ -1255,9 +1217,7 @@ impl Compactor {
         }
         note(self.register(now, all_closed), &mut done);
         note(self.series_months(now, all_closed), &mut done);
-        if self.cfg.compact_kmerge {
-            note(self.rollup_months(), &mut done);
-        }
+        note(self.rollup_months(), &mut done);
         match first_err {
             Some(e) => Err(e),
             None => Ok(done),
@@ -1377,65 +1337,25 @@ impl Compactor {
         let src = parquet_src(&job.kind, &file_list_sql(&self.shared.root, &refs));
         let file_layout = if job.kind == "samples" { layout.as_str() } else { "v2" };
         let total_rows: u64 = job.inputs.iter().map(|f| f.rows).sum();
-        // Samples sort (bounded by splitting into parts); other kinds stream wide rows
-        // (log lines, plans) and need more room per row group.
+        // Other kinds than samples stream wide rows (log lines, plans) and need more room
+        // per row group.
         let lim = if job.kind == "samples" {
             &self.cfg.compact_memory_limit
         } else {
             &self.cfg.compact_events_memory_limit
         };
         self.db.execute_batch(&format!("SET memory_limit='{lim}'"))?;
-        // Samples: streaming k-way merge (inputs are each sorted), one file, O(files) memory.
-        // The DuckDB sort split by series_id range remains only as a fallback (kmerge off).
-        let kmerge = (job.kind == "samples" || job.kind == "series") && self.cfg.compact_kmerge;
-        let parts = if !kmerge && job.kind == "samples" && total_rows > self.cfg.compact_part_rows {
-            total_rows.div_ceil(self.cfg.compact_part_rows).min(10)
-        } else {
-            1
-        };
-        let mut ranges: Vec<String> = vec![String::new()];
-        if parts > 1 {
-            let qs: Vec<String> = (1..parts).map(|i| format!("{}", i as f64 / parts as f64)).collect();
-            let b: String = self.db.query_row(
-                &format!(
-                    "SELECT approx_quantile(series_id, [{}])::VARCHAR FROM {src}",
-                    qs.join(",")
-                ),
-                [],
-                |r| r.get(0),
-            )?;
-            let mut bounds: Vec<u64> = b
-                .trim_matches(|c| c == '[' || c == ']')
-                .split(',')
-                .filter_map(|x| x.trim().parse().ok())
-                .collect();
-            bounds.dedup();
-            ranges.clear();
-            let mut lo: Option<u64> = None;
-            for hi in bounds.iter().copied().chain(std::iter::once(u64::MAX)) {
-                let cond = match (lo, hi) {
-                    (None, h) if h != u64::MAX => format!("series_id < {h}"),
-                    (Some(l), u64::MAX) => format!("series_id >= {l}"),
-                    (Some(l), h) => format!("series_id >= {l} AND series_id < {h}"),
-                    (None, _) => "true".to_string(),
-                };
-                ranges.push(cond);
-                lo = Some(hi);
-            }
-        }
+        // Samples and series: streaming k-way merge (inputs are each sorted), O(files) memory.
+        // Other kinds: a DuckDB copy.
+        let kmerge = job.kind == "samples" || job.kind == "series";
         let mut outs = Vec::new();
-        for cond in &ranges {
+        {
             let id = {
                 let mut c = self.shared.catalog.lock().unwrap();
                 c.alloc_id()
             };
             let rel = format!("{}/date={}/L{}-{id:08}.parquet", job.kind, day_str(job.day), job.level);
             let abs = self.shared.root.join(&rel);
-            let from = if cond.is_empty() {
-                src.clone()
-            } else {
-                format!("(SELECT * FROM {src} WHERE {cond})")
-            };
             let bytes = if kmerge {
                 std::fs::create_dir_all(abs.parent().unwrap())?;
                 let tmp = abs.with_extension("parquet.tmp");
@@ -1459,7 +1379,7 @@ impl Compactor {
                 }
                 std::fs::metadata(&abs)?.len()
             } else {
-                copy_atomic(&self.db, &self.cfg, &merge_select(&job.kind, &from), &abs, file_layout)?
+                copy_atomic(&self.db, &self.cfg, &merge_select(&job.kind, &src), &abs, file_layout)?
             };
             let rows: i64 = self.db.query_row(
                 &format!(

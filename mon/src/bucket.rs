@@ -501,7 +501,6 @@ impl Bucket {
                 let mut c = local.clone().unwrap_or_else(|| Catalog {
                     samples_layout: layout.to_string(),
                     flushed_through_seg: -1,
-                    series_per_day: true,
                     ..Default::default()
                 });
                 c.pending_delete.clear();

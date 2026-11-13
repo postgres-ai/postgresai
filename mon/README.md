@@ -247,11 +247,8 @@ Top level:
 | `compact_memory_limit` | `32MB` | DuckDB memory limit of sample compaction. |
 | `compact_events_memory_limit` | `96MB` | The same for logs, plans and other non-sample kinds. |
 | `compact_grace_s` | 300 | Seconds after a day ends before it is compacted as closed. |
-| `compact_part_rows` | 3,500,000 | Sample rows per compacted file; a bigger day is split by series id. |
-| `compact_kmerge` | `true` | Merge sample files with the streaming merge instead of a DuckDB sort. |
 | `delete_grace_s` | 300 | Seconds a replaced or expired file stays on disk. |
 | `closed_lag_ms` | 5000 | A sample older than the newest sample minus this counts as late. |
-| `samples_layout` | `v2_split_tz` | Physical layout of sample files. Fixed when the store is created. |
 | `zstd_level` | 9 | Compression level of compacted files. |
 | `row_group_size` | 122,880 | Rows per Parquet row group. |
 | `retention_days` | 0 | Days of samples, series, rollups, logs and plan events kept. 0 keeps everything. |
@@ -281,7 +278,6 @@ Top level:
 | `memory_limit` | `96MB` | DuckDB memory limit of the reader. |
 | `threads` | 1 | DuckDB threads of the reader. 0: `max_concurrent`. |
 | `max_temp_directory_size` | `2GB` | Reader spill limit. |
-| `reader_process` | `true` | Run SQL in a child process. |
 | `reader_rss_cap_mb` | 192 | The child is killed above this RSS. |
 | `reader_data_limit_mb` | 1024 | Linux `RLIMIT_DATA` of the child. 0: none. |
 | `reader_drain_pct` | 70 | Replace the child once its RSS passed this share of the cap during a query. |

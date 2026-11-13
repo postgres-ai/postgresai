@@ -197,21 +197,6 @@ impl VTab for PromEval {
     }
 }
 
-impl Drop for Init {
-    fn drop(&mut self) {
-        if std::env::var_os("PGAI_EVAL_DEBUG").is_some() {
-            eprintln!("eval: init dropped");
-        }
-    }
-}
-impl Drop for Bind {
-    fn drop(&mut self) {
-        if std::env::var_os("PGAI_EVAL_DEBUG").is_some() {
-            eprintln!("eval: bind dropped");
-        }
-    }
-}
-
 /// `prom_series_rs(fn, metric, matchers_json, start, end, step, window)` -> (series_id, labels
 /// JSON): the selected series with their labels, read from the series files of the call's window
 /// (the same selection `prom_eval_rs` evaluates). The macros join this, not the `series` view,

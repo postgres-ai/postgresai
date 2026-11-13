@@ -22,7 +22,6 @@ use std::sync::{Arc, RwLock};
 pub struct EvalCtx {
     pub root: PathBuf,
     pub files: Vec<FileEntry>,
-    pub series_per_day: bool,
     /// Catalog generation and data epoch this context was built from; the newest sample's
     /// time and the closed-watermark lag (for the cache below the SQL layer, not built yet).
     pub generation: u64,
@@ -77,7 +76,6 @@ impl EvalCtx {
                 })
                 .cloned()
                 .collect(),
-            series_per_day: c.series_per_day,
             generation: c.generation,
             data_epoch: c.data_epoch,
             hwm_ms,
@@ -94,7 +92,6 @@ pub fn empty_handle(root: PathBuf) -> EvalHandle {
     Arc::new(RwLock::new(Arc::new(EvalCtx {
         root,
         files: vec![],
-        series_per_day: true,
         generation: 0,
         data_epoch: 0,
         hwm_ms: 0,

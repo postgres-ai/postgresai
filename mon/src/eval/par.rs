@@ -123,12 +123,6 @@ fn borrow(want: usize, each: u64) -> Lent {
         (got > 0).then_some(lent + got)
     });
     let bytes = if mem == usize::MAX { 0 } else { got as u64 * each };
-    if std::env::var_os("PGAI_EVAL_TRACE").is_some() {
-        eprintln!(
-            "par: want {want} mem_allows {mem} each {} MB active {active} slots {slots} got {got}",
-            each >> 20
-        );
-    }
     LENT_BYTES.fetch_add(bytes, Ordering::Relaxed);
     Lent(got, bytes)
 }

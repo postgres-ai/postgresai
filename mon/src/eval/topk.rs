@@ -1,7 +1,7 @@
 //! `prom_topk_rs(k, fn, metric, matchers_json, start, end, step, window, den_metric, bottom)`
 //!   -> (series_id, t, value): per step the k largest (bottom: smallest) values of
 //!   fn(metric{matchers}) — or of fn(metric) / fn(den_metric) matched on identical label sets
-//!   (D1's per-call panels) — with NaN dropped. Ties break like the ported D1 SQL:
+//!   (Dashboard 1's per-call panels) — with NaN dropped. Ties break like the ported Dashboard 1 SQL:
 //!   value, then labels['queryid'], then the label set as text. Memory: one series at a time,
 //!   a k-heap per step, and (for a ratio) the denominator's grid rows.
 //!
@@ -497,7 +497,6 @@ fn time_chunks(
         return Ok(whole);
     }
     // exact per-series scrape intervals over the whole grid's fetched range
-    let t_si = std::time::Instant::now();
     let si = super::rollup::si_map(
         &b.ctx,
         ids,
@@ -515,13 +514,6 @@ fn time_chunks(
     let per = (budget / row_bytes.max(1) / live.max(1))
         .min((max_days * crate::model::DAY_MS / b.grid.step) as usize)
         .max(2);
-    if std::env::var_os("PGAI_EVAL_TRACE").is_some() {
-        eprintln!(
-            "topk: chunks of {per} steps, si for {} series in {:?}",
-            si.len(),
-            t_si.elapsed()
-        );
-    }
     let mut out = vec![];
     let mut c0 = 0;
     while c0 < np {
@@ -589,9 +581,7 @@ fn ratio_rows(
     drop(all);
     let mut y = vec![f64::NAN; b.grid.points()];
     let ratio = b.den.is_some();
-    let trace = std::env::var_os("PGAI_EVAL_TRACE").is_some();
     for (c0, g) in chunks {
-        let td = std::time::Instant::now();
         let s = src_of(&src, b, &g);
         let mut den: HashMap<u64, Sparse> = HashMap::new();
         let mut arena = DenRows::default();
@@ -618,14 +608,6 @@ fn ratio_rows(
             }
             each(id, c0, y);
         })?;
-        if trace && src.is_some() {
-            eprintln!(
-                "topk: chunk {c0}+{} den {} rows in {:?}",
-                g.points(),
-                den.len(),
-                td.elapsed()
-            );
-        }
     }
     Ok(())
 }
@@ -949,8 +931,6 @@ fn compute(b: &Bind) -> anyhow::Result<Vec<Row>> {
         return compute_full(b);
     }
     let ls = &b.lean;
-    let trace = std::env::var("PGAI_EVAL_TRACE").is_ok();
-    let t0 = std::time::Instant::now();
     let np = b.grid.points();
     let mut tops: Vec<TopTies> = (0..np)
         .map(|_| TopTies {
@@ -1013,14 +993,6 @@ fn compute(b: &Bind) -> anyhow::Result<Vec<Row>> {
     fin.sort_unstable();
     fin.dedup();
     fin.retain(|id| !keys.contains_key(id));
-    if trace {
-        eprintln!(
-            "topk: num {} series, new finalists {} after {compactions} compactions {:?}",
-            b.num.len(),
-            fin.len(),
-            t0.elapsed()
-        );
-    }
     for (id, l) in index::labels_of(&b.ctx, &fin, b.grid.fetch_start(b.f), b.grid.end)? {
         keys.insert(id, tie_key(&l));
     }
@@ -1140,11 +1112,7 @@ impl VTab for PromTopK {
             let den: Option<super::scan::IdList> = if has_den { Some(sel.ids(1).into()) } else { None };
             (Some(sel), pos, Arc::new(index::IdSel::default()), num, den)
         } else {
-            let ts = std::time::Instant::now();
             let lean = index::select_ids_cached(&ctx, &metrics, &matchers, grid.fetch_start(f), grid.end)?;
-            if std::env::var("PGAI_EVAL_TRACE").is_ok() {
-                eprintln!("topk: select_ids {} in {:?}", lean.len(), ts.elapsed());
-            }
             let num = lean.ids_of(0);
             let den = if has_den { Some(lean.ids_of(1)) } else { None };
             (None, HashMap::new(), lean, num, den)

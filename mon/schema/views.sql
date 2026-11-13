@@ -1,4 +1,4 @@
--- Consumer contract (see SPIKE.md on branch spike-monitoring-v2-duckdb, "Data contract").
+-- Consumer contract.
 -- Consumers query ONLY these views. The binary defines the internal _raw_<kind> views over
 -- the catalog's current Parquet file list (no directory listing) and then runs this file
 -- once; _raw_* are re-pointed after every flush/compaction, these views stay.

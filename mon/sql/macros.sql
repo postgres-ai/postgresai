@@ -9,7 +9,7 @@
 --   {cluster="local", datname=~"a|b"}  ->  [['cluster','=','local'], ['datname','=~','a|b']]
 -- A missing label matches as '' (PromQL). Regexes are fully anchored RE2 (Go and DuckDB both use RE2).
 --
--- Names (G0.5, decision 23): the implementations here are prom_<fn>_sql, the parity oracle.
+-- Names: the implementations here are prom_<fn>_sql, the parity oracle.
 -- Callers use the generic prom_<fn>, bound to an implementation by sql/bind_sql.sql (these
 -- macros) or sql/bind_rs.sql (pgai-mon's Rust table functions prom_<fn>_rs, same signature and
 -- output columns). prom_select, prom_edges, prom_window and the scalars are SQL-only helpers.
@@ -327,7 +327,7 @@ SELECT series_id, any_value(labels) AS labels, t, quantile_cont(v, p_phi) AS val
 
 
 -- topk / bottomk per step of fn(metric{matchers}[window]) (fn 'last': the bare selector, window
--- unused), or of fn(metric) / fn(den_metric) matched on identical label sets (D1's per-call panels); NaN dropped; ties broken by value, then
+-- unused), or of fn(metric) / fn(den_metric) matched on identical label sets (Dashboard 1's per-call panels); NaN dropped; ties broken by value, then
 -- labels['queryid'], then the label set as text (REVIEW.md C1). Same signature and output as
 -- pgai-mon's Rust prom_topk (prom_topk_rs). p_by: sum by those labels before ranking.
 CREATE OR REPLACE MACRO prom_topk_sql(p_k, p_fn, p_metric, p_matchers, p_start, p_end, p_step, p_window,

@@ -66,9 +66,6 @@ enum Cmd {
         /// Evaluated-row cache in the reader (prom_topk rows shared by panels), MB; 0 = off.
         #[arg(long, default_value_t = 24)]
         row_cache_mb: u64,
-        /// Run SQL in-process (no child; no OS memory cap).
-        #[arg(long)]
-        in_process: bool,
         /// Don't run background compaction (benchmarks of a fixed store).
         #[arg(long)]
         no_compact: bool,
@@ -135,8 +132,6 @@ enum Cmd {
         /// JSON lines: {"ts_ms","dbname","kind","schema","name","definition"[,"source","cluster","node_name"]}
         #[arg(long)]
         objects: Option<PathBuf>,
-        #[arg(long, default_value = store::DEFAULT_LAYOUT)]
-        layout: String,
         #[arg(long, default_value_t = 1_000_000)]
         chunk: usize,
         #[arg(long, default_value = "64MB")]
@@ -168,8 +163,6 @@ enum Cmd {
         compact_memory_limit: String,
         #[arg(long, default_value_t = 9)]
         zstd_level: i32,
-        #[arg(long, default_value_t = 3_500_000)]
-        part_rows: u64,
     },
     /// One read-only query through the same guardrails as POST /sql.
     Query {
@@ -179,7 +172,8 @@ enum Cmd {
         metrics_yml: Option<PathBuf>,
         sql: String,
     },
-    /// Crash test writer: append deterministic samples and flush until killed.
+    /// Internal (tests/kill9.rs): crash test writer: append deterministic samples and flush until killed.
+    #[command(hide = true)]
     CrashtestWrite {
         #[arg(long)]
         store: PathBuf,
@@ -199,7 +193,8 @@ enum Cmd {
         #[arg(long)]
         spec: PathBuf,
     },
-    /// Crash test verifier: no gap, no duplicate.
+    /// Internal (tests/kill9.rs): crash test verifier: no gap, no duplicate.
+    #[command(hide = true)]
     CrashtestVerify {
         #[arg(long)]
         store: PathBuf,
@@ -233,7 +228,6 @@ fn main_cmd() -> anyhow::Result<()> {
             reader_rss_cap_mb,
             reader_data_limit_mb,
             row_cache_mb,
-            in_process,
             mut no_compact,
             auth_token_file,
             no_auth,
@@ -296,7 +290,6 @@ fn main_cmd() -> anyhow::Result<()> {
                     reader_rss_cap_mb,
                     reader_data_limit_mb,
                     row_cache_mb,
-                    reader_process: !in_process,
                     max_temp_directory_size,
                     s3,
                     auth: auth::AuthCfg {
@@ -323,13 +316,11 @@ fn main_cmd() -> anyhow::Result<()> {
             input,
             query_texts,
             objects,
-            layout,
             chunk,
             writer_memory_limit,
             no_compact,
         } => {
             let cfg = config::StoreCfg {
-                samples_layout: layout,
                 writer_memory_limit,
                 ..Default::default()
             };
@@ -370,12 +361,10 @@ fn main_cmd() -> anyhow::Result<()> {
             all,
             compact_memory_limit,
             zstd_level,
-            part_rows,
         } => {
             let cfg = config::StoreCfg {
                 compact_memory_limit,
                 zstd_level,
-                compact_part_rows: part_rows,
                 ..Default::default()
             };
             let core = store::StoreCore::open(&store, &cfg)?;
@@ -499,7 +488,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
             b.url
         );
         b.probe(std::time::Duration::from_secs(30))?;
-        b.attach(&cfg.store.samples_layout)?;
+        b.attach(store::DEFAULT_LAYOUT)?;
         eprintln!(
             "pgai-mon: writing {} (epoch {}, local dir {}, upload every {} s)",
             b.url,
@@ -556,7 +545,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
     };
     let dict = query::build_dict(mf.as_ref(), &dict_iv);
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
-    let backend = if cfg.http.reader_process {
+    let backend = {
         let spec = sqlproc::Spec {
             store: if objstore::is_remote(&reader_shared.root) {
                 reader_shared.root.clone()
@@ -572,13 +561,6 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         let spec_path = shared.scratch.join("reader_spec.json");
         std::fs::create_dir_all(spec_path.parent().unwrap())?;
         query::Backend::Proc(sqlproc::ReaderProc::new(&spec, spec_path)?)
-    } else {
-        query::Backend::InProc(Arc::new(query::Reader::new(
-            reader_shared.clone(),
-            cfg.http.clone(),
-            views_sql,
-            dict,
-        )?))
     };
     let objects = structure::load_current_objects(&shared)?;
 

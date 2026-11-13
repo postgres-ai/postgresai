@@ -710,7 +710,7 @@ impl Reader {
             return Ok(());
         }
         let cat = self.shared.catalog.lock().unwrap().clone();
-        let (files, layout) = (&cat.files, cat.samples_layout.clone());
+        let files = &cat.files;
         let root = &self.shared.root;
         // DuckDB's file list for each view: the store's own paths, or the local mirror's
         let mut ms = MirrorRun::default();
@@ -819,7 +819,7 @@ impl Reader {
                     Some(ps) if !ps.is_empty() => {
                         let src = crate::store::parquet_src(kind, &sql_list(&ps));
                         if *kind == "samples" {
-                            samples_raw_select(&layout, &src)
+                            samples_raw_select(&src)
                         } else {
                             format!("SELECT * FROM {src}")
                         }

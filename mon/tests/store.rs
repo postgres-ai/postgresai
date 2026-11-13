@@ -39,7 +39,7 @@ fn stats(core: &StoreCore) -> (i64, i64, f64) {
     let src = format!("read_parquet({})", file_list_sql(&core.shared.root, &files));
     let q = format!(
         "SELECT count(*), count(DISTINCT (series_id, ts)), sum((hash(series_id, ts, value) % 1000003)::DOUBLE) FROM ({})",
-        samples_raw_select(&cat.samples_layout, &src)
+        samples_raw_select(&src)
     );
     core.conn()
         .query_row(&q, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -179,14 +179,7 @@ fn compaction_preserves_rows_and_checksum() {
     let dir = tempfile::tempdir().unwrap();
     let s = series(30);
     let ids: Vec<u64> = s.iter().map(|d| d.series_id).collect();
-    let mut core = StoreCore::open(
-        dir.path(),
-        &StoreCfg {
-            compact_part_rows: 30_000,
-            ..cfg()
-        },
-    )
-    .unwrap();
+    let mut core = StoreCore::open(dir.path(), &cfg()).unwrap();
     core.append(Record::Series(s)).unwrap();
     // 3 days, a flush every 40 steps -> many small files per day
     for k in 0..(3 * 2880) {
