@@ -3,6 +3,9 @@
 PostgresAI monitoring collector, Parquet store and SQL endpoint in one Rust binary with
 embedded DuckDB.
 
+[ARCHITECTURE.md](ARCHITECTURE.md) describes the processes, the module map, the write and
+read paths, the files on disk, the invariants and the security model. Read it first.
+
 - Collects every metric in `mon/metrics.yml` with pgwatch v3 semantics
   (same metric names and labels as the pgwatch + VictoriaMetrics stack).
 - Tails PostgreSQL jsonlog / auto_explain output, and snapshots query texts and object
@@ -74,16 +77,65 @@ are materialised rather than computed by views at query time: every consumer kee
 ranges read one series per node instead of re-deriving rates of every per-CPU and per-device
 counter. `tests/host_rules.rs` runs the vmalert golden cases against it.
 
+## Logs
+
+pgai-mon can read PostgreSQL logs written in the `jsonlog` format. What exists now:
+
+| Feature | State |
+|---|---|
+| Tail a directory of jsonlog files (`logs[]` in the config) | Supported. pgai-mon must be able to read the files on its own filesystem. Positions are kept in the catalog, so a restart continues where it stopped. |
+| Offline import: `pgai-mon load-logs --store DIR --input FILE_OR_DIR` | Supported. Resumable. Run it while no `run` or `serve` has the store open. |
+| auto_explain plans found in log lines | Parsed into the `plans` and `plan_events` views. Literals in plans are redacted. |
+| Log lines | In the `logs` view. Parameter values are dropped. |
+| Logs of managed services (RDS, Supabase and others) | Not supported: nothing fetches them. |
+| The compose stack | Does not tail logs: `docker/pgai-mon.yml` has no `logs` entry and compose mounts no log directory. |
+
+## PromQL to SQL
+
+Conventions of the `prom_*` functions:
+
+- Times (`start`, `end`, `step`, `window`) are Unix milliseconds. `epoch_ms(now())` gives the
+  current time. Below, `S` and `E` stand for the start and end of the range.
+- Matchers are a list of `[label, operator, value]` triples; operators are `=`, `!=`, `=~`,
+  `!~`. `[]` selects every series of the metric. Regular expressions are anchored, as in
+  PromQL.
+- The result columns are `series_id`, `labels` (a map: `labels['datname']`), `t` (the step
+  time, ms) and `value`. `prom_agg` returns `labels`, `t`, `value`.
+- An instant query at time `T` is a range query with `start = end = T` and `step = 300000`.
+
+| PromQL | SQL |
+|---|---|
+| `m{cluster="c"}` at time T | `SELECT labels, value FROM prom_last('m', [['cluster','=','c']], T, T, 300000)` |
+| `m` as a range query, step 1m | `SELECT labels, t, value FROM prom_last('m', [], S, E, 60000)` |
+| `m{datname=~"a\|b", mode!="idle"}` | matchers `[['datname','=~','a\|b'], ['mode','!=','idle']]` |
+| `rate(m[5m])`, step 1m | `SELECT labels, t, value FROM prom_rate('m', [], S, E, 60000, 300000)` |
+| `irate(m[5m])`, `increase(m[1h])`, `delta(m[1h])` | `prom_irate`, `prom_increase`, `prom_delta`, same arguments as `prom_rate` |
+| `max_over_time(m[1h])` | `SELECT labels, t, value FROM prom_max_over_time('m', [], S, E, 60000, 3600000)` |
+| `avg_`, `min_`, `sum_`, `count_`, `stddev_`, `last_`, `first_over_time` | `prom_avg_over_time`, ... same arguments |
+| `quantile_over_time(0.95, m[1h])` | `SELECT labels, t, value FROM prom_quantile_over_time(0.95, 'm', [], S, E, 60000, 3600000)` |
+| `sum by (datname) (rate(m[5m]))` | `SELECT labels['datname'] AS datname, t, value FROM prom_agg('sum', 'rate', 'm', [], S, E, 60000, 300000, p_by := ['datname'])` |
+| `avg`, `min`, `max`, `count by (...)` | `prom_agg` with `'avg'`, `'min'`, `'max'`, `'count'` |
+| `topk(10, rate(m[5m]))` | `SELECT labels, t, value FROM prom_topk(10, 'rate', 'm', [], S, E, 60000, 300000)` |
+| `bottomk(10, ...)` | `prom_topk(..., p_bottom := true)` |
+| last value of every series now | `SELECT labels, value FROM prom_last('m', [], epoch_ms(now()), epoch_ms(now()), 300000)` |
+| raw samples (no PromQL equivalent) | `SELECT ts, labels, value FROM pgai_samples('m', [], S, E) ORDER BY ts` |
+| label values: `label_values(m, datname)` | `SELECT DISTINCT labels['datname'] FROM series WHERE metric = 'm'` |
+| metric names with type and interval | `SELECT metric, type, interval_s FROM metric_dict` |
+| `histogram_quantile(...)` | Not available. |
+
+A window of `0` means no `[d]` was given. Expressions over several series (a ratio of two
+rates, for example) are written as an SQL join of two calls on `labels` and `t`.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `src/` | the crate (`pgai-mon` binary, `pgai_mon` library) |
-| `tests/` | integration tests (`tests/fixtures/`: sample jsonlog lines) |
+| `tests/` | integration tests; `tests/fixtures/` holds sample jsonlog lines, the host rule golden cases, RDS host stats recordings and scrape files |
 | `schema/views.sql` | the consumer views; embedded in the binary (`include_str!`) |
 | `sql/macros.sql` | SQL macros loaded after the views (`macros_sql` / `--macros-sql`) |
 | `sql/reports/` | ported dashboard queries |
-| `grafana/` | dashboard compiler and the 14 compiled SQL dashboards (see `grafana/README.md`) |
+| `grafana/` | dashboard compiler and the 16 compiled SQL dashboards (see `grafana/README.md`) |
 | `examples/pgai-mon.example.yml` | example config (the demo target) |
 | `Dockerfile` | container image |
 
@@ -144,26 +196,179 @@ crash-test helpers (`crashtest-write`, `crashtest-verify`).
 
 ## Config
 
-YAML; the reference is `src/config.rs`. Only `store_dir` and `sources` are required; every
-other field has a default. Unknown fields are rejected. See
-`examples/pgai-mon.example.yml`:
+YAML, loaded by `run --config`. `store_dir` is the only required key (the environment
+variable `PGAI_MON_STORE` may replace its value); without `sources` or `sources_file` nothing
+is collected. Unknown keys are rejected, except inside a source, where they are reported and
+ignored. `examples/pgai-mon.example.yml` is a working example; `docker/pgai-mon.yml` is the
+config of the compose image.
 
-- `sources[]`: `name`, `conn_str`, `custom_tags`, `discover_databases`, `scrape_labels`;
-- `metrics_yml`, `preset` (default `full`);
-- `store`: flush interval, writer/compaction memory limits, compaction settings;
-- `http`: `listen` (default `127.0.0.1:8765`), reader memory and RSS caps, timeouts, row and
-  byte limits, caches, query slots, `s3` read path, `auth` (`token_file`, `username`,
-  `password_file`, `disabled`);
-- `collector`: series and session limits, statement timeout, snapshot intervals;
-- `logs[]`: jsonlog directories to tail;
-- `views_sql` (default: the embedded copy), `macros_sql`, `read_only`;
-- `scrape`: `files`, `jobs`, `reload_interval_s`, `max_body_bytes`, `default_sample_limit`;
-- `rules`: `host` (default: on when `scrape` is configured), `interval_s`, `delay_s`;
-- `ingest`: push limits (`max_body_bytes`, `max_samples_per_request`, `max_series`, `max_age_s`,
-  `max_future_s`, `max_labels`, `max_label_value_bytes`).
+Top level:
 
-Retention: `store.retention_days` (metrics: samples, series, rollups, logs, plan events) and
-`store.texts_retention_days` (query texts); 0, the default, keeps everything, and the compose
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `store_dir` | path or `s3://bucket/prefix` | required | Root of the store. |
+| `metrics_yml` | path | `mon/metrics.yml` | Metric definitions (pgwatch format). Relative to the working directory. |
+| `preset` | string | `full` | Preset in `metrics.yml` that gives the metric list and intervals. |
+| `sources` | list | empty | Monitored nodes, inline. See the next table. |
+| `sources_file` | path | none | A pgwatch `sources.yml` or the CLI's `instances.yml`. Re-read on SIGHUP and every `collector.reload_interval_s`. A missing file counts as empty. |
+| `logs` | list | empty | jsonlog directories to tail: `dir`, `suffix` (`.json`), `start_at_end` (`false`). |
+| `views_sql` | path | embedded copy | The consumer views (`schema/views.sql`). |
+| `macros_sql` | path | none | Extra SQL run after the views (`sql/macros.sql`). |
+| `read_only` | bool | `false` | Open the store without WAL, compaction or ingest. Not allowed with sources or logs. |
+| `store`, `http`, `collector`, `ingest`, `scrape`, `rules` | maps | | See below. |
+| `rds` | list | empty | RDS or Aurora instances polled for host metrics: `instance_id`, `region`, `cluster`, `node_name`, `role_arn`, `external_id`, `poll_interval_s` (1 to 300, default 60). |
+
+`sources[]`:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | required | Source name; becomes the `dbname` label. |
+| `conn_str` | string | required | libpq URL or `key=value` string. |
+| `custom_tags` | map | empty | Labels added to every series. |
+| `discover_databases` | bool | `false` | Also collect per-database metrics on every other connectable database, named `<name>_<datname>`. |
+| `kind` | string | `postgres` | `postgres` or `postgres-continuous-discovery` (which turns discovery on). Other kinds are skipped. |
+| `include_pattern`, `exclude_pattern` | regex | none | Filters on discovered database names. |
+| `preset_metrics`, `custom_metrics` | string, map | none | Per-source preset, or metric to interval in seconds. Neither: the global `preset`. |
+| `preset_metrics_standby`, `custom_metrics_standby` | string, map | none | What a standby runs instead. |
+| `is_enabled` | bool | `true` | `false`: not collected. |
+| `only_if_master` | bool | `false` | Collect only while the node is a primary. |
+| `scrape_labels` | map | empty | Extra labels (`job`, `instance`) that the old stack added at scrape time. |
+| `group` | string | none | Informational. |
+
+`store`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `flush_interval_s` | 60 | Seconds between flushes of the WAL to Parquet. New data is visible to queries after a flush. |
+| `max_buffer_bytes` | 32 MiB | Flush early once this much is buffered. |
+| `write_chunk_bytes` | 8 MiB | Bytes per write batch inside a flush. |
+| `writer_memory_limit` | `64MB` | DuckDB memory limit of the flush. |
+| `writer_threads` | 1 | DuckDB threads of the flush. |
+| `compact_memory_limit` | `32MB` | DuckDB memory limit of sample compaction. |
+| `compact_events_memory_limit` | `96MB` | The same for logs, plans and other non-sample kinds. |
+| `compact_grace_s` | 300 | Seconds after a day ends before it is compacted as closed. |
+| `compact_part_rows` | 3,500,000 | Sample rows per compacted file; a bigger day is split by series id. |
+| `compact_kmerge` | `true` | Merge sample files with the streaming merge instead of a DuckDB sort. |
+| `delete_grace_s` | 300 | Seconds a replaced or expired file stays on disk. |
+| `closed_lag_ms` | 5000 | A sample older than the newest sample minus this counts as late. |
+| `samples_layout` | `v2_split_tz` | Physical layout of sample files. Fixed when the store is created. |
+| `zstd_level` | 9 | Compression level of compacted files. |
+| `row_group_size` | 122,880 | Rows per Parquet row group. |
+| `retention_days` | 0 | Days of samples, series, rollups, logs and plan events kept. 0 keeps everything. |
+| `texts_retention_days` | 0 | Days of query texts kept. 0 keeps everything. |
+| `s3.local_dir` | `/var/lib/pgai-mon` | Local working directory of an S3 store. |
+| `s3.upload_interval_s` | 300 | Seconds between commits to the bucket. |
+| `s3.lease_intervals` | 3 | A writer silent for this many upload intervals may be taken over. |
+| `s3.takeover` | `false` | Start even when another writer's lease is fresh. |
+| `s3.keep_local_days` | 2 | Committed files of this many days stay on local disk. |
+| `s3.sweep_interval_s` | 86,400 | Seconds between sweeps of objects no catalog lists. |
+| `s3.delete_grace_s` | 600 | Seconds a dropped file stays in the bucket. |
+| `s3.part_mb` | 8 | Multipart upload part size, MB. |
+
+`http`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `127.0.0.1:8765` | Address and port. |
+| `timeout_ms` | 15,000 | Per-query timeout. |
+| `max_rows` | 100,000 | Rows per result; more sets `truncated`. With `format=objects` (what Grafana panels read) it is a `result_too_large` error, so a chart never stops halfway unnoticed. |
+| `max_bytes` | 16 MiB | Bytes per result; same behaviour as `max_rows`. |
+| `max_concurrent` | 0 | Query slots. 0: one per core, at most 4. |
+| `queue_max` | 64 | Queries that may wait for a slot. |
+| `queue_wait_ms` | 30,000 | Longest wait for a slot; then `busy`. |
+| `short_query_ms` | 50 | A query expected to finish under this is short and may use the reserved slot. |
+| `heavy_mem_gate_pct` | 50 | A heavy query starts beside another only while the reader's RSS is under this share of the cap. 0: off. |
+| `memory_limit` | `96MB` | DuckDB memory limit of the reader. |
+| `threads` | 1 | DuckDB threads of the reader. 0: `max_concurrent`. |
+| `max_temp_directory_size` | `2GB` | Reader spill limit. |
+| `reader_process` | `true` | Run SQL in a child process. |
+| `reader_rss_cap_mb` | 192 | The child is killed above this RSS. |
+| `reader_data_limit_mb` | 1024 | Linux `RLIMIT_DATA` of the child. 0: none. |
+| `reader_drain_pct` | 70 | Replace the child once its RSS passed this share of the cap during a query. |
+| `footer_cache_mb` | 16 | Parquet footer cache in the reader. 0: off. |
+| `row_cache_mb` | 24 | Cache of evaluated rows in the reader. 0: off. |
+| `cache_mb` | 16 | Result cache in the parent, compressed. 0: off. |
+| `cache_max_entry_kb` | 2048 | Largest compressed result the cache stores. |
+| `eval_workers` | 1 | Evaluator threads shared by running queries. 1: off. 0: `max_concurrent`. |
+| `eval_worker_mb_per_day` | 3 | Memory one evaluator worker may add per day scanned. |
+| `auth.token_file` | none | File with the full bearer token. |
+| `auth.read_token_file` | none | File with the read-only bearer token. |
+| `auth.username`, `auth.password_file` | none | Basic auth. |
+| `auth.disabled` | `false` | Serve without authentication. Local development only. |
+| `s3.concurrency` | 16 | Range GETs in flight. |
+| `s3.inflight_mb` | 8 | Prefetch window. |
+| `s3.coalesce_kb` | 256 | Merge two planned ranges into one GET across a gap up to this. |
+| `s3.cache_dir`, `s3.cache_gb` | none, 2.0 | Local cache of fetched chunks and its size. |
+| `s3.catalog_ttl_ms` | 30,000 | How often a reader re-reads `catalog.json` from the bucket. |
+| `s3.footer_mb` | 8 | Raw footers kept in memory. |
+| `s3.gets_warn` | 64 | A query with more GETs gets a warning in its reply. |
+| `s3.window_soft_pct` | 85 | The prefetch window shrinks so RSS stays under this share of the cap. 0: off. |
+| `s3.mirror_mb` | 2048 | Budget of the local copies of the small kinds that DuckDB reads. A kind over the budget fails when queried, with an error naming this setting; `s3_mirror` in `GET /health` lists such kinds. |
+
+`collector`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_sessions_per_node` | 4 | Sessions to one Postgres node across all its databases. |
+| `default_statement_timeout_s` | 15 | Statement timeout of a metric that sets none. |
+| `lock_timeout_ms` | 100 | `lock_timeout` of every session. |
+| `search_path` | none | Default: `pg_catalog`, the schemas of installed extensions, `public`. |
+| `max_rows_per_query` | 100,000 | Rows one metric query may return; the rest is not fetched and is counted. |
+| `max_series_per_query` | 20,000 | Series one metric query may produce per run; the rest is cut and counted. |
+| `drop_numeric` | `true` | Drop NUMERIC columns, as pgwatch's Prometheus sink did. |
+| `text_columns` | empty | Per metric and column: `label` or `drop`, for text columns without the `tag_` prefix. |
+| `query_texts_interval_s` | 300 | Seconds between query text snapshots. |
+| `objects_interval_s` | 600 | Seconds between object definition snapshots. |
+| `objects_statement_timeout_s`, `objects_max_rows` | 60, 500,000 | Limits of the object snapshot. |
+| `stats_reset_interval_s` | 60 | Seconds between `stats_reset` snapshots. |
+| `reconnect_min_s`, `reconnect_max_s` | 2, 120 | Reconnect backoff range. |
+| `reload_interval_s` | 30 | Seconds between re-reads of the config, sources file and `metrics.yml`. 0: SIGHUP only. |
+| `discovery_interval_s` | 120 | Seconds between database discovery runs. |
+| `role_check_interval_s` | 30 | Seconds between primary or standby checks. |
+| `self_metrics_interval_s` | 15 | Seconds between writes of the collector's own series. |
+
+`ingest`, `scrape`, `rules`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ingest.max_body_bytes` | 16 MiB | Largest push request. |
+| `ingest.max_samples_per_request` | 500,000 | Samples per push request. |
+| `ingest.max_series` | 200,000 | Ingested series tracked at once; new ones beyond it are dropped and counted. |
+| `ingest.max_age_s`, `ingest.max_future_s` | 86,400, 600 | Samples older or further ahead are dropped. |
+| `ingest.max_labels`, `ingest.max_label_value_bytes` | 64, 4096 | Per-series limits. |
+| `scrape.files` | empty | Scrape-config files; `*` allowed in the file name. |
+| `scrape.jobs` | empty | Scrape configs inline. |
+| `scrape.reload_interval_s` | 10 | Seconds between re-reads of `files`. |
+| `scrape.max_body_bytes` | 32 MiB | Largest scrape response; larger is a failed scrape. |
+| `scrape.default_sample_limit` | 50,000 | `sample_limit` of jobs that set none. 0: none. |
+| `rules.host` | unset | Evaluate the host rules. Unset: only when scraping is configured. |
+| `rules.interval_s`, `rules.delay_s` | 60, 5 | Evaluation period, and the delay after each minute. |
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `PGAI_MON_STORE` | Replaces `store_dir` when set and not empty. |
+| `PGAI_MON_RETENTION_DAYS`, `PGAI_MON_TEXTS_RETENTION_DAYS` | Replace `store.retention_days` and `store.texts_retention_days`. A value that is not a whole number stops the start. Empty counts as unset. |
+| `VM_RETENTION_PERIOD`, `QUERYID_RETENTION_HOURS` | The old stack's retention settings. Used only when the variable above is unset; rounded up to days. A value that is not understood is ignored with a message. |
+| `PGAI_MON_TOKEN`, `PGAI_MON_TOKEN_FILE` | The full bearer token, or a file that holds it. |
+| `PGAI_MON_READ_TOKEN`, `PGAI_MON_READ_TOKEN_FILE` | The read-only bearer token. |
+| `PGAI_MON_AUTH_USERNAME`, `PGAI_MON_AUTH_PASSWORD`, `PGAI_MON_AUTH_PASSWORD_FILE` | Basic auth. |
+| `PGAI_MON_AUTH_DISABLED` | `1`, `true`, `yes` or `on`: serve without authentication. |
+| `AWS_*` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, ...) | Credentials and region for an S3 store and for RDS host stats. Without keys, the instance or container role is used. |
+| `RDS_DB_INSTANCE_IDENTIFIER`, `RDS_POLL_INTERVAL_SECONDS`, `RDS_ROLE_ARN`, `RDS_EXTERNAL_ID`, `PGAI_CLUSTER`, `PGAI_NODE_NAME` | One RDS host stats target, used when the `rds` list is empty. |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGPASSFILE`, `PGOPTIONS`, `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT`, `PGSSLKEY`, `PGHOSTADDR`, `PGTARGETSESSIONATTRS` | libpq defaults for values a `conn_str` leaves out. |
+| `PGAI_NO_COMPACT` | Set: the compactor thread does not run. |
+| `PGAI_QCACHE=0` | Turns the result cache off. |
+| `PGAI_TEST_PG_URL` | Tests only: a throwaway Postgres for `tests/collector_pg.rs`. |
+
+Variables named `PGAI_EVAL_*`, `PGAI_QUERY_TIMING`, `PGAI_NO_ROLLUP*`, `PGAI_ROLLUP_*` and
+`PGAI_TOPK_*` are diagnostics for developers and tests; see their use in `src/eval/`.
+
+### Retention
+
+`store.retention_days` covers samples, series, rollups, logs and plan events;
+`store.texts_retention_days` covers query texts. 0, the default, keeps everything. The compose
 image's config sets 14 and 30. The environment variables `PGAI_MON_RETENTION_DAYS` and
 `PGAI_MON_TEXTS_RETENTION_DAYS` replace them; without those, the old stack's
 `VM_RETENTION_PERIOD` and `QUERYID_RETENTION_HOURS` apply, rounded up to days. Each compaction
@@ -172,6 +377,8 @@ pass drops the files whose last day is older from the catalog and deletes them a
 monthly series) goes once its whole month is older. The series registry, object definitions and
 plan definitions are not per day and are kept. A query's text is written again on each UTC day
 it is seen, so every day's file holds the texts of that day's queries.
+
+### Object store
 
 A store root may also be `s3://bucket/prefix` (credentials and region from the AWS
 environment). The environment variable `PGAI_MON_STORE`, when set, replaces `store_dir` (compose
@@ -203,9 +410,9 @@ Operator facts for an object store:
 ```bash
 cd mon
 cargo test             # unit + integration tests
-cargo test -- --ignored --nocapture   # manual measurements (not gates)
 python3 grafana/test_compile.py       # offline dashboard checks
 ```
 
-The tests need no PostgreSQL and no network: they build their stores in temp dirs (and
-in-memory object stores). `kill9.rs` and `rowcache.rs` run the built binary.
+The tests need no network, and no PostgreSQL except `tests/collector_pg.rs`, which runs only
+when `PGAI_TEST_PG_URL` names a throwaway server and prints a skip message otherwise. The
+others build their stores in temp dirs (and in-memory object stores). `kill9.rs` and `rowcache.rs` run the built binary.

@@ -14,7 +14,13 @@ CI does not build its images or run its tests, and nothing in it is shipped.
 - `scripts/rotate-vm-auth.sh`: VictoriaMetrics credential rotation
 - `tests/`: the tests of the above, as they were (paths inside them are the pre-move ones)
 
-Still read from here by live code: `mon/grafana/compile.py` compiles the pgai-mon dashboards
-from `config/grafana/dashboards/`, and `scripts/sync-wait-event-colors.py` and
-`cli/test/config-consistency.test.ts` read those dashboards too; a few CLI and reporter tests
-read `config/pgwatch-postgres/metrics.yml`.
+Still used from here:
+
+| Path under `old/` | Used by |
+|---|---|
+| `config/grafana/dashboards/` | `mon/grafana/compile.py` compiles the pgai-mon dashboards from these PromQL dashboards (read only). |
+| `config/grafana/provisioning/datasources/datasources.yml` | `cli/test/config-consistency.test.ts` reads it. |
+| `tests/host_rules/`, `rds-host-stats/test/fixtures/` | The originals of the copies under `mon/tests/fixtures/`; the pgai-mon tests read the copies, not these. |
+
+Nothing outside `old/` reads `config/pgwatch-postgres/metrics.yml`. The metric definitions
+pgai-mon uses are in `mon/metrics.yml`.

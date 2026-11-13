@@ -642,6 +642,69 @@ the raw result payload. The wait is sized from the instance's
 poll pacing; `--timeout` overrides it. A query error is printed as the instance
 reported it and the command exits 1.
 
+`--local` and the platform path print the result as a text table with the row count under
+it; `--json` prints the result as JSON (`columns`, `rows`, `truncated`, ...). There is no
+other output format.
+
+Limits, set in pgai-mon's config (defaults shown):
+
+| Limit | Default | What happens |
+|---|---|---|
+| Query time (`http.timeout_ms`) | 15 s | The query fails with `timeout`. |
+| Rows (`http.max_rows`) | 100,000 | The result is cut and marked truncated. |
+| Bytes (`http.max_bytes`) | 16 MiB | The result is cut and marked truncated. |
+
+A truncated result has `"truncated": true` in the JSON, and the table output ends with a
+`TRUNCATED` line. Through the platform the result is also cut to the job channel's size
+budget, which is smaller. Add `LIMIT` or narrow the time range.
+
+pgai-mon refuses:
+
+- anything but one `SELECT` (or `WITH ... SELECT`): no DDL, no writes, no `SET`, no second
+  statement (`not_read_only`);
+- table functions outside its allowlist, such as `read_csv`, `read_text`, `glob` and `query`
+  (`forbidden`). Functions named `prom_*` and `pgai_*`, `range`, `generate_series`, `unnest`,
+  `read_parquet` (inside the store only), `parquet_*`, `json_each`, `json_tree` and the
+  `duckdb_*` catalog functions are allowed.
+
+With `--local` a refused query is printed as `Query refused (HTTP 403)` with the reason.
+
+#### PromQL to SQL
+
+Conventions of the `prom_*` functions:
+
+- Times (`start`, `end`, `step`, `window`) are Unix milliseconds. `epoch_ms(now())` gives the
+  current time. Below, `S` and `E` stand for the start and end of the range.
+- Matchers are a list of `[label, operator, value]` triples; operators are `=`, `!=`, `=~`,
+  `!~`. `[]` selects every series of the metric. Regular expressions are anchored, as in
+  PromQL.
+- The result columns are `series_id`, `labels` (a map: `labels['datname']`), `t` (the step
+  time, ms) and `value`. `prom_agg` returns `labels`, `t`, `value`.
+- An instant query at time `T` is a range query with `start = end = T` and `step = 300000`.
+
+| PromQL | SQL |
+|---|---|
+| `m{cluster="c"}` at time T | `SELECT labels, value FROM prom_last('m', [['cluster','=','c']], T, T, 300000)` |
+| `m` as a range query, step 1m | `SELECT labels, t, value FROM prom_last('m', [], S, E, 60000)` |
+| `m{datname=~"a\|b", mode!="idle"}` | matchers `[['datname','=~','a\|b'], ['mode','!=','idle']]` |
+| `rate(m[5m])`, step 1m | `SELECT labels, t, value FROM prom_rate('m', [], S, E, 60000, 300000)` |
+| `irate(m[5m])`, `increase(m[1h])`, `delta(m[1h])` | `prom_irate`, `prom_increase`, `prom_delta`, same arguments as `prom_rate` |
+| `max_over_time(m[1h])` | `SELECT labels, t, value FROM prom_max_over_time('m', [], S, E, 60000, 3600000)` |
+| `avg_`, `min_`, `sum_`, `count_`, `stddev_`, `last_`, `first_over_time` | `prom_avg_over_time`, ... same arguments |
+| `quantile_over_time(0.95, m[1h])` | `SELECT labels, t, value FROM prom_quantile_over_time(0.95, 'm', [], S, E, 60000, 3600000)` |
+| `sum by (datname) (rate(m[5m]))` | `SELECT labels['datname'] AS datname, t, value FROM prom_agg('sum', 'rate', 'm', [], S, E, 60000, 300000, p_by := ['datname'])` |
+| `avg`, `min`, `max`, `count by (...)` | `prom_agg` with `'avg'`, `'min'`, `'max'`, `'count'` |
+| `topk(10, rate(m[5m]))` | `SELECT labels, t, value FROM prom_topk(10, 'rate', 'm', [], S, E, 60000, 300000)` |
+| `bottomk(10, ...)` | `prom_topk(..., p_bottom := true)` |
+| last value of every series now | `SELECT labels, value FROM prom_last('m', [], epoch_ms(now()), epoch_ms(now()), 300000)` |
+| raw samples (no PromQL equivalent) | `SELECT ts, labels, value FROM pgai_samples('m', [], S, E) ORDER BY ts` |
+| label values: `label_values(m, datname)` | `SELECT DISTINCT labels['datname'] FROM series WHERE metric = 'm'` |
+| metric names with type and interval | `SELECT metric, type, interval_s FROM metric_dict` |
+| `histogram_quantile(...)` | Not available. |
+
+A window of `0` means no `[d]` was given. Expressions over several series (a ratio of two
+rates, for example) are written as an SQL join of two calls on `labels` and `t`.
+
 `pgai promql` was removed with VictoriaMetrics; it exits 1 and points here.
 
 ### MCP server (`mcp` group)

@@ -223,9 +223,10 @@ Consistency with the existing dashboards comes first: see README.md §
 python -m pytest tests/grafana_dashboards -q
 ```
 
-Note `old/postgres_ai_helm/config/grafana/dashboards/*.json` are symlinks to
-`old/config/grafana/dashboards/` — edit the canonical file, never write through the
-link.
+There is no Helm chart for the `pgai-mon` stack. The chart of the previous stack is under
+`old/postgres_ai_helm/`; it is not built, tested or released. Its
+`config/grafana/dashboards/*.json` are symlinks to `old/config/grafana/dashboards/`, which is
+the input of `mon/grafana/compile.py`: edit the canonical file, never write through the link.
 
 ### Run reporter on your host (recommended)
 
@@ -332,8 +333,21 @@ not, as it restarts the existing containers.
 
 ### Option B: Run Docker Compose directly
 
-Compose needs `PGAI_TAG` and `PGAI_MON_TOKEN` in `.env` (an Option A install
-writes both). Not exercised in the pgai-mon stack run; Option A is.
+An Option A install prepares everything below. Without one, do it by hand from the
+repository root before the first `docker compose up`:
+
+```bash
+cp .env.example .env                 # then fill in the three required values (below)
+cp instances.demo.yml instances.yml  # the targets pgai-mon collects; edit for your own
+mkdir -p host-metrics                # scrape files for host metrics; may stay empty
+touch .pgwatch-config                # read by the reporter; may stay empty
+```
+
+`.env` must set `PGAI_TAG`, `PGAI_MON_TOKEN` (`openssl rand -hex 32`) and
+`GF_SECURITY_ADMIN_PASSWORD`; compose stops with a message while one is missing. The demo
+databases start only with `COMPOSE_PROFILES=demo`, which also needs `REPLICATOR_PASSWORD`.
+Compose bind-mounts `instances.yml`, `host-metrics/` and `.pgwatch-config`; if a path is
+missing, Docker creates a directory in its place and the containers fail to read it.
 
 Bring the stack up and **force rebuild**:
 

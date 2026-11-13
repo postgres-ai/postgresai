@@ -83,7 +83,8 @@ original; to keep a recompile from undoing the change, also run it with
 
 The existing `quality:grafana-dashboards-lint` CI job checks palette drift,
 complete type coverage, matcher collisions, and documentation parity.
-Helm dashboard files symlink to the same Compose dashboard sources.
+The Helm chart of the previous stack (`old/postgres_ai_helm`, not built or released) symlinks to the
+same dashboard sources; there is no Helm chart for the `pgai-mon` stack.
 Contributors must link this standard when introducing wait-event visualizations
 in other repositories; their review must check the mapping against this file.
 Cross-repository documents and slide decks are subject to review, not this

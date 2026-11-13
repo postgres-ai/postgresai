@@ -290,29 +290,60 @@ Or if you're using npx:
 npx postgresai@0.15.0 --version  # verify the new version
 ```
 
-### Step 2: Stop running services
+### Step 2: Run `mon update`
+
+Do not stop the stack first. `mon update` starts the new stack only when the old one was
+running; after `mon stop` it leaves the box stopped and you start it with `postgresai mon start`.
 
 ```bash
-postgresai mon stop
-```
-
-### Step 3: Pull new Docker images and restart
-
-`mon update` migrates `.env` (adds any newly-required keys), refreshes `docker-compose.yml` to the new stack version, and pulls images — all while preserving your user-managed `instances.yml`. It does **not** change `PGAI_TAG`, so set the new image tag yourself first — otherwise `mon update` just re-pulls and restarts the *old* version:
-
-```bash
-# In your monitoring directory (typically ~/.postgres_ai/), edit .env and set
-# PGAI_TAG to the version you are upgrading to (it should match your new CLI
-# version), e.g. for the 0.15 line:  PGAI_TAG=0.15.0
 postgresai mon update
-postgresai mon start
 ```
 
-This will:
-- Add any newly required `.env` keys for the newer stack (existing values, your secrets, and `instances.yml` targets are preserved)
-- Refresh `docker-compose.yml` to match the new stack version on non-git installs (e.g. npx / `npm install -g`), backing up the old file as `docker-compose.yml.bak-<oldtag>-<hash>` (the original is never overwritten on repeated runs) — this is what switches an old-stack install to `pgai-mon`. The fetched compose is validated before it replaces your working one, so a network proxy/login page can never clobber it. Git checkouts already get this via `git pull`, so it is skipped for them.
-- Pull the Docker images for the `PGAI_TAG` you set
-- Start the services on the new images
+What `mon update` does:
+
+| Step | Detail |
+|---|---|
+| Migrates `.env` | Adds keys the new stack requires. Existing values, secrets and `instances.yml` are kept. |
+| Refreshes `docker-compose.yml` | On installs that are not a git checkout. The old file is saved as `docker-compose.yml.bak-<oldtag>-<hash>`. |
+| Pulls images | For the `PGAI_TAG` in `.env`. |
+| Restarts | Same stack: it prints `postgresai mon restart` for you to run. Old stack to `pgai-mon`: see below. |
+
+Between versions of the same stack `mon update` does not change `PGAI_TAG`: edit `.env` in the
+monitoring directory (typically `~/.postgres_ai/`) and set it to the new version before you run
+`mon update`.
+
+### Upgrading from the pgwatch + VictoriaMetrics stack
+
+When the install still runs the old stack, `mon update` switches it to `pgai-mon`:
+
+1. It replaces `docker-compose.yml` (backup: `docker-compose.yml.bak-<oldtag>-<hash>`) and pulls
+   the images of this CLI's version.
+2. It removes the old stack's containers and, if the old stack was running, starts the new one.
+3. It prints the names of the old data volumes and the command that removes them.
+
+What to expect:
+
+- **History starts empty.** Nothing is copied from VictoriaMetrics. Dashboards fill from the
+  moment of the switch.
+- **The old data stays on disk** in the old stack's Docker volumes until you remove it with the
+  `docker volume rm ...` command that `mon update` printed.
+- **Grafana listens on `127.0.0.1:3000` only** unless `GRAFANA_BIND_HOST` is set in `.env`. The
+  old stack published it on every interface.
+- If the image pull fails, the old stack keeps running, its `docker-compose.yml` and `PGAI_TAG`
+  are put back, and you can run `mon update` again.
+
+To go back to the old stack:
+
+```bash
+cd ~/.postgres_ai                     # your monitoring directory
+docker compose down                   # stop the new stack; volumes stay
+cp docker-compose.yml.bak-<oldtag>-<hash> docker-compose.yml
+# edit .env: set PGAI_TAG=<the old version>
+docker compose up -d
+```
+
+This works while the old volumes exist. Data that `pgai-mon` collected in the meantime is
+not carried back; it stays in the `pgai_mon_data` volume.
 
 > **Note:** The `.env` file contains configuration for the monitoring stack, including `PGAI_TAG` (the Docker image version tag), `REPLICATOR_PASSWORD` (generated password for the demo standby replication user), `PGAI_MON_TOKEN` (the bearer token `pgai-mon` requires; Grafana, the reporter and instance-jobs send it), and optionally `PGAI_MON_STORE` (where metric history goes, e.g. `s3://<bucket>/<prefix>`; unset means the local `pgai_mon_data` volume), `GF_SECURITY_ADMIN_PASSWORD` (Grafana admin password) and `PGAI_REGISTRY` (custom Docker registry). `postgresai mon local-install` preserves existing `REPLICATOR_PASSWORD` and `PGAI_MON_TOKEN` values or generates new ones when they are missing.
 
@@ -347,11 +378,29 @@ postgresai mon health
 
 Check Grafana dashboards at http://localhost:3000 to confirm metrics are being collected.
 
+## Storage, retention and security
+
+| Topic | Default | How to change |
+|---|---|---|
+| Where metrics are stored | The `pgai_mon_data` Docker volume on the host. | `PGAI_MON_STORE=s3://bucket/prefix` in `.env` stores the Parquet files in S3. The volume then holds only the write-ahead log and a cache. Credentials come from the AWS environment or the instance role. |
+| Retention of metrics | 14 days | `PGAI_MON_RETENTION_DAYS` in `.env`. `0` keeps everything. |
+| Retention of query texts | 30 days | `PGAI_MON_TEXTS_RETENTION_DAYS` in `.env`. `0` keeps everything. |
+| Ports | `pgai-mon` on `127.0.0.1:8765`, Grafana on `127.0.0.1:3000`. Neither is reachable from other hosts. | `GRAFANA_BIND_HOST=0.0.0.0:` publishes Grafana on every interface. Put TLS in front of it first. |
+| `PGAI_MON_TOKEN` | Generated by `mon local-install`. Required. | Full access to `pgai-mon`: queries and push ingest. Whoever holds it can read every metric and query text. |
+| `PGAI_MON_READ_TOKEN` | Empty: readers use `PGAI_MON_TOKEN`. | A second token that can query but not write. Grafana, the reporter and instance-jobs use it when it is set. |
+| `GF_SECURITY_ADMIN_PASSWORD` | Generated by `mon local-install`. Required: there is no default password. | Set it in `.env` when you run `docker compose` yourself. |
+
+Files older than the retention are deleted from the store, in the S3 bucket too. With an S3
+store, a lost VM loses at most the last 5 minutes of data (the upload interval) plus one upload.
+[`mon/README.md`](./mon/README.md) has the full configuration reference and
+[`mon/ARCHITECTURE.md`](./mon/ARCHITECTURE.md) explains how the store works.
+
 ## ☸️ Kubernetes deployment
 
 There is no Helm chart for the current (`pgai-mon`) stack yet. The Helm chart of the previous
 pgwatch + VictoriaMetrics stack is kept in [`old/postgres_ai_helm`](./old/postgres_ai_helm) for
-reference only: it is unmaintained and its images are no longer built.
+reference only: it is unmaintained and its images are no longer built. To run the current stack on
+Kubernetes you have to write your own manifests for the `pgai-mon` image.
 
 ## 📋 Checkup reports
 
