@@ -270,7 +270,8 @@ pg_stat_statements id) and a `start`/`end` window of at most 93 days. Unknown
 fields, SQL or a URL are refused before anything is called. The worker reads
 pgai-mon's `query_texts` view with a statement it builds itself (the ids as
 quoted literals), without following redirects, and returns a text only if it is
-the one newest text of that `(queryid, datname)`, observed inside the window;
+the one newest text of that `(queryid, datname)` on that cluster and node,
+observed inside the window;
 over 64 KiB it is cut on a rune boundary and flagged `truncated`.
 
 By default the text is the latest one collected in `(start, end]`. A job can

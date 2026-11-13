@@ -9,6 +9,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -53,9 +54,9 @@ type QueryTextResult struct {
 // retrieved_at = now. When the newest observation has two different texts the
 // answer is "not available" rather than a guess.
 //
-// query_texts carries no cluster or node: it holds the statements of the
-// instances this box's store collects. cluster and node_name are validated as
-// before and do not narrow the lookup.
+// query_texts records the cluster and node each text was collected from, as
+// the series' cluster and node_name labels; the lookup is narrowed to the
+// job's, so another cluster's database of the same name is never read.
 func QueryText(ctx context.Context, c *Client, args json.RawMessage, now time.Time) (Outcome, error) {
 	var a QueryTextArgs
 	decoder := json.NewDecoder(bytes.NewReader(args))
@@ -79,7 +80,7 @@ func QueryText(ctx context.Context, c *Client, args json.RawMessage, now time.Ti
 		result.TextScope, result.RetrievedAt = "latest_collected", &retrieved
 	}
 
-	res, err := c.postSQL(ctx, queryTextSQL(a.QueryID, a.Database, lo, hi))
+	res, err := c.postSQL(ctx, queryTextSQL(strings.TrimSpace(a.Cluster), strings.TrimSpace(a.Node), a.QueryID, a.Database, lo, hi))
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -112,7 +113,7 @@ func QueryText(ctx context.Context, c *Client, args json.RawMessage, now time.Ti
 // queryTextSQL renders the lookup: the texts of the statement whose stored
 // interval [first_seen, last_seen] meets (lo, hi], each observed at the last
 // time inside it the store saw it; of those, the newest, if it is one text.
-func queryTextSQL(queryID, database string, lo, hi float64) string {
+func queryTextSQL(cluster, node, queryID, database string, lo, hi float64) string {
 	from := "to_timestamp(" + strconv.FormatFloat(lo, 'f', -1, 64) + ")"
 	to := "to_timestamp(" + strconv.FormatFloat(hi, 'f', -1, 64) + ")"
 	return "-- instance-jobs: query_text\n" +
@@ -120,6 +121,7 @@ func queryTextSQL(queryID, database string, lo, hi float64) string {
 		"  SELECT query, epoch(least(last_seen, " + to + ")) AS observed_at\n" +
 		"  FROM query_texts\n" +
 		"  WHERE CAST(queryid AS VARCHAR) = " + sqlString(queryID) + " AND dbname = " + sqlString(database) + "\n" +
+		"    AND cluster = " + sqlString(cluster) + " AND node_name = " + sqlString(node) + "\n" +
 		"    AND query IS NOT NULL AND query <> ''\n" +
 		"    AND first_seen <= " + to + " AND last_seen > " + from + "\n" +
 		"), n AS (\n" +

@@ -164,3 +164,17 @@ def test_new_query_files_match_schemas(reports):
     _, new, _ = reports
     for f in (k for k in new if k.endswith(".json")):
         validate_query_file(new[f])
+
+
+def test_query_texts_continued_in_pages_are_the_same(mon):
+    """The continuation after a cut answer, on pgai-mon itself: pages of 7 rows (pgai-mon's own
+    caps are far above the fixture) give what one answer gives."""
+    whole = MonClient(mon.url).query_texts()
+    assert sum(len(v) for v in whole.values()) > 14
+
+    class Paged(MonClient):
+        def _page(self, text):
+            rows, _ = super()._page(text + " LIMIT 7")
+            return rows, len(rows) == 7
+
+    assert Paged(mon.url).query_texts() == whole

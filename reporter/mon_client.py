@@ -49,37 +49,74 @@ def _order(node: promsql.Node) -> str:
 
 
 class MonError(RuntimeError):
-    pass
+    def __init__(self, message: str, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
+
+
+# pgai-mon's transient answers: its own query timeout, a full queue, a reader restart.
+_TRANSIENT = (408, 429, 503)
 
 
 class MonClient:
-    """POST /sql on pgai-mon. `clock` returns the evaluation time for instant queries (epoch s)."""
+    """POST /sql on pgai-mon. `clock` returns the evaluation time for instant queries (epoch s).
+    A transient failure is retried `retries` times, `backoff` seconds apart (then twice that, ...)."""
 
     def __init__(self, url: str, token: Optional[str] = None, timeout: float = 120.0,
-                 clock: Optional[Callable[[], float]] = None, session: Optional[requests.Session] = None):
+                 clock: Optional[Callable[[], float]] = None, session: Optional[requests.Session] = None,
+                 retries: int = 2, backoff: float = 1.0, sleep: Callable[[float], None] = time.sleep):
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.clock = clock or time.time
         self.session = session or requests.Session()
+        self.retries, self.backoff, self.sleep = retries, backoff, sleep
         self.headers = {"content-type": "application/json"}
         if token:
             self.headers["authorization"] = f"Bearer {token}"
 
-    def sql(self, text: str) -> List[Dict[str, Any]]:
-        """Rows of one read-only SQL statement as dicts. Raises MonError on any failure."""
+    def _post(self, text: str) -> Dict[str, Any]:
+        """One attempt: the response body. Raises MonError, with `transient` set when the same
+        statement can succeed a moment later."""
         try:
             r = self.session.post(f"{self.url}/sql", json={"sql": text}, headers=self.headers, timeout=self.timeout)
+        except requests.ConnectionError as e:  # pgai-mon restarting
+            raise MonError(f"pgai-mon unreachable: {e}", transient=True) from e
         except requests.RequestException as e:
             raise MonError(f"pgai-mon unreachable: {e}") from e
         try:
             body = r.json()
         except ValueError:
-            raise MonError(f"pgai-mon HTTP {r.status_code}: {r.text[:300]}")
-        if r.status_code != 200 or "error" in body:
-            err = body.get("error")
-            raise MonError(f"pgai-mon HTTP {r.status_code}: {err if err is not None else body}")
+            body = None
+        if r.status_code != 200 or not isinstance(body, dict) or "error" in body:
+            err = body.get("error") if isinstance(body, dict) else None
+            raise MonError(f"pgai-mon HTTP {r.status_code}: {err if err is not None else r.text[:300]}",
+                           transient=r.status_code in _TRANSIENT)
+        return body
+
+    def _page(self, text: str):
+        """(rows as dicts, truncated): pgai-mon cuts an answer at its row and byte caps and keeps
+        the leading rows."""
+        attempt = 0
+        while True:
+            try:
+                body = self._post(text)
+                break
+            except MonError as e:
+                if not e.transient or attempt >= self.retries:
+                    raise
+                attempt += 1
+                logger.warning(f"pgai-mon query failed, retry {attempt} of {self.retries}: {e}")
+                self.sleep(self.backoff * attempt)
         cols = body["columns"]
-        return [dict(zip(cols, row)) for row in body["rows"]]
+        return [dict(zip(cols, row)) for row in body["rows"]], bool(body.get("truncated"))
+
+    def sql(self, text: str, what: str = "the query") -> List[Dict[str, Any]]:
+        """Rows of one read-only SQL statement as dicts. Raises MonError on any failure; a
+        truncated answer is one, since the missing rows would silently leave a report short."""
+        rows, truncated = self._page(text)
+        if truncated:
+            raise MonError(f"pgai-mon truncated the result of {what} at {len(rows)} rows")
+        return rows
 
     def healthy(self) -> bool:
         try:
@@ -88,14 +125,15 @@ class MonClient:
             return False
 
     # -- metrics ---------------------------------------------------------------------------
-    def _series(self, sql: str):
+    def _series(self, sql: str, what: str):
         series: Dict[tuple, Dict[str, Any]] = {}
-        for row in self.sql(sql):
+        for row in self.sql(sql, what):
             labels = _labels(row["labels"])
             if row["name"] is not None:
                 labels["__name__"] = row["name"]
             key = tuple(sorted(labels.items()))
-            series.setdefault(key, {"metric": labels, "points": []})["points"].append((row["t"], _value(row["value"])))
+            series.setdefault(key, {"metric": labels, "points": []})["points"].extend(
+                (t, _value(v)) for t, v in zip(row["t"], row["value"]))
         return series
 
     def query_instant(self, query: str, at: Optional[float] = None) -> Dict[str, Any]:
@@ -104,7 +142,7 @@ class MonClient:
         at_ms = int(round((self.clock() if at is None else at) * 1000))
         try:
             node = promsql.parse(query)
-            series = self._series(promsql.compile_instant(query, at_ms))
+            series = self._series(promsql.compile_instant(query, at_ms), "an instant query")
         except (promsql.Unsupported, MonError) as e:
             logger.error(f"Query failed: {e} (query: {query})")
             return {"status": "error", "errorType": type(e).__name__, "error": str(e)}
@@ -121,7 +159,8 @@ class MonClient:
         """/api/v1/query_range's data.result: [{'metric': {...}, 'values': [[t, 'v'], ...]}]; [] on error."""
         step_ms = promsql.duration_ms(step)
         try:
-            series = self._series(promsql.compile_range(query, int(round(start * 1000)), int(round(end * 1000)), step_ms))
+            series = self._series(promsql.compile_range(query, int(round(start * 1000)), int(round(end * 1000)), step_ms),
+                                  "a range query")
         except (promsql.Unsupported, MonError) as e:
             logger.error(f"Range query failed: {e} (query: {query})")
             return []
@@ -136,16 +175,32 @@ class MonClient:
         where = ""
         if db_names:
             where = "AND dbname IN (" + ", ".join(promsql._q(d) for d in db_names) + ")"
-        rows = self.sql(f"""
-            SELECT dbname, CAST(queryid AS VARCHAR) AS queryid, query FROM query_texts
-            WHERE queryid IS NOT NULL AND query IS NOT NULL {where}
-            QUALIFY row_number() OVER (PARTITION BY dbname, queryid ORDER BY last_seen DESC, query) = 1""")
+        # Every text of every database passes pgai-mon's answer caps on a large installation, so
+        # the rows come in key order and a cut answer is continued after its last row.
         out: Dict[str, Dict[str, str]] = {}
-        for r in rows:
-            text = r["query"] or ""
-            if len(text) > query_text_limit:
-                text = text[:query_text_limit] + "..."
-            out.setdefault(r["dbname"], {})[r["queryid"]] = text
+        after = ""
+        while True:
+            rows, truncated = self._page(f"""
+                SELECT dbname, CAST(id AS VARCHAR) AS queryid, query FROM (
+                    SELECT dbname, queryid AS id, query FROM query_texts
+                    WHERE queryid IS NOT NULL AND query IS NOT NULL {where} {after}
+                    QUALIFY row_number() OVER (PARTITION BY dbname, queryid ORDER BY last_seen DESC, query) = 1)
+                ORDER BY dbname NULLS LAST, id""")
+            for r in rows:
+                text = r["query"] or ""
+                if len(text) > query_text_limit:
+                    text = text[:query_text_limit] + "..."
+                out.setdefault(r["dbname"], {})[r["queryid"]] = text
+            if not truncated:
+                break
+            if not rows:
+                raise MonError("pgai-mon truncated the result of the query texts at 0 rows")
+            db, qid = rows[-1]["dbname"], int(rows[-1]["queryid"])
+            if db is None:
+                after = f"AND dbname IS NULL AND queryid > {qid}"
+            else:
+                after = (f"AND (dbname > {promsql._q(db)} OR dbname IS NULL"
+                         f" OR (dbname = {promsql._q(db)} AND queryid > {qid}))")
         return out
 
     def index_definitions(self, db_name: Optional[str] = None) -> Dict[str, str]:
@@ -155,7 +210,7 @@ class MonClient:
         rows = self.sql(f"""
             SELECT dbname, name, definition FROM objects
             WHERE kind = 'index' AND valid_to IS NULL {where}
-            ORDER BY dbname, name, schema""")
+            ORDER BY dbname, name, schema""", "the index definitions")
         out: Dict[str, str] = {}
         for r in rows:
             key = r["name"] if db_name else f"{r['dbname']}.{r['name']}"

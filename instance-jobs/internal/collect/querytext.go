@@ -20,17 +20,18 @@ const queryTextMaxChars = 500
 // It reads the store's query_texts view: one row per stored text of a
 // (queryid, database), with first_seen / last_seen (refreshed hourly while the
 // statement stays in pg_stat_statements). The text of an id is its newest one
-// first seen by the end of the window, from any database -- AAS entries carry
-// a datname, but the lookup matches on query_id alone, as before.
+// first seen by the end of the window on the collection's cluster and node,
+// from any of its databases -- AAS entries carry a datname, but the lookup
+// matches on query_id alone, as before.
 //
 // Best-effort: any error is returned for the caller to log and drop.
 // Enrichment must never fail a collection.
-func (c *Client) QueryInfoTexts(ctx context.Context, queryIDs []string, start, end time.Time) (map[string]string, error) {
+func (c *Client) QueryInfoTexts(ctx context.Context, f SeriesFilter, queryIDs []string, start, end time.Time) (map[string]string, error) {
 	texts := make(map[string]string)
 	if len(queryIDs) == 0 {
 		return texts, nil
 	}
-	res, err := c.postSQL(ctx, queryTextsSQL(queryIDs, end))
+	res, err := c.postSQL(ctx, queryTextsSQL(f, queryIDs, end))
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (c *Client) QueryInfoTexts(ctx context.Context, queryIDs []string, start, e
 
 // queryTextsSQL renders the lookup. The ids are compared as text, so an id above
 // 2^53 is never rounded; each is a quoted literal.
-func queryTextsSQL(queryIDs []string, end time.Time) string {
+func queryTextsSQL(f SeriesFilter, queryIDs []string, end time.Time) string {
 	ids := make([]string, 0, len(queryIDs))
 	for _, id := range queryIDs {
 		ids = append(ids, sqlString(id))
@@ -61,6 +62,7 @@ func queryTextsSQL(queryIDs []string, end time.Time) string {
 		"       left(trim(regexp_replace(arg_max(query, last_seen), '\\s+', ' ', 'g')), " + strconv.Itoa(queryTextMaxChars) + ") AS query\n" +
 		"FROM query_texts\n" +
 		"WHERE CAST(queryid AS VARCHAR) IN (" + strings.Join(ids, ", ") + ")\n" +
+		"  AND cluster = " + sqlString(f.Cluster) + " AND node_name = " + sqlString(f.NodeName) + "\n" +
 		"  AND query IS NOT NULL AND first_seen <= to_timestamp(" + strconv.FormatInt(end.Unix(), 10) + ")\n" +
 		"GROUP BY 1\nORDER BY 1"
 }

@@ -325,7 +325,7 @@ func runAAS(ctx context.Context, c *Client, req Request, filter SeriesFilter, w 
 	// otherwise succeeded, so an error here is dropped and the payload goes out
 	// without the query field (the reader renders it absent).
 	if qids := CollectQueryIDs(result); len(qids) > 0 {
-		if texts, terr := c.QueryInfoTexts(ctx, qids, w.start, w.end); terr == nil {
+		if texts, terr := c.QueryInfoTexts(ctx, filter, qids, w.start, w.end); terr == nil {
 			EnrichQueryTexts(&result, texts)
 		} else if c.OnEnrichmentError != nil {
 			c.OnEnrichmentError(terr)

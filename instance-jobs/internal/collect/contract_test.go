@@ -818,7 +818,8 @@ func TestLabelFingerprintEncodesBothLengths(t *testing.T) {
 	}
 }
 
-// The text lookup quotes every id as a literal, bounds it at the window end, and
+// The text lookup quotes every id as a literal, bounds it at the window end and
+// at the collection's cluster and node, and
 // keeps only well-formed (id, text) rows.
 func TestQueryInfoTextsQuotesIDsAndKeepsWellFormedRows(t *testing.T) {
 	var sql string
@@ -830,12 +831,15 @@ func TestQueryInfoTextsQuotesIDsAndKeepsWellFormedRows(t *testing.T) {
 	defer srv.Close()
 
 	texts, err := NewClient(srv.URL, "", time.Second).
-		QueryInfoTexts(context.Background(), []string{"1", "18446744073709551557"}, tm(0), tm(600))
+		QueryInfoTexts(context.Background(), SeriesFilter{Cluster: "c'1", NodeName: "n1"},
+			[]string{"1", "18446744073709551557"}, tm(0), tm(600))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !isQuery(sql, "query_texts") || !strings.Contains(sql, `IN ('1', '18446744073709551557')`) ||
-		!strings.Contains(sql, "to_timestamp(600)") {
+		!strings.Contains(sql, "to_timestamp(600)") ||
+		// only the collection's own cluster and node, each a quoted literal
+		!strings.Contains(sql, "AND cluster = 'c''1' AND node_name = 'n1'\n") {
 		t.Fatalf("lookup SQL:\n%s", sql)
 	}
 	if len(texts) != 1 || texts["1"] != "select 1" {

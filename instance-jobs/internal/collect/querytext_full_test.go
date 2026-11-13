@@ -41,6 +41,7 @@ func TestNativeQueryTextExactOriginalAndScope(t *testing.T) {
 	}
 	sql := (*seen)[0]
 	for _, want := range []string{"-- instance-jobs: query_text\n", "= '9223372036854775807'", "dbname = 'd'",
+		"AND cluster = 'c' AND node_name = 'n'\n",
 		"to_timestamp(100)", "to_timestamp(200)"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("SQL lacks %q:\n%s", want, sql)
@@ -151,5 +152,18 @@ func TestLatestCollectedQueryTextSeparatesChartAndRetrievalTime(t *testing.T) {
 				t.Fatalf("result = %+v", res)
 			}
 		})
+	}
+}
+
+// Cluster and node narrow the lookup as quoted literals: a quote in either
+// cannot end the literal.
+func TestNativeQueryTextQuotesClusterAndNode(t *testing.T) {
+	c, seen := queryTextStore(t, rowsJSON([]string{"query", "observed_at"}))
+	args := `{"cluster":"c' OR 1=1 --","node_name":" n'2 ","datname":"d","queryid":"1","start":100,"end":200}`
+	if _, err := QueryText(context.Background(), c, json.RawMessage(args), time.Unix(200, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if want := "AND cluster = 'c'' OR 1=1 --' AND node_name = 'n''2'\n"; !strings.Contains((*seen)[0], want) {
+		t.Fatalf("SQL lacks %q:\n%s", want, (*seen)[0])
 	}
 }

@@ -629,9 +629,12 @@ class _Compiler:
     def finish(self, rows: str, labels: str) -> str:
         body = ",\n".join(self.ctes)
         return (f"WITH {body}\n"
+                # One row per series, its points as lists: a row per point would repeat the labels
+                # and reach pgai-mon's row cap at (series x steps).
                 f"SELECT l.name, CAST(to_json(l.labels) AS VARCHAR) AS labels, r.t, r.value\n"
-                f"FROM {rows} r JOIN {labels} l USING (k)\n"
-                f"ORDER BY r.k, r.t")
+                f"FROM (SELECT k, list(t ORDER BY t) AS t, list(value ORDER BY t) AS value FROM {rows} GROUP BY k) r\n"
+                f"JOIN {labels} l USING (k)\n"
+                f"ORDER BY r.k")
 
 
 def _compile(src: str, g: Grid) -> str:

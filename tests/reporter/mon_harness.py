@@ -84,7 +84,8 @@ class MonServer:
             [self.binary, "serve", "--store", str(self.store), "--listen", f"127.0.0.1:{self.port}", "--no-compact",
              "--no-auth",
              "--metrics-yml", str(REPO / "mon" / "metrics.yml"),
-             "--macros-sql", str(REPO / "mon" / "sql" / "macros.sql"), "--timeout-ms", "120000"],
+             # no --timeout-ms: the query limits are the defaults, as the compose stack runs them
+             "--macros-sql", str(REPO / "mon" / "sql" / "macros.sql")],
             stdout=out, stderr=subprocess.STDOUT, cwd=str(REPO))
         deadline = time.time() + 60
         while time.time() < deadline:

@@ -2,6 +2,7 @@
 import json
 
 import pytest
+import requests
 
 from reporter import promsql
 from reporter.mon_client import MonClient, MonError, format_value
@@ -130,8 +131,8 @@ def _rows(columns, rows):
 
 def test_instant_result_shape_and_order():
     s = _Session(_rows(["name", "labels", "t", "value"], [
-        ["m", '{"datname":"b"}', 1_794_236_820_000, 2.0],
-        [None, '{"datname":"a"}', 1_794_236_820_000, "+Inf"],
+        ["m", '{"datname":"b"}', [1_794_236_820_000], [2.0]],
+        [None, '{"datname":"a"}', [1_794_236_820_000], ["+Inf"]],
     ]))
     c = MonClient("http://mon:8765/", token="tok", clock=lambda: 1_794_236_820, session=s)
     r = c.query_instant('last_over_time(m[3h])')
@@ -146,16 +147,72 @@ def test_instant_result_shape_and_order():
 
 def test_topk_instant_sorted_by_value_then_labels():
     s = _Session(_rows(["name", "labels", "t", "value"], [
-        [None, '{"a":"z"}', 1000, 5.0], [None, '{"a":"y"}', 1000, 5.0], [None, '{"a":"x"}', 1000, 9.0]]))
+        [None, '{"a":"z"}', [1000], [5.0]], [None, '{"a":"y"}', [1000], [5.0]], [None, '{"a":"x"}', [1000], [9.0]]]))
     r = MonClient("http://m", clock=lambda: 1, session=s).query_instant("topk(3, sum by (a) (x))")
     assert [x["metric"]["a"] for x in r["data"]["result"]] == ["x", "y", "z"]
 
 
 def test_range_result_shape():
     s = _Session(_rows(["name", "labels", "t", "value"], [
-        [None, "{}", 7_200_000, 3.5], [None, "{}", 3_600_000, 1.0]]))
+        [None, "{}", [3_600_000, 7_200_000], [1.0, 3.5]]]))
     r = MonClient("http://m", session=s).query_range("sum(rate(x[5m]))", 3600, 7200, "1h")
     assert r == [{"metric": {}, "values": [[3600, "1"], [7200, "3.5"]]}]
+    # one row per series: the answer's size does not grow with the labels times the steps
+    assert "list(value ORDER BY t)" in s.sent[0][1] and "GROUP BY k" in s.sent[0][1]
+
+
+def test_truncated_answer_is_an_error(capsys):
+    """pgai-mon answers 200 with truncated=true past its caps: never a short result."""
+    body = dict(_rows(["name", "labels", "t", "value"], [[None, "{}", [3_600_000], [1.0]]]), truncated=True)
+    c = MonClient("http://m", clock=lambda: 1, session=_Session(body))
+    with pytest.raises(MonError, match="truncated the result of the index definitions"):
+        c.index_definitions()
+    assert c.query_range("sum(x)", 0, 3600, "60s") == []
+    assert c.query_instant("sum(x)")["status"] == "error"
+    out = capsys.readouterr().out
+    assert "truncated" in out and "(query: sum(x))" in out
+
+
+class _Flaky(_Session):
+    """Answers each status (or raises each exception) in turn, then the body."""
+
+    def __init__(self, body, failures):
+        super().__init__(body)
+        self.failures = list(failures)
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.sent.append((url, json["sql"], headers))
+        if self.failures:
+            f = self.failures.pop(0)
+            if isinstance(f, Exception):
+                raise f
+            return _Resp({"error": {"type": "busy", "message": "busy"}}, f)
+        return _Resp(self.body, 200)
+
+
+@pytest.mark.parametrize("failures", [[429, 503], [408], [requests.ConnectionError("refused")]])
+def test_transient_failures_are_retried(failures):
+    s, slept = _Flaky(_rows(["a"], [[1]]), failures), []
+    c = MonClient("http://m", session=s, sleep=slept.append)
+    assert c.sql("select 1") == [{"a": 1}]
+    assert len(s.sent) == len(failures) + 1 and slept == [1.0, 2.0][:len(failures)]
+
+
+@pytest.mark.parametrize("failure", [400, 403, 500, requests.ReadTimeout("slow")])
+def test_other_failures_are_not_retried(failure):
+    s, slept = _Flaky(_rows(["a"], [[1]]), [failure]), []
+    with pytest.raises(MonError):
+        MonClient("http://m", session=s, sleep=slept.append).sql("select 1")
+    assert len(s.sent) == 1 and slept == []
+
+
+def test_retries_end_and_the_log_names_query_and_status(capsys):
+    s, slept = _Flaky(_rows(["a"], [[1]]), [503, 503, 503]), []
+    c = MonClient("http://m", clock=lambda: 1, session=s, sleep=slept.append)
+    assert c.query_instant("sum(x)")["status"] == "error"
+    assert len(s.sent) == 3 and len(slept) == 2
+    out = capsys.readouterr().out
+    assert "HTTP 503" in out and "(query: sum(x))" in out
 
 
 def test_errors_become_status_error_or_empty():
@@ -176,6 +233,27 @@ def test_query_texts_and_index_definitions():
     assert c.index_definitions("db1") == {"i1": "CREATE INDEX i1 ON t (a)"}
     assert c.index_definitions() == {"db1.i1": "CREATE INDEX i1 ON t (a)"}
     assert "dbname = 'db1'" in s.sent[-2][1] and "valid_to IS NULL" in s.sent[-1][1]
+
+
+def test_query_texts_continue_after_a_truncated_answer():
+    class Pages(_Session):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.sent.append((url, json["sql"], headers))
+            return _Resp(self.body.pop(0), 200)
+
+    cols = ["dbname", "queryid", "query"]
+    s = Pages([dict(_rows(cols, [["a", "-5", "q1"], ["it's", "7", "q2"]]), truncated=True),
+               dict(_rows(cols, [["it's", "9", "q3"], [None, "1", "q4"]]), truncated=True),
+               _rows(cols, [[None, "2", "q5"]])])
+    c = MonClient("http://m", session=s)
+    assert c.query_texts() == {"a": {"-5": "q1"}, "it's": {"7": "q2", "9": "q3"}, None: {"1": "q4", "2": "q5"}}
+    first, second, third = (sent[1] for sent in s.sent)
+    assert "ORDER BY dbname NULLS LAST, id" in first and "dbname >" not in first
+    assert "dbname > 'it''s' OR dbname IS NULL OR (dbname = 'it''s' AND queryid > 7)" in second
+    assert "dbname IS NULL AND queryid > 1" in third
+    # an answer cut before its first row cannot be continued
+    with pytest.raises(MonError, match="truncated"):
+        MonClient("http://m", session=_Session(dict(_rows(cols, []), truncated=True))).query_texts()
 
 
 def test_generator_routes_to_mon(monkeypatch):
