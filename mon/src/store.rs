@@ -1284,7 +1284,18 @@ impl Compactor {
     /// follows at the next commit. Object definitions, plan definitions and the series registry
     /// are kept: they are written on change, not per day. Returns the number of files dropped.
     pub fn expire(&self, now: i64) -> anyhow::Result<usize> {
-        let today = day_of(now);
+        let mut cat = self.shared.catalog.lock().unwrap();
+        // Age is counted from the newest stored day, not from the wall clock alone: a clock that
+        // is far ahead (a VM booted before time sync) must not make the whole history look old.
+        let newest = cat
+            .files
+            .iter()
+            // per-day files only: a month file's last day is the end of its month
+            .filter(|f| !crate::bucket::MONTH_KINDS.contains(&f.kind.as_str()))
+            .map(crate::bucket::last_day)
+            .max()
+            .unwrap_or(i64::MAX - 1);
+        let today = day_of(now).min(newest + 1);
         let keep_days = |kind: &str| match kind {
             "objects" | "plan_defs" | crate::registry::KIND => 0,
             "query_texts" => self.cfg.texts_retention_days,
@@ -1294,7 +1305,6 @@ impl Compactor {
             let days = keep_days(&f.kind) as i64;
             days > 0 && crate::bucket::last_day(f) < today - days
         };
-        let mut cat = self.shared.catalog.lock().unwrap();
         let gone: Vec<String> = cat
             .files
             .iter()

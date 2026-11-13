@@ -508,6 +508,49 @@ fn crash_after_the_takeover_put_keeps_local_files() {
     b.close();
 }
 
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to.join(e.file_name()));
+        } else {
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+    }
+}
+
+/// The local directory is restored from an older disk snapshot (same writer id, catalog behind
+/// the bucket): the bucket's catalog wins, and nothing committed since the snapshot is dropped.
+#[test]
+fn a_directory_restored_from_an_old_snapshot_does_not_roll_the_bucket_back() {
+    let url = "mem://old-snapshot/st";
+    let store = faulty();
+    let (d, snap) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(30);
+    let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
+    ingest(&mut c, t0, 20, 6);
+    c.flush().unwrap();
+    b.sync(&c.shared, None).unwrap();
+    copy_dir(d.path(), snap.path());
+    ingest(&mut c, t0 + 20 * 15_000, 20, 6);
+    c.flush().unwrap();
+    b.sync(&c.shared, None).unwrap();
+    let committed = objects(&store);
+    drop(c);
+    b.close();
+
+    let (b, c) = start(url, &store, snap.path(), bcfg()).unwrap();
+    b.sync(&c.shared, None).unwrap();
+    assert!(
+        objects(&store).is_superset(&committed),
+        "no committed object is deleted"
+    );
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {t0}, {})", t0 + 3_600_000);
+    assert_eq!(rows(&bucket_reader(url), &q), vec!["[800]".to_string()]);
+    b.close();
+}
+
 /// Two writers on one prefix: the second is refused while the first's lease is live; a forced
 /// takeover fences the first, whose next commit fails with a clear error and changes nothing.
 #[test]

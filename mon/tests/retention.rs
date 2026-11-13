@@ -113,6 +113,10 @@ fn files_past_their_retention_leave_the_catalog_and_the_disk() {
         before.files_of(pgai_mon::registry::KIND).count()
     );
 
+    // a wall clock a year ahead does not make the remaining history look old: age counts from
+    // the newest stored day
+    assert_eq!(comp.expire(now + 365 * 86_400_000).unwrap(), 0);
+
     // the next pass, past the delete grace, removes the files and builds nothing from the gap
     comp.run_once(now + 1000, true).unwrap();
     let kept: BTreeSet<String> = core

@@ -91,7 +91,7 @@ impl BucketCfg {
 pub const DEFAULT_LOCAL_DIR: &str = "/var/lib/pgai-mon";
 
 /// Kinds whose files cover a month (`day` is the month's first day).
-const MONTH_KINDS: &[&str] = &[
+pub(crate) const MONTH_KINDS: &[&str] = &[
     crate::store::SERIES_MONTH,
     crate::eval::rollup::KIND_1D,
     crate::eval::rollup::KIND_1HM,
@@ -551,9 +551,17 @@ impl Bucket {
                 // snapshot of the local catalog, which is saved on every change, so the local
                 // catalog is a superset (up to compaction) even when a crash came between the
                 // takeover PUT and the local save below.
-                let same = match (&local, &r.writer) {
-                    (Some(l), Some(w)) => w.id == self.id && l.writer.as_ref().is_some_and(|lw| lw.id == w.id),
-                    _ => false,
+                // Not when the directory is behind the bucket (restored from an older disk
+                // snapshot): committing it would drop every file added since, so the bucket's
+                // catalog is adopted instead.
+                let ours = r.writer.as_ref().is_some_and(|w| w.id == self.id);
+                let same = match &local {
+                    Some(l) => {
+                        // (file ids cannot tell: a takeover moves the bucket's ahead)
+                        ours && l.writer.as_ref().is_some_and(|lw| lw.id == self.id)
+                            && l.flushed_through_seg >= r.flushed_through_seg
+                    }
+                    None => false,
                 };
                 st.epoch = r.writer.as_ref().map_or(0, |w| w.epoch) + 1;
                 st.version = Some(ver);
@@ -571,8 +579,13 @@ impl Bucket {
                 } else {
                     let mut c = r.clone();
                     c.pending_delete.clear();
-                    // local WAL numbering: segments this directory already flushed are gone
+                    // local WAL numbering: segments this directory already flushed are gone. A
+                    // directory of the same lineage that is behind the bucket keeps the bucket's
+                    // mark: its older WAL segments are already in the bucket's files.
                     c.flushed_through_seg = local.as_ref().map_or(-1, |l| l.flushed_through_seg);
+                    if ours && local.is_some() {
+                        c.flushed_through_seg = c.flushed_through_seg.max(r.flushed_through_seg);
+                    }
                     if let Some(l) = &local {
                         c.generation = c.generation.max(l.generation);
                     }
