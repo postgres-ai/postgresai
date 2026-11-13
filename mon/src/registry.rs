@@ -1,4 +1,4 @@
-//! Series registry (review B7): one row per series ever seen, disjoint across files, so the
+//! Series registry: one row per series ever seen, disjoint across files, so the
 //! contract `series` view needs no `DISTINCT ON` over every per-day row of the retention.
 //!
 //! - Per-day series files (`series/`) stay as they are: the evaluator reads them per window.

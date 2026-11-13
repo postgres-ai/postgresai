@@ -10,7 +10,7 @@ mon/grafana/cases.py, and writes them under the same uids and titles (links and 
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
 Infinity target that POSTs `/sql?format=objects` with the ported SQL as a text/plain body:
 - getvariable() parameters become Grafana expressions (GRAFANA_PARAMS). start and end are
-  aligned down to the step (decision 35), and $__rate_interval becomes
+  aligned down to the step, and $__rate_interval becomes
   max(interval + scrape, 4 x scrape) with scrape = 5 s, the Prometheus datasource's
   scrapeInterval. Range targets of 7 d or more pin the step to the rollup tier (STEP), and
   there $__rate_interval is the step itself (README.md: rates differ slightly from Grafana's
@@ -49,7 +49,7 @@ SCRAPE_MS = 5000  # provisioning/datasources: scrapeInterval '5s'
 # Range panels pin the step to the rollup tier the range can use, rounded up to a whole bucket:
 # >= 7 d -> a multiple of 1 h, >= 90 d -> a multiple of 1 d (UTC). Grafana's auto interval
 # (30 d at ~1,000 px is ~40 min) is not on a bucket boundary, and an unaligned grid is evaluated
-# from raw samples (CONSULT_S3.md section 2). Shorter ranges keep $__interval.
+# from raw samples. Shorter ranges keep $__interval.
 PIN_TIERS = ((90 * 86_400_000, 86_400_000), (7 * 86_400_000, 3_600_000))  # (range >=, bucket)
 STEP = "CAST(CASE {} ELSE ${{__interval_ms}} END AS BIGINT)".format(" ".join(
     f"WHEN ${{__to}} - ${{__from}} >= {r} THEN ceil(${{__interval_ms}} / {b}.0) * {b}" for r, b in PIN_TIERS))
@@ -465,7 +465,7 @@ def label_values_sql(query):
         where.append({"=": f"{lv} = {lit}", "!=": f"{lv} <> {lit}",
                       "=~": f"regexp_full_match({lv}, {lit})", "!~": f"NOT regexp_full_match({lv}, {lit})"}[op])
     # Prometheus scopes label_values to the time range; the series view has no time bounds, so
-    # values of series that stopped long ago are listed too (GRAFANA.md decision 4, on branch spike-monitoring-v2-duckdb)
+    # values of series that stopped long ago are listed too
     return f"SELECT DISTINCT labels['{label}'] AS value FROM series WHERE {' AND '.join(where)} ORDER BY 1"
 
 

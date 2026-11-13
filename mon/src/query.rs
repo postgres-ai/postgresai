@@ -428,7 +428,7 @@ fn ast_cacheable(v: &serde_json::Value, volatile: &std::collections::HashSet<Str
                 }
                 _ => {}
             }
-            // USING SAMPLE / TABLESAMPLE: a different sample each run (review N2)
+            // USING SAMPLE / TABLESAMPLE: a different sample each run
             if m.get("sample").is_some_and(|x| !x.is_null()) {
                 return false;
             }
@@ -583,7 +583,7 @@ impl Reader {
         }
         let scratch = tmp.canonicalize().unwrap_or(tmp.clone());
         // DuckDB reads local paths only: the store's directory, or on a remote store the local
-        // mirror of its small kinds; never the s3:// URL (no httpfs; SECURITY_AWS.md check 2)
+        // mirror of its small kinds; never the s3:// URL (httpfs is not loaded)
         let mirror = if crate::objstore::is_remote(&root) {
             // one directory per store URL: readers of different stores may share a cache dir,
             // and their catalogs reuse the same relative paths
@@ -657,7 +657,7 @@ impl Reader {
             }
             // DuckDB's built-in SQL macros have no stability (ago(i) := current_timestamp - i,
             // pg_postmaster_start_time() := current_timestamp): a macro whose definition
-            // names a volatile function is volatile, to a fixed point (review N2). This runs
+            // names a volatile function is volatile, to a fixed point. This runs
             // before views.sql/macros.sql load, so only DuckDB's own macros are scanned.
             let mut q = db.prepare(
                 "SELECT DISTINCT lower(function_name), lower(macro_definition) FROM duckdb_functions() \
@@ -1399,7 +1399,8 @@ async fn post_sql(
     let (res, served) = st
         .cache
         .get_or_run(&sql, fmt, gen, {
-            // the run is a spawned flight that owns its admission permit (review H1)
+            // the run is a spawned flight that owns its admission permit: a client that goes away
+            // does not free the slot early
             let (st, sql) = (st.clone(), sql.clone());
             move || {
                 let (st, sql) = (st.clone(), sql.clone());
@@ -1459,7 +1460,7 @@ async fn run_admitted(st: &AppState, op: &'static str, sql: String) -> Result<Re
     st.adm.observe(&cost, t0.elapsed().as_secs_f64() * 1000.0);
     drop(permit);
     // Out of memory under concurrency gets one retry, within the queue wait (best effort):
-    // - a reader kill fails every query in flight, culprit unknown (review B2): the shape is
+    // - a reader kill fails every query in flight, culprit unknown: the shape is
     //   marked big (it runs alone among heavy queries from now on) and retried that way;
     // - DuckDB's own OOM: retried alone once every slot is free.
     match res {
@@ -1537,7 +1538,7 @@ pub async fn health(st: &AppState) -> serde_json::Value {
         )
     };
     serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
         "samples_in": s.samples_in.load(Ordering::Relaxed),
         "records_in": s.records_in.load(Ordering::Relaxed),
         "flushes": s.flushes.load(Ordering::Relaxed),

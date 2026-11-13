@@ -1596,8 +1596,8 @@ fn sql_over_an_object_store_stays_locked_down() {
 
 /// A tampered remote catalog: a file path that would leave the store root (`../`, absolute,
 /// `a:b`, empty segment, backslash) refuses the whole catalog, before any reader joins it to the
-/// root (review M2); an oversized catalog.json is refused unread (L1); a file whose catalog
-/// size is wrong or 0 is not mirrored (M1).
+/// root; an oversized catalog.json is refused unread; a file whose catalog
+/// size is wrong or 0 is not mirrored.
 #[test]
 fn a_tampered_remote_catalog_is_refused() {
     use pgai_mon::store::Shared;
@@ -1625,7 +1625,7 @@ fn a_tampered_remote_catalog_is_refused() {
         let e = pgai_mon::catalog::Catalog::load_or_new(Path::new(&url), "").expect_err("refused");
         assert!(format!("{e:#}").contains("not a plain relative path"), "{e:#}");
     }
-    // L1: a catalog.json over 64 MB is refused before it is read
+    // a catalog.json over 64 MB is refused before it is read
     {
         use object_store::{ObjectStoreExt, PutPayload};
         let store = std::sync::Arc::new(object_store::memory::InMemory::new());
@@ -1678,7 +1678,7 @@ fn a_tampered_remote_catalog_is_refused() {
         // other views still answer
         assert!(!sql_rows(&r, "SELECT count(*) FROM series").is_empty());
     }
-    // M1: a catalog whose `bytes` lies (too small, too big, 0) about a series file: that copy
+    // a catalog whose `bytes` lies (too small, too big, 0) about a series file: that copy
     // is refused, the view stays empty, the mirror holds no such file, and the error shows
     for (i, lie) in [1u64, u64::MAX / 2, 0].into_iter().enumerate() {
         let url = format!("mem://lie{i}/st");

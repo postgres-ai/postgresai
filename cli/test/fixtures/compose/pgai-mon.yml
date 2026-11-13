@@ -21,7 +21,7 @@ services:
       PGAI_NODE_NAME: ${PGAI_NODE_NAME:-}
     volumes:
       - ./instances.yml:/etc/pgai-mon/instances.yml:ro
-      - ./host-metrics:/etc/pgai-mon/host-metrics:ro
+      - ./host-metrics:/etc/pgai/host-metrics:ro
       - pgai_mon_data:/var/lib/pgai-mon
     restart: unless-stopped
 

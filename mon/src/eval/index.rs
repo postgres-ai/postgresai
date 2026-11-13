@@ -259,7 +259,7 @@ pub fn select_series_uncached(
     Ok(sel)
 }
 
-/// Lean selection for top-k (review B6): no labels kept. Per series 8 bytes (the id; the metric
+/// Lean selection for top-k: no labels kept. Per series 8 bytes (the id; the metric
 /// is its 16-bit prefix), plus 8 for a hash of its sorted label pairs when a denominator metric
 /// must be paired with it (same labels, other metric). Sorted by id.
 pub struct IdSel {

@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(
     name = "pgai-mon",
-    version,
+    version = pgai_mon::VERSION,
     about = "PostgresAI monitoring: collector, Parquet store and SQL endpoint (Rust + DuckDB)"
 )]
 struct Cli {

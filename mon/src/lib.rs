@@ -1,4 +1,12 @@
 //! pgai-mon library: everything the binary runs, exposed for integration tests.
+
+/// The release this binary was built for: the image build passes the tag in `PGAI_MON_VERSION`;
+/// a plain `cargo build` reports the crate version.
+pub const VERSION: &str = match option_env!("PGAI_MON_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod admission;
 pub mod auth;
 pub mod bucket;

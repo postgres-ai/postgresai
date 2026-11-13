@@ -1,7 +1,6 @@
-//! L1 result cache (qcache.rs): coalescing, generations, cancellation, errors, and the
-//! reproductions from REVIEW_L1.md on branch spike-monitoring-v2-duckdb (H1, H2, M1, M3, M4, L3).
-//! (L1-5, byte identity against PGAI_QCACHE=0 over the dashboard and diff sets, is a script:
-//! README.md.)
+//! L1 result cache (qcache.rs): coalescing, generations, cancellation, errors, eviction, cache
+//! keys and cacheability. (Byte identity against PGAI_QCACHE=0 over the dashboard and diff sets is
+//! checked by a script: README.md.)
 use pgai_mon::qcache::{normalize, QueryCache, Served, ENTRY_OVERHEAD};
 use pgai_mon::query::{QueryError, Reply};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,7 +19,7 @@ fn reply(body: &str, gen: u64) -> Reply {
     }
 }
 
-/// L1-1: N identical concurrent requests run the backend once; the next one is a hit.
+/// N identical concurrent requests run the backend once; the next one is a hit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identical_concurrent_requests_run_once() {
     let c = cache();
@@ -70,7 +69,7 @@ async fn identical_concurrent_requests_run_once() {
     assert_eq!(c.stats_json()["not_stored_volatile"], 2);
 }
 
-/// L1-2: the generation changes during a flight: the result is returned, not stored; and a new
+/// The generation changes during a flight: the result is returned, not stored; and a new
 /// generation drops what was stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn generation_change_during_flight_is_not_stored() {
@@ -104,7 +103,7 @@ async fn generation_change_during_flight_is_not_stored() {
     );
 }
 
-/// L1-3 / review H1: the leader's client goes away. The flight keeps running (it owns the
+/// The leader's client goes away. The flight keeps running (it owns the
 /// admission permit), the follower gets its result, and the query runs once, not twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_leader_does_not_rerun_the_query() {
@@ -134,7 +133,7 @@ async fn cancelled_leader_does_not_rerun_the_query() {
     let (_, s) = c.get_or_run("SELECT 4", 0, 1, || async { panic!("stored") }).await;
     assert_eq!(s, Served::Hit);
 
-    // H1 / L4: a sole leader that goes away: the run completes and is stored, no slot is left
+    // a sole leader that goes away: the run completes and is stored, no slot is left
     let c1 = c.clone();
     let h = tokio::spawn(async move {
         c1.get_or_run("SELECT 5", 0, 1, || async {
@@ -176,7 +175,7 @@ async fn leader_panic_frees_the_flight() {
     assert_eq!(c.stats_json()["in_flight"], 0);
 }
 
-/// L1-4 / review M3: after a transient error, followers re-coalesce behind one retry; a
+/// After a transient error, followers re-coalesce behind one retry; a
 /// deterministic error is shared; neither is stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn errors_are_shared_only_when_deterministic_and_never_stored() {
@@ -228,7 +227,7 @@ async fn errors_are_shared_only_when_deterministic_and_never_stored() {
     }
 }
 
-/// Review M4: entries are charged their overhead, the cap holds, and eviction is LRU.
+/// Entries are charged their overhead, the cap holds, and eviction is LRU.
 #[tokio::test]
 async fn eviction_keeps_the_cap_and_is_lru() {
     let c = Arc::new(QueryCache::new(64 << 10, 4096, "v"));
@@ -251,7 +250,7 @@ async fn eviction_keeps_the_cap_and_is_lru() {
     assert!(s["evictions"].as_u64().unwrap() > 1000, "{s}");
 }
 
-/// Review L3: a request that loaded an older generation runs without touching the cache.
+/// A request that loaded an older generation runs without touching the cache.
 #[tokio::test]
 async fn older_generation_does_not_move_the_cache_back() {
     let c = cache();
@@ -263,7 +262,7 @@ async fn older_generation_does_not_move_the_cache_back() {
     assert_eq!(s, Served::Hit);
 }
 
-/// Review M1: no folding; SQL texts with different results never share a key.
+/// No folding: SQL texts with different results never share a key.
 #[test]
 fn keys_are_the_trimmed_text() {
     for (a, b) in [
@@ -282,7 +281,7 @@ fn keys_are_the_trimmed_text() {
     assert_eq!(normalize("  SELECT 1 ;\n"), "SELECT 1");
 }
 
-/// Review H2: cacheability is decided on DuckDB's parse tree in the reader.
+/// Cacheability is decided on DuckDB's parse tree in the reader.
 #[test]
 fn reader_marks_volatile_and_external_sql_not_cacheable() {
     use pgai_mon::config::{HttpCfg, StoreCfg};
@@ -313,7 +312,7 @@ fn reader_marks_volatile_and_external_sql_not_cacheable() {
         ("SELECT current_localtime() AS t", false),
         ("SELECT CURRENT_TIMESTAMP AS t", false),
         ("SELECT * FROM duckdb_memory()", false),
-        // review N2: built-in macros over clock functions, one-argument age, samples
+        // built-in macros over clock functions, one-argument age, samples
         ("SELECT ago(INTERVAL 1 HOUR) AS t", false),
         (
             "SELECT count(*) AS n FROM samples WHERE ts > ago(INTERVAL 1 HOUR)",
@@ -332,7 +331,7 @@ fn reader_marks_volatile_and_external_sql_not_cacheable() {
     }
 }
 
-/// Review N1: a finished flight leaves nothing behind: no Flight, channel or reply, and no
+/// A finished flight leaves nothing behind: no Flight, channel or reply, and no
 /// extra reference to the cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finished_flights_release_their_reply() {

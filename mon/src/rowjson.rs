@@ -1,8 +1,8 @@
 //! Result rows to JSON in Rust, from the Arrow batches DuckDB streams.
 //!
-//! The reader used to run `DESCRIBE <query>` and then prepare `SELECT to_json(..) FROM (<query>)`,
-//! so every table function was bound twice per query. Now the query is prepared once and its
-//! Arrow output is written here, in the same text DuckDB's `to_json` produced:
+//! The query is prepared once and its Arrow output is written here, in the same text DuckDB's
+//! `to_json` produces. Calling `to_json` in SQL would need a `DESCRIBE <query>` first, which binds
+//! every table function twice per query. The output:
 //! - VARCHAR: a JSON string; BOOLEAN; integers; DOUBLE and FLOAT as the shortest text that reads
 //!   back to the same value (NaN and ±Inf as the strings "NaN", "+Inf", "-Inf", the Prometheus
 //!   API convention);
@@ -213,7 +213,7 @@ pub fn push_value(out: &mut String, a: &dyn Array, i: usize) {
             push_decimal(out, a.as_any().downcast_ref::<Decimal128Array>().unwrap().value(i), *s)
         }
         DataType::Date32 => {
-            // DuckDB's infinite dates are +/- i32::MAX (review L2)
+            // DuckDB's infinite dates are +/- i32::MAX
             match a.as_any().downcast_ref::<Date32Array>().unwrap().value(i) {
                 i32::MAX => out.push_str("\"infinity\""),
                 v if v == -i32::MAX => out.push_str("\"-infinity\""),
@@ -240,7 +240,7 @@ pub fn push_value(out: &mut String, a: &dyn Array, i: usize) {
                 TimeUnit::Microsecond => a.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap().value(i),
                 TimeUnit::Nanosecond => a.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap().value(i),
             };
-            // DuckDB's infinite timestamps are +/- i64::MAX (review L2)
+            // DuckDB's infinite timestamps are +/- i64::MAX
             if v == i64::MAX {
                 out.push_str("\"infinity\"");
             } else if v == -i64::MAX || v == i64::MIN {

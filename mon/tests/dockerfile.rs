@@ -63,3 +63,15 @@ fn the_image_config_sets_the_retention() {
     let cfg: pgai_mon::config::Config = serde_yaml::from_str(&std::fs::read_to_string(yml).unwrap()).unwrap();
     assert_eq!((cfg.store.retention_days, cfg.store.texts_retention_days), (14, 30));
 }
+
+/// CI passes the tag as the `VERSION` build argument: the build stage must hand it to the
+/// compiler, or every released binary reports the crate version.
+#[test]
+fn the_image_build_stamps_the_version() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let docker = std::fs::read_to_string(root.join("Dockerfile")).unwrap();
+    let build_stage = docker.split("\nFROM ").nth(1).unwrap();
+    assert!(build_stage.contains("ARG VERSION"), "the build stage declares VERSION");
+    assert!(build_stage.contains("PGAI_MON_VERSION=\"$VERSION\" cargo build"));
+    assert!(!pgai_mon::VERSION.is_empty());
+}

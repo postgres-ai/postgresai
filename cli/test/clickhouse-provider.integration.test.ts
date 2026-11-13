@@ -152,7 +152,7 @@ describe.skipIf(!adminUrl)("ClickHouse-like Postgres", () => {
       await mon.connect();
       const version = await mon.query("show server_version_num");
       const major = Math.floor(Number(version.rows[0].server_version_num) / 10000);
-      // pgai-mon's collector SQL: one file, embedded in the binary.
+      // pgai-mon's collector SQL: one file.
       for (const sink of ["pgai-mon"]) {
         const config = load(await Bun.file(`${import.meta.dir}/../../mon/metrics.yml`).text()) as {
           metrics: Record<string, { node_status?: string; sqls: Record<string, string> }>;

@@ -2,7 +2,7 @@
 //!
 //! DuckDB's `memory_limit` bounds buffer-managed memory (hash tables, sorts) but not the
 //! heap of scalar results (`repeat('x', 7e8)`, `unnest(range(1e8))`), which reached 7 GB in
-//! review. So the reader runs in its own process:
+//! testing. So the reader runs in its own process:
 //! - Linux: `RLIMIT_DATA` (private writable mappings, incl. anonymous mmaps since 4.7) makes
 //!   allocations past the limit fail inside the child;
 //! - everywhere: a watchdog samples the child's RSS every 20 ms and kills it above the cap.
@@ -684,22 +684,19 @@ impl ReaderProc {
         Ok(())
     }
 
-    /// Send one request to the child (starting it if needed) and wait for the answer.
-    /// Send one request; a `reader_restarted` (the reader went away without the query being the
-    /// cause: an idle recycle racing the request, or a crash) is retried (up to 3 times) on a fresh reader.
+    /// Send one request to the child (starting it if needed) and wait for the answer. A
+    /// `reader_restarted` (the reader went away: an idle recycle racing the request, or a crash) is
+    /// retried once on a fresh reader. Once only: the query that crashes the reader cannot be told
+    /// from the queries that were running beside it, and each retry of it takes those down again.
     /// A query killed for memory is not retried.
     pub async fn call(&self, op: &str, sql: &str) -> Result<Reply, QueryError> {
-        let mut r = self.call_once(op, sql).await;
-        for _ in 0..3 {
-            match &r {
-                Err(e) if e.kind == "reader_restarted" => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    r = self.call_once(op, sql).await;
-                }
-                _ => break,
+        match self.call_once(op, sql).await {
+            Err(e) if e.kind == "reader_restarted" => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                self.call_once(op, sql).await
             }
+            r => r,
         }
-        r
     }
 
     async fn call_once(&self, op: &str, sql: &str) -> Result<Reply, QueryError> {

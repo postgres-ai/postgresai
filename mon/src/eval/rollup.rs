@@ -41,7 +41,7 @@ pub const KIND: &str = "rollup_1h";
 pub const KIND_1D: &str = "rollup_1d";
 /// The 1 h tier in month files (same buckets as the per-day `rollup_1h` files, merged per month
 /// like the 1 d tier, with the same day range and freshness rule): a 30 d panel opens ~2 files
-/// instead of 30 (CONSULT_S3.md on branch spike-monitoring-v2-duckdb 1.4). Served in place of the day files it covers.
+/// instead of 30. Served in place of the day files it covers.
 pub const KIND_1HM: &str = "rollup_1h_month";
 pub const B: i64 = 3_600_000;
 pub const D: i64 = DAY_MS;

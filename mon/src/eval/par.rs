@@ -15,7 +15,7 @@
 //!   current RSS minus what workers already lent may still add, at `worker_bytes(span, points)`
 //!   each: the worker's channel (bounded in bytes, so at least one row of `points` values)
 //!   plus `PER_DAY` per day of span. Check and reservation happen under one lock, so concurrent
-//!   queries cannot each take the same headroom (review PIECE4 H1, M1).
+//!   queries cannot each take the same headroom.
 //! - Selections under `MIN_PER_PART` series per worker are not split.
 use super::scan::IdList;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -58,7 +58,7 @@ pub fn worker_bytes(span_ms: i64, points: usize) -> u64 {
     WORKER_BASE + channel + days * PER_DAY.load(Ordering::Relaxed)
 }
 
-/// Check-and-reserve of memory and slots is one critical section (review PIECE4 M1).
+/// Check-and-reserve of memory and slots is one critical section.
 static BORROW: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Worker budget: `slots` threads in all for evaluation, shared with the running queries
@@ -210,7 +210,7 @@ where
 mod tests {
     use super::*;
 
-    /// Review PIECE4 H1: the charge covers the channel, whose floor is one row of `points`.
+    /// The charge covers the channel, whose floor is one row of `points`.
     #[test]
     fn worker_bytes_covers_the_channel() {
         for points in [100usize, 1_000, 32_000, 160_000, 400_000] {

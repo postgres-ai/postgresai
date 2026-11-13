@@ -1,6 +1,6 @@
 //! Streaming k-way merge of sample files that are each sorted by (series_id, ts).
 //!
-//! Compaction used to `COPY (SELECT ... ORDER BY series_id, ts)`: a full sort whose memory
+//! Compaction does not `COPY (SELECT ... ORDER BY series_id, ts)`: a full sort whose memory
 //! DuckDB doesn't keep inside `memory_limit` (185 MiB for a 132 M-sample day at 64 MB, OOM at
 //! 32 MB). Every input is already sorted, so a heap merge needs only one small batch per input
 //! plus one output row group: O(files), independent of rows.

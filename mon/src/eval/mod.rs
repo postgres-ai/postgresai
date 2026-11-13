@@ -1,4 +1,4 @@
-//! Series-at-a-time PromQL-shaped evaluator (G0.5, decision 23; design in EVALUATOR.md on branch spike-monitoring-v2-duckdb).
+//! Series-at-a-time PromQL-shaped evaluator.
 //! Exposed to SQL as table functions in the reader: `prom_eval_rs(...)`, wrapped by macros with
 //! the same names and signatures as sql/macros.sql (which become the `*_sql` oracle).
 pub mod agg;

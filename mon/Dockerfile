@@ -41,10 +41,12 @@ COPY mon/Cargo.toml mon/Cargo.lock mon/rustfmt.toml ./
 COPY mon/src ./src
 COPY mon/schema ./schema
 COPY mon/sql/host_rules.sql ./sql/host_rules.sql
+# The tag this image is built for: `pgai-mon --version` and /health report it.
+ARG VERSION=dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=pgai-mon-target-${TARGETARCH},target=/src/mon/target \
     target="$(cat /rust-target)" \
-    && cargo build --release --locked --target "$target" --bin pgai-mon \
+    && PGAI_MON_VERSION="$VERSION" cargo build --release --locked --target "$target" --bin pgai-mon \
     && install -D -m 0755 "target/$target/release/pgai-mon" /out/pgai-mon
 
 FROM debian:bookworm-slim

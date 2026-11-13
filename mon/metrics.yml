@@ -1,27 +1,18 @@
-# Simple PGWatch Metrics for Prometheus - just queryid and calls
-
-# The following structure is expected for metrics and preset definitions:
-# metrics:
-#    metric_name:
-#        init_sql: |-
-#            CREATE EXTENSIon IF not EXISTS some_extension;
-#            CREATE OR REPLACE FUNCTIon get_some_stat(OUT some_stat int)
-#            ...
-#        sqls:
-#            11: |
-#                select /* pgwatch_generated */
-#                  (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
-#                  ...
-#            14: |
-#                select /* pgwatch_generated */
-#                  (extract(epoch from now()) * 1e9)::int8 as epoch_ns,
-#                  ...
-#        gauges:
-#            - '*'
-#        is_instance_level: true
-#        node_status: primary
-#        statement_timeout_seconds: 300
-#        metric_storage_name: db_stats
+# pgai-mon collector SQL: the metrics it runs against each monitored Postgres and the presets
+# that pick metrics and intervals. The layout is pgwatch v3's metric-definition format, read by
+# src/metricdefs.rs. The file is read at start from the config's `metrics_yml` path
+# (/etc/pgai-mon/metrics.yml in the image) and re-read every collector.reload_interval_s.
+#
+# metrics.<name>:
+#   sqls.<Postgres major>: the query; the highest key <= the server's major is used, and a query
+#     that is just ";" means "not on this version".
+#   gauges: '*' or a column list (the rest of the numeric columns are counters).
+#   is_instance_level: run once per node instead of per database.
+#   node_status: primary | standby, run only on that role.
+#   statement_timeout_seconds, storage_name: as in pgwatch. init_sql is parsed but never run.
+#   Columns: `epoch_ns` is the sample time, `tag_*` columns become labels (prefix stripped), other
+#   numeric columns become `pgwatch_<metric>_<column>` series.
+# presets.<name>.metrics: metric name -> interval in seconds.
 metrics:
   bgwriter:
     description: >

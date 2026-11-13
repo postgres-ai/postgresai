@@ -264,7 +264,7 @@ impl Admission {
             }
             let big_ok = st.running_heavy == 0;
             // A big shape at the head of the heavy queue that can't start yet stops new heavy
-            // starts, so the running ones drain and it gets its turn (review M2). Priority is
+            // starts, so the running ones drain and it gets its turn. Priority is
             // arrival + expected time, so it reaches the head within its expected time.
             let big_first = st.waiters.iter().find(|w| w.heavy).is_some_and(|w| w.big && !big_ok);
             let heavy_ok = st.running_heavy < self.heavy_slots() && st.running_big == 0 && !big_first;
@@ -468,7 +468,7 @@ mod tests {
         drop(b);
     }
 
-    /// Review M2: heavy queries keep overlapping; a big shape must still get its turn.
+    /// Heavy queries keep overlapping; a big shape must still get its turn.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn big_shape_is_not_starved_by_overlapping_heavy_queries() {
         use std::sync::atomic::{AtomicUsize, Ordering};

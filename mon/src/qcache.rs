@@ -1,4 +1,4 @@
-//! L1 result cache in the parent (CACHE_DESIGN.md on branch spike-monitoring-v2-duckdb sections 1.2 and 2.1).
+//! L1 result cache in the parent process.
 //!
 //! Whole response bodies, keyed by the SQL text (trimmed, trailing `;` removed) plus the
 //! response format and a hash of the views/macros/evaluator version, valid for one catalog
@@ -8,14 +8,14 @@
 //! - Exact: a hit returns the bytes a run at the same generation produced. Only `elapsed_ms` in
 //!   the body is that of the original run. Errors are never stored, and neither is a reply the
 //!   reader marks not cacheable (volatile functions, table functions outside the allowlist,
-//!   file scans: decided on DuckDB's parse tree in the child, review H2).
+//!   file scans: decided on DuckDB's parse tree in the child, not on the SQL text).
 //! - Each run is a spawned task (a flight) that owns its admission permit: a client that goes
-//!   away neither frees the slot early nor makes a follower run the query again (review H1).
+//!   away neither frees the slot early nor makes a follower run the query again.
 //! - Followers that get a transient error re-enter once, so their retries coalesce into one new
-//!   flight (review M3).
+//!   flight instead of each running the query again.
 //! - Bodies are kept zstd level 1 compressed; each entry is charged its compressed size plus
-//!   `ENTRY_OVERHEAD`; least-recently-used out above `cap_bytes` (an ordered tick index, O(log n),
-//!   review M4); an entry over `max_entry_bytes` (compressed) is not stored.
+//!   `ENTRY_OVERHEAD`; least-recently-used out above `cap_bytes` (an ordered tick index, O(log n));
+//!   an entry over `max_entry_bytes` (compressed) is not stored.
 use crate::query::{QueryError, Reply};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -127,7 +127,7 @@ pub struct QueryCache {
 }
 
 /// Errors a follower must not take from the leader: they may be about the leader's run (a
-/// reader kill fails every query in flight, review B2), not about this SQL.
+/// reader kill fails every query in flight), not about this SQL.
 fn transient(e: &QueryError) -> bool {
     matches!(
         e.kind,
@@ -251,7 +251,7 @@ impl QueryCache {
                                 me.finish(key, &f, &res).await;
                                 // finish stored or removed the slot: dropping the guard is a
                                 // no-op then, and it must be dropped, not forgotten (forgetting
-                                // kept the Flight, its channel and the reply alive: review N1)
+                                // would keep the Flight, its channel and the reply alive)
                                 drop(guard);
                                 let _ = tx.send(Some(res));
                             });
@@ -262,7 +262,7 @@ impl QueryCache {
             };
             let (rx, led) = match next {
                 Next::Stale => {
-                    // loaded the generation just before a flush: run, don't touch the cache (L3)
+                    // loaded the generation just before a flush: run, don't touch the cache
                     self.stats.stale_gen_bypass.fetch_add(1, Ordering::Relaxed);
                     self.stats.bypass.fetch_add(1, Ordering::Relaxed);
                     return (detached(run()).await.map(Arc::new), Served::Bypass);
@@ -409,8 +409,8 @@ fn decompress_now(e: &Entry) -> Res {
         .ok_or_else(corrupt)
 }
 
-/// The cache key text: trimmed, trailing `;` and whitespace removed. Nothing else is rewritten
-/// (review M1: folding `prom_align_down` produced keys for SQL with different results).
+/// The cache key text: trimmed, trailing `;` and whitespace removed. Nothing else is rewritten:
+/// folding calls such as `prom_align_down` would give SQL texts with different results one key.
 /// Whether a result may be stored is decided by the reader on the parse tree (`Reply.cacheable`).
 pub fn normalize(sql: &str) -> String {
     sql.trim()
