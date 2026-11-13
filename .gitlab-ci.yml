@@ -360,6 +360,29 @@ reporter:tests:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# The dashboards: conventions (tags, titles, units, legends, colors), every
+# panel's SQL run against a real pgai-mon over a recorded store, the compiler's
+# own checks, and that the committed JSON is what the compiler emits today.
+dashboards:tests:
+  stage: test
+  image: python:3.11-bookworm
+  needs:
+    - job: mon:build
+      artifacts: true
+  variables:
+    GIT_STRATEGY: fetch
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "1"
+    PGAI_MON_BIN: "$CI_PROJECT_DIR/bin/pgai-mon"
+  before_script:
+    - pip install pytest pyyaml
+  script:
+    # CI=true (GitLab sets it): a test that needs the binary fails without it, it does not skip.
+    - python -m pytest -rs tests/grafana_dashboards mon/grafana/test_compile.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 # The compose and collector-SQL (mon/metrics.yml) contract tests. The compose
 # tests render `docker compose config`, which needs the docker CLI and its
 # compose plugin but no daemon: both are installed here, and the job fails if
