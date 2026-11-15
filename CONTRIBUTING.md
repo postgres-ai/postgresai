@@ -331,6 +331,14 @@ dashboards reach Grafana without removing the configs volume. After a rebuild,
 the `.env` the install wrote) puts the new images in place; `mon restart` does
 not, as it restarts the existing containers.
 
+The CLI keeps the Grafana admin password in `.pgwatch-config`, not in `.env`, and
+the compose file needs it for every command (`down` and `ps` too). For plain
+`docker compose` commands on a stack the CLI installed, export it first:
+
+```bash
+export GF_SECURITY_ADMIN_PASSWORD="$(sed -n 's/^grafana_password=//p' .pgwatch-config)"
+```
+
 ### Option B: Run Docker Compose directly
 
 An Option A install prepares everything below. Without one, do it by hand from the

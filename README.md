@@ -336,7 +336,7 @@ To go back to the old stack:
 
 ```bash
 cd ~/.postgres_ai                     # your monitoring directory
-docker compose down                   # stop the new stack; volumes stay
+postgresai mon stop                   # stop the new stack; volumes stay
 cp docker-compose.yml.bak-<oldtag>-<hash> docker-compose.yml
 # edit .env: set PGAI_TAG=<the old version>
 docker compose up -d

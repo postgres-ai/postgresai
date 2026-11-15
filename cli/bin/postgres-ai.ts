@@ -5477,6 +5477,17 @@ mon
       // .env moments ago would never reach the stack -- which is how a
       // re-deploy over a running box silently leaves the channel off.
       if (!(await applyInstanceJobsProfile(projectDir, instanceJobs))) process.exitCode = 1;
+      // The same for --grafana / --no-grafana: GRAFANA_SCALE is in .env by
+      // now, and `up` scales the service to it (removing the container at 0).
+      if (opts.grafana !== undefined) {
+        await ensureComposeGrafanaPassword(projectDir);
+        if ((await runCompose(["up", "-d", "--no-deps", "grafana"])) !== 0) {
+          console.error(`✗ Could not ${opts.grafana ? "start" : "remove"} Grafana`);
+          process.exitCode = 1;
+        } else {
+          console.log(opts.grafana ? "✓ Grafana is running" : "✓ Grafana is removed (GRAFANA_SCALE=0 in .env)");
+        }
+      }
       return;
     }
 

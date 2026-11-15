@@ -338,6 +338,16 @@ describe("recovering a partly running stack", () => {
     expect(ups()).toEqual([]);
   });
 
+  // The choice went into .env before the refusal: it must reach the stack too.
+  test("--no-grafana on a fully healthy stack removes Grafana and starts nothing else", () => {
+    const r = run(["mon", "local-install", "--demo", "-y", "--no-grafana"], { RUNNING, SERVICES, PS_JSON: healthy });
+    expect(r.stderr).toContain("already running");
+    expect(env()).toMatch(/^GRAFANA_SCALE=0$/m);
+    expect(ups().length).toBe(1);
+    expect(ups()[0]).toMatch(/ up -d --no-deps grafana$/);
+    expect(r.stdout).toContain("Grafana is removed");
+  });
+
   test("a missing service counts: Grafana left out by GRAFANA_SCALE=0 does not", () => {
     const noGrafana = ps(["config-init", "exited"], ["pgai-mon", "running", "healthy"], ["postgres-reports", "running"]);
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=x\n");
