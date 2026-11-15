@@ -13,6 +13,9 @@
  *      v1.monitoring_instance_aas_register, which encrypts the token and stores
  *      the AAS state keys (it makes no outbound Grafana call of its own).
  *
+ * On a pgai-mon stack steps 1-2 are skipped: it is armed for the instance job
+ * channel (see aasArmingPath), which the RPC selects when no token is sent.
+ *
  * Best-effort, exactly like registerMonitoringInstance: never throws, returns a
  * result the caller logs. The plaintext SA token only ever lives in locals.
  */
@@ -42,19 +45,32 @@ function grafanaAdminUser(): string {
   return process.env.GF_SECURITY_ADMIN_USER || "monitor";
 }
 
+/** Which channel the platform collects AAS through: it dials into Grafana, or the box answers jobs. */
+export type AasArmingPath = "pull" | "jobs";
+
 /**
- * Why AAS arming is skipped on this stack, or null when it can run.
+ * How to arm AAS on this stack, or why not to.
  *
- * The platform collects AAS by sending PromQL through the box's Grafana to a
- * Prometheus-typed datasource. pgai-mon serves SQL, not PromQL, and its stack
- * provisions no such datasource, so arming would only poll Grafana until its
- * timeout and register nothing. Until the platform learns pgai-mon's API, a
- * pgai-mon stack (its compose defines the pgai-mon service) skips arming at once.
+ * The old stack is armed for PULL: the platform sends PromQL through the box's
+ * Grafana to its Prometheus-typed datasource. pgai-mon serves no PromQL and its
+ * stack provisions no such datasource, so a pgai-mon stack (its compose defines
+ * the pgai-mon service) is armed for the instance JOB channel instead: the
+ * instance-jobs runner answers aas_collect against pgai-mon, and the platform
+ * holds no credential into the box. Arming that channel with no runner to answer
+ * it would register a collection nothing serves, so it is skipped with a line
+ * saying how to turn the runner on.
  */
-export function aasArmingSkipReason(composeText: string | null | undefined): string | null {
-  return composeDefinesService(composeText, PGAI_MON_SERVICE)
-    ? "AAS auto-collection not armed: with pgai-mon it needs a platform update (the platform queries PromQL through Grafana); nothing was registered"
-    : null;
+export function aasArmingPath(
+  composeText: string | null | undefined,
+  instanceJobsOn: boolean,
+): { path: AasArmingPath } | { skip: string } {
+  if (!composeDefinesService(composeText, PGAI_MON_SERVICE)) return { path: "pull" };
+  if (instanceJobsOn) return { path: "jobs" };
+  return {
+    skip:
+      "AAS auto-collection not armed: with pgai-mon it needs the instance-jobs runner " +
+      "(re-run 'postgresai mon local-install --instance-jobs', or set PGAI_INSTANCE_JOBS=true); nothing was registered",
+  };
 }
 
 /** Parse a vcpus input (flag/env) to a non-negative integer; 0 = "unknown" fallback. */
@@ -343,6 +359,9 @@ export async function registerAasCollection(
     grafanaPassword: string;
     instancesPath: string;
     vcpus: number;
+    // "jobs" arms the instance job channel: no Grafana call, and the RPC gets no
+    // sa_token / datasource_id, which is what selects that mode on the platform.
+    path?: AasArmingPath;
     apiBaseUrl?: string;
     debug?: boolean;
     fetchImpl?: typeof fetch;
@@ -365,33 +384,37 @@ export async function registerAasCollection(
     const labels = resolveAasLabels(opts.instancesPath);
     if (!labels) return { ok: false, reason: "could not determine a single (cluster, node_name) target" };
 
-    // Grafana was just started by `compose up`; it needs time to create its
-    // admin user, provision datasources, and serve its API. Querying too early
-    // makes the datasource lookup fail transiently, so poll until it resolves
-    // (best-effort, capped — the install never blocks on this).
-    const maxAttempts = opts.datasourceMaxAttempts ?? 20;
-    const retryDelayMs = opts.datasourceRetryDelayMs ?? 3000;
+    // The job channel needs nothing from Grafana: the box answers from its own store.
     let datasourceId: number | null = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const resolved = await resolveDatasourceId(opts.grafanaPassword, debug);
-      if (typeof resolved === "number") { datasourceId = resolved; break; }
-      // "ambiguous" (>1 prometheus datasource) is permanent — retrying can't fix
-      // it, so stop polling immediately instead of waiting out the whole budget.
-      if (resolved === "ambiguous") break;
-      if (attempt < maxAttempts) {
-        if (debug) console.error(`Debug: AAS: datasource not resolvable yet (attempt ${attempt}/${maxAttempts}); waiting for Grafana…`);
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    let saToken: string | null = null;
+    if ((opts.path ?? "pull") === "pull") {
+      // Grafana was just started by `compose up`; it needs time to create its
+      // admin user, provision datasources, and serve its API. Querying too early
+      // makes the datasource lookup fail transiently, so poll until it resolves
+      // (best-effort, capped — the install never blocks on this).
+      const maxAttempts = opts.datasourceMaxAttempts ?? 20;
+      const retryDelayMs = opts.datasourceRetryDelayMs ?? 3000;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const resolved = await resolveDatasourceId(opts.grafanaPassword, debug);
+        if (typeof resolved === "number") { datasourceId = resolved; break; }
+        // "ambiguous" (>1 prometheus datasource) is permanent — retrying can't fix
+        // it, so stop polling immediately instead of waiting out the whole budget.
+        if (resolved === "ambiguous") break;
+        if (attempt < maxAttempts) {
+          if (debug) console.error(`Debug: AAS: datasource not resolvable yet (attempt ${attempt}/${maxAttempts}); waiting for Grafana…`);
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
       }
-    }
-    if (datasourceId == null) return { ok: false, reason: "could not resolve the Prometheus datasource id" };
+      if (datasourceId == null) return { ok: false, reason: "could not resolve the Prometheus datasource id" };
 
-    const saToken = await mintAasServiceAccountToken(opts.grafanaPassword, debug);
-    if (!saToken) return { ok: false, reason: "could not mint a Grafana service-account token" };
+      saToken = await mintAasServiceAccountToken(opts.grafanaPassword, debug);
+      if (!saToken) return { ok: false, reason: "could not mint a Grafana service-account token" };
+    }
 
     const { apiBaseUrl } = resolveBaseUrls({ apiBaseUrl: opts.apiBaseUrl });
     const url = `${apiBaseUrl}/rpc/monitoring_instance_aas_register`;
     const doFetch = opts.fetchImpl || fetch;
-    if (debug) console.error(`Debug: AAS: POST ${url} (cluster=${labels.cluster}, node=${labels.node}, vcpus=${opts.vcpus}, ds=${datasourceId})`);
+    if (debug) console.error(`Debug: AAS: POST ${url} (cluster=${labels.cluster}, node=${labels.node}, vcpus=${opts.vcpus}, path=${opts.path ?? "pull"}, ds=${datasourceId})`);
 
     const res = await doFetch(url, {
       method: "POST",
@@ -399,11 +422,11 @@ export async function registerAasCollection(
       body: JSON.stringify({
         api_token: apiKey,
         instance_id: instanceId,
-        sa_token: saToken,
         cluster_name: labels.cluster,
         node_name: labels.node,
         vcpus: opts.vcpus,
-        datasource_id: datasourceId,
+        // Present only on the pull path: the platform picks its mode by sa_token alone.
+        ...(saToken ? { sa_token: saToken, datasource_id: datasourceId } : {}),
       }),
     });
     if (!res.ok) {
@@ -413,7 +436,7 @@ export async function registerAasCollection(
       // platform was naming the exact precondition that failed.
       const detail = formatPlatformError(
         await res.json().catch(() => null),
-        [apiKey, saToken],
+        saToken ? [apiKey, saToken] : [apiKey],
       );
       const suffix = detail ? ` — ${detail}` : "";
       if (debug) console.error(`Debug: AAS register failed: HTTP ${res.status}${suffix}`);

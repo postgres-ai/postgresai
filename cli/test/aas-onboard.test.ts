@@ -9,7 +9,7 @@ import {
   registerAasCollection,
   aasSuccessMessage,
   formatPlatformError,
-  aasArmingSkipReason,
+  aasArmingPath,
 } from "../lib/aas-onboard";
 import { MAX_SURVIVING_RUN, leaks, longestRun, splitAt } from "./redaction-helpers";
 
@@ -23,38 +23,47 @@ function res(ok: boolean, status: number, jsonBody: unknown, textBody = ""): Res
   } as unknown as Response;
 }
 
-describe("aasArmingSkipReason", () => {
+describe("aasArmingPath", () => {
   const compose = (name: string) =>
     fs.readFileSync(path.resolve(import.meta.dir, name), "utf8");
 
-  test("the shipped pgai-mon compose skips arming with one line naming the platform update", () => {
-    const reason = aasArmingSkipReason(compose("../../docker-compose.yml"));
-    expect(reason).not.toBeNull();
-    expect(reason).toContain("platform update");
-    expect(reason).toContain("nothing was registered");
-    expect(reason).not.toContain("\n");
+  test("pgai-mon with the instance-jobs runner on is armed for the job channel", () => {
+    expect(aasArmingPath(compose("../../docker-compose.yml"), true)).toEqual({ path: "jobs" });
+    expect(aasArmingPath(compose("fixtures/compose/pgai-mon.yml"), true)).toEqual({ path: "jobs" });
   });
 
-  test("the pgai-mon fixture skips; the old stack's compose does not", () => {
-    expect(aasArmingSkipReason(compose("fixtures/compose/pgai-mon.yml"))).not.toBeNull();
-    expect(aasArmingSkipReason(compose("fixtures/compose/old-stack.yml"))).toBeNull();
+  test("pgai-mon with the runner off is not armed: one line saying how to turn it on", () => {
+    const r = aasArmingPath(compose("fixtures/compose/pgai-mon.yml"), false);
+    expect("skip" in r).toBe(true);
+    const line = (r as { skip: string }).skip;
+    expect(line).toContain("instance-jobs runner");
+    expect(line).toContain("--instance-jobs");
+    expect(line).toContain("PGAI_INSTANCE_JOBS=true");
+    expect(line).toContain("nothing was registered");
+    expect(line).not.toContain("\n");
   });
 
-  test("no or unparseable compose text does not skip", () => {
-    expect(aasArmingSkipReason(null)).toBeNull();
-    expect(aasArmingSkipReason("services: [")).toBeNull();
+  test("the old stack (or no readable compose) stays on pull, whatever the runner", () => {
+    for (const on of [true, false]) {
+      expect(aasArmingPath(compose("fixtures/compose/old-stack.yml"), on)).toEqual({ path: "pull" });
+      expect(aasArmingPath(null, on)).toEqual({ path: "pull" });
+      expect(aasArmingPath("services: [", on)).toEqual({ path: "pull" });
+    }
   });
 
-  test("local-install checks it before any Grafana call, so no retry loop runs", () => {
+  test("local-install decides before any call, skips without one, and needs Grafana only for pull", () => {
     const src = fs.readFileSync(path.resolve(import.meta.dir, "../bin/postgres-ai.ts"), "utf8");
-    const skip = src.indexOf("aasArmingSkipReason(readComposeText(projectDir))");
+    const decide = src.indexOf("aasArmingPath(");
     const register = src.indexOf("await registerAasCollection(");
-    expect(skip).toBeGreaterThan(0);
-    expect(register).toBeGreaterThan(skip);
+    expect(decide).toBeGreaterThan(0);
+    expect(register).toBeGreaterThan(decide);
+    expect(src.slice(decide, register)).toContain("instanceJobsProfileEnabled(readComposeProfiles(projectDir))");
     // The skip branch only prints: it neither sets an exit code nor calls out.
-    const branch = src.slice(skip, src.indexOf("} else if (!grafanaOn)", skip));
+    const branch = src.slice(src.indexOf('if ("skip" in aasArming)', decide), src.indexOf("} else if (aasArming.path", decide));
     expect(branch).not.toContain("exitCode");
     expect(branch).not.toContain("await ");
+    expect(src).toContain('} else if (aasArming.path === "pull" && !grafanaOn) {');
+    expect(src.slice(register, register + 400)).toContain("path: aasArming.path");
   });
 });
 
@@ -169,7 +178,8 @@ describe("registerAasCollection", () => {
     expect(rpc).toBeDefined();
     expect(rpc!.url).toBe("https://api.test/rpc/monitoring_instance_aas_register");
     const body = JSON.parse(rpc!.body!);
-    expect(body).toMatchObject({
+    // Exactly these keys: the pull request is what it always was.
+    expect(body).toEqual({
       api_token: "apikey-1",
       instance_id: "inst-123",
       sa_token: "glsa_mock_token_xyz",
@@ -181,6 +191,27 @@ describe("registerAasCollection", () => {
     // a fresh SA was created (search found none) and a token minted on its id.
     expect(calls.some((c) => c.url.endsWith("/api/serviceaccounts") && c.method === "POST")).toBe(true);
     expect(calls.some((c) => c.url.match(/\/serviceaccounts\/42\/tokens$/) && c.method === "POST")).toBe(true);
+  });
+
+  test("job channel: one RPC call, no sa_token / datasource_id, and no Grafana call at all", async () => {
+    installFetch({ rpc: { ok: true, status: 200, json: { armed_for: "jobs", vcpus: 0, url_pending: false } } });
+    const r = await registerAasCollection("apikey-1", "inst-123", {
+      grafanaPassword: "",
+      instancesPath,
+      vcpus: 0,
+      path: "jobs",
+      apiBaseUrl: "https://api.test",
+    });
+    expect(r).toMatchObject({ ok: true, armedFor: "jobs", vcpus: 0 });
+    expect(calls.length).toBe(1);
+    expect(calls[0].url).toBe("https://api.test/rpc/monitoring_instance_aas_register");
+    expect(JSON.parse(calls[0].body!)).toEqual({
+      api_token: "apikey-1",
+      instance_id: "inst-123",
+      cluster_name: "default",
+      node_name: "appdb",
+      vcpus: 0, // the contract's explicit "unknown"
+    });
   });
 
   test("platform error → ok:false, reason carries the status (best-effort, no throw)", async () => {
