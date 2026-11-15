@@ -909,6 +909,55 @@ fn compaction_with_evicted_inputs() {
     b.close();
 }
 
+/// Every commit is a whole snapshot, also while compaction replaces files between commits:
+/// after each one the bucket's catalog lists only objects that exist and reads back the rows
+/// ingested so far, once each. The objects of the commit before are still there, for a reader
+/// that has not seen the new catalog yet (the delete grace).
+#[test]
+fn every_commit_between_compactions_is_a_whole_snapshot() {
+    let url = "mem://snapshots/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let cfg = BucketCfg {
+        delete_grace_s: 3600,
+        keep_local_days: 0,
+        ..Default::default()
+    };
+    let (b, mut c) = start(url, &store, d.path(), cfg).unwrap();
+    let (comp, pre) = (c.compactor().unwrap(), c.upload_compactor().unwrap());
+    let day = 86_400_000i64;
+    let d0 = (now_ms() / day - 5) * day;
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + 2 * day);
+    let mut before = BTreeSet::new();
+    for k in 0..6 {
+        // two closed days, three flushes each
+        ingest(&mut c, d0 + k * day / 3, 10, 5);
+        c.flush().unwrap();
+        // the commit of the flush; every other round a compaction and its commit
+        for compact in [false, true].into_iter().take(1 + (k % 2) as usize) {
+            if compact {
+                assert!(comp.run_once(now_ms(), true).unwrap() > 0);
+            }
+            b.sync(&c.shared, Some(&pre)).unwrap();
+            assert_listed_objects_exist(&store);
+            let keys = objects(&store);
+            assert!(before.is_subset(&keys), "gone early: {:?}", before.difference(&keys));
+            assert_eq!(
+                rows(&bucket_reader(url), &q),
+                vec![format!("[{}]", (k + 1) * 200)],
+                "round {k}"
+            );
+            before = bucket_catalog(&store)
+                .unwrap()
+                .files
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+        }
+    }
+    b.close();
+}
+
 /// Retention on an object store: the files the writer expires leave the bucket's catalog at the
 /// next commit and the bucket after the delete grace; what is kept still answers from the bucket.
 #[test]
