@@ -32,7 +32,7 @@ the read side over an existing store.
 | `compactor` | thread | Every 60 s: merges files, builds rollups, applies retention, deletes files past their grace time. Waits while queries run, for at most 10 minutes. |
 | uploader | thread, S3 store only | Every `store.s3.upload_interval_s`: uploads new files and commits `catalog.json` to the bucket. |
 | `tailer` | thread per `logs[]` entry | Reads new jsonlog lines once a second. |
-| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config and the sources file every `collector.reload_interval_s` and on SIGHUP. |
+| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config and the sources file every `collector.reload_interval_s` and on SIGHUP. A job runs once at the start, then at a fixed phase in its interval (a hash of its name, below min(interval, 60 s)), so the jobs of one tick do not start together. |
 | scraper, host rules, RDS host stats, self metrics | tokio tasks | Other producers of samples; they write through `ingest.rs`. |
 | flush ticker | tokio task | Asks the store thread to flush every `store.flush_interval_s` (60 s). |
 
@@ -297,6 +297,10 @@ per node.
   idle session is reused only for its own database, so the oldest is closed to make room.
   Raise the setting for nodes with many monitored databases.
 - A database that goes away gets no staleness markers: its series end at the last sample.
+- Sampled metrics (wait_events, pg_stat_activity) include the collector's own sessions: the
+  sampling query itself always (the metric SQL has no filter on its own pid, as in pgwatch),
+  and another collector query when one runs at that instant. Job phases are spread to keep
+  the second kind rare.
 - The `scrape:` section of the config (file list, inline jobs) and the `rds:` targets are read
   at start only; a change needs a restart. Only the scrape-config files themselves are re-read.
 - On exit or when a source changes, queries already running are not cancelled: they run to

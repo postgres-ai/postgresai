@@ -974,8 +974,45 @@ enum JobState {
 struct Slot {
     kind: JobKind,
     interval_s: u64,
+    /// Offset of the runs after the first from the slot's start (job_phase_ms).
+    phase: Duration,
+    /// The first run is still due (it runs at the start, without the phase).
+    first: bool,
     next: tokio::time::Instant,
     state: Arc<tokio::sync::Mutex<JobState>>,
+}
+
+/// A job's fixed offset in [0, min(interval, 60 s)) ms: FNV-1a of its name, so it is the
+/// same after a restart. Spreads the jobs of one tick over time: a sampler of instantaneous
+/// state (wait_events, pg_stat_activity, locks) then rarely sees a sibling job's query, and
+/// the database gets no burst of all jobs at once.
+fn job_phase_ms(name: &str, interval_s: u64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h % (interval_s.clamp(1, 60) * 1000)
+}
+
+impl Slot {
+    /// Move `next` past `now`; returns the runs that were due (1: on time, more: missed).
+    /// The first run is at the start; the next at start + phase + interval, then every
+    /// interval. The phase shift itself is not a missed run.
+    fn advance(&mut self, now: tokio::time::Instant) -> u64 {
+        let step = Duration::from_secs(self.interval_s.max(1));
+        let mut due = 0u64;
+        if self.first {
+            self.first = false;
+            self.next += self.phase + step;
+            due = 1;
+        }
+        while self.next <= now {
+            self.next += step;
+            due += 1;
+        }
+        due
+    }
 }
 
 /// The statement_timeout a job runs under, and whether it is heavy (takes a heavy permit).
@@ -1046,6 +1083,8 @@ fn build_slots(
                 })
                 .clone();
             Slot {
+                phase: Duration::from_millis(job_phase_ms(&kind.name(), interval_s)),
+                first: true,
                 kind,
                 interval_s,
                 next: start,
@@ -1099,11 +1138,7 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
         }
         let now = tokio::time::Instant::now();
         for s in slots.iter_mut().filter(|s| s.next <= now) {
-            let mut missed = 0u64;
-            while s.next <= now {
-                s.next += Duration::from_secs(s.interval_s.max(1));
-                missed += 1;
-            }
+            let missed = s.advance(now);
             let name = s.kind.name();
             let mut skipped = missed - 1;
             match s.state.clone().try_lock_owned() {
@@ -1592,6 +1627,41 @@ mod tests {
             interval_s,
             def: serde_yaml::from_str("sqls: {11: 'select 1'}").unwrap(),
         }
+    }
+
+    #[test]
+    fn job_phase_is_stable_bounded_and_spread() {
+        assert_eq!(job_phase_ms("wait_events", 15), job_phase_ms("wait_events", 15));
+        assert_ne!(job_phase_ms("wait_events", 30), job_phase_ms("pg_stat_activity", 30));
+        for name in ["wait_events", "pg_stat_activity", "locks", "up", ""] {
+            assert!(job_phase_ms(name, 15) < 15_000);
+            assert!(job_phase_ms(name, 3600) < 60_000, "capped at 60 s");
+            assert!(job_phase_ms(name, 1) < 1_000);
+            assert!(job_phase_ms(name, 0) < 1_000, "interval 0 runs every second");
+        }
+    }
+
+    #[test]
+    fn a_slot_runs_first_at_once_then_at_its_phase() {
+        let start = tokio::time::Instant::now();
+        let phase = Duration::from_millis(job_phase_ms("locks", 30));
+        let mut s = Slot {
+            kind: JobKind::QueryTexts,
+            interval_s: 30,
+            phase,
+            first: true,
+            next: start,
+            state: Arc::new(tokio::sync::Mutex::new(JobState::None)),
+        };
+        let iv = Duration::from_secs(30);
+        // the first run is at the start; the phase shift is no missed run
+        assert_eq!(s.advance(start), 1);
+        assert_eq!(s.next, start + iv + phase);
+        assert_eq!(s.advance(start + iv + phase), 1);
+        assert_eq!(s.next, start + 2 * iv + phase);
+        // woken 2.5 intervals late: two runs missed, the phase kept
+        assert_eq!(s.advance(start + 4 * iv + phase + iv / 2), 3);
+        assert_eq!(s.next, start + 5 * iv + phase);
     }
 
     #[test]
