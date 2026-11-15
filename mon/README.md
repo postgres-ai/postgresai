@@ -232,7 +232,7 @@ Top level:
 | `preset_metrics_standby`, `custom_metrics_standby` | string, map | none | What a standby runs instead. |
 | `is_enabled` | bool | `true` | `false`: not collected. |
 | `only_if_master` | bool | `false` | Collect only while the node is a primary. |
-| `scrape_labels` | map | empty | Extra labels (`job`, `instance`) that the old stack added at scrape time. |
+| `scrape_labels` | map | `{job: pgwatch-prometheus, instance: <name>}` | Extra labels (`job`, `instance`) that the old stack added at scrape time. With a `job`, the source also writes `up`, which the Active session history panels divide by. A non-empty map replaces the default. |
 | `group` | string | none | Informational. |
 
 `store`:

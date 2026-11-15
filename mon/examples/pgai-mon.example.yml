@@ -16,6 +16,7 @@ sources:
     discover_databases: true
     custom_tags: {env: demo, cluster: local, node_name: node-01}
     # Labels VictoriaMetrics added at scrape time; keep them for series identical to the old stack.
+    # Left out: {job: pgwatch-prometheus, instance: <name>}.
     scrape_labels: {job: pgwatch-prometheus, instance: "pgwatch:9091"}
 # jsonlog / auto_explain directories to tail (optional):
 # logs:

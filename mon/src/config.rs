@@ -84,6 +84,7 @@ pub struct Source {
     pub discover_databases: bool,
     /// Labels pgwatch never sees but VictoriaMetrics adds at scrape time (job, instance).
     /// Kept configurable so live series can be made label-identical to the reference.
+    /// Empty: collect_sources sets the default (DEFAULT_SCRAPE_JOB, instance = name).
     #[serde(default)]
     pub scrape_labels: BTreeMap<String, String>,
     /// pgwatch: preset from metrics.yml; wins over custom_metrics. Neither: the global preset.
@@ -203,8 +204,14 @@ pub fn parse_sources_file(text: &str) -> anyhow::Result<Vec<Source>> {
     Ok(v.unwrap_or_default())
 }
 
+/// The `job` a source without `scrape_labels` gets: the one the dashboards query
+/// (`up{job="pgwatch-prometheus"}`, the Active session history divisor).
+pub const DEFAULT_SCRAPE_JOB: &str = "pgwatch-prometheus";
+
 /// Every source to collect: the config's own `sources` plus `sources_file`. Unusable and
-/// disabled sources are left out (reported); a duplicate name keeps the first.
+/// disabled sources are left out (reported); a duplicate name keeps the first. A source
+/// without `scrape_labels` gets `{job: DEFAULT_SCRAPE_JOB, instance: <name>}`; `instance`
+/// is the name, unique per source, because each source writes its own `up`.
 pub fn collect_sources(cfg: &Config) -> anyhow::Result<Vec<Source>> {
     let mut all = cfg.sources.clone();
     if let Some(f) = &cfg.sources_file {
@@ -216,7 +223,7 @@ pub fn collect_sources(cfg: &Config) -> anyhow::Result<Vec<Source>> {
         all.extend(parse_sources_file(&text)?);
     }
     let mut out: Vec<Source> = Vec::new();
-    for s in all {
+    for mut s in all {
         let (bad, warns) = s.check();
         for w in warns {
             eprintln!("collector: {w}");
@@ -231,6 +238,12 @@ pub fn collect_sources(cfg: &Config) -> anyhow::Result<Vec<Source>> {
         if out.iter().any(|o| o.name == s.name) {
             eprintln!("collector: source {} listed twice; the first is used", s.name);
             continue;
+        }
+        if s.scrape_labels.is_empty() {
+            s.scrape_labels = BTreeMap::from([
+                ("job".to_string(), DEFAULT_SCRAPE_JOB.to_string()),
+                ("instance".to_string(), s.name.clone()),
+            ]);
         }
         out.push(s);
     }
@@ -755,6 +768,16 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!(s[0].name, "native");
         assert_eq!(s[1].conn_str, "host=dup", "the first of two same-named sources wins");
+        // explicit scrape_labels are kept as they are; none: the default job, instance = name
+        let labels = |i: usize| s[i].scrape_labels.clone().into_iter().collect::<Vec<_>>();
+        assert_eq!(labels(0), vec![("job".to_string(), "j".to_string())]);
+        assert_eq!(
+            labels(1),
+            vec![
+                ("instance".to_string(), "target_database".to_string()),
+                ("job".to_string(), DEFAULT_SCRAPE_JOB.to_string())
+            ]
+        );
         // a missing sources file is no sources (the CLI writes it later)
         std::fs::remove_file(&f).unwrap();
         assert_eq!(collect_sources(&Config::load(&cfg_path).unwrap()).unwrap().len(), 2);
