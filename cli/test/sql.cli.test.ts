@@ -42,7 +42,25 @@ const OK_RESULT: JobResult = {
   finished_at: null,
 };
 
-function startFakeApi(jobResult: JobResult = OK_RESULT) {
+// The store's own bytes: JSON.parse would round both 64-bit ids. Everything
+// else in it must come out exactly as before.
+const BIG_ROWS =
+  '{"columns":["queryid","n","f","e","s","labels"],"types":["BIGINT","BIGINT","DOUBLE","DOUBLE","VARCHAR","MAP"],' +
+  '"rows":[[-8580166607628940136,9223372036854775806,0.25,1e-07,"12345678901234567890",{"job":"pg","n":3}],' +
+  '[1,42,null,true,"x",{}]],"row_count":2,"truncated":false,"elapsed_ms":3}';
+function expectExactIds(table: string, json: string) {
+  expect(table).toContain('-8580166607628940136  9223372036854775806  0.25  1e-7  12345678901234567890  {"job":"pg","n":3}');
+  expect(table).toContain("2 rows");
+  // Bare numbers with every digit, and otherwise what JSON.stringify prints.
+  expect(json).toContain("\n      -8580166607628940136,\n      9223372036854775806,\n      0.25,\n      1e-7,\n");
+  const safe = JSON.parse(BIG_ROWS);
+  safe.rows[0][0] = safe.rows[0][1] = "ID";
+  expect(json.replace("-8580166607628940136", '"ID"').replace("9223372036854775806", '"ID"')).toBe(
+    JSON.stringify(safe, null, 2) + "\n",
+  );
+}
+
+function startFakeApi(jobResult: JobResult | string = OK_RESULT) {
   const requests: { fn: string; body: Record<string, unknown>; org: string | null }[] = [];
   const server = Bun.serve({
     port: 0,
@@ -59,7 +77,9 @@ function startFakeApi(jobResult: JobResult = OK_RESULT) {
       if (fn === "instance_query_enqueue") {
         return Response.json({ job_id: "job-1", first_answer_estimate_s: 1 });
       }
-      if (fn === "instance_query_result") return Response.json(jobResult);
+      if (fn === "instance_query_result") {
+        return typeof jobResult === "string" ? new Response(jobResult) : Response.json(jobResult);
+      }
       return new Response("not found", { status: 404 });
     },
   });
@@ -162,6 +182,19 @@ describe("pgai mon sql output", () => {
     }
   });
 
+  test("64-bit integers keep every digit from the platform's reply to the table and --json", async () => {
+    const api = startFakeApi(`{"status":"done","outcome":"ok","result":${BIG_ROWS},"error":null,"failure_class":null}`);
+    try {
+      const args = ["--api-key", "k", "--api-base-url", api.baseUrl, "mon", "sql", "select 1", "--instance", ONE];
+      const table = await runCli(args, isolatedEnv());
+      const json = await runCli([...args, "--json"], isolatedEnv());
+      expect([table.status, json.status]).toEqual([0, 0]);
+      expectExactIds(table.stdout, json.stdout);
+    } finally {
+      api.stop();
+    }
+  });
+
   test("a failed query exits non-zero with the box's error verbatim", async () => {
     const api = startFakeApi({
       ...OK_RESULT,
@@ -250,6 +283,18 @@ describe("pgai mon sql --local", () => {
       expect(r.stdout + r.stderr).not.toContain(TOKEN);
       const json = await runLocal(["mon", "sql", "--local", "--json", "select 1"], project(), { PGAI_MON_URL: mon.url });
       expect(JSON.parse(json.stdout)).toEqual(ROWS);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("64-bit integers keep every digit in the table and in --json", async () => {
+    const mon = startFakeMon(() => new Response(BIG_ROWS, { headers: { "Content-Type": "application/json" } }));
+    try {
+      const table = await runLocal(["mon", "sql", "--local", "select 1"], project(), { PGAI_MON_URL: mon.url });
+      const json = await runLocal(["mon", "sql", "--local", "--json", "select 1"], project(), { PGAI_MON_URL: mon.url });
+      expect([table.status, json.status]).toEqual([0, 0]);
+      expectExactIds(table.stdout, json.stdout);
     } finally {
       mon.stop();
     }

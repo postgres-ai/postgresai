@@ -6,8 +6,10 @@ import {
   isTerminal,
   renderSql,
   resolveMonitoringInstanceId,
+  sqlJson,
   type SqlPayload,
 } from "../lib/instance-query";
+import { parseLossless, stringifyLossless } from "../lib/lossless-json";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -241,6 +243,44 @@ describe("rendering", () => {
 
   test("objects and arrays print as JSON", () => {
     expect(renderSql(payload({ columns: ["labels"], rows: [[{ a: "1" }]] }))).toContain('{"a":"1"}');
+  });
+});
+
+// queryid is a signed 64-bit hash: JSON.parse rounds it to the nearest double.
+const QUERYID = "-8580166607628940136";
+const NEAR_MAX = "9223372036854775806";
+
+describe("64-bit integers survive (parseLossless / stringifyLossless)", () => {
+  test("only bare integer literals beyond 2^53 change type; strings and escapes are respected", () => {
+    const text =
+      `{"s":"${NEAR_MAX}","q":"say \\"x\\": ${NEAR_MAX}","esc":"\\\\","id":${QUERYID},` +
+      `"nest":[1,[${NEAR_MAX},{"k":${QUERYID}}]],"f":1.5,"e":1e-07,"big_f":12345678901234567890.5,"safe":9007199254740991}`;
+    const v = parseLossless(text) as any;
+    expect(v.s).toBe(NEAR_MAX);
+    expect(v.q).toBe(`say "x": ${NEAR_MAX}`);
+    expect(v.esc).toBe("\\");
+    expect(v.id).toBe(BigInt(QUERYID));
+    expect(v.nest).toEqual([1, [BigInt(NEAR_MAX), { k: BigInt(QUERYID) }]]);
+    expect([v.f, v.e, v.big_f, v.safe]).toEqual([1.5, 1e-7, 12345678901234567890.5, 9007199254740991]);
+    // Written back: the same literals, as bare numbers.
+    expect(stringifyLossless(v)).toBe(
+      `{"s":"${NEAR_MAX}","q":"say \\"x\\": ${NEAR_MAX}","esc":"\\\\","id":${QUERYID},` +
+        `"nest":[1,[${NEAR_MAX},{"k":${QUERYID}}]],"f":1.5,"e":1e-7,"big_f":12345678901234567000,"safe":9007199254740991}`,
+    );
+  });
+
+  test("without big integers it is JSON.parse / JSON.stringify exactly", () => {
+    const text = '{"a":[1,-2.5,"12345678901234567890",null,true,{"b":"x"}],"c":1e-07}';
+    expect(parseLossless(text)).toEqual(JSON.parse(text));
+    const p = payloadWith([[1, "x", { labels: { job: "pg" } }]]);
+    expect(sqlJson(p)).toBe(JSON.stringify(p, null, 2));
+  });
+
+  const payloadWith = (rows: unknown[][]): SqlPayload => ({ columns: ["a", "b", "c"], rows, truncated: false });
+
+  test("the table prints every digit, in a cell and inside a nested value", () => {
+    const p = parseLossless(`{"columns":["queryid","labels"],"rows":[[${QUERYID},{"qid":${NEAR_MAX}}]],"truncated":false}`);
+    expect(renderSql(p as SqlPayload)).toContain(`${QUERYID}  {"qid":${NEAR_MAX}}`);
   });
 });
 

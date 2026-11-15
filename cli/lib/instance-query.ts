@@ -14,6 +14,7 @@
 import { asyncPollDelayMs, resolveBaseUrls, SLOW_ANSWER_MS } from "./util";
 import { orgScopeHeaders, getActiveOrgScope } from "./org-scope";
 import { listProjects, isNumericProjectRef } from "./joe";
+import { parseLossless, stringifyLossless } from "./lossless-json";
 
 /** The job kind for a SQL query; the box runs it through pgai-mon's `POST /sql`. */
 export const SQL_JOB_KIND = "sql";
@@ -64,6 +65,7 @@ async function callRpc(
   apiKey: string,
   body: Record<string, unknown>,
   opts?: { apiBaseUrl?: string; timeoutMs?: number },
+  parse: (text: string) => unknown = JSON.parse,
 ): Promise<unknown> {
   const { apiBaseUrl } = resolveBaseUrls(opts);
   const res = await fetch(`${apiBaseUrl}/rpc/${name}`, {
@@ -85,7 +87,7 @@ async function callRpc(
     throw new Error(describeRpcError(res.status, text));
   }
   try {
-    return text ? JSON.parse(text) : null;
+    return text ? parse(text) : null;
   } catch {
     throw new Error(`${name} returned a body that is not JSON`);
   }
@@ -216,7 +218,8 @@ export async function readQueryResult(
   jobId: string,
   opts?: { apiBaseUrl?: string },
 ): Promise<QueryJobResult> {
-  const reply = (await callRpc("instance_query_result", apiKey, { p_job_id: jobId }, opts)) as
+  // Lossless: a result's 64-bit integers (a queryid) must keep every digit.
+  const reply = (await callRpc("instance_query_result", apiKey, { p_job_id: jobId }, opts, parseLossless)) as
     | QueryJobResult
     | null;
   if (!reply || typeof reply.status !== "string") {
@@ -286,13 +289,13 @@ function pad(s: string, width: number): string {
 /** One cell as text: SQL NULL as "NULL", objects and arrays as JSON. */
 function cellText(v: unknown): string {
   if (v === null || v === undefined) return "NULL";
-  if (typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "object") return stringifyLossless(v);
   return String(v);
 }
 
 /**
  * Render a `sql` job's result as a table, with the row count under it.
- * `--json` prints the payload as the box sent it.
+ * `--json` prints the payload as the box sent it, with `sqlJson`.
  */
 export function renderSql(payload: SqlPayload): string {
   const lines: string[] = [];
@@ -310,6 +313,11 @@ export function renderSql(payload: SqlPayload): string {
     lines.push("⚠ TRUNCATED: too large to return whole. Select fewer columns or rows (LIMIT, a narrower time range).");
   }
   return lines.filter((l, i) => !(i === 0 && l === "")).join("\n");
+}
+
+/** `--json` output: integers beyond 2^53 keep their digits, as bare numbers. */
+export function sqlJson(payload: SqlPayload): string {
+  return stringifyLossless(payload, 2);
 }
 
 /**
@@ -355,7 +363,7 @@ export async function runLocalSql(
   }
   let payload: SqlPayload;
   try {
-    payload = JSON.parse(text) as SqlPayload;
+    payload = parseLossless(text) as SqlPayload;
   } catch {
     throw new Error("pgai-mon's answer is not JSON");
   }

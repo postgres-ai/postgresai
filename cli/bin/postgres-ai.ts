@@ -52,6 +52,7 @@ import {
   awaitQueryResult,
   isTerminal,
   renderSql,
+  sqlJson,
   resolveMonitoringInstanceId,
   runLocalSql,
 } from "../lib/instance-query";
@@ -7718,7 +7719,7 @@ async function runMonSqlLocal(query: string, opts: SqlOptions): Promise<void> {
       return;
     }
     const result = await runLocalSql(process.env.PGAI_MON_URL || PGAI_MON_URL, token, query, timeoutS * 1000);
-    console.log(opts.json ? JSON.stringify(result, null, 2) : renderSql(result));
+    console.log(opts.json ? sqlJson(result) : renderSql(result));
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -7853,7 +7854,7 @@ Example:
         return;
       }
       if (opts.json) {
-        console.log(JSON.stringify(res.result, null, 2));
+        console.log(sqlJson(res.result));
         return;
       }
       console.log(renderSql(res.result));
