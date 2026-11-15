@@ -270,6 +270,10 @@ per node.
   one disk comes from the S3 store.
 - With an S3 store, a lost machine loses the data acknowledged since the last commit: up to
   `store.s3.upload_interval_s` (300 s) plus one upload round.
+- The lease is renewed by commits only. An upload round longer than the lease (15 minutes by
+  default: the first upload of a large local store, or the backlog after a long S3 outage)
+  lets a second writer started on the prefix take the store over. The first writer is fenced
+  at its commit and keeps what it had not uploaded for its next start.
 - Two copies of one local directory must not run at the same time. A copy started before the
   writer's next commit looks like a restart of the writer: it takes the store over, and the
   writer is fenced and loses what it had not uploaded.

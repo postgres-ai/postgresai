@@ -661,7 +661,6 @@ impl Bucket {
                 r.flushed_through_seg = -1;
                 r.log_offsets.clear();
                 r.writer = None;
-                r.fenced.clear();
                 st.version = None;
                 (c, r)
             }
@@ -855,12 +854,17 @@ impl Bucket {
     /// happen). Without the record nothing is kept: the directory is a copy or an older state
     /// of its writer's, and what it holds may be in the store already. Compaction on an object
     /// store rewrites only files the bucket has (store.rs, `plan`), so there is nothing but
-    /// level-0 files to keep. Returns the paths in `l` of the files kept.
+    /// level-0 files to keep, unless the bucket had no file at all at that commit: then the
+    /// directory is a local store the bucket never had, and every level is kept (the compactor
+    /// builds the rollups of their days again). Returns the paths in `l` of the files kept.
     fn rescue(&self, base: Option<&Sent>, l: &Catalog, cat: &mut Catalog) -> anyhow::Result<HashSet<String>> {
         let mut kept = HashSet::new();
         let adopted: HashSet<String> = cat.files.iter().map(|f| f.path.clone()).collect();
+        // The bucket had no file at that commit (a local store pointed at an empty prefix):
+        // it never had any file of this directory, of any level.
+        let all = base.is_some_and(|b| b.files.is_empty() && !b.adopted);
         let fresh = |f: &&FileEntry| {
-            f.level == 0
+            (f.level == 0 || all)
                 && crate::store::KINDS.contains(&f.kind.as_str())
                 && !adopted.contains(&f.path)
                 && self.local.join(&f.path).is_file()
@@ -869,7 +873,7 @@ impl Bucket {
             let n = l.files.iter().filter(fresh).count();
             if n > 0 {
                 eprintln!(
-                    "bucket: {}: {n} level-0 files in {} are not in the store's catalog and are dropped: the \
+                    "bucket: {}: {n} files in {} are not in the store's catalog and are dropped: the \
                      directory has no record of its last commit to this store (a copy, an older state, or a \
                      store of its own)",
                     self.url,
@@ -886,7 +890,7 @@ impl Bucket {
             if listed.contains(f.path.as_str()) {
                 continue;
             }
-            let rel = format!("{dir}/L0-{:08}.parquet", cat.alloc_id());
+            let rel = format!("{dir}/L{}-{:08}.parquet", f.level, cat.alloc_id());
             let dst = self.local.join(&rel);
             // (left by a start that stopped before it saved the catalog)
             let _ = std::fs::remove_file(&dst);

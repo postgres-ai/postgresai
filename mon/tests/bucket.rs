@@ -1295,6 +1295,40 @@ fn a_first_start_on_an_empty_prefix_cut_short_keeps_the_local_store() {
     b.close();
 }
 
+/// A local store is pointed at an empty prefix, and another directory takes the store over
+/// before the first upload commits. The bucket never had any of the store's files: when its
+/// directory starts again, the files of every level are kept, not the level-0 ones alone.
+#[test]
+fn a_local_store_taken_over_before_its_first_upload_keeps_every_file() {
+    let url = "mem://moved-to-bucket/st";
+    let store = faulty();
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let day = 86_400_000i64;
+    let d0 = (now_ms() / day - 5) * day;
+    let mut c = StoreCore::open(d1.path(), &scfg()).unwrap();
+    for k in 0..2 {
+        ingest(&mut c, d0 + 3_600_000 + k * 600_000, 20, 19);
+        c.flush().unwrap();
+    }
+    assert!(c.compactor().unwrap().run_once(now_ms(), true).unwrap() > 0); // the closed day becomes one file
+    drop(c);
+    let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    let (b, cb) = start(url, &store, d2.path(), forced()).unwrap();
+    b.release(&cb.shared).unwrap();
+    drop(cb);
+    b.close();
+    assert!(a.sync(&ca.shared, None).is_err(), "fenced");
+    drop(ca);
+    a.close();
+
+    let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + day);
+    assert_eq!(rows(&bucket_reader(url), &q), vec!["[800]".to_string()]);
+    assert_listed_objects_exist(&store);
+    a.close();
+}
+
 /// A copy of a writer's directory from an older snapshot (the same writer id) takes the store
 /// over while the writer is down, and the writer comes back. The store's history still has the
 /// writer's own last commit: the writer keeps what it had flushed since and what its WAL holds.
