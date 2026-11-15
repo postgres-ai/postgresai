@@ -5,6 +5,8 @@ export interface PgaiMonProbe {
   ok: boolean;
   /** One line per endpoint, ready to print; never contains the token. */
   lines: string[];
+  /** /health's `collector` part, when /health answered. */
+  collector?: unknown;
 }
 
 const describeError = (err: unknown) =>
@@ -66,6 +68,7 @@ export async function probePgaiMon(
   const base = baseUrl.replace(/\/+$/, "");
   const lines: string[] = [];
   let ok = true;
+  let collector: unknown;
 
   try {
     const res = await fetch(`${base}/livez`, { signal: AbortSignal.timeout(timeoutMs) });
@@ -100,7 +103,8 @@ export async function probePgaiMon(
       const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       const num = (key: string) => (typeof body?.[key] === "number" ? (body[key] as number) : "?");
       lines.push(`✓ pgai-mon /health: ${num("files")} Parquet files, ${num("series_known")} series, ${num("samples_in")} samples in`);
-      const targets = targetLines(body?.collector);
+      collector = body?.collector;
+      const targets = targetLines(collector);
       if (targets.down > 0) ok = false;
       lines.push(...targets.lines);
     }
@@ -108,5 +112,46 @@ export async function probePgaiMon(
     ok = false;
     lines.push(`✗ pgai-mon /health: ${describeError(err)} at ${base}`);
   }
-  return { ok, lines };
+  return { ok, lines, collector };
+}
+
+/** Node's name-resolution failures, as pg passes them through. */
+export function isNameResolutionError(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  if (typeof e?.code === "string" && ["ENOTFOUND", "EAI_AGAIN", "ESERVFAIL"].includes(e.code)) return true;
+  return typeof e?.message === "string" && e.message.includes("getaddrinfo");
+}
+
+/**
+ * What `mon targets test` says when its own connection failed. Only a host
+ * name that does not resolve here gets pgai-mon's view: such a name (a compose
+ * service name) can resolve inside the Docker network, where pgai-mon
+ * connects from. Every other error is reported as before. pgai-mon keys
+ * /health by the instances.yml name; the main database has the same label.
+ */
+export function judgeTargetTestFailure(
+  name: string,
+  err: unknown,
+  collector: unknown,
+): { ok: boolean; lines: string[] } {
+  const message = err instanceof Error ? err.message : String(err);
+  const failed = `✗ Connection failed: ${message}`;
+  if (!isNameResolutionError(err)) return { ok: false, lines: [failed] };
+
+  const bySource = (collector as { by_source?: Record<string, unknown> } | null | undefined)?.by_source;
+  const databases = (bySource?.[name] as { databases?: Record<string, unknown> } | null | undefined)?.databases;
+  const db = (databases?.[name] ?? Object.values(databases ?? {})[0]) as { up?: unknown; last_error?: unknown } | undefined;
+  const noDns = `- The host name of '${name}' does not resolve from this machine (${oneLine(message)})`;
+  if (db?.up === true) {
+    return { ok: true, lines: [noDns, `✓ pgai-mon, which connects from inside the Docker network, reports '${name}' up`] };
+  }
+  if (typeof db?.last_error === "string" && db.last_error) {
+    return { ok: false, lines: [noDns, `✗ pgai-mon reports '${name}' down: ${oneLine(db.last_error)}`] };
+  }
+  // Unreachable pgai-mon, a target it has not picked up yet, or its first
+  // connection still running: nothing to confirm with.
+  return {
+    ok: false,
+    lines: [failed, `The host name does not resolve from this machine, and pgai-mon could not confirm '${name}'`],
+  };
 }

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { probePgaiMon } from "../lib/pgai-mon-health";
+import { judgeTargetTestFailure, probePgaiMon } from "../lib/pgai-mon-health";
 import { createCliSandbox } from "./cli-sandbox";
 
 const TOKEN = "f00dfeedf00dfeedf00dfeedf00dfeed";
@@ -169,6 +169,42 @@ describe("probePgaiMon", () => {
     const r = await probePgaiMon(url, TOKEN, 1000);
     expect(r.ok).toBe(false);
     expect(r.lines).toEqual([`✗ pgai-mon /livez: unreachable at ${url}`, `✗ pgai-mon /health: unreachable at ${url}`]);
+  });
+});
+
+describe("judgeTargetTestFailure", () => {
+  // What pg throws when the host name does not resolve (Node's getaddrinfo error).
+  const dnsError = Object.assign(new Error("getaddrinfo EAI_AGAIN target-standby"), { code: "EAI_AGAIN" });
+  const seen = (db: unknown) => ({ by_source: { standby: { state: "running", databases: { standby: db } } } });
+  const failed = "✗ Connection failed: getaddrinfo EAI_AGAIN target-standby";
+  const noDns = "- The host name of 'standby' does not resolve from this machine (getaddrinfo EAI_AGAIN target-standby)";
+
+  test("pgai-mon reports the target up: ok, and says why the local test could not connect", () => {
+    expect(judgeTargetTestFailure("standby", dnsError, seen({ up: true, last_error: null }))).toEqual({
+      ok: true,
+      lines: [noDns, "✓ pgai-mon, which connects from inside the Docker network, reports 'standby' up"],
+    });
+  });
+
+  test("pgai-mon reports the target down: not ok, with pgai-mon's error, password left out", () => {
+    const err = Object.assign(new Error("getaddrinfo ENOTFOUND target-standby"), { code: "ENOTFOUND" });
+    const r = judgeTargetTestFailure("standby", err, seen({ up: false, last_error: "connect postgresql://u:s3cret@h/db: refused" }));
+    expect(r.ok).toBe(false);
+    expect(r.lines[1]).toBe("✗ pgai-mon reports 'standby' down: connect postgresql://u:***@h/db: refused");
+  });
+
+  test("a target pgai-mon does not know yet, or pgai-mon not reachable: the old failure and one line more", () => {
+    const unconfirmed = { ok: false, lines: [failed, "The host name does not resolve from this machine, and pgai-mon could not confirm 'standby'"] };
+    expect(judgeTargetTestFailure("standby", dnsError, { by_source: { other: { databases: { other: { up: true } } } } })).toEqual(unconfirmed);
+    expect(judgeTargetTestFailure("standby", dnsError, undefined)).toEqual(unconfirmed);
+  });
+
+  test("any other connection error is reported as before, whatever pgai-mon says", () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:5432"), { code: "ECONNREFUSED" });
+    expect(judgeTargetTestFailure("standby", refused, seen({ up: true }))).toEqual({
+      ok: false,
+      lines: ["✗ Connection failed: connect ECONNREFUSED 10.0.0.5:5432"],
+    });
   });
 });
 

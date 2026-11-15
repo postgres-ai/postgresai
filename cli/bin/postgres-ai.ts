@@ -59,7 +59,7 @@ import { registerAasCollection, parseVcpus, aasSuccessMessage, aasArmingSkipReas
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
-import { PGAI_MON_URL, probePgaiMon } from "../lib/pgai-mon-health";
+import { PGAI_MON_URL, isNameResolutionError, judgeTargetTestFailure, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
@@ -6940,7 +6940,7 @@ targets
   .command("test <name>")
   .description("test monitoring target database connectivity")
   .action(async (name: string) => {
-    const { instancesFile: instancesPath } = await resolveOrInitPaths();
+    const { projectDir, instancesFile: instancesPath } = await resolveOrInitPaths();
     if (!fs.existsSync(instancesPath) || fs.lstatSync(instancesPath).isDirectory()) {
       console.error("instances.yml not found");
       process.exitCode = 1;
@@ -6986,9 +6986,16 @@ targets
         await client.end();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`✗ Connection failed: ${message}`);
-      process.exitCode = 1;
+      // pgai-mon is asked only for a name that does not resolve here; the
+      // judge leaves every other error as it was. Token as in `mon health`.
+      let collector: unknown;
+      if (isNameResolutionError(error)) {
+        const monToken = readEnvValue(projectDir, PGAI_MON_TOKEN_KEY) || undefined;
+        collector = (await probePgaiMon(process.env.PGAI_MON_URL || PGAI_MON_URL, monToken)).collector;
+      }
+      const verdict = judgeTargetTestFailure(name, error, collector);
+      for (const line of verdict.lines) (verdict.ok ? console.log : console.error)(line);
+      if (!verdict.ok) process.exitCode = 1;
     }
   });
 
