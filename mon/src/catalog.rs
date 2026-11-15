@@ -53,6 +53,11 @@ pub struct Catalog {
     /// On an object store: the writer that owns the store (bucket.rs fencing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<WriterLease>,
+    /// On an object store: the leases other writers took this store over from, as their last
+    /// commit had them, oldest first (at most `FENCED_KEPT`). A writer that starts again after
+    /// it was fenced finds here which of its commits the store's history continues.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fenced: Vec<WriterLease>,
     /// The catalog as last written to disk. A failed `save` puts it back, so the catalog in
     /// memory never names files, deletions or a flush position that the file does not have:
     /// otherwise the next successful save would persist a half-applied change (a flush retried
@@ -78,6 +83,9 @@ pub struct WriterLease {
 
 /// Largest catalog.json read from an object store (it is re-read every catalog TTL).
 pub const MAX_REMOTE_BYTES: u64 = 64 << 20;
+
+/// Entries kept in `Catalog::fenced`.
+pub const FENCED_KEPT: usize = 16;
 
 /// A catalog path that stays under the store root whatever the root is: relative, `/`-separated,
 /// no empty, `.` or `..` segment, and no `\`, `:`, `'` or NUL (so `root.join` never yields an
@@ -144,7 +152,11 @@ impl Catalog {
             }
             Err(e) => {
                 if let Some(b) = before {
+                    // file ids taken since the last save may name files being written: never
+                    // hand them out again
+                    let next = self.next_file_id;
                     *self = (*b).clone();
+                    self.next_file_id = self.next_file_id.max(next);
                     self.saved = Some(b);
                 }
                 Err(e)

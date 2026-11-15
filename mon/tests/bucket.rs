@@ -27,12 +27,16 @@ use std::sync::Arc;
 // ------------------------------------------------------------------ fault-injecting store
 
 /// InMemory with injected failures: data PUTs (`.parquet` keys) fail while `fail_data_puts`;
-/// multipart uploads fail at part `fail_part` (1-based; -1 = never).
+/// multipart uploads fail at part `fail_part` (1-based; -1 = never); the next catalog.json PUT
+/// lands and its answer is lost when `lose_answer` is set: 1 = the caller gets a failed
+/// precondition (what the client's retry of a conditional PUT meets), 2 = a plain error (the
+/// client gave up); 3 = it fails and does not land.
 #[derive(Debug, Default)]
 struct Faulty {
     inner: InMemory,
     fail_data_puts: AtomicBool,
     fail_part: AtomicI64,
+    lose_answer: AtomicI64,
 }
 
 impl std::fmt::Display for Faulty {
@@ -82,6 +86,22 @@ impl ObjectStore for Faulty {
     ) -> object_store::Result<PutResult> {
         if self.fail_data_puts.load(Ordering::SeqCst) && location.as_ref().ends_with(".parquet") {
             return Err(injected("put"));
+        }
+        if location.as_ref().ends_with("catalog.json") {
+            let how = self.lose_answer.swap(0, Ordering::SeqCst);
+            if how == 3 {
+                return Err(injected("put"));
+            }
+            if how != 0 {
+                self.inner.put_opts(location, payload, opts).await?;
+                return Err(match how {
+                    1 => object_store::Error::Precondition {
+                        path: location.to_string(),
+                        source: "the retry of a PUT that landed".into(),
+                    },
+                    _ => injected("answer lost"),
+                });
+            }
         }
         self.inner.put_opts(location, payload, opts).await
     }
@@ -169,6 +189,20 @@ fn bucket_catalog(store: &Arc<Faulty>) -> Option<Catalog> {
             Err(_) => None,
         }
     })
+}
+
+/// Every file the bucket's catalog lists is in the bucket.
+fn assert_listed_objects_exist(store: &Arc<Faulty>) {
+    let keys = objects(store);
+    for f in &bucket_catalog(store).unwrap().files {
+        assert!(keys.contains(&f.path), "{} is listed and not in the bucket", f.path);
+    }
+}
+
+/// Rows of `m_a` in the hour from `t0` that a reader of the bucket sees (20 per scrape).
+fn bucket_rows(url: &str, t0: i64) -> String {
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {t0}, {})", t0 + 3_600_000);
+    rows(&bucket_reader(url), &q).join("")
 }
 
 fn bcfg() -> BucketCfg {
@@ -551,6 +585,70 @@ fn a_directory_restored_from_an_old_snapshot_does_not_roll_the_bucket_back() {
     b.close();
 }
 
+/// A commit lands without its answer, the commits after it do not reach the store, and the
+/// process dies: the directory still knows the bucket's commit as its own and continues from
+/// its own catalog, with every file flushed since.
+#[test]
+fn a_restart_after_many_commits_without_an_answer_keeps_local_data() {
+    let url = "mem://unanswered/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
+    let t0 = start_ts(120);
+    for k in 0..12 {
+        ingest(&mut c, t0 + k * STEP, 10, 3);
+        c.flush().unwrap();
+        store.lose_answer.store(if k == 0 { 2 } else { 3 }, Ordering::SeqCst);
+        assert!(b.sync(&c.shared, None).is_err(), "round {k}");
+    }
+    assert!(!b.is_fenced());
+    drop(c);
+    b.close();
+
+    let (b, c) = start(url, &store, d.path(), bcfg()).unwrap();
+    b.sync(&c.shared, None).unwrap();
+    assert_listed_objects_exist(&store);
+    assert_eq!(bucket_rows(url, t0), "[2400]");
+    b.close();
+}
+
+/// The local directory is restored from a disk snapshot taken before a compaction, with no
+/// flush since: the bucket's catalog is one this directory never sent, so it is adopted.
+/// Continuing from the directory would commit files the bucket has deleted since.
+#[test]
+fn a_directory_restored_from_before_a_compaction_adopts_the_bucket() {
+    let url = "mem://old-snapshot-compacted/st";
+    let store = faulty();
+    let (d, snap) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cfg = BucketCfg {
+        keep_local_days: 0,
+        ..bcfg()
+    };
+    let (b, mut c) = start(url, &store, d.path(), cfg.clone()).unwrap();
+    let day = 86_400_000i64;
+    let d0 = (now_ms() / day - 5) * day;
+    for k in 0..2 {
+        ingest(&mut c, d0 + 3_600_000 + k * 600_000, 20, 13);
+        c.flush().unwrap();
+    }
+    b.sync(&c.shared, None).unwrap(); // committed, and evicted from the directory
+    copy_dir(d.path(), snap.path());
+    c.compactor().unwrap().run_once(now_ms(), true).unwrap(); // the closed day becomes one file
+    b.sync(&c.shared, None).unwrap();
+    b.sync(&c.shared, None).unwrap(); // the replaced files leave the bucket
+    let committed = bucket_catalog(&store).unwrap().files;
+    drop(c);
+    b.close();
+
+    let (b, c) = start(url, &store, snap.path(), cfg).unwrap();
+    b.sync(&c.shared, None).unwrap();
+    assert_eq!(bucket_catalog(&store).unwrap().files, committed);
+    assert_listed_objects_exist(&store);
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + day);
+    assert_eq!(rows(&bucket_reader(url), &q), vec!["[800]".to_string()]);
+    b.close();
+}
+
 /// Two writers on one prefix: the second is refused while the first's lease is live; a forced
 /// takeover fences the first, whose next commit fails with a clear error and changes nothing.
 #[test]
@@ -868,6 +966,248 @@ fn retention_deletes_from_the_bucket() {
     b.close();
 }
 
+const STEP: i64 = 10 * 15_000;
+
+/// The store applies a commit and its answer is lost. The client's retry of the conditional
+/// PUT then meets its own write (a failed precondition), or the client gives up (an error).
+/// Either way no other writer exists: the writer is not fenced, and the next round goes on.
+#[test]
+fn a_commit_whose_answer_is_lost_does_not_fence_the_writer() {
+    let url = "mem://lost-answer/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let t0 = start_ts(30);
+    let (b, mut c) = start(url, &store, d.path(), bcfg()).unwrap();
+    ingest(&mut c, t0, 10, 7);
+    c.flush().unwrap();
+    store.lose_answer.store(1, Ordering::SeqCst);
+    b.sync(&c.shared, None).expect("the retry met this writer's own commit");
+    assert_eq!(bucket_rows(url, t0), "[200]");
+
+    ingest(&mut c, t0 + STEP, 10, 7);
+    c.flush().unwrap();
+    store.lose_answer.store(2, Ordering::SeqCst);
+    let e = b.sync(&c.shared, None).expect_err("the client gave up");
+    assert!(e.downcast_ref::<Fenced>().is_none() && !b.is_fenced(), "{e:#}");
+    assert_eq!(bucket_rows(url, t0), "[400]", "the commit landed all the same");
+
+    ingest(&mut c, t0 + 2 * STEP, 10, 7);
+    c.flush().unwrap();
+    b.sync(&c.shared, None)
+        .expect("the next round finds its own commit in the bucket and goes on");
+    assert!(!b.is_fenced());
+    assert_eq!(bucket_rows(url, t0), "[600]");
+    assert_listed_objects_exist(&store);
+    b.close();
+}
+
+/// A writer's sweep runs after another writer took the store over and uploaded files for its
+/// first commit: the sweep leaves them alone (a file id carries its writer's epoch). Otherwise
+/// the new owner commits a catalog that lists deleted objects.
+#[test]
+fn a_sweep_never_deletes_a_newer_writers_objects() {
+    let url = "mem://sweep-race/st";
+    let store = faulty();
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(30);
+    let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    ingest(&mut ca, t0, 10, 8);
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    let takeover = BucketCfg {
+        takeover: true,
+        ..bcfg()
+    };
+    let (b, mut cb) = start(url, &store, d2.path(), takeover).unwrap();
+    ingest(&mut cb, t0 + STEP, 10, 8);
+    cb.flush().unwrap();
+    // the new owner has uploaded and not committed; the old one has not noticed the takeover
+    *b.failpoint.lock().unwrap() = Some(Failpoint::AfterUpload);
+    assert!(b.sync(&cb.shared, None).is_err());
+    a.sweep().unwrap();
+    *b.failpoint.lock().unwrap() = None;
+    b.sync(&cb.shared, None).unwrap();
+    assert_listed_objects_exist(&store);
+    assert_eq!(bucket_rows(url, t0), "[400]");
+    a.close();
+    b.close();
+}
+
+/// A writer is fenced while it holds data it flushed and did not upload, and later starts again
+/// on the same directory: it adopts the new owner's catalog and adds exactly the files that
+/// none of its commits carried into the bucket. Nothing is lost and nothing is there twice,
+/// also when its last commit landed without its answer. A compaction pass in between does not
+/// touch those files: on an object store a job waits until the bucket has all its inputs.
+#[test]
+fn a_fenced_writer_that_starts_again_keeps_what_it_had_not_uploaded() {
+    for lost_answer in [false, true] {
+        let url = if lost_answer {
+            "mem://rescue-lost/st"
+        } else {
+            "mem://rescue/st"
+        };
+        let store = faulty();
+        let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let t0 = start_ts(40);
+        let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+        ingest(&mut ca, t0, 10, 9);
+        ca.flush().unwrap();
+        a.sync(&ca.shared, None).unwrap();
+        ingest(&mut ca, t0 + STEP, 10, 9);
+        ca.flush().unwrap();
+        if lost_answer {
+            // this commit lands and the writer never learns it
+            store.lose_answer.store(2, Ordering::SeqCst);
+            assert!(a.sync(&ca.shared, None).is_err());
+        }
+        for k in 2..4 {
+            ingest(&mut ca, t0 + k * STEP, 10, 9);
+            ca.flush().unwrap();
+        }
+        // two hours on, these files are from finished hours
+        let _ = ca.compactor().unwrap().run_once(now_ms() + 2 * 3_600_000, false);
+
+        let takeover = BucketCfg {
+            takeover: true,
+            ..bcfg()
+        };
+        let (b, mut cb) = start(url, &store, d2.path(), takeover).unwrap();
+        ingest(&mut cb, t0 + 4 * STEP, 10, 9);
+        cb.flush().unwrap();
+        b.sync(&cb.shared, None).unwrap();
+        let err = a.sync(&ca.shared, None).expect_err("fenced");
+        assert!(err.downcast_ref::<Fenced>().is_some(), "{err:#}");
+        ingest(&mut ca, t0 + 5 * STEP, 10, 9); // acked, in the WAL only
+        drop(ca);
+        a.close();
+        b.release(&cb.shared).unwrap();
+        drop(cb);
+        b.close();
+
+        let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+        ca.flush().unwrap();
+        a.sync(&ca.shared, None).unwrap();
+        assert_eq!(bucket_rows(url, t0), "[1200]", "lost_answer: {lost_answer}");
+        assert_listed_objects_exist(&store);
+        a.close();
+    }
+}
+
+/// A writer takes the store over from another directory and stops hard before its first
+/// commit. The takeover put nothing but the lease into the bucket, so the directory still is
+/// the continuation of the bucket: what it flushed and what its WAL holds are kept.
+#[test]
+fn a_restart_before_the_first_commit_after_a_takeover_keeps_local_data() {
+    let url = "mem://takeover-restart/st";
+    let store = faulty();
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(40);
+    let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    for k in 0..3 {
+        ingest(&mut ca, t0 + k * STEP, 10, 10);
+        ca.flush().unwrap();
+    }
+    a.release(&ca.shared).unwrap();
+    drop(ca);
+    a.close();
+    let (b, mut cb) = start(url, &store, d2.path(), bcfg()).unwrap();
+    ingest(&mut cb, t0 + 3 * STEP, 10, 10);
+    cb.flush().unwrap(); // flushed, not uploaded
+    ingest(&mut cb, t0 + 4 * STEP, 10, 10); // in the WAL only
+    drop(cb);
+    b.close();
+    let (b, mut cb) = start(url, &store, d2.path(), bcfg()).unwrap();
+    cb.flush().unwrap();
+    b.sync(&cb.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[1000]");
+    b.close();
+}
+
+/// A fenced writer starts again and stops hard right after its takeover PUT, before it saved
+/// the adopted catalog. Its directory still holds its old catalog, which lacks everything the
+/// other writer committed: the next start adopts the bucket again and does not continue from
+/// the directory.
+#[test]
+fn a_takeover_cut_short_does_not_drop_the_other_writers_commits() {
+    let url = "mem://takeover-cut/st";
+    let store = faulty();
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(40);
+    let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    for k in 0..3 {
+        ingest(&mut ca, t0 + k * STEP, 10, 12);
+        ca.flush().unwrap();
+    }
+    a.sync(&ca.shared, None).unwrap();
+    ingest(&mut ca, t0 + 3 * STEP, 10, 12);
+    ca.flush().unwrap(); // flushed, not uploaded
+    let takeover = BucketCfg {
+        takeover: true,
+        ..bcfg()
+    };
+    let (b, mut cb) = start(url, &store, d2.path(), takeover).unwrap();
+    ingest(&mut cb, t0 + 4 * STEP, 10, 12);
+    cb.flush().unwrap();
+    b.release(&cb.shared).unwrap();
+    drop(cb);
+    b.close();
+    drop(ca);
+    a.close();
+
+    let a = Bucket::with_store(url, store.clone(), d1.path(), bcfg()).unwrap();
+    *a.failpoint.lock().unwrap() = Some(Failpoint::AfterTakeover);
+    assert!(a.attach(pgai_mon::store::DEFAULT_LAYOUT).is_err());
+    a.close();
+    let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[1000]");
+    assert_listed_objects_exist(&store);
+    a.close();
+}
+
+/// A flush (store thread) and the pre-upload merge (uploader thread) run at the same time:
+/// each takes its file ids under the catalog lock, so neither writes the other's file.
+#[test]
+fn a_flush_and_the_pre_upload_merge_never_share_a_file() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = StoreCore::open(d.path(), &scfg()).unwrap();
+    let merger = c.upload_compactor().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let h = std::thread::spawn({
+        let stop = stop.clone();
+        move || {
+            while !stop.load(Ordering::SeqCst) {
+                let _ = merger.merge_unuploaded(&Default::default());
+            }
+        }
+    });
+    let t0 = start_ts(50);
+    for k in 0..150 {
+        ingest(&mut c, t0 + k * 15_000, 1, 11);
+        // a second kind: the merge of its files comes first and takes its id while the next
+        // flush is already writing
+        c.append(Record::QueryTexts(vec![QueryText {
+            queryid: k,
+            dbname: "db1".into(),
+            query_hash: k as u64,
+            query: Some(format!("select {k}")),
+            first_seen: t0,
+            last_seen: t0,
+            src: Default::default(),
+        }]))
+        .unwrap();
+        c.flush().unwrap();
+    }
+    stop.store(true, Ordering::SeqCst);
+    h.join().unwrap();
+    let files = c.shared.catalog.lock().unwrap().files.clone();
+    let paths: BTreeSet<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths.len(), files.len(), "two catalog entries name one file");
+    let r = Reader::new(c.shared.clone(), HttpCfg::default(), views(), vec![]).unwrap();
+    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {t0}, {})", t0 + 3_600_000);
+    assert_eq!(rows(&r, &q), vec!["[3000]".to_string()]);
+}
+
 /// The local-disk store does not touch the write path.
 #[test]
 fn a_local_store_has_no_bucket() {
@@ -908,6 +1248,12 @@ fn uploads_stay_on_time_during_a_slow_compaction() {
         std::time::Duration::from_secs(1),
     )
     .unwrap();
+    // a compaction job waits until the bucket has its inputs: the first round commits them
+    let t = std::time::Instant::now();
+    while bucket_catalog(&store).unwrap().files_of("samples").count() < 3 {
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "the first round");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let comp = c.compactor().unwrap();
     let job = std::thread::spawn(move || comp.run_once(now_ms(), true).unwrap());
     std::thread::sleep(std::time::Duration::from_millis(500));

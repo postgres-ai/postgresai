@@ -567,13 +567,11 @@ impl StoreCore {
         let buf = &self.buf;
         let layout = self.layout();
         let mut entries = Vec::new();
-        let mut ids = { self.shared.catalog.lock().unwrap().next_file_id };
         let mut written = 0usize;
         {
-            let mut alloc = || {
-                ids += 1;
-                ids
-            };
+            // under the catalog lock, as the compactors take theirs: the pre-upload merge writes
+            // level-0 files too, and two files with one id are one path
+            let mut alloc = || self.shared.catalog.lock().unwrap().alloc_id();
             written += buf.samples.len();
             entries.extend(self.write_samples(&buf.samples, &layout, &mut alloc)?);
             entries.extend(self.write_generic("series", &buf.series, &mut alloc)?);
@@ -605,7 +603,6 @@ impl StoreCore {
                     self.shared.stats.late_flushes.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            cat.next_file_id = cat.next_file_id.max(ids);
             cat.files.extend(entries);
             cat.flushed_through_seg = seg as i64;
             for (f, o) in &buf.log_offsets {
@@ -800,18 +797,13 @@ impl StoreCore {
     /// and catalog them, bypassing the WAL (the input file is the durable copy).
     pub fn bulk_write(&mut self, samples: &[Sample], series: &[SeriesDef]) -> anyhow::Result<()> {
         let layout = self.layout();
-        let mut ids = { self.shared.catalog.lock().unwrap().next_file_id };
         let mut entries = Vec::new();
         {
-            let mut alloc = || {
-                ids += 1;
-                ids
-            };
+            let mut alloc = || self.shared.catalog.lock().unwrap().alloc_id();
             entries.extend(self.write_samples(samples, &layout, &mut alloc)?);
             entries.extend(self.write_generic("series", series, &mut alloc)?);
         }
         let mut cat = self.shared.catalog.lock().unwrap();
-        cat.next_file_id = cat.next_file_id.max(ids);
         cat.files.extend(entries);
         cat.save(&self.shared.root)?;
         self.shared.generation.store(cat.generation, Ordering::Release);
@@ -1140,6 +1132,15 @@ struct Job {
 
 impl Compactor {
     fn plan(&self, now: i64, all_closed: bool) -> Vec<Job> {
+        // On an object store a job waits until the bucket has all its inputs. So data that is
+        // not in the bucket yet is always in level-0 files, which a writer that was fenced can
+        // hand to the store when it starts again (bucket.rs, `rescue`).
+        let in_bucket = crate::bucket::of(&self.shared.root).map(|b| b.committed());
+        let ready = |files: &[FileEntry]| {
+            in_bucket
+                .as_ref()
+                .is_none_or(|c| files.iter().all(|f| c.contains(&f.path)))
+        };
         let cat = self.shared.catalog.lock().unwrap();
         let today = day_of(now);
         let hour_start = now - now.rem_euclid(3_600_000);
@@ -1157,8 +1158,9 @@ impl Compactor {
                         .files
                         .iter()
                         .any(|f| f.kind == crate::eval::rollup::KIND && f.day == day);
-                if (files.len() > 1 && !files.iter().all(|f| f.level == 2))
-                    || (needs_rollup && kind != crate::eval::rollup::KIND)
+                if ((files.len() > 1 && !files.iter().all(|f| f.level == 2))
+                    || (needs_rollup && kind != crate::eval::rollup::KIND))
+                    && ready(&files)
                 {
                     jobs.push(Job {
                         kind,
@@ -1173,7 +1175,7 @@ impl Compactor {
                     .into_iter()
                     .filter(|f| f.level == 0 && f.created_ms < hour_start)
                     .collect();
-                if l0.len() > 1 {
+                if l0.len() > 1 && ready(&l0) {
                     jobs.push(Job {
                         kind,
                         day,
