@@ -202,7 +202,7 @@ describe("mon update on an old-stack install", () => {
     const r3 = off.run(["mon", "update"], { OLD_RUNNING: "1" });
     expect(r3.stdout).toContain("Switched this install");
     expect(r3.stdout).not.toContain("Grafana now listens");
-  });
+  }, 20000); // three CLI runs: 1 s on an idle machine, over the default 5 s on a loaded one
 
   test("a stopped old stack is switched but not started", () => {
     const p = makeProject("old-stopped", OLD_COMPOSE);
