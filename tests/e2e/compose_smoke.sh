@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test of docker-compose.yml: config-init, the demo target-db, pgai-mon and Grafana come up;
 # pgai-mon turns healthy, refuses SQL without the token, answers SQL with it, and has collected
-# series from target-db; Grafana answers its health check. Then everything is removed.
+# series from target-db; Grafana answers its health check, and every panel query of every dashboard
+# runs without error through Grafana (tests/e2e/grafana_panels.py). Then everything is removed.
 #
 #   PGAI_REGISTRY=registry.example.com/postgres-ai/postgres_ai PGAI_TAG=my-branch tests/e2e/compose_smoke.sh
 #
@@ -20,18 +21,20 @@ project="${SMOKE_PROJECT:-pgai-smoke}"
 owner="${SMOKE_OWNER:-1000:1000}"
 collect_timeout="${SMOKE_COLLECT_TIMEOUT:-240}"
 curl_image="curlimages/curl:8.11.1"
+python_image="python:3.13.1-alpine3.21"
 
 rand_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
 
 mkdir -p "${smoke_dir}/host-metrics"
 token="$(rand_hex 24)"
+gf_pw="$(rand_hex 16)"
 umask 077
 cat > "${smoke_dir}/.env" <<EOF
 PGAI_REGISTRY=${registry}
 PGAI_TAG=${PGAI_TAG}
 PGAI_MON_TOKEN=${token}
 REPLICATOR_PASSWORD=$(rand_hex 32)
-GF_SECURITY_ADMIN_PASSWORD=$(rand_hex 16)
+GF_SECURITY_ADMIN_PASSWORD=${gf_pw}
 INSTANCE_JOBS_USER=${owner}
 EOF
 cp "${root}/instances.demo.yml" "${smoke_dir}/instances.yml"
@@ -119,5 +122,13 @@ while :; do
   fi
   sleep 10
 done
+
+# Every panel query, through Grafana (the Infinity datasource, its token, the dashboards' SQL).
+dashboards=("${root}"/mon/grafana/dashboards/*.json)
+echo "smoke: panel queries through Grafana (${#dashboards[@]} dashboards expected)"
+docker pull -q "${python_image}" >/dev/null
+GF_PW="${gf_pw}" docker run --rm -i --network "${project}_default" -e GF_PW \
+  -e GRAFANA_URL=http://grafana:3000 "${python_image}" \
+  python - "${#dashboards[@]}" < "${root}/tests/e2e/grafana_panels.py"
 
 echo "smoke: OK"

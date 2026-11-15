@@ -103,7 +103,7 @@ misses critical issues
 
 ### Automated checks
 
-- E2E test: compose stack up → verify metrics from the demo target in pgai-mon (`tests/e2e/compose_smoke.sh`, CI job `compose:smoke`)
+- E2E test: compose stack up → verify metrics from the demo target in pgai-mon, and every dashboard panel query runs without error through Grafana (`tests/e2e/compose_smoke.sh`, CI job `compose:smoke`)
 - E2E test: stop target-db → verify `mon health` reports unhealthy
 - E2E test: `mon targets add` → verify metrics appear within 2 collection cycles
 

@@ -284,7 +284,8 @@ build:test:pgai-mon-image:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # docker-compose.yml end to end: up, pgai-mon healthy, SQL refused without the
-# token and answered with it, data collected from the demo target, down.
+# token and answered with it, data collected from the demo target, every
+# dashboard panel query run through Grafana without error, down.
 compose:smoke:
   stage: test
   image: docker:27.3
