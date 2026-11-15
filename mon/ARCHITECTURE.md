@@ -166,9 +166,11 @@ state as JSON), `GET /ingest/stats`, `GET /scrape/targets`.
 On an `s3://` store DuckDB never sees the bucket. The Rust table functions read S3 with
 range GETs. The small kinds the views need (series, query texts, objects, plans, logs) are
 copied to a local mirror within `http.s3.mirror_mb`. A kind that does not fit the budget (or
-whose download failed) raises an error naming the setting when queried: it never answers as
-if it were empty. The `samples` and `metrics` views raise an error there; use
-`pgai_samples(...)`.
+whose download failed, or is not finished) raises an error naming the setting when queried:
+it never answers as if it were empty. The copies are made when the catalog changes, by the
+first query that sees the change, for at most half of `http.timeout_ms`; the next query
+continues. Queries that arrive meanwhile do not wait: they run on the views of the catalog
+before. The `samples` and `metrics` views raise an error there; use `pgai_samples(...)`.
 
 ## Files
 

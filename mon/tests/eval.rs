@@ -1497,6 +1497,66 @@ fn sql_over_an_object_store_matches_the_local_store() {
     assert_eq!(h["s3_mirror"]["empty_kinds"], serde_json::json!(["samples"]), "{h}");
 }
 
+/// A slow copy of a remote store's files for the SQL views holds up neither the other queries
+/// (they run on the views as they are) nor, past half the query timeout, the query that started
+/// it: a kind not copied yet answers with an error, and the next queries continue the copy.
+#[test]
+fn a_slow_mirror_copy_does_not_block_queries() {
+    use pgai_mon::objstore::TEST_DOWNLOAD_DELAY;
+    let d = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(d.path(), &StoreCfg::default()).unwrap();
+    // six flushes: six series files to copy
+    for k in 0..6u64 {
+        let labels = vec![("i".to_string(), k.to_string())];
+        let series_id = series_id("c_total", &labels);
+        let (ts, value) = (1_794_000_000_000 + k as i64, 1.0);
+        let def = SeriesDef {
+            series_id,
+            metric: "c_total".into(),
+            labels,
+            first_seen: ts,
+        };
+        core.append(Record::Series(vec![def])).unwrap();
+        core.append(Record::Samples(vec![Sample { series_id, ts, value }]))
+            .unwrap();
+        core.flush().unwrap();
+    }
+    let url = "mem://slowmirror/st";
+    to_bucket(d.path(), url);
+    let shared = pgai_mon::store::Shared::open_read_only(std::path::Path::new(url)).unwrap();
+    // 400 ms a file, and the copies of one refresh stop after 800 ms: two files a refresh
+    *TEST_DOWNLOAD_DELAY.lock().unwrap() = Some((url.into(), 400));
+    let cfg = HttpCfg {
+        timeout_ms: 1600,
+        ..Default::default()
+    };
+    let t = std::time::Instant::now();
+    let rem = Reader::new(shared, cfg, format!("{EMBEDDED_VIEWS_SQL}\n;\n{MACROS}"), vec![]).unwrap();
+    assert!(
+        t.elapsed().as_millis() < 1600,
+        "the first refresh took {:?}",
+        t.elapsed()
+    );
+    let q = "SELECT count(*) FROM series";
+    std::thread::scope(|s| {
+        // this query's refresh copies for 800 ms; a second query does not wait for it
+        let slow = s.spawn(|| rem.run(q));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(sql_rows(&rem, "SELECT 42"), vec!["[42]".to_string()]);
+        assert!(!slow.is_finished(), "the query that copies was still running");
+        let e = slow.join().unwrap().expect_err("series is not copied yet");
+        assert!(e.message.contains("still being copied"), "{e:?}");
+    });
+    let t = std::time::Instant::now();
+    assert_eq!(
+        sql_rows(&rem, q),
+        vec!["[6]".to_string()],
+        "the last two files are copied"
+    );
+    assert!(t.elapsed().as_millis() < 1600, "{:?}", t.elapsed());
+    *TEST_DOWNLOAD_DELAY.lock().unwrap() = None;
+}
+
 /// An s3:// store adds nothing DuckDB can reach: local files outside the allowed (local)
 /// directories, IMDS, the bucket URL, the chunk cache dir and the mirror's parent all fail with
 /// a permission error, and configuration stays locked. Positive control: a mirror file reads.
@@ -1679,7 +1739,8 @@ fn a_tampered_remote_catalog_is_refused() {
         assert!(!sql_rows(&r, "SELECT count(*) FROM series").is_empty());
     }
     // a catalog whose `bytes` lies (too small, too big, 0) about a series file: that copy
-    // is refused, the view stays empty, the mirror holds no such file, and the error shows
+    // is refused, the view fails (it does not answer 0 rows), the mirror holds no such file,
+    // and the error shows
     for (i, lie) in [1u64, u64::MAX / 2, 0].into_iter().enumerate() {
         let url = format!("mem://lie{i}/st");
         let remote = to_bucket_with(d.path(), &url, move |c| {
@@ -1704,7 +1765,8 @@ fn a_tampered_remote_catalog_is_refused() {
             vec![],
         )
         .unwrap();
-        assert_eq!(sql_rows(&r, "SELECT count(*) FROM series"), vec!["[0]".to_string()]);
+        let e = r.run("SELECT count(*) FROM series").expect_err("not an empty answer");
+        assert!(e.message.contains("series is not available right now"), "{}", e.message);
         let st = r.stats();
         let m = &st["s3_mirror"];
         if lie == 1 {

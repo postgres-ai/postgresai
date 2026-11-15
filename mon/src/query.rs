@@ -263,7 +263,10 @@ pub struct Reader {
     shared: Shared,
     admin: Mutex<Connection>,
     pool: Mutex<Vec<Connection>>,
-    view_gen: Mutex<u64>,
+    /// The catalog generation the views are at (u64::MAX: not created yet).
+    view_gen: AtomicU64,
+    /// Held by the one `refresh` that runs.
+    refreshing: Mutex<()>,
     pub cfg: HttpCfg,
     views_sql: String,
     pub eval: crate::eval::EvalHandle,
@@ -688,7 +691,8 @@ impl Reader {
             shared: Shared { root, ..shared },
             admin: Mutex::new(db),
             pool: Default::default(),
-            view_gen: Mutex::new(u64::MAX),
+            view_gen: AtomicU64::new(u64::MAX),
+            refreshing: Mutex::new(()),
             cfg,
             views_sql,
             dict,
@@ -703,12 +707,23 @@ impl Reader {
     }
 
     /// Re-point the `_raw_*` views at the catalog's current file list when it changed.
+    /// One refresh runs at a time. A query that arrives during one does not wait for it (on a
+    /// remote store it copies files): it runs on the views as they are, of the catalog before,
+    /// whose files stay for the delete grace. The copies of one refresh stop after half the
+    /// query timeout; the kinds not copied yet answer with an error, and the next query's
+    /// refresh continues.
     pub fn refresh(&self) -> anyhow::Result<()> {
         let g = self.shared.generation.load(Ordering::Acquire);
-        let mut vg = self.view_gen.lock().unwrap();
-        if *vg == g {
+        let _one = match self.refreshing.try_lock() {
+            Ok(one) => one,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+        };
+        let vg = self.view_gen.load(Ordering::Acquire);
+        if vg == g {
             return Ok(());
         }
+        let copy_until = Instant::now() + Duration::from_millis(self.cfg.timeout_ms / 2);
         let cat = self.shared.catalog.lock().unwrap().clone();
         let files = &cat.files;
         let root = &self.shared.root;
@@ -738,6 +753,7 @@ impl Reader {
                     let fresh =
                         std::fs::symlink_metadata(&dst).is_ok_and(|x| x.is_file() && f.bytes > 0 && x.len() == f.bytes);
                     if !fresh {
+                        anyhow::ensure!(Instant::now() < copy_until, "not copied yet; the next query continues");
                         std::fs::create_dir_all(dst.parent().unwrap())?;
                         ms.fetched += crate::objstore::download(&root.join(&f.path), &dst, f.bytes)?;
                     }
@@ -759,6 +775,17 @@ impl Reader {
                 }
             }
             Some(out)
+        };
+        // files exist but are not mirrored (over the budget, a failed download, or not copied
+        // yet): an empty view would answer 0 rows as if there were no data
+        let unavailable = |kind: &str| {
+            format!(
+                "SELECT e.* FROM range(1) t(i) LEFT JOIN ({}) e ON false WHERE CASE WHEN i >= 0 THEN \
+                 error('{kind} is not available right now: its files on the object store are over the mirror \
+                 budget (http.s3.mirror_mb), could not be downloaded or are still being copied; see s3_mirror \
+                 in GET /health')::BOOLEAN END",
+                empty_select(kind)
+            )
         };
         let mut sql = String::new();
         // Series registry (registry.rs): disjoint registry files, and the unregistered tail.
@@ -795,6 +822,9 @@ impl Reader {
                     }
                     b
                 }
+                None if !fs.is_empty() => {
+                    format!("SELECT *, NULL::VARCHAR AS filename FROM ({})", unavailable("series"))
+                }
                 _ => format!("SELECT *, NULL::VARCHAR AS filename FROM ({})", empty_select("series")),
             };
             sql.push_str(&format!("CREATE OR REPLACE VIEW {name} AS {body};\n"));
@@ -825,15 +855,7 @@ impl Reader {
                         }
                     }
                     _ if *kind == "samples" && self.mirror.is_some() => REMOTE_SAMPLES_VIEW.to_string(),
-                    // files exist but are not mirrored (over the budget, or a failed download):
-                    // an empty view would answer 0 rows as if there were no data
-                    None if self.mirror.is_some() && !fs.is_empty() => format!(
-                        "SELECT e.* FROM range(1) t(i) LEFT JOIN ({}) e ON false WHERE CASE WHEN i >= 0 THEN \
-                         error('{kind} is not available right now: its files on the object store are over the \
-                         mirror budget (http.s3.mirror_mb) or could not be downloaded; see s3_mirror in \
-                         GET /health')::BOOLEAN END",
-                        empty_select(kind)
-                    ),
+                    None if self.mirror.is_some() && !fs.is_empty() => unavailable(kind),
                     _ => empty_select(kind).to_string(),
                 }
             };
@@ -846,7 +868,7 @@ impl Reader {
             let _ = admin.execute_batch("ROLLBACK");
             return Err(e.into());
         }
-        if *vg == u64::MAX {
+        if vg == u64::MAX {
             admin.execute_batch(&self.views_sql)?;
         }
         if let Some(m) = &self.mirror {
@@ -867,7 +889,7 @@ impl Reader {
         *self.eval.write().unwrap() = Arc::new(ctx);
         // a failed mirror download is retried by the next refresh
         if ms.error.is_none() {
-            *vg = g;
+            self.view_gen.store(g, Ordering::Release);
         }
         Ok(())
     }
@@ -927,7 +949,7 @@ impl Reader {
         let t0 = Instant::now();
         self.refresh()
             .map_err(|e| QueryError::new("internal", format!("view refresh: {e}")))?;
-        let gen = *self.view_gen.lock().unwrap();
+        let gen = self.view_gen.load(Ordering::Acquire);
         // Connections are reused (a pool); a fresh one is cloned from the admin connection.
         let conn = match self.pool.lock().unwrap().pop() {
             Some(c) => c,
@@ -960,7 +982,8 @@ impl Reader {
         // Timeout: a watchdog thread interrupts the connection at the deadline.
         let handle = conn.interrupt_handle();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let timeout = Duration::from_millis(self.cfg.timeout_ms);
+        // from the query's arrival: the refresh above is part of its time
+        let timeout = Duration::from_millis(self.cfg.timeout_ms).saturating_sub(t0.elapsed());
         let watchdog = std::thread::spawn(move || {
             if done_rx.recv_timeout(timeout).is_err() {
                 handle.interrupt();

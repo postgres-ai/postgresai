@@ -521,6 +521,10 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
     Ok(b.to_vec())
 }
 
+/// Test hook: each `download` from the store at this root sleeps this many ms first, as a slow
+/// link would take (tests/eval.rs).
+pub static TEST_DOWNLOAD_DELAY: Mutex<Option<(PathBuf, u64)>> = Mutex::new(None);
+
 /// Copy a remote file to the local path `dst` (written to a temporary name, then renamed), in
 /// `COPY_PART` range GETs so the body is never held whole. Returns the bytes written.
 /// The object must be exactly `expect` bytes (the catalog's size), checked on the first response
@@ -528,6 +532,10 @@ pub fn read_capped(p: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
 pub fn download(p: &Path, dst: &Path, expect: u64) -> anyhow::Result<u64> {
     anyhow::ensure!(expect > 0, "{}: catalog size 0", p.display());
     use std::io::Write;
+    let delay = TEST_DOWNLOAD_DELAY.lock().unwrap().clone();
+    if let Some((_, ms)) = delay.filter(|(root, _)| p.starts_with(root)) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Some(mut f) = open_overlay(p) {
         let n = f.metadata()?.len();
         anyhow::ensure!(
