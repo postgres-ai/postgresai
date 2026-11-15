@@ -1,9 +1,12 @@
 package collect
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,6 +144,148 @@ func TestSQLJobTrimsToTheBudget(t *testing.T) {
 	if err != nil || !out.Payload.(SQLResult).Truncated {
 		t.Fatalf("the store's truncation was lost: %+v %v", out.Payload, err)
 	}
+}
+
+// The bound against JSONB text written out by hand: exact where nothing is
+// expanded, and never under it where an exponent is.
+func TestJSONBTextBound(t *testing.T) {
+	for _, tc := range []struct {
+		compact, jsonb string
+		slack          int // how far over the true length the bound may be
+	}{
+		{`{"a,b":[1,{"c:d":"x\",y:\\"}],"e":[]}`, `{"e": [], "a,b": [1, {"c:d": "x\",y:\\"}]}`, 0},
+		{`[0,-12,3.25,true,null,"1e-07"]`, `[0, -12, 3.25, true, null, "1e-07"]`, 0},
+		{`[1e-07]`, `[0.0000001]`, 1},
+		{`[1.5e+20]`, `[150000000000000000000]`, 3},
+		{`{"v":-2.5E-3}`, `{"v": -0.0025}`, 1},
+	} {
+		if got := jsonbTextBound([]byte(tc.compact)); got < len(tc.jsonb) || got > len(tc.jsonb)+tc.slack {
+			t.Errorf("%s: bound %d, jsonb text %d (+%d allowed)", tc.compact, got, len(tc.jsonb), tc.slack)
+		}
+	}
+}
+
+// Numeric results are what this job mostly returns, and they grow the most in
+// JSONB text: the trimmed result must pass the platform's 1 MiB check, measured
+// independently of jsonbTextBound.
+func TestSQLJobTrimsNumericResultsToThePlatformsCap(t *testing.T) {
+	cols := make([]string, 50)
+	for i := range cols {
+		cols[i] = fmt.Sprintf("c%d", i)
+	}
+	for _, cell := range []json.Number{"7", "1e-07"} {
+		rows := make([][]any, 20000)
+		for i := range rows {
+			rows[i] = make([]any, len(cols))
+			for j := range rows[i] {
+				rows[i][j] = cell
+			}
+		}
+		out, err := runSQLJob(newSQLStore(t, 200, rowsJSON(cols, rows...)), `{"query":"select *"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := out.Payload.(SQLResult)
+		n := len(jsonbText(t, res))
+		if !res.Truncated || len(res.Rows) == 0 || n > 1048576 || n < 900000 {
+			t.Fatalf("%s: truncated=%v rows=%d jsonb text=%d", cell, res.Truncated, len(res.Rows), n)
+		}
+	}
+}
+
+// A result whose JSONB text fits is passed whole; one row more is trimmed.
+func TestSQLJobKeepsAResultJustUnderTheBudget(t *testing.T) {
+	header := len(jsonbText(t, SQLResult{Columns: []string{"v"}, Types: []string{"VARCHAR"}, Rows: [][]any{}}))
+	row := []any{strings.Repeat("y", 998)} // ["yyy…"]: 1002 bytes, plus ", "
+	fit := (maxSQLResultBytes - header) / 1004
+	for _, tc := range []struct {
+		rows      int
+		truncated bool
+	}{{fit, false}, {fit + 1, true}} {
+		rows := make([][]any, tc.rows)
+		for i := range rows {
+			rows[i] = row
+		}
+		out, err := runSQLJob(newSQLStore(t, 200, rowsJSON([]string{"v"}, rows...)), `{"query":"select v"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := out.Payload.(SQLResult)
+		if res.Truncated != tc.truncated || len(res.Rows) != fit {
+			t.Fatalf("%d rows in: truncated=%v rows=%d, want %v and %d", tc.rows, res.Truncated, len(res.Rows), tc.truncated, fit)
+		}
+	}
+}
+
+// jsonbText renders v as Postgres prints a jsonb: ", " and ": " separators,
+// and numbers as numeric prints them, exponents expanded with math/big. Key
+// order differs from Postgres's, which does not change the length.
+func jsonbText(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var x any
+	if err := dec.Decode(&x); err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	var write func(any)
+	write = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			sb.WriteString("[")
+			for i, e := range x {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				write(e)
+			}
+			sb.WriteString("]")
+		case map[string]any:
+			sb.WriteString("{")
+			i := 0
+			for k, e := range x {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				i++
+				write(k)
+				sb.WriteString(": ")
+				write(e)
+			}
+			sb.WriteString("}")
+		case json.Number:
+			s := string(x)
+			if k := strings.IndexAny(s, "eE"); k >= 0 {
+				r, ok := new(big.Rat).SetString(s)
+				if !ok {
+					t.Fatalf("number %q", s)
+				}
+				var exp int
+				fmt.Sscan(s[k+1:], &exp)
+				scale := 0
+				if dot := strings.IndexByte(s[:k], '.'); dot >= 0 {
+					scale = k - dot - 1
+				}
+				s = r.FloatString(max(0, scale-exp))
+			}
+			sb.WriteString(s)
+		default:
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(x); err != nil {
+				t.Fatal(err)
+			}
+			sb.WriteString(strings.TrimSuffix(buf.String(), "\n"))
+		}
+	}
+	write(x)
+	return sb.String()
 }
 
 // promql_instant / promql_range are known and refused by name, without asking

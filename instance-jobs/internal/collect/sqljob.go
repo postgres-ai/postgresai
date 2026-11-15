@@ -26,13 +26,15 @@ const KindSQL = "sql"
 // a multi-megabyte request.
 const maxSQLQueryBytes = 64 << 10
 
-// maxSQLResultBytes is the compact-JSON budget of one submitted result. The
-// platform caps `result` at 1 MiB measured as octet_length(result::text) on
-// JSONB, whose text form inserts a space after every `:` and `,`: measured at up
-// to ~20% more than Go's compact JSON. 850000 leaves 23% headroom. Do not raise
-// it toward 1 MiB without re-measuring the jsonb text form, which is the only
-// figure the platform reads.
-const maxSQLResultBytes = 850000
+// maxSQLResultBytes is the budget of one submitted result, in bytes of JSONB
+// TEXT: the platform refuses `result` when octet_length(result::text) exceeds
+// 1 MiB, and that text is not what json.Marshal wrote. JSONB puts a space after
+// every `,` and `:` (short numbers in many columns grow by half), and stores
+// numbers as numeric, which has no exponent form (`1e-07` prints as
+// `0.0000001`). So the trim measures jsonbTextBound, never len(json.Marshal).
+// The result is submitted bare (body["result"] is this SQLResult, nothing
+// wraps it), so the 48576 bytes under 1048576 are pure margin, not an envelope.
+const maxSQLResultBytes = 1000000
 
 type sqlArgs struct {
 	Query string `json:"query"`
@@ -85,7 +87,7 @@ func isCallerFault(status int) bool {
 
 // buildSQLResult copies the answer value by value, strips control characters
 // from every string (the CLI renders them on a terminal), and drops trailing
-// rows until the result fits maxSQLResultBytes.
+// rows until the result's JSONB text fits maxSQLResultBytes.
 func buildSQLResult(res *sqlResponse) SQLResult {
 	out := SQLResult{Columns: []string{}, Types: []string{}, Rows: [][]any{}, Truncated: res.Truncated}
 	for _, col := range res.Columns {
@@ -96,7 +98,7 @@ func buildSQLResult(res *sqlResponse) SQLResult {
 	}
 	size := 0
 	if b, err := json.Marshal(out); err == nil {
-		size = len(b)
+		size = jsonbTextBound(b)
 	}
 	for _, raw := range res.Rows {
 		row := make([]any, 0, len(raw))
@@ -108,15 +110,80 @@ func buildSQLResult(res *sqlResponse) SQLResult {
 			out.Truncated = true
 			break
 		}
-		// +1 for the comma between rows
-		if size+len(b)+1 > maxSQLResultBytes {
+		// +2 for the ", " between rows
+		n := jsonbTextBound(b) + 2
+		if size+n > maxSQLResultBytes {
 			out.Truncated = true
 			break
 		}
-		size += len(b) + 1
+		size += n
 		out.Rows = append(out.Rows, row)
 	}
 	return out
+}
+
+// jsonbTextBound returns an upper bound of the length of b, compact JSON as
+// json.Marshal writes it, once Postgres has stored it as JSONB and printed it
+// back with ::text: one more byte for every `,` and `:` outside a string, and
+// every number with an exponent expanded (numeric has no exponent form). The
+// cases where JSONB text is shorter (Go's \u003c for `<`, duplicate keys) are
+// ignored: an upper bound may overcount.
+func jsonbTextBound(b []byte) int {
+	n := len(b)
+	inString, escaped := false, false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+		case c == ',' || c == ':':
+			n++
+		case c == '-' || (c >= '0' && c <= '9'):
+			j := i
+			for j < len(b) && strings.IndexByte("0123456789+-.eE", b[j]) >= 0 {
+				j++
+			}
+			n += expandedNumberBound(b[i:j]) - (j - i)
+			i = j - 1
+		}
+	}
+	return n
+}
+
+// expandedNumberBound bounds the length of a JSON number literal as numeric
+// prints it. Without an exponent that is the literal itself. With one, every
+// mantissa digit is printed once, the exponent adds at most |exp| zeros, and
+// the rest is a sign, a "0" before the point and the point: sign + digits +
+// |exp| + 2.
+func expandedNumberBound(lit []byte) int {
+	k := strings.IndexAny(string(lit), "eE")
+	if k < 0 {
+		return len(lit)
+	}
+	n := 2
+	for _, c := range lit[:k] {
+		if c == '-' || (c >= '0' && c <= '9') {
+			n++
+		}
+	}
+	exp := 0
+	for _, c := range lit[k+1:] {
+		if c >= '0' && c <= '9' && exp < 1<<30 {
+			exp = exp*10 + int(c-'0')
+		}
+	}
+	return n + exp
 }
 
 // cleanValue decodes one JSON cell and rebuilds it: numbers stay exact

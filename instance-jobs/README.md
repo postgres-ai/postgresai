@@ -495,12 +495,16 @@ why they are pinned by name in `internal/collect/contract_test.go` and by data i
 
 ## Caps on a query result
 
-**Bytes are the only real bound.** `maxSQLResultBytes` is **850000**, and it
-is not the platform's 1 MiB limit rounded down for comfort: the platform
-measures `octet_length(result::text)` on the **jsonb** it stored, and Postgres's
-jsonb text output inflates our JSON by up to ~20%. 900000 bytes of ours would be
-refused at 1048576 of theirs. The trim drops whole rows from the end until the
-encoded result fits, and the answer comes back flagged
+**Bytes are the only real bound.** `maxSQLResultBytes` is **1000000** bytes
+of **jsonb text**, because that is what the platform measures:
+`octet_length(result::text)` on the jsonb it stored, refused above 1048576.
+That text is not our JSON: jsonb puts a space after every `,` and `:` (a result
+of short numbers in many columns grows by about half), and prints numbers as
+`numeric`, which has no exponent form (`1e-07` becomes `0.0000001`). So the
+trim sizes each row by an upper bound of its jsonb text (`jsonbTextBound`),
+never by `len(json.Marshal(...))`. The result is submitted bare, so the rest
+under 1 MiB is margin. The trim drops whole rows from the end until the
+result fits, and the answer comes back flagged
 `truncated: true` rather than as an error — a partial answer is more use than
 none to someone reading a chart.
 
