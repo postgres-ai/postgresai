@@ -274,6 +274,10 @@ per node.
   default: the first upload of a large local store, or the backlog after a long S3 outage)
   lets a second writer started on the prefix take the store over. The first writer is fenced
   at its commit and keeps what it had not uploaded for its next start.
+- A fenced writer's kept files are covered once. When it takes the store back, its entry in
+  `fenced` is removed with the takeover, before those files are uploaded. If its disk is lost
+  before that upload and restored from a snapshot taken while it was fenced, the restart
+  keeps none of the files it had not uploaded.
 - Two copies of one local directory must not run at the same time. A copy started before the
   writer's next commit looks like a restart of the writer: it takes the store over, and the
   writer is fenced and loses what it had not uploaded.
