@@ -62,7 +62,7 @@ class Emitted(unittest.TestCase):
             self.assertEqual(sorted(ps), sorted(po))
             for i, a in ps.items():
                 b = po[i]
-                for k in ("type", "title", "gridPos", "options", "description", "maxDataPoints", "transformations"):
+                for k in ("type", "title", "gridPos", "options", "description", "maxDataPoints"):
                     self.assertEqual(a.get(k), b.get(k), f"panel {i} {k}")
                 da, db = a.get("fieldConfig", {}).get("defaults"), b.get("fieldConfig", {}).get("defaults")
                 self.assertEqual(da, db, f"panel {i} field defaults (units, thresholds)")
@@ -168,6 +168,25 @@ class Emitted(unittest.TestCase):
         for k, i in inst.items():
             self.assertEqual(step in ts[k], i, k)
         self.assertEqual(sum(inst.values()), 4)
+
+    def test_table_values_keep_their_prometheus_name(self):
+        """A table panel whose targets select `Value` first renames that field back: Grafana shows it
+        under the frame's name (the refId, for Infinity), where the panel's own transformations and
+        overrides would not find it."""
+        seen = 0
+        for spec, src, out in self.pairs():
+            ps = panels(src)
+            for i, b in panels(out).items():
+                refs = [t["refId"] for t in b.get("targets", [])
+                        if any(c["selector"] == "Value" for c in t.get("columns", []))]
+                seen += bool(refs)
+                # nothing else changes a panel's transformations
+                want = (C.value_field_renames(refs) if refs else []) + (ps[i].get("transformations") or [])
+                self.assertEqual(b.get("transformations") or [], want, f"{spec['out']} panel {i}")
+        self.assertGreater(seen, 0)
+        self.assertEqual(C.value_field_renames(["A"]),
+                         [{"id": "renameByRegex", "options": {"regex": "^A$", "renamePattern": "Value"}}])
+        self.assertEqual([t["options"]["regex"] for t in C.value_field_renames(["A", "B"])], ["^(A|B)$", "^(.+)$"])
 
     def test_table_panels(self):
         """The panels that called the Flask backend or the Postgres sink run pgai-mon SQL instead, with

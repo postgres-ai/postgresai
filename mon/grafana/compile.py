@@ -540,6 +540,21 @@ def probe_label_keys(url, metric):
     return [r[0] for r in j["rows"] if r[0] != "__name__"]
 
 
+def value_field_renames(refs):
+    """Transformations that put a table panel's value column back under the name Prometheus gives it.
+    Grafana shows a field named `Value` under its frame's name, and Infinity names a frame by its
+    refId (a Prometheus frame has no name), so the panel's own transformations, which name `Value`,
+    would miss it: an organize puts it last and a filterFieldsByName drops it. With several targets
+    Prometheus calls the values `Value #<refId>`, and Grafana puts the frame's name before every
+    other field; renaming each field to itself fixes its plain name (renameByRegex reads a name
+    without that prefix)."""
+    alt = "|".join(re.escape(r) for r in refs)
+    if len(refs) == 1:
+        return [{"id": "renameByRegex", "options": {"regex": f"^{alt}$", "renamePattern": "Value"}}]
+    return [{"id": "renameByRegex", "options": {"regex": f"^({alt})$", "renamePattern": "Value #$1"}},
+            {"id": "renameByRegex", "options": {"regex": "^(.+)$", "renamePattern": "$1"}}]
+
+
 def table_label_keys(panel, probe_url, metric):
     """The label columns of an instant table: the metric's label keys in the probe store, plus
     every field the panel's transformations name (so they exist even when the probe store has
@@ -578,6 +593,7 @@ def compile_dashboard(spec, by_id, probe_url):
         if not any(t.get("expr") for t in targets):
             continue
         new = []
+        table_refs = []
         for t in targets:
             case = match_case(spec["census"], p, t, by_id, spec.get("partial", False))
             if case is None:
@@ -594,6 +610,8 @@ def compile_dashboard(spec, by_id, probe_url):
             body = wrap_table(inner, cols, keys) if table else \
                 wrap(inner, cols, t.get("legendFormat"), spec["extra_labels"])
             new.append(infinity_target(t["refId"], body, t.get("hide"), spec["extra_labels"], keys))
+            if table:
+                table_refs.append(t["refId"])
             queries.append({"panel": p["id"], "ref": t["refId"], "case": case["id"], "sql": body,
                             "instant": instant, "table": table, "qvars": query_sample_vars(params, gp, mvars)})
             n += 1
@@ -609,6 +627,8 @@ def compile_dashboard(spec, by_id, probe_url):
             if iv and not p.get("interval"):
                 p["interval"] = iv + "s" if iv.isdigit() else iv
         p["targets"] = new
+        if table_refs:
+            p["transformations"] = value_field_renames(table_refs) + (p.get("transformations") or [])
         p["datasource"] = dict(INFINITY) if all("infinity" in json.dumps(x.get("datasource")) for x in new) \
             else {"type": "datasource", "uid": "-- Mixed --"}
     d["templating"]["list"] = [compile_variable(v) for v in src["templating"]["list"]]

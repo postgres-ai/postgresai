@@ -171,9 +171,9 @@ def test_per_standby_graphs_key_series_by_application_name(dashboard_path: Path)
             f"panel {CONNECTION_IDENTITY_PANEL_ID}: description must state "
             "why client_info is part of physical connection identity"
         )
-    included_fields = connection_panel["transformations"][0]["options"][
-        "include"
-    ]["pattern"]
+    included_fields = next(
+        t for t in connection_panel["transformations"] if t["id"] == "filterFieldsByName"
+    )["options"]["include"]["pattern"]
     if "client_info" not in included_fields:
         problems.append(
             f"panel {CONNECTION_IDENTITY_PANEL_ID}: connection table must "
