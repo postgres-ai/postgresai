@@ -3875,11 +3875,19 @@ async function runCompose(
       env: env,
       cwd: projectDir
     });
-    const watch = args[0] === "up" && args.includes("-d") ? watchRestartLoops(projectDir, () => child.kill("SIGTERM")) : null;
-    // A signal leaves code null: that is a failure, not success.
+    let stopped = false;
+    const watch = args[0] === "up" && args.includes("-d")
+      ? watchRestartLoops(projectDir, () => {
+          stopped = true;
+          child.kill("SIGTERM");
+        })
+      : null;
+    // A signal leaves code null: that is a failure, not success. Compose
+    // stopped by the watcher exits 130, the code of a run the user cancelled:
+    // this run failed.
     child.on("close", (code) => {
       if (watch) clearInterval(watch);
-      resolve(code ?? 1);
+      resolve(stopped ? 1 : (code ?? 1));
     });
   });
 }

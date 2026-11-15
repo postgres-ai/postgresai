@@ -66,6 +66,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       'case " $* " in',
       '  " info ") exit 0 ;;',
       '  " inspect -f {{.State.Running}} "*) echo "${GRAFANA_RUNNING:-false}"; exit 0 ;;',
+      // The restart count of container abc123: 0 at the first call, 3 more at each later one.
+      `  " inspect -f {{.Id}} {{.RestartCount}} "*) f=${JSON.stringify(resolve(bin, "restarts"))}; n=$(cat "$f" 2>/dev/null || echo 0); echo $((n + 3)) > "$f"; echo "abc123def $n"; exit 0 ;;`,
       `  *" reset-admin-password "*) cat > ${JSON.stringify(resolve(bin, "reset-stdin"))}; exit \${RESET_EXIT:-0} ;;`,
       '  *" compose version "*) exit 0 ;;',
       '  *" volume ls "*) for v in $VOLUMES; do echo "$v"; done; exit 0 ;;',
@@ -74,7 +76,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       // As compose reads it: a PGAI_TAG in the environment wins over .env.
       '  *" pull "*) tag="${PGAI_TAG-$(sed -n "s/^PGAI_TAG=//p" .env)}"; [ -z "$PULL_NEEDS_TAG" ] || [ "$tag" = "$PULL_NEEDS_TAG" ] || exit 1; exit ${PULL_EXIT:-0} ;;',
       '  *" down "*) exit ${DOWN_EXIT:-0} ;;',
-      '  *" up "*) exit ${UP_EXIT:-0} ;;',
+      // UP_HANGS: compose waiting for a container that never turns healthy; it exits 130 on SIGTERM.
+      '  *" up "*) [ -z "$UP_HANGS" ] || { trap "exit 130" TERM; while :; do sleep 0.2; done; }; exit ${UP_EXIT:-0} ;;',
       '  *" config --services "*) for s in $CONFIG_SERVICES; do echo "$s"; done; exit 0 ;;',
       '  *" ps -a --format json "*) printf "%s\\n" "$PS_JSON"; exit 0 ;;',
       '  " ps --filter"*) for c in $RUNNING; do echo "$c"; done; exit 0 ;;',
@@ -480,6 +483,17 @@ describe("mon local-install", () => {
     expect(readEnv(p.dir)).toBe(OLD_ENV);
     expect(fs.readFileSync(resolve(p.dir, "docker-compose.yml"), "utf8")).toBe(fs.readFileSync(OLD_COMPOSE, "utf8"));
   });
+
+  test("a service that keeps restarting ends the install with exit code 1 and its name", () => {
+    const p = makeProject("li-restart-loop", NEW_COMPOSE, "PGAI_TAG=0.18.0\n");
+    const r = p.run(["mon", "local-install", "-y"], {
+      UP_HANGS: "1",
+      PS_JSON: JSON.stringify([{ ID: "abc123", Service: "pgai-mon", State: "restarting" }]),
+    });
+    // Not 130, which compose returns when the CLI stops it: nobody cancelled this run.
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/✗ Service pgai-mon failed \(keeps restarting \(3 restarts in \d+ s\)\)/);
+  }, 30000);
 
   test("on the new stack: no switch, no notice about old volumes; a set store is named", () => {
     const p = makeProject("li-new", NEW_COMPOSE, "PGAI_TAG=0.18.0\nPGAI_MON_STORE=s3://bucket/prefix\n");
