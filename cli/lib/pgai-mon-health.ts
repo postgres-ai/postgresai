@@ -18,13 +18,17 @@ const oneLine = (text: string) =>
  * The monitored databases as /health's `collector` part reports them
  * (`by_source.<source>.databases.<dbname>` with `up` and `last_error`): one
  * line per database that is down, else one "N/N up" line. Nothing when the
- * part is absent (an older pgai-mon) or no database is known yet.
+ * part is absent (an older pgai-mon) or no database is known yet. A database
+ * that is not up and has no `last_error` has not finished its first attempt
+ * (pgai-mon sets `last_error` on every failed connect, probe or job): it is
+ * "connecting", not down, and does not fail the check.
  */
 function targetLines(collector: unknown): { down: number; lines: string[] } {
   const bySource = (collector as { by_source?: unknown } | null | undefined)?.by_source;
   if (!bySource || typeof bySource !== "object") return { down: 0, lines: [] };
   let total = 0;
   const lines: string[] = [];
+  const connecting: string[] = [];
   for (const [source, status] of Object.entries(bySource as Record<string, unknown>)) {
     const databases = (status as { databases?: unknown } | null)?.databases;
     if (!databases || typeof databases !== "object") continue;
@@ -32,13 +36,21 @@ function targetLines(collector: unknown): { down: number; lines: string[] } {
       total++;
       const d = db as { up?: unknown; last_error?: unknown } | null;
       if (d?.up === true) continue;
-      const why = typeof d?.last_error === "string" && d.last_error ? oneLine(d.last_error) : "no successful connection yet";
-      lines.push(`✗ target ${source}/${dbname}: down (${why})`);
+      if (typeof d?.last_error !== "string" || !d.last_error) {
+        connecting.push(`- target ${source}/${dbname}: connecting (first connection not finished yet)`);
+        continue;
+      }
+      lines.push(`✗ target ${source}/${dbname}: down (${oneLine(d.last_error)})`);
     }
   }
   if (total === 0) return { down: 0, lines: [] };
   const down = lines.length;
-  return { down, lines: down > 0 ? [`✗ targets: ${total - down}/${total} up`, ...lines] : [`✓ targets: ${total}/${total} up`] };
+  const up = total - down - connecting.length;
+  const more = connecting.length > 0 ? `, ${connecting.length} connecting` : "";
+  return {
+    down,
+    lines: [`${down > 0 ? "✗" : "✓"} targets: ${up}/${total} up${more}`, ...lines, ...connecting],
+  };
 }
 
 /**

@@ -66,7 +66,7 @@ describe("probePgaiMon", () => {
     const mon = fakePgaiMon({
       collector: collector({
         prod: { app: db(true), other: db(false, "connect: password authentication failed\nfor postgresql://mon:s3cret@db:5432/other") },
-        fresh: { app: db(false) },
+        refused: { app: db(false, "connect: connection refused") },
       }),
     });
     try {
@@ -75,10 +75,42 @@ describe("probePgaiMon", () => {
       expect(r.lines.slice(2)).toEqual([
         "✗ targets: 1/3 up",
         "✗ target prod/other: down (connect: password authentication failed for postgresql://mon:***@db:5432/other)",
-        "✗ target fresh/app: down (no successful connection yet)",
+        "✗ target refused/app: down (connect: connection refused)",
       ]);
       expect(r.lines.join("\n")).not.toContain("s3cret");
       expect(r.lines.join("\n")).not.toContain(TOKEN);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("right after start: a target with no attempt finished yet is connecting, not down, and does not fail", async () => {
+    // pgai-mon sets last_error on every failed attempt; not up and no error means its first attempt has not finished.
+    const fresh = { ...db(false), connect_failures: 0 };
+    const mon = fakePgaiMon({ collector: collector({ prod: { app: db(true), new: fresh } }) });
+    try {
+      const r = await probePgaiMon(mon.url, TOKEN);
+      expect(r.ok).toBe(true);
+      expect(r.lines.slice(2)).toEqual([
+        "✓ targets: 1/2 up, 1 connecting",
+        "- target prod/new: connecting (first connection not finished yet)",
+      ]);
+    } finally {
+      mon.stop();
+    }
+  });
+
+  test("a failed target still fails the check while another is connecting", async () => {
+    const fresh = { ...db(false), connect_failures: 0 };
+    const mon = fakePgaiMon({ collector: collector({ prod: { new: fresh, bad: db(false, "connect: timeout") } }) });
+    try {
+      const r = await probePgaiMon(mon.url, TOKEN);
+      expect(r.ok).toBe(false);
+      expect(r.lines.slice(2)).toEqual([
+        "✗ targets: 0/2 up, 1 connecting",
+        "✗ target prod/bad: down (connect: timeout)",
+        "- target prod/new: connecting (first connection not finished yet)",
+      ]);
     } finally {
       mon.stop();
     }
