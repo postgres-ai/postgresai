@@ -309,10 +309,13 @@ function writeEnvFile(envFile: string, content: string): void {
 
   // Compose takes a variable from the environment before .env. Bun loads the
   // .env of the working directory into the environment at startup, so a CLI
-  // run from the project directory carries the old value of every key: after
-  // this write, compose would still use it (`mon update` pulled the new
-  // stack's images with the old PGAI_TAG). An environment value equal to the
-  // one this write replaces follows the file.
+  // run by bun from the project directory carries the old value of every key:
+  // after this write, compose would still use it (`mon update` pulled the new
+  // stack's images with the old PGAI_TAG). Under bun, an environment value
+  // equal to the one this write replaces follows the file. Node loads no
+  // .env: there, a value in the environment was exported by the user and
+  // wins, as it does in compose.
+  if (!process.versions.bun) return;
   for (const key of new Set([...before.matchAll(/^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]))) {
     const was = parseEnvValue(before, key);
     const now = parseEnvValue(content, key);

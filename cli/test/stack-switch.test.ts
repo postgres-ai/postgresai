@@ -245,6 +245,13 @@ describe("mon update on an old-stack install", () => {
     expect(r.stdout).toContain(`PGAI_TAG in .env: 0.17.0 -> ${CLI_VERSION}`);
   });
 
+  test("a PGAI_TAG the user exported, different from the one in .env, still wins in compose", () => {
+    const p = makeProject("old-tag-exported", OLD_COMPOSE);
+    // The shim's pull fails unless compose would use the exported tag.
+    const r = p.run(["mon", "update"], { OLD_RUNNING: "1", PGAI_TAG: "9.9.9", PULL_NEEDS_TAG: "9.9.9" });
+    expect(r.status).toBe(0);
+  });
+
   test("the old stack's containers cannot be removed: the message names the backup file to run `down` on", () => {
     const p = makeProject("old-down-fails", OLD_COMPOSE);
     const r = p.run(["mon", "update"], { OLD_RUNNING: "1", DOWN_EXIT: "1" });
