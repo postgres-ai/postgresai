@@ -293,6 +293,13 @@ per node.
   idle session is reused only for its own database, so the oldest is closed to make room.
   Raise the setting for nodes with many monitored databases.
 - A database that goes away gets no staleness markers: its series end at the last sample.
+- The `scrape:` section of the config (file list, inline jobs) and the `rds:` targets are read
+  at start only; a change needs a restart. Only the scrape-config files themselves are re-read.
+- On exit or when a source changes, queries already running are not cancelled: they run to
+  their statement timeout, and a changed source can briefly hold up to twice its session cap.
+- `sslmode=prefer` does not fall back to an unencrypted connection when the server accepts
+  the SSL request and the TLS handshake then fails (libpq retries without TLS); the connect
+  fails. A server that refuses the SSL request is still connected without TLS.
 - Log tailing reads files from a local directory. It does not fetch logs from managed
   services.
 - New data is visible to queries after the next flush, up to `store.flush_interval_s` (60 s)

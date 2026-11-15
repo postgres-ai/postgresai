@@ -5,7 +5,8 @@
 //!
 //! Differences from libpq, by design or not yet done: the default host is `localhost` (not a
 //! Unix socket directory); `allow` behaves as `prefer`; service files, sslcrl,
-//! sslpassword and GSS are not supported (their keys are ignored with a warning); a
+//! sslpassword and GSS are not supported (their keys are ignored with a warning, once per host
+//! and database); SCRAM runs without channel binding, so `channel_binding=require` is refused; a
 //! root.crt in ~/.postgresql is used only for verify-ca/verify-full (libpq also makes
 //! `require` verify against it when present; here `require` verifies only with an explicit
 //! sslrootcert).
@@ -48,7 +49,20 @@ const KNOWN: &[&str] = &[
     "keepalives_idle",
     "target_session_attrs",
     "load_balance_hosts",
+    "channel_binding",
 ];
+
+/// Unsupported keys of `p` not reported before for its host and database: the warning comes
+/// once, not at every connect.
+fn first_unknown(p: &ConnParams) -> Vec<String> {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut seen = SEEN.lock().unwrap();
+    p.0.keys()
+        .filter(|k| !KNOWN.contains(&k.as_str()) && seen.insert(format!("{} {k}", p.redacted())))
+        .cloned()
+        .collect()
+}
 
 /// libpq environment variables and the key each one defaults.
 const ENV_DEFAULTS: &[(&str, &str)] = &[
@@ -156,10 +170,16 @@ impl ConnParams {
                 Some(m) => anyhow::bail!("sslrootcert=system requires sslmode=verify-full, not {m}"),
             }
         }
-        for k in p.0.keys() {
-            if !KNOWN.contains(&k.as_str()) {
-                eprintln!("collector: connection option {k} is not supported, ignored");
-            }
+        match p.get("channel_binding") {
+            None | Some("prefer") | Some("disable") => {}
+            Some("require") => anyhow::bail!("channel_binding=require is not supported (no SCRAM channel binding)"),
+            Some(v) => anyhow::bail!("invalid channel_binding value {v:?}"),
+        }
+        for k in first_unknown(&p) {
+            eprintln!(
+                "collector: {}: connection option {k} is not supported, ignored",
+                p.redacted()
+            );
         }
         Ok(p)
     }
@@ -867,5 +887,26 @@ mod tests {
             .resolve(&|_| None)
             .unwrap();
         assert_eq!(r.get("sslmode"), Some("verify-full"));
+    }
+
+    #[test]
+    fn unknown_key_is_reported_once_per_database() {
+        let p = ConnParams::parse("host=once-h dbname=a pool_max_conns=4 sslcrl=x").unwrap();
+        assert_eq!(first_unknown(&p), vec!["pool_max_conns", "sslcrl"]);
+        assert!(first_unknown(&p).is_empty(), "the next connect stays quiet");
+        assert_eq!(first_unknown(&p.with_dbname("b")), vec!["pool_max_conns", "sslcrl"]);
+    }
+
+    #[test]
+    fn channel_binding_require_is_refused() {
+        let r = |s: &str| ConnParams::parse(s).unwrap().resolve(&|_| None);
+        let e = r("host=h channel_binding=require").err().unwrap().to_string();
+        assert!(e.contains("channel_binding=require is not supported"), "{e}");
+        assert!(r("host=h channel_binding=prefer").is_ok());
+        assert!(r("host=h channel_binding=disable").is_ok());
+        assert!(
+            first_unknown(&ConnParams::parse("host=cb-h channel_binding=prefer").unwrap()).is_empty(),
+            "no warning"
+        );
     }
 }

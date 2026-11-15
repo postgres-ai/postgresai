@@ -756,16 +756,11 @@ impl Scraper {
 
     /// Re-read the config and start, restart or stop target tasks. Returns (started, stopped).
     pub async fn reconcile(self: &Arc<Self>) -> (usize, usize) {
-        let (targets, errors) = load_targets(&self.cfg);
-        {
-            let mut e = self.errors.lock().unwrap();
-            for x in &errors {
-                if !e.contains(x) {
-                    eprintln!("scrape: {x}");
-                }
-            }
-            *e = errors;
-        }
+        let (targets, mut errors) = load_targets(&self.cfg);
+        // a file that fails to parse (perhaps caught half-written) keeps the targets of its
+        // last good version running, as vmagent does
+        let failed = |src: &str| errors.iter().position(|e| e.starts_with(&format!("{src}: ")));
+        let mut kept: HashMap<usize, usize> = HashMap::new();
         let want: HashMap<String, Target> = targets.into_iter().map(|t| (t.key(), t)).collect();
         let mut stop = Vec::new();
         let mut start = Vec::new();
@@ -773,7 +768,12 @@ impl Scraper {
             let mut run = self.running.lock().unwrap();
             let keys: Vec<String> = run.keys().cloned().collect();
             for k in keys {
-                let keep = want.get(&k).is_some_and(|t| t.fingerprint() == run[&k].fingerprint);
+                let keep = match want.get(&k) {
+                    Some(t) => t.fingerprint() == run[&k].fingerprint,
+                    None => failed(&run[&k].target.source)
+                        .inspect(|i| *kept.entry(*i).or_default() += 1)
+                        .is_some(),
+                };
                 if !keep {
                     let r = run.remove(&k).unwrap();
                     r.task.abort();
@@ -793,6 +793,18 @@ impl Scraper {
                     });
                 }
             }
+        }
+        for (i, n) in kept {
+            errors[i].push_str(&format!("; its {n} running targets keep the last good version"));
+        }
+        {
+            let mut e = self.errors.lock().unwrap();
+            for x in &errors {
+                if !e.contains(x) {
+                    eprintln!("scrape: {x}");
+                }
+            }
+            *e = errors;
         }
         // a removed target's series end now
         let now = crate::model::now_ms();
@@ -849,6 +861,25 @@ fn phase(key: &str, interval: Duration) -> Duration {
     Duration::from_millis(h % (interval.as_millis() as u64).max(1))
 }
 
+/// The log line after a scrape, given the failures in a row before it: the first failure,
+/// every 100th and the recovery are logged, not every failed scrape.
+fn failure_log(fails: &mut u64, err: Option<&str>) -> Option<String> {
+    match err {
+        Some(e) => {
+            *fails += 1;
+            match *fails {
+                1 => Some(e.to_string()),
+                n if n % 100 == 0 => Some(format!("{e} ({n} failures in a row)")),
+                _ => None,
+            }
+        }
+        None => match std::mem::take(fails) {
+            0 => None,
+            n => Some(format!("up again after {n} failed scrapes")),
+        },
+    }
+}
+
 async fn target_loop(s: Arc<Scraper>, t: Target) {
     let key = t.key();
     let iv = t.interval;
@@ -860,13 +891,14 @@ async fn target_loop(s: Arc<Scraper>, t: Target) {
     if next - now > iv_ms {
         next -= iv_ms;
     }
+    let mut fails = 0;
     loop {
         let wait = (next - crate::model::now_ms()).max(0) as u64;
         tokio::time::sleep(Duration::from_millis(wait)).await;
         let ts = crate::model::now_ms();
         let st = scrape_once(&s.client, &s.ing, &t, s.cfg.max_body_bytes, ts).await;
-        if let Some(e) = &st.last_error {
-            eprintln!("scrape {} {}: {e}", t.job, redact_url(&t.url));
+        if let Some(l) = failure_log(&mut fails, st.last_error.as_deref()) {
+            eprintln!("scrape {} {}: {l}", t.job, redact_url(&t.url));
         }
         s.status.lock().unwrap().insert(key.clone(), st);
         next += iv_ms;
@@ -903,6 +935,20 @@ mod tests {
         assert!(parse_duration("1x").is_err());
         assert!(parse_duration("s").is_err());
         assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn a_down_target_is_logged_on_change_and_every_100th_failure() {
+        let mut fails = 0;
+        let logged: Vec<Option<String>> = (0..200).map(|_| failure_log(&mut fails, Some("refused"))).collect();
+        assert_eq!(logged[0].as_deref(), Some("refused"));
+        assert_eq!(logged[99].as_deref(), Some("refused (100 failures in a row)"));
+        assert_eq!(logged.iter().flatten().count(), 3, "1st, 100th, 200th");
+        assert_eq!(
+            failure_log(&mut fails, None).as_deref(),
+            Some("up again after 200 failed scrapes")
+        );
+        assert_eq!(failure_log(&mut fails, None), None);
     }
 
     #[test]

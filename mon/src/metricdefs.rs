@@ -22,7 +22,8 @@ pub struct MetricsFile {
 pub struct Preset {
     #[serde(default)]
     pub description: Option<String>,
-    pub metrics: BTreeMap<String, u64>,
+    /// metric -> interval (s); fractional like custom_metrics (pgwatch parses float64).
+    pub metrics: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,7 +115,7 @@ impl MetricsFile {
             .presets
             .get(preset)
             .ok_or_else(|| anyhow::anyhow!("preset {preset} not in metrics.yml"))?;
-        let list: Vec<(String, f64)> = p.metrics.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
+        let list: Vec<(String, f64)> = p.metrics.iter().map(|(k, v)| (k.clone(), *v)).collect();
         Ok(self.schedule(&list, &format!("preset {preset}")))
     }
 
@@ -188,10 +189,10 @@ impl MetricsFile {
                 add(pr
                     .metrics
                     .iter()
-                    .filter(|(n, i)| **i > 0 && self.metrics.contains_key(*n))
+                    .filter(|(n, i)| **i > 0.0 && self.metrics.contains_key(*n))
                     .map(|(n, i)| Scheduled {
                         name: n.clone(),
-                        interval_s: *i,
+                        interval_s: (i.round() as u64).max(1),
                         def: self.metrics[n].clone(),
                     })
                     .collect());
@@ -313,6 +314,14 @@ presets:
             .unwrap();
         assert_eq!(names(&s), vec!["stored:10"]);
         assert!(m.for_source(&src("{name: a, preset_metrics: nope}"), "full").is_err());
+    }
+
+    #[test]
+    fn fractional_preset_interval_parses() {
+        let m = parse("metrics: {a: {sqls: {11: select 1}}}\npresets: {p: {metrics: {a: 0.5}}}").unwrap();
+        let s = m.scheduled("p").unwrap();
+        assert_eq!((s[0].name.as_str(), s[0].interval_s), ("a", 1), "rounded, at least 1 s");
+        assert_eq!(m.dict_intervals(&["p"], &[]).get("a"), Some(&1));
     }
 
     #[test]

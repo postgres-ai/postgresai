@@ -607,11 +607,13 @@ fn status() -> &'static Mutex<BTreeMap<String, SourceStatus>> {
     STATUS.get_or_init(Default::default)
 }
 
-fn with_source<R>(src: &str, f: impl FnOnce(&mut SourceStatus) -> R) -> R {
-    f(status().lock().unwrap().entry(src.to_string()).or_default())
+/// Only `run_source` creates a source's entry: a late job of a removed source finds none and
+/// changes nothing (it must not bring the source back into /health).
+fn with_source<R: Default>(src: &str, f: impl FnOnce(&mut SourceStatus) -> R) -> R {
+    status().lock().unwrap().get_mut(src).map(f).unwrap_or_default()
 }
 
-fn with_db<R>(src: &str, label: &str, f: impl FnOnce(&mut DbStatus) -> R) -> R {
+fn with_db<R: Default>(src: &str, label: &str, f: impl FnOnce(&mut DbStatus) -> R) -> R {
     with_source(src, |s| f(s.databases.entry(label.to_string()).or_default()))
 }
 
@@ -933,7 +935,7 @@ impl DbCtx {
         source_id(&self.src)
     }
 
-    fn status<R>(&self, f: impl FnOnce(&mut DbStatus) -> R) -> R {
+    fn status<R: Default>(&self, f: impl FnOnce(&mut DbStatus) -> R) -> R {
         with_db(&self.src.name, &self.label, f)
     }
 }
@@ -1349,14 +1351,15 @@ pub async fn run_source(
     let node = Arc::new(NodeState::default());
     let primary = Arc::new(primary);
     let standby = Arc::new(standby);
-    with_source(&src.name, |s| {
-        *s = SourceStatus {
+    status().lock().unwrap().insert(
+        src.name.clone(),
+        SourceStatus {
             state: "starting".into(),
             metrics: primary.len(),
             standby_metrics: standby.len(),
             ..Default::default()
-        }
-    });
+        },
+    );
     let mk = |label: String, conn_str: String, is_main: bool, datname: Option<String>| {
         Arc::new(DbCtx {
             src: src.clone(),
@@ -1747,5 +1750,15 @@ mod tests {
         );
         let bare: Source = serde_yaml::from_str("{name: x, conn_str: y}").unwrap();
         assert_eq!(source_id(&bare).cluster, None);
+    }
+
+    #[test]
+    fn a_late_job_does_not_bring_back_a_removed_source() {
+        status().lock().unwrap().insert("ghost".into(), SourceStatus::default());
+        with_db("ghost", "ghost", |d| d.up = true);
+        assert!(source_status("ghost").unwrap().databases["ghost"].up);
+        status().lock().unwrap().remove("ghost");
+        with_db("ghost", "ghost", |d| d.up = true);
+        assert!(source_status("ghost").is_none());
     }
 }

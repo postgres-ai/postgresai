@@ -355,6 +355,32 @@ async fn reload_starts_and_stops_targets_and_reports_bad_files() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_that_stops_parsing_keeps_its_last_good_targets() {
+    let conf = tempfile::tempdir().unwrap();
+    let file = conf.path().join("t.yml");
+    let good = "- job_name: t\n  static_configs:\n    - targets: ['127.0.0.1:9', '127.0.0.1:10']\n";
+    std::fs::write(&file, good).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let (_s, ing) = setup(d.path()).await;
+    let sc = Scraper::new(files_cfg(conf.path()), ing).unwrap();
+    assert_eq!(sc.reconcile().await, (2, 0));
+    // caught half-written: the targets keep running and the error says so
+    std::fs::write(&file, &good[..good.len() - 20]).unwrap();
+    assert_eq!(sc.reconcile().await, (0, 0));
+    let j = sc.targets_json();
+    assert_eq!(j["targets"].as_array().unwrap().len(), 2);
+    let e = j["errors"][0].as_str().unwrap();
+    assert!(
+        e.contains("t.yml") && e.contains("its 2 running targets keep the last good version"),
+        "{e}"
+    );
+    std::fs::write(&file, good).unwrap();
+    assert_eq!(sc.reconcile().await, (0, 0), "parses again: nothing restarts");
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(sc.reconcile().await, (0, 2), "a removed file still stops its targets");
+}
+
 #[test]
 fn invalid_jobs_are_refused() {
     let conf = tempfile::tempdir().unwrap();
