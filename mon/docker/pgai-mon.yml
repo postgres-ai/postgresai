@@ -18,8 +18,32 @@ preset: full
 sources_file: /etc/pgai-mon/instances.yml
 # Host metrics: the scrape files `postgresai mon targets add` writes for Supabase and
 # ClickHouse Cloud (compose mounts the project's host-metrics/ here); re-read on change.
+#
+# The monitoring host itself (compose services self-node-exporter and self-cadvisor),
+# for the self-monitoring dashboard: only the series it charts are kept.
 scrape:
   files: [/etc/pgai/host-metrics/*.yml]
+  jobs:
+    - job_name: self-node-exporter
+      scrape_interval: 30s
+      static_configs:
+        - targets: [self-node-exporter:9100]
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          regex: node_cpu_seconds_total|node_memory_(MemTotal|MemFree|MemAvailable|Buffers|Cached|SReclaimable)_bytes|node_filesystem_(size|avail)_bytes|node_disk_(reads_completed|writes_completed|read_bytes|written_bytes|io_time_seconds|read_time_seconds|write_time_seconds)_total
+          action: keep
+    - job_name: self-cadvisor
+      scrape_interval: 30s
+      static_configs:
+        - targets: [self-cadvisor:8080]
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          regex: container_(last_seen|cpu_usage_seconds_total|memory_usage_bytes|network_(receive|transmit)_bytes_total|fs_(reads|writes)_bytes_total)
+          action: keep
+        # The root container's network is the host's: keep its real interfaces only.
+        - source_labels: [id, interface]
+          regex: "/;(lo|veth.*|br-.*|docker.*)"
+          action: drop
 http:
   # Inside the compose network only; compose publishes it on 127.0.0.1.
   listen: 0.0.0.0:8765

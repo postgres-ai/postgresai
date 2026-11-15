@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The monitoring host is monitored again. The compose stack brings back `self-node-exporter` and `self-cadvisor` (no published ports; limits `NODE_EXPORTER_*` and `CADVISOR_*` in `.env`), pgai-mon scrapes them every 30 s and keeps only the series it charts, and the self-monitoring dashboard regains the old stack's host and container panels: CPU by mode, memory, network, filesystem usage, disk IOPS, throughput, utilization and latency, running containers, and per-container CPU, memory, network and disk I/O. The host's network now comes from cAdvisor and shows the host's interfaces; the old panel showed only node-exporter's own container interface. `mon health` lists both exporters.
 - K003 "Top queries by total time" (postgres-ai/postgresai#499), for CheckupLoop's K003 report:
   - Each top statement now carries, over the same hourly window as its time: `calls`, `rows`, `shared_blks_hit_bytes`, `shared_blks_read_bytes`, `wal_bytes`, `temp_bytes_written`, its text on one line (`query_text`, 200 characters), `is_monitoring` (our collector's statement) and `relations` (the first 3 it reads or writes). A field that cannot be read is absent, never 0.
   - The summary adds the window (`window_start`, `window_end`, `window_seconds`), `total_calls`, `statements_exported_max`, `statements_reset_max` / `statements_reset_at` (a lower bound) and `export_rule` (the collector's pg_stat_statements export).

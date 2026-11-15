@@ -6054,6 +6054,7 @@ const MONITORING_CONTAINERS = [
   "instance-jobs",
   "self-node-exporter",
   "self-cadvisor",
+  // The old stack's.
   "sink-postgres",
   "sink-prometheus",
   "pgwatch-postgres",
@@ -6235,6 +6236,9 @@ export function monitoringHealthServices(instanceJobsEnabled = false, demoEnable
     // The demo database runs only with the demo profile; without it, an
     // absent target-db is "not enabled", not a fault.
     { name: "Demo DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
+    // The monitoring host's own exporters, for the self-monitoring dashboard.
+    { name: "Host metrics (node-exporter)", container: "self-node-exporter" },
+    { name: "Container metrics (cAdvisor)", container: "self-cadvisor" },
     // Profile-gated and self-reporting; see judgeServiceHealth. The ones above
     // stay on the status-only check. postgresai#366.
     {

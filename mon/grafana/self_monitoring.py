@@ -3,11 +3,12 @@
 
 The original (old/config/grafana/dashboards/Self_Monitoring_Dashboard.json) charted the old stack's
 components: cAdvisor containers, node-exporter host stats, VictoriaMetrics, the sink Postgres and
-the Flask backend. None of them exists any more, and its PromQL has no case in cases.py, so this
-dashboard is not compiled from it: it is written here from the series pgai-mon writes about itself
-(collector.rs: pgai_mon_* per database; selfmon.rs: pgai_mon_* of the process, from GET /health;
-scrape.rs: up, scrape_*) and from the `series` view, in the same target
-shape as compile.py's (time, value, series, label_set). Standard library Python only; it needs no
+the Flask backend. Only cAdvisor and node-exporter remain, and its PromQL has no case in cases.py,
+so this dashboard is not compiled from it: it is written here from the series pgai-mon writes about
+itself (collector.rs: pgai_mon_* per database; selfmon.rs: pgai_mon_* of the process, from GET
+/health; scrape.rs: up, scrape_*), from the `series` view, and from the self-node-exporter and
+self-cadvisor scrape jobs (mon/docker/pgai-mon.yml), in the same target shape as compile.py's
+(time, value, series, label_set). Standard library Python only; it needs no
 pgai-mon.
 
   python3 mon/grafana/self_monitoring.py [--out DIR]   # compile.py also writes it
@@ -28,27 +29,25 @@ UID = "self-monitoring"
 E = "CAST([] AS VARCHAR[][])"  # no matchers: pgai-mon's process series carry no cluster/node_name
 R = "getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms')"
 RI = "getvariable('rate_interval_ms')"
+# the monitoring host's own exporters (jobs in mon/docker/pgai-mon.yml); Supabase relays node_* too
+NE = "[['job', '=', 'self-node-exporter']]"
+CA = "[['job', '=', 'self-cadvisor'], ['name', '!=', '']]"  # containers; the root cgroup has no name
+DISK = "[['job', '=', 'self-node-exporter'], ['device', '!~', 'dm-.*']]"
 
 # the original panels with no counterpart in the new stack, and why (README.md lists them too)
 DROPPED = {
     200: "PostgresAI version banner: read the Flask backend's /version (pgai-mon's version is in GET /health only)",
-    1: "Active monitoring services: cAdvisor, node-exporter, postgres-exporter, VictoriaMetrics, pgwatch",
-    2: "Running containers: cAdvisor",
-    4: "System CPU usage: node-exporter",
+    1: "Active monitoring services: cAdvisor, node-exporter, postgres-exporter, VictoriaMetrics, pgwatch "
+       "(the scrape targets are counted in panel 1004)",
     5: "Victoria Metrics storage size stat: the store size is charted in panel 22",
-    40: "System CPU usage breakdown: node-exporter", 41: "System memory usage breakdown: node-exporter",
-    42: "System network I/O: node-exporter", 43: "System disk usage: node-exporter",
-    50: "Disk I/O operations: node-exporter", 51: "Disk I/O throughput: node-exporter",
-    52: "Disk I/O utilization: node-exporter", 53: "Disk I/O average latency: node-exporter",
-    10: "Container CPU usage: cAdvisor", 11: "Container memory usage: cAdvisor",
-    12: "Container network I/O: cAdvisor", 13: "Container disk I/O: cAdvisor",
     23: "Victoria Metrics rows count: the store keeps no row count (its known series are charted)",
     30: "Sink Postgres connections: no sink", 31: "Sink Postgres transactions: no sink",
     32: "Sink Postgres database size: no sink", 33: "Sink Postgres block I/O: no sink",
 }
 # kept: 3 (memory: pgai-mon's RSS), 6 (time series in the store, from the series view),
-# 20 (ingestion rate), 21 (scrape duration by target), 22 (storage size: WAL and Parquet)
-KEPT = (3, 6, 20, 21, 22)
+# 20 (ingestion rate), 21 (scrape duration by target), 22 (storage size: WAL and Parquet), and the
+# host and container panels (2, 4, 40-43, 50-53, 10-13), from the self-* scrape jobs
+KEPT = (3, 6, 20, 21, 22, 2, 4, 40, 41, 42, 43, 50, 51, 52, 53, 10, 11, 12, 13)
 
 
 def ts_defaults(unit, stack=False, **extra):
@@ -94,9 +93,33 @@ def last(ref, metric, fmt):
     return (ref, f"SELECT labels, t, value FROM prom_last('{metric}', {E}, {R})", fmt, False)
 
 
-def over(fn, ref, metric, fmt):
+def over(fn, ref, metric, fmt, m=E):
     """A target: rate or increase of a counter over the rate interval."""
-    return (ref, f"SELECT labels, t, value FROM prom_{fn}('{metric}', {E}, {R}, {RI})", fmt, False)
+    return (ref, f"SELECT labels, t, value FROM prom_{fn}('{metric}', {m}, {R}, {RI})", fmt, False)
+
+
+def by_name(ref, metric, fmt):
+    """A target: a cAdvisor counter's rate per container, summed over its devices or interfaces."""
+    return (ref, f"SELECT labels, t, value FROM prom_agg('sum', 'rate', '{metric}', {CA}, {R}, {RI}, "
+                 "p_by := ['name'])", fmt, False)
+
+
+def disk_latency(ref, op, fmt):
+    """A target: seconds per read or write, by block device (rate of the time / rate of the count)."""
+    t, c = (f"prom_rate('node_disk_{m}_total', {DISK}, {R}, {RI})" for m in (f"{op}_time_seconds", f"{op}s_completed"))
+    return (ref, f"SELECT a.labels, a.t, a.value / b.value AS value FROM {t} a JOIN {c} b\n"
+                 "  ON a.t = b.t AND a.labels['device'] = b.labels['device'] WHERE b.value > 0", fmt, False)
+
+
+MEM = ("MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached", "SReclaimable")
+
+
+def memory(sql):
+    """`sql` over p: node-exporter's memory gauges, one column each, per time point."""
+    return ("WITH m AS (\n" + "\n  UNION ALL ".join(
+        f"SELECT '{k}' AS k, t, value FROM prom_last('node_memory_{k}_bytes', {NE}, {R})" for k in MEM) +
+        "\n), p AS (\n  SELECT t, " + ", ".join(f"max(value) FILTER (WHERE k = '{k}') AS {k}" for k in MEM) +
+        " FROM m GROUP BY t\n)\n" + sql)
 
 
 # (id, type, title, description, gridPos (h, w, x, y), field defaults, options,
@@ -249,6 +272,92 @@ PANELS = [
      legend("Last", ["max", "last"]),
      [last("A", "pgai_mon_store_files", "files"),
       last("B", "pgai_mon_series_known", "known series")]),
+    ("row", 104, "Host", 72),
+    (2, "stat", "Running containers", "Containers cAdvisor sees on the monitoring host (container_last_seen).",
+     (4, 8, 0, 73), stat_defaults("short", GREEN), STAT_OPTIONS,
+     [("A", f"SELECT t, CAST(count(*) AS DOUBLE) AS value FROM prom_last('container_last_seen', {CA}, {R}) GROUP BY t",
+       "containers", True)]),
+    # a 5 minute window, as the original's [5m]: the rate interval is shorter than the 30 s scrape
+    (4, "stat", "System CPU usage", "Busy share of the monitoring host's CPUs over the last 5 minutes, all "
+     "cores (1 - rate of node_cpu_seconds_total{mode=\"idle\"}).", (4, 8, 8, 73), stat_defaults("percent", GREEN),
+     STAT_OPTIONS,
+     [("A", "SELECT t, 100 * (1 - avg(value)) AS value FROM prom_rate('node_cpu_seconds_total', "
+            f"[['job', '=', 'self-node-exporter'], ['mode', '=', 'idle']], {R}, 300000) GROUP BY t", "CPU", True)]),
+    (1041, "stat", "System memory usage", "Memory of the monitoring host not available to new processes "
+     "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes).", (4, 8, 16, 73),
+     stat_defaults("percent", GREEN), STAT_OPTIONS,
+     [("A", memory("SELECT t, 100 * (1 - MemAvailable / MemTotal) AS value FROM p WHERE MemTotal > 0"), "memory",
+       True)]),
+    (40, "timeseries", "System CPU usage breakdown", "Share of the monitoring host's CPU time by mode, "
+     "averaged over cores (rate of node_cpu_seconds_total).", (8, 12, 0, 77), ts_defaults("percentunit"),
+     legend("Mean", ["mean", "max"]),
+     [("A", "SELECT labels, t, value FROM prom_agg('avg', 'rate', 'node_cpu_seconds_total', "
+            "[['job', '=', 'self-node-exporter'], ['mode', '=~', 'user|system|iowait|nice|irq|softirq|steal']], "
+            f"{R}, {RI}, p_by := ['mode'])", "{{mode}}", False)]),
+    (41, "timeseries", "System memory usage breakdown", "The monitoring host's memory: application (total - "
+     "free - buffers - cache), buffers, cache (page cache and reclaimable slab) and free (node_memory_*_bytes).",
+     (8, 12, 12, 77), ts_defaults("bytes", stack=True), legend("Last", ["mean", "max", "last"]),
+     [("A", memory("SELECT map(['part'], [part]) AS labels, t, value FROM (\n"
+                   "  SELECT t, MemTotal - MemFree - Buffers - Cached - SReclaimable AS Application, Buffers, "
+                   "Cached + SReclaimable AS Cache, MemFree AS Free FROM p\n"
+                   ") UNPIVOT (value FOR part IN (Application, Buffers, Cache, Free))"), "{{part}}", False)]),
+    (42, "timeseries", "System network I/O", "Bytes per second the monitoring host receives and sends, by "
+     "interface, without loopback, bridges and container ends (rates of cAdvisor's root-container "
+     "container_network_*_bytes_total).", (8, 12, 0, 85), ts_defaults("Bps"), legend("Mean", ["mean", "max"]),
+     [over("rate", "A", "container_network_receive_bytes_total", "{{interface}} receive",
+           "[['job', '=', 'self-cadvisor'], ['id', '=', '/']]"),
+      over("rate", "B", "container_network_transmit_bytes_total", "{{interface}} transmit",
+           "[['job', '=', 'self-cadvisor'], ['id', '=', '/']]")]),
+    (43, "timeseries", "System disk usage", "Used share of each filesystem of the monitoring host "
+     "(1 - node_filesystem_avail_bytes / node_filesystem_size_bytes), without tmpfs, squashfs and vfat.",
+     (8, 12, 12, 85), ts_defaults("percent", min=0, max=100), legend("Last", ["max", "last"]),
+     [("A", "WITH f AS (\n"
+            "  SELECT labels, t, value FROM prom_last('node_filesystem_size_bytes', "
+            f"[['job', '=', 'self-node-exporter'], ['fstype', '!~', 'tmpfs|fuse.lxcfs|squashfs|vfat']], {R})\n"
+            "), a AS (\n"
+            f"  SELECT labels, t, value FROM prom_last('node_filesystem_avail_bytes', {NE}, {R})\n"
+            ")\n"
+            "SELECT f.labels, f.t, 100 * (1 - a.value / f.value) AS value FROM f JOIN a ON f.t = a.t\n"
+            "  AND f.labels['mountpoint'] = a.labels['mountpoint'] AND f.labels['device'] = a.labels['device']\n"
+            "  WHERE f.value > 0", "{{mountpoint}}", False)]),
+    (50, "timeseries", "Disk I/O operations (IOPS)", "Reads and writes completed per second, by block device "
+     "(rates of node_disk_reads_completed_total, node_disk_writes_completed_total).", (8, 12, 0, 93),
+     ts_defaults("iops"), legend("Mean", ["mean", "max"]),
+     [over("rate", "A", "node_disk_reads_completed_total", "{{device}} read", DISK),
+      over("rate", "B", "node_disk_writes_completed_total", "{{device}} write", DISK)]),
+    (51, "timeseries", "Disk I/O throughput", "Bytes read and written per second, by block device (rates of "
+     "node_disk_read_bytes_total, node_disk_written_bytes_total).", (8, 12, 12, 93), ts_defaults("Bps"),
+     legend("Mean", ["mean", "max"]),
+     [over("rate", "A", "node_disk_read_bytes_total", "{{device}} read", DISK),
+      over("rate", "B", "node_disk_written_bytes_total", "{{device}} write", DISK)]),
+    (52, "timeseries", "Disk I/O utilization", "Share of time each block device was busy (rate of "
+     "node_disk_io_time_seconds_total).", (8, 12, 0, 101), ts_defaults("percentunit"),
+     legend("Max", ["mean", "max"]),
+     [over("rate", "A", "node_disk_io_time_seconds_total", "{{device}}", DISK)]),
+    (53, "timeseries", "Disk I/O average latency", "Average time of a read and of a write, by block device "
+     "(rate of node_disk_read_time_seconds_total / rate of node_disk_reads_completed_total; writes alike).",
+     (8, 12, 12, 101), ts_defaults("s"), legend("Max", ["mean", "max"]),
+     [disk_latency("A", "read", "{{device}} read"), disk_latency("B", "write", "{{device}} write")]),
+    ("row", 105, "Containers", 109),
+    (10, "timeseries", "Container CPU usage", "CPU time of each container per second; 100% is one core (rate "
+     "of container_cpu_usage_seconds_total).", (8, 12, 0, 110), ts_defaults("percent"),
+     legend("Mean", ["mean", "max"]),
+     [("A", f"SELECT labels, t, 100 * value AS value FROM prom_agg('sum', 'rate', 'container_cpu_usage_seconds_total', "
+            f"{CA}, {R}, {RI}, p_by := ['name'])", "{{name}}", False)]),
+    (11, "timeseries", "Container memory usage", "Memory of each container, page cache included "
+     "(container_memory_usage_bytes).", (8, 12, 12, 110), ts_defaults("bytes"), legend("Last", ["mean", "max", "last"]),
+     [("A", f"SELECT labels, t, value FROM prom_last('container_memory_usage_bytes', {CA}, {R})", "{{name}}",
+       False)]),
+    (12, "timeseries", "Container network I/O", "Bytes each container receives and sends per second, all "
+     "its interfaces (rates of container_network_*_bytes_total).", (8, 12, 0, 118), ts_defaults("Bps"),
+     legend("Mean", ["mean", "max"]),
+     [by_name("A", "container_network_receive_bytes_total", "{{name}} rx"),
+      by_name("B", "container_network_transmit_bytes_total", "{{name}} tx")]),
+    (13, "timeseries", "Container disk I/O", "Bytes each container reads and writes per second, all its "
+     "devices (rates of container_fs_reads_bytes_total, container_fs_writes_bytes_total).", (8, 12, 12, 118),
+     ts_defaults("Bps"), legend("Mean", ["mean", "max"]),
+     [by_name("A", "container_fs_reads_bytes_total", "{{name}} read"),
+      by_name("B", "container_fs_writes_bytes_total", "{{name}} write")]),
 ]
 
 

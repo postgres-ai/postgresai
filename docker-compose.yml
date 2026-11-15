@@ -2,9 +2,9 @@
 # ingest, RDS host stats) + Grafana + the checkup reporter.
 #
 # Resource limits: pgai-mon 1 vCPU / 1.5 GiB, Grafana 0.5 / 0.5 GiB, reporter
-# 1 / 1.75 GiB (it runs once a day), instance-jobs 0.25 / 0.25 GiB: about
-# 4 GiB of limits in all, against ~7.3 GiB for the pgwatch + VictoriaMetrics
-# stack this replaces. Limits are caps, not reservations; the services rarely
+# 1 / 1.75 GiB (it runs once a day), instance-jobs 0.25 / 0.25 GiB, cAdvisor
+# 0.25 / 384 MiB, node-exporter 0.05 / 96 MiB: about 4.5 GiB of limits in all,
+# against ~7.3 GiB for the pgwatch + VictoriaMetrics stack this replaces. Limits are caps, not reservations; the services rarely
 # peak together. Every limit can be overridden from .env (see .env.example).
 #
 # Storage: PGAI_MON_STORE. Unset: the pgai_mon_data volume holds the store.
@@ -286,6 +286,52 @@ services:
       pgai-mon:
         condition: service_healthy
     command: ["bash", "/postgres_ai_configs/scripts/postgres-reports.sh"]
+    restart: unless-stopped
+
+  # Self-monitoring: the monitoring host itself, scraped by pgai-mon (the
+  # self-* jobs in mon/docker/pgai-mon.yml) for the self-monitoring dashboard.
+  # No published ports: pgai-mon reaches them on the compose network.
+  # cAdvisor: per-container CPU, memory, network and disk I/O, and the host's
+  # network (its root container). It reads cgroups, the Docker socket (for
+  # container names) and the Docker data directory, and runs privileged, as in
+  # the old stack (upstream asks for it on some cgroup v1 hosts). Its tags omit
+  # the 'v' prefix.
+  self-cadvisor:
+    image: ghcr.io/google/cadvisor:0.56.2
+    container_name: self-cadvisor
+    cpus: ${CADVISOR_CPUS:-0.25}
+    mem_limit: ${CADVISOR_MEM:-402653184}
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - "--housekeeping_interval=30s"
+      - "--docker_only=true"
+      - "--disable_metrics=advtcp,percpu,sched,tcp,udp,hugetlb,referenced_memory,cpu_topology,resctrl"
+      - "--store_container_labels=false"
+    restart: unless-stopped
+
+  # node-exporter: host CPU, memory, filesystems and disk I/O, read from the
+  # host's / mounted read-only. Unprivileged, no capabilities.
+  self-node-exporter:
+    image: prom/node-exporter:v1.11.1
+    container_name: self-node-exporter
+    cpus: ${NODE_EXPORTER_CPUS:-0.05}
+    mem_limit: ${NODE_EXPORTER_MEM:-100663296}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /:/host:ro,rslave
     restart: unless-stopped
 
   # Instance jobs - collection runs HERE and the results are posted out.

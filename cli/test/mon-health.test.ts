@@ -81,12 +81,14 @@ describe("mon health: which services are reported on", () => {
     expect(entry!.readHealth).toBe(true);
   });
 
-  test("the stack's services: Grafana, pgai-mon, the demo database", () => {
+  test("the stack's services: Grafana, pgai-mon, the demo database, the self-monitoring exporters", () => {
     const longStanding = services.filter(s => s.container !== "instance-jobs");
     expect(longStanding.map(s => s.container)).toEqual([
       "grafana-with-datasources",
       "pgai-mon",
       "target-db",
+      "self-node-exporter",
+      "self-cadvisor",
     ]);
     // Neither flag, so they keep the status-only check.
     // target-db is the exception: it is gated by the demo profile (below).

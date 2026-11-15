@@ -40,12 +40,13 @@ SERVICE_LIMITS: dict[str, tuple[str, str, str, str]] = {
     "grafana": ("GRAFANA_CPUS", "0.5", "GRAFANA_MEM", str(512 * 1024**2)),
     "postgres-reports": ("POSTGRES_REPORTS_CPUS", "1.0", "POSTGRES_REPORTS_MEM", str(1792 * 1024**2)),
     "instance-jobs": ("INSTANCE_JOBS_CPUS", "0.25", "INSTANCE_JOBS_MEM", str(256 * 1024**2)),
+    "self-cadvisor": ("CADVISOR_CPUS", "0.25", "CADVISOR_MEM", str(384 * 1024**2)),
+    "self-node-exporter": ("NODE_EXPORTER_CPUS", "0.05", "NODE_EXPORTER_MEM", str(96 * 1024**2)),
 }
 
 OLD_STACK_SERVICES = {
     "sink-postgres", "sink-prometheus", "vmalert", "pgwatch-postgres", "pgwatch-prometheus",
-    "sources-generator", "monitoring_flask_backend", "rds-host-stats",
-    "self-cadvisor", "self-node-exporter", "self-postgres-exporter",
+    "sources-generator", "monitoring_flask_backend", "rds-host-stats", "self-postgres-exporter",
 }
 
 PGAI_MON_URL = "http://pgai-mon:8765"
@@ -103,7 +104,7 @@ def env_of(service: dict[str, Any]) -> dict[str, str]:
 def test_service_set():
     services = set(raw()["services"])
     assert services == {"config-init", "target-db", "target-standby", "pgai-mon", "grafana",
-                        "postgres-reports", "instance-jobs"}
+                        "postgres-reports", "instance-jobs", "self-cadvisor", "self-node-exporter"}
     assert not services & OLD_STACK_SERVICES
 
 
@@ -126,6 +127,30 @@ def test_pgai_mon_service_contract():
     assert "./instances.yml:/etc/pgai-mon/instances.yml:ro" in vols
     assert "./host-metrics:/etc/pgai/host-metrics:ro" in vols
     assert svc["depends_on"]["config-init"]["condition"] == "service_completed_successfully"
+
+
+def test_self_monitoring_exporters_are_scraped_for_what_the_dashboard_reads():
+    """pgai-mon scrapes the two exporters by service name (mon/docker/pgai-mon.yml), keeps every
+    series the self-monitoring dashboard reads from them, and they keep the old stack's posture:
+    no published port, the host mounted read-only, node-exporter without capabilities."""
+    services = raw()["services"]
+    cfg = yaml.safe_load((PROJECT_ROOT / "mon" / "docker" / "pgai-mon.yml").read_text())
+    jobs = {j["job_name"]: j for j in cfg["scrape"]["jobs"]}
+    assert {n: j["static_configs"][0]["targets"] for n, j in jobs.items()} == {
+        "self-node-exporter": ["self-node-exporter:9100"], "self-cadvisor": ["self-cadvisor:8080"]}
+    for name in jobs:
+        svc = services[name]
+        assert svc["container_name"] == name and "ports" not in svc, name
+        assert all(v.endswith((":ro", ":ro,rslave")) for v in svc["volumes"]), name
+    ne = services["self-node-exporter"]
+    assert (ne["cap_drop"], ne["security_opt"], ne["read_only"]) == (["ALL"], ["no-new-privileges:true"], True)
+    dash = (PROJECT_ROOT / "mon" / "grafana" / "dashboards" / "Self_Monitoring_Dashboard_pgai_mon.json").read_text()
+    read = set(re.findall(r"'((?:node|container)_\w+)', \[\['job', '=', '(self-[\w-]+)'", dash))
+    assert len(read) == 23
+    for metric, job in read:
+        keep = jobs[job]["metric_relabel_configs"][0]
+        assert (keep["source_labels"], keep["action"]) == (["__name__"], "keep")
+        assert re.fullmatch(keep["regex"], metric), (job, metric)
 
 
 def test_own_images_follow_registry_and_tag():
@@ -180,7 +205,7 @@ def test_env_example_documents_the_stack():
         assert documented.get(cpus_var) == cpus, cpus_var
         assert documented.get(mem_var) == mem, mem_var
     # VM_RETENTION_PERIOD and QUERYID_RETENTION_HOURS stay: pgai-mon still reads them
-    for gone in ("VM_AUTH", "SINK_", "PGWATCH_", "FLASK_", "CADVISOR_"):
+    for gone in ("VM_AUTH", "SINK_", "PGWATCH_", "FLASK_", "POSTGRES_EXPORTER_"):
         assert gone not in text, f".env.example still mentions {gone}"
 
 

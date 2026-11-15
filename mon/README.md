@@ -45,7 +45,8 @@ curl -s -H "$H" --data-binary @samples.prom localhost:8765/api/v1/import/prometh
 
 `scrape.files` lists Prometheus scrape-config files (`*` allowed in the file name), e.g. the
 `host-metrics/*.yml` the CLI writes for Supabase (through the instance-jobs relay) and ClickHouse
-Cloud; `scrape.jobs` takes the same configs inline. Files are re-read every
+Cloud; `scrape.jobs` takes the same configs inline (the image's `docker/pgai-mon.yml` scrapes the
+monitoring host's own node-exporter and cAdvisor that way, for the self-monitoring dashboard). Files are re-read every
 `scrape.reload_interval_s` (10 s, no SIGHUP), secret files at every scrape. Supported: static
 targets, `scheme`, `metrics_path`, `params`, `scrape_interval` / `scrape_timeout`, `sample_limit`,
 `honor_labels`, `honor_timestamps`, `basic_auth` (password / password_file), `bearer_token(_file)`,

@@ -167,7 +167,7 @@ class Emitted(unittest.TestCase):
         self.assertEqual(set(ts), set(inst))
         for k, i in inst.items():
             self.assertEqual(step in ts[k], i, k)
-        self.assertEqual(sum(inst.values()), 4)
+        self.assertEqual(sum(inst.values()), 7)
 
     def test_table_values_keep_their_prometheus_name(self):
         """A table panel whose targets select `Value` first renames that field back: Grafana shows it

@@ -11,7 +11,7 @@ a few series per metric: database target_database, schema app, table t119 and it
 t119_unused, a handful of statements. Then it adds synthetic series for what the recording has
 none of (host metrics, WAL archiving, replication and slots, lock waits, autovacuum blocked on a
 lock, index_pilot, the settings columns metrics.yml gained later, pgai-mon's own pgai_mon_*
-series, per database and of the process), so that every panel has data to run on. Values are rounded to 6 significant digits to keep the file small.
+series, per database and of the process, the monitoring host's node-exporter and cAdvisor series), so that every panel has data to run on. Values are rounded to 6 significant digits to keep the file small.
 """
 import argparse
 import gzip
@@ -222,6 +222,39 @@ def synthetic(base, t0, t1):
     for cache, hit, miss in (("query", 1.5, 0.5), ("footer", 20, 0.2), ("row", 0.6, 0.4)):
         own("pgai_mon_cache_hits_total", counter(hit, 10), cache=cache)
         own("pgai_mon_cache_misses_total", counter(miss, 10), cache=cache)
+    # the monitoring host's exporters (self-* jobs in mon/docker/pgai-mon.yml)
+    def put(metric, values, labels):  # a label may be called `name` (cAdvisor's)
+        out.append({"metric": {"__name__": metric, **labels}, "values": [r6(v) for v in values], "timestamps": ts})
+
+    ne = {"job": "self-node-exporter", "instance": "self-node-exporter:9100"}
+    for cpu in ("0", "1"):
+        for mode, rate in (("idle", 0.7), ("user", 0.2), ("system", 0.05), ("iowait", 0.03), ("nice", 0.0),
+                           ("irq", 0.0), ("softirq", 0.01), ("steal", 0.01)):
+            put("node_cpu_seconds_total", counter(rate), {**ne, "cpu": cpu, "mode": mode})
+    for name, vals in (("MemTotal", [8 << 30] * n), ("MemFree", wave(1 << 30, 2 << 30)),
+                       ("MemAvailable", wave(3 << 30, 4 << 30)), ("Buffers", [1 << 28] * n),
+                       ("Cached", wave(2 << 30, 3 << 30)), ("SReclaimable", [1 << 27] * n)):
+        put(f"node_memory_{name}_bytes", vals, ne)
+    fs = {**ne, "device": "/dev/vda1", "fstype": "ext4", "mountpoint": "/"}
+    put("node_filesystem_size_bytes", [100 << 30] * n, fs)
+    put("node_filesystem_avail_bytes", wave(40 << 30, 41 << 30), fs)
+    for name, rate in (("reads_completed", 50), ("writes_completed", 80), ("read_bytes", 1 << 20),
+                       ("written_bytes", 2 << 20), ("io_time_seconds", 0.1), ("read_time_seconds", 0.05),
+                       ("write_time_seconds", 0.2)):
+        put(f"node_disk_{name}_total", counter(rate), {**ne, "device": "vda"})
+    ca = {"job": "self-cadvisor", "instance": "self-cadvisor:8080"}
+    root = {**ca, "id": "/", "interface": "eth0"}  # the host's network: the root cgroup, no name
+    put("container_network_receive_bytes_total", counter(50_000), root)
+    put("container_network_transmit_bytes_total", counter(25_000), root)
+    for name, cpu in (("pgai-mon", 0.3), ("grafana-with-datasources", 0.05)):
+        c = {**ca, "id": f"/docker/{name}", "name": name}
+        put("container_last_seen", [t / 1000 for t in ts], c)
+        put("container_cpu_usage_seconds_total", counter(cpu), {**c, "cpu": "total"})
+        put("container_memory_usage_bytes", wave(200 << 20, 400 << 20), c)
+        put("container_network_receive_bytes_total", counter(10_000), {**c, "interface": "eth0"})
+        put("container_network_transmit_bytes_total", counter(20_000), {**c, "interface": "eth0"})
+        put("container_fs_reads_bytes_total", counter(1 << 16), {**c, "device": "/dev/vda"})
+        put("container_fs_writes_bytes_total", counter(1 << 18), {**c, "device": "/dev/vda"})
     return out
 
 

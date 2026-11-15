@@ -202,6 +202,8 @@ describe("mon health follows the profile", () => {
         "grafana-with-datasources",
         "pgai-mon",
         "target-db",
+        "self-node-exporter",
+        "self-cadvisor",
       ]);
       for (const s of others) {
         // target-db is gated by the demo profile, not by this one.
