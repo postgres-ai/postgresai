@@ -58,7 +58,7 @@ import {
 import { registerAasCollection, parseVcpus, aasSuccessMessage, aasArmingSkipReason } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 import { PGAI_MON_URL, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
@@ -632,7 +632,7 @@ function spawnSync(cmd: string, args: string[], options?: { stdio?: "pipe" | "ig
   };
 }
 
-function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore" | "inherit"; env?: Record<string, string | undefined>; cwd?: string; detached?: boolean }): { on: (event: string, cb: (code: number | null, signal?: string) => void) => void; unref: () => void; pid?: number } {
+function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore" | "inherit"; env?: Record<string, string | undefined>; cwd?: string; detached?: boolean }): { on: (event: string, cb: (code: number | null, signal?: string) => void) => void; unref: () => void; kill: (signal: NodeJS.Signals) => void; pid?: number } {
   const proc = childProcess.spawn(cmd, args, {
     stdio: options?.stdio ?? "pipe",
     env: options?.env as NodeJS.ProcessEnv,
@@ -651,6 +651,9 @@ function spawn(cmd: string, args: string[], options?: { stdio?: "pipe" | "ignore
     },
     unref() {
       proc.unref();
+    },
+    kill(signal: NodeJS.Signals) {
+      proc.kill(signal);
     },
     pid: proc.pid,
   };
@@ -3852,9 +3855,63 @@ async function runCompose(
       env: env,
       cwd: projectDir
     });
+    const watch = args[0] === "up" && args.includes("-d") ? watchRestartLoops(projectDir, () => child.kill("SIGTERM")) : null;
     // A signal leaves code null: that is a failure, not success.
-    child.on("close", (code) => resolve(code ?? 1));
+    child.on("close", (code) => {
+      if (watch) clearInterval(watch);
+      resolve(code ?? 1);
+    });
   });
+}
+
+/** Services the last `up -d` stopped waiting for, with why: read by reportFailedServices. */
+const restartLoopReasons = new Map<string, string>();
+
+/**
+ * While `up -d` runs: compose waits for health without end on a container
+ * in a restart loop, because each restart sets its health back to
+ * "starting". Poll restart counts every 5 s and call `stop` once a
+ * container restarted RESTART_LOOP_LIMIT times since this `up` began.
+ * Killing compose leaves the containers as they are.
+ */
+function watchRestartLoops(projectDir: string, stop: () => void): ReturnType<typeof setInterval> {
+  restartLoopReasons.clear();
+  const started = Date.now();
+  let baseline: Record<string, number> | null = null;
+  const timer = setInterval(() => {
+    try {
+      const ps = composeCapture(projectDir, ["ps", "-a", "--format", "json"]);
+      if (!ps || ps.status !== 0) return;
+      const containers = parseComposePs(ps.stdout).filter((e) => e.ID);
+      if (containers.length === 0) return;
+      const r = spawnSync("docker", ["inspect", "-f", "{{.Id}} {{.RestartCount}}", ...containers.map((c) => c.ID as string)], {
+        stdio: "pipe", encoding: "utf8", timeout: 10000,
+      } as Parameters<typeof spawnSync>[2]);
+      // Some ids may be gone (exit non-zero): use the lines that came back.
+      const counts = new Map<string, number>();
+      for (const line of String(r.stdout ?? "").split("\n")) {
+        const [id, n] = line.trim().split(" ");
+        if (id && /^\d+$/.test(n ?? "")) counts.set(id, Number(n));
+      }
+      const now = containers.flatMap((c) => {
+        const id = [...counts.keys()].find((full) => full.startsWith(c.ID as string));
+        return id ? [{ id, service: c.Service, restarts: counts.get(id) as number }] : [];
+      });
+      if (baseline === null) {
+        baseline = Object.fromEntries(now.map((c) => [c.id, c.restarts]));
+        return;
+      }
+      const loops = restartLoops(baseline, now);
+      if (loops.length === 0) return;
+      const seconds = Math.round((Date.now() - started) / 1000);
+      for (const l of loops) restartLoopReasons.set(l.service, `keeps restarting (${l.restarts} restarts in ${seconds} s)`);
+      clearInterval(timer);
+      stop();
+    } catch {
+      // A poll that fails must never fail the install: skip it.
+    }
+  }, 5000);
+  return timer;
 }
 
 /** The project's docker-compose.yml as text, or null when it cannot be read. */
@@ -4375,10 +4432,13 @@ function stackProblemsNow(projectDir: string): string[] | null {
  */
 function reportFailedServices(projectDir: string): void {
   const ps = composeCapture(projectDir, ["ps", "-a", "--format", "json"]);
-  if (!ps || ps.status !== 0) return;
-  const states = parseComposePs(ps.stdout);
-  for (const service of failedServices(states)) {
-    const why = stackProblems([service], states).map((p) => p.slice(service.length + 2)).join(", ");
+  const states = ps && ps.status === 0 ? parseComposePs(ps.stdout) : [];
+  // A container in a restart loop is "running" most of the time, so name
+  // the ones the `up` watcher caught even when they look fine right now.
+  const services = new Set([...restartLoopReasons.keys(), ...failedServices(states)]);
+  for (const service of services) {
+    const why = restartLoopReasons.get(service)
+      ?? stackProblems([service], states).map((p) => p.slice(service.length + 2)).join(", ");
     console.error(`\n✗ Service ${service} failed (${why}). Its last 20 log lines:`);
     const logs = composeCapture(projectDir, ["logs", "--tail", "20", "--no-color", service]);
     const text = logs && logs.status === 0 ? logs.stdout.trimEnd() : "";

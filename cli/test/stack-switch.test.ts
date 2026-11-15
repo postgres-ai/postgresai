@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import { resolve } from "path";
-import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, oldStackVolumeNames, parseComposePs, redactStoreUrl, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, oldStackVolumeNames, parseComposePs, redactStoreUrl, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 
 /**
  * The switch of an existing install from the old pgwatch + VictoriaMetrics
@@ -546,5 +546,23 @@ describe("stack helpers", () => {
     // Only the failed ones get their logs printed after a failed `up`.
     expect(failedServices(broken)).toEqual(["config-init", "pgai-mon", "grafana"]);
     expect(failedServices(ok)).toEqual([]);
+  });
+
+  test("restartLoops counts restarts since the baseline, per service, from the limit up", () => {
+    const now = [
+      { id: "a", service: "pgai-mon", restarts: 3 },
+      { id: "b", service: "grafana", restarts: 7 },
+      { id: "c", service: "postgres-reports", restarts: 2 },
+    ];
+    // New containers count from 0; an old install's past restarts do not count.
+    expect(restartLoops({}, now)).toEqual([{ service: "pgai-mon", restarts: 3 }, { service: "grafana", restarts: 7 }]);
+    expect(restartLoops({ a: 1, b: 5 }, now)).toEqual([]);
+    expect(restartLoops({ a: 0, b: 4 }, now)).toEqual([{ service: "pgai-mon", restarts: 3 }, { service: "grafana", restarts: 3 }]);
+    // A recreated container (lower count under a new id) is not blamed for the old one.
+    expect(restartLoops({ a: 9 }, [{ id: "a2", service: "pgai-mon", restarts: 0 }])).toEqual([]);
+    // Scaled replicas: one entry per service, with the worst count.
+    expect(restartLoops({}, [
+      { id: "x", service: "w", restarts: 4 }, { id: "y", service: "w", restarts: 6 },
+    ])).toEqual([{ service: "w", restarts: 6 }]);
   });
 });

@@ -111,6 +111,7 @@ export function redactStoreUrl(store: string): string {
 
 /** One container as `docker compose ps -a --format json` reports it. */
 export interface ComposePsEntry {
+  ID?: string;
   Service: string;
   State: string;
   Health?: string;
@@ -191,4 +192,33 @@ export function failedServices(ps: ComposePsEntry[]): string[] {
     }
   }
   return [...failed];
+}
+
+/** Restarts since an `up` began after which the install stops waiting. */
+export const RESTART_LOOP_LIMIT = 3;
+
+/** One container's restart count, as `docker inspect` reports it. */
+export interface ContainerRestarts {
+  id: string;
+  service: string;
+  restarts: number;
+}
+
+/**
+ * Services with a container that restarted `limit` times or more since the
+ * baseline (container id -> restart count at the first poll). A container
+ * not in the baseline is new, so its baseline is 0. Counting from the
+ * baseline keeps a restart from an old run from being blamed.
+ */
+export function restartLoops(
+  baseline: Record<string, number>,
+  now: ContainerRestarts[],
+  limit = RESTART_LOOP_LIMIT,
+): { service: string; restarts: number }[] {
+  const worst = new Map<string, number>();
+  for (const c of now) {
+    const n = c.restarts - (baseline[c.id] ?? 0);
+    if (n >= limit && n > (worst.get(c.service) ?? 0)) worst.set(c.service, n);
+  }
+  return [...worst].map(([service, restarts]) => ({ service, restarts }));
 }
