@@ -47,7 +47,7 @@ def fixture_generator(monkeypatch: pytest.MonkeyPatch) -> PostgresReportGenerato
     monkeypatch.setattr(gen, "_get_hourly_topk_pgss_data", hourly)
     gen.sink_reads = 0
 
-    def texts(limit=655360, db_names=None):
+    def texts(limit=655360, db_names=None, cluster=None, node_name=None):
         gen.sink_reads += 1
         return TEXTS
 

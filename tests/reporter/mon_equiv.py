@@ -91,8 +91,10 @@ def _jsonl(name: str) -> List[dict]:
     return [json.loads(x) for x in (FIXTURE / name).read_text().splitlines() if x.strip()]
 
 
-def sink_query_texts(query_text_limit: int = 655360, db_names: Optional[List[str]] = None) -> Dict[str, Dict[str, str]]:
-    """The old sink query: distinct on (dbname, queryid) ... order by time desc."""
+def sink_query_texts(query_text_limit: int = 655360, db_names: Optional[List[str]] = None,
+                     cluster: Optional[str] = None, node_name: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+    """The old sink query: distinct on (dbname, queryid) ... order by time desc (the sink kept
+    no cluster or node, and the fixture has one of each)."""
     best: Dict[Tuple[str, str], dict] = {}
     for r in _jsonl("query_texts.jsonl"):
         if db_names and r["dbname"] not in db_names:

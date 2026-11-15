@@ -229,10 +229,36 @@ def test_query_texts_and_index_definitions():
     s = _Session(_rows(["dbname", "queryid", "query"], [["db1", "-5", "select 1234567"], ["db2", "7", "select 2"]]))
     c = MonClient("http://m", session=s)
     assert c.query_texts(query_text_limit=8) == {"db1": {"-5": "select 1..."}, "db2": {"7": "select 2"}}
+    assert "cluster" not in s.sent[-1][1] and "node_name" not in s.sent[-1][1]
     s.body = _rows(["dbname", "name", "definition"], [["db1", "i1", "CREATE INDEX i1 ON t (a)"]])
     assert c.index_definitions("db1") == {"i1": "CREATE INDEX i1 ON t (a)"}
     assert c.index_definitions() == {"db1.i1": "CREATE INDEX i1 ON t (a)"}
     assert "dbname = 'db1'" in s.sent[-2][1] and "valid_to IS NULL" in s.sent[-1][1]
+
+
+def test_query_texts_of_one_cluster_and_node():
+    """Two clusters with the same database name and queryid: each report gets its own text."""
+    stored = [  # (cluster, node_name, dbname, queryid, query) as pgai-mon holds them
+        ("c1", "n1", "app", 7, "select from c1"), ("c2", "n1", "app", 7, "select from c2"),
+        (None, None, "app", 9, "select before the source columns")]
+
+    class Store(_Session):  # answers the WHERE conditions query_texts writes
+        def post(self, url, json=None, headers=None, timeout=None):
+            sql = json["sql"]
+            self.sent.append((url, sql, headers))
+            keep = [r for r in stored if all(
+                v is None or f"{col} = '{v}'" in sql or f"{col} =" not in sql
+                for col, v in (("cluster", r[0]), ("node_name", r[1])))]
+            return _Resp(_rows(["dbname", "queryid", "query"], [[r[2], str(r[3]), r[4]] for r in keep]), 200)
+
+    c = MonClient("http://m", session=Store(None))
+    assert c.query_texts(cluster="c1", node_name="n1") == {
+        "app": {"7": "select from c1", "9": "select before the source columns"}}
+    assert c.query_texts(cluster="c2", node_name="n1")["app"]["7"] == "select from c2"
+    assert "(cluster = 'c2' OR cluster IS NULL) AND (node_name = 'n1' OR node_name IS NULL)" in c.session.sent[-1][1]
+    pages = c.query_texts(cluster="it's")  # a cluster alone, quoted
+    assert pages == {"app": {"9": "select before the source columns"}}
+    assert "cluster = 'it''s'" in c.session.sent[-1][1] and "node_name" not in c.session.sent[-1][1]
 
 
 def test_query_texts_continue_after_a_truncated_answer():
@@ -263,7 +289,7 @@ def test_generator_routes_to_mon(monkeypatch):
     assert gen.mon is not None and gen.mon.url == "http://pgai-mon:8765"
     calls = []
     monkeypatch.setattr(gen.mon, "query_instant", lambda q: calls.append(q) or {"status": "success"})
-    monkeypatch.setattr(gen.mon, "query_texts", lambda limit, dbs: {"db": {"1": "x"}})
+    monkeypatch.setattr(gen.mon, "query_texts", lambda limit, dbs, cluster=None, node_name=None: {"db": {"1": "x"}})
     monkeypatch.setattr(gen.mon, "index_definitions", lambda db: {"i": "d"})
     assert gen.query_instant("up") == {"status": "success"} and calls == ["up"]
     assert gen.get_queryid_queries_from_sink(10, ["db"]) == {"db": {"1": "x"}}

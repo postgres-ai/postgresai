@@ -587,20 +587,23 @@ class PostgresReportGenerator:
 
         return index_definitions
 
-    def get_queryid_queries_from_sink(self, query_text_limit: int = 655360, db_names: List[str] = None) -> Dict[str, Dict[str, str]]:
+    def get_queryid_queries_from_sink(self, query_text_limit: int = 655360, db_names: List[str] = None,
+                                      cluster: str = None, node_name: str = None) -> Dict[str, Dict[str, str]]:
         """
         Get queryid-to-query text mappings from the Postgres sink database.
 
         Args:
             query_text_limit: Maximum number of characters for each query text (default: 655360)
             db_names: Optional list of database names to filter results (default: fetch all)
+            cluster, node_name: Optional cluster and node the texts were collected from (pgai-mon
+                only; the Postgres sink does not record them)
 
         Returns:
             Dictionary with database names as keys, containing queryid->query mappings
         """
         if self.mon:
             try:
-                return self.mon.query_texts(query_text_limit, db_names)
+                return self.mon.query_texts(query_text_limit, db_names, cluster=cluster, node_name=node_name)
             except Exception as e:
                 logger.error(f"Error fetching query texts from pgai-mon: {e}")
                 return {}
@@ -1044,7 +1047,7 @@ class PostgresReportGenerator:
             if longest is not None:
                 texts: Dict[str, str] = {}
                 if longest:
-                    for queries in self.get_queryid_queries_from_sink().values():
+                    for queries in self.get_queryid_queries_from_sink(cluster=cluster, node_name=node_name).values():
                         texts.update(queries)
                 data["lock_waits"] = g003_facts.lock_waits(
                     longest, latest(f'tmax_over_time({metric})') or [], window=window, query_text=texts.get)
@@ -3787,6 +3790,7 @@ class PostgresReportGenerator:
         """
         logger.info("Generating K003 Top Queries by total_time (exec + plan) report...")
         self._k003_text_cache = None  # this report's sink read (_k003_texts)
+        self._k003_text_scope = (cluster, node_name)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -5482,7 +5486,9 @@ class PostgresReportGenerator:
         by_db = getattr(self, "_k003_text_cache", None)
         if by_db is None:  # one sink read per report, not one per database
             try:
-                by_db = self.get_queryid_queries_from_sink(K003_TEXT_FETCH_CHARS) or {}
+                cluster, node_name = getattr(self, "_k003_text_scope", (None, None))
+                by_db = self.get_queryid_queries_from_sink(K003_TEXT_FETCH_CHARS, cluster=cluster,
+                                                           node_name=node_name) or {}
             except Exception as e:
                 logger.warning(f"K003 statement texts unavailable: {e}")
                 by_db = {}
@@ -6639,7 +6645,8 @@ class PostgresReportGenerator:
         # prometheus (datname like 'target_database') and sink (dbname like 'target-database')
         db_names_list = list(queryids_by_db.keys())
         logger.info(f"Fetching query texts for {len(db_names_list)} database(s): {db_names_list}")
-        query_texts = self.get_queryid_queries_from_sink(query_text_limit, db_names=None)
+        query_texts = self.get_queryid_queries_from_sink(query_text_limit, db_names=None,
+                                                         cluster=cluster, node_name=node_name)
 
         query_files = []
         # Invert {db: set(queryid)} -> {queryid: set(db)}

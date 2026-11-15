@@ -170,11 +170,17 @@ class MonClient:
         return result
 
     # -- what the pgwatch Postgres sink held ---------------------------------------------------
-    def query_texts(self, query_text_limit: int = 655360, db_names: Optional[List[str]] = None) -> Dict[str, Dict[str, str]]:
-        """{dbname: {queryid: text}}, the latest text per (database, queryid)."""
+    def query_texts(self, query_text_limit: int = 655360, db_names: Optional[List[str]] = None,
+                    cluster: Optional[str] = None, node_name: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+        """{dbname: {queryid: text}}, the latest text per (database, queryid), of one cluster and
+        node when given (rows stored without them, by a source without those tags or before
+        pgai-mon recorded them, count for any)."""
         where = ""
         if db_names:
             where = "AND dbname IN (" + ", ".join(promsql._q(d) for d in db_names) + ")"
+        for col, val in (("cluster", cluster), ("node_name", node_name)):
+            if val is not None:
+                where += f" AND ({col} = {promsql._q(val)} OR {col} IS NULL)"
         # Every text of every database passes pgai-mon's answer caps on a large installation, so
         # the rows come in key order and a cut answer is continued after its last row.
         out: Dict[str, Dict[str, str]] = {}

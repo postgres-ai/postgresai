@@ -193,7 +193,7 @@ class Box(PostgresReportGenerator):
     def query_range(self, query, start_time, end_time, step="30s"):
         return self.ranges
 
-    def get_queryid_queries_from_sink(self, query_text_limit=655360, db_names=None):
+    def get_queryid_queries_from_sink(self, query_text_limit=655360, db_names=None, cluster=None, node_name=None):
         return {"app": {"1": "update t set a = 1"}}
 
 
