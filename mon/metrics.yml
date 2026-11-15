@@ -425,7 +425,10 @@ metrics:
             vartype,
             -- For these settings, compare reset_val with boot_val
             -- since source becomes 'session' during collection.
+            -- client_encoding: the collector's driver sends it at connect (source 'client'); that is
+            -- not a setting someone altered.
             case
+              when name = 'client_encoding' then (source in ('default', 'client'))
               when name in ('lock_timeout', 'statement_timeout', 'search_path', 'default_transaction_read_only') then (reset_val = boot_val)
               else (source = 'default')
             end as is_default_bool

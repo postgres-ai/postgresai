@@ -142,6 +142,13 @@ def test_settings_metric_reports_transaction_read_only_as_a_session_has_it(metri
 
 
 @pytest.mark.unit
+def test_settings_metric_does_not_call_the_collectors_client_encoding_altered(metrics_config: dict) -> None:
+    """The collector's driver sends client_encoding at connect, which makes its source 'client'."""
+    sql = normalized(metrics_config["metrics"]["settings"]["sqls"][11])
+    assert "when name = 'client_encoding' then (source in ('default', 'client'))" in sql
+
+
+@pytest.mark.unit
 def test_settings_metric_is_default_uses_boot_val_for_overridden_settings(metrics_config: dict) -> None:
     """
     Test that is_default compares reset_val with boot_val for overridden settings.
