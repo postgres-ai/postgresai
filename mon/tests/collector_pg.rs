@@ -555,6 +555,45 @@ async fn an_unreachable_source_backs_off_and_reports_down() {
     let _ = stop.send(true);
 }
 
+/// `up` is 1 while its driver metric (wait_events here) collects, 0 once it stops (its table
+/// locked: every run hits lock_timeout), and 1 again after.
+#[tokio::test]
+async fn up_follows_its_driver_metric() {
+    let url = need_pg!();
+    let a = admin(&url).await;
+    let db = fresh_db(&a, &url, "pgai_t_up").await;
+    let (locker, conn) = tokio_postgres::connect(&db, NoTls).await.unwrap();
+    tokio::spawn(conn);
+    locker.batch_execute("create table t (x int)").await.unwrap();
+    let h = harness(CollectorCfg {
+        self_metrics_interval_s: 1,
+        ..Default::default()
+    });
+    let mut src = source("upd", &db);
+    src.scrape_labels = [("job", "pgwatch-prometheus"), ("instance", "upd")]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(collector::run_source(
+        src,
+        vec![metric("wait_events", 1, "sqls: {11: 'select count(*) as v from t'}")],
+        vec![],
+        h.ctx.clone(),
+        rx,
+    ));
+    let up = || h.sink.value("up", ("instance", "upd"));
+    wait_for("up = 1", 10, || up() == Some(1.0)).await;
+    locker
+        .batch_execute("begin; lock table t in access exclusive mode")
+        .await
+        .unwrap();
+    wait_for("up = 0 while wait_events fails", 10, || up() == Some(0.0)).await;
+    locker.batch_execute("commit").await.unwrap();
+    wait_for("up = 1 again", 10, || up() == Some(1.0)).await;
+    let _ = stop.send(true);
+}
+
 /// The collector's own series carry the source identity (cluster, node_name) besides dbname.
 /// Needs no Postgres: nothing listens on port 1.
 #[tokio::test]

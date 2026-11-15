@@ -32,7 +32,7 @@ the read side over an existing store.
 | `compactor` | thread | Every 60 s: merges files, builds rollups, applies retention, deletes files past their grace time. Waits while queries run, for at most 10 minutes. |
 | uploader | thread, S3 store only | Every `store.s3.upload_interval_s`: uploads new files and commits `catalog.json` to the bucket. |
 | `tailer` | thread per `logs[]` entry | Reads new jsonlog lines once a second. |
-| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config and the sources file every `collector.reload_interval_s` and on SIGHUP. A job runs once at the start, then at a fixed phase in its interval (a hash of its name, below min(interval, 60 s)), so the jobs of one tick do not start together. |
+| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config and the sources file every `collector.reload_interval_s` and on SIGHUP. A job runs once at the start, then at a fixed phase in its interval (a hash of its name, below min(interval, 60 s)), so the jobs of one tick do not start together. `up` (for a source with a scrape `job`) is 1 while its driver metric (wait_events, else the first with the shortest interval) succeeded within 1.5 intervals, 0 when it fails or hangs, and absent before its first run. |
 | scraper, host rules, RDS host stats, self metrics | tokio tasks | Other producers of samples; they write through `ingest.rs`. |
 | flush ticker | tokio task | Asks the store thread to flush every `store.flush_interval_s` (60 s). |
 

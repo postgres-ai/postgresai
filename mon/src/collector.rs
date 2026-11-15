@@ -288,12 +288,42 @@ pub fn up_series(scrape_labels: &BTreeMap<String, String>) -> Option<(u64, Strin
     Some((series_id("up", &labels), "up".to_string(), labels))
 }
 
-/// How often `up` is written: the interval of the shortest-interval metric this worker runs
-/// (wait_events, 15 s, in the full preset). Panels that divide by `sum_over_time(up[i])`
-/// (Active session history: wait-event samples per scrape) then get one `up` per collection
-/// of their numerator, as one VictoriaMetrics scrape per pgwatch collection gives.
+/// The interval of the shortest-interval metric this worker runs (wait_events, 15 s, in the
+/// full preset): the `up` interval when the list has no wait_events (up_driver). Panels that
+/// divide by `sum_over_time(up[i])` (Active session history: wait-event samples per scrape)
+/// get one `up` per collection of their numerator, as one VictoriaMetrics scrape per pgwatch
+/// collection gives.
 pub fn up_interval_s(metrics: &[Scheduled]) -> Option<u64> {
     metrics.iter().map(|m| m.interval_s).filter(|&i| i > 0).min()
+}
+
+/// The metric whose collection `up` reports on: wait_events when the list has it (the
+/// Active session history numerator), else the first by name with the `up` interval.
+/// (name, its interval in s).
+pub fn up_driver(metrics: &[Scheduled]) -> Option<(String, u64)> {
+    if let Some(m) = metrics.iter().find(|m| m.name == "wait_events" && m.interval_s > 0) {
+        return Some((m.name.clone(), m.interval_s));
+    }
+    let i = up_interval_s(metrics)?;
+    let m = metrics
+        .iter()
+        .filter(|m| m.interval_s == i)
+        .min_by(|a, b| a.name.cmp(&b.name))?;
+    Some((m.name.clone(), i))
+}
+
+/// The `up` sample for a driver's job status: none while it has never finished a run, 1
+/// when its last success is at most 1.5 intervals old, else 0 (it fails, hangs or is
+/// skipped), as a failed Prometheus scrape writes 0.
+pub fn up_value(last_success_ms: Option<i64>, runs: u64, now_ms: i64, interval_s: u64) -> Option<f64> {
+    if runs == 0 {
+        return None;
+    }
+    let limit_ms = interval_s.max(1) as i64 * 1500;
+    Some(match last_success_ms {
+        Some(t) if now_ms - t <= limit_ms => 1.0,
+        _ => 0.0,
+    })
 }
 
 /// Sends what the collector produces to the store thread.
@@ -946,8 +976,12 @@ enum JobKind {
     QueryTexts,
     Objects,
     StatsResets,
-    /// `up` = 1, as the VictoriaMetrics scrape of pgwatch wrote it (up_series).
-    Up(Vec<(String, String)>),
+    /// `up` (up_series): whether the driver metric (up_driver) collects (up_value).
+    Up {
+        labels: Vec<(String, String)>,
+        driver: String,
+        driver_interval_s: u64,
+    },
     /// The collector's own series for this database.
     SelfMetrics,
 }
@@ -959,7 +993,7 @@ impl JobKind {
             JobKind::QueryTexts => "query_texts".into(),
             JobKind::Objects => "objects".into(),
             JobKind::StatsResets => "stats_resets".into(),
-            JobKind::Up(_) => "up".into(),
+            JobKind::Up { .. } => "up".into(),
             JobKind::SelfMetrics => "self_metrics".into(),
         }
     }
@@ -1062,8 +1096,18 @@ fn build_slots(
         kinds.push((JobKind::StatsResets, cfg.stats_reset_interval_s));
     }
     if db.is_main {
-        if let (Some((_, _, l)), Some(i)) = (up_series(&db.src.scrape_labels), up_interval_s(metrics)) {
-            kinds.push((JobKind::Up(l), i));
+        // one `up` per collection of the driver, so `up` runs at the driver's interval
+        if let (Some((_, _, labels)), Some((driver, driver_interval_s))) =
+            (up_series(&db.src.scrape_labels), up_driver(metrics))
+        {
+            kinds.push((
+                JobKind::Up {
+                    labels,
+                    driver,
+                    driver_interval_s,
+                },
+                driver_interval_s,
+            ));
         }
     }
     if cfg.self_metrics_interval_s > 0 {
@@ -1157,10 +1201,23 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
 async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMutexGuard<JobState>) {
     let em = &db.ctx.em;
     match &kind {
-        JobKind::Up(labels) => {
-            let id = series_id("up", labels);
-            em.emit(vec![(id, "up".into(), labels.clone())], now_ms(), vec![(id, 1.0)])
-                .await;
+        JobKind::Up {
+            labels,
+            driver,
+            driver_interval_s,
+        } => {
+            let now = now_ms();
+            let (last, runs) = db.status(|d| {
+                d.jobs
+                    .get(driver)
+                    .map(|j| (j.last_success_ms, j.runs))
+                    .unwrap_or_default()
+            });
+            if let Some(v) = up_value(last, runs, now, *driver_interval_s) {
+                let id = series_id("up", labels);
+                em.emit(vec![(id, "up".into(), labels.clone())], now, vec![(id, v)])
+                    .await;
+            }
             return;
         }
         JobKind::SelfMetrics => {
@@ -1691,6 +1748,32 @@ mod tests {
             up_interval_s(&[sched("db_stats", 30), sched("wait_events", 15), sched("x", 0)]),
             Some(15)
         );
+        let full = [sched("db_stats", 15), sched("wait_events", 30), sched("archiver", 15)];
+        assert_eq!(up_driver(&full), Some(("wait_events".to_string(), 30)));
+        assert_eq!(up_driver(&full[..1]), Some(("db_stats".to_string(), 15)));
+        assert_eq!(
+            up_driver(&[full[0].clone(), full[2].clone()]),
+            Some(("archiver".to_string(), 15))
+        );
+        assert_eq!(up_driver(&[]), None);
+    }
+
+    #[test]
+    fn up_says_whether_the_driver_collects() {
+        let now = 1_000_000;
+        assert_eq!(up_value(None, 0, now, 15), None, "never ran: nothing");
+        assert_eq!(up_value(Some(now - 1_000), 3, now, 15), Some(1.0), "fresh");
+        assert_eq!(
+            up_value(Some(now - 22_500), 3, now, 15),
+            Some(1.0),
+            "1.5 intervals: still up"
+        );
+        assert_eq!(
+            up_value(Some(now - 22_501), 3, now, 15),
+            Some(0.0),
+            "stale: hangs or fails"
+        );
+        assert_eq!(up_value(None, 2, now, 15), Some(0.0), "ran, never succeeded");
     }
 
     #[test]
