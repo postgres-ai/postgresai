@@ -141,7 +141,7 @@ export function judgeTargetTestFailure(
   const bySource = (collector as { by_source?: Record<string, unknown> } | null | undefined)?.by_source;
   const databases = (bySource?.[name] as { databases?: Record<string, unknown> } | null | undefined)?.databases;
   const db = (databases?.[name] ?? Object.values(databases ?? {})[0]) as { up?: unknown; last_error?: unknown } | undefined;
-  const noDns = `- The host name of '${name}' does not resolve from this machine (${oneLine(message)})`;
+  const noDns = `- The host name of target '${name}' does not resolve from this machine (${oneLine(message)})`;
   if (db?.up === true) {
     return { ok: true, lines: [noDns, `✓ pgai-mon, which connects from inside the Docker network, reports '${name}' up`] };
   }

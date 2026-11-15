@@ -346,6 +346,7 @@ describe("recovering a partly running stack", () => {
     expect(ups().length).toBe(1);
     expect(ups()[0]).toMatch(/ up -d --no-deps grafana$/);
     expect(r.stdout).toContain("Grafana is removed");
+    expect(r.stdout).not.toContain("mon restart");
   });
 
   // Grafana is missing only because GRAFANA_SCALE was 0: that is no reason to recreate the rest.
@@ -358,6 +359,8 @@ describe("recovering a partly running stack", () => {
     expect(ups().length).toBe(1);
     expect(ups()[0]).toMatch(/ up -d --no-deps grafana$/);
     expect(r.stdout).toContain("Grafana is running");
+    expect(r.stdout).not.toContain("mon restart");
+    expect(r.stdout).not.toContain("Local install completed");
   });
 
   test("a missing service counts: Grafana left out by GRAFANA_SCALE=0 does not", () => {

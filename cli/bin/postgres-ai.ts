@@ -5552,7 +5552,7 @@ mon
       console.log(`Monitoring services are not all running and healthy (${problems.join(", ")}): installing over them\n`);
     } else if (running && !onPrestarted) {
       console.error(`⚠ Monitoring services are already running: ${containers.join(", ")}`);
-      console.log("Use 'postgres-ai mon restart' to restart them\n");
+      if (opts.grafana === undefined) console.log("Use 'postgres-ai mon restart' to restart them\n");
       // This path returns without any `up`, so a profile change written to
       // .env moments ago would never reach the stack -- which is how a
       // re-deploy over a running box silently leaves the channel off.

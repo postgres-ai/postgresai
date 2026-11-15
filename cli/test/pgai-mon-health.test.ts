@@ -177,7 +177,7 @@ describe("judgeTargetTestFailure", () => {
   const dnsError = Object.assign(new Error("getaddrinfo EAI_AGAIN target-standby"), { code: "EAI_AGAIN" });
   const seen = (db: unknown) => ({ by_source: { standby: { state: "running", databases: { standby: db } } } });
   const failed = "✗ Connection failed: getaddrinfo EAI_AGAIN target-standby";
-  const noDns = "- The host name of 'standby' does not resolve from this machine (getaddrinfo EAI_AGAIN target-standby)";
+  const noDns = "- The host name of target 'standby' does not resolve from this machine (getaddrinfo EAI_AGAIN target-standby)";
 
   test("pgai-mon reports the target up: ok, and says why the local test could not connect", () => {
     expect(judgeTargetTestFailure("standby", dnsError, seen({ up: true, last_error: null }))).toEqual({
