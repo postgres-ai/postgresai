@@ -266,6 +266,12 @@ function ensureRequiredEnvVars(projectDir: string): string[] {
  * Every writer of this file goes through here (#359).
  */
 function writeEnvFile(envFile: string, content: string): void {
+  let before = "";
+  try {
+    before = fs.readFileSync(envFile, "utf8");
+  } catch {
+    /* no file yet */
+  }
   // Resolve a symlink so the rename replaces the target, not the link.
   let targetFile = envFile;
   try {
@@ -299,6 +305,20 @@ function writeEnvFile(envFile: string, content: string): void {
       /* nothing more we can do */
     }
     throw error;
+  }
+
+  // Compose takes a variable from the environment before .env. Bun loads the
+  // .env of the working directory into the environment at startup, so a CLI
+  // run from the project directory carries the old value of every key: after
+  // this write, compose would still use it (`mon update` pulled the new
+  // stack's images with the old PGAI_TAG). An environment value equal to the
+  // one this write replaces follows the file.
+  for (const key of new Set([...before.matchAll(/^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]))) {
+    const was = parseEnvValue(before, key);
+    const now = parseEnvValue(content, key);
+    if (was === now || process.env[key] !== was) continue;
+    if (now === undefined) delete process.env[key];
+    else process.env[key] = now;
   }
 }
 

@@ -71,7 +71,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       '  *" volume ls "*) for v in $VOLUMES; do echo "$v"; done; exit 0 ;;',
       '  *" ps -q sink-prometheus "*) [ -n "$OLD_RUNNING" ] && echo old123; exit 0 ;;',
       '  *" ps -q pgai-mon "*) [ -n "$NEW_RUNNING" ] && echo new123; exit 0 ;;',
-      '  *" pull "*) [ -z "$PULL_NEEDS_TAG" ] || grep -q "^PGAI_TAG=$PULL_NEEDS_TAG\\$" .env || exit 1; exit ${PULL_EXIT:-0} ;;',
+      // As compose reads it: a PGAI_TAG in the environment wins over .env.
+      '  *" pull "*) tag="${PGAI_TAG-$(sed -n "s/^PGAI_TAG=//p" .env)}"; [ -z "$PULL_NEEDS_TAG" ] || [ "$tag" = "$PULL_NEEDS_TAG" ] || exit 1; exit ${PULL_EXIT:-0} ;;',
       '  *" down "*) exit ${DOWN_EXIT:-0} ;;',
       '  *" up "*) exit ${UP_EXIT:-0} ;;',
       '  *" config --services "*) for s in $CONFIG_SERVICES; do echo "$s"; done; exit 0 ;;',
