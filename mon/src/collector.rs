@@ -781,6 +781,19 @@ pub fn backoff_delay(min_s: u64, max_s: u64, attempt: u32) -> Duration {
     Duration::from_secs_f64(capped * (0.5 + 0.5 * r))
 }
 
+/// The attempt a failed connect counts as, given the last counted one and its backoff end;
+/// None when that backoff has not passed: connects that failed side by side count once. A
+/// streak ends when the last backoff passed more than `max_s` ago: jobs kept running on the
+/// sessions that stayed open, so no connect succeeded to clear it, and the next outage must
+/// not start at the longest wait.
+fn next_attempt(last: Option<(u32, tokio::time::Instant)>, now: tokio::time::Instant, max_s: u64) -> Option<u32> {
+    match last {
+        Some((_, until)) if until > now => None,
+        Some((n, until)) if now - until <= Duration::from_secs(max_s) => Some(n + 1),
+        _ => Some(1),
+    }
+}
+
 enum Take {
     Idle(Idle),
     Permit(OwnedSemaphorePermit),
@@ -864,9 +877,11 @@ impl NodePool {
             Err(e) => {
                 {
                     let mut b = self.backoff.lock().unwrap();
-                    let n = b.get(conn_str).map_or(0, |(n, _)| *n) + 1;
-                    let d = backoff_delay(self.cfg.reconnect_min_s, self.cfg.reconnect_max_s, n);
-                    b.insert(conn_str.to_string(), (n, tokio::time::Instant::now() + d));
+                    let now = tokio::time::Instant::now();
+                    if let Some(n) = next_attempt(b.get(conn_str).copied(), now, self.cfg.reconnect_max_s) {
+                        let d = backoff_delay(self.cfg.reconnect_min_s, self.cfg.reconnect_max_s, n);
+                        b.insert(conn_str.to_string(), (n, now + d));
+                    }
                 }
                 drop(permit);
                 self.notify.notify_waiters();
@@ -1857,6 +1872,19 @@ mod tests {
         }
         let ds: HashSet<u64> = (0..20).map(|_| backoff_delay(2, 120, 5).as_micros() as u64).collect();
         assert!(ds.len() > 1, "jitter");
+    }
+
+    #[test]
+    fn backoff_counts_a_round_once_and_forgets_an_old_streak() {
+        let t0 = tokio::time::Instant::now();
+        let s = Duration::from_secs;
+        assert_eq!(next_attempt(None, t0, 120), Some(1));
+        // a connect that failed beside the one already counted
+        assert_eq!(next_attempt(Some((1, t0 + s(2))), t0, 120), None);
+        // the next try after the backoff: the streak grows
+        assert_eq!(next_attempt(Some((6, t0)), t0 + s(5), 120), Some(7));
+        // the last failure is from an outage that ended long ago
+        assert_eq!(next_attempt(Some((6, t0)), t0 + s(300), 120), Some(1));
     }
 
     #[test]
