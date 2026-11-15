@@ -319,7 +319,8 @@ When the install still runs the old stack, `mon update` switches it to `pgai-mon
 1. It replaces `docker-compose.yml` (backup: `docker-compose.yml.bak-<oldtag>-<hash>`) and pulls
    the images of this CLI's version.
 2. It removes the old stack's containers and, if the old stack was running, starts the new one.
-3. It prints the names of the old data volumes and the command that removes them.
+3. It prints the names of the old data volumes, the command that removes them, and the
+   commands that bring the old stack back.
 
 What to expect:
 
@@ -332,15 +333,22 @@ What to expect:
 - If the image pull fails, the old stack keeps running, its `docker-compose.yml` and `PGAI_TAG`
   are put back, and you can run `mon update` again.
 
-To go back to the old stack:
+To go back to the old stack (`mon update` prints these commands with your paths filled in):
 
 ```bash
 cd ~/.postgres_ai                     # your monitoring directory
 postgresai mon stop                   # stop the new stack; volumes stay
+docker volume rm <project>_postgres_ai_configs   # the old stack fills it again
 cp docker-compose.yml.bak-<oldtag>-<hash> docker-compose.yml
 # edit .env: set PGAI_TAG=<the old version>
 docker compose up -d
 ```
+
+The `postgres_ai_configs` volume holds Grafana's provisioning files. Without the `docker volume
+rm`, the old Grafana finds the new stack's datasource beside its own and keeps restarting.
+After a switch made by `mon local-install` (not `mon update`), restore `.env` from the
+`.env.bak-<oldtag>` copy instead of editing `PGAI_TAG`: that command removed the old stack's
+`VM_AUTH_*` keys from `.env`.
 
 This works while the old volumes exist. Data that `pgai-mon` collected in the meantime is
 not carried back; it stays in the `pgai_mon_data` volume.

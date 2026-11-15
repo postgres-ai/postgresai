@@ -3948,12 +3948,16 @@ const FIRST_QUERY_HINT =
   'postgresai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"';
 
 /** The old stack's volumes that exist in this project (all of them when docker cannot tell). */
-async function existingOldStackVolumes(projectDir: string): Promise<string[]> {
-  const project = composeProjectName(
+/** The install's compose project name, read as compose reads it. */
+function projectName(projectDir: string): string {
+  return composeProjectName(
     path.basename(projectDir),
     process.env.COMPOSE_PROJECT_NAME ?? readEnvValue(projectDir, "COMPOSE_PROJECT_NAME"),
   );
-  const candidates = oldStackVolumeNames(project);
+}
+
+async function existingOldStackVolumes(projectDir: string): Promise<string[]> {
+  const candidates = oldStackVolumeNames(projectName(projectDir));
   try {
     const { stdout } = await execFilePromise("docker", ["volume", "ls", "-q"]);
     const present = new Set(stdout.split(/\s+/).filter(Boolean));
@@ -3986,9 +3990,7 @@ async function switchFromOldStack(
       console.error("✗ The new stack did not start. See the error above, then run 'postgresai mon start'.");
       // The old containers are gone by now, so say how to get them back.
       console.error("  To go back to the old stack instead (its volumes are untouched):");
-      console.error(`    cp ${oldComposeBackup(projectDir, oldCompose)} ${path.resolve(projectDir, "docker-compose.yml")}`);
-      console.error(`    set PGAI_TAG=${oldTag ?? "<the old version>"} in ${path.resolve(projectDir, ".env")}`);
-      console.error(`    cd ${projectDir} && docker compose up -d`);
+      for (const step of wayBackSteps(projectDir, oldCompose, oldTag)) console.error(`    ${step}`);
       ok = false;
     }
   } else {
@@ -3997,11 +3999,54 @@ async function switchFromOldStack(
       : "\n(could not tell whether the old stack was running, so the new one was not started: run 'postgresai mon start')");
   }
   console.log(`\n${stackSwitchNotice(await existingOldStackVolumes(projectDir))}`);
+  if (ok) console.log(wayBackNotice(projectDir, oldCompose, oldTag));
   const bindNotice = switchedGrafanaBindNotice(projectDir);
   if (bindNotice) console.log(bindNotice);
   const store = storeNotice(process.env.PGAI_MON_STORE ?? readEnvValue(projectDir, "PGAI_MON_STORE"));
   if (store) console.log(store);
   return ok;
+}
+
+/**
+ * The commands that bring the old stack back. `envBackup` is the copy of the
+ * old .env, when this run rewrote the file (`mon local-install` drops the old
+ * stack's keys, which the old compose file requires).
+ */
+function wayBackSteps(projectDir: string, oldCompose: string, oldTag: string | null, envBackup: string | null = null): string[] {
+  const envFile = path.resolve(projectDir, ".env");
+  return [
+    "postgresai mon stop",
+    // The volume holds the new stack's Grafana provisioning. The old stack's
+    // config-init adds its files and removes none, and Grafana refuses two
+    // default datasources: it would restart forever.
+    `docker volume rm ${projectName(projectDir)}_postgres_ai_configs   # the old stack fills it again`,
+    `cp ${oldComposeBackup(projectDir, oldCompose)} ${path.resolve(projectDir, "docker-compose.yml")}`,
+    envBackup ? `cp ${envBackup} ${envFile}` : `set PGAI_TAG=${oldTag ?? "<the old version>"} in ${envFile}`,
+    `cd ${projectDir} && docker compose up -d`,
+  ];
+}
+
+/** What a finished switch prints about the way back to the old stack. */
+function wayBackNotice(projectDir: string, oldCompose: string, oldTag: string | null, envBackup: string | null = null): string {
+  return [
+    "To go back to the old stack (while its volumes exist):",
+    ...wayBackSteps(projectDir, oldCompose, oldTag, envBackup).map((step) => `  ${step}`),
+  ].join("\n");
+}
+
+/**
+ * Keeps the old stack's .env beside the compose backup, before `mon
+ * local-install` rewrites the file. The first copy stays: a re-run after a
+ * failed switch reads a .env that is rewritten already.
+ */
+function backupOldStackEnv(projectDir: string, oldEnv: string, oldTag: string | null): string {
+  const backup = path.resolve(projectDir, `.env.bak-${oldTag ?? "old-stack"}`);
+  try {
+    fs.writeFileSync(backup, oldEnv, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch {
+    // it exists already, or the directory is read-only: the path is what the operator looks for
+  }
+  return backup;
 }
 
 /**
@@ -5426,6 +5471,7 @@ mon
       opts.demo ? true : undefined,
       opts.grafana,
     );
+    const oldEnvBackup = fromOldStack ? backupOldStackEnv(projectDir, existingEnv, previousTag) : null;
     writeEnvFile(envFile, envContent);
     const grafanaOn = grafanaEnabled(parseEnvValue(envContent, GRAFANA_SCALE_KEY));
     if (preservedKeys.length > 0) {
@@ -5914,6 +5960,7 @@ mon
     if (store) console.log(`${store}\n`);
     if (switchedFrom !== null) {
       console.log(`${stackSwitchNotice(await existingOldStackVolumes(projectDir))}\n`);
+      console.log(`${wayBackNotice(projectDir, switchedFrom, previousTag, oldEnvBackup)}\n`);
       const bindNotice = switchedGrafanaBindNotice(projectDir);
       if (bindNotice) console.log(`${bindNotice}\n`);
     }

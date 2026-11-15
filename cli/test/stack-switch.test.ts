@@ -169,6 +169,17 @@ describe("mon update on an old-stack install", () => {
     expect(r.stdout).toContain("Metric history starts fresh");
     expect(r.stdout).toContain("docker volume rm old-running_victoria_metrics_data\n");
     expect(r.stdout).not.toContain("old-running_sink_postgres_data");
+    // The way back: stop the new stack, put the old file and tag back, start.
+    const backup = fs.readdirSync(p.dir).find((f) => f.startsWith("docker-compose.yml.bak-0.17.0-"))!;
+    expect(r.stdout).toContain(
+      "To go back to the old stack (while its volumes exist):\n  postgresai mon stop\n" +
+        "  docker volume rm old-running_postgres_ai_configs   # the old stack fills it again\n" +
+        `  cp ${resolve(p.dir, backup)} ${resolve(p.dir, "docker-compose.yml")}\n` +
+        `  set PGAI_TAG=0.17.0 in ${resolve(p.dir, ".env")}\n  cd ${p.dir} && docker compose up -d\n`,
+    );
+    // `mon update` leaves the old stack's keys in .env, so it keeps no copy of the file.
+    expect(readEnv(p.dir)).toContain("VM_AUTH_PASSWORD=old-vm-password");
+    expect(fs.readdirSync(p.dir).some((f) => f.startsWith(".env.bak-"))).toBe(false);
     expect(r.stdout).toContain(storeNotice(undefined)!);
     // GRAFANA_BIND_HOST was unset: the old stack published Grafana on every
     // interface, this one on 127.0.0.1 only. Said once; .env is not changed.
@@ -247,6 +258,7 @@ describe("mon update on an old-stack install", () => {
     const r = p.run(["mon", "update"], { OLD_RUNNING: "1", UP_EXIT: "1" });
     expect(r.status).toBe(1);
     const backup = fs.readdirSync(p.dir).find((f) => f.startsWith("docker-compose.yml.bak-0.17.0-"))!;
+    expect(r.stderr).toContain("    postgresai mon stop\n    docker volume rm old-up-fails_postgres_ai_configs");
     expect(r.stderr).toContain(`cp ${resolve(p.dir, backup)} ${resolve(p.dir, "docker-compose.yml")}`);
     expect(r.stderr).toContain(`set PGAI_TAG=0.17.0 in ${resolve(p.dir, ".env")}`);
     expect(r.stderr).toContain(`cd ${p.dir} && docker compose up -d`);
@@ -446,6 +458,15 @@ describe("mon local-install", () => {
 
     expect(r.stdout).toContain("pgai-mon: metrics collection, storage and SQL");
     expect(r.stdout).toContain("docker volume rm li-old-stopped_victoria_metrics_data li-old-stopped_sink_postgres_data");
+    // The way back restores the old .env from a copy: this install dropped keys the old compose file requires.
+    const envBackup = resolve(p.dir, ".env.bak-0.17.0");
+    expect(fs.readFileSync(envBackup, "utf8")).toBe(OLD_ENV);
+    expect(fs.statSync(envBackup).mode & 0o777).toBe(0o600);
+    expect(r.stdout).toContain(
+      "To go back to the old stack (while its volumes exist):\n  postgresai mon stop\n" +
+        "  docker volume rm li-old-stopped_postgres_ai_configs   # the old stack fills it again\n  cp ",
+    );
+    expect(r.stdout).toContain(`  cp ${envBackup} ${resolve(p.dir, ".env")}\n  cd ${p.dir} && docker compose up -d\n`);
     expect(r.stdout).toContain(grafanaBindNotice(undefined)!);
     expect(r.stdout).toContain(storeNotice(undefined)!);
     expect(r.stdout).not.toContain("VictoriaMetrics Auth");
