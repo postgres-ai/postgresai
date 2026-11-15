@@ -411,7 +411,12 @@ metrics:
             name,
             -- Use reset_val for settings the collector overrides in its session: lock_timeout,
             -- a per-metric statement_timeout, a pinned search_path, and read-only transactions.
+            -- transaction_read_only: the collector reads inside a read-only transaction, so report
+            -- what a transaction of an ordinary session is: read-only on a standby, else the default.
             case
+              when name = 'transaction_read_only' then
+                case when pg_is_in_recovery() then 'on'
+                  else (select d.reset_val from pg_settings d where d.name = 'default_transaction_read_only') end
               when name in ('lock_timeout', 'statement_timeout', 'search_path', 'default_transaction_read_only') then reset_val
               else setting
             end as effective_setting,

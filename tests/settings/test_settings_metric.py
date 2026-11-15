@@ -134,6 +134,14 @@ def test_settings_metric_numeric_value_uses_correct_source_for_overridden_settin
 
 
 @pytest.mark.unit
+def test_settings_metric_reports_transaction_read_only_as_a_session_has_it(metrics_config: dict) -> None:
+    """The collector reads inside read-only transactions: the raw value is 'on' on a primary too."""
+    sql = normalized(metrics_config["metrics"]["settings"]["sqls"][11])
+    assert ("when name = 'transaction_read_only' then case when pg_is_in_recovery() then 'on' "
+            "else (select d.reset_val from pg_settings d where d.name = 'default_transaction_read_only') end") in sql
+
+
+@pytest.mark.unit
 def test_settings_metric_is_default_uses_boot_val_for_overridden_settings(metrics_config: dict) -> None:
     """
     Test that is_default compares reset_val with boot_val for overridden settings.
