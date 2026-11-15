@@ -1000,13 +1000,15 @@ impl Reader {
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
         let s3 = match (s3_0, crate::objstore::totals()) {
             (Some(a), Some(b)) => {
-                let gets = b[0] - a[0];
+                // (the totals go down when a store is closed meanwhile)
+                let d = |i: usize| b[i].saturating_sub(a[i]);
+                let gets = d(0);
                 let warn = crate::objstore::gets_warn();
                 Some(QueryS3 {
                     gets,
-                    bytes: b[1] - a[1],
-                    demand_gets: b[2] - a[2],
-                    footer_gets: b[3] - a[3],
+                    bytes: d(1),
+                    demand_gets: d(2),
+                    footer_gets: d(3),
                     exclusive: alone && STARTED.load(Ordering::Acquire) == me,
                     warning: (warn > 0 && gets > warn)
                         .then(|| format!("{gets} object-store GETs, over --s3-gets-warn {warn}")),
