@@ -348,6 +348,18 @@ describe("recovering a partly running stack", () => {
     expect(r.stdout).toContain("Grafana is removed");
   });
 
+  // Grafana is missing only because GRAFANA_SCALE was 0: that is no reason to recreate the rest.
+  test("--grafana on a healthy stack without Grafana starts Grafana and nothing else", () => {
+    const noGrafana = ps(["config-init", "exited"], ["pgai-mon", "running", "healthy"], ["postgres-reports", "running"]);
+    writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=x\nGRAFANA_SCALE=0\n");
+    const r = run(["mon", "local-install", "--demo", "-y", "--grafana"], { RUNNING, SERVICES, PS_JSON: noGrafana });
+    expect(r.stderr).toContain("already running");
+    expect(env()).not.toMatch(/^GRAFANA_SCALE=0$/m);
+    expect(ups().length).toBe(1);
+    expect(ups()[0]).toMatch(/ up -d --no-deps grafana$/);
+    expect(r.stdout).toContain("Grafana is running");
+  });
+
   test("a missing service counts: Grafana left out by GRAFANA_SCALE=0 does not", () => {
     const noGrafana = ps(["config-init", "exited"], ["pgai-mon", "running", "healthy"], ["postgres-reports", "running"]);
     writeFileSync(`${projectDir}/.env`, "PGAI_TAG=1.0.0\nPGAI_MON_TOKEN=x\n");

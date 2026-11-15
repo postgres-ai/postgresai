@@ -5541,7 +5541,10 @@ mon
     // missing, stopped, restarting or unhealthy is installed over instead, so
     // a re-run recovers a failed install.
     const { running, containers } = checkRunningContainers();
-    const problems = running && !onPrestarted ? stackProblemsNow(projectDir) : null;
+    // A Grafana that --grafana turns on is missing until the scoped `up`
+    // below starts it: that is no reason to recreate every other container.
+    const problems = (running && !onPrestarted ? stackProblemsNow(projectDir) : null)
+      ?.filter((p) => !(opts.grafana === true && p === "grafana: missing")) ?? null;
     if (problems && problems.length > 0) {
       console.log(`Monitoring services are not all running and healthy (${problems.join(", ")}): installing over them\n`);
     } else if (running && !onPrestarted) {
