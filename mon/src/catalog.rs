@@ -53,11 +53,11 @@ pub struct Catalog {
     /// On an object store: the writer that owns the store (bucket.rs fencing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<WriterLease>,
-    /// On an object store: the leases other writers took this store over from, as their last
-    /// commit had them, oldest first (at most `FENCED_KEPT`). A writer that starts again after
-    /// it was fenced finds here which of its commits the store's history continues.
+    /// On an object store: the leases that a directory other than their own took this store
+    /// over from, oldest first (at most `FENCED_KEPT`). A writer that starts again after it was
+    /// fenced finds its lease here, and removes it with its takeover.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fenced: Vec<WriterLease>,
+    pub fenced: Vec<FencedLease>,
     /// The catalog as last written to disk. A failed `save` puts it back, so the catalog in
     /// memory never names files, deletions or a flush position that the file does not have:
     /// otherwise the next successful save would persist a half-applied change (a flush retried
@@ -81,11 +81,21 @@ pub struct WriterLease {
     pub released: bool,
 }
 
+/// A lease another directory took the store over from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FencedLease {
+    #[serde(flatten)]
+    pub writer: WriterLease,
+    /// `flushed_through_seg` of the catalog that had the lease: the WAL numbering of that
+    /// writer's directory.
+    pub flushed_through_seg: i64,
+}
+
 /// Largest catalog.json read from an object store (it is re-read every catalog TTL).
 pub const MAX_REMOTE_BYTES: u64 = 64 << 20;
 
 /// Entries kept in `Catalog::fenced`.
-pub const FENCED_KEPT: usize = 16;
+pub const FENCED_KEPT: usize = 64;
 
 /// A catalog path that stays under the store root whatever the root is: relative, `/`-separated,
 /// no empty, `.` or `..` segment, and no `\`, `:`, `'` or NUL (so `root.join` never yields an

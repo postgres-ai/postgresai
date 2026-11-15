@@ -230,6 +230,22 @@ fn start(url: &str, store: &Arc<Faulty>, dir: &Path, cfg: BucketCfg) -> anyhow::
     Ok((b, core))
 }
 
+/// Start even when another writer's lease is fresh.
+fn forced() -> BucketCfg {
+    BucketCfg {
+        takeover: true,
+        ..bcfg()
+    }
+}
+
+/// A start on `dir` that stops hard right after its takeover PUT, before it saves its catalog.
+fn cut_short(url: &str, store: &Arc<Faulty>, dir: &Path, cfg: BucketCfg) {
+    let b = Bucket::with_store(url, store.clone(), dir, cfg).unwrap();
+    *b.failpoint.lock().unwrap() = Some(Failpoint::AfterTakeover);
+    assert!(b.attach(pgai_mon::store::DEFAULT_LAYOUT).is_err());
+    b.close();
+}
+
 const METRICS: &[&str] = &["m_a", "m_b"];
 
 /// Ingest `n` scrapes at `t0, t0 + 15 s, ...` through the collector's Emitter (series first,
@@ -555,7 +571,9 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// The local directory is restored from an older disk snapshot (same writer id, catalog behind
-/// the bucket): the bucket's catalog wins, and nothing committed since the snapshot is dropped.
+/// the bucket). While the lease is fresh the start is refused as a second writer's: the
+/// snapshot has no record of the bucket's commit, so it may be a copy of a directory in use.
+/// Forced, the bucket's catalog wins, and nothing committed since the snapshot is dropped.
 #[test]
 fn a_directory_restored_from_an_old_snapshot_does_not_roll_the_bucket_back() {
     let url = "mem://old-snapshot/st";
@@ -574,7 +592,9 @@ fn a_directory_restored_from_an_old_snapshot_does_not_roll_the_bucket_back() {
     drop(c);
     b.close();
 
-    let (b, c) = start(url, &store, snap.path(), bcfg()).unwrap();
+    let e = start(url, &store, snap.path(), bcfg()).err().expect("a copy");
+    assert!(format!("{e:#}").contains("a copy or an older state"), "{e:#}");
+    let (b, c) = start(url, &store, snap.path(), forced()).unwrap();
     b.sync(&c.shared, None).unwrap();
     assert!(
         objects(&store).is_superset(&committed),
@@ -617,36 +637,42 @@ fn a_restart_after_many_commits_without_an_answer_keeps_local_data() {
 /// Continuing from the directory would commit files the bucket has deleted since.
 #[test]
 fn a_directory_restored_from_before_a_compaction_adopts_the_bucket() {
-    let url = "mem://old-snapshot-compacted/st";
-    let store = faulty();
-    let (d, snap) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let cfg = BucketCfg {
-        keep_local_days: 0,
-        ..bcfg()
-    };
-    let (b, mut c) = start(url, &store, d.path(), cfg.clone()).unwrap();
     let day = 86_400_000i64;
     let d0 = (now_ms() / day - 5) * day;
-    for k in 0..2 {
-        ingest(&mut c, d0 + 3_600_000 + k * 600_000, 20, 13);
-        c.flush().unwrap();
-    }
-    b.sync(&c.shared, None).unwrap(); // committed, and evicted from the directory
-    copy_dir(d.path(), snap.path());
-    c.compactor().unwrap().run_once(now_ms(), true).unwrap(); // the closed day becomes one file
-    b.sync(&c.shared, None).unwrap();
-    b.sync(&c.shared, None).unwrap(); // the replaced files leave the bucket
-    let committed = bucket_catalog(&store).unwrap().files;
-    drop(c);
-    b.close();
+    let cfg = BucketCfg {
+        keep_local_days: 0,
+        ..forced()
+    };
+    // (also when the first start on the snapshot stops hard right after its takeover)
+    for cut in [false, true] {
+        let url = format!("mem://old-snapshot-compacted-{cut}/st");
+        let store = faulty();
+        let (d, snap) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (b, mut c) = start(&url, &store, d.path(), cfg.clone()).unwrap();
+        for k in 0..2 {
+            ingest(&mut c, d0 + 3_600_000 + k * 600_000, 20, 13);
+            c.flush().unwrap();
+        }
+        b.sync(&c.shared, None).unwrap(); // committed, and evicted from the directory
+        copy_dir(d.path(), snap.path());
+        c.compactor().unwrap().run_once(now_ms(), true).unwrap(); // the closed day becomes one file
+        b.sync(&c.shared, None).unwrap();
+        b.sync(&c.shared, None).unwrap(); // the replaced files leave the bucket
+        let committed = bucket_catalog(&store).unwrap().files;
+        drop(c);
+        b.close();
 
-    let (b, c) = start(url, &store, snap.path(), cfg).unwrap();
-    b.sync(&c.shared, None).unwrap();
-    assert_eq!(bucket_catalog(&store).unwrap().files, committed);
-    assert_listed_objects_exist(&store);
-    let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + day);
-    assert_eq!(rows(&bucket_reader(url), &q), vec!["[800]".to_string()]);
-    b.close();
+        if cut {
+            cut_short(&url, &store, snap.path(), cfg.clone());
+        }
+        let (b, c) = start(&url, &store, snap.path(), cfg.clone()).unwrap();
+        b.sync(&c.shared, None).unwrap();
+        assert_eq!(bucket_catalog(&store).unwrap().files, committed, "cut: {cut}");
+        assert_listed_objects_exist(&store);
+        let q = format!("SELECT count(*) FROM pgai_samples('m_a', [], {d0}, {})", d0 + day);
+        assert_eq!(rows(&bucket_reader(&url), &q), vec!["[800]".to_string()]);
+        b.close();
+    }
 }
 
 /// Two writers on one prefix: the second is refused while the first's lease is live; a forced
@@ -1175,7 +1201,8 @@ fn a_restart_before_the_first_commit_after_a_takeover_keeps_local_data() {
 /// A fenced writer starts again and stops hard right after its takeover PUT, before it saved
 /// the adopted catalog. Its directory still holds its old catalog, which lacks everything the
 /// other writer committed: the next start adopts the bucket again and does not continue from
-/// the directory.
+/// the directory. The other writer's compaction replaced the files the first one had
+/// committed: the directory still has them, and they are not added again.
 #[test]
 fn a_takeover_cut_short_does_not_drop_the_other_writers_commits() {
     let url = "mem://takeover-cut/st";
@@ -1190,28 +1217,206 @@ fn a_takeover_cut_short_does_not_drop_the_other_writers_commits() {
     a.sync(&ca.shared, None).unwrap();
     ingest(&mut ca, t0 + 3 * STEP, 10, 12);
     ca.flush().unwrap(); // flushed, not uploaded
-    let takeover = BucketCfg {
-        takeover: true,
-        ..bcfg()
-    };
-    let (b, mut cb) = start(url, &store, d2.path(), takeover).unwrap();
+    let (b, mut cb) = start(url, &store, d2.path(), forced()).unwrap();
     ingest(&mut cb, t0 + 4 * STEP, 10, 12);
     cb.flush().unwrap();
+    b.sync(&cb.shared, None).unwrap();
+    // two hours on, the hour of these files is finished
+    assert!(
+        cb.compactor()
+            .unwrap()
+            .run_once(now_ms() + 2 * 3_600_000, false)
+            .unwrap()
+            > 0
+    );
     b.release(&cb.shared).unwrap();
     drop(cb);
     b.close();
     drop(ca);
     a.close();
 
-    let a = Bucket::with_store(url, store.clone(), d1.path(), bcfg()).unwrap();
-    *a.failpoint.lock().unwrap() = Some(Failpoint::AfterTakeover);
-    assert!(a.attach(pgai_mon::store::DEFAULT_LAYOUT).is_err());
-    a.close();
+    cut_short(url, &store, d1.path(), bcfg());
     let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
     a.sync(&ca.shared, None).unwrap();
     assert_eq!(bucket_rows(url, t0), "[1000]");
     assert_listed_objects_exist(&store);
     a.close();
+}
+
+/// A writer starts again on its directory and stops hard right after the takeover; another
+/// writer takes the store over; the first one comes back. The lease the store was taken over
+/// from is of a later epoch than the catalog in its directory, which still holds a file it
+/// never uploaded: the file is kept.
+#[test]
+fn a_takeover_cut_short_and_then_taken_over_keeps_local_files() {
+    let url = "mem://takeover-cut-taken/st";
+    let store = faulty();
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(40);
+    let (a, mut ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    ingest(&mut ca, t0, 10, 14);
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    ingest(&mut ca, t0 + STEP, 10, 14);
+    ca.flush().unwrap(); // flushed, not uploaded
+    drop(ca);
+    a.close();
+    cut_short(url, &store, d1.path(), bcfg());
+    let (b, mut cb) = start(url, &store, d2.path(), forced()).unwrap();
+    ingest(&mut cb, t0 + 2 * STEP, 10, 14);
+    cb.flush().unwrap();
+    b.release(&cb.shared).unwrap();
+    drop(cb);
+    b.close();
+
+    let (a, ca) = start(url, &store, d1.path(), bcfg()).unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[600]");
+    a.close();
+}
+
+/// A local store is pointed at an empty prefix and the process stops hard right after the
+/// takeover, which put a catalog with no files there: the next start continues from the
+/// directory, with every file.
+#[test]
+fn a_first_start_on_an_empty_prefix_cut_short_keeps_the_local_store() {
+    let url = "mem://first-cut/st";
+    let store = faulty();
+    let d = tempfile::tempdir().unwrap();
+    let t0 = start_ts(40);
+    let mut c = StoreCore::open(d.path(), &scfg()).unwrap();
+    ingest(&mut c, t0, 10, 16);
+    c.flush().unwrap();
+    drop(c);
+    cut_short(url, &store, d.path(), bcfg());
+    let (b, c) = start(url, &store, d.path(), bcfg()).unwrap();
+    b.sync(&c.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[200]");
+    b.close();
+}
+
+/// A copy of a writer's directory from an older snapshot (the same writer id) takes the store
+/// over while the writer is down, and the writer comes back. The store's history still has the
+/// writer's own last commit: the writer keeps what it had flushed since and what its WAL holds.
+#[test]
+fn a_writer_keeps_its_data_after_a_copy_of_its_directory_owned_the_store() {
+    let url = "mem://copy-owned/st";
+    let store = faulty();
+    let (d, copy) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(40);
+    let (a, mut ca) = start(url, &store, d.path(), bcfg()).unwrap();
+    ingest(&mut ca, t0, 10, 17);
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    copy_dir(d.path(), copy.path());
+    ingest(&mut ca, t0 + STEP, 10, 17);
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    ingest(&mut ca, t0 + 2 * STEP, 10, 17);
+    ca.flush().unwrap(); // flushed, not uploaded
+    ingest(&mut ca, t0 + 3 * STEP, 10, 17); // in the WAL only
+    drop(ca);
+    a.close();
+
+    // the copy's WAL numbering goes past the writer's
+    let (x, mut cx) = start(url, &store, copy.path(), forced()).unwrap();
+    for k in 4..6 {
+        ingest(&mut cx, t0 + k * STEP, 10, 17);
+        cx.flush().unwrap();
+    }
+    x.release(&cx.shared).unwrap();
+    drop(cx);
+    x.close();
+
+    let (a, mut ca) = start(url, &store, d.path(), bcfg()).unwrap();
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[1200]");
+    a.close();
+}
+
+/// A writer starts again on its directory, which puts only the lease into the bucket, and its
+/// disk is lost before the next upload. A snapshot of the disk from after the last upload is
+/// restored: what its WAL holds was in no commit, and is kept.
+#[test]
+fn a_takeover_does_not_count_unsent_data_as_committed() {
+    let url = "mem://takeover-mark/st";
+    let store = faulty();
+    let (d, snap) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let t0 = start_ts(40);
+    let (a, mut ca) = start(url, &store, d.path(), bcfg()).unwrap();
+    ingest(&mut ca, t0, 10, 18);
+    ca.flush().unwrap();
+    a.sync(&ca.shared, None).unwrap();
+    ingest(&mut ca, t0 + STEP, 10, 18); // in the WAL only
+    copy_dir(d.path(), snap.path());
+    ca.flush().unwrap(); // flushed, not uploaded
+    drop(ca);
+    a.close();
+    let (a, ca) = start(url, &store, d.path(), bcfg()).unwrap();
+    drop(ca);
+    a.close();
+
+    let (x, mut cx) = start(url, &store, snap.path(), forced()).unwrap();
+    cx.flush().unwrap();
+    x.sync(&cx.shared, None).unwrap();
+    assert_eq!(bucket_rows(url, t0), "[400]");
+    x.close();
+}
+
+/// A directory restored from an older copy, after another writer owned the store, adds nothing
+/// a second time. Copy 1 has WAL records that its writer flushed and committed after the copy
+/// was taken. Copy 2 was taken after its writer was fenced and has a file that the real
+/// directory handed to the store when it started again.
+#[test]
+fn a_restored_directory_adds_nothing_twice() {
+    let t0 = start_ts(40);
+    let dirs: Vec<tempfile::TempDir> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let (d1, d2, copy) = (dirs[0].path(), dirs[1].path(), dirs[2].path());
+    for second in [false, true] {
+        let url = format!("mem://restored-{second}/st");
+        let store = faulty();
+        for d in [d1, d2, copy] {
+            std::fs::remove_dir_all(d).unwrap();
+            std::fs::create_dir(d).unwrap();
+        }
+        let (a, mut ca) = start(&url, &store, d1, bcfg()).unwrap();
+        ingest(&mut ca, t0, 10, 15);
+        ca.flush().unwrap();
+        a.sync(&ca.shared, None).unwrap();
+        ingest(&mut ca, t0 + STEP, 10, 15); // in the WAL only
+        if !second {
+            copy_dir(d1, copy);
+        }
+        ca.flush().unwrap();
+        if !second {
+            a.sync(&ca.shared, None).unwrap();
+        }
+        let (b, mut cb) = start(&url, &store, d2, forced()).unwrap();
+        ingest(&mut cb, t0 + 2 * STEP, 10, 15);
+        cb.flush().unwrap();
+        b.release(&cb.shared).unwrap();
+        drop(cb);
+        b.close();
+        assert!(a.sync(&ca.shared, None).is_err(), "fenced");
+        drop(ca);
+        a.close();
+        if second {
+            copy_dir(d1, copy);
+            // the real directory starts again and hands the file it had not uploaded to the store
+            let (a, ca) = start(&url, &store, d1, bcfg()).unwrap();
+            a.release(&ca.shared).unwrap();
+            drop(ca);
+            a.close();
+        }
+        assert_eq!(bucket_rows(&url, t0), "[600]", "second: {second}");
+
+        let (x, mut cx) = start(&url, &store, copy, bcfg()).unwrap();
+        cx.flush().unwrap();
+        x.sync(&cx.shared, None).unwrap();
+        assert_eq!(bucket_rows(&url, t0), "[600]", "second: {second}");
+        x.close();
+    }
 }
 
 /// A flush (store thread) and the pre-upload merge (uploader thread) run at the same time:

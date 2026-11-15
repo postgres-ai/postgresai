@@ -385,7 +385,8 @@ on its own thread: a lost machine loses at most that interval plus one upload ro
 per prefix: a writer that has not committed for `store.s3.lease_intervals` (default 3) upload
 intervals is taken over at start; a fresher one refuses the start (`store.s3.takeover: true`
 forces it). A clean stop releases the lease with its last commit, so a new machine on the same
-prefix starts at once. At start the store must answer within 30 s, or the process exits with the
+prefix starts at once. A copy or an older snapshot of a writer's directory counts as another
+writer while that writer's lease is fresh. At start the store must answer within 30 s, or the process exits with the
 reason (credentials, region, network). A writer whose commit finds another owner exits with
 code 4; started again on the same directory once the store is free, it adopts the owner's
 catalog and adds what it had flushed and not uploaded. `file:///dir` works as a

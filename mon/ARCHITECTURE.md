@@ -205,10 +205,12 @@ uploaded yet, and committed files of the last `store.s3.keep_local_days` days.
 
 The `writer` lease in the bucket's catalog names the one process that may commit: `id`,
 `epoch`, `host`, `heartbeat_ms` (time of its last commit), `released` (set by a clean stop).
-`fenced` lists the leases other writers took the store over from (the last 16). The local
-directory also holds `writer.id` and `commits.json`: the lease and file list of the last
-commit known to have landed and of every commit sent since. A writer that was fenced reads
-both when it starts again, to find the files it flushed that the store does not have.
+`fenced` lists the leases that another directory took the store over from (at most 64), each
+with the WAL position of its directory. The local directory also holds `writer.id` and
+`commits.json`: the lease and file list of the last commit known to have landed and of every
+commit sent since. A writer reads both when it starts, to tell whether its directory
+continues the store and which files it flushed that the store does not have. A directory
+that finds its lease in `fenced` removes it with its takeover.
 
 ## Invariants
 
@@ -217,9 +219,9 @@ both when it starts again, to find the files it flushed that the store does not 
 | Exactly-once flush: a crash at any point leaves neither a gap nor a duplicate. | Flush rotates the WAL, writes Parquet under temp names and renames, rewrites the catalog with the new files and `flushed_through_seg`, then deletes the segments. At start, Parquet files the catalog does not list are deleted and segments above the watermark are replayed. | `store.rs`, `wal.rs` | `tests/kill9.rs` (kill -9 at random points), `tests/store.rs` (crash between each step, torn WAL tail) |
 | An acknowledged record survives a crash. | fsync per append before the record is buffered; a short or corrupt last frame ends replay. | `wal.rs` | `tests/kill9.rs`, `tests/store.rs` |
 | Readers see only whole files. | Readers learn files only from the catalog, which is replaced by tmp + fsync + rename. | `catalog.rs` | `tests/store.rs` |
-| One writer per S3 prefix. | A writer takes the lease with a conditional PUT of `catalog.json` (epoch + 1). Every commit is conditional on the version this writer wrote last. After a failed precondition the writer reads the catalog back: another writer's means a takeover, and the process exits with code 4; its own means a PUT landed and the answer was lost, and it goes on. File ids of epoch e start at e × 2^32, so a fenced writer never writes a key the new owner uses, and a sweep never deletes an object of a later epoch. | `bucket.rs` | `tests/bucket.rs` (lost answer, sweep after a takeover), `tests/run_bucket.rs` |
+| One writer per S3 prefix. | A writer takes the lease with a conditional PUT of `catalog.json` (epoch + 1). Every commit is conditional on the version this writer wrote last. After a failed precondition the writer reads the catalog back: another writer's means a takeover, and the process exits with code 4; its own means a PUT landed and the answer was lost, and it goes on. File ids of epoch e start at e × 2^32, so a fenced writer never writes a key the new owner uses, and a sweep never deletes an object of a later epoch. A directory that has the writer's id and no record of its last commit (a copy, an older snapshot) counts as another writer while the lease is fresh. | `bucket.rs` | `tests/bucket.rs` (lost answer, sweep after a takeover, restored snapshot), `tests/run_bucket.rs` |
 | S3 commit is atomic. | Files are uploaded first; the catalog PUT is the commit. Objects are immutable. Objects no catalog lists are removed by a LIST sweep. | `bucket.rs` | `tests/bucket.rs` (crash between upload and commit, partial uploads) |
-| A restart keeps what the directory has and the bucket lacks, and never drops what the bucket has. | The directory continues from its own catalog only when the bucket's last commit is one it recorded in `commits.json` and no other writer owned the store in between (`fenced`); else it adopts the bucket's catalog. A writer that was fenced then adds the level-0 files none of its commits carried into the bucket (`rescue`). | `bucket.rs`, `store.rs` (`plan`) | `tests/bucket.rs` (fenced writer starts again, restart before the first commit, takeover cut short, directory from before a compaction, commits without an answer) |
+| A restart keeps what the directory has and the bucket lacks, never drops what the bucket has, and adds nothing twice. | The directory continues from its own catalog only when it sent the bucket's last commit (a record in `commits.json`) and that was not an adoption cut short; else it adopts the bucket's catalog. A directory that finds a lease of its own in `fenced` adds the level-0 files that commit did not list (`rescue`), replays the WAL above that commit's position, and removes the entry in the same PUT. A copy or an older state of a directory has no such record: it adds no file, and replays no segment its writer id's latest commit had flushed. A takeover commits the WAL position the bucket's files cover, not the directory's own. | `bucket.rs`, `store.rs` (`plan`) | `tests/bucket.rs` (fenced writer starts again, restart before the first commit, takeover cut short, cut short and taken over, first start cut short, directory from before a compaction, restored directory, copy that owned the store, takeover's WAL position, commits without an answer) |
 | A file id names one file. | Flush and both compactors take ids under the catalog lock; a failed catalog save does not give ids back. | `store.rs`, `catalog.rs` | `tests/bucket.rs` (flush during the pre-upload merge) |
 | Delete only after commit plus a grace time. | Replaced and expired files go to `pending_delete` with a time; `purge` deletes them after it. In the bucket the grace (`store.s3.delete_grace_s`) counts from the commit that dropped the file. | `store.rs`, `bucket.rs` | `tests/retention.rs`, `tests/bucket.rs` |
 | User SQL cannot write, load code or read outside the store. | Single SELECT check, table function allowlist, `enable_external_access=false`, `allowed_directories` = the store (or the mirror) and scratch, `lock_configuration=true`. | `query.rs` | `tests/guardrails.rs`, `tests/reader_settings.rs` |
@@ -268,6 +270,12 @@ per node.
   one disk comes from the S3 store.
 - With an S3 store, a lost machine loses the data acknowledged since the last commit: up to
   `store.s3.upload_interval_s` (300 s) plus one upload round.
+- Two copies of one local directory must not run at the same time. A copy started before the
+  writer's next commit looks like a restart of the writer: it takes the store over, and the
+  writer is fenced and loses what it had not uploaded.
+- Deleting `catalog.json` from the bucket under a writer leaves it unable to commit when
+  older files were already evicted from its local directory (it cannot upload them again).
+  Restore the object, or start with an empty prefix and an empty local directory.
 - No TLS in the server. It listens on `127.0.0.1:8765` by default; put a proxy in front for
   remote access.
 - PromQL is not parsed. Queries are SQL; the `prom_*` functions reproduce single PromQL

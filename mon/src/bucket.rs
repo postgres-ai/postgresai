@@ -23,13 +23,17 @@
 //!   object of a later epoch than its own (a newer writer's upload).
 //! - Eviction: after a commit, committed files older than `keep_local_days` leave the local
 //!   directory; a job that needs one again fetches it (`ensure_local`).
-//! - Restart: when the bucket's last commit came from this local directory (its writer id, and
-//!   no other writer in between), the local directory is the continuation of that commit and
-//!   stays authoritative (it holds what was not uploaded yet). Otherwise (an empty disk, or
-//!   another writer committed since) the bucket's catalog is adopted and the files a writer
-//!   reads at start are fetched. A directory whose writer was fenced keeps the level-0 files
-//!   none of its commits carried into the bucket (`rescue`). Local WAL segments are replayed
-//!   either way: they are in no Parquet file.
+//! - Restart: when the bucket's last commit is one this local directory sent (it keeps a record
+//!   of each, commits.json), the directory is the continuation of that commit and stays
+//!   authoritative (it holds what was not uploaded yet). Otherwise (an empty disk, another
+//!   directory committed since, a copy or an older state of the directory) the bucket's
+//!   catalog is adopted and the files a writer reads at start are fetched. A takeover by
+//!   another directory leaves the lease it took the store over from in the catalog (`fenced`).
+//!   The directory of that lease, when it starts again, keeps the level-0 files its commit did
+//!   not list (`rescue`), replays its WAL above that commit's position, and removes the entry:
+//!   what a directory held and the store lacked goes in once, whatever copies of it exist.
+//!   For the lease, a directory that did not send the bucket's last commit is another writer,
+//!   also with the same writer id: a copy of a directory that may be in use.
 //!
 //! The process's own reader reads the store through its URL with this directory as the
 //! objstore overlay (`objstore::set_overlay`): local files, including catalog.json, win.
@@ -162,14 +166,18 @@ struct St {
 }
 
 /// A commit this writer sent: the lease it carried and the files it listed. `commits.json` in
-/// the local directory holds the last one known to have landed and every one sent since. With
-/// `Catalog::fenced` in the bucket (the lease the store was taken over from), a writer that was
-/// fenced can tell, when it starts again, which of its local files the store already has.
+/// the local directory holds the last one known to have landed and every one sent since. A
+/// start finds with it whether this directory sent the bucket's last commit, or a lease in
+/// `Catalog::fenced`, and which of its local files the store had by then.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Sent {
     epoch: u64,
     heartbeat_ms: i64,
     files: Vec<String>,
+    /// A takeover that adopted the bucket's catalog. Until the local catalog has this lease,
+    /// the directory still holds the catalog from before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    adopted: bool,
 }
 
 impl Sent {
@@ -442,7 +450,9 @@ impl Bucket {
 
     /// PUT catalog.json conditionally on the version this writer wrote last (create when none).
     /// A refused precondition fences this writer, unless the catalog in the bucket is its own.
-    fn put_catalog(&self, st: &mut St, c: &Catalog) -> anyhow::Result<()> {
+    /// `adopted`: a takeover that adopts the bucket's catalog; `also`: the files of the local
+    /// directory that its record covers besides the ones the catalog lists.
+    fn put_catalog(&self, st: &mut St, c: &Catalog, adopted: bool, also: Vec<String>) -> anyhow::Result<()> {
         let body = bytes::Bytes::from(serde_json::to_vec(c)?);
         if let Some(w) = &c.writer {
             if st.sent.len() >= SENT_KEPT {
@@ -452,7 +462,8 @@ impl Bucket {
             st.sent.push(Sent {
                 epoch: w.epoch,
                 heartbeat_ms: w.heartbeat_ms,
-                files: c.files.iter().map(|f| f.path.clone()).collect(),
+                files: c.files.iter().map(|f| f.path.clone()).chain(also).collect(),
+                adopted,
             });
             write_sent(&self.local, &st.sent)?;
         }
@@ -625,6 +636,14 @@ impl Bucket {
         st.sent = read_sent(&self.local);
         let local = local_catalog(&self.local)?;
         let now = now_ms();
+        let mine = |w: &WriterLease| w.id == self.id;
+        // this directory sent the bucket's last commit
+        let mut current = false;
+        // the record of the commit this directory continues from, and its `fenced` entry
+        let mut base = None;
+        let mut claimed = None;
+        // the WAL position of this directory that the bucket's files cover
+        let mut mark = None;
         let mut adopted = false;
         let (mut cat, remote_cat) = match self.get_catalog()? {
             None => {
@@ -641,15 +660,46 @@ impl Bucket {
                 r.files.clear();
                 r.flushed_through_seg = -1;
                 r.log_offsets.clear();
+                r.writer = None;
+                r.fenced.clear();
                 st.version = None;
                 (c, r)
             }
             Some((r, ver)) => {
-                if let Some(w) = &r.writer {
+                // The commit in the store's history that this directory continues from: the
+                // bucket's last commit when this directory sent it, else the last lease of this
+                // directory that another one took the store over from (`fenced`). A directory
+                // sent a commit when it has its record (commits.json); a copy or an older state
+                // of the directory has the writer id and not the record.
+                let sent = |w: &WriterLease| mine(w).then(|| st.sent.iter().find(|s| s.is(w))).flatten();
+                let cur = r.writer.as_ref();
+                base = cur.and_then(sent).cloned();
+                current = base.is_some();
+                if !current {
+                    let f = r.fenced.iter().rev().find(|f| sent(&f.writer).is_some());
+                    base = f.and_then(|f| sent(&f.writer)).cloned();
+                    claimed = f.cloned();
+                }
+                // In this directory's WAL numbering: the position at that commit. A copy or an
+                // older state has the numbering of its writer id's latest commit.
+                mark = match (&claimed, cur) {
+                    (Some(f), _) => Some(f.flushed_through_seg),
+                    (None, Some(w)) if mine(w) => Some(r.flushed_through_seg),
+                    _ => {
+                        let f = r.fenced.iter().rev().find(|f| mine(&f.writer));
+                        f.map(|f| f.flushed_through_seg)
+                    }
+                };
+                st.sent.retain(|s| {
+                    base.as_ref()
+                        .is_some_and(|b| s.epoch == b.epoch && s.heartbeat_ms == b.heartbeat_ms)
+                });
+                if let Some(w) = cur.filter(|_| !current) {
+                    // another directory wrote the bucket's last commit
                     let age = now - w.heartbeat_ms;
-                    if w.id != self.id && !w.released && age < self.cfg.lease_ms() && !self.cfg.takeover {
+                    if !w.released && age < self.cfg.lease_ms() && !self.cfg.takeover {
                         anyhow::bail!(
-                            "{}: the store is written by another pgai-mon (writer {} on {:?}, last commit {} s ago); \
+                            "{}: the store is written by another pgai-mon (writer {} on {:?}, last commit {} s ago{}); \
                              refusing to start a second writer on the same prefix. Stop the other writer, or wait \
                              {} s: a lease without a commit for store.s3.lease_intervals x upload_interval_s is \
                              taken over at start (store.s3.takeover: true forces it now)",
@@ -657,69 +707,55 @@ impl Bucket {
                             w.id,
                             w.host,
                             age / 1000,
+                            if mine(w) {
+                                "; it has this directory's writer id and this directory has no record of that \
+                                 commit, so the directory is a copy or an older state of that writer's"
+                            } else {
+                                ""
+                            },
                             (self.cfg.lease_ms() - age) / 1000 + 1
                         );
                     }
-                    if w.id != self.id {
-                        eprintln!(
-                            "bucket: {}: taking the store over from writer {} on {:?} (epoch {}, last commit {} s ago{})",
-                            self.url,
-                            w.id,
-                            w.host,
-                            w.epoch,
-                            age / 1000,
-                            if w.released {
-                                ", released"
-                            } else if age < self.cfg.lease_ms() {
-                                ", forced"
-                            } else {
-                                ", lease expired"
-                            }
-                        );
-                    }
+                    eprintln!(
+                        "bucket: {}: taking the store over from writer {} on {:?} (epoch {}, last commit {} s ago{})",
+                        self.url,
+                        w.id,
+                        w.host,
+                        w.epoch,
+                        age / 1000,
+                        if w.released {
+                            ", released"
+                        } else if age < self.cfg.lease_ms() {
+                            ", forced"
+                        } else {
+                            ", lease expired"
+                        }
+                    );
                 }
-                // Of the commits this directory recorded, a start needs two: the one the bucket
-                // has now and the one the store was last taken over from (`rescue`).
-                let mine = |w: &&WriterLease| w.id == self.id;
-                let ours = r.writer.as_ref().filter(mine);
-                let needed: Vec<&WriterLease> = ours.into_iter().chain(r.fenced.iter().rev().find(mine)).collect();
-                st.sent.retain(|s| needed.iter().any(|w| s.is(w)));
                 // The bucket's last commit is one this directory sent: every commit is a snapshot
                 // of the local catalog, which is saved on every change, so the local catalog is a
-                // superset (up to compaction) even when a crash came between the takeover PUT and
-                // the local save below.
-                // Not when another writer owned the store since this directory saved its
-                // catalog (`fenced` has that writer's lease, of a later epoch): its commits are
-                // not in this directory, also when the bucket's last PUT is this directory's
-                // takeover, cut short before the adopted catalog was saved.
-                // Not when the directory is behind the bucket (restored from an older disk
-                // snapshot, which has no record of the bucket's commit): committing it would drop
-                // every file added since and bring back the files compaction replaced.
-                // In both cases the bucket's catalog is adopted instead.
-                let same = match (&local, ours) {
-                    (Some(l), Some(rw)) => {
-                        // (file ids cannot tell: a takeover moves the bucket's ahead)
-                        st.sent.iter().any(|s| s.is(rw))
-                            && l.writer.as_ref().is_some_and(|lw| {
-                                lw.id == self.id
-                                && !r.fenced.iter().any(|w| w.id != self.id && w.epoch > lw.epoch)
-                                // a full list may have dropped such a lease
-                                && !(r.fenced.len() >= catalog::FENCED_KEPT && r.fenced[0].epoch > lw.epoch)
-                            })
-                            && l.flushed_through_seg >= r.flushed_through_seg
-                    }
+                // superset (up to compaction) even when a crash came between a takeover PUT and
+                // the local save below. One case apart: a takeover that adopted the bucket's
+                // catalog and was cut short there. The directory still holds the catalog from
+                // before, which lacks what the other directory committed.
+                // A directory that did not send the bucket's last commit adopts the bucket's
+                // catalog: another directory owned the store since, or this one is a copy or an
+                // older state. Committing its catalog would drop every file added since and
+                // bring back the files compaction replaced.
+                let same = match (&local, &base) {
+                    (Some(l), Some(b)) if current => !b.adopted || l.writer.as_ref() == cur,
                     _ => false,
                 };
-                if local.is_some() && ours.is_some() && !same {
+                if local.is_some() && cur.is_some_and(mine) && !same {
                     eprintln!(
-                        "bucket: {}: {} is not where the bucket's last commit left off (another writer owned \
-                         the store since, or the directory is an older copy): continuing from the bucket's catalog",
+                        "bucket: {}: {} is not where the bucket's last commit left off (a takeover was cut \
+                         short, or the directory is a copy or an older state): continuing from the bucket's \
+                         catalog",
                         self.url,
                         self.local.display()
                     );
                 }
-                let ours = ours.is_some();
-                st.epoch = r.writer.as_ref().map_or(0, |w| w.epoch) + 1;
+                st.epoch = cur.map_or(0, |w| w.epoch) + 1;
                 st.version = Some(ver);
                 st.remote_gen = r.generation;
                 st.gc = r.pending_delete.clone();
@@ -736,13 +772,13 @@ impl Bucket {
                     adopted = true;
                     let mut c = r.clone();
                     c.pending_delete.clear();
-                    // local WAL numbering: segments this directory already flushed are gone. A
-                    // directory of the same lineage that is behind the bucket keeps the bucket's
-                    // mark: its older WAL segments are already in the bucket's files.
-                    c.flushed_through_seg = local.as_ref().map_or(-1, |l| l.flushed_through_seg);
-                    if ours && local.is_some() {
-                        c.flushed_through_seg = c.flushed_through_seg.max(r.flushed_through_seg);
-                    }
+                    // Local WAL numbering. The segments this directory already flushed are gone,
+                    // and those up to `mark` are in the store's files (the directory is behind
+                    // when it was restored from an older copy): neither are replayed.
+                    c.flushed_through_seg = match &local {
+                        Some(l) => l.flushed_through_seg.max(mark.unwrap_or(-1)),
+                        None => -1,
+                    };
                     if let Some(l) = &local {
                         c.generation = c.generation.max(l.generation);
                     }
@@ -754,26 +790,39 @@ impl Bucket {
         let epoch = st.epoch;
         cat.writer = Some(self.lease(&mut st));
         cat.next_file_id = cat.next_file_id.max(epoch << 32);
+        // Until the catalog below is saved, the directory holds its old one. The takeover's
+        // record covers that too: of the old catalog's files, all but the ones kept by `rescue`
+        // are in the store's history (or dropped for good).
+        let mut also = Vec::new();
         if let (true, Some(l)) = (adopted, &local) {
-            self.rescue(&st.sent, l, &remote_cat, &mut cat)?;
+            let kept = self.rescue(base.as_ref(), l, &mut cat)?;
+            also.extend(l.files.iter().map(|f| f.path.clone()).filter(|p| !kept.contains(p)));
         }
         let mut rc = remote_cat;
-        // the lease taken over from another writer: what that writer needs when it starts again
-        // (`rescue`), and what tells a later start that this directory lacks its commits
-        if let Some(w) = rc.writer.take().filter(|w| w.id != self.id) {
-            rc.fenced.push(w);
+        // `fenced`: the lease that a directory other than its own takes the store over from,
+        // with its WAL position. That directory finds the entry when it starts again, keeps
+        // what the commit did not have (`rescue`) and removes the entry with its takeover: a
+        // copy of the directory that starts later finds none, and adds nothing a second time.
+        if let Some(f) = &claimed {
+            rc.fenced.retain(|e| e.writer != f.writer);
+        }
+        if let Some(w) = rc.writer.take().filter(|_| !current) {
+            rc.fenced.push(catalog::FencedLease {
+                writer: w,
+                flushed_through_seg: rc.flushed_through_seg,
+            });
             let over = rc.fenced.len().saturating_sub(catalog::FENCED_KEPT);
             rc.fenced.drain(..over);
         }
         cat.fenced = rc.fenced.clone();
         rc.writer = cat.writer.clone();
         rc.next_file_id = rc.next_file_id.max(cat.next_file_id);
-        // this directory's WAL numbering, not the previous writer's: a start of this directory
-        // before its first commit compares its own mark with this one
-        rc.flushed_through_seg = cat.flushed_through_seg;
+        // This directory's WAL numbering, not the previous writer's, and not the directory's
+        // own position: what it flushed and did not upload is not in the bucket's files.
+        rc.flushed_through_seg = mark.unwrap_or(-1);
         rc.pending_delete = st.gc.clone();
         rc.generation = rc.generation.max(st.remote_gen) + 1;
-        self.put_catalog(&mut st, &rc)?;
+        self.put_catalog(&mut st, &rc, adopted, also)?;
         st.remote_gen = rc.generation;
         st.last_commit_ms = now;
         st.commits += 1;
@@ -797,57 +846,59 @@ impl Bucket {
         Ok(())
     }
 
-    /// A writer that was fenced starts again on its directory `l` and adopts the bucket's
-    /// catalog `r`: the level-0 files there that none of its commits carried into the bucket
-    /// (flushed and never uploaded, or uploaded for a commit that did not happen) go into the
-    /// adopted catalog `cat` under names of the new epoch, and the next commit uploads them.
-    /// `r.fenced` has the lease the store was taken over from and `sent` (commits.json) what the
-    /// commit with that lease listed. Without both the files are dropped: a directory restored from
-    /// an old snapshot must not add again what its writer committed later. Compaction on an
-    /// object store rewrites only files the bucket has (store.rs, `plan`), so there is nothing
-    /// but level-0 files to keep. Returns how many were kept.
-    fn rescue(&self, sent: &[Sent], l: &Catalog, r: &Catalog, cat: &mut Catalog) -> anyhow::Result<usize> {
-        // the directory is as its writer left it when it was fenced: the same epoch
-        let at = l.writer.as_ref().filter(|w| w.id == self.id).map(|w| w.epoch);
-        let mine = |w: &&WriterLease| w.id == self.id;
-        let Some(lease) = r.fenced.iter().rev().find(mine).filter(|w| Some(w.epoch) == at) else {
-            return Ok(0);
+    /// A start adopts the bucket's catalog while its directory holds another one, `l`: its
+    /// writer was fenced, or a takeover was cut short. The level-0 files of `l` that `base` does
+    /// not list go into the adopted catalog `cat` under names of the new epoch, and the next
+    /// commit uploads them. `base` is the record of the commit this directory continues from
+    /// (`attach`), with the directory's files the store had by then: a level-0 file it does not
+    /// list was flushed later and never committed (or uploaded for a commit that did not
+    /// happen). Without the record nothing is kept: the directory is a copy or an older state
+    /// of its writer's, and what it holds may be in the store already. Compaction on an object
+    /// store rewrites only files the bucket has (store.rs, `plan`), so there is nothing but
+    /// level-0 files to keep. Returns the paths in `l` of the files kept.
+    fn rescue(&self, base: Option<&Sent>, l: &Catalog, cat: &mut Catalog) -> anyhow::Result<HashSet<String>> {
+        let mut kept = HashSet::new();
+        let adopted: HashSet<String> = cat.files.iter().map(|f| f.path.clone()).collect();
+        let fresh = |f: &&FileEntry| {
+            f.level == 0
+                && crate::store::KINDS.contains(&f.kind.as_str())
+                && !adopted.contains(&f.path)
+                && self.local.join(&f.path).is_file()
         };
-        let unsent = |f: &&FileEntry| f.level == 0 && crate::store::KINDS.contains(&f.kind.as_str());
-        let listed = sent.iter().find(|s| s.is(lease));
-        let Some(listed) = listed.filter(|_| l.samples_layout == cat.samples_layout) else {
-            eprintln!(
-                "bucket: {}: no record in {} of the commit the store was taken over from (epoch {}): \
-                 files flushed there since and not uploaded are dropped",
-                self.url,
-                self.local.display(),
-                lease.epoch
-            );
-            return Ok(0);
+        let Some(base) = base.filter(|_| l.samples_layout == cat.samples_layout) else {
+            let n = l.files.iter().filter(fresh).count();
+            if n > 0 {
+                eprintln!(
+                    "bucket: {}: {n} level-0 files in {} are not in the store's catalog and are dropped: the \
+                     directory has no record of its last commit to this store (a copy, an older state, or a \
+                     store of its own)",
+                    self.url,
+                    self.local.display()
+                );
+            }
+            return Ok(kept);
         };
-        let listed: HashSet<&str> = listed.files.iter().map(String::as_str).collect();
-        let mut n = 0;
-        for f in l.files.iter().filter(unsent) {
-            let src = self.local.join(&f.path);
+        let listed: HashSet<&str> = base.files.iter().map(String::as_str).collect();
+        for f in l.files.iter().filter(fresh) {
             let Some((dir, _)) = f.path.rsplit_once('/') else {
                 continue;
             };
-            if listed.contains(f.path.as_str()) || !src.is_file() {
+            if listed.contains(f.path.as_str()) {
                 continue;
             }
             let rel = format!("{dir}/L0-{:08}.parquet", cat.alloc_id());
             let dst = self.local.join(&rel);
             // (left by a start that stopped before it saved the catalog)
             let _ = std::fs::remove_file(&dst);
-            std::fs::hard_link(&src, &dst)?;
+            std::fs::hard_link(self.local.join(&f.path), &dst)?;
             cat.files.push(FileEntry {
                 path: rel,
                 registered: false,
                 ..f.clone()
             });
-            n += 1;
+            kept.insert(f.path.clone());
         }
-        if n > 0 {
+        if !kept.is_empty() {
             // the log lines in those files are not read again
             for (file, off) in &l.log_offsets {
                 let e = cat.log_offsets.entry(file.clone()).or_insert(0);
@@ -855,12 +906,15 @@ impl Bucket {
             }
             cat.data_epoch += 1;
             eprintln!(
-                "bucket: {}: {n} files flushed before this writer was fenced (epoch {}) and not in the \
-                 bucket go into the next commit",
-                self.url, lease.epoch
+                "bucket: {}: {} files in {} that the store does not have (flushed after this directory's last \
+                 commit there, epoch {}) go into the next commit",
+                self.url,
+                kept.len(),
+                self.local.display(),
+                base.epoch
             );
         }
-        Ok(n)
+        Ok(kept)
     }
 
     /// Fetch the files missing from the local directory. Returns how many were fetched.
@@ -1069,7 +1123,7 @@ impl Bucket {
         rc.pending_delete = gc.clone();
         rc.writer = Some(self.lease(&mut st));
         rc.generation = rc.generation.max(st.remote_gen + 1);
-        self.put_catalog(&mut st, &rc)?;
+        self.put_catalog(&mut st, &rc, false, Vec::new())?;
         st.remote_gen = rc.generation;
         st.gc = gc;
         st.committed = snap.files.iter().map(|f| (f.path.clone(), f.bytes)).collect();
