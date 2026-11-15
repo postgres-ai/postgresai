@@ -520,6 +520,66 @@ async fn reconnects_after_its_sessions_are_killed() {
     let _ = stop.send(true);
 }
 
+/// A run that loses its session to an outage runs again once the database is back, not an
+/// interval (here an hour) later; its slot is not counted as skipped.
+#[tokio::test]
+async fn a_run_lost_to_an_outage_runs_again_when_the_database_is_back() {
+    let url = need_pg!();
+    let a = admin(&url).await;
+    let db = fresh_db(&a, &url, "pgai_t_catchup").await;
+    let h = harness(CollectorCfg {
+        reconnect_min_s: 1,
+        reconnect_max_s: 2,
+        role_check_interval_s: 1,
+        ..Default::default()
+    });
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(collector::run_source(
+        source("catchup", &db),
+        vec![
+            metric("fast", 1, "sqls: {11: 'select 1 as v'}"),
+            metric("hourly", 3600, "sqls: {11: 'select 1 as v from pg_sleep(2)'}"),
+        ],
+        vec![],
+        h.ctx.clone(),
+        rx,
+    ));
+    let running = "select count(*) from pg_stat_activity where datname = 'pgai_t_catchup' \
+                   and state = 'active' and query like '%pg_sleep(2)%'";
+    let t = Instant::now();
+    while a.query_one(running, &[]).await.unwrap().get::<_, i64>(0) == 0 {
+        assert!(t.elapsed() < Duration::from_secs(10), "hourly never started");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // the outage: no new sessions, the open ones (hourly's mid-run) killed
+    exec_each(
+        &a,
+        &[
+            "alter database pgai_t_catchup allow_connections false",
+            "select pg_terminate_backend(pid) from pg_stat_activity \
+             where datname = 'pgai_t_catchup' and application_name = 'pgai-mon'",
+        ],
+    )
+    .await;
+    wait_for("hourly's run to fail", 10, || {
+        job("catchup", "catchup", "hourly").errors == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(h.sink.value("pgwatch_hourly_v", ("dbname", "catchup")), None);
+    exec_each(&a, &["alter database pgai_t_catchup allow_connections true"]).await;
+    wait_for("hourly after the outage", 15, || {
+        job("catchup", "catchup", "hourly").last_success_ms.is_some()
+    })
+    .await;
+    assert_eq!(h.sink.value("pgwatch_hourly_v", ("dbname", "catchup")), Some(1.0));
+    // once: more wake-ups (every reconnecting job sends one) do not run it again
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let j = job("catchup", "catchup", "hourly");
+    assert_eq!((j.runs, j.errors, j.skipped), (2, 1, 0), "{j:?}");
+    let _ = stop.send(true);
+}
+
 #[tokio::test]
 async fn an_unreachable_source_backs_off_and_reports_down() {
     let _ = need_pg!();

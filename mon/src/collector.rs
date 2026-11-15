@@ -959,6 +959,9 @@ pub struct DbCtx {
     pub ctx: CollectorCtx,
     pub primary: Arc<Vec<Scheduled>>,
     pub standby: Arc<Vec<Scheduled>>,
+    /// A job got a session while the database was down: wakes `run_db` to run the jobs whose
+    /// last run found no session.
+    pub back: tokio::sync::Notify,
 }
 
 impl DbCtx {
@@ -1014,7 +1017,14 @@ impl JobKind {
     }
 }
 
-enum JobState {
+struct JobState {
+    /// The last run got no session or lost it: it runs again as soon as the database is
+    /// back, not at its next slot, which may be hours away.
+    lost: bool,
+    data: JobData,
+}
+
+enum JobData {
     None,
     Metric(MetricState),
     Texts(crate::structure::TextState),
@@ -1134,10 +1144,13 @@ fn build_slots(
             let state = states
                 .entry(kind.name())
                 .or_insert_with(|| {
-                    Arc::new(tokio::sync::Mutex::new(match &kind {
-                        JobKind::Metric(_) => JobState::Metric(MetricState::default()),
-                        JobKind::QueryTexts => JobState::Texts(HashMap::new()),
-                        _ => JobState::None,
+                    Arc::new(tokio::sync::Mutex::new(JobState {
+                        lost: false,
+                        data: match &kind {
+                            JobKind::Metric(_) => JobData::Metric(MetricState::default()),
+                            JobKind::QueryTexts => JobData::Texts(HashMap::new()),
+                            _ => JobData::None,
+                        },
                     }))
                 })
                 .clone();
@@ -1154,7 +1167,9 @@ fn build_slots(
 }
 
 /// One database's scheduler. Every job runs as its own task, so a slow metric never delays
-/// a fast one; a job whose previous run is still going skips its slot (counted).
+/// a fast one; a job whose previous run is still going skips its slot (counted). A job
+/// whose last run found no session runs once more when the database is back (`back`),
+/// outside its schedule.
 async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
     let mut states: HashMap<String, Arc<tokio::sync::Mutex<JobState>>> = HashMap::new();
     let mut node_rx = db.node.tx.subscribe();
@@ -1167,11 +1182,12 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
             .map(|s| s.next)
             .min()
             .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(60));
-        tokio::select! {
-            _ = stop.changed() => {}
-            _ = node_rx.changed() => {}
-            _ = tokio::time::sleep_until(next) => {}
-        }
+        let back = tokio::select! {
+            _ = stop.changed() => false,
+            _ = node_rx.changed() => false,
+            _ = db.back.notified() => true,
+            _ = tokio::time::sleep_until(next) => false,
+        };
         // a dropped sender stops the worker too
         if *stop.borrow() || stop.has_changed().is_err() {
             return;
@@ -1208,6 +1224,16 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
             }
             if skipped > 0 && matches!(s.kind, JobKind::Metric(_)) {
                 db.status(|d| d.jobs.entry(name).or_default().skipped += skipped);
+            }
+        }
+        if back {
+            // after the due slots, so a job due now runs once; one still running is left alone
+            for s in &slots {
+                if let Ok(guard) = s.state.clone().try_lock_owned() {
+                    if guard.lost {
+                        tokio::spawn(run_job(db.clone(), s.kind.clone(), guard));
+                    }
+                }
             }
         }
     }
@@ -1269,8 +1295,14 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
     };
     let t0 = std::time::Instant::now();
     let mut lease = match db.pool.acquire(&db.conn_str).await {
-        Ok(l) => l,
+        Ok(l) => {
+            if !db.status(|d| d.up) {
+                db.back.notify_one();
+            }
+            l
+        }
         Err(e) => {
+            state.lost = true;
             let msg = format!("{e:#}");
             let first = db.status(|d| {
                 let backing_off = msg.contains("(backoff)");
@@ -1292,11 +1324,11 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
     let res: anyhow::Result<()> = async {
         lease.set_timeout(timeout_s).await?;
         let c = &mut lease.client;
-        match (&kind, &mut *state) {
-            (JobKind::Metric(m), JobState::Metric(st)) => {
+        match (&kind, &mut state.data) {
+            (JobKind::Metric(m), JobData::Metric(st)) => {
                 collect_metric(c, m, sql.as_deref().unwrap(), &base, em, st).await?;
             }
-            (JobKind::QueryTexts, JobState::Texts(texts)) => {
+            (JobKind::QueryTexts, JobData::Texts(texts)) => {
                 let v =
                     crate::structure::snapshot_query_texts(c, &db.source_id(), texts, &em.shared.fp_to_queryid).await?;
                 if !v.is_empty() {
@@ -1321,7 +1353,11 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
         Ok(())
     }
     .await;
-    let closed = lease.client.is_closed();
+    // the client may see the close only a moment after the server's error that ended it
+    let lost = res.as_ref().is_err_and(|e| {
+        lease.client.is_closed() || pg_code(e).is_some_and(|c| c.starts_with("08") || c.starts_with("57P0"))
+    });
+    state.lost = lost;
     drop(lease);
     let now = now_ms();
     let log = db.status(|d| {
@@ -1345,7 +1381,7 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
                 j.last_error = Some(t.clone());
                 d.last_error = Some(format!("{name}: {t}"));
                 d.last_error_ms = Some(now);
-                if closed {
+                if lost {
                     d.up = false;
                 }
                 let n = j.errors;
@@ -1479,6 +1515,7 @@ pub async fn run_source(
             ctx: ctx.clone(),
             primary: primary.clone(),
             standby: standby.clone(),
+            back: Default::default(),
         })
     };
     let main = mk(src.name.clone(), src.conn_str.clone(), true, None);
@@ -1723,7 +1760,10 @@ mod tests {
             phase,
             first: true,
             next: start,
-            state: Arc::new(tokio::sync::Mutex::new(JobState::None)),
+            state: Arc::new(tokio::sync::Mutex::new(JobState {
+                lost: false,
+                data: JobData::None,
+            })),
         };
         let iv = Duration::from_secs(30);
         // the first run is at the start; the phase shift is no missed run
