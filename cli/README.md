@@ -642,6 +642,21 @@ the raw result payload. The wait is sized from the instance's
 poll pacing; `--timeout` overrides it. A query error is printed as the instance
 reported it and the command exits 1.
 
+When writing queries:
+
+- `pgai_samples` returns `ts` as a timestamp; the `prom_*` functions return `t` in Unix
+  milliseconds (`to_timestamp(t / 1000)`). The time arguments of both are milliseconds and
+  take an expression such as `epoch_ms(now() - interval 1 hour)`, not a subquery.
+- A series that ended (a dropped index, a closed session) ends with a staleness marker: a
+  row with `stale = true` and `value = NaN`. Filter raw samples with `WHERE NOT stale`
+  before aggregating: `max()` and `avg()` over a NaN return NaN, and `NaN > 0` is true.
+- `queryid` is BIGINT in `query_texts` and text in a series' labels, so a join needs a cast
+  (`labels['queryid'] = queryid::varchar`). Wait-event series carry it as `query_id`.
+- In the labels, `dbname` is the monitored source (the node) and `datname` the database.
+- `information_schema.columns` lists the views and their columns; `metric_dict` lists the
+  metrics.
+- `logs`, `plans` and `plan_events` are empty unless Postgres logs are collected.
+
 `--local` and the platform path print the result as a text table with the row count under
 it; `--json` prints the result as JSON (`columns`, `rows`, `truncated`, ...). There is no
 other output format.
