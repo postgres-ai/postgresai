@@ -432,7 +432,11 @@ fn lose_the_vm_and_restart_from_the_bucket() {
         assert_eq!(a, rows(&local_ref, &q), "{q}");
     }
     // the raw views say what to use; an empty answer would read as "no data"
-    for q in ["SELECT count(*) FROM samples", "SELECT count(*) FROM metrics"] {
+    for q in [
+        "SELECT count(*) FROM samples",
+        "SELECT count(*) FROM metrics",
+        "SELECT count(*) FROM samples WHERE ts > now() - INTERVAL 1 HOUR",
+    ] {
         let e = other
             .run(q)
             .err()

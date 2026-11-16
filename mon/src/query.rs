@@ -22,10 +22,18 @@ pub const EMBEDDED_VIEWS_SQL: &str = include_str!("../schema/views.sql");
 
 /// `_raw_samples` on an object store: raw samples are never mirrored, so the `samples` and
 /// `metrics` views fail with a pointer to what does work, where an empty answer would mislead.
-const REMOTE_SAMPLES_VIEW: &str = "SELECT NULL::UBIGINT AS series_id, NULL::TIMESTAMPTZ AS ts, NULL::DOUBLE AS value, \
-     NULL::BOOLEAN AS stale FROM range(1) t(i) WHERE CASE WHEN i >= 0 THEN error('the samples and metrics views are \
-     not available on an object store: use pgai_samples(metric, matchers, start_ms, end_ms) or the prom_* \
-     functions')::BOOLEAN END";
+const REMOTE_SAMPLES_ERROR: &str = "the samples and metrics views are not available on an object store: use \
+     pgai_samples(metric, matchers, start_ms, end_ms) or the prom_* functions";
+
+/// The body of a view that cannot be read: a query on it fails with `msg`, whatever it selects
+/// or filters on. Every column raises, not only the filter: over constant NULL columns the
+/// optimizer answers `WHERE ts > ...` with no rows and never runs the filter that raises.
+fn failing_select(kind: &str, msg: &str) -> String {
+    let e = format!("CASE WHEN i >= 0 THEN error('{}') END", msg.replace('\'', "''"));
+    empty_select(kind)
+        .replace("NULL::", &format!("{e}::"))
+        .replace(" WHERE false", &format!(" FROM range(1) t(i) WHERE {e}::BOOLEAN"))
+}
 
 /// On an object store the SQL macros of sql/macros.sql read raw samples through the Rust scan.
 const REMOTE_PROM_RAW: &str =
@@ -779,12 +787,13 @@ impl Reader {
         // files exist but are not mirrored (over the budget, a failed download, or not copied
         // yet): an empty view would answer 0 rows as if there were no data
         let unavailable = |kind: &str| {
-            format!(
-                "SELECT e.* FROM range(1) t(i) LEFT JOIN ({}) e ON false WHERE CASE WHEN i >= 0 THEN \
-                 error('{kind} is not available right now: its files on the object store are over the mirror \
-                 budget (http.s3.mirror_mb), could not be downloaded or are still being copied; see s3_mirror \
-                 in GET /health')::BOOLEAN END",
-                empty_select(kind)
+            failing_select(
+                kind,
+                &format!(
+                    "{kind} is not available right now: its files on the object store are over the mirror budget \
+                     (http.s3.mirror_mb), could not be downloaded or are still being copied; see s3_mirror in GET \
+                     /health"
+                ),
             )
         };
         let mut sql = String::new();
@@ -854,7 +863,7 @@ impl Reader {
                             format!("SELECT * FROM {src}")
                         }
                     }
-                    _ if *kind == "samples" && self.mirror.is_some() => REMOTE_SAMPLES_VIEW.to_string(),
+                    _ if *kind == "samples" && self.mirror.is_some() => failing_select(kind, REMOTE_SAMPLES_ERROR),
                     None if self.mirror.is_some() && !fs.is_empty() => unavailable(kind),
                     _ => empty_select(kind).to_string(),
                 }

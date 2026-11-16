@@ -1479,11 +1479,17 @@ fn sql_over_an_object_store_matches_the_local_store() {
     assert_eq!(body["s3"]["gets"], serde_json::json!(s3.gets), "{body}");
     let series = sql_rows(&rem, "SELECT count(*) FROM series WHERE metric = 'r_total'");
     assert_eq!(series, vec!["[24]".to_string()]);
-    // raw samples are not mirrored: the view is empty (prom_* read them from the bucket)
-    let e = rem
-        .run("SELECT count(*) FROM samples")
-        .expect_err("raw view on an object store");
-    assert!(e.message.contains("pgai_samples"), "{e:?}");
+    // raw samples are not mirrored (prom_* read them from the bucket): the view says what to
+    // use, also under a filter, which over constant columns would be answered with no rows
+    for q in [
+        "SELECT count(*) FROM samples",
+        "SELECT count(*) FROM samples WHERE ts > now() - INTERVAL 1 HOUR",
+        "SELECT ts, value FROM samples WHERE series_id = 1 AND NOT stale",
+        "SELECT count(*) FROM metrics WHERE ts > now() - INTERVAL 1 HOUR",
+    ] {
+        let e = rem.run(q).expect_err("raw view on an object store");
+        assert!(e.message.contains("pgai_samples"), "{q}: {e:?}");
+    }
     let gets = remote.stats.gets.load(Ordering::Relaxed) - g0;
     assert!(
         gets <= 6 * nfiles,
@@ -1731,10 +1737,14 @@ fn a_tampered_remote_catalog_is_refused() {
         let shared = Shared::open_read_only(Path::new(url)).unwrap();
         let views = format!("{EMBEDDED_VIEWS_SQL}\n;\n{MACROS}");
         let r = Reader::new(shared, HttpCfg::default(), views, vec![]).unwrap();
-        let e = r
-            .run("SELECT count(*) FROM query_texts")
-            .expect_err("not an empty answer");
-        assert!(e.message.contains("mirror budget"), "{}", e.message);
+        for q in [
+            "SELECT count(*) FROM query_texts",
+            "SELECT query FROM query_texts WHERE queryid = 1",
+            "SELECT count(*) FROM query_texts WHERE dbname = 'db1'",
+        ] {
+            let e = r.run(q).expect_err("not an empty answer");
+            assert!(e.message.contains("mirror budget"), "{q}: {}", e.message);
+        }
         // other views still answer
         assert!(!sql_rows(&r, "SELECT count(*) FROM series").is_empty());
     }
@@ -1765,8 +1775,17 @@ fn a_tampered_remote_catalog_is_refused() {
             vec![],
         )
         .unwrap();
-        let e = r.run("SELECT count(*) FROM series").expect_err("not an empty answer");
-        assert!(e.message.contains("series is not available right now"), "{}", e.message);
+        for q in [
+            "SELECT count(*) FROM series",
+            "SELECT labels FROM series WHERE metric = 'r_total'",
+        ] {
+            let e = r.run(q).expect_err("not an empty answer");
+            assert!(
+                e.message.contains("series is not available right now"),
+                "{q}: {}",
+                e.message
+            );
+        }
         let st = r.stats();
         let m = &st["s3_mirror"];
         if lie == 1 {
