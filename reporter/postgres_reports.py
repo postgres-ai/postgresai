@@ -64,6 +64,7 @@ from requests_aws4auth import AWS4Auth
 from reporter import a005 as a005_facts
 from reporter import d001 as d001_facts
 from reporter import d004 as d004_facts
+from reporter import k004 as k004_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
@@ -90,6 +91,11 @@ K003_WINDOW_METRICS = {
 # tests/reporter/test_k003_window_facts.py checks it against the config.
 K003_EXPORT_RULE = {"top_n_per_database": 100, "ranked_by": "total_exec_time", "min_calls": 3,
                     "min_exec_time_ms": 1000, "interval_seconds": 30}
+# K004 per-statement window facts: K003's, plus the time and the temp reads a per-call spill reading
+# needs (ms per call; reads against writes).
+K004_WINDOW_METRICS = {**K003_WINDOW_METRICS,
+                       "exec_time_ms": "pgwatch_pg_stat_statements_exec_time_total",
+                       "temp_bytes_read": "pgwatch_pg_stat_statements_temp_bytes_read"}
 K003_TEXT_CHARS = 200  # a statement's text in K003: enough to name it, small enough for 100 rows
 K003_TEXT_FETCH_CHARS = 20000  # read this much to find the monitoring marker (test: every collector SQL fits)
 MONITORING_MARKER = "pgwatch_generated"  # the comment every collector statement carries
@@ -4280,6 +4286,11 @@ class PostgresReportGenerator:
         """
         Generate K004 Top Queries by temp bytes written report.
 
+        Per database: the statements that wrote temporary files (hourly top 3 union), each with
+        K003's window facts plus its time and temp reads; the database-wide temporary-file
+        counters over the same window (reporter/k004.py). Per node: the settings that bound or
+        log a spill, with the values stored per role and per database.
+
         Args:
             cluster: Cluster name
             node_name: Node name
@@ -4291,6 +4302,7 @@ class PostgresReportGenerator:
             Dictionary containing top queries sorted by temp bytes written
         """
         logger.info("Generating K004 Top Queries by temp bytes written report...")
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -4311,15 +4323,19 @@ class PostgresReportGenerator:
                 per_query, other, timeline = self._get_hourly_topk_pgss_data(
                     cluster, node_name, db_name, metric_name, hours=hours
                 )
+                spill = self._k004_database_spill(cluster, node_name, db_name, timeline)
 
-                if not per_query and sum(other) == 0:
+                if not per_query and sum(other) == 0 and not (spill.get("bytes") or spill.get("files")):
                     logger.warning(f"K004 - No query metrics returned for database {db_name}")
                     continue  # Skip databases with no data
 
-                # Calculate total temp bytes per query across all hours
+                # Calculate total temp bytes per query across all hours. A statement in an hour's top 3
+                # with no temp bytes in the window (a quiet hour ranks zeros) did not spill.
                 query_totals = []
                 for queryid, hourly_values in per_query.items():
                     total_bytes = sum(hourly_values)
+                    if total_bytes <= 0:
+                        continue
                     query_totals.append({
                         "queryid": queryid,
                         "total_temp_bytes": total_bytes,
@@ -4329,32 +4345,100 @@ class PostgresReportGenerator:
                 # Sort by total_temp_bytes (descending) and limit to top N
                 sorted_metrics = sorted(query_totals, key=lambda x: x.get('total_temp_bytes', 0), reverse=True)[:limit]
 
+                # Per statement, over the same hourly window: calls, time, rows, buffers, WAL, temp
+                # reads, and its text, so a reader gets per-call figures and tells our monitoring apart.
+                window = self._k003_window_facts(cluster, node_name, db_name,
+                                                 [q['queryid'] for q in sorted_metrics], timeline,
+                                                 metrics=K004_WINDOW_METRICS)
+                for q in sorted_metrics:
+                    q.update(window["per_query"].get(q['queryid'], {}))
+
                 # Calculate totals
                 total_bytes = sum(q.get('total_temp_bytes', 0) for q in sorted_metrics) + sum(other)
 
+                summary = {
+                    "queries_returned": len(sorted_metrics),
+                    "total_temp_bytes": total_bytes,
+                    "total_temp_bytes_tracked_queries": sum(q.get('total_temp_bytes', 0) for q in sorted_metrics),
+                    "total_temp_bytes_other": sum(other),
+                    "time_range_hours": hours,
+                    "hourly_timestamps": timeline,
+                    "limit": limit,
+                    **window["summary"],
+                }
+                if spill:  # readings, or why there are none
+                    summary["database_temp"] = spill
                 queries_by_db[db_name] = {
                     "top_queries": sorted_metrics,
                     "other_temp_bytes_hourly": other,
-                    "summary": {
-                        "queries_returned": len(sorted_metrics),
-                        "total_temp_bytes": total_bytes,
-                        "total_temp_bytes_tracked_queries": sum(q.get('total_temp_bytes', 0) for q in sorted_metrics),
-                        "total_temp_bytes_other": sum(other),
-                        "time_range_hours": hours,
-                        "hourly_timestamps": timeline,
-                        "limit": limit
-                    }
+                    "summary": summary,
                 }
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K004",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict):
+            node.update(self._k004_settings(cluster, node_name))
+        return report
+
+    def _k004_database_spill(self, cluster: str, node_name: str, db_name: str,
+                             timeline: List[int]) -> Dict[str, Any]:
+        """pg_stat_database's temporary files and bytes of one database over the hourly window
+        (reporter/k004.counter_hours): total, per hour, busiest five minutes. Empty when monitoring
+        has fewer than two readings (not known, never zero)."""
+        if not timeline:
+            return {}
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        start, end = datetime.fromtimestamp(timeline[0] - 3600), datetime.fromtimestamp(timeline[-1])
+        out: Dict[str, Any] = {}
+        for key, metric in (("bytes", "pgwatch_db_stats_temp_bytes"), ("files", "pgwatch_db_stats_temp_files")):
+            try:
+                series = self.query_range(f"{metric}{{{where}}}", start, end, step=f"{k004_facts.STEP_S}s")
+            except Exception as e:  # one failed metric must not lose the report
+                logger.warning(f"K004 database {key} failed ({db_name}): {e}")
+                continue
+            window = k004_facts.counter_hours(series, timeline)
+            if window:
+                out[key] = window
+            else:  # query_range answers [] on an error too: not known, never zero
+                out[f"{key}_error"] = "monitoring has fewer than two readings of the counter in the window"
+        return out
+
+    def _k004_settings(self, cluster: str, node_name: str) -> Dict[str, Any]:
+        """The node's spill settings with their context and stored role/database values, read from the
+        node (reporter/k004.node_facts); without the node, the values monitoring has (no context)."""
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        out = k004_facts.node_facts(conn_str)
+        if out.get("settings"):
+            return out
+        _esc = self._escape_promql_label
+        names = "|".join(n.replace(".", "[.]") for n in k004_facts.SETTINGS)  # no backslash in a PromQL string
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        try:  # both label forms, as the version reader (older pgwatch configs keep the tag_ prefix)
+            settings, disagree = k004_facts.settings_from_monitoring(self.query_instant(
+                f'last_over_time(pgwatch_settings_configured{{{where}, setting_name=~"{names}"}}[3h]) or '
+                f'last_over_time(pgwatch_settings_configured{{{where}, tag_setting_name=~"{names}"}}[3h])'))
+        except Exception as e:
+            settings, disagree = {}, []
+            logger.warning(f"K004 settings failed: {e}")
+        if settings:
+            out["settings"] = settings
+        if disagree:
+            out["settings_error"] = "; ".join(x for x in (out.get("settings_error"), (
+                "monitoring has more than one value of " + ", ".join(disagree)
+                + " (a database's own value, or a change in the last 3 hours)")) if x)
+        elif not settings:
+            out.setdefault("settings_error", "monitoring has no reading of these settings")
+        return out
 
     def generate_k005_wal_bytes_report(self, cluster: str = "local", node_name: str = "node-01",
                                        time_range_minutes: int = 60, limit: int = 100, use_hourly: bool = True) -> Dict[str, Any]:
@@ -5373,7 +5457,8 @@ class PostgresReportGenerator:
         }
 
     def _k003_window_facts(self, cluster: str, node_name: str, db_name: str, queryids: List[str],
-                           timeline: List[int]) -> Dict[str, Any]:
+                           timeline: List[int],
+                           metrics: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """K003's per-statement facts over the hourly window: the sum of each hour's increase (the
         same sums as total_time_ms), so per-call and per-second figures share one window.
 
@@ -5433,7 +5518,7 @@ class PostgresReportGenerator:
 
         if queryids:
             f_q = '{' + ','.join(base + [f'queryid=~"{self._build_qid_regex(queryids)}"']) + '}'
-            for key, metric in K003_WINDOW_METRICS.items():
+            for key, metric in (metrics or K003_WINDOW_METRICS).items():
                 for qid, value in _summed(f"sum by (queryid) (increase({metric}{f_q}[1h]))").items():
                     if qid in per_query:
                         per_query[qid][key] = value
