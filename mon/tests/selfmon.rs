@@ -77,7 +77,12 @@ fn binary_writes_its_own_series() {
                     )
                 })
                 .collect();
-            if got.get("pgai_mon_flushes_total{}").is_some_and(|v| v.len() >= 3) {
+            // three samples, the last one taken after a flush was counted (the first ones can
+            // be taken before that)
+            if got
+                .get("pgai_mon_flushes_total{}")
+                .is_some_and(|v| v.len() >= 3 && v[v.len() - 1] >= 1.0)
+            {
                 break;
             }
         }
