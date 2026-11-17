@@ -510,5 +510,148 @@
         }
       ]
     }
+  },
+  {
+    "client": "cloudwatch",
+    "command": "GetMetricDataCommand",
+    "input": {
+      "StartTime": "2026-09-28T05:15:00.000Z",
+      "EndTime": "2026-09-28T05:45:00.000Z",
+      "MetricDataQueries": [
+        {
+          "Id": "host_cpu_credit_balance",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "CPUCreditBalance",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 300,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_cpu_surplus_credit_balance",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "CPUSurplusCreditBalance",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 300,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "EBSIOBalance%",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 300,
+            "Stat": "Average"
+          }
+        },
+        {
+          "Id": "host_ebs_byte_balance_percent",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "AWS/RDS",
+              "MetricName": "EBSByteBalance%",
+              "Dimensions": [
+                {
+                  "Name": "DBInstanceIdentifier",
+                  "Value": "pgai-test-hoststats-b9e0be1f"
+                }
+              ]
+            },
+            "Period": 300,
+            "Stat": "Average"
+          }
+        }
+      ]
+    },
+    "output": {
+      "MetricDataResults": [
+        {
+          "Id": "host_cpu_credit_balance",
+          "Label": "host_cpu_credit_balance",
+          "StatusCode": "Complete",
+          "Timestamps": [
+            "2026-09-28T05:40:00.000Z",
+            "2026-09-28T05:30:00.000Z",
+            "2026-09-28T05:20:00.000Z"
+          ],
+          "Values": [
+            12,
+            96,
+            144
+          ]
+        },
+        {
+          "Id": "host_cpu_surplus_credit_balance",
+          "Label": "host_cpu_surplus_credit_balance",
+          "StatusCode": "Complete",
+          "Timestamps": [
+            "2026-09-28T05:40:00.000Z",
+            "2026-09-28T05:30:00.000Z",
+            "2026-09-28T05:20:00.000Z"
+          ],
+          "Values": [
+            3.5,
+            0,
+            0
+          ]
+        },
+        {
+          "Id": "host_ebs_io_balance_percent",
+          "Label": "host_ebs_io_balance_percent",
+          "StatusCode": "Complete",
+          "Timestamps": [
+            "2026-09-28T05:40:00.000Z",
+            "2026-09-28T05:30:00.000Z",
+            "2026-09-28T05:20:00.000Z"
+          ],
+          "Values": [
+            98,
+            99,
+            100
+          ]
+        },
+        {
+          "Id": "host_ebs_byte_balance_percent",
+          "Label": "host_ebs_byte_balance_percent",
+          "StatusCode": "Complete",
+          "Timestamps": [
+            "2026-09-28T05:40:00.000Z",
+            "2026-09-28T05:30:00.000Z",
+            "2026-09-28T05:20:00.000Z"
+          ],
+          "Values": [
+            95,
+            97.5,
+            100
+          ]
+        }
+      ],
+      "Messages": []
+    }
   }
 ]

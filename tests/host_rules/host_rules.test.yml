@@ -240,6 +240,10 @@ tests:
         values: '25x10'
       - series: 'PostgresServer_StorageLimitBytes{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
         values: '107374182400x10'
+      - series: 'PostgresServer_CPUCores{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '2x10'
+      - series: 'PostgresServer_CPUCores{job="clickhouse-ch1",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
+        values: '2x10'
       - series: 'PostgresServer_FilesystemUsedPercent{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
         values: '25x10'
       - series: 'PostgresServer_DiskReads_Total{job="clickhouse-ch2",instance="api.clickhouse.cloud",cluster="default",node_name="ch1",clickhouse_org="ca04a310-730d-4ce0-93dd-39f2cd2d5e6f",postgres_service="0c330583-6396-86d0-82cd-ed0f23b0d38c",postgres_service_name="my-postgres"}'
@@ -254,6 +258,7 @@ tests:
       - {expr: 'round(host_cpu_utilization_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_cpu_utilization_percent{cluster="default",node_name="ch1"}', value: 20}]}
       - {expr: 'round(host_os_cpu_iowait_percent, 1e-9)', eval_time: 10m, exp_samples: [{labels: 'host_os_cpu_iowait_percent{cluster="default",node_name="ch1"}', value: 5}]}
       - {expr: host_os_memory_total_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_total_bytes{cluster="default",node_name="ch1"}', value: 17179869184}]}
+      - {expr: host_cpu_cores, eval_time: 10m, exp_samples: [{labels: 'host_cpu_cores{cluster="default",node_name="ch1"}', value: 2}]}
       - {expr: host_memory_available_bytes, eval_time: 10m, exp_samples: [{labels: 'host_memory_available_bytes{cluster="default",node_name="ch1"}', value: 10737418240}]}
       - {expr: host_os_memory_cached_bytes, eval_time: 10m, exp_samples: [{labels: 'host_os_memory_cached_bytes{cluster="default",node_name="ch1"}', value: 4294967296}]}
       - {expr: host_disk_free_bytes, eval_time: 10m, exp_samples: [{labels: 'host_disk_free_bytes{cluster="default",node_name="ch1"}', value: 80530636800}]}
