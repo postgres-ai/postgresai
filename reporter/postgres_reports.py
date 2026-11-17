@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"
 
 import requests
 import json
@@ -1143,7 +1143,22 @@ class PostgresReportGenerator:
             'disk_iops': (f'avg_over_time((host_disk_read_iops{{{sel}}}'
                           f' + host_disk_write_iops{{{sel}}})[5m:1m])'),
             'backends': f'max_over_time(sum(pgwatch_pg_stat_activity_count{{{sel}}})[5m:1m])',
+            # Resource sizing for RDS and ClickHouse (platform-all#1101): the
+            # average CPU (a burstable class's baseline is an average), memory
+            # available in bytes (RDS without Enhanced Monitoring has no total,
+            # the platform divides by the class's RAM), and the credit and
+            # burst balances (5-minute metrics; the lowest in each 5 minutes,
+            # the surplus at its highest).
+            'cpu_avg_pct': f'avg_over_time(host_cpu_utilization_percent{{{sel}}}[5m])',
+            'mem_available_bytes': f'min_over_time(host_memory_available_bytes{{{sel}}}[5m])',
+            'cpu_credit_balance': f'min_over_time(host_cpu_credit_balance{{{sel}}}[5m])',
+            'cpu_surplus_balance': f'max_over_time(host_cpu_surplus_credit_balance{{{sel}}}[5m])',
+            'burst_balance_pct': f'min_over_time(host_disk_burst_balance_percent{{{sel}}}[5m])',
+            'ebs_io_balance_pct': f'min_over_time(host_ebs_io_balance_percent{{{sel}}}[5m])',
+            'ebs_byte_balance_pct': f'min_over_time(host_ebs_byte_balance_percent{{{sel}}}[5m])',
         }
+        lowest = {'mem_available_pct', 'mem_available_bytes', 'cpu_credit_balance', 'burst_balance_pct',
+                  'ebs_io_balance_pct', 'ebs_byte_balance_pct'}
         series: Dict[str, List[Optional[float]]] = {}
         first_ts: Optional[int] = None
         for name, query in series_queries.items():
@@ -1157,7 +1172,7 @@ class PostgresReportGenerator:
                     if v != v or v in (float('inf'), float('-inf')):
                         continue
                     t = int(float(ts)) // step * step
-                    points[t] = max(points.get(t, v), v) if name != 'mem_available_pct' else min(points.get(t, v), v)
+                    points[t] = min(points.get(t, v), v) if name in lowest else max(points.get(t, v), v)
             if points:
                 first = min(points)
                 first_ts = first if first_ts is None else min(first_ts, first)
@@ -1184,17 +1199,21 @@ class PostgresReportGenerator:
                     return None
             return None
 
+        # The value is a label: after a resize (or a tier change) the window holds
+        # the old and the new one; the series sampled last is current.
         max_connections = None
         settings = self.query_instant(
-            f'last_over_time(pgwatch_settings_configured{{{sel}, setting_name="max_connections"}}[3h])')
+            f'tlast_over_time(pgwatch_settings_configured{{{sel}, setting_name="max_connections"}}[3h])')
         if settings.get('status') == 'success' and settings.get('data', {}).get('result'):
             try:
-                max_connections = int(settings['data']['result'][0]['metric'].get('setting_value'))
-            except (TypeError, ValueError):
+                newest = max(settings['data']['result'], key=lambda r: float(r['value'][1]))
+                max_connections = int(newest['metric'].get('setting_value'))
+            except (KeyError, IndexError, TypeError, ValueError):
                 max_connections = None
 
         cpu, mem, mbps, iops, backends = (_values(n) for n in
                                           ('cpu_pct', 'mem_available_pct', 'disk_mbps', 'disk_iops', 'backends'))
+        cpu_avg = _values('cpu_avg_pct')
         total_bytes = _instant(f'last_over_time(host_os_memory_total_bytes{{{sel}}}[3h])')
         free_bytes = _instant(f'last_over_time(host_disk_free_bytes{{{sel}}}[3h])')
         db_size = _instant(f'sum(last_over_time(pgwatch_db_size_size_b{{{sel}}}[3h]))')
@@ -1211,7 +1230,8 @@ class PostgresReportGenerator:
         data = {
             "window_hours": min(hours, float(window_hours)),
             "host_metrics": bool(cpu),
-            "cpu": {"cores": None, "p95_pct": _pct(cpu, 0.95), "max_pct": max(cpu) if cpu else None},
+            "cpu": {"cores": None, "p95_pct": _pct(cpu, 0.95), "max_pct": max(cpu) if cpu else None,
+                    "avg_pct": round(sum(cpu_avg) / len(cpu_avg), 3) if cpu_avg else None},
             "memory": {
                 "total_bytes": int(total_bytes) if total_bytes is not None else None,
                 "available_min_pct": min(mem) if mem else None,
@@ -1238,10 +1258,203 @@ class PostgresReportGenerator:
                 # Older reporters sent the busiest minute per point; the
                 # platform judges IOPS only when it sees this (platform-all#1086).
                 "disk_iops_kind": "avg_5m",
+                # The sizing series exist only where the box collects them.
+                **{name: series[name] for name in ('cpu_avg_pct', 'mem_available_bytes', 'cpu_credit_balance',
+                                                   'cpu_surplus_balance', 'burst_balance_pct', 'ebs_io_balance_pct',
+                                                   'ebs_byte_balance_pct') if _values(name)},
             },
         }
+        observed = self._a014_observed_size(sel, start, end, step, _instant)
+        if observed:
+            data["observed_size"] = observed
         return self.format_report_data("A014", data, node_name,
                                        postgres_version=self._get_postgres_version_info(cluster, node_name))
+
+    def _a014_observed_size(self, sel: str, start: datetime, end: datetime, step: int,
+                            instant) -> Optional[Dict[str, Any]]:
+        """
+        What the database server is, for the platform's sizing (platform-all#1101):
+        an RDS instance from rds-host-stats' host_instance_info, a ClickHouse
+        Managed Postgres service from the ClickHouse Cloud API (with the key the
+        box scrapes with) or, failing that, its metrics. None otherwise.
+        seen_at_epoch: the last time it was seen; since_epoch: the first point
+        of the current size after any other in the window (a resize), else None.
+        """
+        def history(query: str, key) -> List[Tuple[int, Any]]:
+            out: List[Tuple[int, Any]] = []
+            for item in self.query_range(query, start, end, step=f"{step}s"):
+                for ts, _ in item.get('values', []):
+                    out.append((int(float(ts)) // step * step, key(item.get('metric', {}))))
+            return sorted(out, key=lambda p: p[0])
+
+        def resize_cut(points: List[Tuple[int, Any]]) -> Optional[int]:
+            current = points[-1][1]
+            other = [t for t, v in points if v != current]
+            if not other:
+                return None
+            return min((t for t, v in points if v == current and t > max(other)), default=None)
+
+        def last(name: str) -> Optional[float]:
+            return instant(f'last_over_time({name}{{{sel}}}[3h])')
+
+        info = history(f'last_over_time(host_instance_info{{{sel}}}[10m])', lambda m: dict(m))
+        # Each label set's last sample (tlast_over_time, VictoriaMetrics), over
+        # the window plus the grid's 10-minute carry-over and a step: every
+        # label set on the grid has one.
+        latest = self.query_instant(
+            f'tlast_over_time(host_instance_info{{{sel}}}[{int((end - start).total_seconds()) + 600 + step}s])')
+        try:
+            newest = sorted((latest.get('data') or {}).get('result') or [],
+                            key=lambda r: float(r['value'][1]), reverse=True)
+            if newest:
+                at = int(float(newest[0]['value'][1]))
+                labels = {k: v for k, v in newest[0].get('metric', {}).items() if k != '__name__'}
+                # After a resize (or a storage change) last_over_time[10m] keeps the
+                # old label set on the grid for 10 minutes past its last sample:
+                # those points go, so the label set sampled last is current and
+                # the resize is where it starts.
+                def key(m: Dict[str, Any]) -> frozenset:
+                    return frozenset((k, v) for k, v in m.items() if k != '__name__')
+                last_seen: Dict[frozenset, float] = {}
+                for r in newest:
+                    last_seen.setdefault(key(r.get('metric', {})), float(r['value'][1]))
+                info = [(t, m) for t, m in info if key(m) == key(labels) or t <= last_seen.get(key(m), t)]
+                # The grid ends at the last 5-minute point before now: a box that
+                # started minutes ago (its first report runs 3 minutes in) has the
+                # info only after it.
+                if not info or at > info[-1][0]:
+                    info.append((at, labels))
+                elif key(info[-1][1]) != key(labels):
+                    info.append((info[-1][0], labels))
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+        if info:
+            labels = info[-1][1]
+            size_bytes, max_bytes = last('host_disk_size_bytes'), last('host_disk_max_size_bytes')
+            iops, throughput = last('host_disk_provisioned_iops'), last('host_disk_provisioned_throughput_bytes_per_second')
+            return {
+                "provider": "aurora" if str(labels.get('engine', '')).startswith('aurora') else "rds",
+                "size": labels.get('instance_class'),
+                "region": labels.get('region'),
+                "engine": labels.get('engine'),
+                "multi_az": labels.get('multi_az') == 'true' if labels.get('multi_az') else None,
+                "storage": {
+                    "type": labels.get('storage_type'),
+                    "size_gb": round(size_bytes / 2 ** 30, 1) if size_bytes else None,
+                    "max_size_gb": round(max_bytes / 2 ** 30, 1) if max_bytes else None,
+                    "iops": int(iops) if iops else None,
+                    "throughput_mbps": round(throughput / 1e6, 1) if throughput else None,
+                },
+                "seen_at_epoch": info[-1][0],
+                "since_epoch": resize_cut([(t, m.get('instance_class')) for t, m in info]),
+            }
+
+        if instant(f'last_over_time(host_provider_info{{{sel}, provider="ClickHouse"}}[3h])') is None:
+            return None
+        # A resize shows as a change of vCPUs or memory (the API returns only
+        # the current size): one series whose value carries both.
+        shape_values: List[Tuple[int, Any]] = []
+        for item in self.query_range(f'last_over_time(host_cpu_cores{{{sel}}}[10m]) * 1e15'
+                                     f' + last_over_time(host_os_memory_total_bytes{{{sel}}}[10m])',
+                                     start, end, step=f"{step}s"):
+            for ts, v in item.get('values', []):
+                shape_values.append((int(float(ts)) // step * step, v))
+        shape_values.sort(key=lambda p: p[0])
+        vcpus, memory, storage = last('host_cpu_cores'), last('host_os_memory_total_bytes'), last('host_disk_size_bytes')
+        observed: Dict[str, Any] = {
+            "provider": "clickhouse",
+            "size": None, "region": None, "standbys": None, "org_tier": None,
+            "vcpus": int(vcpus) if vcpus else None,
+            "memory_bytes": int(memory) if memory else None,
+            "storage": {"type": "nvme", "size_gb": round(storage / 2 ** 30, 1) if storage else None,
+                        "max_size_gb": None, "iops": None, "throughput_mbps": None},
+            # No grid point in the last 10 minutes: when the metrics were last scraped.
+            "seen_at_epoch": shape_values[-1][0] if shape_values else self._a014_last_sample_epoch(
+                f'tlast_over_time(host_os_memory_total_bytes{{{sel}}}[3h])', end),
+            "since_epoch": resize_cut(shape_values) if shape_values else None,
+            "size_source": "metrics",
+        }
+        observed.update(self._clickhouse_service_size(sel))
+        return observed
+
+    def _a014_last_sample_epoch(self, query: str, default: datetime) -> int:
+        """The newest last-sample time a tlast_over_time query returns, else default."""
+        try:
+            result = (self.query_instant(query).get('data') or {}).get('result') or []
+            return max(int(float(r['value'][1])) for r in result) if result else int(default.timestamp())
+        except (KeyError, IndexError, TypeError, ValueError):
+            return int(default.timestamp())
+
+    def _clickhouse_service_size(self, sel: str = '') -> Dict[str, Any]:
+        """
+        The ClickHouse Cloud service's size, region, standbys and org tier, read
+        with the API key the box scrapes the service's metrics with: the CLI's
+        scrape file (host-metrics/clickhouse-<name>.yml, written by js-yaml, so
+        its scalars are plain) and the secret beside it. Read-only GETs. {} when
+        there is no file, or the API does not answer; the caller then keeps what
+        the metrics say.
+        """
+        directory = Path(os.environ.get('REPORTER_HOST_METRICS_DIR', '/etc/pgai/host-metrics'))
+        try:
+            files = sorted(directory.glob('clickhouse-*.yml'))
+        except OSError:
+            return {}
+        # The scrape file of this node (its static labels), else the only file: on
+        # a box with several services another service's size must not be this one's.
+        node = re.search(r'node_name="((?:[^"\\]|\\.)*)"', sel)
+        node_name = node.group(1) if node else None
+
+        def for_node(path) -> bool:
+            try:
+                m = re.search(r'node_name:\s*>?-?\s*[\'"]?([^\s\'"]+)', path.read_text())
+            except OSError:
+                return False
+            return bool(m and node_name and m.group(1) == node_name)
+        own = [f for f in files if for_node(f)]
+        for scrape in own or (files if len(files) == 1 else []):
+            try:
+                text = scrape.read_text()
+                path = re.search(r'metrics_path:\s*[\'"]?/v1/organizations/([0-9a-f-]{36})/postgres/([0-9a-f-]{36})/prometheus', text)
+                user = re.search(r'username:\s*[\'"]?([A-Za-z0-9_-]+)', text)
+                scheme = re.search(r'scheme:\s*[\'"]?(https?)\b', text)
+                host = re.search(r'targets:\s*\n\s*-\s*[\'"]?([A-Za-z0-9.-]+(?::\d+)?)', text)
+                if not (path and user and host):
+                    continue
+                secret = scrape.with_suffix('.secret').read_text().strip()
+                base = f"{scheme.group(1) if scheme else 'https'}://{host.group(1)}/v1/organizations/{path.group(1)}"
+                auth = (user.group(1), secret)
+                reply = requests.get(f"{base}/postgres/{path.group(2)}", auth=auth, timeout=10, allow_redirects=False)
+                if reply.status_code != 200:
+                    logger.warning(f"A014: ClickHouse Cloud service read failed ({reply.status_code}); sizing uses metrics")
+                    continue
+                service = reply.json().get('result') or {}
+                out: Dict[str, Any] = {
+                    "size": service.get('size') if isinstance(service.get('size'), str) else None,
+                    "region": service.get('region') if isinstance(service.get('region'), str) else None,
+                    "standbys": {'none': 0, 'async': 1, 'sync': 2}.get(service.get('haType')),
+                    "size_source": "api",
+                }
+                if isinstance(service.get('storageSize'), (int, float)):
+                    out["storage"] = {"type": "nvme", "size_gb": float(service['storageSize']),
+                                      "max_size_gb": None, "iops": None, "throughput_mbps": None}
+                # The org plan prices the size; without it the size still counts.
+                day = datetime.now(timezone.utc).date()
+                try:
+                    costs = requests.get(f"{base}/usageCost", auth=auth, timeout=10, allow_redirects=False,
+                                         params={'from_date': str(day - timedelta(days=2)), 'to_date': str(day - timedelta(days=1))})
+                    if costs.status_code == 200:
+                        tiers = [c.get('organizationTier') for c in (costs.json().get('result') or {}).get('costs') or []
+                                 if isinstance(c, dict) and isinstance(c.get('organizationTier'), str)]
+                        out["org_tier"] = tiers[-1].lower() if tiers else None
+                    else:
+                        logger.warning(f"A014: ClickHouse Cloud org plan read failed ({costs.status_code})")
+                except Exception as e:
+                    logger.warning(f"A014: ClickHouse Cloud org plan not read: {type(e).__name__}")
+                return out
+            except Exception as e:  # never fail the report over the size
+                logger.warning(f"A014: ClickHouse Cloud size not read: {type(e).__name__}")
+                continue
+        return {}
 
     # H001-O2 persistence: an invalid index listed in readings over days is a leftover; one reading is not.
     H001_LOOKBACK = "35d"

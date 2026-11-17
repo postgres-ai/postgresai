@@ -110,3 +110,7 @@ groups:
         expr: 100 * sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!="", mode="steal"}[3m])) / sum by (cluster, node_name) (rate(PostgresServer_CPUSeconds_Total{job=~"clickhouse-.+", cluster!="", node_name!=""}[3m]))
       - record: host_disk_size_bytes
         expr: max by (cluster, node_name) (PostgresServer_StorageLimitBytes{job=~"clickhouse-.+", cluster!="", node_name!=""})
+      # The service's vCPUs; with its memory limit, how a resize is told apart
+      # when the size name can't be read (resource sizing, platform-all#1101).
+      - record: host_cpu_cores
+        expr: max by (cluster, node_name) (PostgresServer_CPUCores{job=~"clickhouse-.+", cluster!="", node_name!=""})

@@ -79,7 +79,8 @@ async function runRole(fail = false) {
 test('customer role uses the configured AssumeRole parameters and assumed credentials', async () => {
   const { requests, imports, stderr } = await runRole()
   expect(stderr).toBe('')
-  expect(requests.map(r => r.action)).toEqual(['AssumeRole', 'DescribeDBInstances', 'AssumeRole', 'GetMetricData'])
+  // The second GetMetricData reads the 5-minute credit and burst balances (platform-all#1101).
+  expect(requests.map(r => r.action)).toEqual(['AssumeRole', 'DescribeDBInstances', 'AssumeRole', 'GetMetricData', 'GetMetricData'])
   for (const request of requests.filter(r => r.action === 'AssumeRole')) {
     const params = new URLSearchParams(request.body)
     expect(params.get('RoleArn')).toBe(roleArn)
@@ -90,7 +91,7 @@ test('customer role uses the configured AssumeRole parameters and assumed creden
     expect(request.authorization).toContain('Credential=assumed/')
     expect(request.token).toBe('assumed-token')
   }
-  expect(imports).toEqual(['host_provider_info{cluster="c",node_name="n",provider="Amazon RDS"} 1 1790856000000\nhost_cpu_utilization_percent{cluster="c",node_name="n"} 12.5 1790855700000\n'])
+  expect(imports).toEqual(['host_provider_info{cluster="c",node_name="n",provider="Amazon RDS"} 1 1790856000000\nhost_cpu_utilization_percent{cluster="c",node_name="n"} 12.5 1790855700000\nhost_instance_info{cluster="c",node_name="n",engine="postgres",region="us-east-1"} 1 1790856000000\n'])
 }, 15_000)
 
 test('an STS failure writes no metrics and never queries RDS or CloudWatch', async () => {

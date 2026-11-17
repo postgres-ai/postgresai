@@ -6,7 +6,7 @@ import { fromTemporaryCredentials } from '@aws-sdk/credential-providers'
 
 type Client = { send(command: any): Promise<any> }
 export type Clients = { rds: Client; cloudwatch: Client; pi: Client; logs: Client }
-export type Target = { instanceId: string; cluster: string; nodeName: string }
+export type Target = { instanceId: string; cluster: string; nodeName: string; region?: string }
 export type Role = { arn: string; externalId: string }
 export type Auth = { username: string; password: string }
 
@@ -40,6 +40,27 @@ const rdsMetrics: Metric[] = [
 const auroraMetrics: Metric[] = [
   ['host_local_storage_free_bytes', 'FreeLocalStorage'],
 ]
+// Credit and burst balances that limit what the instance can sustain (resource
+// sizing, platform-all#1101). CloudWatch publishes them every 5 minutes, so
+// they are read at most once per 5 minutes (a failed read again on the next
+// poll), over the 30 minutes up to the last 5-minute boundary: CloudWatch
+// aligns the buckets to the start, so every read stamps the same buckets, each
+// is seen by several reads, and a failed read does not lose it. Only where they apply:
+// CPU credits on t-classes, BurstBalance on gp2; the EBS balances exist only on
+// classes whose EBS baseline is below their burst, and cost little elsewhere.
+const creditMetrics: Metric[] = [
+  ['host_cpu_credit_balance', 'CPUCreditBalance'],
+  ['host_cpu_surplus_credit_balance', 'CPUSurplusCreditBalance'],
+]
+const gp2Metrics: Metric[] = [
+  ['host_disk_burst_balance_percent', 'BurstBalance'],
+]
+const ebsMetrics: Metric[] = [
+  ['host_ebs_io_balance_percent', 'EBSIOBalance%'],
+  ['host_ebs_byte_balance_percent', 'EBSByteBalance%'],
+]
+const balanceEvery = 5 * 60_000
+const balanceKey = 'balances read at'
 const volumeMetrics: Metric[] = [
   ['host_volume_used_bytes', 'VolumeBytesUsed'],
   ['host_volume_read_iops', 'VolumeReadIOPs', 1 / 300],
@@ -150,6 +171,20 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
       if (typeof point.value === 'number' && closed(point.time, period)) emit(name, point.value * scale, point.time)
     }
   }
+  // What the instance is (resource sizing, platform-all#1101): one sample per
+  // poll, its labels from the instance description.
+  const info = {
+    instance_class: db.DBInstanceClass, engine: db.Engine, storage_type: db.StorageType,
+    multi_az: db.MultiAZ === undefined ? undefined : String(db.MultiAZ), region: target.region,
+  }
+  const infoLabels = Object.entries(info).filter(([, v]) => typeof v === 'string' && v !== '')
+    .map(([k, v]) => `,${k}="${escapeLabel(v!)}"`).join('')
+  const infoMetric = 'host_instance_info'
+  const infoKey = `${infoMetric}{cluster="${escapeLabel(target.cluster)}",node_name="${escapeLabel(target.nodeName)}"${infoLabels}} ${end.getTime()}`
+  if (!state.has(infoKey)) {
+    text += `${infoKey.replace(/ \d+$/, '')} 1 ${end.getTime()}\n`
+    state.set(infoKey, end.getTime())
+  }
   // Storage limits from the instance description, stamped at `end` on every
   // poll. Only RDS (not Aurora) reports them: Aurora storage grows on demand
   // and has no provisioned IOPS or throughput. gp2 and magnetic storage report
@@ -159,6 +194,34 @@ async function poll(clients: Clients, target: Target, now: Date, state: Map<stri
     if ((db.AllocatedStorage ?? 0) > 0) emit('host_disk_size_bytes', db.AllocatedStorage! * GiB, end.getTime())
     if ((db.Iops ?? 0) > 0) emit('host_disk_provisioned_iops', db.Iops, end.getTime())
     if ((db.StorageThroughput ?? 0) > 0) emit('host_disk_provisioned_throughput_bytes_per_second', db.StorageThroughput! * 1024 ** 2, end.getTime())
+    // Storage autoscaling's ceiling; absent when autoscaling is off.
+    if ((db.MaxAllocatedStorage ?? 0) > 0) emit('host_disk_max_size_bytes', db.MaxAllocatedStorage! * GiB, end.getTime())
+  }
+  const lastBalances = state.get(balanceKey)
+  if (!aurora && (lastBalances === undefined || end.getTime() - lastBalances >= balanceEvery)) {
+    const balances = [
+      ...(/^db\.t\d/.test(db.DBInstanceClass ?? '') ? creditMetrics : []),
+      ...(db.StorageType === 'gp2' ? gp2Metrics : []),
+      ...ebsMetrics,
+    ]
+    // A failure is reported and read again on the next poll; the samples above are kept.
+    try {
+      const until = Math.floor(end.getTime() / balanceEvery) * balanceEvery
+      const result5: GetMetricDataCommandOutput = await clients.cloudwatch.send(new GetMetricDataCommand({
+        StartTime: new Date(until - 30 * 60_000), EndTime: new Date(until),
+        MetricDataQueries: queries(balances, 'DBInstanceIdentifier', target.instanceId, 300),
+      }))
+      for (const [name] of balances) {
+        const data = result5.MetricDataResults?.find(r => r.Id === name)
+        const points = (data?.Timestamps ?? []).map((time, i) => ({ time: time.getTime(), value: data?.Values?.[i] }))
+        for (const point of points.sort((a, b) => a.time - b.time)) {
+          if (typeof point.value === 'number' && closed(point.time, 300)) emit(name, point.value, point.time)
+        }
+      }
+      state.set(balanceKey, end.getTime())
+    } catch (error) {
+      errors.push(toError(error))
+    }
   }
   if (db.PerformanceInsightsEnabled) {
     try {

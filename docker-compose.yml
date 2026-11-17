@@ -390,6 +390,9 @@ services:
     volumes:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
       - postgres_ai_configs:/postgres_ai_configs:ro
+      # A ClickHouse target's scrape file and key, read-only: A014 reads the
+      # service's size with the same key (platform-all#1101).
+      - ./host-metrics:/etc/pgai/host-metrics:ro
     environment:
       - PROMETHEUS_URL=http://sink-prometheus:9090
       - VM_AUTH_USERNAME=${VM_AUTH_USERNAME:-}
