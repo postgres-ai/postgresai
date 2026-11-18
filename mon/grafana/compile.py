@@ -588,6 +588,20 @@ def table_label_keys(panel, probe_url, metric):
     return sorted(keys - {"Time", "Value", "__name__"})
 
 
+def timeseries_labels(panel, cols, params, extra, probe_url):
+    """Keep labels used by this panel's links and field settings when the result has them."""
+    settings = "".join(json.dumps(panel.get(k)) for k in ("fieldConfig", "options", "links"))
+    needed = set(re.findall(r"__field\.labels\.(\w+)", settings)) - set(extra) - {"series", "label_set"}
+    available = set(cols) - {"t", "value", "labels"}
+    if needed - available and "labels" in cols:
+        if "by" in params:
+            # Do not infer metric labels that aggregation may have removed, even for by=[].
+            available.update(params["by"])
+        elif params.get("metric"):
+            available.update(probe_label_keys(probe_url, params["metric"]))
+    return list(extra) + sorted(needed & available)
+
+
 def compile_dashboard(spec, by_id, probe_url):
     src = json.load(open(os.path.join(DASH_DIR, spec["src"])))
     d = copy.deepcopy(src)
@@ -626,11 +640,12 @@ def compile_dashboard(spec, by_id, probe_url):
             mvars = expr_matcher_vars(t["expr"])
             table = instant and t.get("format") == "table" and p.get("type") == "table"
             keys = table_label_keys(p, probe_url, params.get("metric")) if table else None
+            extra = spec["extra_labels"] if table else timeseries_labels(p, cols, params, spec["extra_labels"], probe_url)
             inner = inline(case_sql(case), params, gp, mvars)
             body = wrap_table(inner, cols, keys) if table else \
-                wrap(inner, cols, t.get("legendFormat"), spec["extra_labels"],
+                wrap(inner, cols, t.get("legendFormat"), extra,
                      ash=case["sql_file"] == "sql/reports/dash/ash_by.sql")
-            new.append(infinity_target(t["refId"], body, t.get("hide"), spec["extra_labels"], keys))
+            new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys))
             if table:
                 table_refs.append(t["refId"])
             queries.append({"panel": p["id"], "ref": t["refId"], "case": case["id"], "sql": body,

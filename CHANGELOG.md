@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Monitoring v4 dashboards preserve query and table labels used by data links, so query and single-table analysis links receive their variables.
 - Every dashboard shows UTC and a shared crosshair (postgres-ai/postgresai#340, item H6): 7 of 16 were on browser time or had no time zone set, and 8 had no shared crosshair. The compiler sets both, and a dashboard test checks them.
 - The dashboards no longer carry variable defaults saved from a developer's database (query, schema, table, index). "09. Single table analysis" and "11. Single index analysis" no longer offer the `$other$` bucket as a schema, table or index, so they open on a real object (postgres-ai/postgresai#512).
 - pgai-mon runs a job again when its run was lost to a lock timeout or a statement timeout, without waiting for the next slot: one lock wait no longer leaves a 4-hour hole in a 2-hour job such as `unused_indexes` or the bloat metrics (postgres-ai/postgresai#507). After a lock timeout it retries with a back-off (30 s, doubling, capped at 10 minutes; `timeout_retry_min_s`, `timeout_retry_max_s`) until the next slot; after a statement timeout at most twice (after 5 and 15 more minutes). Jobs that run every 60 s or less are unchanged. Retries are counted in `/health` and in `pgai_mon_retries_total`.

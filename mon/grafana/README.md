@@ -63,7 +63,9 @@ The SQL template's final SELECT is also used directly by the evaluator compariso
 
 `compile.py` needs a running pgai-mon with some data (any store): it runs each target's SQL
 once with `LIMIT 0` to learn its output columns, and reads a metric's label keys for table
-panels. Standard library Python only. A table panel's columns are the label keys its metric
+panels and time-series field references. Time-series targets also carry labels their panel's
+links and field settings reference, when the result columns or label keys support them.
+Standard library Python only. A table panel's columns are the label keys its metric
 has in the probe store (plus the fields its transformations name), so the emitted JSON depends
 on the probe: collect with the tags a deployment has (`instances.yml` adds
 `sink_type: prometheus`, which Dashboards 5 and 6 show as a column), and a metric without

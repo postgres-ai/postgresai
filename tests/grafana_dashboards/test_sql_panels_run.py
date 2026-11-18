@@ -162,6 +162,28 @@ def test_every_panel_has_data(pgai_mon, tmp_path):
     assert sum(1 for r in results for p in r["panels"] if p["class"] == "data") >= 180
 
 
+@pytest.mark.parametrize("dashboard,panel_id,expected", [
+    (4, 3, {"query_id": QUERY_ID}),
+    (8, 5, {"schema": "app", "table_name": "t119"}),
+])
+def test_data_link_labels_have_values(pgai_mon, dashboard, panel_id, expected):
+    path = next((REPO_ROOT / "mon/grafana/dashboards").glob(f"Dashboard_{dashboard}_*.json"))
+    panel = next(p for p in CP.walk(json.loads(path.read_text())["panels"]) if p.get("id") == panel_id)
+    variables, _ = CP.resolve_variables(
+        json.loads(path.read_text()), pgai_mon, FIXTURE_END_MS - 3_600_000, FIXTURE_END_MS, {})
+    for target in panel["targets"]:
+        sql, left = CP.interpolate(target["url_options"]["data"], variables,
+                                   CP.builtin_vars(FIXTURE_END_MS - 3_600_000, FIXTURE_END_MS, 30_000))
+        assert not left
+        result = CP.post(pgai_mon, sql)
+        assert "error" not in result, result
+        assert set(expected) <= set(result["columns"])
+        assert result["rows"]
+        # Some wait events have no query ID; the fixture's known query must still reach the link.
+        assert all(label in row for row in result["rows"] for label in expected)
+        assert any(all(row[label] == value for label, value in expected.items()) for row in result["rows"])
+
+
 def test_ash_label_dictionary_matches_per_row_formatting(pgai_mon):
     # Empty, missing and unusual labels must keep exactly the same Grafana series identity.
     labels = """SELECT row_number() OVER () AS k, labels FROM (VALUES
