@@ -292,7 +292,8 @@ accepts listed IPs). If the host is
 docker-compose service name, or a private address (`10.*`, `172.16-31.*`,
 `192.168.*`), tell the user PostgresAI Cloud cannot reach it, and offer
 `--self-hosted` (Docker on this machine) instead. A self-hosted deploy returns
-`ready` with Grafana at `dashboard_url` (`http://localhost:3000`) but no
+`ready` with Grafana at `dashboard_url` (`http://localhost:3000`, or the
+`GRAFANA_PORT` of the install's `.env`) but no
 Health Matrix: give the user the Grafana link.
 
 ## 2–3. The price and the payment method

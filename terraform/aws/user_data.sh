@@ -186,7 +186,8 @@ sleep 30
 # Reset Grafana admin password to match terraform config
 echo "Setting Grafana admin password..."
 cd /home/postgres_ai/postgres_ai
-docker exec grafana-with-datasources grafana-cli admin reset-admin-password "${grafana_password}"
+# Through compose: the containers have no fixed names (<project>-<service>-1).
+/usr/local/bin/docker-compose exec -T grafana grafana-cli admin reset-admin-password "${grafana_password}"
 
 echo "Installation complete!"
 echo "Access Grafana at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):3000"

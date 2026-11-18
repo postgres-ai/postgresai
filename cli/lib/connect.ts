@@ -225,6 +225,8 @@ export interface ConnectDeps {
   /** Drops the role a `generated` prepare created; false when it could not. */
   unprepare(url: string, monitoringUser?: string, opts?: { warn?: Warn }): Promise<boolean>;
   localStackRunning(): boolean;
+  /** Grafana of the self-hosted stack (its GRAFANA_PORT); default http://localhost:3000. */
+  dashboardUrl?(): string;
   clickhouseOrg(host: string, keyId: string, keySecret: string): Promise<{ orgId: string; state: string }>;
   selfHosted(monitoringUrl: string, env: Record<string, string>): Promise<void>;
   /**
@@ -1155,7 +1157,7 @@ export async function connect(url: string, opts: ConnectOptions, deps: ConnectDe
         await deps.selfHosted(prepared.monitoringUrl, key && ch
           ? { CLICKHOUSE_ORG_ID: ch.orgId, CLICKHOUSE_KEY_ID: key.keyId, CLICKHOUSE_KEY_SECRET: key.keySecret }
           : {});
-        return { status: "ready", provider, name, dashboard_url: "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
+        return { status: "ready", provider, name, dashboard_url: deps.dashboardUrl?.() ?? "http://localhost:3000", host_metrics: !!ch, next: `pgai mon health${note}` };
       }
       progress("provisioning", `Provisioning monitoring for ${name}`);
       const monitoringUrl = prepared.monitoringUrl;

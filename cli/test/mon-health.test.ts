@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { judgeServiceHealth, monitoringHealthServices, type MonitoringService } from "../bin/postgres-ai";
 
-const core: MonitoringService = { name: "Prometheus", container: "sink-prometheus" };
+const core: MonitoringService = { name: "Prometheus", service: "sink-prometheus" };
 const gated: MonitoringService = {
   name: "Instance jobs",
-  container: "instance-jobs",
+  service: "instance-jobs",
   optional: true,
   readHealth: true,
 };
@@ -70,7 +70,7 @@ describe("mon health: which services are reported on", () => {
   const services = monitoringHealthServices();
 
   test("the instance-jobs container is in the list, gated and self-reporting", () => {
-    const entry = services.find(s => s.container === "instance-jobs");
+    const entry = services.find(s => s.service === "instance-jobs");
     expect(entry).toBeDefined();
     // optional: it ships behind a compose profile, so on a stack that never
     // enabled it an absent container is "not enabled" rather than a fault --
@@ -82,9 +82,9 @@ describe("mon health: which services are reported on", () => {
   });
 
   test("the stack's services: Grafana, pgai-mon, the demo database, the self-monitoring exporters", () => {
-    const longStanding = services.filter(s => s.container !== "instance-jobs");
-    expect(longStanding.map(s => s.container)).toEqual([
-      "grafana-with-datasources",
+    const longStanding = services.filter(s => s.service !== "instance-jobs");
+    expect(longStanding.map(s => s.service)).toEqual([
+      "grafana",
       "pgai-mon",
       "target-db",
       "self-node-exporter",
@@ -93,14 +93,14 @@ describe("mon health: which services are reported on", () => {
     // Neither flag, so they keep the status-only check.
     // target-db is the exception: it is gated by the demo profile (below).
     for (const s of longStanding) {
-      if (s.container !== "target-db") expect(s.optional).toBeUndefined();
+      if (s.service !== "target-db") expect(s.optional).toBeUndefined();
       expect(s.readHealth).toBeUndefined();
     }
   });
 
   test("target-db is required only with the demo profile", () => {
     const entry = (demo?: boolean) =>
-      monitoringHealthServices(false, demo).find(s => s.container === "target-db")!;
+      monitoringHealthServices(false, demo).find(s => s.service === "target-db")!;
     expect(entry().optional).toBe(true);
     expect(entry(false).optional).toBe(true);
     expect(entry(true).optional).toBeUndefined();

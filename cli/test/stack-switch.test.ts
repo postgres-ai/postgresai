@@ -80,7 +80,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       '  *" up "*) [ -z "$UP_HANGS" ] || { trap "exit 130" TERM; while :; do sleep 0.2; done; }; exit ${UP_EXIT:-0} ;;',
       '  *" config --services "*) for s in $CONFIG_SERVICES; do echo "$s"; done; exit 0 ;;',
       '  *" ps -a --format json "*) printf "%s\\n" "$PS_JSON"; exit 0 ;;',
-      '  " ps --filter"*) for c in $RUNNING; do echo "$c"; done; exit 0 ;;',
+      // This project's containers ("<service>\t<id>"); GRAFANA_RUNNING adds a running Grafana.
+      '  " ps --filter"*) for c in $RUNNING; do echo "$c"; done; [ "$GRAFANA_RUNNING" = true ] && printf "grafana\\tgraf123\\n"; exit 0 ;;',
       "esac",
       "exit 0",
     ].join("\n"),
@@ -443,6 +444,34 @@ describe("mon restart, reset, generate-grafana-password", () => {
     expect(r.stderr).toContain("saved password is unchanged");
   });
 
+});
+
+describe("a second install on the same host (#510)", () => {
+  // The old stack, or another install, runs beside this one: every container
+  // is found through this install's compose project, every port is its own.
+  const SIDE_ENV = `${NEW_ENV}COMPOSE_PROJECT_NAME=pgai-v4\nGRAFANA_PORT=3001\nPGAI_MON_PORT=18765\n`;
+
+  test("prints the Grafana URL with GRAFANA_PORT", () => {
+    const p = makeProject("side-credentials", NEW_COMPOSE, SIDE_ENV);
+    const r = p.run(["mon", "show-grafana-credentials"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("URL:      http://localhost:3001");
+  });
+
+  test("mon health and mon stop look only at this project's containers, never at a container name", () => {
+    const p = makeProject("side-health", NEW_COMPOSE, SIDE_ENV);
+    p.run(["mon", "health"]);
+    p.run(["mon", "stop"], { DOWN_EXIT: "1" });
+    const docker = p.calls().filter((c) => !c.startsWith("compose "));
+    expect(docker.some((c) => c.startsWith("ps --filter label=com.docker.compose.project=pgai-v4 -a "))).toBe(true);
+    expect(docker.some((c) => c.startsWith("ps -aq --filter label=com.docker.compose.project=pgai-v4 "))).toBe(true);
+    expect(docker.some((c) => c.startsWith("network rm pgai-v4_default "))).toBe(true);
+    // The old stack's containers have these fixed names: never touched from here.
+    for (const name of ["grafana-with-datasources", "postgres-reports", "self-cadvisor", "instance-jobs"]) {
+      expect(docker.filter((c) => c.split(" |")[0].split(" ").includes(name))).toEqual([]);
+    }
+    expect(docker.some((c) => /name=/.test(c.split(" |")[0]))).toBe(false);
+  });
 });
 
 describe("mon local-install", () => {

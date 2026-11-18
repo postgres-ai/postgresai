@@ -411,7 +411,8 @@ describe("install output", () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).not.toContain("Configuring Grafana security");
     expect(r.stdout).not.toContain("55432");
-    expect(r.stdout).toContain("docker exec -it target-db psql -U postgres target_database");
+    // The container is named by compose after the project directory ("project").
+    expect(r.stdout).toContain("docker exec -it project-target-db-1 psql -U postgres target_database");
     const withGrafana = run(["mon", "local-install", "--demo", "-y", "--grafana"]);
     expect(withGrafana.stdout).toContain("Step 3: Configuring Grafana security");
   });

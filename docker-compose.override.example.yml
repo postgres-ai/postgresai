@@ -11,7 +11,6 @@ services:
   # (postgres_ai_configs); the dashboards directory mirrors the source exactly.
   config-init:
     image: alpine:3.22.0
-    container_name: postgres-ai-config-init
     volumes:
       - postgres_ai_configs:/target
       - ./config:/src/config:ro

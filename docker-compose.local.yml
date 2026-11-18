@@ -28,7 +28,6 @@ services:
         BUILD_TS: "${BUILD_TS:-local}"
     image: local/reporter:dev
 
-  # Override Grafana port to avoid conflict with local dev server
-  grafana:
-    ports:
-      - "127.0.0.1:3001:3000"
+  # Grafana's host port: set GRAFANA_PORT=3001 in .env to avoid a conflict with a
+  # local dev server. A `ports` entry here would be added to the 3000 one, not
+  # replace it.

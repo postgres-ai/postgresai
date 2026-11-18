@@ -3,15 +3,13 @@
 services:
   config-init:
     image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: postgres-ai-config-init
     volumes:
       - postgres_ai_configs:/target
 
   pgai-mon:
     image: ${PGAI_REGISTRY:-postgresai}/pgai-mon:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: pgai-mon
     ports:
-      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:${PGAI_MON_PORT:-8765}:8765"
     environment:
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
       PGAI_MON_STORE: ${PGAI_MON_STORE:-}
@@ -27,7 +25,6 @@ services:
 
   grafana:
     image: grafana/grafana:12.0.0
-    container_name: grafana-with-datasources
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD is required}
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
@@ -37,7 +34,6 @@ services:
 
   postgres-reports:
     image: ${PGAI_REGISTRY:-postgresai}/reporter:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: postgres-reports
     environment:
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
     volumes:
@@ -47,7 +43,6 @@ services:
   instance-jobs:
     profiles: ["instance-jobs"]
     image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: instance-jobs
     user: ${INSTANCE_JOBS_USER:-65532:65532}
     environment:
       PGAI_MON_TOKEN: ${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}
@@ -57,7 +52,6 @@ services:
   target-db:
     profiles: ["demo"]
     image: postgres:17
-    container_name: target-db
     volumes:
       - target_db_data:/var/lib/postgresql/data
 

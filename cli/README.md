@@ -549,6 +549,18 @@ When `--instance-id <uuid>` (or `PGAI_INSTANCE_ID`) is set, `local-install` forw
 
 `local-install` writes `.env` in the monitoring directory. It preserves existing `REPLICATOR_PASSWORD`, `PGAI_MON_TOKEN` (the bearer token pgai-mon requires) and `PGAI_MON_READ_TOKEN` (the read-only token Grafana, the reporter and instance-jobs send) or generates new random ones when missing, and drops the old stack's `VM_AUTH_*` and `VM_*_AUTH_KEY` keys, which nothing reads any more (`mon update` leaves them in place). The replication password is used by the demo PostgreSQL standby replication user. If you run `docker compose` directly or maintain `.env` yourself, run `postgresai mon update-config` once to add `PGAI_MON_TOKEN`.
 
+##### Project name and ports
+
+Compose names the containers after the project: `<project>-<service>-1`. The project is
+`COMPOSE_PROJECT_NAME` in `.env`, or else the name of the monitoring directory. Every `mon`
+command finds the containers through that project, so another stack on the same host is
+never touched. Grafana's host port is `GRAFANA_PORT` (3000) and pgai-mon's is
+`PGAI_MON_PORT` (8765), both on 127.0.0.1. `local-install` keeps these keys, and the CLI
+reads them for `mon health`, `mon sql --local` and the Grafana URL it prints. To run a second
+stack on one host (for example monitoring v4 beside the old stack), give it its own directory,
+project name and Grafana port; see "Monitoring v4 beside the old stack on one host" in
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ##### Metrics store (`PGAI_MON_STORE`)
 
 pgai-mon keeps metric history in the Docker volume `pgai_mon_data` unless
@@ -636,7 +648,7 @@ pgai mon sql "select ts, labels['dbname'] as dbname, value
 # on the box itself, --instance is read from .pgwatch-config
 pgai mon sql "select 1"
 
-# on the box itself, straight to pgai-mon (127.0.0.1:8765, token from .env):
+# on the box itself, straight to pgai-mon (127.0.0.1:8765 or PGAI_MON_PORT, token from .env):
 # no API key, no platform, no instance-jobs needed
 pgai mon sql --local "select metric, count(*) from series group by 1 order by 2 desc limit 10"
 ```

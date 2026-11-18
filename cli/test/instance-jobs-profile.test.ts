@@ -175,7 +175,7 @@ describe("buildLocalInstallEnv writes COMPOSE_PROFILES", () => {
 
 describe("mon health follows the profile", () => {
   const entry = (enabled: boolean) =>
-    monitoringHealthServices(enabled).find((s) => s.container === "instance-jobs")!;
+    monitoringHealthServices(enabled).find((s) => s.service === "instance-jobs")!;
 
   test("profile off: an absent container is skipped, as before", () => {
     const s = entry(false);
@@ -195,11 +195,11 @@ describe("mon health follows the profile", () => {
   });
 
   test("the default is still off, and the other services are untouched either way", () => {
-    expect(monitoringHealthServices().find((s) => s.container === "instance-jobs")!.optional).toBe(true);
+    expect(monitoringHealthServices().find((s) => s.service === "instance-jobs")!.optional).toBe(true);
     for (const enabled of [true, false]) {
-      const others = monitoringHealthServices(enabled).filter((s) => s.container !== "instance-jobs");
-      expect(others.map((s) => s.container)).toEqual([
-        "grafana-with-datasources",
+      const others = monitoringHealthServices(enabled).filter((s) => s.service !== "instance-jobs");
+      expect(others.map((s) => s.service)).toEqual([
+        "grafana",
         "pgai-mon",
         "target-db",
         "self-node-exporter",
@@ -207,7 +207,7 @@ describe("mon health follows the profile", () => {
       ]);
       for (const s of others) {
         // target-db is gated by the demo profile, not by this one.
-        if (s.container !== "target-db") expect(s.optional).toBeUndefined();
+        if (s.service !== "target-db") expect(s.optional).toBeUndefined();
         expect(s.absentLabel).toBeUndefined();
       }
     }

@@ -59,7 +59,7 @@ import {
 import { registerAasCollection, parseVcpus, aasSuccessMessage, aasArmingPath } from "../lib/aas-onboard";
 import { uploadFile, downloadFile, buildMarkdownLink, uploadAttachments, appendAttachmentsToContent } from "../lib/storage";
 import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
-import { composeDefinesService, composeProjectName, failedServices, grafanaBindNotice, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, PGAI_MON_SERVICE, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
+import { cleanOrphanVolumes, composeDefinesService, composeProjectName, DEFAULT_GRAFANA_PORT, DEFAULT_PGAI_MON_PORT, failedServices, grafanaBindNotice, hostPort, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, parseProjectPs, PGAI_MON_SERVICE, projectPsArgs, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 import { PGAI_MON_URL, isNameResolutionError, judgeTargetTestFailure, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
 import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
@@ -3151,32 +3151,47 @@ function getComposeCmd(): string[] | null {
 }
 
 /**
- * Check if monitoring containers are already running: this stack's, or the old
- * pgwatch + VictoriaMetrics stack's (an install that has not been updated yet).
+ * This install's containers, by compose service: found by the compose project
+ * label, so another install on the same host (the old stack beside this one,
+ * or a second project) is never seen. `all` lists stopped containers too.
+ * Null when docker could not tell.
  */
-function checkRunningContainers(): { running: boolean; containers: string[] } {
+function projectContainers(projectDir: string, all = false): Map<string, string> | null {
   try {
-    const result = spawnSync(
-      "docker",
-      [
-        "ps",
-        "--filter", "name=grafana-with-datasources",
-        "--filter", `name=${PGAI_MON_SERVICE}`,
-        "--filter", "name=postgres-reports",
-        "--filter", "name=pgwatch",
-        "--format", "{{.Names}}",
-      ],
-      { stdio: "pipe", encoding: "utf8", timeout: 5000 } as Parameters<typeof spawnSync>[2]
-    );
-
-    if (result.status === 0 && result.stdout) {
-      const containers = result.stdout.trim().split("\n").filter(Boolean);
-      return { running: containers.length > 0, containers };
-    }
-    return { running: false, containers: [] };
+    const result = spawnSync("docker", projectPsArgs(projectName(projectDir), all), {
+      stdio: "pipe", encoding: "utf8", timeout: 10000,
+    } as Parameters<typeof spawnSync>[2]);
+    return result.status === 0 ? parseProjectPs(String(result.stdout ?? "")) : null;
   } catch {
-    return { running: false, containers: [] };
+    return null;
   }
+}
+
+/**
+ * Check if this install's monitoring services are running: this stack's, or
+ * the old pgwatch + VictoriaMetrics stack's in the same compose project (an
+ * install that has not been updated yet). `containers` are service names.
+ */
+function checkRunningContainers(projectDir: string): { running: boolean; containers: string[] } {
+  const services = [...(projectContainers(projectDir)?.keys() ?? [])];
+  return { running: services.length > 0, containers: services };
+}
+
+/** Grafana's host port: GRAFANA_PORT, read as compose reads it (the environment, else .env). */
+function grafanaPort(projectDir: string): number {
+  return hostPort(process.env.GRAFANA_PORT ?? readEnvValue(projectDir, "GRAFANA_PORT"), DEFAULT_GRAFANA_PORT);
+}
+
+/** Grafana's address on this host. */
+function grafanaUrl(projectDir: string): string {
+  return `http://localhost:${grafanaPort(projectDir)}`;
+}
+
+/** This install's pgai-mon: PGAI_MON_URL when set, else 127.0.0.1 and PGAI_MON_PORT (8765). */
+function localPgaiMonUrl(projectDir: string): string {
+  if (process.env.PGAI_MON_URL) return process.env.PGAI_MON_URL;
+  const port = hostPort(process.env.PGAI_MON_PORT ?? readEnvValue(projectDir, "PGAI_MON_PORT"), DEFAULT_PGAI_MON_PORT);
+  return port === DEFAULT_PGAI_MON_PORT ? PGAI_MON_URL : `http://127.0.0.1:${port}`;
 }
 
 /** Parsed result of v1.monitoring_instance_register. */
@@ -4067,7 +4082,7 @@ function backupOldStackEnv(projectDir: string, oldEnv: string, oldTag: string | 
  */
 function switchedGrafanaBindNotice(projectDir: string): string | null {
   if (!grafanaEnabled(process.env[GRAFANA_SCALE_KEY] ?? readEnvValue(projectDir, GRAFANA_SCALE_KEY))) return null;
-  return grafanaBindNotice(process.env.GRAFANA_BIND_HOST ?? readEnvValue(projectDir, "GRAFANA_BIND_HOST"));
+  return grafanaBindNotice(process.env.GRAFANA_BIND_HOST ?? readEnvValue(projectDir, "GRAFANA_BIND_HOST"), grafanaPort(projectDir));
 }
 
 /**
@@ -4454,8 +4469,8 @@ function prestartRefusal(projectDir: string): string | null {
       return "This stack was already started with --prestart";
     }
   }
-  const { containers } = checkRunningContainers();
-  const configured = containers.filter((c) => c.startsWith("pgwatch") || c.includes("postgres-reports"));
+  const { containers } = checkRunningContainers(projectDir);
+  const configured = containers.filter((c) => c.startsWith("pgwatch") || c === "postgres-reports");
   if (configured.length > 0) {
     return `A configured monitoring stack is already running (${configured.join(", ")}); --prestart is only for a fresh box`;
   }
@@ -4610,9 +4625,9 @@ async function runPrestart(projectDir: string, instancesPath: string, imageTag: 
  * was never isolated. The force-remove does not depend on which way it goes,
  * which is the point of doing it explicitly.
  *
- * Going through compose rather than `docker rm -f <name>` keeps the removal
- * scoped to THIS project: `container_name: instance-jobs` is global, so a bare
- * `docker rm` could take out another project's container on the same host.
+ * Going through compose rather than `docker rm -f` keeps the removal scoped to
+ * THIS project: another project on the same host (the old stack, whose
+ * container IS named `instance-jobs`) keeps its container.
  */
 async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): Promise<boolean> {
   if (enabled === undefined) return true;
@@ -4644,7 +4659,7 @@ async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): 
   // removed a container or found none. Observed at the wire:
   //   docker rm --force <existing> -> stdout=[<name>] stderr=[]                   rc=0
   //   docker rm --force <missing>  -> stdout=[]       stderr=[No such container]  rc=0
-  const before = await inspectInstanceJobsState();
+  const before = await inspectInstanceJobsState(projectDir);
   if (before === "absent" || before === "unknown") {
     const verdict = instanceJobsRemovalOutcome(before, before, 0);
     (verdict.ok ? console.log : console.error)(`\n${verdict.message}`);
@@ -4661,27 +4676,30 @@ async function applyInstanceJobsProfile(projectDir: string, enabled?: boolean): 
     undefined,
     { COMPOSE_PROFILES: INSTANCE_JOBS_PROFILE },
   );
-  const verdict = instanceJobsRemovalOutcome(before, await inspectInstanceJobsState(), code);
+  const verdict = instanceJobsRemovalOutcome(before, await inspectInstanceJobsState(projectDir), code);
   (verdict.ok ? console.log : console.error)(`\n${verdict.message}`);
   return verdict.ok;
 }
 
 /**
- * `docker inspect` the instance-jobs container.
+ * The state of this project's instance-jobs container, found by its compose
+ * labels (projectContainers): the container has no fixed name.
  *
- * A missing container and a dead daemon both exit 1, so the two are separated
- * on the error text -- and `execFile`'s error does NOT carry a `.stderr`
- * property, it folds the child's stderr into `.message` ("Command failed: ...
- * error: no such object: ..."), which is why this matches there.
+ * A failed listing is `unknown`, never `absent`. A container that vanishes
+ * between the listing and `docker inspect` is `absent`; a dead daemon there is
+ * `unknown`. The two are separated on the error text -- and `execFile`'s error
+ * does NOT carry a `.stderr` property, it folds the child's stderr into
+ * `.message` ("Command failed: ... error: no such object: ..."), which is why
+ * this matches there.
  */
-async function inspectInstanceJobsState(): Promise<InstanceJobsContainerState> {
+async function inspectInstanceJobsState(projectDir: string): Promise<InstanceJobsContainerState> {
+  const containers = projectContainers(projectDir, true);
+  if (containers === null) return "unknown";
+  const id = containers.get(INSTANCE_JOBS_PROFILE);
+  if (id === undefined) return "absent";
+  if (!id) return "unknown";
   try {
-    const { stdout } = await execFilePromise("docker", [
-      "inspect",
-      "-f",
-      "{{.State.Running}}",
-      INSTANCE_JOBS_PROFILE,
-    ]);
+    const { stdout } = await execFilePromise("docker", ["inspect", "-f", "{{.State.Running}}", id]);
     return stdout.trim() === "true" ? "running" : "stopped";
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
@@ -4875,7 +4893,8 @@ async function runConnect(urlArg: string | undefined, opts: ConnectOpts) {
             { ...process.env, ...env, PGAI_DB_URL: monitoringUrl, PGAI_API_BASE_URL: api.apiBaseUrl, ...(api.apiKey ? { PGAI_API_KEY: api.apiKey } : {}) }, json, "mon local-install");
           if (status !== 0) throw new Error("mon local-install failed (see above)");
         },
-        localStackRunning: () => checkRunningContainers().running,
+        localStackRunning: () => checkRunningContainers(healthProjectDir()).running,
+        dashboardUrl: () => grafanaUrl(healthProjectDir()),
         // A billed box: asked only of a person at a terminal (else --yes).
         confirm: async (q) => {
           if (!interactive(opts.json)) return false;
@@ -5544,7 +5563,7 @@ mon
     // Check if containers are already running. A stack with a service
     // missing, stopped, restarting or unhealthy is installed over instead, so
     // a re-run recovers a failed install.
-    const { running, containers } = checkRunningContainers();
+    const { running, containers } = checkRunningContainers(projectDir);
     // A Grafana that --grafana turns on is missing until the scoped `up`
     // below starts it: that is no reason to recreate every other container.
     const problems = (running && !onPrestarted ? stackProblemsNow(projectDir) : null)
@@ -5993,9 +6012,10 @@ mon
       console.log(`  • Query the collected metrics: ${FIRST_QUERY_HINT}\n`);
     } else {
       console.log("Demo mode next steps:");
-      if (grafanaOn) console.log("  • Explore Grafana dashboards at http://localhost:3000");
+      if (grafanaOn) console.log(`  • Explore Grafana dashboards at ${grafanaUrl(projectDir)}`);
       // target-db publishes no port: it is reachable inside the compose network only.
-      console.log("  • Connect to the demo database: docker exec -it target-db psql -U postgres target_database");
+      // Its container is named by compose: <project>-target-db-1.
+      console.log(`  • Connect to the demo database: docker exec -it ${projectName(projectDir)}-target-db-1 psql -U postgres target_database`);
       console.log("  • Generate some load on the demo database to see metrics");
       console.log(`  • Query the collected metrics: ${FIRST_QUERY_HINT}\n`);
     }
@@ -6003,7 +6023,7 @@ mon
     if (grafanaOn) {
       console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
       console.log("🚀 MAIN ACCESS POINT - Start here:");
-      console.log("   Grafana Dashboard: http://localhost:3000");
+      console.log(`   Grafana Dashboard: ${grafanaUrl(projectDir)}`);
       console.log(`   Login: monitor / ${grafanaPassword}`);
       console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
@@ -6025,7 +6045,7 @@ mon
     }
     // Already running only when every service is running and healthy; anything
     // missing, stopped, restarting or unhealthy gets the (idempotent) `up -d`.
-    const { running, containers } = checkRunningContainers();
+    const { running, containers } = checkRunningContainers(projectDir);
     if (running) {
       const problems = stackProblemsNow(projectDir);
       if (problems && problems.length > 0) {
@@ -6044,33 +6064,6 @@ mon
       process.exitCode = code;
     }
   });
-
-// Known container names for cleanup: this stack's, then the old pgwatch +
-// VictoriaMetrics stack's, which an install that was never updated still has.
-const MONITORING_CONTAINERS = [
-  "postgres-ai-config-init",
-  "grafana-with-datasources",
-  PGAI_MON_SERVICE,
-  "target-db",
-  "target-standby",
-  "postgres-reports",
-  // Profile-gated (postgresai#366): absent on a box that never enabled it,
-  // which this list already tolerates - `docker rm -f` on a missing container
-  // is caught and ignored below.
-  "instance-jobs",
-  "self-node-exporter",
-  "self-cadvisor",
-  // The old stack's.
-  "sink-postgres",
-  "sink-prometheus",
-  "pgwatch-postgres",
-  "pgwatch-prometheus",
-  "self-postgres-exporter",
-  "flask-pgss-api",
-  "sources-generator",
-  "rds-host-stats",
-  "vmalert",
-];
 
 /**
  * Volumes `mon clean` removes when left by installs under older compose
@@ -6092,24 +6085,24 @@ export const CLEAN_ORPHAN_VOLUMES = [
   "postgres_ai_configs_postgres_ai_configs",
 ];
 
-/**
- * Network cleanup constants.
- * Docker Compose creates a default network named "{project}_default".
- * In CI environments, network cleanup can fail if containers are slow to disconnect.
- */
-const COMPOSE_PROJECT_NAME = "postgres_ai";
-const DOCKER_NETWORK_NAME = `${COMPOSE_PROJECT_NAME}_default`;
 /** Delay before retrying network cleanup (allows container network disconnections to complete) */
 const NETWORK_CLEANUP_DELAY_MS = 2000;
 
-/** Remove orphaned containers that docker compose down might miss */
-async function removeOrphanedContainers(): Promise<void> {
-  for (const container of MONITORING_CONTAINERS) {
-    try {
-      await execFilePromise("docker", ["rm", "-f", container]);
-    } catch {
-      // Container doesn't exist, ignore
-    }
+/**
+ * Remove this project's containers that `docker compose down` might miss.
+ * Found by the compose project label, never by name: another install on the
+ * same host (the old stack beside this one) keeps its containers. The old
+ * stack's containers of THIS project carry its label, so they go too.
+ */
+async function removeOrphanedContainers(projectDir: string): Promise<void> {
+  try {
+    const { stdout } = await execFilePromise("docker", [
+      "ps", "-aq", "--filter", `label=com.docker.compose.project=${projectName(projectDir)}`,
+    ]);
+    const ids = stdout.split(/\s+/).filter(Boolean);
+    if (ids.length > 0) await execFilePromise("docker", ["rm", "-f", ...ids]);
+  } catch {
+    // Nothing to remove, or docker cannot tell: compose's own error is printed.
   }
 }
 
@@ -6122,11 +6115,12 @@ mon
     // Stage 2: Force remove any orphaned containers, then retry compose down
     // Stage 3: Force remove the Docker network directly
     // This handles edge cases where containers are slow to disconnect from networks.
+    const projectDir = healthProjectDir();
     let code = await runCompose(["down", "--remove-orphans"]);
 
     // Stage 2: If initial cleanup fails, try removing orphaned containers first
     if (code !== 0) {
-      await removeOrphanedContainers();
+      await removeOrphanedContainers(projectDir);
       // Wait a moment for container network disconnections to complete
       await new Promise(resolve => setTimeout(resolve, NETWORK_CLEANUP_DELAY_MS));
       // Retry compose down
@@ -6136,7 +6130,8 @@ mon
     // Final cleanup: force remove the network if it still exists
     if (code !== 0) {
       try {
-        await execFilePromise("docker", ["network", "rm", DOCKER_NETWORK_NAME]);
+        // Compose names the project's network "<project>_default".
+        await execFilePromise("docker", ["network", "rm", `${projectName(projectDir)}_default`]);
         // Network removal succeeded - cleanup is complete
         code = 0;
       } catch {
@@ -6182,7 +6177,8 @@ mon
   });
 export type MonitoringService = {
   name: string;
-  container: string;
+  /** The compose service: its container is found by the project's labels, not by a name. */
+  service: string;
   /** Skipped when its container is absent, for a service behind a compose profile. */
   optional?: boolean;
   /** Read .State.Health.Status too, for a container that reports a real verdict. */
@@ -6237,19 +6233,19 @@ export function judgeServiceHealth(
 export function monitoringHealthServices(instanceJobsEnabled = false, demoEnabled = false, grafanaOn = true): MonitoringService[] {
   return [
     // GRAFANA_SCALE=0 (--no-grafana): an absent Grafana is "not enabled".
-    { name: "Grafana", container: "grafana-with-datasources", ...(grafanaOn ? {} : { optional: true }) },
-    { name: "pgai-mon", container: PGAI_MON_SERVICE },
+    { name: "Grafana", service: "grafana", ...(grafanaOn ? {} : { optional: true }) },
+    { name: "pgai-mon", service: PGAI_MON_SERVICE },
     // The demo database runs only with the demo profile; without it, an
     // absent target-db is "not enabled", not a fault.
-    { name: "Demo DB", container: "target-db", ...(demoEnabled ? {} : { optional: true }) },
+    { name: "Demo DB", service: "target-db", ...(demoEnabled ? {} : { optional: true }) },
     // The monitoring host's own exporters, for the self-monitoring dashboard.
-    { name: "Host metrics (node-exporter)", container: "self-node-exporter" },
-    { name: "Container metrics (cAdvisor)", container: "self-cadvisor" },
+    { name: "Host metrics (node-exporter)", service: "self-node-exporter" },
+    { name: "Container metrics (cAdvisor)", service: "self-cadvisor" },
     // Profile-gated and self-reporting; see judgeServiceHealth. The ones above
     // stay on the status-only check. postgresai#366.
     {
       name: "Instance jobs",
-      container: "instance-jobs",
+      service: "instance-jobs",
       optional: !instanceJobsEnabled,
       readHealth: true,
       absentLabel: "enabled but not running",
@@ -6271,7 +6267,7 @@ mon
     );
     // Read from .env only, sent as a header only, never printed.
     const monToken = readEnvValue(projectDir, PGAI_MON_TOKEN_KEY) || undefined;
-    const monUrl = process.env.PGAI_MON_URL || PGAI_MON_URL;
+    const monUrl = localPgaiMonUrl(projectDir);
 
     const waitTime = opts.wait || 0;
     const maxAttempts = waitTime > 0 ? Math.ceil(waitTime / 5) : 1;
@@ -6286,14 +6282,17 @@ mon
       }
 
       allHealthy = true;
+      // This project's containers, stopped ones included; null: docker could not tell.
+      const containers = projectContainers(projectDir, true);
       for (const service of services) {
         try {
-          const result = spawnSync("docker", ["inspect", "-f", "{{.State.Status}}", service.container], { stdio: "pipe" });
-          const present = result.status === 0;
+          const id = containers?.get(service.service) || "";
+          const result = id ? spawnSync("docker", ["inspect", "-f", "{{.State.Status}}", id], { stdio: "pipe" }) : null;
+          const present = result !== null && result.status === 0;
           const health = present && service.readHealth
-            ? (spawnSync("docker", ["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{end}}", service.container], { stdio: "pipe" }).stdout || "").trim()
+            ? (spawnSync("docker", ["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{end}}", id], { stdio: "pipe" }).stdout || "").trim()
             : "";
-          const verdict = judgeServiceHealth(service, present, (result.stdout || "").trim(), health);
+          const verdict = judgeServiceHealth(service, present, String(result?.stdout || "").trim(), health);
           console.log(`${verdict.mark} ${service.name}: ${verdict.label}`);
           if (!verdict.ok) allHealthy = false;
         } catch (error) {
@@ -6605,14 +6604,18 @@ mon
       }
 
       // Remove any orphaned containers that docker compose down missed
-      await removeOrphanedContainers();
+      await removeOrphanedContainers(healthProjectDir());
       console.log("✓ Removed orphaned containers");
 
       // Remove orphaned volumes from previous installs with different project names
       if (!options.keepVolumes) {
         const { stdout: existingVolumes } = await execFilePromise("docker", ["volume", "ls", "-q"]);
         const volumeList = existingVolumes.trim().split('\n').filter(Boolean);
-        const orphanedVolumes = volumeList.filter(v => CLEAN_ORPHAN_VOLUMES.includes(v));
+        const { remove: orphanedVolumes, kept } = cleanOrphanVolumes(
+          projectName(healthProjectDir()), volumeList, CLEAN_ORPHAN_VOLUMES);
+        if (kept.length > 0) {
+          console.log(`Kept ${kept.join(", ")}: they belong to the install of compose project 'monitoring', not to this one. To remove them on purpose: docker volume rm ${kept.join(" ")}`);
+        }
 
         if (orphanedVolumes.length > 0) {
           let removedCount = 0;
@@ -7099,7 +7102,7 @@ targets
       let collector: unknown;
       if (isNameResolutionError(error)) {
         const monToken = readEnvValue(projectDir, PGAI_MON_TOKEN_KEY) || undefined;
-        collector = (await probePgaiMon(process.env.PGAI_MON_URL || PGAI_MON_URL, monToken)).collector;
+        collector = (await probePgaiMon(localPgaiMonUrl(projectDir), monToken)).collector;
       }
       const verdict = judgeTargetTestFailure(name, error, collector);
       for (const line of verdict.lines) (verdict.ok ? console.log : console.error)(line);
@@ -7527,9 +7530,9 @@ mon
       // Grafana reads GF_SECURITY_ADMIN_PASSWORD only when it creates its
       // database, so a running Grafana is told directly. The password goes on
       // stdin, not argv. A failure here leaves the saved password as it was.
-      const container = "grafana-with-datasources";
-      const state = spawnSync("docker", ["inspect", "-f", "{{.State.Running}}", container], { stdio: "pipe" });
-      const running = state.status === 0 && String(state.stdout || "").trim() === "true";
+      // This project's running Grafana, by its compose labels (no fixed name).
+      const container = projectContainers(projectDir)?.get("grafana") || "";
+      const running = container !== "";
       if (running) {
         const applied = childProcess.spawnSync(
           "docker",
@@ -7574,7 +7577,7 @@ mon
 
       console.log("✓ New Grafana password generated and saved");
       console.log("\nNew credentials:");
-      console.log("  URL:      http://localhost:3000");
+      console.log(`  URL:      ${grafanaUrl(projectDir)}`);
       console.log("  Username: monitor");
       console.log(`  Password: ${newPassword}`);
       if (running) {
@@ -7624,7 +7627,7 @@ mon
       return;
     }
     console.log("\nGrafana credentials:");
-    console.log("  URL:      http://localhost:3000");
+    console.log(`  URL:      ${grafanaUrl(projectDir)}`);
     console.log("  Username: monitor");
     console.log(`  Password: ${password}`);
 
@@ -7735,7 +7738,7 @@ async function runMonSqlLocal(query: string, opts: SqlOptions): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const result = await runLocalSql(process.env.PGAI_MON_URL || PGAI_MON_URL, token, query, timeoutS * 1000);
+    const result = await runLocalSql(localPgaiMonUrl(projectDir), token, query, timeoutS * 1000);
     console.log(opts.json ? sqlJson(result) : renderSql(result));
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -7750,7 +7753,7 @@ withOrgOptions(mon.command("sql"))
   .option("--project <id|alias>", "the project's monitoring instance, by project id, alias or name; not with --instance")
   .option("--timeout <duration>", "how long to wait for an answer (default: sized from the instance's poll pacing; 11m if the platform does not report it)")
   .option("--json", "output the raw result payload")
-  .option("--local", "query this box's pgai-mon directly (127.0.0.1:8765, token from the install's .env); no API key needed")
+  .option("--local", "query this box's pgai-mon directly (127.0.0.1:8765, or PGAI_MON_PORT from the install's .env; token from the same .env); no API key needed")
   .addHelpText("after", `
 Example:
   pgai mon sql --project my-db "select metric, count(*) from series group by 1 order by 2 desc limit 10"

@@ -61,19 +61,22 @@ def _docker_compose() -> bool:
 needs_compose = pytest.mark.skipif(not _docker_compose(), reason="docker compose not available")
 
 _RESOURCE_VARS = {v for spec in SERVICE_LIMITS.values() for v in (spec[0], spec[2])}
-_STRIPPED = _RESOURCE_VARS | {"GRAFANA_BIND_HOST", "GRAFANA_SCALE", "PGAI_MON_USER", "INSTANCE_JOBS_USER",
+_STRIPPED = _RESOURCE_VARS | {"GRAFANA_BIND_HOST", "GRAFANA_PORT", "PGAI_MON_PORT", "GRAFANA_SCALE", "PGAI_MON_USER", "INSTANCE_JOBS_USER",
                               "PGAI_MON_STORE", "COMPOSE_PROFILES", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME",
                               "PGAI_MON_RETENTION_DAYS", "PGAI_MON_TEXTS_RETENTION_DAYS",
                               "VM_RETENTION_PERIOD", "QUERYID_RETENTION_HOURS"}
 
 
-def render(extra: dict[str, str] | None = None, drop: tuple[str, ...] = (), profiles: tuple[str, ...] = ("demo", "instance-jobs")) -> subprocess.CompletedProcess:
+def render(extra: dict[str, str] | None = None, drop: tuple[str, ...] = (), profiles: tuple[str, ...] = ("demo", "instance-jobs"),
+           project: str | None = None) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k not in _STRIPPED}
     env.update(REQUIRED_ENV)
     env.update(extra or {})
     for k in drop:
         env.pop(k, None)
     args = ["docker", "compose", "-f", str(COMPOSE_PATH), "--project-directory", str(PROJECT_ROOT)]
+    if project:
+        args += ["-p", project]
     # An .env in the checkout must not leak into the rendering: point compose at an empty one.
     args += ["--env-file", os.devnull]
     for p in profiles:
@@ -108,6 +111,19 @@ def test_service_set():
     assert not services & OLD_STACK_SERVICES
 
 
+def test_no_fixed_container_names():
+    """Compose names every container, volume and network after the project, so a second
+    install on the same host (the old stack's containers have fixed names) needs only its
+    own project name and ports (#510). A fixed name would collide again."""
+    doc = raw()
+    for name, svc in doc["services"].items():
+        assert "container_name" not in svc, f"{name} has a fixed container_name"
+    assert "name" not in doc, "a fixed top-level project name"
+    for section in ("volumes", "networks"):
+        for name, spec in (doc.get(section) or {}).items():
+            assert not (spec or {}).get("name"), f"{section[:-1]} {name} has a fixed name"
+
+
 def test_no_old_stack_references():
     text = COMPOSE_PATH.read_text()
     for needle in ("sink-prometheus", "sink-postgres", "VM_AUTH", "PROMETHEUS_URL", "pgwatch-prometheus",
@@ -118,7 +134,7 @@ def test_no_old_stack_references():
 def test_pgai_mon_service_contract():
     svc = raw()["services"]["pgai-mon"]
     assert svc["image"] == "${PGAI_REGISTRY:-postgresai}/pgai-mon:${PGAI_TAG:?PGAI_TAG is required}"
-    assert svc["ports"] == ["127.0.0.1:8765:8765"]
+    assert svc["ports"] == ["127.0.0.1:${PGAI_MON_PORT:-8765}:8765"]
     assert "/livez" in " ".join(svc["healthcheck"]["test"])
     assert svc["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in svc["security_opt"]
@@ -140,7 +156,8 @@ def test_self_monitoring_exporters_are_scraped_for_what_the_dashboard_reads():
         "self-node-exporter": ["self-node-exporter:9100"], "self-cadvisor": ["self-cadvisor:8080"]}
     for name in jobs:
         svc = services[name]
-        assert svc["container_name"] == name and "ports" not in svc, name
+        # The scrape target is the service name, which resolves on the compose network.
+        assert "ports" not in svc, name
         assert all(v.endswith((":ro", ":ro,rslave")) for v in svc["volumes"]), name
     ne = services["self-node-exporter"]
     assert (ne["cap_drop"], ne["security_opt"], ne["read_only"]) == (["ALL"], ["no-new-privileges:true"], True)
@@ -196,6 +213,8 @@ def test_env_example_documents_the_stack():
         "PGAI_MON_TEXTS_RETENTION_DAYS",
         "PGAI_MON_USER",
         "GRAFANA_BIND_HOST",
+        "GRAFANA_PORT",
+        "PGAI_MON_PORT",
         "GRAFANA_SCALE",
         "RDS_DB_INSTANCE_IDENTIFIER",
     ):
@@ -247,6 +266,31 @@ def test_grafana_bind_host_empty_means_all_interfaces():
     assert "host_ip" not in port and str(port["published"]) == "3000"
     pgai = rendered({"GRAFANA_BIND_HOST": ""})["services"]["pgai-mon"]["ports"][0]
     assert pgai["host_ip"] == "127.0.0.1"
+
+
+@needs_compose
+def test_host_ports_come_from_env():
+    """GRAFANA_PORT and PGAI_MON_PORT move the published ports; the bind stays 127.0.0.1."""
+    def published(svc: dict[str, Any]) -> tuple[str | None, str]:
+        port = svc["ports"][0]
+        assert str(port["target"]) == {"grafana": "3000", "pgai-mon": "8765"}[svc["_name"]]
+        return port.get("host_ip"), str(port["published"])
+
+    for extra, grafana, pgai in (({}, "3000", "8765"), ({"GRAFANA_PORT": "3001", "PGAI_MON_PORT": "18765"}, "3001", "18765")):
+        services = rendered(extra)["services"]
+        for name in ("grafana", "pgai-mon"):
+            services[name]["_name"] = name
+        assert published(services["grafana"]) == ("127.0.0.1", grafana)
+        assert published(services["pgai-mon"]) == ("127.0.0.1", pgai)
+
+
+@needs_compose
+def test_two_projects_share_no_volume_or_network_name():
+    a, b = rendered(project="pgai-a"), rendered(project="pgai-b")
+    for section in ("volumes", "networks"):
+        names_a = {v["name"] for v in a[section].values()}
+        names_b = {v["name"] for v in b[section].values()}
+        assert names_a and not names_a & names_b, section
 
 
 @needs_compose

@@ -12,7 +12,14 @@
 # role / default AWS chain); the volume keeps only the write-ahead log and cache.
 #
 # Ports are published on 127.0.0.1 only. pgai-mon needs a bearer token
-# (PGAI_MON_TOKEN) on every route but /livez.
+# (PGAI_MON_TOKEN) on every route but /livez. Host ports: GRAFANA_PORT (3000)
+# and PGAI_MON_PORT (8765) in .env.
+#
+# No service sets container_name: compose names the containers
+# <project>-<service>-1, and volumes and the network <project>_<name>. A second
+# install on the same host (or the old pgwatch + VictoriaMetrics stack, whose
+# containers have fixed names) needs only its own project name
+# (COMPOSE_PROJECT_NAME, or the directory's name) and its own ports.
 
 x-pgai-mon-owner: &pgai_mon_owner "${PGAI_MON_USER:-${INSTANCE_JOBS_USER:-10001:10001}}"
 
@@ -22,7 +29,6 @@ services:
   # pgai-mon runs as. Idempotent; exits when done.
   config-init:
     image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: postgres-ai-config-init
     volumes:
       - postgres_ai_configs:/target
       - pgai_mon_data:/pgai_mon_data
@@ -35,7 +41,6 @@ services:
   # Behind the demo profile: `mon local-install --demo` turns it on.
   target-db:
     image: postgres:17
-    container_name: target-db
     profiles: ["demo"]
     cpus: ${TARGET_DB_CPUS:-0.2}
     mem_limit: ${TARGET_DB_MEM:-805306368}
@@ -80,7 +85,6 @@ services:
   # Hot standby used by xmin-horizon integration coverage when explicitly started.
   target-standby:
     image: postgres:17
-    container_name: target-standby
     profiles: ["demo"]
     cpus: ${TARGET_STANDBY_CPUS:-0.2}
     mem_limit: ${TARGET_STANDBY_MEM:-805306368}
@@ -118,7 +122,6 @@ services:
   # the image (mon/docker/pgai-mon.yml).
   pgai-mon:
     image: ${PGAI_REGISTRY:-postgresai}/pgai-mon:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: pgai-mon
     # instances.yml and host-metrics/ are owner-only (they hold passwords and
     # API keys), so pgai-mon runs as their owner: the install user that
     # `mon local-install` writes as INSTANCE_JOBS_USER (or PGAI_MON_USER).
@@ -131,7 +134,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:${PGAI_MON_PORT:-8765}:8765"
     environment:
       # Never logged and never in argv. The full token (the CLI uses it) may
       # also write: push ingest.
@@ -191,7 +194,6 @@ services:
   # Grafana. On by default; GRAFANA_SCALE=0 leaves it out (nothing depends on it).
   grafana:
     image: grafana/grafana:12.3.2
-    container_name: grafana-with-datasources
     scale: ${GRAFANA_SCALE:-1}
     cpus: ${GRAFANA_CPUS:-0.5}
     mem_limit: ${GRAFANA_MEM:-536870912}
@@ -223,7 +225,8 @@ services:
     ports:
       # Unset: 127.0.0.1 only. GRAFANA_BIND_HOST= (empty, as terraform's
       # grafana_bind_host = "") or 0.0.0.0: opens it beyond this host.
-      - "${GRAFANA_BIND_HOST-127.0.0.1:}3000:3000"
+      # GRAFANA_PORT: the host port (3000).
+      - "${GRAFANA_BIND_HOST-127.0.0.1:}${GRAFANA_PORT:-3000}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - postgres_ai_configs:/postgres_ai_configs:ro
@@ -244,7 +247,6 @@ services:
   # target has data (at most 30 more minutes), then daily
   postgres-reports:
     image: ${PGAI_REGISTRY:-postgresai}/reporter:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: postgres-reports
     cpus: ${POSTGRES_REPORTS_CPUS:-1.0}
     mem_limit: ${POSTGRES_REPORTS_MEM:-1879048192}
     working_dir: /app
@@ -301,7 +303,6 @@ services:
   # the 'v' prefix.
   self-cadvisor:
     image: ghcr.io/google/cadvisor:0.56.2
-    container_name: self-cadvisor
     cpus: ${CADVISOR_CPUS:-0.25}
     mem_limit: ${CADVISOR_MEM:-402653184}
     privileged: true
@@ -322,7 +323,6 @@ services:
   # host's / mounted read-only. Unprivileged, no capabilities.
   self-node-exporter:
     image: prom/node-exporter:v1.11.1
-    container_name: self-node-exporter
     cpus: ${NODE_EXPORTER_CPUS:-0.05}
     mem_limit: ${NODE_EXPORTER_MEM:-100663296}
     read_only: true
@@ -344,7 +344,6 @@ services:
   # See instance-jobs/README.md and postgresai#366.
   instance-jobs:
     image: ${PGAI_REGISTRY:-postgresai}/instance-jobs:${PGAI_TAG:?PGAI_TAG is required}
-    container_name: instance-jobs
     profiles: ["instance-jobs"]
     # .pgwatch-config is 0600 owned by the install user, deliberately (the CLI
     # chmods it back on every write), so the container has to BE that owner:

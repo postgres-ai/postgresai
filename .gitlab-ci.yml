@@ -1071,6 +1071,10 @@ cli:node:full:dind:
     # of that host to it, for `mon health` (PGAI_MON_URL above).
     - docker run -d --name pgai-mon-forward --network host alpine:3.19 sh -c 'apk add --no-cache socat >/dev/null && exec socat TCP-LISTEN:18765,fork,reuseaddr TCP:127.0.0.1:8765'
   script:
+    # The stack's containers have no fixed names (compose names them
+    # <project>-<service>-1): find one by its service label. This dind daemon
+    # runs only this job's stack.
+    - cid() { docker ps -aq --filter "label=com.docker.compose.service=$1" | head -n 1; }
     - echo "=== Testing local-install (demo mode) ==="
     - node ./cli/dist/bin/postgres-ai.js mon local-install --demo
     - sleep 10
@@ -1092,14 +1096,15 @@ cli:node:full:dind:
     # `targets add` above restarted postgres-reports; its first run starts
     # 180 s later, once every target has data. Wait for it to finish.
     - |
+      REPORTS=$(cid postgres-reports)
       for i in $(seq 1 80); do
-        docker logs postgres-reports 2>&1 | grep -qE "postgres-reports: (sleeping|run failed)" && break
+        docker logs "$REPORTS" 2>&1 | grep -qE "postgres-reports: (sleeping|run failed)" && break
         sleep 10
       done
-      docker logs -t postgres-reports 2>&1 | grep -E "postgres-reports:|Discovered clusters|No clusters found|Generated report: .*(A002|A003)" || true
-      docker logs postgres-reports 2>&1 | grep -q "postgres-reports: sleeping" || (echo "FAIL: no successful first reporter run" && docker logs --tail 80 postgres-reports && exit 1)
+      docker logs -t "$REPORTS" 2>&1 | grep -E "postgres-reports:|Discovered clusters|No clusters found|Generated report: .*(A002|A003)" || true
+      docker logs "$REPORTS" 2>&1 | grep -q "postgres-reports: sleeping" || (echo "FAIL: no successful first reporter run" && docker logs --tail 80 "$REPORTS" && exit 1)
     - |
-      docker exec -i postgres-reports python - <<'PY'
+      docker exec -i "$(cid postgres-reports)" python - <<'PY'
       import glob, json, sys
       files = sorted(glob.glob("/app/*A002.json") + glob.glob("/app/*A003.json"))
       ok = bool(files)
@@ -1151,7 +1156,8 @@ cli:node:full:dind:
               pass
       HTTPServer(("0.0.0.0", 8080), H).serve_forever()
       PY
-      NET=$(docker inspect postgres-reports -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
+      REPORTS=$(cid postgres-reports)
+      NET=$(docker inspect "$REPORTS" -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
       IMG="$CI_REGISTRY_IMAGE/reporter:$PGAI_TAG"
       TOKEN=$(grep '^PGAI_MON_TOKEN=' .env | cut -d= -f2-)
       docker run -d --name stub-api --network "$NET" "$IMG" python -u -c "$(cat /tmp/stub_api.py)" >/dev/null
@@ -1170,7 +1176,7 @@ cli:node:full:dind:
         name=$1; pattern=$2; min=$3; max=$4; shift 4
         echo "--- case $name ---"
         stub_from=$(docker logs stub-api 2>&1 | wc -l)
-        docker run -d --name "$name" --network "$NET" --volumes-from postgres-reports \
+        docker run -d --name "$name" --network "$NET" --volumes-from "$REPORTS" \
           -e PGAI_MON_URL=http://pgai-mon:8765 -e PGAI_MON_TOKEN="$TOKEN" \
           -e REPORTER_INITIAL_DELAY_SECONDS=0 -e REPORTER_OUTPUT_TEMPLATE=/tmp/all_reports_%Y%m%d_%H%M%S.json \
           "$@" "$IMG" bash -c 'if [ -n "${STUB_KEY:-}" ]; then printf "api_key=%s\n" "$STUB_KEY" > /tmp/pgwatch-config; fi; exec bash /postgres_ai_configs/scripts/postgres-reports.sh' >/dev/null
@@ -1200,9 +1206,9 @@ cli:node:full:dind:
       require /tmp/rep-a-unreachable.log "no data after 60s for: default/unreachable-test; running anyway"
       require /tmp/rep-a-unreachable.log "postgres-reports: sleeping 86400s"
       # `targets remove` must not restart postgres-reports: its start time stays.
-      started_before=$(docker inspect -f '{{.State.StartedAt}}' postgres-reports)
+      started_before=$(docker inspect -f '{{.State.StartedAt}}' "$REPORTS")
       node ./cli/dist/bin/postgres-ai.js mon targets remove unreachable-test
-      started_after=$(docker inspect -f '{{.State.StartedAt}}' postgres-reports)
+      started_after=$(docker inspect -f '{{.State.StartedAt}}' "$REPORTS")
       echo "postgres-reports StartedAt before remove: $started_before; after remove: $started_after"
       [ "$started_before" = "$started_after" ] || { echo "FAIL: targets remove restarted postgres-reports"; exit 1; }
       echo "(e) no sources file: no enabled targets, no wait"
@@ -1235,7 +1241,7 @@ cli:node:full:dind:
     # pgai-mon is published on the dind host's 127.0.0.1 only: ask from the
     # compose network. The token goes in a header file, not in argv.
     - |
-      NET=$(docker inspect pgai-mon -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
+      NET=$(docker inspect "$(cid pgai-mon)" -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
       TOKEN=$(grep '^PGAI_MON_TOKEN=' .env | cut -d= -f2-)
       code() { docker run --rm --network "$NET" -e TOKEN="$TOKEN" --entrypoint sh curlimages/curl:8.11.1 -c 'printf "Authorization: Bearer %s\n" "$TOKEN" > /tmp/auth; curl -s -o /dev/null -w "%{http_code}" "$@"' sh "$@"; }
       c=$(code -X POST --data-binary 'select 1' http://pgai-mon:8765/sql); echo "No token -> HTTP $c"
@@ -1250,9 +1256,10 @@ cli:node:full:dind:
     - node ./cli/dist/bin/postgres-ai.js mon stop
     - node ./cli/dist/bin/postgres-ai.js mon clean
   after_script:
+    - cid() { docker ps -aq --filter "label=com.docker.compose.service=$1" | head -n 1; }
     - docker ps -a || true
-    - docker logs pgai-mon 2>&1 | tail -200 || true
-    - docker logs -t postgres-reports 2>&1 | tail -200 || true
+    - docker logs "$(cid pgai-mon)" 2>&1 | tail -200 || true
+    - docker logs -t "$(cid postgres-reports)" 2>&1 | tail -200 || true
     - docker logs stub-api 2>&1 | tail -100 || true
     - docker logs empty-mon 2>&1 | tail -50 || true
   rules:
@@ -1291,7 +1298,7 @@ integration:xmin-horizon:
       bash <<'BASH'
       set -Eeuo pipefail
       IFS=$'\n\t'
-      NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' target-db | head -n1)"
+      NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$(docker ps -q --filter label=com.docker.compose.service=target-db)" | head -n1)"
       test -n "$NETWORK"
       target_ready=0
       for i in {1..60}; do
@@ -1340,7 +1347,7 @@ integration:xmin-horizon:
       docker compose up -d pgai-mon
       mon_ready=0
       for i in {1..60}; do
-        if [ "$(docker inspect -f '{{.State.Health.Status}}' pgai-mon)" = "healthy" ]; then
+        if [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker ps -q --filter label=com.docker.compose.service=pgai-mon)")" = "healthy" ]; then
           mon_ready=1
           break
         fi
@@ -1364,8 +1371,8 @@ integration:xmin-horizon:
       BASH
   after_script:
     - docker ps -a || true
-    - docker logs target-standby 2>&1 || true
-    - docker logs pgai-mon 2>&1 | tail -200 || true
+    - docker logs "$(docker ps -aq --filter label=com.docker.compose.service=target-standby)" 2>&1 || true
+    - docker logs "$(docker ps -aq --filter label=com.docker.compose.service=pgai-mon)" 2>&1 | tail -200 || true
     - docker compose down -v || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

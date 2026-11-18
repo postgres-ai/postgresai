@@ -342,6 +342,48 @@ the compose file needs it for every command (`down` and `ps` too). For plain
 export GF_SECURITY_ADMIN_PASSWORD="$(sed -n 's/^grafana_password=//p' .pgwatch-config)"
 ```
 
+#### Monitoring v4 beside the old stack on one host
+
+You can run the branch beside an installed old stack (`postgresai@0.18.0`, pgwatch +
+VictoriaMetrics) and point both at the same database. The containers of monitoring v4 have
+no fixed names: compose names them after the project (`<project>-<service>-1`), and the
+volumes and the network too (`<project>_<name>`). So a second project name and a second
+Grafana port are enough. The old stack keeps its fixed container names, Grafana on port
+3000 and its project `monitoring` (its directory is `~/.config/postgresai/monitoring`).
+
+1. Leave the old stack as it is. Run its commands from outside the checkout, for example
+   `cd ~ && npx postgresai@0.18.0 mon health`. Inside the checkout the CLI uses the
+   checkout's `docker-compose.yml`.
+2. In the checkout root, before the first install, set the project name and the ports in
+   `.env`. `mon local-install` keeps these keys:
+
+   ```bash
+   printf '%s\n' COMPOSE_PROJECT_NAME=pgai-v4 GRAFANA_PORT=3001 >> .env
+   ```
+
+   The old stack does not publish 8765, so pgai-mon can keep it. For a third stack, set
+   `PGAI_MON_PORT` too.
+3. Build the images and install as in Option A above, with the database the old stack
+   monitors:
+
+   ```bash
+   bun cli/bin/postgres-ai.ts mon local-install --db-url 'postgresql://postgres_ai_mon:<password>@<host>:5432/<db>' -y
+   ```
+
+4. Check that both run: `docker ps --format '{{.Names}}\t{{.Ports}}'` lists the old
+   stack's `grafana-with-datasources` on port 3000 and `pgai-v4-grafana-1` on
+   127.0.0.1:3001. Monitoring v4 is at http://localhost:3001, the old stack at
+   http://localhost:3000. `bun cli/bin/postgres-ai.ts mon health` (from the checkout) looks
+   only at the `pgai-v4` containers.
+5. To remove monitoring v4 and keep the old stack, run `bun cli/bin/postgres-ai.ts mon
+   reset` from the checkout and answer `y`. It removes the containers, volumes and network
+   of the `pgai-v4` project only. `mon clean` there keeps the old stack's `monitoring_*`
+   volumes too: they belong to another project, and it says how to remove them on purpose.
+
+Both stacks collect from the database, so it serves two collectors. Their memory limits
+add up (about 4.5 GiB for monitoring v4 and 7.3 GiB for the old stack); the host needs
+room for both.
+
 ### Option B: Run Docker Compose directly
 
 An Option A install prepares everything below. Without one, do it by hand from the

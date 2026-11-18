@@ -6,11 +6,10 @@ set -Eeuo pipefail
 
 CLI_CMD="node ./cli/dist/bin/postgres-ai.js"
 MON_CMD="${CLI_CMD} mon"
-GRAFANA_CONTAINER="grafana-with-datasources"
 GRAFANA_DEADLINE_SECONDS=120
 GRAFANA_DATASOURCE_POLL_SECONDS=3
 GRAFANA_RESTART_POLL_SECONDS=2
-readonly CLI_CMD MON_CMD GRAFANA_CONTAINER GRAFANA_DEADLINE_SECONDS \
+readonly CLI_CMD MON_CMD GRAFANA_DEADLINE_SECONDS \
   GRAFANA_DATASOURCE_POLL_SECONDS GRAFANA_RESTART_POLL_SECONDS
 
 # Return the host where Docker publishes ports for the current runner.
@@ -139,15 +138,32 @@ wait_for_grafana_datasources() {
   done
 }
 
+# The compose project the CLI installs into (this directory), as compose derives it:
+# COMPOSE_PROJECT_NAME from the environment or .env, else the directory's name.
+compose_project() {
+  local name="${COMPOSE_PROJECT_NAME:-}"
+  if [[ -z "${name}" && -f .env ]]; then
+    name="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env | tail -n 1)"
+  fi
+  printf '%s' "${name:-$(basename "${PWD}")}" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-'
+}
+
+# The Grafana container's id: the containers have no fixed names, so it is found by
+# its compose project and service labels.
+grafana_container() {
+  docker ps -aq --filter "label=com.docker.compose.project=$(compose_project)" \
+    --filter "label=com.docker.compose.service=grafana" | head -n 1
+}
+
 # Return the current Grafana container start timestamp.
 grafana_started_at() {
-  docker inspect "${GRAFANA_CONTAINER}" --format '{{.State.StartedAt}}'
+  docker inspect "$(grafana_container)" --format '{{.State.StartedAt}}'
 }
 
 # Read an environment variable from the Grafana container config.
 grafana_env_value() {
   local key="$1"
-  docker inspect "${GRAFANA_CONTAINER}" \
+  docker inspect "$(grafana_container)" \
     --format '{{range .Config.Env}}{{println .}}{{end}}' |
     sed -n "s/^${key}=//p" | tail -n 1
 }
@@ -191,15 +207,17 @@ wait_for_grafana_restart() {
 seed_conflicting_grafana_datasource_state() {
   local db_path
   local restart_needed="false"
+  local grafana
   db_path="$(grafana_db_path)"
+  grafana="$(grafana_container)"
 
   # restart_needed avoids a double start: normal exit sets it false after the
   # explicit docker start, while early errors leave it true so RETURN restarts
   # Grafana before the function exits.
-  trap 'if [[ "${restart_needed}" == "true" ]]; then docker start "${GRAFANA_CONTAINER}" >/dev/null 2>&1 || true; fi' RETURN
-  docker stop "${GRAFANA_CONTAINER}" >/dev/null
+  trap 'if [[ "${restart_needed}" == "true" ]]; then docker start "${grafana}" >/dev/null 2>&1 || true; fi' RETURN
+  docker stop "${grafana}" >/dev/null
   restart_needed="true"
-  docker run --rm --volumes-from "${GRAFANA_CONTAINER}" \
+  docker run --rm --volumes-from "${grafana}" \
     -e GRAFANA_DB_PATH="${db_path}" alpine:3.20 sh -s <<'SH'
 set -eu
 apk add --no-cache sqlite
@@ -222,7 +240,7 @@ if [ "${stale_count}" != "1" ]; then
   exit 1
 fi
 SH
-  docker start "${GRAFANA_CONTAINER}" >/dev/null
+  docker start "${grafana}" >/dev/null
   restart_needed="false"
   trap - RETURN
 }

@@ -57,11 +57,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# health CONTAINER TIMEOUT_S: wait for Docker's healthcheck to say healthy.
+# wait_healthy SERVICE TIMEOUT_S: wait for Docker's healthcheck to say healthy. The
+# containers have no fixed names: compose finds the service's container in this project.
 wait_healthy() {
-  local c="$1" deadline=$((SECONDS + $2)) s
+  local c="$1" deadline=$((SECONDS + $2)) s id
   while :; do
-    s="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$c" 2>/dev/null || true)"
+    id="$(dc ps -q "$c" 2>/dev/null || true)"
+    s="$( [[ -n "${id}" ]] && docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${id}" 2>/dev/null || true)"
     [[ "$s" == "healthy" ]] && { echo "smoke: $c healthy"; return 0; }
     if (( SECONDS >= deadline )); then
       echo "smoke: FAIL: $c is '$s' after $2 s" >&2
@@ -93,7 +95,7 @@ dc --profile demo up -d target-db pgai-mon grafana
 docker pull -q "${curl_image}" >/dev/null
 
 wait_healthy pgai-mon 180
-wait_healthy grafana-with-datasources 180
+wait_healthy grafana 180
 
 # Liveness needs no token; data needs it.
 code="$(req_noauth http://pgai-mon:8765/livez)"

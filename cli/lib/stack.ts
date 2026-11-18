@@ -47,11 +47,70 @@ export function composeDefinesService(text: string | null | undefined, service: 
 /**
  * The compose project name, as compose derives it: COMPOSE_PROJECT_NAME when
  * set, else the project directory's name, lower-cased with every character but
- * [a-z0-9_-] dropped.
+ * [a-z0-9_-] dropped and leading '_' and '-' trimmed (compose refuses an
+ * explicit name that needs any of this). The CLI finds the stack's containers
+ * by this name, so it must match compose's.
  */
 export function composeProjectName(projectDirName: string, explicit?: string | null): string {
   const name = explicit?.trim() || projectDirName;
-  return name.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  return name.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+}
+
+/**
+ * `docker ps` arguments that list one compose project's containers, one per
+ * line as "<service>\t<container id>". The containers have no fixed names: two
+ * installs (or the old stack and this one) can share a host, so a container is
+ * found by its project and service labels, never by a name.
+ */
+export function projectPsArgs(project: string, all: boolean): string[] {
+  return [
+    "ps",
+    "--filter", `label=com.docker.compose.project=${project}`,
+    ...(all ? ["-a"] : []),
+    "--format", '{{.Label "com.docker.compose.service"}}\t{{.ID}}',
+  ];
+}
+
+/** Parse projectPsArgs output: service -> container id (the first one listed). */
+export function parseProjectPs(out: string): Map<string, string> {
+  const byService = new Map<string, string>();
+  for (const line of out.split("\n")) {
+    const [service, id = ""] = line.trim().split("\t");
+    if (service && !byService.has(service)) byService.set(service, id.trim());
+  }
+  return byService;
+}
+
+/** Grafana's and pgai-mon's host ports when .env does not set them. */
+export const DEFAULT_GRAFANA_PORT = 3000;
+export const DEFAULT_PGAI_MON_PORT = 8765;
+
+/**
+ * A host port from .env (GRAFANA_PORT, PGAI_MON_PORT), or `fallback` when the
+ * value is unset, blank or not a port number.
+ */
+export function hostPort(value: string | null | undefined, fallback: number): number {
+  const text = (value ?? "").trim().replace(/^["']|["']$/g, "");
+  if (!/^\d{1,5}$/.test(text)) return fallback;
+  const port = Number(text);
+  return port >= 1 && port <= 65535 ? port : fallback;
+}
+
+/**
+ * Which of `mon clean`'s leftover volumes (`candidates`, the names older
+ * installs used) to remove, of those that exist. `monitoring_*` is the default
+ * install's project: when this install's project is another one, those volumes
+ * belong to that install (the old stack beside this one, say), not to this one,
+ * so they are kept.
+ */
+export function cleanOrphanVolumes(
+  project: string,
+  existing: string[],
+  candidates: string[],
+): { remove: string[]; kept: string[] } {
+  const present = candidates.filter((v) => existing.includes(v));
+  const othersDefault = (v: string) => project !== "monitoring" && v.startsWith("monitoring_");
+  return { remove: present.filter((v) => !othersDefault(v)), kept: present.filter(othersDefault) };
 }
 
 /** The old stack's volume names in a project. */
@@ -84,11 +143,11 @@ export function stackSwitchNotice(volumes: string[]): string {
  * on every interface when GRAFANA_BIND_HOST was unset; this one publishes it on
  * 127.0.0.1 then. A set value (empty included) means the same as before.
  */
-export function grafanaBindNotice(bindHost: string | null | undefined): string | null {
+export function grafanaBindNotice(bindHost: string | null | undefined, port = DEFAULT_GRAFANA_PORT): string | null {
   if (bindHost !== undefined && bindHost !== null) return null;
   return (
-    "Grafana now listens on 127.0.0.1:3000 only (before, on all interfaces): reach it through an SSH tunnel " +
-    "(ssh -L 3000:localhost:3000 <this host>), or, to expose it on purpose, set GRAFANA_BIND_HOST in .env " +
+    `Grafana now listens on 127.0.0.1:${port} only (before, on all interfaces): reach it through an SSH tunnel ` +
+    `(ssh -L ${port}:localhost:${port} <this host>), or, to expose it on purpose, set GRAFANA_BIND_HOST in .env ` +
     "(e.g. GRAFANA_BIND_HOST=0.0.0.0:) and run 'postgresai mon restart grafana'."
   );
 }
