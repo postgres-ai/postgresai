@@ -43,12 +43,12 @@ pub struct EvalCtx {
 }
 
 impl EvalCtx {
-    /// Match metric_dict: the most specific prefix wins, including fast/unknown intervals.
+    /// Match metric_dict: longest prefix, then largest interval among aliases of that prefix.
     pub fn interval(&self, metric: &str) -> i64 {
         self.dict
             .iter()
             .filter(|d| metric == d.prefix || metric.strip_prefix(&d.prefix).is_some_and(|s| s.starts_with('_')))
-            .max_by_key(|d| d.prefix.len())
+            .max_by_key(|d| (d.prefix.len(), d.interval_s))
             .and_then(|d| d.interval_s)
             .filter(|&s| s > 300)
             .map_or(0, |s| s.saturating_mul(1000).min(i64::MAX as u64) as i64)

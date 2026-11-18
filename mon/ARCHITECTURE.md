@@ -32,7 +32,7 @@ the read side over an existing store.
 | `compactor` | thread | Every 60 s: merges files, builds rollups, applies retention, deletes files past their grace time. Waits while queries run, for at most 10 minutes. |
 | uploader | thread, S3 store only | Every `store.s3.upload_interval_s`: uploads new files and commits `catalog.json` to the bucket. |
 | `tailer` | thread per `logs[]` entry | Reads new jsonlog lines once a second. |
-| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config and the sources file every `collector.reload_interval_s` and on SIGHUP. A job runs once at the start, then at a fixed phase in its interval (a hash of its name, below min(interval, 60 s)), so the jobs of one tick do not start together. A run that got no session, or lost it, runs once more as soon as a job reaches the database again, outside its schedule. `up` (for a source with a scrape `job`) is 1 while its driver metric (wait_events, else the first with the shortest interval) succeeded within 1.5 intervals, 0 when it fails or hangs, and absent before its first run. |
+| collector manager | tokio task | One task per source, per database and per metric run. Re-reads the config, the sources file and `metrics.yml` every `collector.reload_interval_s` and on SIGHUP. A job runs once at the start, then at a fixed phase in its interval (a hash of its name, below min(interval, 60 s)), so the jobs of one tick do not start together. A run that got no session, or lost it, runs once more as soon as a job reaches the database again, outside its schedule. `up` (for a source with a scrape `job`) is 1 while its driver metric (wait_events, else the first with the shortest interval) succeeded within 1.5 intervals, 0 when it fails or hangs, and absent before its first run. |
 | scraper, host rules, RDS host stats, self metrics | tokio tasks | Other producers of samples; they write through `ingest.rs`. |
 | flush ticker | tokio task | Asks the store thread to flush every `store.flush_interval_s` (60 s). |
 
@@ -154,11 +154,27 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    Bare selectors normally infer lookback from fetched samples. For dictionary intervals above
    300 s, the fetch reaches back at least that interval plus 12.5%. Values stay current for at
    least the same interval plus margin in instant and range queries, even with irregular sample
-   spacing. Longer estimated lookbacks, fast metrics, explicit windows and raw SQL keep their
-   existing behavior. The dictionary uses
-   the longest matching metric prefix and the maximum interval across sources. Staleness markers
-   end a series; native target removal does not yet write them, so slow series can remain visible
-   for up to the longer lookback after removal.
+   spacing. Longer estimated lookbacks still apply; fast selectors, explicit `*_over_time`
+   windows and raw SQL keep their lookback. `timestamp(selector)` uses the same slow-metric interval
+   floor for fetching and expiry, through raw samples and rollups. It still skips staleness markers;
+   making it stop at markers like the selector would change recorded reporter comparisons.
+   `PromEval::bind` (`prom_last`, `prom_timestamp`),
+   `PromSeries::bind` (their labels), `PromAgg::bind` (`prom_agg`) and `PromTopK::bind`
+   (`prom_topk`, `prom_topk_expr`, including denominators and each expression term) all pass
+   the dictionary interval to the same slow-metric lookback floor for window 0. Outside that floor,
+   the existing fetch padding is unchanged (the selector fetches 300 s more than timestamp).
+   The dictionary uses the longest matching metric prefix, then the maximum interval across
+   sources and definitions sharing that prefix. The SQL `metric_dict` view uses the same choice.
+   Staleness markers end a bare selector's series. Native target removal does not yet write them,
+   so slow series can remain visible for up to the longer lookback after removal.
+
+   The dictionary is built in `main` once and sent in `sqlproc::Spec` to the separate SQL reader.
+   `Reader::refresh` replaces the catalog context but copies the same dictionary. Reader restarts
+   reuse the original specification. The collector reloads the main config, sources file and
+   `metrics.yml`; global and per-source primary/standby presets and custom intervals can change
+   schedules. Those changes do not reach `metric_dict` or the evaluator until pgai-mon restarts.
+   A live update needs coordinated dictionary publication, a new reader restart specification,
+   and invalidation of the response and evaluated-row caches; catalog refresh alone is insufficient.
 6. **Limits.** See the table.
 
 | Limit | Config key | Default | When reached |

@@ -105,12 +105,20 @@ Conventions of the `prom_*` functions:
 - An instant query at time `T` is a range query with `start = end = T` and `step = 300000`.
 
 Bare selectors for metrics collected more than 300 seconds apart fetch at least the dictionary interval
-(`metric_dict.interval_s`, the maximum across sources) plus 12.5%: 2 h 15 min for a two-hour job.
+(`metric_dict.interval_s`, the maximum across sources and definitions sharing the longest matching
+storage prefix) plus 12.5%: 2 h 15 min for a two-hour job.
 The last value stays current for at least that interval plus margin, for instant and range queries,
 even when restarts or retries shorten the observed sample spacing. A longer estimated lookback
-still applies. Staleness markers still end a series. Explicit windows and raw SQL are
-unchanged. Native target removal does not yet write markers, so a removed target's slow-job
+still applies. `timestamp(selector)` uses the same slow-metric interval floor for fetching and
+expiry, including in aggregations and top-k expressions. Its existing handling of staleness markers
+is unchanged: it skips markers, while a bare selector ends the series at a marker. This preserves
+existing report history. Explicit windows and raw SQL are unchanged. Native target removal does not yet write markers, so a removed target's slow-job
 series can remain visible for up to this lookback.
+
+The collector reloads the main config, sources file and `metrics.yml`, including presets and
+per-source primary and standby intervals. The query dictionary is a startup snapshot:
+after changing a metric's interval, restart pgai-mon. Both `metric_dict` and the evaluator keep
+the old intervals until that restart; recycling only the SQL reader does not update them.
 
 | PromQL | SQL |
 |---|---|

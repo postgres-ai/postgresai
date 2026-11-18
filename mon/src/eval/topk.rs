@@ -1139,7 +1139,7 @@ impl VTab for PromTopK {
             }
         }
         let intervals: Vec<i64> = metrics.iter().map(|m| ctx.interval(m)).collect();
-        if f == Func::Last && grid.window == 0 {
+        if matches!(f, Func::Last | Func::Timestamp) && grid.window == 0 {
             grid.interval = intervals.iter().copied().max().unwrap_or(0);
         }
         // Exact k-heaps with interned labels when the selection is small enough; the lean

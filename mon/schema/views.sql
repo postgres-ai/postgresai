@@ -84,7 +84,7 @@ SELECT m.metric, d.metric_group, d.interval_s, d.instance_level,
        d.description
 FROM (SELECT DISTINCT metric FROM _raw_series) m
 LEFT JOIN (
-  -- longest matching prefix wins (pg_stat_all_tables vs pg_stat_all_tables_..)
+  -- Longest prefix wins; aliases of that prefix use the largest interval.
   SELECT * FROM _metric_dict
 ) d ON m.metric = d.prefix OR starts_with(m.metric, d.prefix || '_')
-QUALIFY row_number() OVER (PARTITION BY m.metric ORDER BY length(d.prefix) DESC NULLS LAST) = 1;
+QUALIFY row_number() OVER (PARTITION BY m.metric ORDER BY length(d.prefix) DESC NULLS LAST, d.interval_s DESC NULLS LAST) = 1;

@@ -2032,6 +2032,41 @@ fn slow_last_kernel_preserves_bounds_and_other_selectors() {
 }
 
 #[test]
+fn slow_timestamp_lookback_matches_last() {
+    let end = 20_000_000;
+    for start in [end - 3_600_000, end] {
+        for interval in [0, 30_000, 300_000, 7_200_000] {
+            let g = Grid {
+                start,
+                end,
+                step: 300_000,
+                window: 0,
+                interval,
+                phi: 0.0,
+            };
+            if interval > 300_000 {
+                assert_eq!(g.fetch_start(Func::Timestamp), g.fetch_start(Func::Last));
+            }
+            for (ts, v) in [
+                (vec![end - 5_400_000], vec![42.0]),
+                (vec![end - 6_000_000, end - 5_400_000], vec![1.0, 42.0]),
+                (vec![start - 8_100_000 + 1], vec![42.0]),
+                (vec![start - 8_100_000], vec![42.0]),
+            ] {
+                let expected: Vec<_> = run(Func::Last, g, &ts, &v)
+                    .into_iter()
+                    .map(|(t, _)| {
+                        let sample = ts.iter().rev().find(|&&s| s <= t).unwrap();
+                        (t, *sample as f64 / 1000.0)
+                    })
+                    .collect();
+                assert_eq!(run(Func::Timestamp, g, &ts, &v), expected, "{g:?} {ts:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn slow_last_dictionary_matches_longest_metric_prefix() {
     use pgai_mon::query::DictEntry;
     let mut ctx = pgai_mon::eval::EvalCtx::from_catalog(Default::default(), &Default::default());
@@ -2167,6 +2202,31 @@ fn slow_last_sql_paths_preserve_metric_intervals() {
                 }
             }
         }
+        for (metric, sample, until) in [
+            ("irregular_value", old, end + 1),
+            // timestamp keeps its recorded VM behavior: markers do not end its sequence.
+            ("stale_value", old, end + 1),
+            ("expiring_value", end - 190 * 60_000, end - 55 * 60_000),
+        ] {
+            let start = end - 80 * 60_000;
+            let expected: Vec<_> = (start..=end)
+                .step_by(60_000)
+                .filter(|&t| t < until)
+                .map(|t| serde_json::json!([t, sample as f64 / 1000.0]).to_string())
+                .collect();
+            let args = format!("'{metric}', [], {start}, {end}, 60000");
+            for call in [
+                format!("prom_timestamp({args})"),
+                format!("prom_agg('sum', 'timestamp', {args}, 0)"),
+                format!("prom_topk(1, 'timestamp', {args}, 0)"),
+            ] {
+                assert_eq!(
+                    sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t")),
+                    expected,
+                    "{call}"
+                );
+            }
+        }
         for start in [end - 3_600_000, end] {
             let args = format!("'slow_value', [], {start}, {end}, 300000");
             let expected = sql_rows(&r, &format!("SELECT t, value FROM prom_last({args}) ORDER BY t"));
@@ -2181,24 +2241,47 @@ fn slow_last_sql_paths_preserve_metric_intervals() {
                     "{call}"
                 );
             }
+            let expected_ts: Vec<_> = (start..=end)
+                .step_by(300_000)
+                .map(|t| serde_json::json!([t, old as f64 / 1000.0]).to_string())
+                .collect();
+            for call in [
+                format!("prom_timestamp({args})"),
+                format!("prom_agg('sum', 'timestamp', {args}, 0)"),
+                format!("prom_topk(1, 'timestamp', {args}, 0)"),
+                format!("prom_topk_expr(1, 'timestamp', [{{'m':'slow_value','n':1}}], [], {start}, {end}, 300000, 0)"),
+            ] {
+                assert_eq!(
+                    sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t")),
+                    expected_ts,
+                    "{call}"
+                );
+            }
             let mixed_args = format!("'irregular_value', [], {start}, {end}, 300000");
-            for call in [format!("prom_topk(1, 'last', {mixed_args}, 0, p_den_metric := 'fast_value')"),
-                         format!("prom_topk_expr(1, 'last', [{{'m':'irregular_value','n':1}},{{'m':'fast_value','n':1}}], [], {start}, {end}, 300000, 0)")] {
+            for f in ["last", "timestamp"] {
+                for call in [format!("prom_topk(1, '{f}', {mixed_args}, 0, p_den_metric := 'fast_value')"),
+                         format!("prom_topk_expr(1, '{f}', [{{'m':'irregular_value','n':1}},{{'m':'fast_value','n':1}}], [], {start}, {end}, 300000, 0)")] {
                 let mixed = sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t"));
                 // The fast series has a value around its sample, but must expire on its own schedule.
                 assert_eq!(mixed.len(), if start < end { 2 } else { 0 }, "{call}");
                 assert!(sql_rows(&r, &format!("SELECT t FROM {call} WHERE t = {end}")).is_empty(), "{call}");
             }
+            }
         }
         for metric in ["fast_value", "stale_value", "expired_value"] {
-            assert!(
-                sql_rows(
-                    &r,
-                    &format!("SELECT * FROM prom_last('{metric}', [], {end}, {end}, 300000)")
-                )
-                .is_empty(),
-                "{metric}"
-            );
+            for f in ["last", "timestamp"] {
+                if metric == "stale_value" && f == "timestamp" {
+                    continue;
+                }
+                assert!(
+                    sql_rows(
+                        &r,
+                        &format!("SELECT * FROM prom_{f}('{metric}', [], {end}, {end}, 300000)")
+                    )
+                    .is_empty(),
+                    "{metric}"
+                );
+            }
         }
         assert!(sql_rows(
             &r,
@@ -2242,4 +2325,142 @@ fn slow_last_sql_paths_preserve_metric_intervals() {
     std::env::remove_var("PGAI_TOPK_CHUNK_ALWAYS");
     std::env::remove_var("PGAI_TOPK_DEN_BUDGET");
     std::env::remove_var("PGAI_TOPK_LEAN_ABOVE");
+}
+
+#[test]
+fn slow_dictionary_shared_storage_prefixes() {
+    let mf = pgai_mon::metricdefs::parse(
+        "metrics:\n  a: {storage_name: shared}\n  b: {storage_name: shared}\n  z: {storage_name: shared}\n  fast: {storage_name: shared_fast}\n  unknown: {storage_name: shared_unknown}\npresets:\n  full:\n    metrics: {a: 7200, b: 3600, fast: 30}\n",
+    ).unwrap();
+    let dict = pgai_mon::query::build_dict(Some(&mf), &mf.dict_intervals(&["full"], &[]));
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    let metrics = ["pgwatch_shared_v", "pgwatch_shared_fast_v", "pgwatch_shared_unknown_v"];
+    core.append(Record::Series(
+        metrics
+            .iter()
+            .map(|&m| SeriesDef {
+                series_id: series_id(m, &[]),
+                metric: m.into(),
+                labels: vec![],
+                first_seen: 1,
+            })
+            .collect(),
+    ))
+    .unwrap();
+    core.flush().unwrap();
+    for entries in [dict.clone(), dict.into_iter().rev().collect()] {
+        let mut ctx = pgai_mon::eval::EvalCtx::from_catalog(Default::default(), &Default::default());
+        ctx.dict = entries.clone();
+        for (m, expected) in metrics.iter().zip([7_200_000, 0, 0]) {
+            assert_eq!(ctx.interval(m), expected, "{m}");
+        }
+        let r = Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            entries,
+        )
+        .unwrap();
+        assert_eq!(
+            sql_rows(&r, "SELECT metric, interval_s FROM metric_dict ORDER BY metric"),
+            vec![
+                r#"["pgwatch_shared_fast_v",30]"#,
+                r#"["pgwatch_shared_unknown_v",null]"#,
+                r#"["pgwatch_shared_v",7200]"#,
+            ]
+        );
+    }
+}
+
+#[test]
+fn reader_dictionary_changes_only_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(&dir.path().join("store"), &StoreCfg::default()).unwrap();
+    let mf_path = dir.path().join("metrics.yml");
+    let sources_path = dir.path().join("instances.yml");
+    let cfg_path = dir.path().join("pgai-mon.yml");
+    std::fs::write(
+        &mf_path,
+        "metrics: {slow: {sqls: {11: 'select 42 as v'}}}\npresets: {full: {metrics: {slow: 30}}}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &cfg_path,
+        format!(
+            "store_dir: {}\nmetrics_yml: {}\nsources_file: {}\n",
+            dir.path().join("store").display(),
+            mf_path.display(),
+            sources_path.display()
+        ),
+    )
+    .unwrap();
+    let sources = |interval| {
+        format!("- name: lookback_reload\n  conn_str: postgresql://localhost/lookback_reload\n  custom_metrics: {{slow: {interval}}}\n")
+    };
+    std::fs::write(&sources_path, sources(30)).unwrap();
+    let load_dict = || {
+        let cfg = pgai_mon::config::Config::load(&cfg_path).unwrap();
+        let mf = pgai_mon::metricdefs::load(&cfg.metrics_yml).unwrap();
+        let sources = pgai_mon::config::collect_sources(&cfg).unwrap();
+        let interval = mf.for_source(&sources[0], &cfg.preset).unwrap().0[0].interval_s;
+        let dict = pgai_mon::query::build_dict(Some(&mf), &mf.dict_intervals(&[&cfg.preset], &sources));
+        (interval, dict)
+    };
+    let end = 1_794_009_600_000;
+    let id = series_id("pgwatch_slow_v", &[]);
+    core.append(Record::Series(vec![SeriesDef {
+        series_id: id,
+        metric: "pgwatch_slow_v".into(),
+        labels: vec![],
+        first_seen: end - 1_800_000,
+    }]))
+    .unwrap();
+    core.append(Record::Samples(vec![Sample {
+        series_id: id,
+        ts: end - 1_800_000,
+        value: 42.0,
+    }]))
+    .unwrap();
+    core.flush().unwrap();
+    let (interval, dict) = load_dict();
+    assert_eq!(interval, 30);
+    let r = Reader::new(core.shared.clone(), HttpCfg::default(), EMBEDDED_VIEWS_SQL.into(), dict).unwrap();
+    std::fs::write(&sources_path, sources(3600)).unwrap();
+    let (interval, updated) = load_dict();
+    assert_eq!(interval, 3600);
+    // A new catalog generation still does not deliver the collector's new definitions.
+    core.append(Record::Samples(vec![Sample {
+        series_id: id,
+        ts: end - 1_800_001,
+        value: 1.0,
+    }]))
+    .unwrap();
+    core.flush().unwrap();
+    r.refresh().unwrap();
+    // Reloading the collector inputs leaves both query surfaces on the startup snapshot.
+    assert_eq!(sql_rows(&r, "SELECT interval_s FROM metric_dict"), vec!["[30]"]);
+    assert!(sql_rows(
+        &r,
+        &format!("SELECT value FROM prom_last('pgwatch_slow_v', [], {end}, {end}, 300000)")
+    )
+    .is_empty());
+    let restarted = Reader::new(
+        core.shared.clone(),
+        HttpCfg::default(),
+        EMBEDDED_VIEWS_SQL.into(),
+        updated,
+    )
+    .unwrap();
+    assert_eq!(
+        sql_rows(&restarted, "SELECT interval_s FROM metric_dict"),
+        vec!["[3600]"]
+    );
+    assert_eq!(
+        sql_rows(
+            &restarted,
+            &format!("SELECT value FROM prom_last('pgwatch_slow_v', [], {end}, {end}, 300000)")
+        ),
+        vec!["[42.0]"]
+    );
 }

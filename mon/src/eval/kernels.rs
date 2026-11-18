@@ -108,7 +108,7 @@ impl Grid {
         self.start.saturating_sub(history.max(self.last_lookback(f)))
     }
     pub fn last_lookback(&self, f: Func) -> i64 {
-        if f == Func::Last && self.window == 0 && self.interval > 300_000 {
+        if matches!(f, Func::Last | Func::Timestamp) && self.window == 0 && self.interval > 300_000 {
             max_prev(self.interval)
         } else {
             0
