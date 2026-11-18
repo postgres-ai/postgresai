@@ -71,7 +71,8 @@ an S3 store uploads and commits once more and releases the writer lease.
 | Read | `query.rs` | HTTP routes, the reader (DuckDB session, views, lock-down), the read-only check, limits. |
 | | `auth.rs` | Bearer tokens and basic auth; what the read-only token may do. |
 | | `admission.rs` | Which waiting query gets the next slot. |
-| | `qcache.rs` | Result cache in the parent, keyed by SQL text and catalog generation. |
+| | `qcache.rs` | Result cache in the parent, keyed by SQL, format and dictionary version; validates catalog changes. |
+| | `dictionary.rs`, `readset.rs` | Versioned collector dictionary; evaluator fetch windows and bounded SQL dependency checks. |
 | | `sqlproc.rs` | The reader as a child process with a memory cap; the parent-child protocol. |
 | | `rowjson.rs`, `rowcsv.rs` | Result rows from Arrow to JSON or CSV. |
 | Evaluator (`eval/`) | `mod.rs`, `eval.sql` | The `prom_*` SQL macros and the handle they share. |
@@ -135,12 +136,20 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 ```
 
 1. **Auth** (`auth.rs`). Every route except `GET /livez` needs credentials.
-2. **Result cache** (`qcache.rs`). Key: SQL text, response format, and a hash of the views.
-   An entry is valid for one catalog generation, so it never outlives a flush or compaction.
-   Identical requests that arrive while one runs wait for it. Queries that call clock
-   functions are not cached. The response header `x-pgai-cache` says how it was served.
-   Moving Grafana time bounds change the SQL text even when alignment gives the same grid;
-   those requests miss L1. A hit retains the original body's `elapsed_ms`.
+2. **Result cache** (`qcache.rs`). Key: SQL text, response format, views hash and dictionary
+   version. Evaluator-only queries record the union of their bound fetch windows, including
+   lookback. Their replies survive a flush when every added file starts after that window's
+   end and no evaluator file was removed or replaced. Series files are selected by day or
+   month: additions in those windows invalidate too. Registry and rollup changes invalidate
+   conservatively. The parent compares file snapshots once per catalog generation; entries
+   need only a time range, not their own file lists.
+   Ordinary SQL, mixed evaluator/table queries and unproven macros keep generation-only
+   validity. Macro bodies and every overload must pass the dependency check. Errors and
+   volatile queries are not stored. Identical requests in flight share one execution.
+   The response header `x-pgai-cache` says how a request was served. Moving Grafana time bounds
+   change the SQL text even when alignment gives the same grid; those requests still miss L1.
+   Fixed historical requests benefit across newer-only flushes. A hit retains the original
+   body's `elapsed_ms`.
 3. **Admission** (`admission.rs`). `http.max_concurrent` queries run at once (default: one per
    core, at most 4). One slot is kept for short queries. Up to `http.queue_max` (64) wait for
    at most `http.queue_wait_ms` (30 s); beyond that the answer is `busy`, HTTP 429.
@@ -181,13 +190,15 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    Staleness markers end a bare selector's series. Native target removal does not yet write them,
    so slow series can remain visible for up to the longer lookback after removal.
 
-   The dictionary is built in `main` once and sent in `sqlproc::Spec` to the separate SQL reader.
-   `Reader::refresh` replaces the catalog context but copies the same dictionary. Reader restarts
-   reuse the original specification. The collector reloads the main config, sources file and
-   `metrics.yml`; global and per-source primary/standby presets and custom intervals can change
-   schedules. Those changes do not reach `metric_dict` or the evaluator until pgai-mon restarts.
-   A live update needs coordinated dictionary publication, a new reader restart specification,
-   and invalidation of the response and evaluated-row caches; catalog refresh alone is insufficient.
+   After loading valid collector inputs, the manager atomically publishes a dictionary with
+   a content version (`dictionary.rs`). Both reader modes check it before queries, independent
+   of catalog flushes. A changed version updates `_metric_dict` and the evaluator together;
+   running queries finish on their previous snapshot. Response and evaluated-row cache keys
+   include the version. A restarted child reads the published snapshot as well as its startup
+   specification. Invalid metrics or sources files keep the previous dictionary and schedules.
+   The running server keeps its reader files under `reader-runtime/pgai-mon-<pid>` on the local
+   store volume. CLI cleanup of `store/tmp` cannot erase the published dictionary. Clean exit
+   removes the process directory; the next startup sweeps directories of dead processes.
 6. **Limits.** See the table.
 
 | Limit | Config key | Default | When reached |
@@ -277,7 +288,7 @@ that finds its lease in `fenced` removes it with its takeover.
 | Delete only after commit plus a grace time. | Replaced and expired files go to `pending_delete` with a time; `purge` deletes them after it. In the bucket the grace (`store.s3.delete_grace_s`) counts from the commit that dropped the file. | `store.rs`, `bucket.rs` | `tests/retention.rs`, `tests/bucket.rs` |
 | User SQL cannot write, load code or read outside the store. | Single SELECT check, table function allowlist, `enable_external_access=false`, `allowed_directories` = the store (or the mirror) and scratch, `lock_configuration=true`. | `query.rs` | `tests/guardrails.rs`, `tests/reader_settings.rs` |
 | A query cannot take the collector down. | User SQL runs only in the child. A watchdog samples the child's RSS every 10 ms and kills it above the cap; on Linux `RLIMIT_DATA` also bounds it. | `sqlproc.rs`, `admission.rs` | `tests/guardrails.rs` |
-| A cached reply equals a fresh one. | The cache key includes the catalog generation; errors and volatile queries are not stored. | `qcache.rs` | `tests/qcache.rs`, `tests/rowcache.rs` |
+| A cached reply equals a fresh one. | Catalog deltas validate bounded evaluator replies; other SQL is generation-bound. Dictionary versions isolate both result and row caches. Errors and volatile queries are not stored. | `qcache.rs` | `tests/qcache.rs`, `tests/cache_reload.rs`, `tests/rowcache.rs` |
 | Rust functions give the same numbers as the SQL reference. | `sql/macros.sql` keeps a pure-SQL implementation of each function (`prom_<fn>_sql`). | `eval/` | `tests/eval.rs`, `tests/topk_expr.rs`, `tests/rollup_month.rs` |
 | A path in a remote catalog cannot point outside the store. | Every path must be plain and relative, or the whole catalog is refused. | `catalog.rs` (`plain_rel`), `query.rs`, `objstore.rs` | `tests/eval.rs` |
 
@@ -321,6 +332,13 @@ slot replaces pending retries. A completed job wakes the scheduler to update its
 there is no retry polling. Outage recovery still uses the separate `lost` state.
 
 ## Known limits
+
+- Result-cache reuse across flushes needs identical SQL and proven evaluator dependencies.
+  Grafana's moving time bounds still miss. Changes to rollups or the registry, and removal
+  of any evaluator file, invalidate conservatively even when an individual query could be
+  unaffected. Raw SQL and unproven macros remain generation-bound.
+- Publishing a new query snapshot waits for running queries. Remote file downloads happen
+  before that wait, so other queries can still use the previous snapshot while copying.
 
 - One writer per store. There is no replication between pgai-mon processes; durability beyond
   one disk comes from the S3 store.

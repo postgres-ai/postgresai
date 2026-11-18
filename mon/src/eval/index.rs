@@ -149,6 +149,7 @@ pub fn select_series(
     t0: i64,
     t1: i64,
 ) -> anyhow::Result<Arc<Selection>> {
+    crate::readset::record(t0, t1);
     let key = format!(
         "{metrics:?}|{matchers_json}|{}|{}",
         crate::model::day_of(t0),
@@ -634,6 +635,7 @@ pub fn select_ids_cached(
     t0: i64,
     t1: i64,
 ) -> anyhow::Result<std::sync::Arc<IdSel>> {
+    crate::readset::record(t0, t1);
     let key = format!(
         "{metrics:?}|{matchers_json}|{}|{}",
         crate::model::day_of(t0),

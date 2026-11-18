@@ -1,11 +1,11 @@
 //! L1 result cache in the parent process.
 //!
 //! Whole response bodies, keyed by the SQL text (trimmed, trailing `;` removed) plus the
-//! response format and a hash of the views/macros/evaluator version, valid for one catalog
-//! generation. Identical requests that arrive while one is running wait for it (coalescing)
-//! instead of running again. A hit never reaches admission or the reader child.
+//! response format, dictionary version and a hash of the views/macros/evaluator version.
+//! Bounded evaluator results survive catalog changes proven outside their fetch window.
+//! Identical requests that arrive while one runs wait for it (coalescing) instead of running again. A hit never reaches admission or the reader child.
 //!
-//! - Exact: a hit returns the bytes a run at the same generation produced. Only `elapsed_ms` in
+//! - Exact: a hit returns bytes from a run whose dependencies still hold. Only `elapsed_ms` in
 //!   the body is that of the original run. Errors are never stored, and neither is a reply the
 //!   reader marks not cacheable (volatile functions, table functions outside the allowlist,
 //!   file scans: decided on DuckDB's parse tree in the child, not on the SQL text).
@@ -38,12 +38,15 @@ pub struct Key {
     len: u32,
     fmt: u8,
     views: u64,
+    dict: u64,
 }
 
 struct Entry {
     zbody: Box<[u8]>,
     raw_len: usize,
     gen: u64,
+    range: Option<crate::readset::ReadRange>,
+    dict_version: u64,
 }
 
 type Res = Result<Arc<Reply>, QueryError>;
@@ -60,10 +63,68 @@ enum Slot {
 #[derive(Default)]
 struct L1State {
     gen: u64,
+    snapshot: Option<Snapshot>,
     map: HashMap<Key, Slot>,
     lru: BTreeMap<u64, Key>,
     bytes: usize,
     tick: u64,
+}
+
+/// The parent's catalog and dictionary at request admission. Tests may supply just a generation.
+#[derive(Clone, Default)]
+pub struct Snapshot {
+    pub gen: u64,
+    pub dict_version: u64,
+    files: Option<Arc<Vec<crate::catalog::FileEntry>>>,
+    layout: String,
+    data_epoch: u64,
+    closed_lag_ms: i64,
+}
+
+impl From<u64> for Snapshot {
+    fn from(gen: u64) -> Self {
+        Self {
+            gen,
+            ..Default::default()
+        }
+    }
+}
+
+fn reads(f: &crate::catalog::FileEntry, r: crate::readset::ReadRange) -> bool {
+    match f.kind.as_str() {
+        "series" => f.day >= crate::model::day_of(r.start) && f.day <= crate::model::day_of(r.end),
+        crate::store::SERIES_MONTH => {
+            let (a, b) = crate::store::month_of(f.day);
+            a <= crate::model::day_of(r.end) && b > crate::model::day_of(r.start)
+        }
+        crate::registry::KIND => true,
+        "samples" | crate::eval::rollup::KIND | crate::eval::rollup::KIND_1D | crate::eval::rollup::KIND_1HM => {
+            f.min_ts <= r.end && f.max_ts >= r.start
+        }
+        _ => false,
+    }
+}
+
+impl Snapshot {
+    fn changes(&self, old: &Self) -> Option<(Vec<crate::catalog::FileEntry>, Vec<crate::catalog::FileEntry>)> {
+        if self.layout != old.layout || self.closed_lag_ms != old.closed_lag_ms {
+            return None;
+        }
+        let (new, old) = (self.files.as_ref()?, old.files.as_ref()?);
+        let by_path: HashMap<_, _> = old.iter().map(|f| (&f.path, f)).collect();
+        let added = new
+            .iter()
+            .filter(|f| by_path.get(&f.path).is_none_or(|p| *p != *f))
+            .cloned()
+            .collect();
+        let by_path: HashMap<_, _> = new.iter().map(|f| (&f.path, f)).collect();
+        let removed = old
+            .iter()
+            .filter(|f| by_path.get(&f.path).is_none_or(|p| *p != *f))
+            .cloned()
+            .collect();
+        Some((added, removed))
+    }
 }
 
 impl L1State {
@@ -174,6 +235,33 @@ impl QueryCache {
             len: normalized.len() as u32,
             fmt,
             views: self.views_hash,
+            dict: 0,
+        }
+    }
+
+    /// Reuse the file snapshot within a generation rather than copying it for every hit.
+    pub fn snapshot(&self, cat: &crate::catalog::Catalog, dict_version: u64) -> Snapshot {
+        if !self.enabled() {
+            return Snapshot {
+                gen: cat.generation,
+                dict_version,
+                ..Default::default()
+            };
+        }
+        let st = self.st.lock().unwrap();
+        if let Some(s) = st.snapshot.as_ref().filter(|s| s.gen == cat.generation) {
+            return Snapshot {
+                dict_version,
+                ..s.clone()
+            };
+        }
+        Snapshot {
+            gen: cat.generation,
+            dict_version,
+            files: Some(Arc::new(cat.files.clone())),
+            layout: cat.samples_layout.clone(),
+            data_epoch: cat.data_epoch,
+            closed_lag_ms: cat.closed_lag_ms,
         }
     }
 
@@ -205,7 +293,13 @@ impl QueryCache {
 
     /// Serve `sql` from the cache, from a flight already running, or by starting one that runs
     /// `run` as a spawned task. `run` may be called again by a follower after a transient error.
-    pub async fn get_or_run<F, Fut>(self: &Arc<Self>, sql: &str, fmt: u8, gen_now: u64, run: F) -> (Res, Served)
+    pub async fn get_or_run<F, Fut>(
+        self: &Arc<Self>,
+        sql: &str,
+        fmt: u8,
+        snapshot: impl Into<Snapshot>,
+        run: F,
+    ) -> (Res, Served)
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Reply, QueryError>> + Send + 'static,
@@ -214,7 +308,10 @@ impl QueryCache {
             self.stats.bypass.fetch_add(1, Ordering::Relaxed);
             return (detached(run()).await.map(Arc::new), Served::Bypass);
         }
-        let key = self.key(&normalize(sql), fmt);
+        let snapshot = snapshot.into();
+        let gen_now = snapshot.gen;
+        let mut key = self.key(&normalize(sql), fmt);
+        key.dict = snapshot.dict_version;
         let run = Arc::new(run);
         for attempt in 0..2 {
             enum Next {
@@ -225,8 +322,66 @@ impl QueryCache {
             let next = {
                 let mut st = self.st.lock().unwrap();
                 if gen_now > st.gen {
-                    st.clear();
+                    let changes = st.snapshot.as_ref().and_then(|old| snapshot.changes(old));
+                    if let Some((added, removed)) = changes {
+                        let old_epoch = st.snapshot.as_ref().unwrap().data_epoch;
+                        // An unexplained data epoch change cannot be proved harmless.
+                        let known = old_epoch == snapshot.data_epoch || !added.is_empty() || !removed.is_empty();
+                        let keep: Vec<_> = st
+                            .map
+                            .iter()
+                            .filter_map(|(k, slot)| {
+                                let Slot::Ready(e, _) = slot else { return None };
+                                let r = e.range?;
+                                (known
+                                    && k.dict == snapshot.dict_version
+                                    && added.iter().all(|f| {
+                                        !matches!(
+                                            f.kind.as_str(),
+                                            crate::eval::rollup::KIND
+                                                | crate::eval::rollup::KIND_1D
+                                                | crate::eval::rollup::KIND_1HM
+                                        ) && f.min_ts > r.end
+                                            && (!matches!(
+                                                f.kind.as_str(),
+                                                "series" | crate::store::SERIES_MONTH | crate::registry::KIND
+                                            ) || !reads(f, r))
+                                    })
+                                    && removed.iter().all(|f| {
+                                        !matches!(
+                                            f.kind.as_str(),
+                                            "samples"
+                                                | "series"
+                                                | crate::store::SERIES_MONTH
+                                                | crate::registry::KIND
+                                                | crate::eval::rollup::KIND
+                                                | crate::eval::rollup::KIND_1D
+                                                | crate::eval::rollup::KIND_1HM
+                                        )
+                                    }))
+                                .then_some(*k)
+                            })
+                            .collect();
+                        let mut kept = HashMap::new();
+                        for k in keep {
+                            kept.insert(k, st.map.remove(&k).unwrap());
+                        }
+                        st.clear();
+                        for (k, slot) in kept {
+                            if let Slot::Ready(e, t) = &slot {
+                                st.bytes += e.zbody.len() + ENTRY_OVERHEAD;
+                                st.lru.insert(*t, k);
+                            }
+                            st.map.insert(k, slot);
+                        }
+                    } else {
+                        st.clear();
+                    }
                     st.gen = gen_now;
+                    st.snapshot = Some(snapshot.clone());
+                }
+                if st.snapshot.is_none() && gen_now == st.gen {
+                    st.snapshot = Some(snapshot.clone());
                 }
                 if gen_now < st.gen {
                     Next::Stale
@@ -305,7 +460,7 @@ impl QueryCache {
                 tokio::task::spawn_blocking(move || {
                     zstd::bulk::compress(r.body.as_bytes(), 1)
                         .ok()
-                        .map(|z| (z, r.body.len(), r.gen))
+                        .map(|z| (z, r.body.len(), r.gen, r.range, r.dict_version))
                 })
                 .await
                 .ok()
@@ -323,12 +478,16 @@ impl QueryCache {
             return;
         }
         match z {
-            Some((z, raw_len, gen)) if gen == st.gen && z.len() <= self.max_entry_bytes => {
+            Some((z, raw_len, gen, range, dict_version))
+                if gen == st.gen && key.dict == dict_version && z.len() <= self.max_entry_bytes =>
+            {
                 st.tick += 1;
                 let t = st.tick;
                 let e = Arc::new(Entry {
                     raw_len,
                     gen,
+                    range,
+                    dict_version,
                     zbody: z.into_boxed_slice(),
                 });
                 st.bytes += e.zbody.len() + ENTRY_OVERHEAD;
@@ -345,8 +504,8 @@ impl QueryCache {
                     }
                 }
             }
-            Some((_, _, gen)) => {
-                if gen != st.gen {
+            Some((_, _, gen, _, dict_version)) => {
+                if gen != st.gen || key.dict != dict_version {
                     self.stats.not_stored_gen.fetch_add(1, Ordering::Relaxed);
                 } else {
                     self.stats.not_stored_size.fetch_add(1, Ordering::Relaxed);
@@ -404,6 +563,8 @@ fn decompress_now(e: &Entry) -> Res {
                 body,
                 gen: e.gen,
                 cacheable: true,
+                range: e.range,
+                dict_version: e.dict_version,
             })
         })
         .ok_or_else(corrupt)

@@ -43,3 +43,6 @@ pub enum Msg {
     RecAck(model::Record, tokio::sync::oneshot::Sender<()>),
     Flush(Option<tokio::sync::oneshot::Sender<()>>),
 }
+
+pub mod dictionary;
+pub mod readset;

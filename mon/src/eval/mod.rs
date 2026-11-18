@@ -22,6 +22,7 @@ use std::sync::{Arc, RwLock};
 pub struct EvalCtx {
     pub root: PathBuf,
     pub dict: Vec<crate::query::DictEntry>,
+    pub dict_version: u64,
     pub files: Vec<FileEntry>,
     /// Catalog generation and data epoch this context was built from; the newest sample's
     /// time and the closed-watermark lag (for the cache below the SQL layer, not built yet).
@@ -76,6 +77,7 @@ impl EvalCtx {
                 .collect(),
             tail_new: Default::default(),
             dict: vec![],
+            dict_version: 0,
             root,
             files: files
                 .iter()
@@ -105,6 +107,7 @@ pub fn empty_handle(root: PathBuf) -> EvalHandle {
     Arc::new(RwLock::new(Arc::new(EvalCtx {
         root,
         dict: vec![],
+        dict_version: 0,
         files: vec![],
         generation: 0,
         data_epoch: 0,

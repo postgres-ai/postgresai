@@ -243,13 +243,15 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
         std::thread::spawn(move || {
             // The result is serialised straight into the pipe: building it as a String and then
             // a framed line kept two extra copies of a max_bytes result inside the capped child.
-            let (mut gen, mut cacheable) = (0u64, false);
+            let (mut gen, mut cacheable, mut dict_version, mut range) = (0u64, false, 0u64, None);
             let res: Result<Box<dyn erased::Ser>, QueryError> = match req.op.as_str() {
                 "schema" => reader.schema().map(|v| Box::new(v) as Box<dyn erased::Ser>),
                 "stats" => Ok(Box::new(reader.stats()) as Box<dyn erased::Ser>),
                 op => reader.run_fmt(&req.sql, crate::query::Fmt::from_op(op)).map(|r| {
                     gen = r.gen;
                     cacheable = r.cacheable;
+                    dict_version = r.dict_version;
+                    range = r.range;
                     Box::new(r) as Box<dyn erased::Ser>
                 }),
             };
@@ -271,10 +273,13 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
                     Some([g, b, d, f]) => format!(",\"s3\":[{g},{b},{d},{f}]"),
                     None => String::new(),
                 };
+                let range = range.map_or(String::new(), |r: crate::readset::ReadRange| {
+                    format!(",\"r\":[{},{}]", r.start, r.end)
+                });
                 let _ = match res {
                     Ok(v) => write!(
                         w,
-                        "{{\"id\":{},\"gen\":{gen},\"c\":{},\"rc\":{rc}{s3},\"ok\":",
+                        "{{\"id\":{},\"gen\":{gen},\"c\":{},\"dv\":{dict_version}{range},\"rc\":{rc}{s3},\"ok\":",
                         req.id, cacheable as u8
                     )
                     .and_then(|_| v.write_to(&mut w)),
@@ -308,6 +313,8 @@ type Pending = Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<Reply,
 pub struct ReaderProc {
     spec_path: PathBuf,
     spec_json: Vec<u8>,
+    scratch: PathBuf,
+    dict_version: u64,
     pub rss_cap: u64,
     data_limit: u64,
     timeout: Duration,
@@ -422,6 +429,22 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
         cacheable = v == 1;
         after = &c[n..];
     }
+    let mut dict_version = 0;
+    if let Some(c) = after.strip_prefix(",\"dv\":") {
+        let (v, n) = num(c)?;
+        dict_version = v;
+        after = &c[n..];
+    }
+    let mut range = None;
+    if let Some(c) = after.strip_prefix(",\"r\":[") {
+        let end = c.find(']')?;
+        let (a, b) = c[..end].split_once(',')?;
+        range = Some(crate::readset::ReadRange {
+            start: a.parse().ok()?,
+            end: b.parse().ok()?,
+        });
+        after = &c[end + 1..];
+    }
     if let Some(c) = after.strip_prefix(",\"rc\":") {
         let (v, n) = num(c)?;
         READER_CACHE_BYTES.store(v, Ordering::Relaxed);
@@ -456,6 +479,8 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
                 body: line,
                 gen,
                 cacheable,
+                dict_version,
+                range,
             }),
         ));
     }
@@ -472,6 +497,10 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
 }
 
 impl ReaderProc {
+    pub fn dictionary_version(&self) -> anyhow::Result<u64> {
+        Ok(crate::dictionary::Dictionary::load(&self.scratch)?.map_or(self.dict_version, |d| d.version))
+    }
+
     /// Return freed heap to the OS when replies were relayed since the last pass: a 16 MB
     /// result body is freed after the HTTP layer sends it, and macOS malloc otherwise keeps it
     /// (the parent reached 300 MiB RSS relaying 24 h dashboards).
@@ -495,6 +524,8 @@ impl ReaderProc {
         let p = Arc::new(Self {
             spec_path,
             spec_json,
+            scratch: spec.scratch.clone(),
+            dict_version: crate::dictionary::Dictionary::new(spec.dict.clone()).version,
             rss_cap: spec.http.reader_rss_cap_mb << 20,
             data_limit: spec.http.reader_data_limit_mb << 20,
             timeout: Duration::from_millis(spec.http.timeout_ms + 5_000),

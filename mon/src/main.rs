@@ -506,10 +506,14 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         let root = bucket.as_ref().map_or(cfg.store_dir.clone(), |b| b.local.clone());
         Some(store::StoreCore::open(&root, &cfg.store)?)
     };
-    let shared = match &core {
+    let mut shared = match &core {
         Some(c) => c.shared.clone(),
         None => store::Shared::open_read_only(&cfg.store_dir)?,
     };
+    if core.is_some() {
+        // CLI opens clear store/tmp; the live dictionary and reader must survive them.
+        shared.scratch = store::own_scratch_in(&shared.root.join("reader-runtime"))?;
+    }
     // what the reader reads: the bucket URL (same catalog and stats, local files win)
     let reader_shared = match &bucket {
         Some(b) => store::Shared {
@@ -544,6 +548,7 @@ fn run(mut cfg: config::Config) -> anyhow::Result<()> {
         None => Default::default(),
     };
     let dict = query::build_dict(mf.as_ref(), &dict_iv);
+    pgai_mon::dictionary::Dictionary::new(dict.clone()).publish(&shared.scratch)?;
     let views_text = format!("{views_sql}\n;\n{}", eval::EVAL_SQL);
     let backend = {
         let spec = sqlproc::Spec {

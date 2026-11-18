@@ -16,6 +16,8 @@ fn reply(body: &str, gen: u64) -> Reply {
         body: body.into(),
         gen,
         cacheable: true,
+        range: None,
+        dict_version: 0,
     }
 }
 
@@ -61,6 +63,8 @@ async fn identical_concurrent_requests_run_once() {
                     body: "t".into(),
                     gen: 7,
                     cacheable: false,
+                    range: None,
+                    dict_version: 0,
                 })
             })
             .await;
@@ -354,6 +358,8 @@ async fn finished_flights_release_their_reply() {
                 body: "t".into(),
                 gen: 1,
                 cacheable: false,
+                range: None,
+                dict_version: 0,
             })
         })
         .await;
@@ -369,4 +375,42 @@ async fn finished_flights_release_their_reply() {
     assert_eq!(Arc::strong_count(&c), 1, "flights hold no reference to the cache");
     assert_eq!(Arc::strong_count(&body), 1, "run closures are released");
     assert_eq!(c.stats_json()["in_flight"], 0);
+}
+
+#[tokio::test]
+async fn a_reply_from_a_new_dictionary_is_not_stored_under_the_old_version() {
+    use pgai_mon::qcache::Snapshot;
+    let c = cache();
+    let mut old: Snapshot = 1.into();
+    old.dict_version = 10;
+    let mut new = old.clone();
+    new.dict_version = 20;
+    let (_, served) = c
+        .get_or_run("SELECT interval_s", 0, old.clone(), || async {
+            Ok(Reply {
+                dict_version: 20,
+                ..reply("new", 1)
+            })
+        })
+        .await;
+    assert_eq!(served, Served::Miss);
+    let (_, served) = c
+        .get_or_run("SELECT interval_s", 0, old, || async {
+            Ok(Reply {
+                dict_version: 10,
+                ..reply("old", 1)
+            })
+        })
+        .await;
+    assert_eq!(served, Served::Miss);
+    let (r, served) = c
+        .get_or_run("SELECT interval_s", 0, new, || async {
+            Ok(Reply {
+                dict_version: 20,
+                ..reply("new", 1)
+            })
+        })
+        .await;
+    assert_eq!(served, Served::Miss);
+    assert_eq!(r.unwrap().body, "new");
 }

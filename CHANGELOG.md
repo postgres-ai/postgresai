@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Monitoring v4 filters sample series and times before decoding values, reducing discarded rows in top-N dashboard scans of local Rust-compacted files (postgres-ai/postgresai#516).
+- Monitoring v4 keeps identical historical evaluator results cached across flushes that add only newer samples. Overlapping data and file replacement or removal invalidate them; moving Grafana time bounds still make distinct requests (postgres-ai/postgresai#516).
+- Monitoring v4 queries pick up changed collection intervals after a successful config reload, without a restart. The metric dictionary and both query caches use its new version (postgres-ai/postgresai#518).
 
 - Monitoring v4 sends every chart target as CSV and replaces repeated full label sets with compact series IDs, keeping legends and link labels; tables keep JSON (postgres-ai/postgresai#515).
 

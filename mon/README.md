@@ -116,9 +116,9 @@ existing report history. Explicit windows and raw SQL are unchanged. Native targ
 series can remain visible for up to this lookback.
 
 The collector reloads the main config, sources file and `metrics.yml`, including presets and
-per-source primary and standby intervals. The query dictionary is a startup snapshot:
-after changing a metric's interval, restart pgai-mon. Both `metric_dict` and the evaluator keep
-the old intervals until that restart; recycling only the SQL reader does not update them.
+per-source primary and standby intervals. After a successful reload, the next query uses the
+new intervals in both `metric_dict` and the evaluator, without a restart or flush. Cached
+results computed with different intervals cannot be served for the new dictionary version.
 
 | PromQL | SQL |
 |---|---|
@@ -413,6 +413,13 @@ Variables named `PGAI_EVAL_*`, `PGAI_QUERY_TIMING`, `PGAI_NO_ROLLUP*`, `PGAI_ROL
 `PGAI_QUERY_TIMING=1` logs read-only checking, preparation, execution, Arrow fetching, JSON
 encoding and sample-file opening times. Scan times are part of execution/fetch, not additional
 elapsed time. Measure HTTP time separately: cached bodies retain the original `elapsed_ms`.
+
+Identical evaluator queries over fixed historical ranges can stay in the result cache across
+flushes that add only newer samples. Overlapping data, compaction, retention, and changes to
+the query dictionary invalidate affected entries. Series, registry and rollup changes are
+handled conservatively. Raw SQL and queries with unproven dependencies remain valid for one
+catalog generation. Grafana's moving `${__to}` changes the SQL text even when its aligned end
+is unchanged, so repeated loads ending at “now” still miss this cache.
 
 ### Retention
 

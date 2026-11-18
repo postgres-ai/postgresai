@@ -15,7 +15,7 @@ use crate::store::{empty_select, samples_raw_select, Shared, KINDS};
 use duckdb::Connection;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 pub const EMBEDDED_VIEWS_SQL: &str = include_str!("../schema/views.sql");
@@ -166,6 +166,8 @@ pub struct QueryResult {
     pub gen: u64,
     /// Whether the parent's result cache may store this result (`Reader::cacheable`).
     pub cacheable: bool,
+    pub range: Option<crate::readset::ReadRange>,
+    pub dict_version: u64,
     /// Object-store reads during the query (on an object store).
     pub s3: Option<QueryS3>,
 }
@@ -298,10 +300,12 @@ pub struct Reader {
     view_gen: AtomicU64,
     /// Held by the one `refresh` that runs.
     refreshing: Mutex<()>,
+    query_snapshot: RwLock<()>,
     pub cfg: HttpCfg,
     views_sql: String,
     pub eval: crate::eval::EvalHandle,
-    dict: Vec<DictEntry>,
+    dict: Mutex<crate::dictionary::Dictionary>,
+    bounded_macros: std::sync::OnceLock<(std::collections::HashSet<String>, std::collections::HashSet<String>)>,
     /// Scalar functions whose result can change between runs of the same SQL at the same
     /// catalog generation (DuckDB's own stability metadata plus clock functions it labels
     /// CONSISTENT): a query calling one is not cached.
@@ -724,38 +728,61 @@ impl Reader {
             pool: Default::default(),
             view_gen: AtomicU64::new(u64::MAX),
             refreshing: Mutex::new(()),
+            query_snapshot: RwLock::new(()),
             cfg,
             views_sql,
-            dict,
+            dict: Mutex::new(crate::dictionary::Dictionary::new(dict)),
+            bounded_macros: Default::default(),
             mirror,
         };
         r.refresh()?;
+        r.init_bounded_macros()?;
         Ok(r)
     }
 
-    pub fn dict(&self) -> &[DictEntry] {
-        &self.dict
+    pub fn dictionary_version(&self) -> anyhow::Result<u64> {
+        Ok(crate::dictionary::Dictionary::load(&self.shared.scratch)?
+            .map_or_else(|| self.dict.lock().unwrap().version, |d| d.version))
     }
 
-    /// Re-point the `_raw_*` views at the catalog's current file list when it changed.
-    /// One refresh runs at a time. A query that arrives during one does not wait for it (on a
-    /// remote store it copies files): it runs on the views as they are, of the catalog before,
-    /// whose files stay for the delete grace. The copies of one refresh stop after half the
-    /// query timeout; the kinds not copied yet answer with an error, and the next query's
-    /// refresh continues.
+    /// Refresh the catalog and dictionary as one query snapshot. Publication waits for
+    /// running queries; a dictionary change is picked up before the next query.
+    /// Queries can use the previous snapshot during remote copies. Copies stop after half
+    /// the query timeout; failed copies are retried on the next refresh.
     pub fn refresh(&self) -> anyhow::Result<()> {
         let g = self.shared.generation.load(Ordering::Acquire);
-        let _one = match self.refreshing.try_lock() {
-            Ok(one) => one,
-            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+        let next_dict = crate::dictionary::Dictionary::load(&self.shared.scratch)?;
+        let changed = || {
+            next_dict
+                .as_ref()
+                .is_some_and(|d| d.version != self.dict.lock().unwrap().version)
+        };
+        if self.view_gen.load(Ordering::Acquire) == g && !changed() {
+            return Ok(());
+        }
+        // Keep the dictionary, views and bound evaluator context on one snapshot per query.
+        let _one = if changed() {
+            self.refreshing.lock().unwrap()
+        } else {
+            match self.refreshing.try_lock() {
+                Ok(one) => one,
+                Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+            }
+        };
+        let next_dict = crate::dictionary::Dictionary::load(&self.shared.scratch)?;
+        let changed = || {
+            next_dict
+                .as_ref()
+                .is_some_and(|d| d.version != self.dict.lock().unwrap().version)
         };
         let vg = self.view_gen.load(Ordering::Acquire);
-        if vg == g {
+        if vg == g && !changed() {
             return Ok(());
         }
         let copy_until = Instant::now() + Duration::from_millis(self.cfg.timeout_ms / 2);
         let cat = self.shared.catalog.lock().unwrap().clone();
+        let g = cat.generation;
         let files = &cat.files;
         let root = &self.shared.root;
         // DuckDB's file list for each view: the store's own paths, or the local mirror's
@@ -893,7 +920,27 @@ impl Reader {
             };
             sql.push_str(&format!("CREATE OR REPLACE VIEW _raw_{kind} AS {body};\n"));
         }
+        // Copy remote files before taking the query snapshot lock. Other queries can keep
+        // using the previous context while a slow mirror copy runs.
+        // Queue publication after copying so overlapping queries cannot starve refresh.
+        let _snapshot = self.query_snapshot.write().unwrap();
         let admin = self.admin.lock().unwrap();
+        let mut dict = self.dict.lock().unwrap();
+        let dict_changed = next_dict.as_ref().is_some_and(|d| d.version != dict.version);
+        if let Some(d) = next_dict.as_ref().filter(|_| dict_changed) {
+            sql.push_str("DELETE FROM _metric_dict;\n");
+            for e in &d.entries {
+                sql.push_str(&format!(
+                    "INSERT INTO _metric_dict VALUES ({}, {}, {}, {}, string_split({}, ','), {});\n",
+                    sql_str(&e.group),
+                    sql_str(&e.prefix),
+                    e.interval_s.map_or("NULL".into(), |n| n.to_string()),
+                    e.instance_level,
+                    sql_str(&e.gauges.join(",")),
+                    sql_str(&e.description)
+                ));
+            }
+        }
         // one transaction: a query preparing on another connection sees all the old views or all
         // the new ones, never `_raw_series_reg` from one catalog with `_raw_series_tail` from another
         if let Err(e) = admin.execute_batch(&format!("BEGIN;\n{sql}COMMIT;")) {
@@ -918,7 +965,11 @@ impl Reader {
         }
         let mut ctx = crate::eval::EvalCtx::from_catalog(self.shared.root.clone(), &cat);
         ctx.generation = g;
-        ctx.dict = self.dict.clone();
+        if dict_changed {
+            *dict = next_dict.unwrap();
+        }
+        ctx.dict = dict.entries.clone();
+        ctx.dict_version = dict.version;
         *self.eval.write().unwrap() = Arc::new(ctx);
         // a failed mirror download is retried by the next refresh
         if ms.error.is_none() {
@@ -927,9 +978,50 @@ impl Reader {
         Ok(())
     }
 
+    fn init_bounded_macros(&self) -> anyhow::Result<()> {
+        let db = self.admin.lock().unwrap();
+        let mut q = db.prepare("SELECT lower(function_name), macro_definition, function_type FROM duckdb_functions() WHERE function_type IN ('macro', 'table_macro')")?;
+        let defs = q
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let names = defs.iter().map(|(n, _, _)| n.clone()).collect();
+        let mut trees = Vec::new();
+        for (name, def, kind) in defs {
+            let sql = if kind == "table_macro" {
+                def
+            } else {
+                format!("SELECT {def}")
+            };
+            let json: String = db.query_row("SELECT json_serialize_sql(?::VARCHAR)::VARCHAR", [sql], |r| r.get(0))?;
+            let tree: serde_json::Value = serde_json::from_str(&json)?;
+            trees.push((name, tree));
+        }
+        let mut safe = std::collections::HashSet::new();
+        loop {
+            let before = safe.len();
+            for name in &names {
+                // A safe overload must not bless an unsafe overload or schema sibling.
+                if trees.iter().filter(|(n, _)| n == name).all(|(_, tree)| {
+                    tree["error"] == false
+                        && ast_cacheable(tree, &self.volatile)
+                        && crate::readset::bounded_sql(tree, &names, &safe, &Default::default())
+                }) {
+                    safe.insert(name.clone());
+                }
+            }
+            if safe.len() == before {
+                break;
+            }
+        }
+        let _ = self.bounded_macros.set((names, safe));
+        Ok(())
+    }
+
     /// Check that `sql` is exactly one SELECT, using DuckDB's parser.
-    /// Ok(cacheable) for a single read-only SELECT.
-    fn check_read_only(&self, conn: &Connection, sql: &str) -> Result<bool, QueryError> {
+    /// Ok((cacheable, bounded evaluator dependencies)) for a single read-only SELECT.
+    fn check_read_only(&self, conn: &Connection, sql: &str) -> Result<(bool, bool), QueryError> {
         let j: String = conn
             .query_row("SELECT json_serialize_sql(?::VARCHAR)::VARCHAR", [sql], |r| r.get(0))
             .map_err(|e| classify(&e))?;
@@ -961,7 +1053,10 @@ impl Reader {
                 format!("table function {f} is not available here (see GET /schema for the tables and functions)"),
             ));
         }
-        Ok(ast_cacheable(&v["statements"], &self.volatile))
+        let bounded = self.bounded_macros.get().is_some_and(|(names, safe)| {
+            crate::readset::bounded_sql(&v["statements"], names, safe, &Default::default())
+        });
+        Ok((ast_cacheable(&v["statements"], &self.volatile), bounded))
     }
 
     /// Run one read-only query under the limits. Blocking; call from a blocking thread.
@@ -982,7 +1077,9 @@ impl Reader {
         let t0 = Instant::now();
         self.refresh()
             .map_err(|e| QueryError::new("internal", format!("view refresh: {e}")))?;
+        let _snapshot = self.query_snapshot.read().unwrap();
         let gen = self.view_gen.load(Ordering::Acquire);
+        let dict_version = self.dict.lock().unwrap().version;
         // Connections are reused (a pool); a fresh one is cloned from the admin connection.
         let conn = match self.pool.lock().unwrap().pop() {
             Some(c) => c,
@@ -1009,7 +1106,7 @@ impl Reader {
             return Err(QueryError::new("parse_error", "empty query"));
         }
         let t_chk = Instant::now();
-        let cacheable = self.check_read_only(conn, &body)?;
+        let (cacheable, bounded) = self.check_read_only(conn, &body)?;
         let t_chk = t_chk.elapsed();
 
         // Timeout: a watchdog thread interrupts the connection at the deadline.
@@ -1029,7 +1126,9 @@ impl Reader {
         let s3_0 = crate::objstore::totals();
         let me = STARTED.fetch_add(1, Ordering::AcqRel) + 1;
         let alone = ACTIVE.fetch_add(1, Ordering::AcqRel) == 0;
+        crate::readset::reset();
         let res = self.run_inner(conn, &body, fmt);
+        let range = crate::readset::take().filter(|_| bounded);
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
         let s3 = match (s3_0, crate::objstore::totals()) {
             (Some(a), Some(b)) => {
@@ -1065,6 +1164,8 @@ impl Reader {
                 r.s3 = s3;
                 r.gen = gen;
                 r.cacheable = cacheable;
+                r.range = range;
+                r.dict_version = dict_version;
                 if fmt == Fmt::Objects {
                     let mut size = EncodedSize(0);
                     serde_json::to_writer(&mut size, &r).unwrap();
@@ -1306,6 +1407,8 @@ impl Reader {
             elapsed_ms: 0,
             gen: 0,
             cacheable: false,
+            range: None,
+            dict_version: 0,
             s3: None,
         };
         Ok(result)
@@ -1375,6 +1478,8 @@ pub struct Reply {
     pub gen: u64,
     /// The reader found nothing in the SQL that can change between runs at one generation.
     pub cacheable: bool,
+    pub range: Option<crate::readset::ReadRange>,
+    pub dict_version: u64,
 }
 
 /// Where SQL runs: in this process (tests, `query`), or in the capped child process.
@@ -1385,6 +1490,13 @@ pub enum Backend {
 }
 
 impl Backend {
+    pub fn dictionary_version(&self) -> anyhow::Result<u64> {
+        match self {
+            Self::InProc(r) => r.dictionary_version(),
+            Self::Proc(p) => p.dictionary_version(),
+        }
+    }
+
     pub async fn call(&self, op: &'static str, sql: String) -> Result<Reply, QueryError> {
         match self {
             Backend::Proc(p) => p.call(op, &sql).await,
@@ -1395,16 +1507,22 @@ impl Backend {
                         body: v.to_string(),
                         gen: 0,
                         cacheable: false,
+                        range: None,
+                        dict_version: 0,
                     }),
                     "stats" => Ok(Reply {
                         body: r.stats().to_string(),
                         gen: 0,
                         cacheable: false,
+                        range: None,
+                        dict_version: 0,
                     }),
                     op => r.run_fmt(&sql, Fmt::from_op(op)).map(|mut x| Reply {
                         body: x.csv.take().unwrap_or_else(|| serde_json::to_string(&x).unwrap()),
                         gen: x.gen,
                         cacheable: x.cacheable,
+                        range: x.range,
+                        dict_version: x.dict_version,
                     }),
                 })
                 .await
@@ -1547,10 +1665,14 @@ async fn post_sql(
     };
     let (op, fmt) = (f.op(), f.key());
     // L1 result cache (qcache.rs): a hit or a coalesced follower needs no admission slot.
-    let gen = st.shared.generation.load(Ordering::Acquire);
+    let dict_version = match st.backend.dictionary_version() {
+        Ok(v) => v,
+        Err(e) => return err_response(QueryError::new("internal", format!("dictionary reload: {e}"))),
+    };
+    let snapshot = st.cache.snapshot(&st.shared.catalog.lock().unwrap(), dict_version);
     let (res, served) = st
         .cache
-        .get_or_run(&sql, fmt, gen, {
+        .get_or_run(&sql, fmt, snapshot, {
             // the run is a spawned flight that owns its admission permit: a client that goes away
             // does not free the slot early
             let (st, sql) = (st.clone(), sql.clone());

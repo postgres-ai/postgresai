@@ -1812,6 +1812,11 @@ fn apply_sources(cfg: &Config, ctx: &CollectorCtx, running: &mut BTreeMap<String
             return;
         }
     };
+    let dict = crate::query::build_dict(Some(&mf), &mf.dict_intervals(&[&cfg.preset], &sources));
+    if let Err(e) = crate::dictionary::Dictionary::new(dict).publish(&ctx.em.shared.scratch) {
+        eprintln!("collector: dictionary not published: {e}; keeping the running sources");
+        return;
+    }
     let mut ctx = ctx.clone();
     ctx.em.cfg = cfg.collector.clone();
     let mut want: BTreeMap<String, (Source, Vec<Scheduled>, Vec<Scheduled>, u64)> = BTreeMap::new();
@@ -1856,6 +1861,62 @@ fn apply_sources(cfg: &Config, ctx: &CollectorCtx, running: &mut BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reload_publishes_dictionary_only_after_valid_inputs() {
+        use crate::dictionary::Dictionary;
+        let dir = tempfile::tempdir().unwrap();
+        let mf = dir.path().join("metrics.yml");
+        let sources = dir.path().join("instances.yml");
+        let config = dir.path().join("mon.yml");
+        let metric = |interval| {
+            format!("metrics: {{slow: {{sqls: {{11: 'select 42 as v'}}}}}}\npresets: {{full: {{metrics: {{slow: {interval}}}}}}}\n")
+        };
+        let source = |interval| {
+            format!("- name: r5cache_reload\n  conn_str: postgresql://localhost:1/postgres\n  custom_metrics: {{slow: {interval}}}\n")
+        };
+        std::fs::write(&mf, metric(30)).unwrap();
+        std::fs::write(&sources, source(30)).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "store_dir: {}\nmetrics_yml: {}\nsources_file: {}\n",
+                dir.path().join("store").display(),
+                mf.display(),
+                sources.display()
+            ),
+        )
+        .unwrap();
+        let cfg = Config::load(&config).unwrap();
+        let core = crate::store::StoreCore::open(&cfg.store_dir, &cfg.store).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let ctx = CollectorCtx {
+            em: Emitter::new(core.shared.clone(), tx, cfg.collector.clone()),
+            objects: Default::default(),
+        };
+        let mut running = BTreeMap::new();
+        let current = || Dictionary::load(&core.shared.scratch).unwrap().unwrap();
+        apply_sources(&cfg, &ctx, &mut running);
+        let first = current();
+        assert_eq!(first.entries[0].interval_s, Some(30));
+        std::fs::write(&sources, source(3600)).unwrap();
+        apply_sources(&cfg, &ctx, &mut running);
+        let second = current();
+        assert_ne!(first.version, second.version);
+        assert_eq!(second.entries[0].interval_s, Some(3600));
+        std::fs::write(&mf, metric(7200)).unwrap();
+        apply_sources(&cfg, &ctx, &mut running);
+        let third = current();
+        assert_ne!(second.version, third.version);
+        assert_eq!(third.entries[0].interval_s, Some(7200));
+        for path in [&mf, &sources] {
+            std::fs::write(path, "[malformed:").unwrap();
+            apply_sources(&cfg, &ctx, &mut running);
+            assert_eq!(current().version, third.version);
+            std::fs::write(&mf, metric(7200)).unwrap();
+        }
+        // No await: the spawned sources never connect; runtime teardown cancels them.
+    }
 
     fn sched(name: &str, interval_s: u64) -> Scheduled {
         Scheduled {

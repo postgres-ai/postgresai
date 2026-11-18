@@ -3,8 +3,8 @@
 //! evaluate the same metric on the same grid (D2: per second and per call; eleven panels over
 //! one `calls` denominator) compute it once, with the L1 response cache off and from cold.
 //!
-//! Key: everything the rows depend on: function, grid (start, end, step, window, phi), the
-//! exact series ids, the catalog generation and data epoch, the newest sample and the
+//! Key: everything the rows depend on: function, grid (including the metric interval), the
+//! dictionary version, exact series ids, catalog generation and data epoch, newest sample and the
 //! closed-day lag (which days are served from rollups and which from raw samples), and the
 //! rollup / raw switch. Single flight: a second caller for a key being computed waits for the
 //! first and replays its rows. Bounded in bytes (`set_cap`, --row-cache-mb; 0 = off), least
@@ -91,7 +91,8 @@ pub fn key(ctx: &super::EvalCtx, f: Func, g: &Grid, ids: &[u64]) -> Key {
     let mut b = std::collections::hash_map::DefaultHasher::new();
     for h in [&mut a, &mut b] {
         format!("{f:?}").hash(h);
-        (g.start, g.end, g.step, g.window, g.phi.to_bits()).hash(h);
+        (g.start, g.end, g.step, g.window, g.interval, g.phi.to_bits()).hash(h);
+        ctx.dict_version.hash(h);
         (ctx.generation, ctx.data_epoch, ctx.hwm_ms, ctx.closed_lag_ms).hash(h);
         std::env::var_os("PGAI_NO_ROLLUP").is_some().hash(h);
         ids.len().hash(h);

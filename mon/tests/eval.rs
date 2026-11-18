@@ -2374,7 +2374,7 @@ fn slow_dictionary_shared_storage_prefixes() {
 }
 
 #[test]
-fn reader_dictionary_changes_only_after_restart() {
+fn reader_dictionary_changes_without_restart() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = StoreCore::open(&dir.path().join("store"), &StoreCfg::default()).unwrap();
     let mf_path = dir.path().join("metrics.yml");
@@ -2426,41 +2426,25 @@ fn reader_dictionary_changes_only_after_restart() {
     let (interval, dict) = load_dict();
     assert_eq!(interval, 30);
     let r = Reader::new(core.shared.clone(), HttpCfg::default(), EMBEDDED_VIEWS_SQL.into(), dict).unwrap();
+    let query = format!("SELECT value FROM prom_last('pgwatch_slow_v', [], {end}, {end}, 300000)");
+    assert!(sql_rows(&r, &query).is_empty());
+    let generation = core.shared.generation.load(std::sync::atomic::Ordering::Acquire);
     std::fs::write(&sources_path, sources(3600)).unwrap();
     let (interval, updated) = load_dict();
     assert_eq!(interval, 3600);
-    // A new catalog generation still does not deliver the collector's new definitions.
-    core.append(Record::Samples(vec![Sample {
-        series_id: id,
-        ts: end - 1_800_001,
-        value: 1.0,
-    }]))
-    .unwrap();
-    core.flush().unwrap();
-    r.refresh().unwrap();
-    // Reloading the collector inputs leaves both query surfaces on the startup snapshot.
-    assert_eq!(sql_rows(&r, "SELECT interval_s FROM metric_dict"), vec!["[30]"]);
-    assert!(sql_rows(
-        &r,
-        &format!("SELECT value FROM prom_last('pgwatch_slow_v', [], {end}, {end}, 300000)")
-    )
-    .is_empty());
-    let restarted = Reader::new(
-        core.shared.clone(),
-        HttpCfg::default(),
-        EMBEDDED_VIEWS_SQL.into(),
-        updated,
-    )
-    .unwrap();
+    pgai_mon::dictionary::Dictionary::new(updated)
+        .publish(&core.shared.scratch)
+        .unwrap();
+    assert_eq!(sql_rows(&r, "SELECT interval_s FROM metric_dict"), vec!["[3600]"]);
+    assert_eq!(sql_rows(&r, &query), vec!["[42.0]"]);
     assert_eq!(
-        sql_rows(&restarted, "SELECT interval_s FROM metric_dict"),
-        vec!["[3600]"]
+        core.shared.generation.load(std::sync::atomic::Ordering::Acquire),
+        generation
     );
-    assert_eq!(
-        sql_rows(
-            &restarted,
-            &format!("SELECT value FROM prom_last('pgwatch_slow_v', [], {end}, {end}, 300000)")
-        ),
-        vec!["[42.0]"]
-    );
+    // A second reload can shorten lookback too.
+    std::fs::write(&sources_path, sources(30)).unwrap();
+    pgai_mon::dictionary::Dictionary::new(load_dict().1)
+        .publish(&core.shared.scratch)
+        .unwrap();
+    assert!(sql_rows(&r, &query).is_empty());
 }
