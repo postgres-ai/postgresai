@@ -231,7 +231,8 @@ begin
         pg_get_constraintdef(oid, true) as condef
       from pg_constraint
       where conrelid = v_oid
-        and contype != 'p'  -- skip primary key (shown with indexes)
+        -- p: shown with the indexes; n (PG18+): Columns already says NOT NULL
+        and contype not in ('p', 'n')
       order by
         case contype when 'f' then 1 when 'u' then 2 when 'c' then 3 else 4 end,
         conname
