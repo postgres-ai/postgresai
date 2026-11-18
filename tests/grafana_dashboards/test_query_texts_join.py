@@ -82,7 +82,7 @@ def test_series_named_by_text_fall_back_to_the_queryid() -> None:
     for where, panel, target, sql in _queries(dashboard):
         if panel is None or target.get("format") != "timeseries" or "query_texts" not in sql:
             continue
-        m = re.search(r"AS value, (.*?) AS series,", sql)
+        m = re.search(r"AS __key, (.*?) AS __series,", sql)
         assert m, where
         assert re.fullmatch(r"coalesce\(q\.\"_displayname\w*\", q\.labels\['queryid'\], ''\)", m.group(1)), \
             f"{where}: series is {m.group(1)}"

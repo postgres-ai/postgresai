@@ -29,7 +29,7 @@ GATE_MARKER = "HAVING count(DISTINCT coalesce(labels[('application_name')], ''))
 RANGE_WINDOW = "CAST(round((${__to} - ${__from}) / 1000.0) * 1000 AS BIGINT)"
 BY_APPLICATION = re.compile(
     r"p_by := CAST\(\(\['application_name'\]\) AS VARCHAR\[\]\)|prom_by\(labels, \['application_name'\]\)")
-SERIES_BY_APPLICATION = ", coalesce(q.labels['application_name'], '') AS series,"
+SERIES_BY_APPLICATION = ", coalesce(q.labels['application_name'], '') AS __series"
 PROMPT = "select one standby to analyze replication stages"
 DETAIL_PANEL_TITLES = {
     221: "Replay lag by stage (bytes)",

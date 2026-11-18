@@ -186,6 +186,13 @@ def test_data_link_labels_have_values(pgai_mon, dashboard, panel_id, expected):
         assert any(all(row[label] == value for label, value in expected.items()) for row in result["rows"])
 
 
+def with_series_ids(rows):
+    labels = sorted({r["label_set"] or "" for r in rows})
+    ids = {label: str(i).zfill(len(str(len(labels)))) for i, label in enumerate(labels, 1)}
+    return [{**{k: v for k, v in r.items() if k != "label_set"},
+             "__sid": ids[r["label_set"] or ""]} for r in rows]
+
+
 def test_ash_label_dictionary_matches_per_row_formatting(pgai_mon):
     # Empty, missing and unusual labels must keep exactly the same Grafana series identity.
     labels = """SELECT row_number() OVER () AS k, labels FROM (VALUES
@@ -202,33 +209,40 @@ def test_ash_label_dictionary_matches_per_row_formatting(pgai_mon):
     SELECT labels, t, value FROM r JOIN names USING (k)"""
     cols = ["labels", "t", "value"]
     legend = "{{wait_event_type}} - {{wait_event}} - {{query_id}}"
-    plain = CP.post(pgai_mon, DC.wrap(sql, cols, legend, []))
+    plain = CP.post(pgai_mon, f"WITH q AS ({sql}) SELECT CAST(t AS BIGINT) AS time, "
+                    f"CAST(value AS DOUBLE) AS value, {DC.legend_expr(legend, cols)} AS __series, "
+                    f"{DC.auto_legend(cols)} AS label_set FROM q")
     once = CP.post(pgai_mon, DC.wrap(sql, cols, legend, [], ash=True))
     assert "error" not in plain and "error" not in once, (plain, once)
-    assert plain["columns"] == once["columns"]
+    assert once["columns"] == ["time", "value", "__series", "__sid"]
     ordered = lambda rows: sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
     assert len(plain["rows"]) == 12
-    assert ordered(plain["rows"]) == ordered(once["rows"])
+    assert ordered(with_series_ids(plain["rows"])) == ordered(once["rows"])
+    generic = CP.post(pgai_mon, DC.wrap(sql, cols, legend, []))
+    assert "error" not in generic, generic
+    assert ordered(generic["rows"]) == ordered(with_series_ids(plain["rows"]))
     compact = CP.post(pgai_mon, DC.wrap(sql, cols, legend, [], ash=True,
-                      legend_column="__series", label_set=False,
+                      legend_column="__series", series_id=False,
                       by=["wait_event_type", "wait_event", "query_id"]))
     assert "error" not in compact, compact
     # Without label_set, groups with equal legends (here: no labels, and NULL labels) are numbered.
     plain_name = lambda s: re.sub(r" #\d+$", "", s)
-    renamed = [dict(time=r["time"], value=r["value"], series=plain_name(r["__series"])) for r in compact["rows"]]
+    renamed = [dict(time=r["time"], value=r["value"], __series=plain_name(r["__series"])) for r in compact["rows"]]
     expected = [{k: v for k, v in r.items() if k != "label_set"} for r in plain["rows"]]
     assert ordered(renamed) == ordered(expected)
     assert len({r["__series"] for r in compact["rows"]}) == 6
 
 
 
-@pytest.mark.parametrize("dashboard,panel_id", [(3, 19), (4, 2), (4, 3)])
-def test_ash_csv_matches_objects(pgai_mon, dashboard, panel_id):
+@pytest.mark.parametrize("dashboard,panel_id", [(3, 19), (4, 2), (4, 3), (1, 38), (1, 7),
+                                               (2, 4), (8, 5), (8, 7), (14, 11)])
+def test_csv_matches_objects(pgai_mon, dashboard, panel_id):
     path = next((REPO_ROOT / "mon/grafana/dashboards").glob(f"Dashboard_{dashboard}_*.json"))
     dash = json.loads(path.read_text())
     panel = next(p for p in CP.walk(dash["panels"]) if p.get("id") == panel_id)
     variables, _ = CP.resolve_variables(dash, pgai_mon, FIXTURE_END_MS - 3_600_000,
                                         FIXTURE_END_MS, {"query_id": [QUERY_ID]})
+    nonempty = 0
     for target in panel["targets"]:
         assert target["type"] == "csv"
         sql, left = CP.interpolate(target["url_options"]["data"], variables,
@@ -243,8 +257,8 @@ def test_ash_csv_matches_objects(pgai_mon, dashboard, panel_id):
         parsed = csv.DictReader(io.StringIO(body.decode()))
         rows = list(parsed)
         assert parsed.fieldnames == [c["selector"] for c in target["columns"]]
-        assert "label_set" not in parsed.fieldnames
-        assert rows
+        assert "__series" in parsed.fieldnames
+        nonempty += bool(rows)
         times = [int(r["time"]) for r in rows]
         assert times == sorted(times)
         for row in rows:
@@ -256,23 +270,84 @@ def test_ash_csv_matches_objects(pgai_mon, dashboard, panel_id):
         # CSV represents SQL NULL as an empty field, including an absent query_id link label.
         expected = [{k: "" if v is None else v for k, v in row.items()} for row in objects["rows"]]
         assert ordered(rows) == ordered(expected)
+    assert nonempty, "the panel fixture must exercise points, not only empty responses"
 
 
-def test_ash_equal_legends_stay_apart(pgai_mon):
-    """Without label_set the legend text is a series' identity: two groups that render to the same
-    text (a label value that holds the separator) are numbered, not merged."""
+@pytest.mark.parametrize("ash", [False, True])
+@pytest.mark.parametrize("literal_suffix", [False, True])
+@pytest.mark.parametrize("series_id", [False, True])
+def test_equal_legends_stay_apart(pgai_mon, ash, literal_suffix, series_id):
+    """Equal legends use IDs when emitted, otherwise collision-safe numbering."""
     tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
-    inner = ("WITH r AS (SELECT * FROM (VALUES (['IO', 'a - b'], 1000, 1.0), (['IO - a', 'b'], 1000, 2.0), "
-             "(['Lock', 'x'], 1000, 3.0)) v(k, t, value)), "
+    literal = "IO - a - b #2" if literal_suffix else "Lock - x"
+    suffix_group = "['IO', 'a - b #2']" if literal_suffix else "['Lock', 'x']"
+    inner = ("WITH r AS (SELECT k, t, value FROM (VALUES (['IO', 'a - b'], 1.0), (['IO - a', 'b'], 2.0), "
+             f"({suffix_group}, 3.0)) v(k, value) CROSS JOIN (VALUES (1000), (2000)) ts(t)), "
              "names AS (SELECT k, map(['wait_event_type', 'wait_event'], k) AS labels "
              "FROM (SELECT DISTINCT k FROM r))\n" + tail)
     by = ["wait_event_type", "wait_event"]
-    sql = DC.wrap(inner, ["labels", "t", "value"], "{{wait_event_type}} - {{wait_event}}", [], ash=True,
-                  legend_column="__series", label_set=False, by=by)
+    sql = DC.wrap(inner, ["labels", "t", "value"], "{{wait_event_type}} - {{wait_event}}", [], ash=ash,
+                  legend_column="__series", series_id=series_id, by=by)
     got = CP.post(pgai_mon, sql)
     assert "error" not in got, got
-    assert sorted((r["__series"], r["value"]) for r in got["rows"]) == [
-        ("IO - a - b", 1.0), ("IO - a - b #2", 2.0), ("Lock - x", 3.0)]
+    numbered = "IO - a - b ##2" if literal_suffix else "IO - a - b #2"
+    if series_id:
+        numbered = "IO - a - b"
+        assert len({r["__sid"] for r in got["rows"]}) == 3
+    assert len(got["rows"]) == 6
+    for t in (1000, 2000):
+        assert sorted((r["__series"], r["value"]) for r in got["rows"] if r["time"] == t) == sorted([
+            ("IO - a - b", 1.0), (numbered, 2.0), (literal, 3.0)])
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_dictionary_preserves_nullable_labels_and_equal_legends(pgai_mon, mapped):
+    labels = "map(['a', 'b'], [a, b]) AS labels" if mapped else "a, b"
+    cols = ["labels", "t", "value"] if mapped else ["a", "b", "t", "value"]
+    inner = (f"SELECT {labels}, t, value FROM (VALUES ('same', 'x', 1.0), ('same', NULL, 2.0), "
+             "(NULL, 'y', 3.0)) v(a, b, value) CROSS JOIN (VALUES (1000), (2000)) ts(t)")
+    got = CP.post(pgai_mon, DC.wrap(inner, cols, "{{a}}", ["b"]))
+    # The old per-point projection is an independent oracle for the dictionary join.
+    expected = CP.post(pgai_mon, f"WITH q AS ({inner}) SELECT t AS time, CAST(value AS DOUBLE) AS value, "
+                       f"{DC.legend_expr('{{a}}', cols)} AS __series, {DC.label_expr(cols, 'b')} AS b, "
+                       f"{DC.auto_legend(cols)} AS label_set FROM q")
+    assert "error" not in got and "error" not in expected, (got, expected)
+    ordered = lambda rows: sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
+    assert len(got["rows"]) == 6
+    assert ordered(got["rows"]) == ordered(with_series_ids(expected["rows"]))
+
+
+@pytest.mark.parametrize("ash", [False, True])
+def test_series_ids_sort_after_legend_before_link_labels(pgai_mon, ash):
+    # More than nine equal legends catch lexicographic rank sorting (1, 10, 11, 2).
+    inner = ("WITH names AS (SELECT i AS k, map(['id', 'link', 'legend'], "
+             "[lpad(CAST(i AS VARCHAR), 2, '0'), CAST(20 - i AS VARCHAR), "
+             "CASE WHEN i = 1 THEN 'z' ELSE 'a' END]) AS labels FROM range(1, 13) v(i)), "
+             "r AS (SELECT k, t, CAST(k AS DOUBLE) AS value FROM names "
+             "CROSS JOIN (VALUES (1000), (2000)) ts(t))\n"
+             "SELECT labels, t, value FROM r JOIN names USING (k)")
+    sql = DC.wrap(inner, ["labels", "t", "value"], "{{legend}}", ["link"], ash=ash)
+    target = DC.infinity_target("A", sql, False, ["link"])
+    got = CP.post(pgai_mon, sql, fmt="csv", columns=target["columns"])
+    assert "error" not in got, got
+    assert len(got["rows"]) == 24
+    keys = sorted(c["selector"] for c in target["columns"] if c["type"] == "string")
+    assert keys == ["__series", "__sid", "link"]
+    for t in (1000, 2000):
+        rows = sorted((r for r in got["rows"] if r["time"] == t),
+                      key=lambda r: tuple(r[k] for k in keys))
+        assert [r["value"] for r in rows] == list(range(2, 13)) + [1]
+        assert [r["__sid"] for r in rows] == [f"{i:02}" for i in range(2, 13)] + ["01"]
+        assert [r["link"] for r in rows] == [str(20 - i) for i in list(range(2, 13)) + [1]]
+
+
+def test_series_id_without_label_columns(pgai_mon):
+    sql = DC.wrap("SELECT t, 1.0 AS value FROM (VALUES (1000), (2000)) v(t)",
+                  ["t", "value"], "total", [])
+    got = CP.post(pgai_mon, sql)
+    assert "error" not in got, got
+    assert got["rows"] == [dict(time=t, value=1.0, __series="total", __sid="1")
+                           for t in (1000, 2000)]
 
 
 def test_grafana_e2e_sends_csv_target_unchanged(monkeypatch):
@@ -336,7 +411,7 @@ def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon):
                               start_ms=0, end_ms=30, step_ms=10), None)
     result = CP.post(pgai_mon, DC.wrap(sql, ["labels", "t", "value"], "{{wait_event_type}}", [], ash=True))
     assert "error" not in result, result
-    assert [(r["time"], r["value"], r["series"]) for r in result["rows"]] == [
+    assert [(r["time"], r["value"], r["__series"]) for r in result["rows"]] == [
         (0, 0.5, "IO"), (10, 3.0, "IO"), (20, 0.0, "IO"),
     ]
 

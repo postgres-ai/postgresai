@@ -8,7 +8,7 @@ but 99) on pgai-mon via the Infinity datasource. Standard library only.
 Reads old/config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sql/reports/* and
 mon/grafana/cases.py, and writes them under the same uids and titles (links and bookmarks keep working). The
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
-Infinity target that POSTs `/sql?format=objects` (grouped ASH: `format=csv`) with the ported SQL as a text/plain body:
+Infinity target that POSTs `/sql?format=csv` (tables: `format=objects`) with the ported SQL as a text/plain body:
 - getvariable() parameters become Grafana expressions (GRAFANA_PARAMS). start and end are
   aligned down to the step, and $__rate_interval becomes
   max(interval + scrape, 4 x scrape) with scrape = 5 s, the Prometheus datasource's
@@ -19,7 +19,7 @@ Infinity target that POSTs `/sql?format=objects` (grouped ASH: `format=csv`) wit
   step: a bare selector there looks back 5 minutes, not $__interval.
 - The per-target constants (metric, divisor, variant, ...) come from the matching case in
   cases.py, as SQL literals: the same inlining as diff.py --engine http.
-- The query is wrapped to return (time epoch ms, value, series[, label columns]); `series` is
+- The query is wrapped to return (time epoch ms, value, __series[, label columns]); `__series` is
   the target's legendFormat rendered in SQL. A per-refId displayName override shows it, and the
   Infinity backend parser's timeseries format turns string columns into series (verify).
 --probe-url is needed to compile: each target's SQL runs once with LIMIT 0 to learn whether
@@ -333,7 +333,7 @@ def match_case(census, panel, target, by_id, partial=False):
 
 
 # --------------------------------------------------------------------------------------------
-# The output wrapper: (time, value, series[, labels])
+# The output wrapper: (time, value, __series[, labels])
 # --------------------------------------------------------------------------------------------
 def label_expr(cols, name):
     """A label of the inner query's row: from its `labels` MAP or a plain column."""
@@ -378,39 +378,76 @@ def legend_expr(fmt, cols):
     return " || ".join(parts) or "''"
 
 
-def wrap(sql, cols, legend, extra, ash=False, legend_column="series", label_set=True, by=()):
+def grouping(case):
+    """None means no proven grouping; [] means a single aggregate group."""
+    by = case.get("params", {}).get("by")
+    # prom_topk's empty p_by ranks original series instead of aggregating them.
+    if by == [] and case.get("sql_file") == "sql/reports/dash/topk_fn.sql":
+        return None
+    return by
+
+
+def legend_covers(legend, by):
+    return by is not None and set(by) <= set(re.findall(r"\{\{\s*(.*?)\s*\}\}", legend or ""))
+
+
+def wrap(sql, cols, legend, extra, ash=False, legend_column="__series", series_id=True, by=None):
     """The Infinity-facing query. NaN/Inf points are dropped (Prometheus never returns NaN on
     a range query except staleness, and the strings "NaN"/"+Inf" would not parse as numbers)."""
-    if not label_set:
-        assert ash and set(by) <= set(re.findall(r"\{\{\s*(.*?)\s*\}\}", legend or "")), \
-            "omitting label_set requires every grouping label in the legend"
+    if not series_id:
+        assert legend_covers(legend, by), \
+            "omitting __sid requires every grouping label in the legend"
     sel = ["CAST(q.t AS BIGINT) AS time", "CAST(q.value AS DOUBLE) AS value", f"{legend_expr(legend, cols)} AS {legend_column}"]
     sel += [f"{label_expr(cols, x)} AS {x}" for x in extra]
-    # the whole label set: series with equal legends stay apart (Prometheus shows both)
-    if label_set:
-        sel.append(f"{auto_legend(cols)} AS label_set")
-    if ash:
+    # With no label columns there is only one series.
+    if series_id:
+        sel.append("'1' AS __sid")
+    identity = [c for c in cols if c not in ("t", "value")]
+    if ash or identity:
         # ash_by.sql exposes r(k,t,value) and names(k,labels). Format names before the grid join.
-        assert set(cols) == {"labels", "t", "value"}
-        tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
-        assert sql.endswith(tail), "ash_by.sql output changed"
-        leg = legend_expr(legend, cols)
-        if not label_set:
-            # Without label_set the legend text is the series' identity. Two groups can render to
-            # the same text when a label value holds the legend's separator: number the later
-            # ones. Done once per group, not per point.
-            dup = f"row_number() OVER (PARTITION BY {leg} ORDER BY q.k)"
-            leg = f"{leg} || CASE WHEN {dup} > 1 THEN ' #' || {dup} ELSE '' END"
-        names = ["q.k", f"{leg} AS {legend_column}"]
+        if ash:
+            assert set(cols) == {"labels", "t", "value"}
+            tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
+            assert sql.endswith(tail), "ash_by.sql output changed"
+            prefix = sql[:-len(tail)].rstrip()
+            key, points, join = "q.k", "r", "r.k IS NOT DISTINCT FROM n.__key"
+        else:
+            # DISTINCT runs before rendering, so label text is built once per series.
+            keys = ", ".join(f'q."{c}"' for c in identity)
+            key = f"row({keys})"
+            prefix = f"WITH q AS MATERIALIZED (\n{sql}\n), names AS (SELECT DISTINCT {keys} FROM q)"
+            points, join = "q", f"{key} IS NOT DISTINCT FROM n.__key"
+        names = [f"{key} AS __key", f"{legend_expr(legend, cols)} AS {legend_column}"]
         names += [f"{label_expr(cols, x)} AS {x}" for x in extra]
-        if label_set:
+        if series_id:
             names.append(f"{auto_legend(cols)} AS label_set")
-        projected = ["CAST(r.t AS BIGINT) AS time", "CAST(r.value AS DOUBLE) AS value"]
-        projected += [f"n.{x}" for x in [legend_column, *extra, *(["label_set"] if label_set else [])]]
-        return (sql[:-len(tail)].rstrip() + ", rendered AS MATERIALIZED (\n"
-                f"SELECT {', '.join(names)} FROM names q\n)\n"
-                f"SELECT {', '.join(projected)}\nFROM r JOIN rendered n USING (k)\n"
-                "WHERE r.value IS NOT NULL AND isfinite(CAST(r.value AS DOUBLE))\nORDER BY time")
+        fields = [legend_column, *extra, *(["__sid"] if series_id else [])]
+        dictionary = f"SELECT {', '.join(names)} FROM names q"
+        if series_id:
+            # Infinity compares string labels. Pad ranks so 10 cannot sort before 2.
+            # NULL and empty text are the same label in the CSV response.
+            sid = ("lpad(CAST(__rank AS VARCHAR), "
+                   "CAST(length(CAST(max(__rank) OVER () AS VARCHAR)) AS INTEGER), '0') AS __sid")
+            rendered = ["__key", legend_column, *extra, sid]
+            rendering = (f", legend_names AS MATERIALIZED (\n{dictionary}\n), ranked AS (\n"
+                         "SELECT *, dense_rank() OVER (ORDER BY coalesce(label_set, '')) AS __rank "
+                         "FROM legend_names\n), rendered AS MATERIALIZED (\n"
+                         f"SELECT {', '.join(rendered)} FROM ranked\n)\n")
+        else:
+            dup = f"row_number() OVER (PARTITION BY {legend_column} ORDER BY __key)"
+            # A literal ' #2' must not collide with a numbered legend. Choose a marker
+            # longer than any existing numeric suffix, without changing original texts.
+            marker = f"repeat('#', 1 + max(length(regexp_extract({legend_column}, ' (#+)[0-9]+$', 1))) OVER ())"
+            numbered = (f"{legend_column} || CASE WHEN {dup} > 1 THEN ' ' || {marker} || {dup} "
+                        f"ELSE '' END AS {legend_column}")
+            rendered = ["__key", numbered, *extra]
+            rendering = (f", legend_names AS MATERIALIZED (\n{dictionary}\n), rendered AS MATERIALIZED (\n"
+                         f"SELECT {', '.join(rendered)} FROM legend_names\n)\n")
+        projected = [f"CAST({points}.t AS BIGINT) AS time", f"CAST({points}.value AS DOUBLE) AS value"]
+        projected += [f"n.{x}" for x in fields]
+        return (prefix + rendering +
+                f"SELECT {', '.join(projected)}\nFROM {points} JOIN rendered n ON {join}\n"
+                f"WHERE {points}.value IS NOT NULL AND isfinite(CAST({points}.value AS DOUBLE))\nORDER BY time")
     return (f"WITH q AS (\n{sql}\n)\nSELECT {', '.join(sel)}\nFROM q\n"
             "WHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time")
 
@@ -446,8 +483,9 @@ def response_url(url, fmt):
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(params + [("format", fmt)])))
 
 
-def infinity_target(ref, body, hide, extra, table_keys=None, csv=False, legend_column="series", label_set=True):
+def infinity_target(ref, body, hide, extra, table_keys=None, legend_column="__series", series_id=True):
     body = sqlstring_vars(body)
+    csv = table_keys is None
     if table_keys is not None:
         cols = [{"selector": "Time", "text": "Time", "type": "timestamp_epoch"}]
         cols += [{"selector": k, "text": k, "type": "string"} for k in table_keys]
@@ -456,7 +494,7 @@ def infinity_target(ref, body, hide, extra, table_keys=None, csv=False, legend_c
         cols = [{"selector": "time", "text": "time", "type": "timestamp_epoch"},
                 {"selector": "value", "text": "value", "type": "number"},
                 {"selector": legend_column, "text": legend_column, "type": "string"}]
-        cols += [{"selector": x, "text": x, "type": "string"} for x in extra + (["label_set"] if label_set else [])]
+        cols += [{"selector": x, "text": x, "type": "string"} for x in extra + (["__sid"] if series_id else [])]
     t = {
         "refId": ref,
         "datasource": dict(INFINITY),
@@ -618,7 +656,7 @@ def table_label_keys(panel, probe_url, metric):
 def timeseries_labels(panel, cols, params, extra, probe_url):
     """Keep labels used by this panel's links and field settings when the result has them."""
     settings = "".join(json.dumps(panel.get(k)) for k in ("fieldConfig", "options", "links"))
-    needed = set(re.findall(r"__field\.labels\.(\w+)", settings)) - set(extra) - {"series", "label_set"}
+    needed = set(re.findall(r"__field\.labels\.(\w+)", settings)) - set(extra) - {"series", "__series", "__sid", "label_set"}
     available = set(cols) - {"t", "value", "labels"}
     if needed - available and "labels" in cols:
         if "by" in params:
@@ -672,26 +710,26 @@ def compile_dashboard(spec, by_id, probe_url):
             ash = case["sql_file"] == "sql/reports/dash/ash_by.sql"
             legend = t.get("legendFormat")
             # Infinity sorts label keys first: the legend must precede link labels such as query_id.
-            shape = dict(legend_column="__series", label_set=not set(params["by"]) <=
-                         set(re.findall(r"\{\{\s*(.*?)\s*\}\}", legend or ""))) if ash else {}
-            if ash:
-                assert all(shape["legend_column"] < x for x in extra + ["label_set"])
+            by = grouping(case)
+            shape = dict(legend_column="__series", series_id=not legend_covers(legend, by))
+            assert shape["legend_column"] < "__sid"
+            assert all("__sid" < x for x in extra)
             body = wrap_table(inner, cols, keys) if table else \
-                wrap(inner, cols, legend, extra, ash=ash, by=params.get("by", []), **shape)
-            new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys, csv=ash, **shape))
+                wrap(inner, cols, legend, extra, ash=ash, by=by, **shape)
+            new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys, **shape))
             if table:
                 table_refs.append(t["refId"])
             queries.append({"panel": p["id"], "ref": t["refId"], "case": case["id"], "sql": body,
-                            "instant": instant, "table": table, "format": "csv" if ash else "objects",
-                            "legend_column": shape.get("legend_column", "series"), "qvars": query_sample_vars(params, gp, mvars)})
+                            "instant": instant, "table": table, "format": "objects" if table else "csv",
+                            "legend_column": "__series", "qvars": query_sample_vars(params, gp, mvars)})
             n += 1
-            # the legend: `series`, shown through a per-refId display name (verify); a table's
+            # the legend: `__series`, shown through a per-refId display name (verify); a table's
             # columns are named by their labels and keep their names
             if not table:
                 fc = p.setdefault("fieldConfig", {"defaults": {}, "overrides": []})
                 fc.setdefault("overrides", []).insert(0, {
                     "matcher": {"id": "byFrameRefID", "options": t["refId"]},
-                    "properties": [{"id": "displayName", "value": "${__field.labels." + shape.get("legend_column", "series") + "}"}]})
+                    "properties": [{"id": "displayName", "value": "${__field.labels.__series}"}]})
             # Prometheus targets' own min interval ("interval": "20" = 20 s) -> the panel's (verify)
             iv = str(t.get("interval") or "").strip()
             if iv and not p.get("interval"):

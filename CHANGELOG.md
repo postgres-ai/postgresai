@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Monitoring v4 sends every chart target as CSV and replaces repeated full label sets with compact series IDs, keeping legends and link labels; tables keep JSON (postgres-ai/postgresai#515).
+
 - Monitoring v4 wait-event charts use CSV to load faster and avoid exhausting Grafana's memory on busy databases; `http.chart_max_bytes` now caps chart responses at 5 MiB (postgres-ai/postgresai#508).
 - A failed panel query names its cause in Grafana: pgai-mon sends an error's type and message in the HTTP status line too, which is all the Infinity datasource shows of a failed request.
 - Monitoring v4 dashboards preserve query and table labels used by data links, so query and single-table analysis links receive their variables.

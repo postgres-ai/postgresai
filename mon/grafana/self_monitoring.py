@@ -8,7 +8,7 @@ so this dashboard is not compiled from it: it is written here from the series pg
 itself (collector.rs: pgai_mon_* per database; selfmon.rs: pgai_mon_* of the process, from GET
 /health; scrape.rs: up, scrape_*), from the `series` view, and from the self-node-exporter and
 self-cadvisor scrape jobs (mon/docker/pgai-mon.yml), in the same target shape as compile.py's
-(time, value, series, label_set). Standard library Python only; it needs no
+(time, value, __series, __sid), sent as CSV. Standard library Python only; it needs no
 pgai-mon.
 
   python3 mon/grafana/self_monitoring.py [--out DIR]   # compile.py also writes it
@@ -381,7 +381,7 @@ def build():
             continue
         pid, typ, title, desc, (h, w, x, y), defaults, options, targets = p
         overrides = [{"matcher": {"id": "byFrameRefID", "options": ref},
-                      "properties": [{"id": "displayName", "value": "${__field.labels.series}"}]}
+                      "properties": [{"id": "displayName", "value": "${__field.labels.__series}"}]}
                      for ref, *_ in targets]
         panels.append({"datasource": dict(C.INFINITY), "description": desc,
                        "fieldConfig": {"defaults": copy.deepcopy(defaults), "overrides": overrides},

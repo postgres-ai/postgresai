@@ -150,7 +150,7 @@ def test_ash_labels_are_built_and_formatted_once_per_group() -> None:
         assert "FROM (SELECT DISTINCT k FROM w)" in sql
         assert "rendered AS MATERIALIZED" in sql
         assert "FROM names q" in sql
-        assert "FROM r JOIN rendered n USING (k)" in sql
+        assert "FROM r JOIN rendered n ON r.k IS NOT DISTINCT FROM n.__key" in sql
 
 
 def test_wait_event_variables_follow_scope_dependency_order() -> None:

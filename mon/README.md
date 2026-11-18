@@ -294,7 +294,10 @@ Top level:
 | `s3.delete_grace_s` | 600 | Seconds a dropped file stays in the bucket. |
 | `s3.part_mb` | 8 | Multipart upload part size, MB. |
 
-Infinity copies response bodies into frame metadata: at Grafana's default 512 MiB, an
+All monitoring v4 time-series targets use CSV; table targets keep JSON. Charts use compact
+`__sid` ranks where a separate series identity is needed, instead of repeating full label sets.
+Legends and data-link labels are preserved. Infinity copies response bodies into frame metadata:
+at Grafana's default 512 MiB, an
 11.1 MB JSON response of 68,800 points exhausted memory, while the same points as 3.0 MB CSV peaked at 393 MB.
 The 5 MiB chart limit leaves room below the measured CSV failure range; narrow the time range or
 filter, or raise `http.chart_max_bytes` together with Grafana's `GRAFANA_MEM`.

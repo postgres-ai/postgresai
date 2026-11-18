@@ -40,7 +40,8 @@ own; per container CPU, memory, network and disk I/O from `container_*`. `pgai_m
 Every target uses the Infinity datasource `pgai-mon` (`yesoreyeram-infinity-datasource`, uid
 `pgai-mon`, provisioned by `config/grafana/provisioning/datasources/pgai-mon.yml` with the bearer
 token from `PGAI_MON_TOKEN`). A target POSTs its SQL as a `text/plain` body to
-`http://pgai-mon:8765/sql?format=objects` (grouped wait-event charts: `format=csv`), with Grafana variables (`${__from}`, `${__to}`,
+`http://pgai-mon:8765/sql?format=csv` for time-series targets, or `format=objects` for tables,
+with Grafana variables (`${__from}`, `${__to}`,
 `${__interval_ms}`, `${cluster_name:sqlstring}`, `${db_name:regex}`, ...) interpolated into the
 SQL. A variable holding one value is written `${x:sqlstring}`, so Grafana quotes it and doubles a
 quote inside it; a filter matched as a regex is written `'${x:regex}'`. No panel calls the Flask backend
@@ -53,20 +54,33 @@ The compiler formats each group's legend in a materialized `rendered` relation b
 the time grid. Keep that work before the join: formatting every point is costly for many query IDs.
 The SQL template's final SELECT is also used directly by the evaluator comparison cases.
 
-The three grouped wait-event targets (dashboard 03 panel 19, dashboard 04 panels 2 and 3)
-use Infinity's backend CSV parser with an empty root selector. They omit `label_set` only when
-the compiler verifies that the legend names every grouping label; an incomplete legend keeps it.
-Two groups whose legends are still equal (a label value that holds the legend's separator) are
-numbered (` #2`), once per group, so they stay two series.
-Their legend column is `__series`, and the display-name override reads that label: Infinity sorts
-fields by label keys and values, so this key sorts before `query_id` and keeps wait-event type,
-event and query groups together in the stack. SQL still orders by time so Infinity can build a
-wide frame; query links, legend text, zero filling and values stay the same.
+Every time-series target, including stat panels and self-monitoring, uses Infinity's backend
+CSV parser with an empty root selector. Infinity keeps each response in frame metadata; a CSV
+string costs less memory than parsed JSON objects. Table targets still use JSON.
 
-Other time-series targets still use JSON and `label_set` to distinguish equal legends.
-Moving those targets to CSV needs matching parser/URL/column changes and a check of their
-series identity and stack order; `label_set` remains a large repeated cost unless their legends
-identify every grouping label. Chart responses are capped by `http.chart_max_bytes` (5 MiB):
+The legend column is `__series`, and the display-name override reads that label. Targets that
+need a separate identity emit `__sid`: a dense integer rank of the full label-set text, computed
+once per series. Infinity reads it as a string label. Ranks use leading zeros up to the widest
+rank in the result, so `10` cannot sort before `2`. Label keys sort `__series` < `__sid` < link
+labels: fields (and stacks) sort by legend text, then by label-set order. SQL still orders points
+by time so Infinity can build a wide frame; query-link columns stay present.
+
+The compiler omits `__sid` only when a known `by` grouping is fully named in the legend.
+Missing grouping metadata, incomplete legends and ungrouped top-k queries keep it. Self-monitoring
+has no grouping metadata and keeps it too. This gives 348 targets with `__sid` and 33 without it.
+Only those 33 targets number equal legends (` #2`), avoiding an extra identity column. If a literal
+legend already ends in a numeric suffix, numbering uses more `#` characters than any existing
+suffix, so two names cannot collide. Targets with `__sid` leave equal legends unchanged.
+
+The generic wrapper selects distinct label and display columns, formats them in a materialized
+dictionary, ranks them, then joins points with null-safe equality. Full label text stays inside
+the dictionary instead of repeating as a `label_set` column on the wire. Automatic legends still
+use that text in `__series` (dashboard 02 panels 38 and 32, dashboard 04 panel 1); no panel
+transformation or data link consumes `label_set`. Queries
+with no label columns use a constant identity. The grouped ASH targets keep their pre-grid
+dictionary. IDs are local to each query result and can change when its series set changes.
+
+Chart responses are capped by `http.chart_max_bytes` (5 MiB):
 narrow the range or filter, or raise that limit together with Grafana's `GRAFANA_MEM`.
 
 
