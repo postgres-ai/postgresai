@@ -75,6 +75,9 @@
 
 ### Fixed
 
+- `postgres_ai.table_describe` no longer lists every NOT NULL column a second time under Constraints on PostgreSQL 18
+  (as `n:` lines); Columns already shows `NOT NULL`, so the output now matches earlier versions
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/517). An existing install changes when `prepare-db` runs again.
 - `pgai mon deploy` over AWS PrivateLink provisions the box with the nonce of the setup SQL that ran, so a newer SQL
   issued since (another run, the console wizard) no longer makes the box fail its ownership check
   (https://gitlab.com/postgres-ai/platform-all/-/work_items/1058). `pgai mon instances list`, `watch` and `delete` read a
