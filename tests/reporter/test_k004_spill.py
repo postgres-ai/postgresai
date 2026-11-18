@@ -174,7 +174,7 @@ def fixture_generator(monkeypatch: pytest.MonkeyPatch) -> PostgresReportGenerato
                 [0.0, 0.0, 0.0], TIMELINE)
 
     monkeypatch.setattr(gen, "_get_hourly_topk_pgss_data", hourly)
-    monkeypatch.setattr(gen, "get_queryid_queries_from_sink", lambda limit=655360, db_names=None: TEXTS)
+    monkeypatch.setattr(gen, "get_queryid_queries_from_sink", lambda limit=655360, db_names=None, cluster=None, node_name=None: TEXTS)
     gen.instant: List[str] = []
 
     def query_instant(query):
