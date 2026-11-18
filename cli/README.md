@@ -626,10 +626,18 @@ postgresai mon config                         # Show monitoring configuration
 postgresai mon update-config                  # Apply configuration changes
 postgresai mon update                         # Update monitoring stack
 postgresai mon reset [service]                # Remove all data, or re-create one service (its named volumes are kept)
-postgresai mon clean                          # Cleanup artifacts
+postgresai mon clean                          # Remove this install's containers and data
 postgresai mon check                          # System readiness check
 postgresai mon shell <service>                # Open shell to monitoring service
 ```
+
+`mon clean` removes this project's containers, volumes and unused networks. Use
+`--keep-volumes` to keep its data. Of images, only dangling ones are removed. With either default
+project name (`monitoring` or `postgres_ai_configs`), it also removes listed historical
+volumes from both names. With a custom `COMPOSE_PROJECT_NAME`, it keeps all those
+historical volumes and prints a `docker volume rm` command for deliberate removal.
+Use a custom project name and different `GRAFANA_PORT` / `PGAI_MON_PORT` values in `.env`
+when running beside another install.
 
 ### SQL queries (`mon sql`)
 

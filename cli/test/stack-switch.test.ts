@@ -70,6 +70,8 @@ function makeProject(name: string, compose: string, env = OLD_ENV, pgwatchConfig
       `  " inspect -f {{.Id}} {{.RestartCount}} "*) f=${JSON.stringify(resolve(bin, "restarts"))}; n=$(cat "$f" 2>/dev/null || echo 0); echo $((n + 3)) > "$f"; echo "abc123def $n"; exit 0 ;;`,
       `  *" reset-admin-password "*) cat > ${JSON.stringify(resolve(bin, "reset-stdin"))}; exit \${RESET_EXIT:-0} ;;`,
       '  *" compose version "*) exit 0 ;;',
+      '  " ps -aq --filter label=com.docker.compose.project="*) echo own-container; exit 0 ;;',
+      '  " network ls -q --filter label=com.docker.compose.project="*) echo own-network; exit 0 ;;',
       '  *" volume ls "*) for v in $VOLUMES; do echo "$v"; done; exit 0 ;;',
       '  *" ps -q sink-prometheus "*) [ -n "$OLD_RUNNING" ] && echo old123; exit 0 ;;',
       '  *" ps -q pgai-mon "*) [ -n "$NEW_RUNNING" ] && echo new123; exit 0 ;;',
@@ -465,7 +467,7 @@ describe("a second install on the same host (#510)", () => {
     const docker = p.calls().filter((c) => !c.startsWith("compose "));
     expect(docker.some((c) => c.startsWith("ps --filter label=com.docker.compose.project=pgai-v4 -a "))).toBe(true);
     expect(docker.some((c) => c.startsWith("ps -aq --filter label=com.docker.compose.project=pgai-v4 "))).toBe(true);
-    expect(docker.some((c) => c.startsWith("network rm pgai-v4_default "))).toBe(true);
+    expect(docker.some((c) => c.startsWith("network rm own-network "))).toBe(true);
     // The old stack's containers have these fixed names: never touched from here.
     for (const name of ["grafana-with-datasources", "postgres-reports", "self-cadvisor", "instance-jobs"]) {
       expect(docker.filter((c) => c.split(" |")[0].split(" ").includes(name))).toEqual([]);
@@ -558,7 +560,8 @@ describe("stack helpers", () => {
   test("composeProjectName follows compose: explicit name first, else the directory, normalized", () => {
     expect(composeProjectName("monitoring")).toBe("monitoring");
     expect(composeProjectName("My.Box_1")).toBe("mybox_1");
-    expect(composeProjectName("monitoring", "Postgres_AI")).toBe("postgres_ai");
+    expect(composeProjectName("monitoring", "postgres_ai")).toBe("postgres_ai");
+    expect(() => composeProjectName("monitoring", "Postgres_AI")).toThrow("Invalid COMPOSE_PROJECT_NAME");
     expect(oldStackVolumeNames("monitoring")).toEqual(["monitoring_victoria_metrics_data", "monitoring_sink_postgres_data"]);
   });
 
@@ -638,3 +641,63 @@ describe("stack helpers", () => {
     ])).toEqual([{ service: "w", restarts: 6 }]);
   });
 });
+
+// A stopped neighboring install still owns its historical volumes and networks.
+describe("project-scoped cleanup", () => {
+  const volumes = "monitoring_grafana_data postgres_ai_configs_pgai_mon_data other_grafana_data";
+
+  for (const project of ["pgai-v4", "monitoring", "postgres_ai_configs"]) {
+    test(`clean in ${project} respects historical volume ownership`, () => {
+      const p = makeProject(`clean-${project}`, NEW_COMPOSE, `${NEW_ENV}COMPOSE_PROJECT_NAME=${project}\n`);
+      const r = p.run(["mon", "clean"], { VOLUMES: volumes });
+      expect(r.status).toBe(0);
+      const calls = p.calls().map((c) => c.split(" |PROFILES=")[0]);
+      expect(calls.some((c) => c.endsWith(" down -v"))).toBe(true);
+      expect(calls).toContain(`ps -aq --filter label=com.docker.compose.project=${project}`);
+      expect(calls).toContain("rm -f own-container");
+      expect(calls).toContain(`network prune -f --filter label=com.docker.compose.project=${project}`);
+      expect(calls).not.toContain("network prune -f");
+      // dangling images only: no image of any install is removed by name
+      expect(calls.filter((c) => c.startsWith("image "))).toEqual(["image prune -f"]);
+      const removed = calls.filter((c) => c.startsWith("volume rm "));
+      if (project === "pgai-v4") {
+        expect(removed).toEqual([]);
+        expect(r.stdout).toContain("Kept monitoring_grafana_data, postgres_ai_configs_pgai_mon_data");
+        expect(r.stdout).toContain("docker volume rm monitoring_grafana_data postgres_ai_configs_pgai_mon_data");
+      } else {
+        expect(removed).toEqual(["volume rm monitoring_grafana_data", "volume rm postgres_ai_configs_pgai_mon_data"]);
+      }
+    });
+  }
+
+  test("clean --keep-volumes keeps all volumes, including on a default project", () => {
+    const p = makeProject("clean-keep", NEW_COMPOSE, `${NEW_ENV}COMPOSE_PROJECT_NAME=monitoring\n`);
+    const r = p.run(["mon", "clean", "--keep-volumes"], { VOLUMES: volumes });
+    expect(r.status).toBe(0);
+    const calls = p.calls().map((c) => c.split(" |PROFILES=")[0]);
+    expect(calls.some((c) => c.endsWith(" down"))).toBe(true);
+    expect(calls.some((c) => c.startsWith("volume "))).toBe(false);
+    expect(calls.filter((c) => c.startsWith("image "))).toEqual(["image prune -f"]);
+    expect(calls).not.toContain("network prune -f");
+  });
+
+  test("stop's fallback removes networks by project label, never by name", () => {
+    const p = makeProject("stop-networks", NEW_COMPOSE, `${NEW_ENV}COMPOSE_PROJECT_NAME=pgai-v4\n`);
+    const r = p.run(["mon", "stop"], { DOWN_EXIT: "1" });
+    expect(r.status).toBe(0);
+    const calls = p.calls().map((c) => c.split(" |PROFILES=")[0]);
+    expect(calls).toContain("network ls -q --filter label=com.docker.compose.project=pgai-v4");
+    expect(calls.filter((c) => c.startsWith("network rm "))).toEqual(["network rm own-network"]);
+    expect(calls).toContain("rm -f own-container");
+  });
+});
+
+for (const project of ["monitoring!", " monitoring "]) {
+  test(`clean rejects invalid explicit project ${JSON.stringify(project)} before deleting resources`, () => {
+    const p = makeProject(`clean-invalid-${project.length}`, NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "clean"], { COMPOSE_PROJECT_NAME: project, VOLUMES: "monitoring_grafana_data" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("Invalid COMPOSE_PROJECT_NAME");
+    expect(p.calls()).toEqual([]);
+  });
+}

@@ -46,14 +46,19 @@ export function composeDefinesService(text: string | null | undefined, service: 
 
 /**
  * The compose project name, as compose derives it: COMPOSE_PROJECT_NAME when
- * set, else the project directory's name, lower-cased with every character but
- * [a-z0-9_-] dropped and leading '_' and '-' trimmed (compose refuses an
- * explicit name that needs any of this). The CLI finds the stack's containers
+ * set (invalid explicit names are rejected), else the project directory's name,
+ * lower-cased with every character but [a-z0-9_-] dropped and leading '_' and '-'
+ * trimmed. The CLI finds the stack's containers
  * by this name, so it must match compose's.
  */
 export function composeProjectName(projectDirName: string, explicit?: string | null): string {
-  const name = explicit?.trim() || projectDirName;
-  return name.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+  const configured = explicit || undefined;
+  // Compose rejects invalid explicit names; never normalize one into another install.
+  if (configured && !/^[a-z0-9][a-z0-9_-]*$/.test(configured)) {
+    throw new Error("Invalid COMPOSE_PROJECT_NAME: use lowercase letters, digits, underscores and hyphens, starting with a letter or digit");
+  }
+  if (configured) return configured;
+  return projectDirName.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
 }
 
 /**
@@ -98,10 +103,9 @@ export function hostPort(value: string | null | undefined, fallback: number): nu
 
 /**
  * Which of `mon clean`'s leftover volumes (`candidates`, the names older
- * installs used) to remove, of those that exist. `monitoring_*` is the default
- * install's project: when this install's project is another one, those volumes
- * belong to that install (the old stack beside this one, say), not to this one,
- * so they are kept.
+ * installs used) to remove, of those that exist. Only the two default project
+ * names share this history. A custom project may run beside either default
+ * install, even while it is stopped, so it keeps every historical volume.
  */
 export function cleanOrphanVolumes(
   project: string,
@@ -109,8 +113,8 @@ export function cleanOrphanVolumes(
   candidates: string[],
 ): { remove: string[]; kept: string[] } {
   const present = candidates.filter((v) => existing.includes(v));
-  const othersDefault = (v: string) => project !== "monitoring" && v.startsWith("monitoring_");
-  return { remove: present.filter((v) => !othersDefault(v)), kept: present.filter(othersDefault) };
+  const isDefault = project === "monitoring" || project === "postgres_ai_configs";
+  return isDefault ? { remove: present, kept: [] } : { remove: [], kept: present };
 }
 
 /** The old stack's volume names in a project. */

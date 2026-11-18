@@ -28,13 +28,13 @@ import {
   whitespaceTolerantSecretPattern,
 } from "./util";
 import { orgScopeHeaders, type OrgScope } from "./org-scope";
-import { composeDefinesService, PGAI_MON_SERVICE } from "./stack";
+import { composeDefinesService, DEFAULT_GRAFANA_PORT, hostPort, PGAI_MON_SERVICE } from "./stack";
 
 const SA_NAME = "pgai-aas-collect";
 
 /** Local Grafana base URL (published on the monitoring host). Overridable for tests/odd setups. */
-function grafanaBaseUrl(): string {
-  return (process.env.PGAI_GRAFANA_LOCAL_URL || "http://localhost:3000").replace(/\/+$/, "");
+function grafanaBaseUrl(installUrl?: string): string {
+  return (process.env.PGAI_GRAFANA_LOCAL_URL || installUrl || `http://localhost:${hostPort(process.env.GRAFANA_PORT, DEFAULT_GRAFANA_PORT)}`).replace(/\/+$/, "");
 }
 
 function grafanaAdminUser(): string {
@@ -105,10 +105,11 @@ async function grafanaApi(
   method: string,
   pathPart: string,
   adminPassword: string,
-  body?: unknown
+  body?: unknown,
+  installUrl?: string
 ): Promise<Response> {
   const auth = Buffer.from(`${grafanaAdminUser()}:${adminPassword}`).toString("base64");
-  return fetch(`${grafanaBaseUrl()}${pathPart}`, {
+  return fetch(`${grafanaBaseUrl(installUrl)}${pathPart}`, {
     method,
     headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -127,13 +128,14 @@ async function grafanaApi(
  */
 export async function mintAasServiceAccountToken(
   adminPassword: string,
-  debug = false
+  debug = false,
+  installUrl?: string
 ): Promise<string | null> {
   const log = (m: string) => debug && console.error(`Debug: AAS SA mint: ${m}`);
   try {
     let saId: number | null = null;
 
-    const search = await grafanaApi("GET", `/api/serviceaccounts/search?query=${SA_NAME}`, adminPassword);
+    const search = await grafanaApi("GET", `/api/serviceaccounts/search?query=${SA_NAME}`, adminPassword, undefined, installUrl);
     if (search.ok) {
       const data = (await search.json().catch(() => null)) as { serviceAccounts?: Array<{ id?: unknown; name?: unknown }> } | null;
       const found = (data?.serviceAccounts || []).find((s) => s.name === SA_NAME);
@@ -141,7 +143,7 @@ export async function mintAasServiceAccountToken(
     }
 
     if (saId == null) {
-      const created = await grafanaApi("POST", "/api/serviceaccounts", adminPassword, { name: SA_NAME, role: "Viewer" });
+      const created = await grafanaApi("POST", "/api/serviceaccounts", adminPassword, { name: SA_NAME, role: "Viewer" }, installUrl);
       if (!created.ok) {
         log(`create SA failed: HTTP ${created.status}`);
         return null;
@@ -155,7 +157,7 @@ export async function mintAasServiceAccountToken(
     const mint = await grafanaApi("POST", `/api/serviceaccounts/${saId}/tokens`, adminPassword, {
       name: `aas-collect-${Date.now()}`,
       role: "Viewer",
-    });
+    }, installUrl);
     if (!mint.ok) {
       log(`mint token failed: HTTP ${mint.status}`);
       return null;
@@ -177,9 +179,9 @@ export async function mintAasServiceAccountToken(
  * (a permanent misconfiguration — the loop stops at once), matching
  * v1.aas_onboard's >1 skip.
  */
-export async function resolveDatasourceId(adminPassword: string, debug = false): Promise<number | "ambiguous" | null> {
+export async function resolveDatasourceId(adminPassword: string, debug = false, installUrl?: string): Promise<number | "ambiguous" | null> {
   try {
-    const res = await grafanaApi("GET", "/api/datasources", adminPassword);
+    const res = await grafanaApi("GET", "/api/datasources", adminPassword, undefined, installUrl);
     if (!res.ok) return null;
     const list = (await res.json().catch(() => [])) as Array<{ id?: unknown; type?: unknown }>;
     const prom = list.filter((d) => d.type === "prometheus");
@@ -357,6 +359,7 @@ export async function registerAasCollection(
   instanceId: string,
   opts: {
     grafanaPassword: string;
+    grafanaUrl?: string;
     instancesPath: string;
     vcpus: number;
     // "jobs" arms the instance job channel: no Grafana call, and the RPC gets no
@@ -395,7 +398,7 @@ export async function registerAasCollection(
       const maxAttempts = opts.datasourceMaxAttempts ?? 20;
       const retryDelayMs = opts.datasourceRetryDelayMs ?? 3000;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const resolved = await resolveDatasourceId(opts.grafanaPassword, debug);
+        const resolved = await resolveDatasourceId(opts.grafanaPassword, debug, opts.grafanaUrl);
         if (typeof resolved === "number") { datasourceId = resolved; break; }
         // "ambiguous" (>1 prometheus datasource) is permanent — retrying can't fix
         // it, so stop polling immediately instead of waiting out the whole budget.
@@ -407,7 +410,7 @@ export async function registerAasCollection(
       }
       if (datasourceId == null) return { ok: false, reason: "could not resolve the Prometheus datasource id" };
 
-      saToken = await mintAasServiceAccountToken(opts.grafanaPassword, debug);
+      saToken = await mintAasServiceAccountToken(opts.grafanaPassword, debug, opts.grafanaUrl);
       if (!saToken) return { ok: false, reason: "could not mint a Grafana service-account token" };
     }
 

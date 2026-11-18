@@ -377,8 +377,17 @@ Grafana port are enough. The old stack keeps its fixed container names, Grafana 
    only at the `pgai-v4` containers.
 5. To remove monitoring v4 and keep the old stack, run `bun cli/bin/postgres-ai.ts mon
    reset` from the checkout and answer `y`. It removes the containers, volumes and network
-   of the `pgai-v4` project only. `mon clean` there keeps the old stack's `monitoring_*`
-   volumes too: they belong to another project, and it says how to remove them on purpose.
+   of the `pgai-v4` project only. `mon clean` there also keeps all historical
+   `monitoring_*` and `postgres_ai_configs_*` volumes, even if the other install is
+   stopped, and prints the command to remove them on purpose. With either default
+   project name (`monitoring` or `postgres_ai_configs`), `mon clean` removes listed
+   historical volumes from both names. It cleans only this project's unused networks;
+   of images it removes dangling ones only. `--keep-volumes` keeps all volumes.
+
+Host scripts read `PGAI_MON_PORT` and `GRAFANA_PORT` from the environment, then the
+project's `.env`, with defaults 8765 and 3000. `scripts/run_reporter_local.sh` keeps
+an explicit `PGAI_MON_URL`; `tests/e2e.cli.sh` accepts `GRAFANA_URL` and otherwise uses
+`DOCKER_HOST` for Grafana's host.
 
 Both stacks collect from the database, so it serves two collectors. Their memory limits
 add up (about 4.5 GiB for monitoring v4 and 7.3 GiB for the old stack); the host needs

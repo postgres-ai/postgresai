@@ -63,7 +63,8 @@ describe("aasArmingPath", () => {
     expect(branch).not.toContain("exitCode");
     expect(branch).not.toContain("await ");
     expect(src).toContain('} else if (aasArming.path === "pull" && !grafanaOn) {');
-    expect(src.slice(register, register + 400)).toContain("path: aasArming.path");
+    expect(src.slice(register, register + 450)).toContain("path: aasArming.path");
+    expect(src.slice(register, register + 450)).toContain("grafanaUrl: grafanaUrl(projectDir)");
   });
 });
 
@@ -191,6 +192,29 @@ describe("registerAasCollection", () => {
     // a fresh SA was created (search found none) and a token minted on its id.
     expect(calls.some((c) => c.url.endsWith("/api/serviceaccounts") && c.method === "POST")).toBe(true);
     expect(calls.some((c) => c.url.match(/\/serviceaccounts\/42\/tokens$/) && c.method === "POST")).toBe(true);
+  });
+
+  test("pull channel uses the install's Grafana port for every request; explicit URL wins", async () => {
+    const saved = process.env.PGAI_GRAFANA_LOCAL_URL;
+    try {
+      for (const override of [undefined, "http://explicit:13002/"]) {
+        if (override) process.env.PGAI_GRAFANA_LOCAL_URL = override;
+        else delete process.env.PGAI_GRAFANA_LOCAL_URL;
+        installFetch();
+        const r = await registerAasCollection("apikey-1", "inst-123", {
+          grafanaPassword: "pw", grafanaUrl: "http://localhost:13001",
+          instancesPath, vcpus: 16, apiBaseUrl: "https://api.test",
+        });
+        expect(r.ok).toBe(true);
+        const grafana = calls.filter((c) => c.url.includes("/api/"));
+        expect(grafana).toHaveLength(4);
+        expect(grafana.every((c) => c.url.startsWith(override ?? "http://localhost:13001/"))).toBe(true);
+        fetchSpy?.mockRestore();
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PGAI_GRAFANA_LOCAL_URL;
+      else process.env.PGAI_GRAFANA_LOCAL_URL = saved;
+    }
   });
 
   test("job channel: one RPC call, no sa_token / datasource_id, and no Grafana call at all", async () => {

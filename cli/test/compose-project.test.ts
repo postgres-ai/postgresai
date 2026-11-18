@@ -16,7 +16,13 @@ describe("containers by compose project", () => {
   test("the project name is compose's: from the directory, normalized as compose does", () => {
     // `docker compose config` in a directory named "_-My.Proj" says "name: myproj".
     expect(composeProjectName("_-My.Proj")).toBe("myproj");
-    expect(composeProjectName("monitoring", " pgai-v4 ")).toBe("pgai-v4");
+    expect(composeProjectName("monitoring", "pgai-v4")).toBe("pgai-v4");
+  });
+
+  test("invalid explicit project names cannot select a different install", () => {
+    for (const name of [" monitoring ", "monitoring!", "Monitoring", "-monitoring", "monitoring/", "monitoring.other"]) {
+      expect(() => composeProjectName("project", name)).toThrow("Invalid COMPOSE_PROJECT_NAME");
+    }
   });
 
   test("maps each service to its first container", () => {
@@ -45,15 +51,21 @@ describe("mon clean's leftover volumes", () => {
   const candidates = ["monitoring_grafana_data", "monitoring_victoria_metrics_data", "postgres_ai_configs_grafana_data"];
   const existing = [...candidates, "pgai-v4_grafana_data"];
 
-  test("another project keeps the default install's monitoring_* volumes", () => {
-    expect(cleanOrphanVolumes("pgai-v4", existing, candidates)).toEqual({
-      remove: ["postgres_ai_configs_grafana_data"],
-      kept: ["monitoring_grafana_data", "monitoring_victoria_metrics_data"],
+  for (const project of ["pgai-v4", "monitoring-copy", "postgres_ai_configs-copy"]) {
+    test(`${project} keeps every historical volume`, () => {
+      expect(cleanOrphanVolumes(project, existing, candidates)).toEqual({ remove: [], kept: candidates });
     });
-  });
+  }
 
-  test("the monitoring project removes them as before; absent volumes are not listed", () => {
-    expect(cleanOrphanVolumes("monitoring", existing, candidates)).toEqual({ remove: candidates, kept: [] });
+  for (const project of ["monitoring", "postgres_ai_configs"]) {
+    test(`${project} removes every listed volume that exists`, () => {
+      expect(cleanOrphanVolumes(project, existing, candidates)).toEqual({ remove: candidates, kept: [] });
+      expect(cleanOrphanVolumes(project, existing.slice(1), candidates)).toEqual({ remove: candidates.slice(1), kept: [] });
+    });
+  }
+
+  test("absent volumes are neither removed nor listed as kept", () => {
     expect(cleanOrphanVolumes("pgai-v4", [], candidates)).toEqual({ remove: [], kept: [] });
+    expect(cleanOrphanVolumes("monitoring", [], candidates)).toEqual({ remove: [], kept: [] });
   });
 });

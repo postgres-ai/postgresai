@@ -61,7 +61,19 @@ grafana_auth_header() {
 # would put the basic-auth token in argv where ps/proc can expose it.
 grafana_datasources_json() {
   local grafana_url
-  grafana_url="http://$(docker_host_for_ports):3000/api/datasources"
+  local port="${GRAFANA_PORT:-}"
+  if [[ -z "${GRAFANA_PORT+x}" && -f .env ]]; then
+    port="$(awk '
+      /^[[:space:]]*(export[[:space:]]+)?GRAFANA_PORT[[:space:]]*=/ {
+        value = substr($0, index($0, "=") + 1)
+        sub(/[[:space:]]*#.*/, "", value)
+        gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, "", value)
+      }
+      END { print value }
+     ' .env)"
+  fi
+  grafana_url="${GRAFANA_URL:-http://$(docker_host_for_ports):${port:-3000}}"
+  grafana_url="${grafana_url%/}/api/datasources"
   curl -fsS --config <(printf 'header = "%s"\n' "$(grafana_auth_header)") "${grafana_url}"
 }
 
@@ -258,7 +270,7 @@ $MON_CMD start
 sleep 10
 $MON_CMD status
 $MON_CMD logs --tail 5 grafana
-# Probes pgai-mon at PGAI_MON_URL (default http://127.0.0.1:8765): set it where
+# Probes pgai-mon at PGAI_MON_URL (else PGAI_MON_PORT from environment/.env, then 8765): set the URL where
 # the docker host is not this host (docker-in-docker).
 $MON_CMD health --wait 120
 

@@ -5919,6 +5919,7 @@ mon
           const aas = await registerAasCollection(apiKey, instanceId, {
             orgScope: regOrgScope,
             grafanaPassword,
+            grafanaUrl: grafanaUrl(projectDir),
             instancesPath,
             vcpus: parseVcpus(opts.vcpus ?? process.env.PGAI_VCPUS),
             path: aasArming.path,
@@ -6130,10 +6131,14 @@ mon
     // Final cleanup: force remove the network if it still exists
     if (code !== 0) {
       try {
-        // Compose names the project's network "<project>_default".
-        await execFilePromise("docker", ["network", "rm", `${projectName(projectDir)}_default`]);
-        // Network removal succeeded - cleanup is complete
-        code = 0;
+        const { stdout } = await execFilePromise("docker", [
+          "network", "ls", "-q", "--filter", `label=com.docker.compose.project=${projectName(projectDir)}`,
+        ]);
+        const ids = stdout.split(/\s+/).filter(Boolean);
+        if (ids.length > 0) {
+          await execFilePromise("docker", ["network", "rm", ...ids]);
+          code = 0;
+        }
       } catch {
         // Network doesn't exist or couldn't be removed, ignore
       }
@@ -6590,6 +6595,7 @@ mon
     console.log("Cleaning up monitoring services...\n");
 
     try {
+      const project = projectName(healthProjectDir());
       // First, use docker-compose down to properly stop and remove containers/volumes
       const downArgs = options.keepVolumes ? ["down"] : ["down", "-v"];
       console.log(options.keepVolumes
@@ -6612,9 +6618,9 @@ mon
         const { stdout: existingVolumes } = await execFilePromise("docker", ["volume", "ls", "-q"]);
         const volumeList = existingVolumes.trim().split('\n').filter(Boolean);
         const { remove: orphanedVolumes, kept } = cleanOrphanVolumes(
-          projectName(healthProjectDir()), volumeList, CLEAN_ORPHAN_VOLUMES);
+          project, volumeList, CLEAN_ORPHAN_VOLUMES);
         if (kept.length > 0) {
-          console.log(`Kept ${kept.join(", ")}: they belong to the install of compose project 'monitoring', not to this one. To remove them on purpose: docker volume rm ${kept.join(" ")}`);
+          console.log(`Kept ${kept.join(", ")}: this custom project does not own historical volumes from 'monitoring' or 'postgres_ai_configs'. To remove them on purpose: docker volume rm ${kept.join(" ")}`);
         }
 
         if (orphanedVolumes.length > 0) {
@@ -6633,10 +6639,12 @@ mon
         }
       }
 
-      // Remove any dangling resources
-      await execFilePromise("docker", ["network", "prune", "-f"]);
-      console.log("✓ Removed unused networks");
+      await execFilePromise("docker", [
+        "network", "prune", "-f", "--filter", `label=com.docker.compose.project=${project}`,
+      ]);
+      console.log("✓ Removed this project's unused networks");
 
+      // Dangling images only: untagged layers that no container uses, of no install.
       await execFilePromise("docker", ["image", "prune", "-f"]);
       console.log("✓ Removed dangling images");
 

@@ -4,12 +4,13 @@ set -Eeuo pipefail
 # Run the reporter on the host against the Docker Compose stack.
 #
 # Defaults:
-# - pgai-mon: http://127.0.0.1:8765, bearer token PGAI_MON_TOKEN from ./.env
+# - pgai-mon: http://127.0.0.1:${PGAI_MON_PORT:-8765}, token from the project .env
 # - Sources (node connections, for A005): ./instances.yml
 # - Output directory: ./dev_reports/dev_report_<UTC timestamp>/
 #   (one JSON file per check, e.g. A002.json, K003.json, ...)
 #
 # Overrides (env vars):
+# - PGAI_MON_PORT (environment, then project .env, then 8765)
 # - PGAI_MON_URL
 # - PGAI_MON_TOKEN
 # - REPORTER_SOURCES_PATH
@@ -19,7 +20,17 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PGAI_MON_URL="${PGAI_MON_URL:-http://127.0.0.1:8765}"
+if [[ -z "${PGAI_MON_PORT+x}" && -f "${REPO_ROOT}/.env" ]]; then
+  PGAI_MON_PORT="$(awk '
+    /^[[:space:]]*(export[[:space:]]+)?PGAI_MON_PORT[[:space:]]*=/ {
+      value = substr($0, index($0, "=") + 1)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, "", value)
+    }
+    END { print value }
+   ' "${REPO_ROOT}/.env")"
+fi
+PGAI_MON_URL="${PGAI_MON_URL:-http://127.0.0.1:${PGAI_MON_PORT:-8765}}"
 if [[ -z "${PGAI_MON_TOKEN:-}" ]] && [[ -f "${REPO_ROOT}/.env" ]]; then
   PGAI_MON_TOKEN="$(sed -n 's/^PGAI_MON_TOKEN=//p' "${REPO_ROOT}/.env" | tail -n 1)"
 fi
