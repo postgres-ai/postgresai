@@ -395,10 +395,7 @@ def build():
 
 def write(out_dir):
     path = os.path.join(out_dir, OUT)
-    with open(path, "w") as f:
-        # One line per file: generated, not for reading or line diffs (README.md).
-        json.dump(build(), f, separators=(",", ":"), ensure_ascii=False)
-        f.write("\n")
+    C.write_dashboard(build(), path)
     return path
 
 

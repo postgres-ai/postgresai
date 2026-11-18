@@ -31,6 +31,14 @@ explicitly in the MR description: a genuine bug in an existing pattern (fix it,
 and say so), and a problem the repo has never had to solve (choose carefully,
 and propose it as the convention).
 
+## Time zone and tooltip mode
+
+Every monitoring v4 dashboard uses `timezone: "utc"` and `graphTooltip: 1`
+(shared crosshair). Screenshots attached to customer issues must be UTC.
+The compiler applies both settings when writing each dashboard, including
+self-monitoring. `tests/grafana_dashboards/test_dashboard_settings.py` enforces
+the rule on every generated dashboard.
+
 ## Tag vocabulary
 
 Every shipped dashboard JSON MUST include a top-level `"tags"` array whose

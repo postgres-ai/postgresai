@@ -724,6 +724,15 @@ def interpolate(sql, vs):
     return sql
 
 
+def write_dashboard(d, path):
+    # Customer issue screenshots must use UTC; every dashboard uses a shared crosshair.
+    d.update(timezone="utc", graphTooltip=1)
+    with open(path, "w") as f:
+        # One line per file: generated, not for reading or line diffs (README.md).
+        json.dump(d, f, separators=(",", ":"), ensure_ascii=False)
+        f.write("\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--probe-url", required=True, help="pgai-mon to learn each SQL's output columns from")
@@ -748,10 +757,7 @@ def main():
     for spec in DASHBOARDS:
         d, n, queries = compile_dashboard(spec, by_id, args.probe_url)
         path = os.path.join(args.out, spec["out"])
-        with open(path, "w") as f:
-            # One line per file: generated, not for reading or line diffs (README.md).
-            json.dump(d, f, separators=(",", ":"), ensure_ascii=False)
-            f.write("\n")
+        write_dashboard(d, path)
         print(f"{path}: {n} targets, {len(d['templating']['list'])} variables")
         report.append((spec, d, queries))
     # the self-monitoring dashboard has no PromQL original to compile (self_monitoring.py)

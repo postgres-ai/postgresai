@@ -9,6 +9,7 @@ ranges, two db selections, parity with diff.py-style inlining).
 import json
 import os
 import re
+import tempfile
 import unittest
 
 import compile as C
@@ -264,7 +265,7 @@ class Emitted(unittest.TestCase):
 
 
 class SelfMonitoring(unittest.TestCase):
-    """self_monitoring.py: written, not compiled; its file matches build() and the original's
+    """self_monitoring.py: written, not compiled; its file matches write() and the original's
     panels are each kept or listed as dropped."""
 
     def setUp(self):
@@ -274,7 +275,8 @@ class SelfMonitoring(unittest.TestCase):
         self.src = load(os.path.join(C.DASH_DIR, S.SRC))
 
     def test_file_is_current(self):
-        self.assertEqual(self.out, json.loads(json.dumps(self.S.build())))
+        with tempfile.TemporaryDirectory() as out:
+            self.assertEqual(self.out, load(self.S.write(out)))
 
     def test_identity(self):
         self.assertEqual((self.out["uid"], self.out["title"]), (self.S.UID, self.src["title"]))
