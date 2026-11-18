@@ -478,6 +478,65 @@ async fn slow_metrics_do_not_delay_fast_ones() {
     let _ = stop.send(true);
 }
 
+/// A lock timeout on an hourly metric is retried without waiting for the next slot.
+#[tokio::test]
+async fn lock_timeout_retries_before_the_next_regular_slot() {
+    let url = need_pg!();
+    let a = admin(&url).await;
+    let db = fresh_db(&a, &url, "pgai_t_retry507").await;
+    let locker = admin(&db).await;
+    locker.batch_execute("create table t (x int)").await.unwrap();
+    locker
+        .batch_execute("begin; lock table t in access exclusive mode")
+        .await
+        .unwrap();
+    let h = harness(CollectorCfg {
+        timeout_retry_min_s: 2,
+        timeout_retry_max_s: 2,
+        self_metrics_interval_s: 6,
+        ..Default::default()
+    });
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(collector::run_source(
+        source("retry507", &db),
+        vec![metric("hourly", 3600, "sqls: {11: 'select count(*) as v from t'}")],
+        vec![],
+        h.ctx.clone(),
+        rx,
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(12), async {
+        wait_for("first lock timeout", 5, || {
+            job("retry507", "retry507", "hourly").timeouts == 1
+        })
+        .await;
+        let failed = job("retry507", "retry507", "hourly");
+        assert!(failed.last_error.as_deref().unwrap().starts_with("55P03:"));
+        assert_eq!((failed.runs, failed.retries), (1, 0));
+        assert_eq!(h.sink.value("pgwatch_hourly_v", ("dbname", "retry507")), None);
+        locker.batch_execute("commit").await.unwrap();
+        wait_for("sample after retry", 4, || {
+            h.sink.value("pgwatch_hourly_v", ("dbname", "retry507")) == Some(0.0)
+        })
+        .await;
+        // Success clears the retry, even after another backoff duration passes.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        wait_for("retry counter", 10, || {
+            h.sink.value("pgai_mon_retries_total", ("metric", "hourly")) == Some(1.0)
+        })
+        .await;
+        let j = job("retry507", "retry507", "hourly");
+        assert_eq!((j.runs, j.errors, j.timeouts, j.retries, j.skipped), (2, 1, 1, 1, 0));
+    })
+    .await;
+    let _ = stop.send(true);
+    worker.await.unwrap();
+    drop(locker);
+    a.batch_execute("drop database pgai_t_retry507 with (force)")
+        .await
+        .unwrap();
+    result.expect("retry and sample must arrive long before the hourly slot");
+}
+
 #[tokio::test]
 async fn reconnects_after_its_sessions_are_killed() {
     let url = need_pg!();

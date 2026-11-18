@@ -63,6 +63,7 @@ opt-level = 1
 opt-level = 2
 
 [dev-dependencies]
+tokio = { version = "=1.54.1", features = ["test-util"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
 tempfile = "=3.23.0"
 

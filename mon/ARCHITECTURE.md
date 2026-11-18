@@ -262,7 +262,12 @@ There is no per-user or per-database access control: a token grants the whole st
 
 The collector sets a `lock_timeout` (100 ms) and a statement timeout (15 s unless the metric
 sets one) on every session, and opens at most `collector.max_sessions_per_node` (4) sessions
-per node.
+per node. Jobs with intervals over 60 seconds retry lock timeouts with jittered exponential
+backoff (30 s base, 600 s cap). Statement timeouts or cancels get at most two retries per
+slot, after 5 minutes and then 15 minutes more. Retries must fall before the next regular
+slot and use the same job guard and heavy permit. Success clears retry state, and a regular
+slot replaces pending retries. A completed job wakes the scheduler to update its next timer;
+there is no retry polling. Outage recovery still uses the separate `lost` state.
 
 ## Known limits
 

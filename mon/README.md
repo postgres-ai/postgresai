@@ -319,10 +319,19 @@ Top level:
 | `objects_statement_timeout_s`, `objects_max_rows` | 60, 500,000 | Limits of the object snapshot. |
 | `stats_reset_interval_s` | 60 | Seconds between `stats_reset` snapshots. |
 | `reconnect_min_s`, `reconnect_max_s` | 2, 120 | Reconnect backoff range. |
+| `timeout_retry_min_s`, `timeout_retry_max_s` | 30, 600 | Lock-timeout retry backoff base and cap, in seconds. Each delay has 50–100% jitter. |
 | `reload_interval_s` | 30 | Seconds between re-reads of the config, sources file and `metrics.yml`. 0: SIGHUP only. |
 | `discovery_interval_s` | 120 | Seconds between database discovery runs. |
 | `role_check_interval_s` | 30 | Seconds between primary or standby checks. |
 | `self_metrics_interval_s` | 15 | Seconds between writes of the collector's own series. |
+
+Jobs with intervals over 60 seconds retry lock timeouts (`55P03`) with exponential backoff.
+Statement timeouts or cancels (`57014`) get at most two retries per slot, after 5 minutes
+and then 15 minutes more. A retry must fall before the next regular slot. Success clears
+retries; the next regular slot replaces any pending retry. Intervals of 60 seconds or less
+keep their normal cadence. Retries use the same session limits and heavy-job permit.
+The job's `/health` status includes `retries`, also emitted as `pgai_mon_retries_total` with
+the same labels as `pgai_mon_timeouts_total`.
 
 `ingest`, `scrape`, `rules`:
 

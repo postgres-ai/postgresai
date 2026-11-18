@@ -459,6 +459,9 @@ pub struct CollectorCfg {
     /// Reconnect backoff after a failed connection: doubles from min to max, with jitter.
     pub reconnect_min_s: u64,
     pub reconnect_max_s: u64,
+    /// Lock-timeout retry backoff: doubles from min to max, with jitter.
+    pub timeout_retry_min_s: u64,
+    pub timeout_retry_max_s: u64,
     /// Seconds between re-reads of the config, sources file and metrics.yml (also on SIGHUP);
     /// changed sources restart, removed ones stop. 0 = SIGHUP only.
     pub reload_interval_s: u64,
@@ -482,6 +485,8 @@ impl Default for CollectorCfg {
             objects_max_rows: 500_000,
             reconnect_min_s: 2,
             reconnect_max_s: 120,
+            timeout_retry_min_s: 30,
+            timeout_retry_max_s: 600,
             reload_interval_s: 30,
             discovery_interval_s: 120,
             role_check_interval_s: 30,
@@ -591,6 +596,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeout_retry_defaults_and_overrides() {
+        let cfg: CollectorCfg = serde_yaml::from_str("{}").unwrap();
+        assert_eq!((cfg.timeout_retry_min_s, cfg.timeout_retry_max_s), (30, 600));
+        let cfg: CollectorCfg = serde_yaml::from_str("timeout_retry_min_s: 1\ntimeout_retry_max_s: 2").unwrap();
+        assert_eq!((cfg.timeout_retry_min_s, cfg.timeout_retry_max_s), (1, 2));
+    }
 
     #[test]
     fn retention_variables_override_the_file() {

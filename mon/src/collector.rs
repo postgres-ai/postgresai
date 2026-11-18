@@ -599,6 +599,8 @@ pub struct JobStatus {
     pub errors: u64,
     /// statement_timeout (57014) and lock_timeout (55P03) errors, also counted in errors.
     pub timeouts: u64,
+    /// Runs started by a timeout retry (also counted in runs).
+    pub retries: u64,
     /// Slots not run: the previous run was still going, or its time passed while waiting.
     pub skipped: u64,
     pub last_success_ms: Option<i64>,
@@ -1021,7 +1023,51 @@ struct JobState {
     /// The last run got no session or lost it: it runs again as soon as the database is
     /// back, not at its next slot, which may be hours away.
     lost: bool,
+    retry: TimeoutRetry,
     data: JobData,
+}
+
+#[derive(Default)]
+struct TimeoutRetry {
+    due: Option<tokio::time::Instant>,
+    slot_end: Option<tokio::time::Instant>,
+    lock_attempts: u32,
+    statement_attempts: u32,
+}
+
+impl TimeoutRetry {
+    fn schedule(
+        &mut self,
+        code: Option<&str>,
+        cfg: &CollectorCfg,
+        interval_s: u64,
+        now: tokio::time::Instant,
+        next_slot: tokio::time::Instant,
+    ) {
+        self.due = None;
+        self.slot_end = Some(next_slot);
+        // Fast jobs already get another chance at their normal cadence.
+        if interval_s <= 60 {
+            return;
+        }
+        let delay = match code {
+            Some("55P03") => {
+                self.lock_attempts = self.lock_attempts.saturating_add(1);
+                backoff_delay(cfg.timeout_retry_min_s, cfg.timeout_retry_max_s, self.lock_attempts)
+            }
+            Some("57014") => {
+                let seconds = match self.statement_attempts {
+                    0 => 300,
+                    1 => 900,
+                    _ => return,
+                };
+                self.statement_attempts += 1;
+                Duration::from_secs(seconds)
+            }
+            _ => return,
+        };
+        self.due = now.checked_add(delay).filter(|due| *due < next_slot);
+    }
 }
 
 enum JobData {
@@ -1055,6 +1101,42 @@ fn job_phase_ms(name: &str, interval_s: u64) -> u64 {
 }
 
 impl Slot {
+    fn wake_at(&self) -> tokio::time::Instant {
+        self.state
+            .try_lock()
+            .ok()
+            .and_then(|state| {
+                (state.retry.slot_end == Some(self.next))
+                    .then_some(state.retry.due)
+                    .flatten()
+            })
+            .map_or(self.next, |due| due.min(self.next))
+    }
+
+    fn take_regular(&self) -> Result<tokio::sync::OwnedMutexGuard<JobState>, tokio::sync::TryLockError> {
+        let mut guard = self.state.clone().try_lock_owned()?;
+        guard.retry = TimeoutRetry::default();
+        Ok(guard)
+    }
+
+    fn take_pending(
+        &self,
+        now: tokio::time::Instant,
+        back: bool,
+    ) -> Option<(tokio::sync::OwnedMutexGuard<JobState>, bool)> {
+        let mut guard = self.state.clone().try_lock_owned().ok()?;
+        // A role change can replace the schedule while the old run is still finishing.
+        if guard.retry.slot_end != Some(self.next) {
+            guard.retry = TimeoutRetry::default();
+        }
+        let retry = guard.retry.due.is_some_and(|due| due <= now);
+        if !(retry || back && guard.lost) {
+            return None;
+        }
+        guard.retry.due = None;
+        Some((guard, retry))
+    }
+
     /// Move `next` past `now`; returns the runs that were due (1: on time, more: missed).
     /// The first run is at the start; the next at start + phase + interval, then every
     /// interval. The phase shift itself is not a missed run.
@@ -1146,6 +1228,7 @@ fn build_slots(
                 .or_insert_with(|| {
                     Arc::new(tokio::sync::Mutex::new(JobState {
                         lost: false,
+                        retry: TimeoutRetry::default(),
                         data: match &kind {
                             JobKind::Metric(_) => JobData::Metric(MetricState::default()),
                             JobKind::QueryTexts => JobData::Texts(HashMap::new()),
@@ -1176,16 +1259,18 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
     let mut known = db.node.get().is_some();
     let mut role = db.node.get().map(|i| i.in_recovery).unwrap_or(false);
     let mut slots = build_slots(&db, role, &mut states);
+    let retry_ready = Arc::new(tokio::sync::Notify::new());
     loop {
         let next = slots
             .iter()
-            .map(|s| s.next)
+            .map(Slot::wake_at)
             .min()
             .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(60));
         let back = tokio::select! {
             _ = stop.changed() => false,
             _ = node_rx.changed() => false,
             _ = db.back.notified() => true,
+            _ = retry_ready.notified() => false,
             _ = tokio::time::sleep_until(next) => false,
         };
         // a dropped sender stops the worker too
@@ -1216,9 +1301,17 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
             let missed = s.advance(now);
             let name = s.kind.name();
             let mut skipped = missed - 1;
-            match s.state.clone().try_lock_owned() {
+            match s.take_regular() {
                 Ok(guard) => {
-                    tokio::spawn(run_job(db.clone(), s.kind.clone(), guard));
+                    tokio::spawn(run_job(
+                        db.clone(),
+                        s.kind.clone(),
+                        guard,
+                        s.interval_s,
+                        s.next,
+                        retry_ready.clone(),
+                        false,
+                    ));
                 }
                 Err(_) => skipped += 1, // the previous run is still going
             }
@@ -1226,20 +1319,32 @@ async fn run_db(db: Arc<DbCtx>, mut stop: watch::Receiver<bool>) {
                 db.status(|d| d.jobs.entry(name).or_default().skipped += skipped);
             }
         }
-        if back {
-            // after the due slots, so a job due now runs once; one still running is left alone
-            for s in &slots {
-                if let Ok(guard) = s.state.clone().try_lock_owned() {
-                    if guard.lost {
-                        tokio::spawn(run_job(db.clone(), s.kind.clone(), guard));
-                    }
-                }
+        // Regular slots win; a busy job is left alone, including during outage recovery.
+        for s in &slots {
+            if let Some((guard, retry)) = s.take_pending(now, back) {
+                tokio::spawn(run_job(
+                    db.clone(),
+                    s.kind.clone(),
+                    guard,
+                    s.interval_s,
+                    s.next,
+                    retry_ready.clone(),
+                    retry,
+                ));
             }
         }
     }
 }
 
-async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMutexGuard<JobState>) {
+async fn run_job(
+    db: Arc<DbCtx>,
+    kind: JobKind,
+    mut state: tokio::sync::OwnedMutexGuard<JobState>,
+    interval_s: u64,
+    next_slot: tokio::time::Instant,
+    retry_ready: Arc<tokio::sync::Notify>,
+    retry: bool,
+) {
     let em = &db.ctx.em;
     match &kind {
         JobKind::Up {
@@ -1293,6 +1398,8 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
     } else {
         None
     };
+    // A retry that waited here past its slot still runs: the slot's own run was skipped,
+    // because this run held the job.
     let t0 = std::time::Instant::now();
     let mut lease = match db.pool.acquire(&db.conn_str).await {
         Ok(l) => {
@@ -1358,11 +1465,23 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
         lease.client.is_closed() || pg_code(e).is_some_and(|c| c.starts_with("08") || c.starts_with("57P0"))
     });
     state.lost = lost;
+    if res.is_ok() {
+        state.retry = TimeoutRetry::default();
+    } else if !lost {
+        state.retry.schedule(
+            res.as_ref().err().and_then(pg_code).as_deref(),
+            &em.cfg,
+            interval_s,
+            tokio::time::Instant::now(),
+            next_slot,
+        );
+    }
     drop(lease);
     let now = now_ms();
     let log = db.status(|d| {
         let j = d.jobs.entry(name.clone()).or_default();
         j.runs += 1;
+        j.retries += u64::from(retry);
         j.last_duration_ms = Some(t0.elapsed().as_millis() as u64);
         match &res {
             Ok(()) => {
@@ -1392,12 +1511,17 @@ async fn run_job(db: Arc<DbCtx>, kind: JobKind, mut state: tokio::sync::OwnedMut
     if let Some(l) = log {
         eprintln!("collector {} {name}: {l}", db.label);
     }
+    let pending = state.retry.due.is_some();
+    drop(state);
+    if pending {
+        retry_ready.notify_one();
+    }
 }
 
 /// The collector's own series for one database, from its status:
 /// pgai_mon_source_up, pgai_mon_source_last_success_epoch_s, pgai_mon_connect_failures_total
 /// {cluster, dbname, node_name}; pgai_mon_errors_total, pgai_mon_timeouts_total,
-/// pgai_mon_skipped_slots_total {cluster, dbname, metric, node_name}. Written also while the
+/// pgai_mon_retries_total, pgai_mon_skipped_slots_total {cluster, dbname, metric, node_name}. Written also while the
 /// database is down (up = 0).
 async fn emit_self_metrics(db: &DbCtx) {
     let Some(d) = source_status(&db.src.name).and_then(|s| s.databases.get(&db.label).cloned()) else {
@@ -1425,6 +1549,9 @@ async fn emit_self_metrics(db: &DbCtx) {
         }
         if j.timeouts > 0 {
             put("pgai_mon_timeouts_total", l.clone(), j.timeouts as f64);
+        }
+        if j.retries > 0 {
+            put("pgai_mon_retries_total", l.clone(), j.retries as f64);
         }
         if j.skipped > 0 {
             put("pgai_mon_skipped_slots_total", l, j.skipped as f64);
@@ -1762,6 +1889,7 @@ mod tests {
             next: start,
             state: Arc::new(tokio::sync::Mutex::new(JobState {
                 lost: false,
+                retry: TimeoutRetry::default(),
                 data: JobData::None,
             })),
         };
@@ -1901,6 +2029,117 @@ mod tests {
                 ("sys_id".to_string(), "1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn timeout_retry_policy_and_slot_boundary() {
+        let cfg = CollectorCfg::default();
+        let now = tokio::time::Instant::now();
+        let next = now + Duration::from_secs(7200);
+        let mut retry = TimeoutRetry::default();
+        for attempt in 1..=40 {
+            retry.schedule(Some("55P03"), &cfg, 7200, now, next);
+            let delay = retry.due.unwrap() - now;
+            let cap = (30.0 * 2f64.powi(attempt - 1)).min(600.0);
+            assert!(delay.as_secs_f64() >= cap / 2.0 && delay.as_secs_f64() < cap);
+        }
+        for code in [None, Some("08006"), Some("57P01"), Some("42601")] {
+            retry.schedule(code, &cfg, 7200, now, next);
+            assert!(retry.due.is_none());
+        }
+        for interval in [1, 30, 60] {
+            retry.schedule(Some("55P03"), &cfg, interval, now, next);
+            assert!(retry.due.is_none(), "short jobs keep their cadence");
+        }
+        retry = TimeoutRetry::default();
+        retry.schedule(Some("57014"), &cfg, 7200, now, next);
+        assert_eq!(retry.due, Some(now + Duration::from_secs(300)));
+        retry.schedule(Some("55P03"), &cfg, 7200, now, next);
+        retry.schedule(Some("57014"), &cfg, 7200, now, next);
+        assert_eq!(retry.due, Some(now + Duration::from_secs(900)));
+        retry.schedule(Some("57014"), &cfg, 7200, now, next);
+        assert!(retry.due.is_none(), "only two statement retries per slot");
+        for remaining in [0, 1, 300, 301] {
+            let mut retry = TimeoutRetry::default();
+            retry.schedule(Some("57014"), &cfg, 7200, now, now + Duration::from_secs(remaining));
+            assert_eq!(retry.due.is_some(), remaining > 300);
+        }
+        retry.schedule(Some("55P03"), &cfg, 7200, now, now - Duration::from_secs(1));
+        assert!(retry.due.is_none(), "a run finishing after its slot cannot retry");
+        let cfg = CollectorCfg {
+            timeout_retry_min_s: 2,
+            timeout_retry_max_s: 4,
+            ..cfg
+        };
+        retry = TimeoutRetry::default();
+        retry.schedule(Some("55P03"), &cfg, 7200, now, next);
+        assert!((1.0..2.0).contains(&(retry.due.unwrap() - now).as_secs_f64()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_deadline_wakes_scheduler_and_dispatches_once() {
+        let now = tokio::time::Instant::now();
+        let due = now + Duration::from_secs(300);
+        let mut slot = Slot {
+            kind: JobKind::QueryTexts,
+            interval_s: 7200,
+            phase: Duration::ZERO,
+            first: false,
+            next: now + Duration::from_secs(7200),
+            state: Arc::new(tokio::sync::Mutex::new(JobState {
+                lost: false,
+                retry: TimeoutRetry {
+                    due: Some(due),
+                    slot_end: Some(now + Duration::from_secs(7200)),
+                    ..Default::default()
+                },
+                data: JobData::None,
+            })),
+        };
+        assert!(slot.take_pending(now, false).is_none());
+        tokio::time::sleep_until(slot.wake_at()).await;
+        assert_eq!(tokio::time::Instant::now(), due);
+        let (guard, retry) = slot.take_pending(due, false).unwrap();
+        assert!(retry);
+        assert!(slot.take_pending(due, true).is_none(), "a busy job is left alone");
+        assert_eq!(slot.wake_at(), slot.next, "no spinning on a consumed deadline");
+        drop(guard);
+        assert!(
+            slot.take_pending(due, true).is_none(),
+            "outage wake cannot duplicate retry"
+        );
+        {
+            let mut state = slot.state.lock().await;
+            state.lost = true;
+            state.retry.due = Some(due);
+        }
+        let (mut guard, retry) = slot.take_pending(due, true).unwrap();
+        assert!(retry, "simultaneous outage and retry get one guard");
+        assert!(slot.take_pending(due, true).is_none());
+        // Rebuild while the old run holds the guard, then let that run time out.
+        let old_next = slot.next;
+        slot.next += Duration::from_secs(1);
+        assert!(slot.take_regular().is_err());
+        guard.lost = false;
+        guard
+            .retry
+            .schedule(Some("55P03"), &CollectorCfg::default(), 7200, due, old_next);
+        drop(guard);
+        assert_eq!(slot.wake_at(), slot.next);
+        assert!(slot.take_pending(old_next, false).is_none());
+        {
+            let mut state = slot.state.lock().await;
+            state.retry.due = Some(due);
+            state.retry.slot_end = Some(slot.next);
+        }
+        // The regular path advances and clears any pending retry before spawning.
+        let next = slot.next;
+        slot.advance(next);
+        let mut guard = slot.take_regular().unwrap();
+        guard.lost = false;
+        drop(guard);
+        assert!(slot.take_pending(next, true).is_none());
+        assert_eq!(slot.wake_at(), slot.next);
     }
 
     #[test]
