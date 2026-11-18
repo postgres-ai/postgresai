@@ -26,6 +26,23 @@ function runPgai(args: string[], env: NodeJS.ProcessEnv = {}) {
 }
 
 describe("init module", () => {
+  test("table_describe leaves PG18 NOT NULL constraint rows out of Constraints", async () => {
+    // PG18 stores every NOT NULL as a pg_constraint row (contype 'n'). Columns
+    // already prints NOT NULL, so listing them again as "n: ..." lines would
+    // make PG18 output differ from earlier versions (platform-all#491).
+    const plan = await init.buildInitPlan({
+      database: "mydb",
+      monitoringUser: DEFAULT_MONITORING_USER,
+      monitoringPassword: "pw",
+      includeOptionalPermissions: false,
+    });
+    const helpers = plan.steps.find((s: { name: string }) => s.name === "06.helpers");
+    expect(helpers).toBeTruthy();
+    expect(helpers!.sql).toMatch(/and contype not in \('p', 'n'\)/);
+    // The fallback label casts the "char" contype: text || "char" is ambiguous.
+    expect(helpers!.sql).toContain("v_rec.contype::text");
+  });
+
   test("maskConnectionString hides password when present", () => {
     const masked = init.maskConnectionString("postgresql://user:secret@localhost:5432/mydb");
     expect(masked).toMatch(/postgresql:\/\/user:\*{5}@localhost:5432\/mydb/);
