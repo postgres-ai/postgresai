@@ -2,9 +2,9 @@
 //! Files are sorted by (series_id, ts); row groups are pruned by series_id and ts statistics;
 //! a heap merges the files (days, flush files) into one (series_id, ts) stream.
 use crate::catalog::FileEntry;
-use arrow::array::{Array, Float64Array, Int64Array, RecordBatch, UInt64Array};
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, UInt64Array};
 use arrow::datatypes::{DataType, TimeUnit};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReader, RowFilter};
 use parquet::arrow::ProjectionMask;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -31,6 +31,7 @@ struct Cursor {
     rows: Rows,
     pos: usize,
     ts_div: i64, // file ts unit -> ms
+    predicate_rows: std::sync::Arc<[std::sync::atomic::AtomicUsize; 2]>,
 }
 
 /// A sorted id list shared without copying: a range of an Arc'd array (one metric's ids inside a
@@ -94,19 +95,23 @@ struct ScanStats {
     rows_kept: usize,
     t_read: std::time::Duration,
     t_decode: std::time::Duration,
+    t_predicate: std::time::Duration,
 }
 
 impl Drop for Scan {
     fn drop(&mut self) {
-        if std::env::var_os("PGAI_QUERY_TIMING").is_some() && self.st.rows_read > 0 {
+        if std::env::var_os("PGAI_QUERY_TIMING").is_some() && self.st.rgs > 0 {
             eprintln!(
-                "query timing: scan {} files {} row groups, rows read {} kept {}, parquet {:?}, filter {:?}",
+                "query timing: scan {} files {} row groups, rows read {} kept {}, parquet {:?}, filter {:?}, predicate rows series {} time {}, predicates {:?}",
                 self.cursors.len(),
                 self.st.rgs,
                 self.st.rows_read,
                 self.st.rows_kept,
                 self.st.t_read,
-                self.st.t_decode
+                self.st.t_decode,
+                self.cursors.iter().map(|c| c.predicate_rows[0].load(std::sync::atomic::Ordering::Relaxed)).sum::<usize>(),
+                self.cursors.iter().map(|c| c.predicate_rows[1].load(std::sync::atomic::Ordering::Relaxed)).sum::<usize>(),
+                self.st.t_predicate
             );
         }
     }
@@ -119,6 +124,56 @@ fn stat_u64(b: Option<&[u8]>) -> Option<u64> {
 fn stat_i64(b: Option<&[u8]>) -> Option<i64> {
     b.filter(|x| x.len() == 8)
         .map(|x| i64::from_le_bytes(x.try_into().unwrap()))
+}
+
+/// Filter narrow columns before materializing values from a surviving row group.
+fn row_filter(
+    schema: &parquet::schema::types::SchemaDescriptor,
+    ids: IdList,
+    ts_div: i64,
+    t0: i64,
+    t1: i64,
+    skip: Option<(i64, i64)>,
+    filter_time: bool,
+    counts: std::sync::Arc<[std::sync::atomic::AtomicUsize; 2]>,
+) -> RowFilter {
+    let series_counts = counts.clone();
+    let series = ArrowPredicateFn::new(ProjectionMask::columns(schema, ["series_id"]), move |b| {
+        series_counts[0].fetch_add(b.num_rows(), std::sync::atomic::Ordering::Relaxed);
+        let sid = b.column(0).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let mut selected = arrow::array::BooleanBufferBuilder::new(b.num_rows());
+        let mut i = 0;
+        while i < sid.len() {
+            let end = run_end(sid.values(), i);
+            selected.append_n(end - i, ids.binary_search(&sid.value(i)).is_ok());
+            i = end;
+        }
+        Ok(BooleanArray::new(selected.finish(), None))
+    });
+    if !filter_time {
+        return RowFilter::new(vec![Box::new(series)]);
+    }
+    let time = ArrowPredicateFn::new(ProjectionMask::columns(schema, ["ts"]), move |b| {
+        counts[1].fetch_add(b.num_rows(), std::sync::atomic::Ordering::Relaxed);
+        let ts = timestamp_values(b.column(0))?;
+        Ok(BooleanArray::from_iter(ts.values().iter().map(|&x| {
+            let t = x / ts_div;
+            Some(t >= t0 && t <= t1 && !skip.is_some_and(|(p, q)| t > p && t <= q))
+        })))
+    });
+    RowFilter::new(vec![Box::new(series), Box::new(time)])
+}
+
+fn timestamp_values(ts: &arrow::array::ArrayRef) -> Result<Int64Array, arrow::error::ArrowError> {
+    Ok(match ts.data_type() {
+        DataType::Int64 => ts.as_any().downcast_ref::<Int64Array>().unwrap().clone(),
+        DataType::Timestamp(_, _) => Int64Array::from(ts.to_data().into_builder().data_type(DataType::Int64).build()?),
+        _ => arrow::compute::cast(ts, &DataType::Int64)?
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .clone(),
+    })
 }
 
 impl Scan {
@@ -163,6 +218,7 @@ impl Scan {
         let _no_insert = super::footer::NoInsert::new(files.len() > super::footer::SCAN_CACHE_FILES);
         super::footer::warm(&files.iter().map(|f| root.join(&f.path)).collect::<Vec<_>>());
         let mut plans = Vec::new();
+        let mut readers = Vec::new();
         for f in files {
             let (b, src) = super::footer::builder_src(&root.join(&f.path))?;
             let schema = b.schema().clone();
@@ -213,10 +269,54 @@ impl Scan {
             }
             s.st.rgs += rgs.len();
             plans.push(src.plan(&md, &rgs, Some(&mask)));
-            let reader = super::footer::builder_rgs(b, &src, &rgs)?
-                .with_projection(mask)
-                .with_batch_size(8192)
-                .build()?;
+            let predicate_rows = std::sync::Arc::new(std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)));
+            // DuckDB writes 256-value delta miniblocks; parquet-rs 58 can read them but
+            // cannot skip within them. Keep full decoding for unknown delta writers.
+            let can_skip = md
+                .file_metadata()
+                .created_by()
+                .is_some_and(|w| w.starts_with("parquet-rs "))
+                || rgs.iter().all(|&i| {
+                    md.row_group(i).columns().iter().all(|c| {
+                        !c.encodings()
+                            .any(|e| e == parquet::basic::Encoding::DELTA_BINARY_PACKED)
+                    })
+                });
+            // Remote prefetch parts can include values: eager predicates would retain those
+            // parts across every file, bypassing the bounded streaming window.
+            // Catalog bounds can prove every timestamp matches, avoiding a second read.
+            let filter_time =
+                f.min_ts < t0 || f.max_ts > t1 || skip.is_some_and(|(p, q)| f.max_ts > p && f.min_ts <= q);
+            let filter = (can_skip && matches!(src, crate::objstore::Src::Local(_))).then(|| {
+                row_filter(
+                    pq,
+                    s.ids.clone(),
+                    ts_div,
+                    t0,
+                    t1,
+                    skip,
+                    filter_time,
+                    predicate_rows.clone(),
+                )
+            });
+            readers.push((
+                super::footer::builder_rgs(b, &src, &rgs)?,
+                mask,
+                filter,
+                ts_div,
+                predicate_rows,
+            ));
+        }
+        // The synchronous reader evaluates predicates in build(), so prefetch first.
+        crate::objstore::submit(plans);
+        for (builder, mask, filter, ts_div, predicate_rows) in readers {
+            let t = std::time::Instant::now();
+            let builder = builder.with_projection(mask).with_batch_size(8192);
+            let reader = match filter {
+                Some(filter) => builder.with_row_filter(filter).build()?,
+                None => builder.build()?,
+            };
+            s.st.t_predicate += t.elapsed();
             s.cursors.push(Cursor {
                 reader,
                 rows: Rows {
@@ -227,9 +327,9 @@ impl Scan {
                 },
                 pos: 0,
                 ts_div,
+                predicate_rows,
             });
         }
-        crate::objstore::submit(plans);
         if std::env::var_os("PGAI_QUERY_TIMING").is_some() {
             eprintln!(
                 "query timing: open {} sample files {:?}",
@@ -348,15 +448,7 @@ pub fn decode(
     let tsc = b.column_by_name("ts").ok_or_else(|| anyhow::anyhow!("ts column"))?;
     // Timestamp(unit) and Int64 share the physical layout: reinterpret, don't cast (a cast
     // copied the whole column per batch).
-    let ts: Int64Array = match tsc.data_type() {
-        DataType::Int64 => tsc.as_any().downcast_ref::<Int64Array>().unwrap().clone(),
-        DataType::Timestamp(_, _) => Int64Array::from(tsc.to_data().into_builder().data_type(DataType::Int64).build()?),
-        _ => arrow::compute::cast(tsc, &DataType::Int64)?
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap()
-            .clone(),
-    };
+    let ts = timestamp_values(tsc)?;
     let ival = b
         .column_by_name("ival")
         .and_then(|c| c.as_any().downcast_ref::<Int64Array>().cloned());
@@ -522,6 +614,209 @@ mod tests {
                 assert_eq!(got, naive(&sid, &ts, &iv, &fv, sel, t0, t1, skip), "case {case}");
             }
         }
+    }
+
+    #[test]
+    fn scan_filters_before_values_without_changing_samples() {
+        use arrow::array::{TimestampMicrosecondArray, TimestampNanosecondArray};
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::{EnabledStatistics, WriterProperties};
+        for unit in 0..4 {
+            for legacy in [false, true] {
+                for stats in [EnabledStatistics::None, EnabledStatistics::Chunk] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let div = match unit {
+                        2 => 1000,
+                        3 => 1_000_000,
+                        _ => 1,
+                    };
+                    let sid: Vec<_> = [1, 7, u64::MAX].into_iter().flat_map(|id| [id; 10]).collect();
+                    let ts: Vec<_> = (0..30).map(|i| ((i % 10) as i64 - 2) * 1000 * div + div - 1).collect();
+                    let ts: ArrayRef = match unit {
+                        0 => Arc::new(Int64Array::from(ts)),
+                        1 => Arc::new(TimestampMillisecondArray::from(ts)),
+                        2 => Arc::new(TimestampMicrosecondArray::from(ts)),
+                        _ => Arc::new(TimestampNanosecondArray::from(ts)),
+                    };
+                    let mut cols = vec![("series_id", Arc::new(UInt64Array::from(sid)) as ArrayRef), ("ts", ts)];
+                    if legacy {
+                        cols.push((
+                            "value",
+                            Arc::new(Float64Array::from_iter((0..30).map(|i| match i % 4 {
+                                0 => None,
+                                1 => Some(f64::NAN),
+                                _ => Some(i as f64),
+                            }))),
+                        ));
+                    } else {
+                        cols.push((
+                            "ival",
+                            Arc::new(Int64Array::from_iter((0..30).map(|i| (i % 4 < 2).then_some(i)))),
+                        ));
+                        cols.push((
+                            "fval",
+                            Arc::new(Float64Array::from_iter((0..30).map(|i| match i % 4 {
+                                1 | 2 => Some(f64::NAN),
+                                _ => None,
+                            }))),
+                        ));
+                    }
+                    let batch = RecordBatch::try_from_iter(cols).unwrap();
+                    let props = WriterProperties::builder()
+                        .set_max_row_group_row_count(Some(12))
+                        .set_statistics_enabled(stats)
+                        .set_column_dictionary_enabled("ts".into(), false)
+                        .set_column_encoding("ts".into(), parquet::basic::Encoding::DELTA_BINARY_PACKED)
+                        .set_column_dictionary_enabled("ival".into(), false)
+                        .set_column_encoding("ival".into(), parquet::basic::Encoding::DELTA_BINARY_PACKED)
+                        .build();
+                    let mut writer = ArrowWriter::try_new(
+                        std::fs::File::create(dir.path().join("samples.parquet")).unwrap(),
+                        batch.schema(),
+                        Some(props),
+                    )
+                    .unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.close().unwrap();
+                    let file = FileEntry {
+                        kind: "samples".into(),
+                        path: "samples.parquet".into(),
+                        day: 0,
+                        level: 1,
+                        rows: 30,
+                        bytes: 0,
+                        min_ts: -2000,
+                        max_ts: 8000,
+                        created_ms: 0,
+                        registered: false,
+                        ver: 0,
+                    };
+                    for ids in [vec![7, u64::MAX], vec![], vec![5]] {
+                        for (t0, t1, skip) in [(0, 5000, Some((1000, 3000))), (-2000, 8000, None), (9000, 10000, None)]
+                        {
+                            let expected = decode(&batch, div, Some(&ids), t0, t1, skip).unwrap();
+                            let mut scan =
+                                Scan::open_skip(dir.path(), std::slice::from_ref(&file), ids.clone(), t0, t1, skip)
+                                    .unwrap();
+                            let mut actual = vec![];
+                            let mut rows = SeriesRows::default();
+                            while scan.next_series(&mut rows).unwrap() {
+                                actual.extend(
+                                    (0..rows.ts.len())
+                                        .map(|i| (rows.id, rows.ts[i], rows.v[i].to_bits(), rows.stale[i])),
+                                );
+                            }
+                            let expected: Vec<_> = (0..expected.sid.len())
+                                .map(|i| {
+                                    (
+                                        expected.sid[i],
+                                        expected.ts[i],
+                                        expected.v[i].to_bits(),
+                                        expected.stale[i],
+                                    )
+                                })
+                                .collect();
+                            assert_eq!(actual, expected, "unit {unit}, legacy {legacy}");
+                            // Rejected series and times must never reach value materialization.
+                            assert_eq!(scan.st.rows_read, expected.len());
+                            if t0 <= file.min_ts && file.max_ts <= t1 && skip.is_none() {
+                                assert!(scan
+                                    .cursors
+                                    .iter()
+                                    .all(|c| c.predicate_rows[1].load(std::sync::atomic::Ordering::Relaxed) == 0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scan_keeps_duckdb_delta_files_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("samples.parquet");
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!(
+            "COPY (SELECT (i // 4096)::UBIGINT series_id, (i * 1000)::BIGINT ts, \
+             i::BIGINT ival, NULL::DOUBLE fval FROM range(122880) t(i) ORDER BY series_id, ts) \
+             TO '{}' (FORMAT parquet, COMPRESSION zstd, PARQUET_VERSION V2, ROW_GROUP_SIZE 122880)",
+            path.display()
+        ))
+        .unwrap();
+        let builder =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap())
+                .unwrap();
+        assert!(builder.metadata().row_group(0).columns().iter().any(|c| c
+            .encodings()
+            .any(|e| e == parquet::basic::Encoding::DELTA_BINARY_PACKED)));
+        let file = FileEntry {
+            kind: "samples".into(),
+            path: "samples.parquet".into(),
+            day: 0,
+            level: 0,
+            rows: 122880,
+            bytes: 0,
+            min_ts: 0,
+            max_ts: 122_879_000,
+            created_ms: 0,
+            registered: false,
+            ver: 0,
+        };
+        let mut scan = Scan::open_skip(dir.path(), &[file], vec![0], 1000, 5000, Some((2000, 4000))).unwrap();
+        let mut rows = SeriesRows::default();
+        assert!(scan.next_series(&mut rows).unwrap());
+        assert_eq!(rows.id, 0);
+        assert_eq!(rows.ts, [1000, 2000, 5000]);
+        assert_eq!(rows.v, [1.0, 2.0, 5.0]);
+        assert!(!scan.next_series(&mut rows).unwrap());
+    }
+
+    #[test]
+    fn remote_scan_keeps_streaming_without_eager_predicates() {
+        use object_store::{memory::InMemory, ObjectStoreExt, PutPayload};
+        let batch = RecordBatch::try_from_iter(vec![
+            ("series_id", Arc::new(UInt64Array::from(vec![1, 2, 3])) as ArrayRef),
+            ("ts", Arc::new(Int64Array::from(vec![1000, 2000, 3000])) as ArrayRef),
+            ("value", Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])) as ArrayRef),
+        ])
+        .unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(Vec::new(), batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        let store = Arc::new(InMemory::new());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(store.put(
+            &"samples.parquet".into(),
+            PutPayload::from(writer.into_inner().unwrap()),
+        ))
+        .unwrap();
+        let root = "s3://scan-streaming-test";
+        crate::objstore::register(root, store, Default::default()).unwrap();
+        let file = FileEntry {
+            kind: "samples".into(),
+            path: "samples.parquet".into(),
+            day: 0,
+            level: 1,
+            rows: 3,
+            bytes: 0,
+            min_ts: 1000,
+            max_ts: 3000,
+            created_ms: 0,
+            registered: false,
+            ver: 0,
+        };
+        let mut scan = Scan::open(Path::new(root), &[file], vec![2], 1000, 3000).unwrap();
+        let mut rows = SeriesRows::default();
+        assert!(scan.next_series(&mut rows).unwrap());
+        assert_eq!((rows.id, rows.ts, rows.v), (2, vec![2000], vec![2.0]));
+        assert_eq!(scan.st.rows_read, 3);
+        assert_eq!(
+            scan.cursors[0].predicate_rows[0].load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]

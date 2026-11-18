@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Monitoring v4 filters sample series and times before decoding values, reducing discarded rows in top-N dashboard scans of local Rust-compacted files (postgres-ai/postgresai#516).
+
 - Monitoring v4 sends every chart target as CSV and replaces repeated full label sets with compact series IDs, keeping legends and link labels; tables keep JSON (postgres-ai/postgresai#515).
 
 - Monitoring v4 skips an unused raw-sample boundary read when rollups cover a `last_over_time` window, reducing work in the table overview dashboard (postgres-ai/postgresai#516).

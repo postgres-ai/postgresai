@@ -151,6 +151,17 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    catalog (no directory listing) and re-points them when the catalog generation changes. The
    public views are in `schema/views.sql`. The `prom_*` macros call Rust table functions that
    read the Parquet files directly, one series at a time, and use rollups for closed days.
+   Sample files are sorted by `(series_id, ts)`. The Rust scan prunes files and row groups
+   by series and time statistics, then filters series IDs, followed by timestamps, inside
+   the Parquet reader before decoding values. The timestamp pass is omitted when catalog
+   bounds prove that every timestamp matches. This works on existing local Rust-compacted files;
+   neither the storage format nor the row-group size changes. DuckDB does not push these
+   filters. Remote scans keep full decoding to preserve bounded streaming prefetch.
+   DuckDB-written delta-encoded files keep full decoding: the pinned Parquet reader
+   cannot skip their 256-value miniblocks. They gain pushdown after normal Rust compaction.
+   `PGAI_QUERY_TIMING` reports materialized rows separately from series/time predicate rows.
+   Predicate time is also part of scan-open time, since the synchronous reader filters in
+   its builder. Row-group counts and compressed bytes need not fall with value decoding.
    `last_over_time` excludes its window start. When rollups cover the window from the fetch
    floor, that boundary is also excluded from the raw scan so covered files can be pruned.
    Bare selectors normally infer lookback from fetched samples. For dictionary intervals above
