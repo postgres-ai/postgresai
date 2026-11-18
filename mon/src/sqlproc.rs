@@ -12,7 +12,7 @@
 //! `reader_restarted` otherwise) and the next request starts a fresh child (~100 ms).
 //!
 //! Protocol (child stdin/stdout, one JSON object per line):
-//!   -> {"id": 1, "op": "sql" | "sql_columnar" | "sql_objects" | "schema" | "stats", "sql": "..."}
+//!   -> {"id": 1, "op": "sql" | "sql_columnar" | "sql_objects" | "sql_csv" | "schema" | "stats", "sql": "..."}
 //!   <- {"id": 1, "ok": <result JSON>}  |  {"id": 1, "err": {"type": .., "message": ..}}
 //!      (`"gen"`, `"c"`, `"rc"` and, on an object store, `"s3":[gets,bytes,demand,footer gets]` — the
 //!      child's running totals — come before `"ok"` / `"err"`)
@@ -445,6 +445,10 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
         let start = line.len() - body.len();
         line.pop(); // the closing brace of the envelope
         line.drain(..start);
+        // CSV travels as a JSON string so embedded newlines cannot split the pipe frame.
+        if line.starts_with('"') {
+            line = serde_json::from_str(&line).ok()?;
+        }
         return Some((
             id,
             s3,

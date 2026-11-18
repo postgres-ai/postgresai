@@ -73,7 +73,7 @@ an S3 store uploads and commits once more and releases the writer lease.
 | | `admission.rs` | Which waiting query gets the next slot. |
 | | `qcache.rs` | Result cache in the parent, keyed by SQL text and catalog generation. |
 | | `sqlproc.rs` | The reader as a child process with a memory cap; the parent-child protocol. |
-| | `rowjson.rs` | Result rows from Arrow to JSON. |
+| | `rowjson.rs`, `rowcsv.rs` | Result rows from Arrow to JSON or CSV. |
 | Evaluator (`eval/`) | `mod.rs`, `eval.sql` | The `prom_*` SQL macros and the handle they share. |
 | | `vtab.rs`, `agg.rs`, `topk.rs` | The table functions `prom_eval_rs`, `prom_agg_rs`, `prom_topk_rs` and the raw-sample functions. |
 | | `kernels.rs` | The rollup functions (rate, irate, increase, `*_over_time`, ...), matched to VictoriaMetrics. |
@@ -131,7 +131,7 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
                                                               │    Parquet files + Rust table functions
                                                               │ 3. timeout, row cap, byte cap
                                                               ▼
-                                               JSON reply (rows | columnar | objects)
+                                               JSON reply (rows | columnar | objects) or CSV
 ```
 
 1. **Auth** (`auth.rs`). Every route except `GET /livez` needs credentials.
@@ -180,11 +180,22 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 | Limit | Config key | Default | When reached |
 |---|---|---|---|
 | Query time | `http.timeout_ms` | 15 s | error `timeout`, HTTP 408 |
-| Result rows | `http.max_rows` | 100,000 | reply cut, `"truncated": true`; `format=objects` (dashboards): `result_too_large` (413) |
-| Result bytes | `http.max_bytes` | 16 MiB | reply cut, `"truncated": true`; `format=objects`: `result_too_large` (413) |
+| Result rows | `http.max_rows` | 100,000 | reply cut, `"truncated": true`; `objects` and `csv` (charts): `result_too_large` (413) |
+| Result bytes | `http.max_bytes` | 16 MiB | `rows` and `columnar`: reply cut, `"truncated": true` |
+| Chart bytes | `http.chart_max_bytes` | 5 MiB | `objects` and `csv`: `result_too_large` (413), never a partial chart |
 | DuckDB memory | `http.memory_limit` | 96 MB | error `out_of_memory`, HTTP 413 |
 | Reader process RSS | `http.reader_rss_cap_mb` | 192 MB | child killed; queries in flight are retried once, then `out_of_memory` |
 | Spill to disk | `http.max_temp_directory_size` | 2 GB | query fails |
+
+Infinity copies the upstream body into frame metadata: an 11.1 MB JSON response of 68,800 points
+exhausted Grafana's default 512 MiB, while the same points as 3.0 MB CSV peaked at 393 MB.
+The 5 MiB chart cap stays below the measured CSV failure range; narrow the time range or filter,
+or raise `http.chart_max_bytes` together with `GRAFANA_MEM`.
+
+`/sql?format=csv` returns RFC 4180 CSV with a header and epoch-millisecond timestamps
+(`text/csv; charset=utf-8`); errors keep their JSON body and HTTP status.
+The reader writes CSV as a JSON string in its pipe envelope so embedded newlines are safe;
+the parent decodes it before caching or serving it. The response format is part of the cache key.
 
 Other routes: `GET /schema` (views, columns, metric dictionary), `GET /health` (counters and
 state as JSON), `GET /ingest/stats`, `GET /scrape/targets`.

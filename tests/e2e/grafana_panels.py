@@ -88,6 +88,7 @@ def interp_obj(o, vars_):
 
 def ds_query(target, ds):
     """-> (data|empty|error, info, first-column values)"""
+    # Keep the target's parser, columns and root selector, including CSV chart targets.
     t = copy.deepcopy(target)
     t.setdefault("refId", "A")
     t["datasource"] = t.get("datasource") or ds  # the target's own datasource wins over the panel's

@@ -335,6 +335,8 @@ pub struct HttpCfg {
     pub timeout_ms: u64,
     pub max_rows: usize,
     pub max_bytes: usize,
+    /// Encoded bytes for chart formats (objects and csv); oversized charts fail with 413.
+    pub chart_max_bytes: usize,
     pub max_temp_directory_size: String,
     /// Admission: queries beyond max_concurrent wait in a bounded queue (FIFO) for up to
     /// queue_wait_ms; a full queue or a longer wait answers `busy`.
@@ -401,6 +403,7 @@ impl Default for HttpCfg {
             timeout_ms: 15_000,
             max_rows: 100_000,
             max_bytes: 16 << 20,
+            chart_max_bytes: 5 << 20,
             max_temp_directory_size: "2GB".into(),
             queue_max: 64,
             queue_wait_ms: 30_000,

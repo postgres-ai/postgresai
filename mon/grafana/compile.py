@@ -8,7 +8,7 @@ but 99) on pgai-mon via the Infinity datasource. Standard library only.
 Reads old/config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sql/reports/* and
 mon/grafana/cases.py, and writes them under the same uids and titles (links and bookmarks keep working). The
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
-Infinity target that POSTs `/sql?format=objects` with the ported SQL as a text/plain body:
+Infinity target that POSTs `/sql?format=objects` (grouped ASH: `format=csv`) with the ported SQL as a text/plain body:
 - getvariable() parameters become Grafana expressions (GRAFANA_PARAMS). start and end are
   aligned down to the step, and $__rate_interval becomes
   max(interval + scrape, 4 x scrape) with scrape = 5 s, the Prometheus datasource's
@@ -28,6 +28,8 @@ Grafana are marked (verify) here and in README.md.
 """
 import argparse
 import copy
+import csv
+import io
 import json
 import os
 import re
@@ -35,6 +37,7 @@ import sys
 import time
 import types
 import urllib.request
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MON = os.path.dirname(HERE)
@@ -375,23 +378,28 @@ def legend_expr(fmt, cols):
     return " || ".join(parts) or "''"
 
 
-def wrap(sql, cols, legend, extra, ash=False):
+def wrap(sql, cols, legend, extra, ash=False, legend_column="series", label_set=True, by=()):
     """The Infinity-facing query. NaN/Inf points are dropped (Prometheus never returns NaN on
     a range query except staleness, and the strings "NaN"/"+Inf" would not parse as numbers)."""
-    sel = ["CAST(q.t AS BIGINT) AS time", "CAST(q.value AS DOUBLE) AS value", f"{legend_expr(legend, cols)} AS series"]
+    if not label_set:
+        assert ash and set(by) <= set(re.findall(r"\{\{\s*(.*?)\s*\}\}", legend or "")), \
+            "omitting label_set requires every grouping label in the legend"
+    sel = ["CAST(q.t AS BIGINT) AS time", "CAST(q.value AS DOUBLE) AS value", f"{legend_expr(legend, cols)} AS {legend_column}"]
     sel += [f"{label_expr(cols, x)} AS {x}" for x in extra]
     # the whole label set: series with equal legends stay apart (Prometheus shows both)
-    sel.append(f"{auto_legend(cols)} AS label_set")
+    if label_set:
+        sel.append(f"{auto_legend(cols)} AS label_set")
     if ash:
         # ash_by.sql exposes r(k,t,value) and names(k,labels). Format names before the grid join.
         assert set(cols) == {"labels", "t", "value"}
         tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
         assert sql.endswith(tail), "ash_by.sql output changed"
-        names = ["q.k", f"{legend_expr(legend, cols)} AS series"]
+        names = ["q.k", f"{legend_expr(legend, cols)} AS {legend_column}"]
         names += [f"{label_expr(cols, x)} AS {x}" for x in extra]
-        names.append(f"{auto_legend(cols)} AS label_set")
+        if label_set:
+            names.append(f"{auto_legend(cols)} AS label_set")
         projected = ["CAST(r.t AS BIGINT) AS time", "CAST(r.value AS DOUBLE) AS value"]
-        projected += [f"n.{x}" for x in ["series", *extra, "label_set"]]
+        projected += [f"n.{x}" for x in [legend_column, *extra, *(["label_set"] if label_set else [])]]
         return (sql[:-len(tail)].rstrip() + ", rendered AS MATERIALIZED (\n"
                 f"SELECT {', '.join(names)} FROM names q\n)\n"
                 f"SELECT {', '.join(projected)}\nFROM r JOIN rendered n USING (k)\n"
@@ -425,7 +433,13 @@ def sqlstring_vars(sql):
     return CAST_VAR.sub(r"CAST(${\1:sqlstring} AS ", sql)
 
 
-def infinity_target(ref, body, hide, extra, table_keys=None):
+def response_url(url, fmt):
+    parts = urllib.parse.urlsplit(url)
+    params = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query) if k != "format"]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(params + [("format", fmt)])))
+
+
+def infinity_target(ref, body, hide, extra, table_keys=None, csv=False, legend_column="series", label_set=True):
     body = sqlstring_vars(body)
     if table_keys is not None:
         cols = [{"selector": "Time", "text": "Time", "type": "timestamp_epoch"}]
@@ -434,19 +448,19 @@ def infinity_target(ref, body, hide, extra, table_keys=None):
     else:
         cols = [{"selector": "time", "text": "time", "type": "timestamp_epoch"},
                 {"selector": "value", "text": "value", "type": "number"},
-                {"selector": "series", "text": "series", "type": "string"}]
-        cols += [{"selector": x, "text": x, "type": "string"} for x in extra + ["label_set"]]
+                {"selector": legend_column, "text": legend_column, "type": "string"}]
+        cols += [{"selector": x, "text": x, "type": "string"} for x in extra + (["label_set"] if label_set else [])]
     t = {
         "refId": ref,
         "datasource": dict(INFINITY),
-        "type": "json",
+        "type": "csv" if csv else "json",
         "source": "url",
         "parser": "backend",
         "format": "table" if table_keys is not None else "timeseries",
-        "url": PGAI_URL,
+        "url": response_url(PGAI_URL, "csv") if csv else PGAI_URL,
         "url_options": {"method": "POST", "data": body, "body_type": "raw", "body_content_type": "text/plain",
                         "params": [], "headers": []},
-        "root_selector": "rows",
+        "root_selector": "" if csv else "rows",
         "columns": cols,
         "computed_columns": [],
         "filters": [],
@@ -533,6 +547,12 @@ def post(url, sql, fmt=None):
     req = urllib.request.Request(u, data=sql.encode(), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=300) as r:
+            if fmt == "csv":
+                reader = csv.DictReader(io.StringIO(r.read().decode()))
+                rows = list(reader)
+                for row in rows:
+                    row.update(time=int(row["time"]), value=float(row["value"]))
+                return {"columns": reader.fieldnames, "rows": rows, "row_count": len(rows), "format": "csv"}
             return json.load(r)
     except urllib.error.HTTPError as e:
         return json.load(e)
@@ -642,14 +662,21 @@ def compile_dashboard(spec, by_id, probe_url):
             keys = table_label_keys(p, probe_url, params.get("metric")) if table else None
             extra = spec["extra_labels"] if table else timeseries_labels(p, cols, params, spec["extra_labels"], probe_url)
             inner = inline(case_sql(case), params, gp, mvars)
+            ash = case["sql_file"] == "sql/reports/dash/ash_by.sql"
+            legend = t.get("legendFormat")
+            # Infinity sorts label keys first: the legend must precede link labels such as query_id.
+            shape = dict(legend_column="__series", label_set=not set(params["by"]) <=
+                         set(re.findall(r"\{\{\s*(.*?)\s*\}\}", legend or ""))) if ash else {}
+            if ash:
+                assert all(shape["legend_column"] < x for x in extra + ["label_set"])
             body = wrap_table(inner, cols, keys) if table else \
-                wrap(inner, cols, t.get("legendFormat"), extra,
-                     ash=case["sql_file"] == "sql/reports/dash/ash_by.sql")
-            new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys))
+                wrap(inner, cols, legend, extra, ash=ash, by=params.get("by", []), **shape)
+            new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys, csv=ash, **shape))
             if table:
                 table_refs.append(t["refId"])
             queries.append({"panel": p["id"], "ref": t["refId"], "case": case["id"], "sql": body,
-                            "instant": instant, "table": table, "qvars": query_sample_vars(params, gp, mvars)})
+                            "instant": instant, "table": table, "format": "csv" if ash else "objects",
+                            "legend_column": shape.get("legend_column", "series"), "qvars": query_sample_vars(params, gp, mvars)})
             n += 1
             # the legend: `series`, shown through a per-refId display name (verify); a table's
             # columns are named by their labels and keep their names
@@ -657,7 +684,7 @@ def compile_dashboard(spec, by_id, probe_url):
                 fc = p.setdefault("fieldConfig", {"defaults": {}, "overrides": []})
                 fc.setdefault("overrides", []).insert(0, {
                     "matcher": {"id": "byFrameRefID", "options": t["refId"]},
-                    "properties": [{"id": "displayName", "value": "${__field.labels.series}"}]})
+                    "properties": [{"id": "displayName", "value": "${__field.labels." + shape.get("legend_column", "series") + "}"}]})
             # Prometheus targets' own min interval ("interval": "20" = 20 s) -> the panel's (verify)
             iv = str(t.get("interval") or "").strip()
             if iv and not p.get("interval"):
@@ -755,7 +782,7 @@ def main():
     ap.add_argument("--target-url", default="http://pgai-mon:8765/sql?format=objects",
                     help="pgai-mon URL Grafana's Infinity calls (default: %(default)s)")
     ap.add_argument("--check", action="store_true",
-                    help="also run every emitted query (and variable) through /sql?format=objects of --probe-url")
+                    help="also run every emitted query (and variable) through /sql of --probe-url")
     ap.add_argument("--to-ms", type=int, help="--check: range end (default: newest `up` sample, else now)")
     ap.add_argument("--spans", default="6h:30s,24h:1m,7d:10m",
                     help="--check: range:interval pairs, the interval being Grafana's $__interval before "
@@ -796,14 +823,15 @@ def main():
             for dbre in (SAMPLE["db"], f"({SAMPLE['db2']}|{SAMPLE['db']})"):
                 vs = sample_vars(to, span, iv, dbre)
                 for q in queries:
-                    j = post(args.probe_url, interpolate(q["sql"], {**q["qvars"], **vs}), "objects")
+                    fmt = q.get("format", "objects")
+                    j = post(args.probe_url, interpolate(q["sql"], {**q["qvars"], **vs}), fmt)
                     vcol = "Value" if q["table"] else "value"
                     if q["case"] is None:  # a TABLE_PANELS table: its columns, no PromQL reference
                         ok = "error" not in j and j.get("format") == "objects" and set(q["columns"]) <= set(j["columns"])
                     else:
-                        ok = "error" not in j and j.get("format") == "objects" and \
+                        ok = "error" not in j and j.get("format") == fmt and \
                             (j["columns"][0] == "Time" and j["columns"][-1] == "Value" if q["table"]
-                             else j["columns"][:3] == ["time", "value", "series"])
+                             else j["columns"][:3] == ["time", "value", q["legend_column"]])
                     parity = ""
                     if ok and dbre == SAMPLE["db"] and q["case"] is not None:
                         rj = post(args.probe_url, reference(by_id[q["case"]], to, span, iv, q["instant"]))
@@ -824,7 +852,7 @@ def main():
                         bad += 1
                     print(f"{'ok ' if ok else 'BAD'} {spec['census']} {span // 3600_000}h db={dbre} panel {q['panel']}{q['ref']} "
                           f"({q['case']}): {j.get('row_count', j.get('error'))} rows, "
-                          f"{len({r.get('series', i) for i, r in enumerate(j.get('rows', []))})} series, "
+                          f"{len({r.get(q.get('legend_column', 'series'), i) for i, r in enumerate(j.get('rows', []))})} series, "
                           f"{j.get('elapsed_ms')} ms{parity}")
         for v in d["templating"]["list"]:
             if v.get("type") != "query":

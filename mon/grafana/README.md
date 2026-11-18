@@ -40,7 +40,7 @@ own; per container CPU, memory, network and disk I/O from `container_*`. `pgai_m
 Every target uses the Infinity datasource `pgai-mon` (`yesoreyeram-infinity-datasource`, uid
 `pgai-mon`, provisioned by `config/grafana/provisioning/datasources/pgai-mon.yml` with the bearer
 token from `PGAI_MON_TOKEN`). A target POSTs its SQL as a `text/plain` body to
-`http://pgai-mon:8765/sql?format=objects`, with Grafana variables (`${__from}`, `${__to}`,
+`http://pgai-mon:8765/sql?format=objects` (grouped wait-event charts: `format=csv`), with Grafana variables (`${__from}`, `${__to}`,
 `${__interval_ms}`, `${cluster_name:sqlstring}`, `${db_name:regex}`, ...) interpolated into the
 SQL. A variable holding one value is written `${x:sqlstring}`, so Grafana quotes it and doubles a
 quote inside it; a filter matched as a regex is written `'${x:regex}'`. No panel calls the Flask backend
@@ -52,6 +52,21 @@ The grouped ASH charts use `ash_by.sql`'s `r(k,t,value)` and `names(k,labels)` r
 The compiler formats each group's legend in a materialized `rendered` relation before joining
 the time grid. Keep that work before the join: formatting every point is costly for many query IDs.
 The SQL template's final SELECT is also used directly by the evaluator comparison cases.
+
+The three grouped wait-event targets (dashboard 03 panel 19, dashboard 04 panels 2 and 3)
+use Infinity's backend CSV parser with an empty root selector. They omit `label_set` only when
+the compiler verifies that the legend names every grouping label; an incomplete legend keeps it.
+Their legend column is `__series`, and the display-name override reads that label: Infinity sorts
+fields by label keys and values, so this key sorts before `query_id` and keeps wait-event type,
+event and query groups together in the stack. SQL still orders by time so Infinity can build a
+wide frame; query links, legend text, zero filling and values stay the same.
+
+Other time-series targets still use JSON and `label_set` to distinguish equal legends.
+Moving those targets to CSV needs matching parser/URL/column changes and a check of their
+series identity and stack order; `label_set` remains a large repeated cost unless their legends
+identify every grouping label. Chart responses are capped by `http.chart_max_bytes` (5 MiB):
+narrow the range or filter, or raise that limit together with Grafana's `GRAFANA_MEM`.
+
 
 ## Inputs
 

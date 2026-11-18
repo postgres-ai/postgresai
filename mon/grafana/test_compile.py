@@ -72,6 +72,28 @@ class Emitted(unittest.TestCase):
                 ob = b.get("fieldConfig", {}).get("overrides", [])
                 self.assertEqual(ob[len(ob) - len(oa):], oa, f"panel {i} overrides")
 
+    def test_ash_incomplete_legend_keeps_identity(self):
+        from unittest.mock import patch
+        spec = next(s for s in C.DASHBOARDS if s["census"] == "D4")
+        cases = {c["id"]: c for c in C.load_cases()}
+        with patch.object(C, "probe_columns", return_value=["labels", "t", "value"]):
+            complete, _, _ = C.compile_dashboard(spec, cases, "unused")
+            # Remove a grouping label from the source legend without changing the grouped query.
+            src = load(os.path.join(C.DASH_DIR, spec["src"]))
+            panels(src)[3]["targets"][0]["legendFormat"] = "{{wait_event_type}}"
+            with patch.object(C.json, "load", return_value=src):
+                incomplete, _, _ = C.compile_dashboard(spec, cases, "unused")
+        good = panels(complete)[3]["targets"][0]
+        fallback = panels(incomplete)[3]["targets"][0]
+        self.assertNotIn("label_set", [c["selector"] for c in good["columns"]])
+        self.assertIn("label_set", [c["selector"] for c in fallback["columns"]])
+        self.assertIn("AS label_set", fallback["url_options"]["data"])
+        with self.assertRaises(AssertionError):
+            C.wrap("unused", ["labels", "t", "value"], "{{wait_event_type}}", [],
+                   ash=True, label_set=False, by=["wait_event_type", "query_id"])
+        self.assertEqual(C.response_url("http://mon/sql?foo=1&format=objects", "csv"),
+                         "http://mon/sql?foo=1&format=csv")
+
     def test_every_promql_target_is_an_infinity_target(self):
         counts = {}
         for spec, src, out in self.pairs():
@@ -93,8 +115,9 @@ class Emitted(unittest.TestCase):
                     # an instant target of a table panel in Prometheus' table format: Time, a
                     # column per label, Value (the panel's transformations name those)
                     table = bool(x.get("instant")) and x.get("format") == "table" and a.get("type") == "table"
+                    ash = (spec["census"], i, x["refId"]) in {("D4", 2, "A"), ("D4", 3, "A"), ("D3", 19, "A")}
                     self.assertEqual((y["type"], y["source"], y["parser"], y["format"]),
-                                     ("json", "url", "backend", "table" if table else "timeseries"))
+                                     ("csv" if ash else "json", "url", "backend", "table" if table else "timeseries"))
                     sel = [c["selector"] for c in y["columns"]]
                     if table:
                         self.assertEqual((sel[0], sel[-1]), ("Time", "Value"))
@@ -104,9 +127,13 @@ class Emitted(unittest.TestCase):
                             named |= set(o.get("indexByName") or {}) | set((o.get("include") or {}).get("names") or [])
                         self.assertTrue(named <= set(sel), f"panel {i}: {named - set(sel)}")
                     else:
-                        self.assertEqual(sel[:3], ["time", "value", "series"])
-                    self.assertTrue(y["url"].endswith(":8765/sql?format=objects"), y["url"])
-                    self.assertEqual(y["root_selector"], "rows")
+                        self.assertEqual(sel[:3], ["time", "value", "__series" if ash else "series"])
+                        self.assertEqual("label_set" in sel, not ash)
+                        if ash:
+                            self.assertEqual(min(sel[2:]), "__series")
+                            self.assertNotIn("label_set", y["url_options"]["data"])
+                    self.assertTrue(y["url"].endswith(":8765/sql?format=" + ("csv" if ash else "objects")), y["url"])
+                    self.assertEqual(y["root_selector"], "" if ash else "rows")
                     self.assertEqual(y["url_options"]["method"], "POST")
                     self.assertEqual(y.get("hide", False), x.get("hide", False))
                     body = y["url_options"]["data"]
@@ -122,7 +149,7 @@ class Emitted(unittest.TestCase):
                     else:
                         self.assertIn("${__to} - ${__to} % ${__interval_ms}", body)
                     legend = {"matcher": {"id": "byFrameRefID", "options": y["refId"]},
-                              "properties": [{"id": "displayName", "value": "${__field.labels.series}"}]}
+                              "properties": [{"id": "displayName", "value": "${__field.labels.__series}" if ash else "${__field.labels.series}"}]}
                     if table:
                         self.assertNotIn(legend, po[i].get("fieldConfig", {}).get("overrides", []))
                     else:

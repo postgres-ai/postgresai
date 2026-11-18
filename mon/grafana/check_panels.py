@@ -12,7 +12,7 @@ query variable run through /sql and set to its current value when that is among 
 else to its first option (All when the current value is All and the variable has includeAll).
 Then each target's SQL body is interpolated (${var}, $var, [[var]], ${var:regex|sqlstring|csv|
 pipe|raw|queryparam|date|...}, ${__from}, ${__to}, ${__interval_ms}, ${__range}, ...) and POSTed
-to /sql?format=objects. An Infinity filterExpression (`a < 1 && b > 0`) is applied to the rows.
+to /sql using the target's response format. An Infinity filterExpression (`a < 1 && b > 0`) is applied to the rows.
 
 A panel is `error` when any target fails, `data` when a target returns a row, `empty` when the
 queries ran and returned nothing, `external` when its targets do not call pgai-mon, and `none`
@@ -21,6 +21,8 @@ when it has no targets (rows, text panels).
 --expect FILE (JSON {"<dashboard uid>/<panel id>": "data" | "empty"}) makes the exit status 1 when
 a listed panel is classified differently; without it the exit status is 1 on any error.
 """
+import csv
+import io
 import argparse
 import datetime
 import json
@@ -193,13 +195,23 @@ def builtin_vars(from_ms, to_ms, iv_ms):
 # --------------------------------------------------------------------------------------------
 # pgai-mon
 # --------------------------------------------------------------------------------------------
-def post(url, sql, timeout=300):
-    req = urllib.request.Request(url.rstrip("/") + "/sql?format=objects", data=sql.encode(),
+def post(url, sql, timeout=300, fmt="objects", columns=()):
+    req = urllib.request.Request(url.rstrip("/") + "/sql?format=" + fmt, data=sql.encode(),
                                  headers={"Content-Type": "text/plain"}, method="POST")
     t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            j = json.load(r)
+            if fmt == "csv":
+                reader = csv.DictReader(io.StringIO(r.read().decode()))
+                rows = list(reader)
+                for row in rows:
+                    for col in columns:
+                        key = col["selector"]
+                        if key in row and col["type"] in ("number", "timestamp_epoch"):
+                            row[key] = (int(row[key]) if col["type"] == "timestamp_epoch" else float(row[key])) if row[key] else None
+                j = {"columns": reader.fieldnames, "rows": rows, "row_count": len(rows)}
+            else:
+                j = json.load(r)
     except urllib.error.HTTPError as e:
         try:
             j = json.load(e)
@@ -334,7 +346,7 @@ def run_target(url, t, vars_, builtins):
         print(f"-- refId {t.get('refId')}\n{body}\n")
     if left:
         return {"class": "error", "error": f"uninterpolated {sorted(set(left))}", "rows": 0, "ms": 0}
-    j = post(url, body)
+    j = post(url, body, fmt="csv" if t.get("type") == "csv" else "objects", columns=t.get("columns", []))
     if "error" in j:
         return {"class": "error", "error": error_text(j), "rows": 0, "ms": j.get("elapsed_ms")}
     rows = j.get("rows") or []

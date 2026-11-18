@@ -105,6 +105,8 @@ pub enum Fmt {
     /// `objects`: each row a JSON object `{column: value}`, for clients that map fields by name
     /// (Grafana's Infinity datasource reads it with no per-column configuration).
     Objects,
+    /// RFC 4180 CSV with a header, for chart clients.
+    Csv,
 }
 
 impl Fmt {
@@ -114,6 +116,7 @@ impl Fmt {
             None | Some("") | Some("rows") => Some(Fmt::Rows),
             Some("columnar") => Some(Fmt::Columnar),
             Some("objects") => Some(Fmt::Objects),
+            Some("csv") => Some(Fmt::Csv),
             Some(_) => None,
         }
     }
@@ -123,12 +126,14 @@ impl Fmt {
             Fmt::Rows => "sql",
             Fmt::Columnar => "sql_columnar",
             Fmt::Objects => "sql_objects",
+            Fmt::Csv => "sql_csv",
         }
     }
     pub fn from_op(op: &str) -> Fmt {
         match op {
             "sql_columnar" => Fmt::Columnar,
             "sql_objects" => Fmt::Objects,
+            "sql_csv" => Fmt::Csv,
             _ => Fmt::Rows,
         }
     }
@@ -151,6 +156,8 @@ pub struct QueryResult {
     /// Columnar format (`?format=columnar`): one entry per column, either a JSON array of its
     /// values or `{"dict":[distinct values],"idx":[index per row]}` when values repeat.
     pub data: Option<Box<serde_json::value::RawValue>>,
+    /// Complete CSV body; JSON formats leave this empty.
+    pub csv: Option<String>,
     pub row_count: usize,
     pub truncated: bool,
     pub elapsed_ms: u64,
@@ -188,6 +195,10 @@ static STARTED: AtomicU64 = AtomicU64::new(0);
 /// "row_count","truncated","elapsed_ms"}`.
 impl Serialize for QueryResult {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        // The child protocol carries CSV as a JSON string, decoded by the parent.
+        if let Some(csv) = &self.csv {
+            return ser.serialize_str(csv);
+        }
         use serde::ser::SerializeStruct;
         let mut m = ser.serialize_struct("QueryResult", 7)?;
         m.serialize_field("columns", &self.columns)?;
@@ -211,6 +222,18 @@ impl Serialize for QueryResult {
             m.serialize_field("s3", s)?;
         }
         m.end()
+    }
+}
+
+/// Count the full JSON envelope without allocating another response body.
+struct EncodedSize(usize);
+impl std::io::Write for EncodedSize {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -1042,6 +1065,13 @@ impl Reader {
                 r.s3 = s3;
                 r.gen = gen;
                 r.cacheable = cacheable;
+                if fmt == Fmt::Objects {
+                    let mut size = EncodedSize(0);
+                    serde_json::to_writer(&mut size, &r).unwrap();
+                    if size.0 > self.cfg.chart_max_bytes {
+                        return Err(self.chart_too_large());
+                    }
+                }
                 Ok(r)
             }
             Err(e) if timed_out => Err(QueryError::new(
@@ -1057,6 +1087,13 @@ impl Reader {
 
     fn run_inner(&self, conn: &Connection, body: &str, fmt: Fmt) -> Result<QueryResult, QueryError> {
         let columnar = fmt == Fmt::Columnar;
+        let chart = matches!(fmt, Fmt::Objects | Fmt::Csv);
+        let max_bytes = if chart {
+            self.cfg.chart_max_bytes
+        } else {
+            self.cfg.max_bytes
+        };
+        let mut csv = (fmt == Fmt::Csv).then(String::new);
         // One prepare: the query is bound once (it was DESCRIBE + a wrapping prepare, so every
         // table function bound twice), and its Arrow output is written as JSON in Rust
         // (rowjson.rs, the same text DuckDB's to_json gave). Streaming: DuckDB produces chunk by
@@ -1085,6 +1122,19 @@ impl Reader {
             let schema = stream.get_schema();
             columns = schema.fields().iter().map(|f| f.name().clone()).collect();
             arrow_types = schema.fields().iter().map(|f| format!("{}", f.data_type())).collect();
+            if let Some(csv) = &mut csv {
+                for (i, name) in columns.iter().enumerate() {
+                    if i > 0 {
+                        csv.push(',');
+                    }
+                    crate::rowcsv::push_field(csv, name);
+                }
+                csv.push_str("\r\n");
+                bytes = csv.len();
+                if bytes > max_bytes {
+                    return Err(self.chart_too_large());
+                }
+            }
             // objects format: each column's `"name":` prefix, JSON-escaped once
             let keys: Vec<String> = if fmt == Fmt::Objects {
                 columns
@@ -1113,6 +1163,24 @@ impl Reader {
                             truncated = true;
                             break;
                         }
+                        if let Some(csv) = &mut csv {
+                            s.clear();
+                            for (j, c) in cols.iter().enumerate() {
+                                if j > 0 {
+                                    s.push(',');
+                                }
+                                crate::rowcsv::push_value(&mut s, c.as_ref(), i);
+                            }
+                            s.push_str("\r\n");
+                            bytes += s.len();
+                            if bytes > max_bytes {
+                                truncated = true;
+                                break;
+                            }
+                            csv.push_str(&s);
+                            nrows += 1;
+                            continue;
+                        }
                         if columnar {
                             let mut add = 0;
                             for (j, c) in cols.iter().enumerate() {
@@ -1121,7 +1189,7 @@ impl Reader {
                                 add += cols_out[j].push(&s);
                             }
                             bytes += add;
-                            if bytes > self.cfg.max_bytes {
+                            if bytes > max_bytes {
                                 // drop the row just added: the response holds whole rows only
                                 for c in cols_out.iter_mut() {
                                     c.idx.pop();
@@ -1149,7 +1217,7 @@ impl Reader {
                         }
                         s.push(if keys.is_empty() { ']' } else { '}' });
                         bytes += s.len() + 1;
-                        if bytes > self.cfg.max_bytes {
+                        if bytes > max_bytes {
                             truncated = true;
                             break;
                         }
@@ -1191,17 +1259,9 @@ impl Reader {
         if timing {
             eprintln!("query timing: fetch {t_fetch:?} encode {t_encode:?} rows {nrows} bytes {bytes}");
         }
-        // The objects format feeds charts, which show nothing of a `truncated` flag: a series
-        // that stops early looks like a collector outage. There a cut result is an error.
-        if truncated && fmt == Fmt::Objects {
-            return Err(QueryError::new(
-                "result_too_large",
-                format!(
-                    "the result passes {} rows or {} bytes: narrow the time range, filter, or aggregate \
-                     (the rows format returns the first part with \"truncated\": true)",
-                    self.cfg.max_rows, self.cfg.max_bytes
-                ),
-            ));
+        // A cut chart looks like a collector outage; return an error instead.
+        if truncated && chart {
+            return Err(self.chart_too_large());
         }
         // DuckDB type names from the executed statement's logical types.
         let types = (0..columns.len())
@@ -1230,19 +1290,31 @@ impl Reader {
         } else {
             None
         };
-        Ok(QueryResult {
+        let result = QueryResult {
             row_count: nrows,
             columns,
             types,
             rows: out,
             fmt,
+            csv,
             data,
             truncated,
             elapsed_ms: 0,
             gen: 0,
             cacheable: false,
             s3: None,
-        })
+        };
+        Ok(result)
+    }
+
+    fn chart_too_large(&self) -> QueryError {
+        QueryError::new(
+            "result_too_large",
+            format!(
+            "the result exceeds http.max_rows ({}) or http.chart_max_bytes ({}): narrow the time range or the filter; \
+             or raise the limit together with Grafana memory (GRAFANA_MEM)",
+            self.cfg.max_rows, self.cfg.chart_max_bytes),
+        )
     }
 
     /// Reader-side counters (the `stats` op of the child protocol).
@@ -1325,8 +1397,8 @@ impl Backend {
                         gen: 0,
                         cacheable: false,
                     }),
-                    op => r.run_fmt(&sql, Fmt::from_op(op)).map(|x| Reply {
-                        body: serde_json::to_string(&x).unwrap(),
+                    op => r.run_fmt(&sql, Fmt::from_op(op)).map(|mut x| Reply {
+                        body: x.csv.take().unwrap_or_else(|| serde_json::to_string(&x).unwrap()),
                         gen: x.gen,
                         cacheable: x.cacheable,
                     }),
@@ -1422,7 +1494,7 @@ async fn post_sql(
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("json"));
-    // response format: `?format=rows|columnar|objects` (or "format" in a JSON body); rows by default
+    // response format: `?format=rows|columnar|objects|csv` (or "format" in a JSON body); rows by default
     let mut format = query
         .as_deref()
         .unwrap_or("")
@@ -1446,7 +1518,7 @@ async fn post_sql(
         return err_response(QueryError::new(
             "invalid_input",
             format!(
-                "unknown format {:?}: use rows, columnar or objects",
+                "unknown format {:?}: use rows, columnar, objects or csv",
                 format.unwrap_or_default()
             ),
         ));
@@ -1469,7 +1541,12 @@ async fn post_sql(
     let mut r = match res {
         Ok(rep) => {
             let body = axum::body::Body::from(bytes::Bytes::from_owner(ReplyBody(rep)));
-            ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response()
+            let content_type = if f == Fmt::Csv {
+                "text/csv; charset=utf-8"
+            } else {
+                "application/json"
+            };
+            ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response()
         }
         Err(e) => err_response(e),
     };
@@ -1487,7 +1564,7 @@ impl AsRef<[u8]> for ReplyBody {
 }
 
 /// Admission, the reader call and the out-of-memory retries: everything a cache miss runs.
-/// `op`: "sql" (row format), "sql_columnar" or "sql_objects".
+/// `op`: "sql" (row format), "sql_columnar", "sql_objects" or "sql_csv".
 async fn run_admitted(st: &AppState, op: &'static str, sql: String) -> Result<Reply, QueryError> {
     let cfg = &st.cfg;
     let busy = |why: String| Err(QueryError::new("busy", why));

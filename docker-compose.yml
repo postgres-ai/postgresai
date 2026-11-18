@@ -196,6 +196,7 @@ services:
     image: grafana/grafana:12.3.2
     scale: ${GRAFANA_SCALE:-1}
     cpus: ${GRAFANA_CPUS:-0.5}
+    # Raise this together with pgai-mon http.chart_max_bytes (5 MiB) for larger charts.
     mem_limit: ${GRAFANA_MEM:-536870912}
     environment:
       GF_SECURITY_ADMIN_USER: monitor

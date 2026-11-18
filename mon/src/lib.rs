@@ -25,6 +25,7 @@ pub mod pgconn;
 pub mod qcache;
 pub mod query;
 pub mod registry;
+pub mod rowcsv;
 pub mod rowjson;
 pub mod rules;
 pub mod scrape;

@@ -192,7 +192,7 @@ export PGAI_MON_TOKEN=$(openssl rand -hex 24)   # or --no-auth for local develop
 H="Authorization: Bearer $PGAI_MON_TOKEN"
 curl -s -H "$H" localhost:8765/sql -d "select metric, count(*) from series group by 1 order by 2 desc limit 5"
 curl -s -H "$H" localhost:8765/sql -H 'content-type: application/json' -d '{"sql":"select 1"}'
-curl -s -H "$H" 'localhost:8765/sql?format=objects' -d "select 1 as x"   # the format Grafana's Infinity reads
+curl -s -H "$H" 'localhost:8765/sql?format=objects' -d "select 1 as x"   # JSON chart rows
 curl -s -H "$H" localhost:8765/schema    # views, columns, metric names with type/interval/description
 curl -s localhost:8765/livez   # liveness, no credentials
 curl -s -H "$H" localhost:8765/health    # ingest counters, files, bytes, reader state
@@ -210,6 +210,19 @@ $B compact --store DIR --all
 
 `$B --help` and `$B <command> --help` list every command and option, including the
 crash-test helpers (`crashtest-write`, `crashtest-verify`).
+
+`POST /sql` accepts `?format=` (or `format` in a JSON request):
+
+| Format | Body |
+|---|---|
+| `rows` (default) | JSON envelope with `columns`, `types` and row arrays in `rows`. |
+| `columnar` | JSON envelope with column arrays or dictionaries in `data`. |
+| `objects` | JSON envelope with one object per row in `rows`. |
+| `csv` | Header and rows, RFC 4180 quoting, `Content-Type: text/csv; charset=utf-8`. NULL is empty; timestamps are epoch milliseconds, integers stay integers, booleans are `true`/`false`. |
+
+Errors keep their JSON body and HTTP status in every format. Chart formats (`objects` and
+`csv`) fail with `result_too_large` (413) at the row or chart byte limit; they never return a
+partial chart. `rows` and `columnar` return whole rows up to their limits with `truncated: true`.
 
 ## Config
 
@@ -279,14 +292,20 @@ Top level:
 | `s3.delete_grace_s` | 600 | Seconds a dropped file stays in the bucket. |
 | `s3.part_mb` | 8 | Multipart upload part size, MB. |
 
+Infinity copies response bodies into frame metadata: at Grafana's default 512 MiB, an
+11.1 MB JSON response of 68,800 points exhausted memory, while the same points as 3.0 MB CSV peaked at 393 MB.
+The 5 MiB chart limit leaves room below the measured CSV failure range; narrow the time range or
+filter, or raise `http.chart_max_bytes` together with Grafana's `GRAFANA_MEM`.
+
 `http`:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `listen` | `127.0.0.1:8765` | Address and port. |
 | `timeout_ms` | 15,000 | Per-query timeout. |
-| `max_rows` | 100,000 | Rows per result; more sets `truncated`. With `format=objects` (what Grafana panels read) it is a `result_too_large` error, so a chart never stops halfway unnoticed. |
-| `max_bytes` | 16 MiB | Bytes per result; same behaviour as `max_rows`. |
+| `max_rows` | 100,000 | Rows per result; more sets `truncated`. With `objects` or `csv` (chart formats) it is a `result_too_large` error, so a chart never stops halfway unnoticed. |
+| `max_bytes` | 16 MiB | Bytes per `rows` or `columnar` result; more sets `truncated`. |
+| `chart_max_bytes` | 5 MiB | Encoded bytes per `objects` or `csv` result; more returns `result_too_large` (413). |
 | `max_concurrent` | 0 | Query slots. 0: one per core, at most 4. |
 | `queue_max` | 64 | Queries that may wait for a slot. |
 | `queue_wait_ms` | 30,000 | Longest wait for a slot; then `busy`. |

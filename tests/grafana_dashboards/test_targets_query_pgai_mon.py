@@ -73,12 +73,14 @@ def test_every_target_posts_one_select_to_pgai_mon(dashboard_path: Path) -> None
             opts = target.get("url_options") or {}
             if target.get("expr") or target.get("rawSql"):
                 offenders.append(f"{where}: still carries PromQL or sink SQL")
+            csv = target.get("type") == "csv"
+            url = PGAI_MON_SQL_URL.replace("format=objects", "format=csv") if csv else PGAI_MON_SQL_URL
             if (target.get("datasource"), target.get("url"), target.get("source"), target.get("type")) != \
-                    (INFINITY, PGAI_MON_SQL_URL, "url", "json"):
-                offenders.append(f"{where}: not an Infinity JSON target on {PGAI_MON_SQL_URL}")
+                    (INFINITY, url, "url", "csv" if csv else "json"):
+                offenders.append(f"{where}: not an Infinity target on {url}")
             if (opts.get("method"), opts.get("body_type"), opts.get("body_content_type"), target.get("root_selector")) \
-                    != ("POST", "raw", "text/plain", "rows"):
-                offenders.append(f"{where}: not a raw text/plain POST read from `rows`")
+                    != ("POST", "raw", "text/plain", "" if csv else "rows"):
+                offenders.append(f"{where}: not a raw text/plain POST with the expected root")
             body = re.sub(r"'(?:[^']|'')*'", "''", opts.get("data") or "")  # string literals aside
             if not re.match(r"\s*(WITH|SELECT)\b", body) or re.search(r";\s*\S", body):
                 offenders.append(f"{where}: the body is not one SELECT")
