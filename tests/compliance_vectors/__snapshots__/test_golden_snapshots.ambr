@@ -84,7 +84,7 @@
     'build_ts': None,
     'checkId': 'G001',
     'checkTitle': 'Memory-related settings',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -132,7 +132,7 @@
     'build_ts': None,
     'checkId': 'G001',
     'checkTitle': 'Memory-related settings',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -180,7 +180,7 @@
     'build_ts': None,
     'checkId': 'G001',
     'checkTitle': 'Memory-related settings',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -268,7 +268,7 @@
     'build_ts': None,
     'checkId': 'G001',
     'checkTitle': 'Memory-related settings',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -324,7 +324,7 @@
     'build_ts': None,
     'checkId': 'K001',
     'checkTitle': 'Globally aggregated query metrics',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -352,7 +352,7 @@
     'build_ts': None,
     'checkId': 'K001',
     'checkTitle': 'Globally aggregated query metrics',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -449,7 +449,7 @@
     'build_ts': None,
     'checkId': 'K001',
     'checkTitle': 'Globally aggregated query metrics',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -504,7 +504,7 @@
     'build_ts': None,
     'checkId': 'K001',
     'checkTitle': 'Globally aggregated query metrics',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -570,7 +570,7 @@
     'build_ts': None,
     'checkId': 'K003',
     'checkTitle': 'Top queries by total time (total_exec_time + total_plan_time)',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -598,7 +598,7 @@
     'build_ts': None,
     'checkId': 'K003',
     'checkTitle': 'Top queries by total time (total_exec_time + total_plan_time)',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -693,7 +693,7 @@
     'build_ts': None,
     'checkId': 'K003',
     'checkTitle': 'Top queries by total time (total_exec_time + total_plan_time)',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',
@@ -807,7 +807,7 @@
     'build_ts': None,
     'checkId': 'K003',
     'checkTitle': 'Top queries by total time (total_exec_time + total_plan_time)',
-    'contract_version': '1.0.0',
+    'contract_version': '1.1.0',
     'generation_mode': 'full',
     'nodes': dict({
       'primary': 'node-01',

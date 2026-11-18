@@ -596,7 +596,7 @@ class TestGetAllNodesContract:
         generator: PostgresReportGenerator,
         prom_result: Callable,
     ) -> None:
-        """Edge case: multiple nodes report as primary (split-brain scenario)."""
+        """Edge case: several primaries under one cluster label (unrelated servers, or a split brain)."""
         def mock_query(query: str) -> Dict:
             if "pgwatch_settings_configured" in query:
                 return prom_result([
@@ -611,6 +611,6 @@ class TestGetAllNodesContract:
 
         result = generator.get_all_nodes("test-cluster")
 
-        # Contract: first becomes primary, others go to standbys
-        assert result["primary"] is not None
-        assert len(result["standbys"]) == 1  # Second "primary" treated as standby
+        # Contract: the first becomes the primary; another primary is never a standby (#406)
+        assert result["primary"] == "node-01"
+        assert result["standbys"] == []
