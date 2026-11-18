@@ -220,7 +220,9 @@ crash-test helpers (`crashtest-write`, `crashtest-verify`).
 | `objects` | JSON envelope with one object per row in `rows`. |
 | `csv` | Header and rows, RFC 4180 quoting, `Content-Type: text/csv; charset=utf-8`. NULL is empty; timestamps are epoch milliseconds, integers stay integers, booleans are `true`/`false`. |
 
-Errors keep their JSON body and HTTP status in every format. Chart formats (`objects` and
+Errors keep their JSON body and HTTP status in every format. The error's type and message are also the
+reason phrase of the status line (`HTTP/1.1 413 result_too_large: ...`): Grafana's Infinity
+datasource shows only the status line of a failed request, so a panel names the cause. Chart formats (`objects` and
 `csv`) fail with `result_too_large` (413) at the row or chart byte limit; they never return a
 partial chart. `rows` and `columnar` return whole rows up to their limits with `truncated: true`.
 

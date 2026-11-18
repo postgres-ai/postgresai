@@ -150,6 +150,37 @@ async fn http_formats_errors_limits_and_cache() {
             }
         }
     }
+    // Infinity shows only the status line of a failed request: the error's text is there too.
+    let addr = base.trim_start_matches("http://").to_owned();
+    let status_line = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        let sql = "SELECT i FROM range(21) r(i)";
+        let head = "POST /sql?format=csv HTTP/1.1\r\nHost: x\r\nConnection: close\r\n";
+        write!(s, "{head}Content-Length: {}\r\n\r\n{sql}", sql.len()).unwrap();
+        let mut line = String::new();
+        BufReader::new(s).read_line(&mut line).unwrap();
+        line
+    })
+    .await
+    .unwrap();
+    assert!(
+        status_line.starts_with("HTTP/1.1 413 result_too_large: the result exceeds http.max_rows (20) "),
+        "{status_line}"
+    );
+    assert!(status_line.contains("narrow the time range"), "{status_line}");
+    let res = post("csv", "SELECT 'a' ||\n chr(233) FROM missing_table")
+        .await
+        .unwrap();
+    let reason = res
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    let reason = String::from_utf8(reason).unwrap();
+    assert!(reason.starts_with("catalog_error: ") && reason.len() <= 300, "{reason}");
+    assert!(reason.chars().all(|c| c.is_ascii_graphic() || c == ' '), "{reason}");
     for fmt in ["rows", "columnar"] {
         let res = post(fmt, "SELECT repeat('x', 300) AS x").await.unwrap();
         assert_eq!(res.status(), 200);

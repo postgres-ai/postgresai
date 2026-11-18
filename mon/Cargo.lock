@@ -1723,6 +1723,7 @@ dependencies = [
  "crc32fast",
  "duckdb",
  "futures-util",
+ "hyper",
  "libc",
  "object_store",
  "parquet",

@@ -18,6 +18,8 @@ duckdb = { version = "=1.10506.1", features = ["bundled", "json", "parquet", "vt
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
 tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"] }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+# axum's own HTTP layer, named for the reason phrase of an error response (query.rs)
+hyper = { version = "=1.12.0", default-features = false, features = ["http1", "server"] }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: AWS values parse to the exact double (the default parser can be 1 ULP off)
 serde_json = { version = "1", features = ["float_roundtrip"] }

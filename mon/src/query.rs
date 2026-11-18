@@ -1477,7 +1477,25 @@ impl AppState {
 
 fn err_response(e: QueryError) -> Response {
     let code = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (code, Json(serde_json::json!({ "error": e }))).into_response()
+    let reason = reason_phrase(&e);
+    let mut r = (code, Json(serde_json::json!({ "error": e }))).into_response();
+    if let Some(reason) = reason {
+        r.extensions_mut().insert(reason);
+    }
+    r
+}
+
+/// The error's type and message as the HTTP/1 reason phrase, next to the JSON body. Grafana's
+/// Infinity datasource drops the body of a failed request and shows the status line only, so a
+/// panel would say "413 Payload Too Large" and nothing of what to do about it.
+fn reason_phrase(e: &QueryError) -> Option<hyper::ext::ReasonPhrase> {
+    let text = format!("{}: {}", e.kind, e.message);
+    let ascii: String = text
+        .chars()
+        .map(|c| if c.is_ascii_graphic() { c } else { ' ' })
+        .collect();
+    let line: String = ascii.split_whitespace().collect::<Vec<_>>().join(" ");
+    hyper::ext::ReasonPhrase::try_from(line.chars().take(300).collect::<String>()).ok()
 }
 
 fn json_body(s: String) -> Response {

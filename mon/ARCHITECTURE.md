@@ -193,7 +193,8 @@ The 5 MiB chart cap stays below the measured CSV failure range; narrow the time 
 or raise `http.chart_max_bytes` together with `GRAFANA_MEM`.
 
 `/sql?format=csv` returns RFC 4180 CSV with a header and epoch-millisecond timestamps
-(`text/csv; charset=utf-8`); errors keep their JSON body and HTTP status.
+(`text/csv; charset=utf-8`); errors keep their JSON body and HTTP status. An error's type and message are also
+the reason phrase of the status line, which is all Infinity shows of a failed request.
 The reader writes CSV as a JSON string in its pipe envelope so embedded newlines are safe;
 the parent decodes it before caching or serving it. The response format is part of the cache key.
 
