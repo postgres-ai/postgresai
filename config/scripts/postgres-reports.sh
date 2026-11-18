@@ -115,12 +115,16 @@ if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seco
     "${readiness_timeout_seconds}" "${readiness_poll_seconds}" || true
 fi
 
+# The first run ends its window now: the previous full hour can predate collection.
+# Later runs keep the hour-aligned window unless USE_CURRENT_TIME=true.
+first_run=true
 while true; do
   output_path="$(date -u +"${output_template}")"
   reporter_args=(--mon-url "${mon_url}" --output "${output_path}")
-  if [[ "${use_current_time}" == "true" ]]; then
+  if [[ "${use_current_time}" == "true" || "${first_run}" == "true" ]]; then
     reporter_args+=(--use-current-time)
   fi
+  first_run=false
 
   # Project name: env var > config file, read each cycle: a platform-provisioned
   # box learns its project only when the platform adopts the instance, after

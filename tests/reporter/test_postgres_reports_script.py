@@ -480,3 +480,53 @@ def test_project_name_written_after_start_is_used(tmp_path):
     assert "--project-name 2492" in reports[0]
     assert "--no-upload" not in reports[0]
     assert "project name is required" not in proc.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("use_current_time", "expected"),
+    [(None, [True, False, False]), ("true", [True, True, True])],
+)
+def test_first_report_ends_now_later_ones_on_the_hour(tmp_path, use_current_time, expected):
+    """The first report runs soon after the stack starts. A window floored to
+    the hour ends before the first sample there, so K/M/N came out empty on
+    every new box (UAT 2026-10-02, real reporter against real pgwatch data:
+    floored K001 `data: {}`, --use-current-time 1 query). The first cycle ends
+    its window now; later ones keep the hour-aligned window unless
+    USE_CURRENT_TIME=true asks for the current time on every cycle.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    stub = stub_dir / "python"
+    # One line per invocation; the third one stops the loop.
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "$*" >> "$CALLS"\n'
+        '[ "$(wc -l < "$CALLS")" -ge 3 ] && exit 7\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    # This branch retries failed runs; stop at its retry sleep after the third call.
+    sleep_stub = stub_dir / "sleep"
+    sleep_stub.write_text(f"#!/usr/bin/env bash\nexit {STUB_EXIT_CODE}\n")
+    sleep_stub.chmod(0o755)
+    env = os.environ.copy()
+    env.pop("USE_CURRENT_TIME", None)
+    if use_current_time is not None:
+        env["USE_CURRENT_TIME"] = use_current_time
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "CALLS": str(calls),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(tmp_path / "missing"),
+            "REPORTER_INITIAL_DELAY_SECONDS": "0",
+            "REPORTER_READINESS_TIMEOUT_SECONDS": "0",
+            "REPORTER_INTERVAL_SECONDS": "0",
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "r_%H%M%S.json"),
+        }
+    )
+    proc = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert ["--use-current-time" in line.split() for line in calls.read_text().splitlines()] == expected
