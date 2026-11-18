@@ -1,4 +1,4 @@
-# Test-only bearer tokens in mon/src/auth.rs unit tests, in commits of the monitoring v2
+# Test-only bearer tokens in mon/src/auth.rs unit tests, in commits of the monitoring v4
 # branch (the current tests use values the allowlist in gitleaks.toml recognises).
 18917f4ca52fdc360ce8d458d89e102d403d2ee5:mon/src/auth.rs:generic-api-key:230
 18917f4ca52fdc360ce8d458d89e102d403d2ee5:mon/src/auth.rs:generic-api-key:274

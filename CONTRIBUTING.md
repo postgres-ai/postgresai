@@ -6,6 +6,7 @@ This document describes how to run postgres_ai monitoring locally for developmen
 
 - Docker + Docker Compose plugin (`docker compose`)
 - Git
+- Bun 1.x (for the CLI workflow; CI uses `oven/bun:1`). Install with `curl -fsSL https://bun.sh/install | bash`.
 - Python 3.11+ (for running the reporter on your host)
 - Node.js (optional, for `npx postgresai ...` helpers)
 
@@ -311,14 +312,16 @@ directory, so `COMPOSE_FILE` and `docker-compose.local.yml` do not apply to it.
 Instead, build the images under the names `docker-compose.yml` resolves
 (`postgresai/<image>:$PGAI_TAG`; the CLI writes `PGAI_TAG` = the version in
 `cli/package.json`, `0.0.0-dev.0` in a checkout) and run the CLI from the
-repository root:
+repository root. The default install needs these three project images; build the fourth,
+`instance-jobs`, only when using `--instance-jobs` (see above). A cold `pgai-mon`
+build takes about 20 minutes on a 2 vCPU box (it compiles DuckDB).
 
 ```bash
 cd cli && bun install && bun run embed-all && cd ..   # generated files are not in git
 TAG=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' cli/package.json)
 TS="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 docker build -f config/Dockerfile --build-arg VERSION="$TAG" --build-arg BUILD_TS="$TS" -t "postgresai/postgres-ai-configs:$TAG" .
-docker build -f mon/Dockerfile -t "postgresai/pgai-mon:$TAG" .   # a cold build compiles DuckDB: many minutes
+docker build -f mon/Dockerfile -t "postgresai/pgai-mon:$TAG" .
 docker build --build-arg VERSION="$TAG" --build-arg BUILD_TS="$TS" -t "postgresai/reporter:$TAG" reporter
 bun cli/bin/postgres-ai.ts mon local-install --demo -y
 ```

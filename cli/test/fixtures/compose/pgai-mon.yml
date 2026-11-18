@@ -1,5 +1,5 @@
 # Test fixture: the monitoring compose file as the CLI expects it (services and
-# variables from the monitoring v2 contract). Not the shipped compose file.
+# variables from the monitoring v4 contract). Not the shipped compose file.
 services:
   config-init:
     image: ${PGAI_REGISTRY:-postgresai}/postgres-ai-configs:${PGAI_TAG:?PGAI_TAG is required}
