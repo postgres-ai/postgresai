@@ -1512,7 +1512,14 @@ impl RollupStream {
     ) -> anyhow::Result<Self> {
         let (p, q) = (plan.p, plan.q);
         let fetch_start = from.map_or(g.fetch_start(f), |x| x.min(g.fetch_start(f)));
-        let mut raw = Scan::open_skip(&ctx.root, &ctx.files, ids.clone(), fetch_start, g.end, Some((p, q)))?;
+        // last_over_time excludes its window start. If coverage starts at the fetch floor,
+        // skipping that boundary too lets raw files covered by rollups be pruned entirely.
+        let raw_p = if f == Func::LastOverTime && fetch_start == p {
+            p.saturating_sub(1)
+        } else {
+            p
+        };
+        let mut raw = Scan::open_skip(&ctx.root, &ctx.files, ids.clone(), fetch_start, g.end, Some((raw_p, q)))?;
         let inputs: Vec<(&FileEntry, i64, i64)> = plan
             .segs
             .iter()
@@ -2041,4 +2048,79 @@ pub fn update_tier(
         done += 1;
     }
     Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StoreCfg;
+    use crate::model::{Record, Sample};
+    use crate::store::StoreCore;
+
+    #[test]
+    fn last_over_time_rollup_does_not_read_the_excluded_window_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+        let p = 20_000 * DAY_MS + 12 * B;
+        let q = p + 2 * B;
+        let input = [
+            (1, p, 10.0),
+            (1, p + 30_000, 20.0),
+            (1, q, 30.0),
+            (2, p, 40.0), // only the excluded boundary: no result
+            (3, p, 50.0),
+            (3, p + B, crate::model::stale_nan()),
+            (4, p + 1, f64::NAN),
+            (4, q - 1, 60.0),
+        ];
+        core.append(Record::Samples(
+            input
+                .iter()
+                .map(|&(series_id, ts, value)| Sample { series_id, ts, value })
+                .collect(),
+        ))
+        .unwrap();
+        core.flush().unwrap();
+        core.compactor().unwrap().run_once(q + 2 * DAY_MS, true).unwrap();
+        let ctx = EvalCtx::from_catalog(dir.path().to_path_buf(), &core.shared.catalog.lock().unwrap());
+        for (end, window, shift, step) in [
+            (q, 2 * B, 0, B),
+            (q + B, 2 * B, 0, B),
+            (q, 0, 0, 2 * B),
+            (q + B, 3 * B + 30_000, B, B), // the window head is not covered by rollups
+        ] {
+            let grid = Grid {
+                start: q + shift,
+                end,
+                step,
+                window,
+                interval: 0,
+                phi: 0.0,
+            };
+            let plan = plan(&ctx, Func::LastOverTime, &grid).unwrap();
+            assert_eq!(plan.p, p);
+            let mut stream =
+                RollupStream::open(&ctx, Func::LastOverTime, &grid, &vec![1, 2, 3, 4].into(), plan).unwrap();
+            let raw_head = stream.raw_next;
+            let mut actual = vec![];
+            while stream.next(|id, t, v| actual.push((id, t, v))).unwrap() {}
+            let mut expected = vec![];
+            for id in 1..=4 {
+                let (ts, values): (Vec<_>, Vec<_>) = input
+                    .iter()
+                    .filter(|&&(s, _, v)| s == id && !v.is_nan())
+                    .map(|&(_, t, v)| (t, v))
+                    .unzip();
+                super::super::kernels::eval_series(Func::LastOverTime, &grid, &ts, &values, &mut vec![], |t, v| {
+                    expected.push((id, t, v))
+                });
+            }
+            assert_eq!(actual, expected, "rollups must equal the raw kernel");
+            assert_eq!(
+                raw_head.is_some(),
+                shift > 0,
+                "only an uncovered window head needs raw samples"
+            );
+        }
+    }
 }

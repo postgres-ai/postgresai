@@ -151,6 +151,8 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    catalog (no directory listing) and re-points them when the catalog generation changes. The
    public views are in `schema/views.sql`. The `prom_*` macros call Rust table functions that
    read the Parquet files directly, one series at a time, and use rollups for closed days.
+   `last_over_time` excludes its window start. When rollups cover the window from the fetch
+   floor, that boundary is also excluded from the raw scan so covered files can be pruned.
    Bare selectors normally infer lookback from fetched samples. For dictionary intervals above
    300 s, the fetch reaches back at least that interval plus 12.5%. Values stay current for at
    least the same interval plus margin in instant and range queries, even with irregular sample
