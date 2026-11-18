@@ -85,7 +85,7 @@ import { generateCheckSummary, CheckSummary } from "./checkup-summary";
  * cross-language test (cli/test/contract-version.test.ts) asserts the two
  * sources cannot drift.
  */
-export const CONTRACT_VERSION = "1.0.0";
+export const CONTRACT_VERSION = "1.1.0";
 
 // Time constants
 const SECONDS_PER_DAY = 86400;

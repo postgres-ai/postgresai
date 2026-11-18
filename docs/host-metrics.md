@@ -35,6 +35,7 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_os_process_max_rss_bytes` | bytes | EM max process RSS | – | – |
 | `host_disk_free_bytes` | bytes | FreeStorageSpace (RDS) | `filesystem_avail_bytes` on `/data` | StorageLimitBytes × (1 − FilesystemUsedPercent / 100) |
 | `host_disk_size_bytes` | bytes | DescribeDBInstances AllocatedStorage × 2^30 (RDS) | `filesystem_size_bytes` on `/data` | StorageLimitBytes |
+| `host_disk_max_size_bytes` | bytes | DescribeDBInstances MaxAllocatedStorage × 2^30 (RDS, storage autoscaling on) | – | – |
 | `host_local_storage_free_bytes` | bytes | FreeLocalStorage (Aurora) | – | – |
 | `host_volume_used_bytes` | bytes | VolumeBytesUsed (Aurora cluster) | – | – |
 | `host_disk_read_iops` | operations/s | ReadIOPS | rate of `disk_reads_completed_total`, all disks, per second of `time_seconds` | rate of `DiskReads_Total` |
@@ -50,10 +51,17 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkReceiveBytes_Total` |
 | `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkTransmitBytes_Total` |
 | `host_db_load` | average active sessions | PI `db.load.avg`, 60 s | – | – |
+| `host_instance_info` | identity | constant 1; labels `instance_class`, `engine`, `storage_type`, `multi_az`, `region` from DescribeDBInstances | – | – |
+| `host_cpu_cores` | vCPUs | – | – | CPUCores |
+| `host_cpu_credit_balance` | credits | CPUCreditBalance, 300 s (db.t*) | – | – |
+| `host_cpu_surplus_credit_balance` | credits | CPUSurplusCreditBalance, 300 s (db.t*) | – | – |
+| `host_disk_burst_balance_percent` | percent | BurstBalance, 300 s (gp2) | – | – |
+| `host_ebs_io_balance_percent` | percent | EBSIOBalance%, 300 s (RDS) | – | – |
+| `host_ebs_byte_balance_percent` | percent | EBSByteBalance%, 300 s (RDS) | – | – |
 
 ## Dashboard
 
-Dashboard 1 has one collapsed **Host** row, second to last on the page. It starts with a provider identity panel, then CPU utilization, Memory and Storage. Disk read IOPS, disk write IOPS, network receive and network transmit each have their own full-width chart so series with different operational limits are never overlaid. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. pgai-mon's RDS poller requests no CloudWatch metric that no panel reads: GetMetricData bills per metric.
+Dashboard 1 has one collapsed **Host** row, second to last on the page. It starts with a provider identity panel, then CPU utilization, Memory and Storage. Disk read IOPS, disk write IOPS, network receive and network transmit each have their own full-width chart so series with different operational limits are never overlaid. Each panel reads `host_*` with the dashboard's cluster and node selectors and charts at least one family that every provider writes, so none is empty for RDS, Supabase or ClickHouse. A self-managed node writes no `host_*`, and its row stays closed and empty. The other families are not every provider's, so they are stored and queryable but not charted. pgai-mon's RDS poller requests a CloudWatch metric only when a panel or the A014 resource sizing report reads it: GetMetricData bills per metric. The instance info (`host_instance_info`), the autoscaling ceiling (`host_disk_max_size_bytes`), ClickHouse's `host_cpu_cores` and the CPU credit and EBS burst balances (`host_cpu_credit_balance`, `host_cpu_surplus_credit_balance`, `host_disk_burst_balance_percent`, `host_ebs_io_balance_percent`, `host_ebs_byte_balance_percent`) feed A014's observed size and series and are not charted.
 
 DB load (`host_db_load`, RDS and Aurora with Performance Insights on) has no Supabase or ClickHouse equivalent, so it is not in the Host row. It has its own collapsed row after Host, **RDS DB load (Performance Insights)**. Grafana 12.3 cannot hide a row that has no data (a row repeated over an empty variable is still rendered once), so on Supabase, ClickHouse, self-managed nodes and RDS without Performance Insights this row stays closed and empty.
 

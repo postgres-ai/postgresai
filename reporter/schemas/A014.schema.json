@@ -186,6 +186,13 @@
                 "number",
                 "null"
               ]
+            },
+            "avg_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Mean of the 5-minute CPU averages (a burstable class's baseline is an average)."
             }
           }
         },
@@ -367,6 +374,224 @@
                 "avg_5m"
               ],
               "description": "What a disk_iops point is: avg_5m = the 5-minute average. Reports from older reporters omit it (their points were the busiest minute), and the platform does not judge their IOPS."
+            },
+            "cpu_avg_pct": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "5-minute CPU averages, percent"
+            },
+            "mem_available_bytes": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Lowest memory available in each 5 minutes, bytes"
+            },
+            "cpu_credit_balance": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Lowest CPU credit balance in each 5 minutes (RDS db.t*)"
+            },
+            "cpu_surplus_balance": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Highest CPU surplus credit balance in each 5 minutes (RDS db.t*)"
+            },
+            "burst_balance_pct": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Lowest gp2 BurstBalance in each 5 minutes, percent"
+            },
+            "ebs_io_balance_pct": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Lowest EBSIOBalance% in each 5 minutes"
+            },
+            "ebs_byte_balance_pct": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": "Lowest EBSByteBalance% in each 5 minutes"
+            }
+          }
+        },
+        "observed_size": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What the database server is, for the platform's sizing (platform-all#1101). Absent when unknown.",
+          "required": [
+            "provider",
+            "size",
+            "region",
+            "storage",
+            "seen_at_epoch",
+            "since_epoch"
+          ],
+          "properties": {
+            "provider": {
+              "enum": [
+                "rds",
+                "aurora",
+                "clickhouse"
+              ],
+              "description": "Where the server runs: rds and aurora from rds-host-stats' instance info, clickhouse for a ClickHouse Managed Postgres service."
+            },
+            "size": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "RDS/Aurora: the instance class (db.t4g.micro). ClickHouse: the service size from the ClickHouse Cloud API (r6gd.large); null when only its metrics are known."
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Cloud region (eu-central-1); null when unknown."
+            },
+            "engine": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "RDS/Aurora only: the DB engine (postgres, aurora-postgresql)."
+            },
+            "multi_az": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "RDS only: whether the instance is a Multi-AZ deployment (its compute is paid twice)."
+            },
+            "standbys": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "ClickHouse only: standby copies from the API's haType (none 0, async 1, sync 2)."
+            },
+            "org_tier": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "ClickHouse only: the organization's plan (basic, scale, enterprise), lower case; it prices the size. Null when not read."
+            },
+            "vcpus": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "ClickHouse only: vCPUs from the service's metrics (PostgresServer_CPUCores)."
+            },
+            "memory_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "ClickHouse only: memory from the service's metrics, in bytes."
+            },
+            "size_source": {
+              "enum": [
+                "api",
+                "metrics"
+              ],
+              "description": "ClickHouse only: api when the size came from the ClickHouse Cloud API, metrics when only the metrics answered."
+            },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "size_gb",
+                "max_size_gb",
+                "iops",
+                "throughput_mbps"
+              ],
+              "properties": {
+                "type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Volume type (gp2, gp3, io1, io2; nvme for ClickHouse)."
+                },
+                "size_gb": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Allocated storage in GiB."
+                },
+                "max_size_gb": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "RDS storage autoscaling ceiling in GiB; null when autoscaling is off."
+                },
+                "iops": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Provisioned IOPS (RDS gp3/io1/io2); null otherwise."
+                },
+                "throughput_mbps": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Provisioned throughput in MB/s (decimal: 125 MiB/s is 131.1), as the platform shows it; null otherwise."
+                }
+              }
+            },
+            "seen_at_epoch": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Unix seconds of the last sample that showed this size. The platform treats a size seen more than an hour before (or after) the report as stale."
+            },
+            "since_epoch": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Unix seconds of the first point of the current size after another one in the 7-day window (a resize); null when the size did not change."
             }
           }
         }

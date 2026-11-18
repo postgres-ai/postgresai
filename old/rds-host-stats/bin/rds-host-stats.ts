@@ -28,8 +28,8 @@ if (invalid) {
   console.error(`${invalid}; rds-host-stats will idle until the configuration is fixed and the container is recreated (docker compose --profile rds up -d rds-host-stats)`)
   await new Promise(() => setInterval(() => {}, 2 ** 31 - 1))
 }
-const target = { instanceId: env.RDS_DB_INSTANCE_IDENTIFIER!, cluster: env.PGAI_CLUSTER!, nodeName: env.PGAI_NODE_NAME! }
 const region = env.AWS_REGION!
+const target = { instanceId: env.RDS_DB_INSTANCE_IDENTIFIER!, cluster: env.PGAI_CLUSTER!, nodeName: env.PGAI_NODE_NAME!, region }
 const interval = Number(env.RDS_POLL_INTERVAL_SECONDS || 60)
 const role = env.RDS_ROLE_ARN ? { arn: env.RDS_ROLE_ARN, externalId: env.RDS_EXTERNAL_ID! } : undefined
 const clients = createClients(region, role)

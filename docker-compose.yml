@@ -252,6 +252,9 @@ services:
       - ./.pgwatch-config:/app/.pgwatch-config:ro
       - ./instances.yml:/app/instances.yml:ro
       - postgres_ai_configs:/postgres_ai_configs:ro
+      # A ClickHouse target's scrape file and key, read-only: A014 reads the
+      # service's size with the same key (platform-all#1101).
+      - ./host-metrics:/etc/pgai/host-metrics:ro
     environment:
       - PGAI_MON_URL=http://pgai-mon:8765
       - PGAI_MON_TOKEN=${PGAI_MON_READ_TOKEN:-${PGAI_MON_TOKEN:?PGAI_MON_TOKEN is required}}

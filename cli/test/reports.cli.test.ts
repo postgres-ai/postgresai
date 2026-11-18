@@ -50,7 +50,7 @@ function isolatedEnv(extra: Record<string, string> = {}) {
   };
 }
 
-async function startFakeApi() {
+async function startFakeApi(opts: { noReportKinds?: boolean } = {}) {
   const requests: Array<{
     method: string;
     pathname: string;
@@ -80,6 +80,19 @@ async function startFakeApi() {
         req.method === "GET" &&
         url.pathname.endsWith("/checkup_reports")
       ) {
+        // An API from before report kinds (platform-all #1208): PostgREST's reply
+        // to a filter on a column the view does not have.
+        if (opts.noReportKinds && url.searchParams.has("kind")) {
+          return new Response(
+            JSON.stringify({
+              code: "42703",
+              details: null,
+              hint: 'Perhaps you meant to reference the column "checkup_reports.id".',
+              message: "column checkup_reports.kind does not exist",
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response(
           JSON.stringify([
             {
@@ -262,6 +275,85 @@ describe("CLI reports command group", () => {
       );
       expect(req).toBeTruthy();
       expect(req!.headers["access-token"]).toBe("test-key");
+    } finally {
+      api.stop();
+    }
+  });
+
+  // #504: --kind filters by report kind (checkup / Database health).
+  test("reports list --kind health sends kind=eq.health and prints raw JSON when piped", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["reports", "list", "--kind", "health"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+      expect(Array.isArray(JSON.parse(r.stdout.trim()))).toBe(true);
+      const req = api.requests.find((x) => x.pathname.endsWith("/checkup_reports"));
+      expect(req!.searchParams.kind).toBe("eq.health");
+      expect(req!.searchParams.order).toBe("id.desc");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("reports list --kind rejects an unknown kind before any request", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["reports", "list", "--kind", "bogus"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("checkup");
+      expect(r.stderr).toContain("health");
+      expect(api.requests.length).toBe(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("reports list --kind on an API without report kinds says so, nothing on stdout", async () => {
+    const api = await startFakeApi({ noReportKinds: true });
+    try {
+      const r = await runCliAsync(
+        ["reports", "list", "--kind", "health", "--json"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(1);
+      expect(r.stdout.trim()).toBe("");
+      expect(r.stderr).toContain("--kind needs a newer PostgresAI API");
+      expect(r.stderr).not.toContain("Perhaps you meant");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("reports list without --kind still works on an API without report kinds", async () => {
+    const api = await startFakeApi({ noReportKinds: true });
+    try {
+      const r = await runCliAsync(
+        ["reports", "list"],
+        isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())[0].id).toBe(1);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("reports list --kind with a global token and no --org names --org, sends nothing", async () => {
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(
+        ["reports", "list", "--kind", "health"],
+        isolatedEnv({ PGAI_API_KEY: "pai_global_test", PGAI_API_BASE_URL: api.baseUrl })
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("--org <alias>");
+      expect(api.requests.length).toBe(0);
     } finally {
       api.stop();
     }

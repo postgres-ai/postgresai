@@ -4,6 +4,14 @@
 
 ### Added
 
+- `pgai reports list` tells checkup reports from Database health collections
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/504): in a terminal each report prints as `id`, `project`,
+  `type` (`Checkup`, or `Database health` with its period, e.g. `week 2026-W46 (Nov 9–15) (in progress)`), `created`
+  (in UTC; for a health collection, when its data was last written, not its period's end, which can be in the
+  future) and `status` / `status_reason` when set; the other fields (e.g. `project_id`, `epoch`) are now only in
+  `--json`. `--kind checkup|health` lists one kind. `--json` and piped output stay the raw rows, which now also carry
+  `kind`, `health_period`, `health_period_start` and `display_at`. Order is unchanged (most recently added first). On a platform without report kinds the terminal view shows `created_at` with no type,
+  and `--kind` fails with a message saying the platform is too old.
 - Console permalinks for Joe results (https://gitlab.com/postgres-ai/platform-all/-/work_items/1171): `pgai joe <verb>`
   and `pgai joe result` print `console: <url>` right under the `command N · ok` line (on stderr after the error line
   when a failed command has a stored result), and `--json` carries `session_id`, `console_command_id` and

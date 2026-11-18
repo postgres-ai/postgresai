@@ -246,3 +246,71 @@ test('rds-postgres: disk rates, latency and provisioned limits retain their unit
   expect(unknown.text).not.toContain('host_disk_provisioned_')
   expect(unknown.text).toContain('host_disk_size_bytes')
 })
+
+// Resource sizing (platform-all#1101): what the instance is, its storage
+// ceiling, and the credit and burst balances that limit what it can sustain.
+test('rds-postgres: the instance info series carries the class, storage and region', async () => {
+  const dir = `${root}/rds-postgres`
+  const recorded: Recorded[] = await Bun.file(`${dir}/recorded.json`).json()
+  const { now, instanceId } = await Bun.file(`${dir}/case.json`).json()
+  const db = (recorded.find(r => r.command === 'DescribeDBInstancesCommand')!.output as { DBInstances: Record<string, unknown>[] }).DBInstances[0]
+  Object.assign(db, { MultiAZ: true, MaxAllocatedStorage: 40, StorageType: 'gp3"x' })
+  const { text, errors } = await pollOnce(replay(recorded).clients, { instanceId, cluster: 'ci', nodeName: 'node-01', region: 'eu-central-1' }, new Date(now), new Map())
+  expect(errors).toEqual([])
+  expect(text).toContain(`host_instance_info{cluster="ci",node_name="node-01",instance_class="db.t4g.micro",engine="postgres",storage_type="gp3\\"x",multi_az="true",region="eu-central-1"} 1 ${Date.parse(now)}\n`)
+  expect(text).toContain(`host_disk_max_size_bytes{cluster="ci",node_name="node-01"} ${40 * 1024 ** 3} ${Date.parse(now)}\n`)
+})
+
+test('rds-postgres: balances are read every 5 minutes, only where they apply, and a failure is retried', async () => {
+  const dir = `${root}/rds-postgres`
+  const recorded: Recorded[] = await Bun.file(`${dir}/recorded.json`).json()
+  const { now, instanceId } = await Bun.file(`${dir}/case.json`).json()
+  const target = { instanceId, cluster: 'ci', nodeName: 'node-01' }
+  const t0 = Date.parse(now)
+  // Every GetMetricData request, with a reply that has no points.
+  const calls: { StartTime: Date; EndTime: Date; MetricDataQueries: { Id: string; MetricStat: { Period: number } }[] }[] = []
+  const describe = (patch: Record<string, unknown>) => ({
+    async send(command: { constructor: { name: string } }) {
+      const out = structuredClone(recorded.find(r => r.command === 'DescribeDBInstancesCommand')!.output) as { DBInstances: Record<string, unknown>[] }
+      Object.assign(out.DBInstances[0], { PerformanceInsightsEnabled: false, MonitoringInterval: 0, ...patch })
+      return out
+    },
+  })
+  let fail = false
+  const cloudwatch = {
+    async send(command: { input: (typeof calls)[number] }) {
+      if (fail && command.input.MetricDataQueries[0].MetricStat.Period === 300) throw Object.assign(new Error('throttled'), { name: 'Throttling' })
+      calls.push(command.input)
+      return { MetricDataResults: [] }
+    },
+  }
+  const none = { send: async () => { throw new Error('not expected') } }
+  const balanceIds = () => calls.filter(c => c.MetricDataQueries[0].MetricStat.Period === 300).map(c => c.MetricDataQueries.map(q => q.Id))
+  const state = new Map<string, number>()
+
+  await pollOnce({ rds: describe({}), cloudwatch, pi: none, logs: none }, target, new Date(t0), state)
+  expect(balanceIds()).toEqual([['host_cpu_credit_balance', 'host_cpu_surplus_credit_balance', 'host_ebs_io_balance_percent', 'host_ebs_byte_balance_percent']])
+  // On 5-minute boundaries (CloudWatch aligns the buckets to StartTime), so a
+  // later read stamps the same buckets.
+  const window = calls.filter(c => c.MetricDataQueries[0].MetricStat.Period === 300)[0]
+  expect([window.StartTime.getTime() % 300_000, window.EndTime.getTime() % 300_000]).toEqual([0, 0])
+  expect(window.EndTime.getTime() - window.StartTime.getTime()).toBe(30 * 60_000)
+  // 4 minutes later: not again.
+  await pollOnce({ rds: describe({}), cloudwatch, pi: none, logs: none }, target, new Date(t0 + 4 * 60_000), state)
+  expect(balanceIds().length).toBe(1)
+  // 5 minutes after the first: a non-burstable gp2 instance reads BurstBalance, not CPU credits.
+  await pollOnce({ rds: describe({ DBInstanceClass: 'db.m7g.large', StorageType: 'gp2' }), cloudwatch, pi: none, logs: none }, target, new Date(t0 + 5 * 60_000), state)
+  expect(balanceIds()[1]).toEqual(['host_disk_burst_balance_percent', 'host_ebs_io_balance_percent', 'host_ebs_byte_balance_percent'])
+  // A failed read is reported, the minute's samples are still written, and it is read again on the next poll.
+  fail = true
+  const failed = await pollOnce({ rds: describe({}), cloudwatch, pi: none, logs: none }, target, new Date(t0 + 10 * 60_000), state)
+  expect(failed.errors.map(e => e.name)).toEqual(['Throttling'])
+  expect(failed.text).toContain('host_instance_info')
+  fail = false
+  await pollOnce({ rds: describe({}), cloudwatch, pi: none, logs: none }, target, new Date(t0 + 11 * 60_000), state)
+  expect(balanceIds().length).toBe(3)
+  // Aurora: never.
+  const aurora = new Map<string, number>()
+  await pollOnce({ rds: describe({ Engine: 'aurora-postgresql', DBClusterIdentifier: 'c' }), cloudwatch, pi: none, logs: none }, target, new Date(t0), aurora)
+  expect(balanceIds().length).toBe(3)
+})

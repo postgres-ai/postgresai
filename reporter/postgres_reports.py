@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"
 
 import requests
 import json
@@ -64,6 +64,7 @@ from requests_aws4auth import AWS4Auth
 from reporter import a005 as a005_facts
 from reporter import d001 as d001_facts
 from reporter import d004 as d004_facts
+from reporter import k004 as k004_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
@@ -91,6 +92,11 @@ K003_WINDOW_METRICS = {
 # tests/reporter/test_k003_window_facts.py checks it against the config.
 K003_EXPORT_RULE = {"top_n_per_database": 100, "ranked_by": "total_exec_time", "min_calls": 3,
                     "min_exec_time_ms": 1000, "interval_seconds": 30}
+# K004 per-statement window facts: K003's, plus the time and the temp reads a per-call spill reading
+# needs (ms per call; reads against writes).
+K004_WINDOW_METRICS = {**K003_WINDOW_METRICS,
+                       "exec_time_ms": "pgwatch_pg_stat_statements_exec_time_total",
+                       "temp_bytes_read": "pgwatch_pg_stat_statements_temp_bytes_read"}
 K003_TEXT_CHARS = 200  # a statement's text in K003: enough to name it, small enough for 100 rows
 K003_TEXT_FETCH_CHARS = 20000  # read this much to find the monitoring marker (test: every collector SQL fits)
 MONITORING_MARKER = "pgwatch_generated"  # the comment every collector statement carries
@@ -1168,7 +1174,22 @@ class PostgresReportGenerator:
             'disk_iops': (f'avg_over_time((host_disk_read_iops{{{sel}}}'
                           f' + host_disk_write_iops{{{sel}}})[5m:1m])'),
             'backends': f'max_over_time(sum(pgwatch_pg_stat_activity_count{{{sel}}})[5m:1m])',
+            # Resource sizing for RDS and ClickHouse (platform-all#1101): the
+            # average CPU (a burstable class's baseline is an average), memory
+            # available in bytes (RDS without Enhanced Monitoring has no total,
+            # the platform divides by the class's RAM), and the credit and
+            # burst balances (5-minute metrics; the lowest in each 5 minutes,
+            # the surplus at its highest).
+            'cpu_avg_pct': f'avg_over_time(host_cpu_utilization_percent{{{sel}}}[5m])',
+            'mem_available_bytes': f'min_over_time(host_memory_available_bytes{{{sel}}}[5m])',
+            'cpu_credit_balance': f'min_over_time(host_cpu_credit_balance{{{sel}}}[5m])',
+            'cpu_surplus_balance': f'max_over_time(host_cpu_surplus_credit_balance{{{sel}}}[5m])',
+            'burst_balance_pct': f'min_over_time(host_disk_burst_balance_percent{{{sel}}}[5m])',
+            'ebs_io_balance_pct': f'min_over_time(host_ebs_io_balance_percent{{{sel}}}[5m])',
+            'ebs_byte_balance_pct': f'min_over_time(host_ebs_byte_balance_percent{{{sel}}}[5m])',
         }
+        lowest = {'mem_available_pct', 'mem_available_bytes', 'cpu_credit_balance', 'burst_balance_pct',
+                  'ebs_io_balance_pct', 'ebs_byte_balance_pct'}
         series: Dict[str, List[Optional[float]]] = {}
         first_ts: Optional[int] = None
         for name, query in series_queries.items():
@@ -1182,7 +1203,7 @@ class PostgresReportGenerator:
                     if v != v or v in (float('inf'), float('-inf')):
                         continue
                     t = int(float(ts)) // step * step
-                    points[t] = max(points.get(t, v), v) if name != 'mem_available_pct' else min(points.get(t, v), v)
+                    points[t] = min(points.get(t, v), v) if name in lowest else max(points.get(t, v), v)
             if points:
                 first = min(points)
                 first_ts = first if first_ts is None else min(first_ts, first)
@@ -1209,17 +1230,21 @@ class PostgresReportGenerator:
                     return None
             return None
 
+        # The value is a label: after a resize (or a tier change) the window holds
+        # the old and the new one; the series sampled last is current.
         max_connections = None
         settings = self.query_instant(
-            f'last_over_time(pgwatch_settings_configured{{{sel}, setting_name="max_connections"}}[3h])')
+            f'tlast_over_time(pgwatch_settings_configured{{{sel}, setting_name="max_connections"}}[3h])')
         if settings.get('status') == 'success' and settings.get('data', {}).get('result'):
             try:
-                max_connections = int(settings['data']['result'][0]['metric'].get('setting_value'))
-            except (TypeError, ValueError):
+                newest = max(settings['data']['result'], key=lambda r: float(r['value'][1]))
+                max_connections = int(newest['metric'].get('setting_value'))
+            except (KeyError, IndexError, TypeError, ValueError):
                 max_connections = None
 
         cpu, mem, mbps, iops, backends = (_values(n) for n in
                                           ('cpu_pct', 'mem_available_pct', 'disk_mbps', 'disk_iops', 'backends'))
+        cpu_avg = _values('cpu_avg_pct')
         total_bytes = _instant(f'last_over_time(host_os_memory_total_bytes{{{sel}}}[3h])')
         free_bytes = _instant(f'last_over_time(host_disk_free_bytes{{{sel}}}[3h])')
         db_size = _instant(f'sum(last_over_time(pgwatch_db_size_size_b{{{sel}}}[3h]))')
@@ -1236,7 +1261,8 @@ class PostgresReportGenerator:
         data = {
             "window_hours": min(hours, float(window_hours)),
             "host_metrics": bool(cpu),
-            "cpu": {"cores": None, "p95_pct": _pct(cpu, 0.95), "max_pct": max(cpu) if cpu else None},
+            "cpu": {"cores": None, "p95_pct": _pct(cpu, 0.95), "max_pct": max(cpu) if cpu else None,
+                    "avg_pct": round(sum(cpu_avg) / len(cpu_avg), 3) if cpu_avg else None},
             "memory": {
                 "total_bytes": int(total_bytes) if total_bytes is not None else None,
                 "available_min_pct": min(mem) if mem else None,
@@ -1263,10 +1289,203 @@ class PostgresReportGenerator:
                 # Older reporters sent the busiest minute per point; the
                 # platform judges IOPS only when it sees this (platform-all#1086).
                 "disk_iops_kind": "avg_5m",
+                # The sizing series exist only where the box collects them.
+                **{name: series[name] for name in ('cpu_avg_pct', 'mem_available_bytes', 'cpu_credit_balance',
+                                                   'cpu_surplus_balance', 'burst_balance_pct', 'ebs_io_balance_pct',
+                                                   'ebs_byte_balance_pct') if _values(name)},
             },
         }
+        observed = self._a014_observed_size(sel, start, end, step, _instant)
+        if observed:
+            data["observed_size"] = observed
         return self.format_report_data("A014", data, node_name,
                                        postgres_version=self._get_postgres_version_info(cluster, node_name))
+
+    def _a014_observed_size(self, sel: str, start: datetime, end: datetime, step: int,
+                            instant) -> Optional[Dict[str, Any]]:
+        """
+        What the database server is, for the platform's sizing (platform-all#1101):
+        an RDS instance from rds-host-stats' host_instance_info, a ClickHouse
+        Managed Postgres service from the ClickHouse Cloud API (with the key the
+        box scrapes with) or, failing that, its metrics. None otherwise.
+        seen_at_epoch: the last time it was seen; since_epoch: the first point
+        of the current size after any other in the window (a resize), else None.
+        """
+        def history(query: str, key) -> List[Tuple[int, Any]]:
+            out: List[Tuple[int, Any]] = []
+            for item in self.query_range(query, start, end, step=f"{step}s"):
+                for ts, _ in item.get('values', []):
+                    out.append((int(float(ts)) // step * step, key(item.get('metric', {}))))
+            return sorted(out, key=lambda p: p[0])
+
+        def resize_cut(points: List[Tuple[int, Any]]) -> Optional[int]:
+            current = points[-1][1]
+            other = [t for t, v in points if v != current]
+            if not other:
+                return None
+            return min((t for t, v in points if v == current and t > max(other)), default=None)
+
+        def last(name: str) -> Optional[float]:
+            return instant(f'last_over_time({name}{{{sel}}}[3h])')
+
+        info = history(f'last_over_time(host_instance_info{{{sel}}}[10m])', lambda m: dict(m))
+        # Each label set's last sample (tlast_over_time, VictoriaMetrics), over
+        # the window plus the grid's 10-minute carry-over and a step: every
+        # label set on the grid has one.
+        latest = self.query_instant(
+            f'tlast_over_time(host_instance_info{{{sel}}}[{int((end - start).total_seconds()) + 600 + step}s])')
+        try:
+            newest = sorted((latest.get('data') or {}).get('result') or [],
+                            key=lambda r: float(r['value'][1]), reverse=True)
+            if newest:
+                at = int(float(newest[0]['value'][1]))
+                labels = {k: v for k, v in newest[0].get('metric', {}).items() if k != '__name__'}
+                # After a resize (or a storage change) last_over_time[10m] keeps the
+                # old label set on the grid for 10 minutes past its last sample:
+                # those points go, so the label set sampled last is current and
+                # the resize is where it starts.
+                def key(m: Dict[str, Any]) -> frozenset:
+                    return frozenset((k, v) for k, v in m.items() if k != '__name__')
+                last_seen: Dict[frozenset, float] = {}
+                for r in newest:
+                    last_seen.setdefault(key(r.get('metric', {})), float(r['value'][1]))
+                info = [(t, m) for t, m in info if key(m) == key(labels) or t <= last_seen.get(key(m), t)]
+                # The grid ends at the last 5-minute point before now: a box that
+                # started minutes ago (its first report runs 3 minutes in) has the
+                # info only after it.
+                if not info or at > info[-1][0]:
+                    info.append((at, labels))
+                elif key(info[-1][1]) != key(labels):
+                    info.append((info[-1][0], labels))
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+        if info:
+            labels = info[-1][1]
+            size_bytes, max_bytes = last('host_disk_size_bytes'), last('host_disk_max_size_bytes')
+            iops, throughput = last('host_disk_provisioned_iops'), last('host_disk_provisioned_throughput_bytes_per_second')
+            return {
+                "provider": "aurora" if str(labels.get('engine', '')).startswith('aurora') else "rds",
+                "size": labels.get('instance_class'),
+                "region": labels.get('region'),
+                "engine": labels.get('engine'),
+                "multi_az": labels.get('multi_az') == 'true' if labels.get('multi_az') else None,
+                "storage": {
+                    "type": labels.get('storage_type'),
+                    "size_gb": round(size_bytes / 2 ** 30, 1) if size_bytes else None,
+                    "max_size_gb": round(max_bytes / 2 ** 30, 1) if max_bytes else None,
+                    "iops": int(iops) if iops else None,
+                    "throughput_mbps": round(throughput / 1e6, 1) if throughput else None,
+                },
+                "seen_at_epoch": info[-1][0],
+                "since_epoch": resize_cut([(t, m.get('instance_class')) for t, m in info]),
+            }
+
+        if instant(f'last_over_time(host_provider_info{{{sel}, provider="ClickHouse"}}[3h])') is None:
+            return None
+        # A resize shows as a change of vCPUs or memory (the API returns only
+        # the current size): one series whose value carries both.
+        shape_values: List[Tuple[int, Any]] = []
+        for item in self.query_range(f'last_over_time(host_cpu_cores{{{sel}}}[10m]) * 1e15'
+                                     f' + last_over_time(host_os_memory_total_bytes{{{sel}}}[10m])',
+                                     start, end, step=f"{step}s"):
+            for ts, v in item.get('values', []):
+                shape_values.append((int(float(ts)) // step * step, v))
+        shape_values.sort(key=lambda p: p[0])
+        vcpus, memory, storage = last('host_cpu_cores'), last('host_os_memory_total_bytes'), last('host_disk_size_bytes')
+        observed: Dict[str, Any] = {
+            "provider": "clickhouse",
+            "size": None, "region": None, "standbys": None, "org_tier": None,
+            "vcpus": int(vcpus) if vcpus else None,
+            "memory_bytes": int(memory) if memory else None,
+            "storage": {"type": "nvme", "size_gb": round(storage / 2 ** 30, 1) if storage else None,
+                        "max_size_gb": None, "iops": None, "throughput_mbps": None},
+            # No grid point in the last 10 minutes: when the metrics were last scraped.
+            "seen_at_epoch": shape_values[-1][0] if shape_values else self._a014_last_sample_epoch(
+                f'tlast_over_time(host_os_memory_total_bytes{{{sel}}}[3h])', end),
+            "since_epoch": resize_cut(shape_values) if shape_values else None,
+            "size_source": "metrics",
+        }
+        observed.update(self._clickhouse_service_size(sel))
+        return observed
+
+    def _a014_last_sample_epoch(self, query: str, default: datetime) -> int:
+        """The newest last-sample time a tlast_over_time query returns, else default."""
+        try:
+            result = (self.query_instant(query).get('data') or {}).get('result') or []
+            return max(int(float(r['value'][1])) for r in result) if result else int(default.timestamp())
+        except (KeyError, IndexError, TypeError, ValueError):
+            return int(default.timestamp())
+
+    def _clickhouse_service_size(self, sel: str = '') -> Dict[str, Any]:
+        """
+        The ClickHouse Cloud service's size, region, standbys and org tier, read
+        with the API key the box scrapes the service's metrics with: the CLI's
+        scrape file (host-metrics/clickhouse-<name>.yml, written by js-yaml, so
+        its scalars are plain) and the secret beside it. Read-only GETs. {} when
+        there is no file, or the API does not answer; the caller then keeps what
+        the metrics say.
+        """
+        directory = Path(os.environ.get('REPORTER_HOST_METRICS_DIR', '/etc/pgai/host-metrics'))
+        try:
+            files = sorted(directory.glob('clickhouse-*.yml'))
+        except OSError:
+            return {}
+        # The scrape file of this node (its static labels), else the only file: on
+        # a box with several services another service's size must not be this one's.
+        node = re.search(r'node_name="((?:[^"\\]|\\.)*)"', sel)
+        node_name = node.group(1) if node else None
+
+        def for_node(path) -> bool:
+            try:
+                m = re.search(r'node_name:\s*>?-?\s*[\'"]?([^\s\'"]+)', path.read_text())
+            except OSError:
+                return False
+            return bool(m and node_name and m.group(1) == node_name)
+        own = [f for f in files if for_node(f)]
+        for scrape in own or (files if len(files) == 1 else []):
+            try:
+                text = scrape.read_text()
+                path = re.search(r'metrics_path:\s*[\'"]?/v1/organizations/([0-9a-f-]{36})/postgres/([0-9a-f-]{36})/prometheus', text)
+                user = re.search(r'username:\s*[\'"]?([A-Za-z0-9_-]+)', text)
+                scheme = re.search(r'scheme:\s*[\'"]?(https?)\b', text)
+                host = re.search(r'targets:\s*\n\s*-\s*[\'"]?([A-Za-z0-9.-]+(?::\d+)?)', text)
+                if not (path and user and host):
+                    continue
+                secret = scrape.with_suffix('.secret').read_text().strip()
+                base = f"{scheme.group(1) if scheme else 'https'}://{host.group(1)}/v1/organizations/{path.group(1)}"
+                auth = (user.group(1), secret)
+                reply = requests.get(f"{base}/postgres/{path.group(2)}", auth=auth, timeout=10, allow_redirects=False)
+                if reply.status_code != 200:
+                    logger.warning(f"A014: ClickHouse Cloud service read failed ({reply.status_code}); sizing uses metrics")
+                    continue
+                service = reply.json().get('result') or {}
+                out: Dict[str, Any] = {
+                    "size": service.get('size') if isinstance(service.get('size'), str) else None,
+                    "region": service.get('region') if isinstance(service.get('region'), str) else None,
+                    "standbys": {'none': 0, 'async': 1, 'sync': 2}.get(service.get('haType')),
+                    "size_source": "api",
+                }
+                if isinstance(service.get('storageSize'), (int, float)):
+                    out["storage"] = {"type": "nvme", "size_gb": float(service['storageSize']),
+                                      "max_size_gb": None, "iops": None, "throughput_mbps": None}
+                # The org plan prices the size; without it the size still counts.
+                day = datetime.now(timezone.utc).date()
+                try:
+                    costs = requests.get(f"{base}/usageCost", auth=auth, timeout=10, allow_redirects=False,
+                                         params={'from_date': str(day - timedelta(days=2)), 'to_date': str(day - timedelta(days=1))})
+                    if costs.status_code == 200:
+                        tiers = [c.get('organizationTier') for c in (costs.json().get('result') or {}).get('costs') or []
+                                 if isinstance(c, dict) and isinstance(c.get('organizationTier'), str)]
+                        out["org_tier"] = tiers[-1].lower() if tiers else None
+                    else:
+                        logger.warning(f"A014: ClickHouse Cloud org plan read failed ({costs.status_code})")
+                except Exception as e:
+                    logger.warning(f"A014: ClickHouse Cloud org plan not read: {type(e).__name__}")
+                return out
+            except Exception as e:  # never fail the report over the size
+                logger.warning(f"A014: ClickHouse Cloud size not read: {type(e).__name__}")
+                continue
+        return {}
 
     # H001-O2 persistence: an invalid index listed in readings over days is a leftover; one reading is not.
     H001_LOOKBACK = "35d"
@@ -4312,6 +4531,11 @@ class PostgresReportGenerator:
         """
         Generate K004 Top Queries by temp bytes written report.
 
+        Per database: the statements that wrote temporary files (hourly top 3 union), each with
+        K003's window facts plus its time and temp reads; the database-wide temporary-file
+        counters over the same window (reporter/k004.py). Per node: the settings that bound or
+        log a spill, with the values stored per role and per database.
+
         Args:
             cluster: Cluster name
             node_name: Node name
@@ -4323,6 +4547,7 @@ class PostgresReportGenerator:
             Dictionary containing top queries sorted by temp bytes written
         """
         logger.info("Generating K004 Top Queries by temp bytes written report...")
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -4343,15 +4568,19 @@ class PostgresReportGenerator:
                 per_query, other, timeline = self._get_hourly_topk_pgss_data(
                     cluster, node_name, db_name, metric_name, hours=hours
                 )
+                spill = self._k004_database_spill(cluster, node_name, db_name, timeline)
 
-                if not per_query and sum(other) == 0:
+                if not per_query and sum(other) == 0 and not (spill.get("bytes") or spill.get("files")):
                     logger.warning(f"K004 - No query metrics returned for database {db_name}")
                     continue  # Skip databases with no data
 
-                # Calculate total temp bytes per query across all hours
+                # Calculate total temp bytes per query across all hours. A statement in an hour's top 3
+                # with no temp bytes in the window (a quiet hour ranks zeros) did not spill.
                 query_totals = []
                 for queryid, hourly_values in per_query.items():
                     total_bytes = sum(hourly_values)
+                    if total_bytes <= 0:
+                        continue
                     query_totals.append({
                         "queryid": queryid,
                         "total_temp_bytes": total_bytes,
@@ -4361,32 +4590,100 @@ class PostgresReportGenerator:
                 # Sort by total_temp_bytes (descending) and limit to top N
                 sorted_metrics = sorted(query_totals, key=lambda x: x.get('total_temp_bytes', 0), reverse=True)[:limit]
 
+                # Per statement, over the same hourly window: calls, time, rows, buffers, WAL, temp
+                # reads, and its text, so a reader gets per-call figures and tells our monitoring apart.
+                window = self._k003_window_facts(cluster, node_name, db_name,
+                                                 [q['queryid'] for q in sorted_metrics], timeline,
+                                                 metrics=K004_WINDOW_METRICS)
+                for q in sorted_metrics:
+                    q.update(window["per_query"].get(q['queryid'], {}))
+
                 # Calculate totals
                 total_bytes = sum(q.get('total_temp_bytes', 0) for q in sorted_metrics) + sum(other)
 
+                summary = {
+                    "queries_returned": len(sorted_metrics),
+                    "total_temp_bytes": total_bytes,
+                    "total_temp_bytes_tracked_queries": sum(q.get('total_temp_bytes', 0) for q in sorted_metrics),
+                    "total_temp_bytes_other": sum(other),
+                    "time_range_hours": hours,
+                    "hourly_timestamps": timeline,
+                    "limit": limit,
+                    **window["summary"],
+                }
+                if spill:  # readings, or why there are none
+                    summary["database_temp"] = spill
                 queries_by_db[db_name] = {
                     "top_queries": sorted_metrics,
                     "other_temp_bytes_hourly": other,
-                    "summary": {
-                        "queries_returned": len(sorted_metrics),
-                        "total_temp_bytes": total_bytes,
-                        "total_temp_bytes_tracked_queries": sum(q.get('total_temp_bytes', 0) for q in sorted_metrics),
-                        "total_temp_bytes_other": sum(other),
-                        "time_range_hours": hours,
-                        "hourly_timestamps": timeline,
-                        "limit": limit
-                    }
+                    "summary": summary,
                 }
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K004",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict):
+            node.update(self._k004_settings(cluster, node_name))
+        return report
+
+    def _k004_database_spill(self, cluster: str, node_name: str, db_name: str,
+                             timeline: List[int]) -> Dict[str, Any]:
+        """pg_stat_database's temporary files and bytes of one database over the hourly window
+        (reporter/k004.counter_hours): total, per hour, busiest five minutes. Empty when monitoring
+        has fewer than two readings (not known, never zero)."""
+        if not timeline:
+            return {}
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        start, end = datetime.fromtimestamp(timeline[0] - 3600), datetime.fromtimestamp(timeline[-1])
+        out: Dict[str, Any] = {}
+        for key, metric in (("bytes", "pgwatch_db_stats_temp_bytes"), ("files", "pgwatch_db_stats_temp_files")):
+            try:
+                series = self.query_range(f"{metric}{{{where}}}", start, end, step=f"{k004_facts.STEP_S}s")
+            except Exception as e:  # one failed metric must not lose the report
+                logger.warning(f"K004 database {key} failed ({db_name}): {e}")
+                continue
+            window = k004_facts.counter_hours(series, timeline)
+            if window:
+                out[key] = window
+            else:  # query_range answers [] on an error too: not known, never zero
+                out[f"{key}_error"] = "monitoring has fewer than two readings of the counter in the window"
+        return out
+
+    def _k004_settings(self, cluster: str, node_name: str) -> Dict[str, Any]:
+        """The node's spill settings with their context and stored role/database values, read from the
+        node (reporter/k004.node_facts); without the node, the values monitoring has (no context)."""
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        out = k004_facts.node_facts(conn_str)
+        if out.get("settings"):
+            return out
+        _esc = self._escape_promql_label
+        names = "|".join(n.replace(".", "[.]") for n in k004_facts.SETTINGS)  # no backslash in a PromQL string
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        try:  # both label forms, as the version reader (older pgwatch configs keep the tag_ prefix)
+            settings, disagree = k004_facts.settings_from_monitoring(self.query_instant(
+                f'last_over_time(pgwatch_settings_configured{{{where}, setting_name=~"{names}"}}[3h]) or '
+                f'last_over_time(pgwatch_settings_configured{{{where}, tag_setting_name=~"{names}"}}[3h])'))
+        except Exception as e:
+            settings, disagree = {}, []
+            logger.warning(f"K004 settings failed: {e}")
+        if settings:
+            out["settings"] = settings
+        if disagree:
+            out["settings_error"] = "; ".join(x for x in (out.get("settings_error"), (
+                "monitoring has more than one value of " + ", ".join(disagree)
+                + " (a database's own value, or a change in the last 3 hours)")) if x)
+        elif not settings:
+            out.setdefault("settings_error", "monitoring has no reading of these settings")
+        return out
 
     def generate_k005_wal_bytes_report(self, cluster: str = "local", node_name: str = "node-01",
                                        time_range_minutes: int = 60, limit: int = 100, use_hourly: bool = True) -> Dict[str, Any]:
@@ -5407,7 +5704,8 @@ class PostgresReportGenerator:
         }
 
     def _k003_window_facts(self, cluster: str, node_name: str, db_name: str, queryids: List[str],
-                           timeline: List[int]) -> Dict[str, Any]:
+                           timeline: List[int],
+                           metrics: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """K003's per-statement facts over the hourly window: the sum of each hour's increase (the
         same sums as total_time_ms), so per-call and per-second figures share one window.
 
@@ -5467,7 +5765,7 @@ class PostgresReportGenerator:
 
         if queryids:
             f_q = '{' + ','.join(base + [f'queryid=~"{self._build_qid_regex(queryids)}"']) + '}'
-            for key, metric in K003_WINDOW_METRICS.items():
+            for key, metric in (metrics or K003_WINDOW_METRICS).items():
                 for qid, value in _summed(f"sum by (queryid) (increase({metric}{f_q}[1h]))").items():
                     if qid in per_query:
                         per_query[qid][key] = value
